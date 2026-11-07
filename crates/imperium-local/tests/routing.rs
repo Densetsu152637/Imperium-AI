@@ -196,6 +196,8 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         context: None,
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
+        launcher: None,
+        instructions: None,
         max_steps: 10,
         journal_path: dir.path().join("journal.jsonl"),
     })

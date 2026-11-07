@@ -133,6 +133,8 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         context: None,
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
+        launcher: None,
+        instructions: None,
         max_steps: 5,
         journal_path: dir.path().join("journal.jsonl"),
     })

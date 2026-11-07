@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::agent::Agent;
 use crate::journal::Journal;
-use crate::{CatalogModel, LocalModels, ResolvedModel};
+use crate::{CatalogModel, LocalModels, ResolvedModel, SessionLauncher};
 
 /// Events kept for slow subscribers before they start missing some.
 const EVENT_BUFFER: usize = 1024;
@@ -49,6 +49,10 @@ pub struct SessionConfig {
     /// Tools that run without asking, as if the user had allowed them for the session (for
     /// unattended sessions such as auto-fix, in their own worktree).
     pub pre_approved: Vec<String>,
+    /// For a project agent: starts sessions with the `start_session` tool.
+    pub launcher: Option<Arc<dyn SessionLauncher>>,
+    /// Extra instructions for the root agent, after its standard ones.
+    pub instructions: Option<String>,
     pub max_steps: u32,
     pub journal_path: PathBuf,
 }
@@ -182,6 +186,8 @@ pub(crate) struct Shared {
     pub memory: Option<SessionMemory>,
     pub context: Option<Arc<ContextIndex>>,
     pub enforce: Enforce,
+    pub launcher: Option<Arc<dyn SessionLauncher>>,
+    pub instructions: Option<String>,
     next_task: AtomicU32,
 }
 
@@ -219,6 +225,8 @@ async fn run(
         memory: config.memory,
         context: config.context,
         enforce: config.enforce,
+        launcher: config.launcher,
+        instructions: config.instructions,
         next_task: AtomicU32::new(0),
     });
     shared

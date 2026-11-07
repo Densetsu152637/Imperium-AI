@@ -524,3 +524,55 @@ pub struct AutofixEventParams {
     pub session_id: Option<String>,
     pub summary: String,
 }
+
+/// `projects.list`: projects with a running project agent.
+#[derive(Debug)]
+pub struct ProjectList;
+
+impl Method for ProjectList {
+    const NAME: &'static str = "projects.list";
+    type Params = ProjectListParams;
+    type Result = ProjectListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProjectListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProjectListResult {
+    pub agents: Vec<ProjectAgentRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProjectAgentRow {
+    pub project: String,
+    /// The agent's own session, which can be opened like any other.
+    pub session_id: String,
+}
+
+/// `projects.message`: wake a project agent with a message.
+#[derive(Debug)]
+pub struct ProjectMessage;
+
+impl Method for ProjectMessage {
+    const NAME: &'static str = "projects.message";
+    type Params = ProjectMessageParams;
+    type Result = ProjectMessageResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProjectMessageParams {
+    pub project: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProjectMessageResult {
+    /// False when the project has no running agent.
+    pub delivered: bool,
+}

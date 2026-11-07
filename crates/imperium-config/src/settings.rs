@@ -56,6 +56,9 @@ pub struct Settings {
     pub workflow: WorkflowSettings,
     #[serde(default)]
     pub github: GithubSettings,
+    /// `[[projects]]`: per-project settings, such as the project agent.
+    #[serde(default)]
+    pub projects: Vec<ProjectSettings>,
     /// `[[schedules]]`: tasks the daemon runs on a timetable (see docs/14).
     #[serde(default)]
     pub schedules: Vec<ScheduleSettings>,
@@ -120,9 +123,11 @@ impl Settings {
                     schedule.id
                 ));
             }
-            if schedule.action.prompt.is_some() == schedule.action.command.is_some() {
+            let action = &schedule.action;
+            let kinds = [&action.prompt, &action.command, &action.agent];
+            if kinds.iter().filter(|kind| kind.is_some()).count() != 1 {
                 return Err(format!(
-                    "schedules.{}: set exactly one of action.prompt or action.command",
+                    "schedules.{}: set exactly one of action.prompt, action.command, or action.agent",
                     schedule.id
                 ));
             }
@@ -183,6 +188,32 @@ impl Default for AutofixSettings {
     }
 }
 
+/// One `[[projects]]` entry.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ProjectSettings {
+    pub path: PathBuf,
+    /// Run a project agent for this project while the daemon runs (off by default).
+    #[serde(default)]
+    pub agent: bool,
+    /// Model for the agent itself; defaults to `models.default`.
+    #[serde(default)]
+    pub agent_model: Option<String>,
+    /// Sessions the agent may have running at once.
+    #[serde(default = "default_max_sessions")]
+    pub max_sessions: usize,
+    /// Sessions the agent may start per day.
+    #[serde(default = "default_max_sessions_per_day")]
+    pub max_sessions_per_day: u32,
+}
+
+fn default_max_sessions() -> usize {
+    2
+}
+
+fn default_max_sessions_per_day() -> u32 {
+    20
+}
+
 /// One `[[schedules]]` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ScheduleSettings {
@@ -221,6 +252,9 @@ pub struct ActionSettings {
     pub prompt: Option<String>,
     #[serde(default)]
     pub command: Option<String>,
+    /// A message for the project's agent (the project needs `agent = true`).
+    #[serde(default)]
+    pub agent: Option<String>,
     /// Model for prompt runs, as `<endpoint>:<model>`; defaults to `models.default`.
     #[serde(default)]
     pub model: Option<String>,

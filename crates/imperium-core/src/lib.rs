@@ -7,10 +7,12 @@
 
 mod agent;
 mod journal;
+mod launcher;
 mod local;
 mod model;
 mod session;
 
+pub use launcher::{LaunchFuture, SessionLauncher};
 pub use local::{AcquireFuture, Availability, LocalLease, LocalModels};
 pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
 pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};

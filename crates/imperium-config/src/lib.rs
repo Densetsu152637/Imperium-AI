@@ -17,6 +17,7 @@ pub use settings::{
     ActionSettings, AgentSettings, AutofixSettings, CatalogEntry, DaemonSettings, EndpointSettings,
     Enforce, ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HookSettings,
     LLAMACPP_ENDPOINT, LlamaCppSettings, Location, McpServerSettings, McpSettings, MemorySettings,
-    MemoryWrite, ModelSettings, Preference, RoutingRule, RoutingSettings, RuntimeSettings,
-    ScheduleSettings, SecretRef, Settings, Tier, TriggerSettings, WorkflowSettings, WritePolicy,
+    MemoryWrite, ModelSettings, Preference, ProjectSettings, RoutingRule, RoutingSettings,
+    RuntimeSettings, ScheduleSettings, SecretRef, Settings, Tier, TriggerSettings,
+    WorkflowSettings, WritePolicy,
 };
