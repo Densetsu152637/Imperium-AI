@@ -87,6 +87,26 @@ impl Response {
     }
 }
 
+/// A message from daemon to client that needs no reply, such as a session event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Notification {
+    pub jsonrpc: JsonRpcVersion,
+    pub method: String,
+    #[ts(type = "unknown")]
+    pub params: Value,
+}
+
+impl Notification {
+    pub fn new(method: impl Into<String>, params: Value) -> Self {
+        Notification {
+            jsonrpc: JsonRpcVersion,
+            method: method.into(),
+            params,
+        }
+    }
+}
+
 /// A JSON-RPC error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
