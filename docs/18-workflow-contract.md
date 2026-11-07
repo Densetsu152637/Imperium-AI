@@ -133,8 +133,11 @@ workflow, so it does not depend on the agent's own model.
 3. **Suggested:** hybrid search (full-text plus embeddings over section chunks) for the
    request, excluding items already chosen, up to `suggested_tokens`. Optional.
 4. **Ordering:** by priority (host, user, project, workflow, lessons), then dependency order.
-5. **Memories:** relevant memories ([17](17-memory.md)) are appended as a separate, data-only
-   group from the same search index.
+5. **Documentation and memories:** pointers to the project's existing documentation
+   ([17](17-memory.md#project-documentation-retrieval)), matched by the paths, commands, and
+   config keys in play as well as by similarity, and relevant memories, are appended as
+   separate, data-only groups. One retriever and one index serve workflow instructions,
+   documentation, and memories.
 
 ### Load manifest
 
@@ -149,6 +152,10 @@ workflow, so it does not depend on the agent's own model.
     { "ref": "workflows/AGENTS.debugging.md", "reason": "intent: debugging", "required": true, "tokens": 1100 },
     { "ref": "guides/validation.md#shared-validation-rules", "reason": "depends on debugging", "required": true, "tokens": 600 },
     { "ref": "learning/flaky-windows-file-locks.md", "reason": "similar to request (0.82)", "required": false, "tokens": 300 }
+  ],
+  "documentation": [
+    { "ref": "docs/11-ci-cd.md#runtime-packs", "reason": "mentions scripts/ci/build-llama-runtime.sh (being edited)",
+      "summary": "Which llama.cpp packs CI builds and how they are published" }
   ],
   "memories": [{ "ref": "memory:project/prefers-pnpm", "reason": "similar to request (0.77)" }]
 }

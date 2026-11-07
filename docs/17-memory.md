@@ -63,6 +63,42 @@ Use pnpm for installs and scripts. **Why:** the user's workspaces rely on pnpm w
 Subagents can search and read memory in their parent's scopes; they propose new memories
 through their parent rather than writing directly.
 
+## Project documentation retrieval
+
+Environment memory also covers what a project already documents. Each project keeps a
+**documentation index** so agents working on a specific task get pointers to the existing
+documentation that bears on it, instead of rediscovering or contradicting it.
+
+- **Sources:** `README*`, `docs/**`, decision records, `AGENTS.md`/`CLAUDE.md`, changelogs,
+  and configured globs, in the project and in linked repositories. Code itself is not
+  indexed here; agents search code with their file tools.
+- **Chunks:** documents are split by heading; each chunk keeps its path, heading anchor, a
+  short summary, and the code paths, symbols, commands, and config keys it mentions.
+- **Search:** the same hybrid engine as memory and workflows (full-text plus optional local
+  embeddings, see [18](18-workflow-contract.md#context-retrieval)).
+- **Triggers, not just similarity:** a chunk that mentions a path the agent is about to edit, a
+  command it is about to run, or a config key it is changing is served even when the request's
+  wording differs. For example, an agent editing `scripts/ci/build-llama-runtime.sh` is pointed
+  at the CI/CD document's runtime-pack section.
+- **Pointers, then loading:** the retriever serves references with a reason and a summary
+  (`docs/11-ci-cd.md#runtime-packs`: "describes the packs this script builds"); the agent loads
+  the ones it needs with `context.load`. Documentation is served as data, not instructions.
+- **Freshness:** the index updates when files change (a file watcher, and after each commit or
+  pull). Chunks whose mentioned paths no longer exist are flagged as possibly stale, and the
+  agent can propose a documentation fix.
+- **Keeping docs current:** when an agent changes code that indexed documentation describes,
+  the retriever lists those chunks at the end of its turn so the agent (or the policy's
+  documentation rule) updates them in the same change.
+
+```toml
+[memory.docs]
+enabled = true
+include = ["README*", "docs/**", "**/*.md"]
+exclude = ["node_modules/**", "target/**", "**/CHANGELOG.md"]
+linked_repos = []              # extra folders or Git URLs to index read-only
+max_pointer_tokens = 800       # budget for documentation pointers per manifest
+```
+
 ## How memory is written
 
 - Tools: `memory.remember` (new entry), `memory.update`, `memory.forget`.
