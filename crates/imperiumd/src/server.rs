@@ -118,7 +118,7 @@ async fn forward(mut subscription: Subscription, notify: mpsc::UnboundedSender<N
         };
         let params = SessionEventParams {
             session_id: subscription.session_id.clone(),
-            event,
+            agent_event: event,
         };
         let params = serde_json::to_value(params).expect("session events serialise to JSON");
         if notify

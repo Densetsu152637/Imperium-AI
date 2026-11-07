@@ -11,7 +11,7 @@ use imperium_protocol::methods::{
     SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult,
     SessionSummary,
 };
-use imperium_protocol::session::SessionEvent;
+use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -23,7 +23,7 @@ use crate::state::{CreateError, DaemonState};
 #[derive(Debug)]
 pub struct Subscription {
     pub session_id: String,
-    pub events: broadcast::Receiver<SessionEvent>,
+    pub events: broadcast::Receiver<AgentEvent>,
 }
 
 /// The reply to one frame, plus any subscription the call started.
@@ -166,7 +166,7 @@ impl Connection {
     fn create_session(
         &self,
         params: SessionCreateParams,
-    ) -> Result<(SessionCreateResult, broadcast::Receiver<SessionEvent>), ErrorObject> {
+    ) -> Result<(SessionCreateResult, broadcast::Receiver<AgentEvent>), ErrorObject> {
         let (session, events) = self
             .state
             .create_session(&params.project_dir, params.model.as_deref())

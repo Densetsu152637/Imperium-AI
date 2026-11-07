@@ -44,6 +44,44 @@ pub struct ModelSettings {
     /// Model for new sessions, as `<endpoint>:<model>`, for example `openrouter:qwen/qwen3-coder`.
     #[serde(default)]
     pub default: Option<String>,
+    /// Models subagents may be routed to.
+    #[serde(default)]
+    pub catalog: Vec<CatalogEntry>,
+}
+
+/// A model available to the router, written as `[[models.catalog]]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CatalogEntry {
+    /// `<endpoint>:<model>`.
+    pub spec: String,
+    pub tier: Tier,
+}
+
+/// How capable a model is; tasks ask for a minimum tier.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    Basic,
+    #[default]
+    Standard,
+    Strong,
+    Frontier,
+}
+
+impl std::str::FromStr for Tier {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        match text {
+            "basic" => Ok(Tier::Basic),
+            "standard" => Ok(Tier::Standard),
+            "strong" => Ok(Tier::Strong),
+            "frontier" => Ok(Tier::Frontier),
+            other => Err(format!(
+                "unknown tier {other:?}; use basic, standard, strong, or frontier"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

@@ -6,7 +6,7 @@ use axum::Router;
 use axum::routing::post;
 use imperium_core::{ResolvedModel, Session, SessionConfig};
 use imperium_models::{Endpoint, Pricing};
-use imperium_protocol::session::{PermissionDecision, SessionEvent};
+use imperium_protocol::session::{AgentEvent, PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
 use tokio::sync::broadcast;
 
@@ -48,11 +48,12 @@ fn text_body(text: &str) -> String {
     )
 }
 
-async fn next(events: &mut broadcast::Receiver<SessionEvent>) -> SessionEvent {
+async fn next(events: &mut broadcast::Receiver<AgentEvent>) -> SessionEvent {
     tokio::time::timeout(Duration::from_secs(10), events.recv())
         .await
         .expect("an event within 10 s")
         .unwrap()
+        .event
 }
 
 fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
@@ -69,6 +70,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
                 cached_input_usd_per_mtok: None,
             }),
         },
+        catalog: Vec::new(),
         max_steps: 5,
         journal_path: dir.join(".journal/test.jsonl"),
     })
@@ -153,7 +155,8 @@ async fn an_approved_write_changes_the_file_and_the_turn_reports_cost() {
     assert_eq!(journal.lines().count(), 8);
     let (history, _) = session.subscribe_with_history();
     assert_eq!(history.len(), 8);
-    assert!(matches!(history[0], SessionEvent::TurnStarted { .. }));
+    assert!(matches!(history[0].event, SessionEvent::TurnStarted { .. }));
+    assert!(history.iter().all(|event| event.agent_id == "root"));
     assert!(journal.contains(r#""type":"turn_completed""#));
 }
 
@@ -186,4 +189,89 @@ async fn a_denied_command_does_not_run() {
     assert!(!ok);
     assert!(output.contains("denied"));
     assert!(!dir.path().join("ran.txt").exists());
+}
+
+/// A fake endpoint that tells the root agent and subagents apart by their system prompt.
+async fn delegating_endpoint(
+    root_calls: Arc<AtomicUsize>,
+    sub_calls: Arc<AtomicUsize>,
+) -> Endpoint {
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let root_calls = Arc::clone(&root_calls);
+            let sub_calls = Arc::clone(&sub_calls);
+            async move {
+                let system = body["messages"][0]["content"].as_str().unwrap_or_default();
+                let body = if system.contains("subagent") {
+                    let n = sub_calls.fetch_add(1, Ordering::SeqCst);
+                    text_body(&format!("report {n}"))
+                } else {
+                    match root_calls.fetch_add(1, Ordering::SeqCst) {
+                        0 => {
+                            let calls = serde_json::json!({"choices":[{"delta":{"tool_calls":[
+                                {"index":0,"id":"a","function":{"name":"spawn_agent","arguments":"{\"brief\":\"check docs\"}"}},
+                                {"index":1,"id":"b","function":{"name":"spawn_agent","arguments":"{\"brief\":\"check tests\",\"tier\":\"basic\"}"}}
+                            ]}}]});
+                            format!("data: {calls}
+
+data: [DONE]
+
+")
+                        }
+                        1 => tool_call_body("await_tasks", "{}"),
+                        _ => text_body("Both checks are done."),
+                    }
+                };
+                ([("content-type", "text/event-stream")], body)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    Endpoint {
+        base_url,
+        api_key: None,
+    }
+}
+
+#[tokio::test]
+async fn the_root_delegates_waits_without_model_calls_and_collects_reports() {
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let sub_calls = Arc::new(AtomicUsize::new(0));
+    let endpoint = delegating_endpoint(Arc::clone(&root_calls), Arc::clone(&sub_calls)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(endpoint, dir.path());
+    let mut events = session.subscribe();
+    session.send("check docs and tests".into()).unwrap();
+
+    let mut spawned = Vec::new();
+    let mut finished = Vec::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap();
+        match event.event {
+            SessionEvent::TaskSpawned { task_id, .. } => spawned.push(task_id),
+            SessionEvent::TaskFinished { task_id, ok, .. } => {
+                assert!(ok);
+                assert_eq!(event.agent_id, task_id);
+                finished.push(task_id);
+            }
+            SessionEvent::TurnCompleted { steps, .. } if event.agent_id == "root" => {
+                assert_eq!(steps, 3);
+                break;
+            }
+            SessionEvent::TurnFailed { message } => panic!("{} failed: {message}", event.agent_id),
+            _ => {}
+        }
+    }
+    assert_eq!(spawned, ["t1", "t2"]);
+    finished.sort();
+    assert_eq!(finished, ["t1", "t2"]);
+    // Spawn, await, and summary: waiting for the subagents cost the root no model calls.
+    assert_eq!(root_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(sub_calls.load(Ordering::SeqCst), 2);
 }

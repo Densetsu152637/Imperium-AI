@@ -147,7 +147,7 @@ pub struct SessionSubscribeParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionSubscribeResult {
-    pub history: Vec<crate::session::SessionEvent>,
+    pub history: Vec<crate::session::AgentEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

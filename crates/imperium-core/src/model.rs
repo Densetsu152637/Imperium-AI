@@ -1,4 +1,4 @@
-use imperium_config::{SecretError, SecretName, Settings};
+use imperium_config::{SecretError, SecretName, Settings, Tier};
 use imperium_models::{Endpoint, Pricing};
 
 /// A model chosen for a session: where to call it, its id, and its prices.
@@ -60,6 +60,37 @@ pub fn resolve_model(
     })
 }
 
+/// A model subagents may be routed to, with its capability tier.
+#[derive(Debug, Clone)]
+pub struct CatalogModel {
+    pub model: ResolvedModel,
+    pub tier: Tier,
+}
+
+/// Picks a subagent's model (router v1): the model the parent named if it is in the catalog,
+/// otherwise the cheapest catalog model at or above the requested tier, otherwise `fallback`.
+/// Unpriced models count as free, so local models win ties.
+pub fn route(
+    catalog: &[CatalogModel],
+    fallback: &ResolvedModel,
+    named: Option<&str>,
+    tier: Tier,
+) -> ResolvedModel {
+    if let Some(named) = named.and_then(|spec| catalog.iter().find(|c| c.model.spec == spec)) {
+        return named.model.clone();
+    }
+    let price = |model: &ResolvedModel| {
+        model
+            .pricing
+            .map_or(0.0, |p| p.input_usd_per_mtok + p.output_usd_per_mtok)
+    };
+    catalog
+        .iter()
+        .filter(|candidate| candidate.tier >= tier)
+        .min_by(|a, b| price(&a.model).total_cmp(&price(&b.model)))
+        .map_or_else(|| fallback.clone(), |chosen| chosen.model.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,6 +135,53 @@ mod tests {
 
         let missing = resolve_model(&settings(ENDPOINTS), Some("hosted:big"), |_| Ok(None));
         assert!(matches!(missing, Err(ModelError::MissingSecret(..))));
+    }
+
+    #[test]
+    fn routing_picks_the_cheapest_model_at_or_above_the_tier() {
+        let model = |spec: &str, price: Option<f64>| ResolvedModel {
+            spec: spec.into(),
+            endpoint: Endpoint {
+                base_url: String::new(),
+                api_key: None,
+            },
+            model: spec.into(),
+            pricing: price.map(|p| Pricing {
+                input_usd_per_mtok: p,
+                output_usd_per_mtok: p,
+                cached_input_usd_per_mtok: None,
+            }),
+        };
+        let catalog = [
+            CatalogModel {
+                model: model("cheap", Some(0.1)),
+                tier: Tier::Basic,
+            },
+            CatalogModel {
+                model: model("mid", Some(1.0)),
+                tier: Tier::Standard,
+            },
+            CatalogModel {
+                model: model("local", None),
+                tier: Tier::Standard,
+            },
+            CatalogModel {
+                model: model("big", Some(5.0)),
+                tier: Tier::Strong,
+            },
+        ];
+        let fallback = model("session", None);
+        assert_eq!(route(&catalog, &fallback, None, Tier::Basic).spec, "local");
+        assert_eq!(route(&catalog, &fallback, None, Tier::Strong).spec, "big");
+        assert_eq!(
+            route(&catalog, &fallback, Some("mid"), Tier::Basic).spec,
+            "mid"
+        );
+        assert_eq!(
+            route(&catalog, &fallback, Some("unknown"), Tier::Frontier).spec,
+            "session"
+        );
+        assert_eq!(route(&[], &fallback, None, Tier::Basic).spec, "session");
     }
 
     #[test]

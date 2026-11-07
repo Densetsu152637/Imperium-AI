@@ -10,7 +10,8 @@ use imperium_protocol::methods::{
     SessionSendParams,
 };
 use imperium_protocol::session::{
-    PermissionDecision, SESSION_EVENT, SessionEvent, SessionEventParams,
+    AgentEvent, PermissionDecision, ROOT_AGENT, SESSION_EVENT, SessionEvent, SessionEventParams,
+    StepStatus,
 };
 
 use crate::{block_on, connect};
@@ -55,7 +56,8 @@ pub fn run(project: Option<PathBuf>, model: Option<String>) -> anyhow::Result<()
     })
 }
 
-/// Prints a turn's events until it completes or fails, asking the user about permissions.
+/// Prints a turn's events until the root agent completes or fails, asking the user about
+/// permissions. Subagent lines are prefixed with their task id.
 async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()> {
     loop {
         let notification = client.next_notification().await?;
@@ -67,19 +69,28 @@ async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()
         if params.session_id != session_id {
             continue;
         }
-        match params.event {
+        let AgentEvent { agent_id, event } = params.agent_event;
+        let root = agent_id == ROOT_AGENT;
+        let tag = if root {
+            String::new()
+        } else {
+            format!("[{agent_id}] ")
+        };
+        match event {
             SessionEvent::TurnStarted { .. } | SessionEvent::ModelCallCompleted { .. } => {}
-            SessionEvent::TextDelta { text } => {
+            // Subagent replies arrive as their task report; only the root streams to the terminal.
+            SessionEvent::TextDelta { text } if root => {
                 print!("{text}");
                 std::io::stdout().flush().ok();
             }
-            SessionEvent::ToolStarted { summary, .. } => println!("\n· {summary}"),
+            SessionEvent::TextDelta { .. } => {}
+            SessionEvent::ToolStarted { summary, .. } => println!("\n{tag}· {summary}"),
             SessionEvent::PermissionRequested {
                 request_id,
                 summary,
                 ..
             } => {
-                let decision = ask_permission(&summary)?;
+                let decision = ask_permission(&format!("{tag}{summary}"))?;
                 client
                     .call::<SessionRespond>(SessionRespondParams {
                         session_id: session_id.to_string(),
@@ -90,14 +101,45 @@ async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()
             }
             SessionEvent::ToolFinished { ok, output, .. } => {
                 if !ok {
-                    println!("  ✗ {}", output.lines().next().unwrap_or_default());
+                    println!("  {tag}✗ {}", output.lines().next().unwrap_or_default());
                 }
+            }
+            SessionEvent::PlanUpdated { plan } => {
+                println!("\n{tag}Plan: {}", plan.goal);
+                for step in plan.steps {
+                    let mark = match step.status {
+                        StepStatus::Done => "✓",
+                        StepStatus::InProgress => "▸",
+                        StepStatus::Blocked => "!",
+                        StepStatus::Skipped => "–",
+                        StepStatus::Pending => " ",
+                    };
+                    println!("  [{mark}] {}", step.title);
+                }
+            }
+            SessionEvent::TaskSpawned {
+                task_id,
+                brief,
+                model,
+            } => println!(
+                "\n{tag}→ {task_id} on {model}: {}",
+                brief.lines().next().unwrap_or_default()
+            ),
+            SessionEvent::TaskFinished {
+                task_id,
+                ok,
+                cost_usd,
+                ..
+            } => {
+                let cost = cost_usd.map_or(String::new(), |cost| format!(" (${cost:.4})"));
+                let state = if ok { "finished" } else { "failed" };
+                println!("\n← {task_id} {state}{cost}");
             }
             SessionEvent::TurnCompleted {
                 usage,
                 cost_usd,
                 steps,
-            } => {
+            } if root => {
                 let cost = cost_usd.map_or(String::new(), |cost| format!(", ${cost:.4}"));
                 println!(
                     "\n[{} in ({} cached) / {} out tokens{cost}, {steps} model calls]",
@@ -105,10 +147,12 @@ async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()
                 );
                 return Ok(());
             }
-            SessionEvent::TurnFailed { message } => {
+            SessionEvent::TurnFailed { message } if root => {
                 println!("\nturn failed: {message}");
                 return Ok(());
             }
+            SessionEvent::TurnCompleted { .. } => {}
+            SessionEvent::TurnFailed { message } => println!("\n{tag}failed: {message}"),
         }
     }
 }

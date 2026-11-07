@@ -1,13 +1,14 @@
 //! Sessions and the agent loop.
 //!
-//! Each [`Session`] runs on its own OS thread with a single-threaded Tokio runtime, so a busy
-//! session cannot starve others or the daemon's transport. Callers talk to it over channels
-//! and receive its [`SessionEvent`](imperium_protocol::session::SessionEvent)s by subscribing.
+//! Every agent (a session's root and each subagent) is its own task on the daemon's
+//! multi-threaded Tokio runtime, so agents run in parallel across cores and idle agents use no
+//! CPU. Callers talk to a [`Session`] over channels and receive its
+//! [`AgentEvent`](imperium_protocol::session::AgentEvent)s by subscribing.
 
 mod agent;
 mod journal;
 mod model;
 mod session;
 
-pub use model::{ModelError, ResolvedModel, resolve_model};
+pub use model::{CatalogModel, ModelError, ResolvedModel, resolve_model, route};
 pub use session::{Session, SessionClosed, SessionConfig, new_session_id};

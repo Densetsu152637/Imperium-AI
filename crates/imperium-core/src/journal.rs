@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use imperium_protocol::session::SessionEvent;
+use imperium_protocol::session::AgentEvent;
 use serde::Serialize;
 
 /// Append-only JSON Lines record of a session: one object per event, with a timestamp.
@@ -16,7 +16,7 @@ pub struct Journal {
 struct Line<'a> {
     at_ms: u128,
     #[serde(flatten)]
-    event: &'a SessionEvent,
+    event: &'a AgentEvent,
 }
 
 impl Journal {
@@ -28,7 +28,7 @@ impl Journal {
         Ok(Journal { file })
     }
 
-    pub fn record(&mut self, event: &SessionEvent) -> std::io::Result<()> {
+    pub fn record(&mut self, event: &AgentEvent) -> std::io::Result<()> {
         let at_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_millis());
