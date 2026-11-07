@@ -134,6 +134,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
         launcher: None,
+        resume: false,
         instructions: None,
         media: None,
         web: None,

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use imperium_protocol::session::AgentEvent;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Append-only JSON Lines record of a session: one object per event, with a timestamp.
 #[derive(Debug)]
@@ -36,4 +36,24 @@ impl Journal {
         line.push(b'\n');
         self.file.write_all(&line)
     }
+}
+
+/// The events recorded in a journal, oldest first; unreadable lines are skipped.
+pub fn read_events(path: &Path) -> Vec<AgentEvent> {
+    #[derive(Deserialize)]
+    struct Stored {
+        #[serde(flatten)]
+        event: AgentEvent,
+    }
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Stored>(line).ok())
+        .map(|stored| stored.event)
+        .collect()
+}
+
+/// Where a session's root conversation is kept between turns, beside its journal.
+pub fn messages_path(journal: &Path) -> std::path::PathBuf {
+    journal.with_extension("messages.json")
 }

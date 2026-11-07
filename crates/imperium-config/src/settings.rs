@@ -15,6 +15,8 @@ port = 0
 [agents]
 # Model calls an agent may make in one turn before it stops.
 max_steps = 50
+# Sessions active within this many days continue after the daemon restarts.
+resume_days = 7
 
 [runtime.llamacpp]
 # Runtime pack: auto, cpu, vulkan, cuda12, cuda13, rocm, or metal. custom_path overrides it.
@@ -568,6 +570,7 @@ pub struct DaemonSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct AgentSettings {
     pub max_steps: u32,
+    pub resume_days: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

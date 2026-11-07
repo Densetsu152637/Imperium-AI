@@ -103,7 +103,10 @@ async fn a_chat_turn_streams_events_to_the_client() {
     let mut text = String::new();
     loop {
         let notification = client.next_notification().await.unwrap();
-        assert_eq!(notification.method, SESSION_EVENT);
+        // Daemon-wide notices (such as session.created) arrive too.
+        if notification.method != SESSION_EVENT {
+            continue;
+        }
         let params: SessionEventParams = serde_json::from_value(notification.params).unwrap();
         assert_eq!(params.session_id, session.session_id);
         match params.agent_event.event {

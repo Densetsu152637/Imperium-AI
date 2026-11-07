@@ -761,3 +761,7 @@ pub struct PhoneRevokeParams {
 pub struct PhoneRevokeResult {
     pub found: bool,
 }
+
+/// Notification sent to every client when a session starts, whoever started it (a client, a
+/// schedule, a project agent, or auto-fix). The payload is a [`SessionSummary`].
+pub const SESSION_CREATED: &str = "session.created";
