@@ -1,6 +1,7 @@
 //! One agent's conversation and its turn loop.
 
 use std::collections::HashSet;
+use std::time::Instant;
 
 use imperium_models::{ChatMessage, ChatRequest, ToolCall, Usage, stream_chat};
 use imperium_protocol::session::{PermissionDecision, SessionEvent, TokenUsage};
@@ -63,7 +64,10 @@ impl Agent {
                 messages: &self.messages,
                 tools: &tools,
             };
+            let started = Instant::now();
+            let mut first_text = None;
             let completion = match stream_chat(&self.http, &self.model.endpoint, request, |text| {
+                first_text.get_or_insert_with(Instant::now);
                 emit(SessionEvent::TextDelta {
                     text: text.to_string(),
                 })
@@ -78,22 +82,18 @@ impl Agent {
                     return;
                 }
             };
-            if let Some(usage) = completion.usage {
-                total.prompt_tokens += usage.prompt_tokens;
-                total.completion_tokens += usage.completion_tokens;
-                total.cached_tokens += usage.cached_tokens;
-            }
+            let usage = completion.usage.unwrap_or_default();
+            total.prompt_tokens += usage.prompt_tokens;
+            total.completion_tokens += usage.completion_tokens;
+            total.cached_tokens += usage.cached_tokens;
+            emit(self.call_telemetry(&usage, started, first_text));
             self.messages.push(ChatMessage::Assistant {
                 content: Some(completion.text).filter(|text| !text.is_empty()),
                 tool_calls: completion.tool_calls.clone(),
             });
             if completion.tool_calls.is_empty() {
                 emit(SessionEvent::TurnCompleted {
-                    usage: TokenUsage {
-                        prompt_tokens: total.prompt_tokens,
-                        completion_tokens: total.completion_tokens,
-                        cached_tokens: total.cached_tokens,
-                    },
+                    usage: token_usage(&total),
                     cost_usd: self.model.pricing.map(|pricing| pricing.cost_usd(&total)),
                     steps: step,
                 });
@@ -113,6 +113,26 @@ impl Agent {
                 self.max_steps
             ),
         });
+    }
+
+    fn call_telemetry(
+        &self,
+        usage: &Usage,
+        started: Instant,
+        first_text: Option<Instant>,
+    ) -> SessionEvent {
+        let duration = started.elapsed();
+        let generating = first_text.map_or(duration, |first| first.elapsed());
+        let tokens_per_sec = (usage.completion_tokens > 0 && !generating.is_zero())
+            .then(|| usage.completion_tokens as f64 / generating.as_secs_f64());
+        SessionEvent::ModelCallCompleted {
+            model: self.model.spec.clone(),
+            usage: token_usage(usage),
+            duration_ms: millis(duration),
+            time_to_first_token_ms: first_text.map(|first| millis(first - started)),
+            tokens_per_sec,
+            cost_usd: self.model.pricing.map(|pricing| pricing.cost_usd(usage)),
+        }
     }
 
     /// Runs one tool call and returns the text the model sees.
@@ -164,6 +184,18 @@ impl Agent {
             Err(error) => finish(emit, false, format!("error: {error}")),
         }
     }
+}
+
+fn token_usage(usage: &Usage) -> TokenUsage {
+    TokenUsage {
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        cached_tokens: usage.cached_tokens,
+    }
+}
+
+fn millis(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn truncate(text: &str) -> String {

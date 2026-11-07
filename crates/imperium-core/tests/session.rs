@@ -91,6 +91,19 @@ async fn an_approved_write_changes_the_file_and_the_turn_reports_cost() {
         next(&mut events).await,
         SessionEvent::TurnStarted { .. }
     ));
+    let SessionEvent::ModelCallCompleted {
+        usage,
+        cost_usd,
+        tokens_per_sec,
+        ..
+    } = next(&mut events).await
+    else {
+        panic!("expected per-call telemetry");
+    };
+    assert_eq!(usage.prompt_tokens, 100);
+    // 100 × $1 + 20 × $2, per million tokens.
+    assert!((cost_usd.unwrap() - 0.00014).abs() < 1e-12);
+    assert!(tokens_per_sec.is_some());
     let SessionEvent::PermissionRequested {
         request_id, tool, ..
     } = next(&mut events).await
@@ -114,6 +127,10 @@ async fn an_approved_write_changes_the_file_and_the_turn_reports_cost() {
         next(&mut events).await,
         SessionEvent::TextDelta { .. }
     ));
+    assert!(matches!(
+        next(&mut events).await,
+        SessionEvent::ModelCallCompleted { .. }
+    ));
     let SessionEvent::TurnCompleted {
         usage,
         cost_usd,
@@ -133,7 +150,7 @@ async fn an_approved_write_changes_the_file_and_the_turn_reports_cost() {
         "hi"
     );
     let journal = std::fs::read_to_string(dir.path().join(".journal/test.jsonl")).unwrap();
-    assert_eq!(journal.lines().count(), 6);
+    assert_eq!(journal.lines().count(), 8);
     assert!(journal.contains(r#""type":"turn_completed""#));
 }
 
@@ -152,6 +169,7 @@ async fn a_denied_command_does_not_run() {
     let mut events = session.subscribe();
     session.send("run it".into()).unwrap();
 
+    next(&mut events).await;
     next(&mut events).await;
     let SessionEvent::PermissionRequested { request_id, .. } = next(&mut events).await else {
         panic!("expected a permission request");

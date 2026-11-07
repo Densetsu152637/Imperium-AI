@@ -41,6 +41,19 @@ pub enum SessionEvent {
         ok: bool,
         output: String,
     },
+    /// One model call finished; emitted after every call, so a turn can have several.
+    ModelCallCompleted {
+        model: String,
+        usage: TokenUsage,
+        #[ts(type = "number")]
+        duration_ms: u64,
+        /// Time to the first streamed text; absent when the call produced no text.
+        #[ts(type = "number | null")]
+        time_to_first_token_ms: Option<u64>,
+        /// Completion tokens per second after the first token (or over the whole call).
+        tokens_per_sec: Option<f64>,
+        cost_usd: Option<f64>,
+    },
     /// The agent finished the turn.
     TurnCompleted {
         usage: TokenUsage,

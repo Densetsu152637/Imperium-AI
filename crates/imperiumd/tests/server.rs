@@ -55,6 +55,28 @@ async fn an_authorised_client_can_handshake_and_ping() {
 }
 
 #[tokio::test]
+async fn a_browser_client_can_send_the_token_as_a_subprotocol() {
+    let url = start_server("secret").await;
+    let mut request = url.clone().into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        "imperium.v0, imperium.token.secret".parse().unwrap(),
+    );
+    let (_, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(response.headers()["sec-websocket-protocol"], "imperium.v0");
+
+    let mut wrong = url.into_client_request().unwrap();
+    wrong.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        "imperium.v0, imperium.token.wrong".parse().unwrap(),
+    );
+    match tokio_tungstenite::connect_async(wrong).await {
+        Err(tungstenite::Error::Http(response)) => assert_eq!(response.status(), 401),
+        other => panic!("expected 401, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_client_without_the_token_is_refused() {
     let url = start_server("secret").await;
     for header in [None, Some("Bearer wrong")] {

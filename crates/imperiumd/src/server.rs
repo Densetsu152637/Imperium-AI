@@ -22,8 +22,15 @@ struct ServerState {
     daemon: Arc<DaemonState>,
 }
 
+/// WebSocket subprotocol a browser client offers alongside its token, since browsers cannot
+/// set an `Authorization` header on WebSocket requests.
+const SUBPROTOCOL: &str = "imperium.v0";
+const TOKEN_SUBPROTOCOL_PREFIX: &str = "imperium.token.";
+
 /// Serves JSON-RPC on `GET /rpc` (WebSocket upgrade) until `shutdown` resolves.
-/// Upgrades without `Authorization: Bearer <token>` are refused with 401.
+/// The upgrade must carry the token as `Authorization: Bearer <token>` or, for browser
+/// clients, as the subprotocol `imperium.token.<token>` next to `imperium.v0`; anything
+/// else is refused with 401.
 pub async fn serve(
     listener: TcpListener,
     token: AccessToken,
@@ -42,15 +49,25 @@ async fn upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> HttpResponse {
-    let authorized = headers
+    let by_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| state.token.accepts_header(value));
-    if !authorized {
+    let by_subprotocol = headers
+        .get(header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|offered| {
+            offered
+                .split(',')
+                .filter_map(|protocol| protocol.trim().strip_prefix(TOKEN_SUBPROTOCOL_PREFIX))
+                .any(|token| state.token.accepts_header(&format!("Bearer {token}")))
+        });
+    if !by_header && !by_subprotocol {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let daemon = Arc::clone(&state.daemon);
-    ws.on_upgrade(move |socket| run_connection(socket, daemon))
+    ws.protocols([SUBPROTOCOL])
+        .on_upgrade(move |socket| run_connection(socket, daemon))
 }
 
 /// Reads requests and writes responses, interleaving notifications from subscribed sessions.

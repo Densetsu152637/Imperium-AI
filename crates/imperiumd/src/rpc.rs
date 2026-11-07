@@ -6,8 +6,9 @@ use imperium_core::Session;
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, Handshake, HandshakeParams, HandshakeResult, Method, Peer, Ping, PingParams,
-    PingResult, SessionCreate, SessionCreateParams, SessionCreateResult, SessionRespond,
-    SessionRespondParams, SessionSend, SessionSendParams,
+    PingResult, SessionCreate, SessionCreateParams, SessionCreateResult, SessionList,
+    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSend,
+    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSummary,
 };
 use imperium_protocol::session::SessionEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -91,6 +92,30 @@ impl Connection {
                 });
                 Ok(result)
             }),
+            SessionList::NAME => call::<SessionList>(request.params, |_: SessionListParams| {
+                Ok(SessionListResult {
+                    sessions: self
+                        .state
+                        .sessions()
+                        .iter()
+                        .map(|session| SessionSummary {
+                            session_id: session.id().to_string(),
+                            project_dir: session.project_dir().to_string(),
+                            model: session.model().to_string(),
+                        })
+                        .collect(),
+                })
+            }),
+            SessionSubscribe::NAME => {
+                call::<SessionSubscribe>(request.params, |params: SessionSubscribeParams| {
+                    let session = self.session(&params.session_id)?;
+                    subscription = Some(Subscription {
+                        session_id: params.session_id,
+                        events: session.subscribe(),
+                    });
+                    Ok(Accepted {})
+                })
+            }
             SessionSend::NAME => {
                 call::<SessionSend>(request.params, |params: SessionSendParams| {
                     self.session(&params.session_id)?

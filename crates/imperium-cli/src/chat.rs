@@ -68,7 +68,7 @@ async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()
             continue;
         }
         match params.event {
-            SessionEvent::TurnStarted { .. } => {}
+            SessionEvent::TurnStarted { .. } | SessionEvent::ModelCallCompleted { .. } => {}
             SessionEvent::TextDelta { text } => {
                 print!("{text}");
                 std::io::stdout().flush().ok();

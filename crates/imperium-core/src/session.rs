@@ -42,6 +42,7 @@ pub struct SessionClosed;
 pub struct Session {
     id: String,
     model: String,
+    project_dir: String,
     commands: mpsc::UnboundedSender<Command>,
     events: broadcast::Sender<SessionEvent>,
     _thread: JoinHandle<()>,
@@ -64,6 +65,7 @@ impl Session {
             .build()?;
         let id = config.id.clone();
         let model = config.model.spec.clone();
+        let project_dir = config.workspace.root_display();
         let thread_events = events.clone();
         let thread = std::thread::Builder::new()
             .name(format!("session-{id}"))
@@ -71,6 +73,7 @@ impl Session {
         Ok(Session {
             id,
             model,
+            project_dir,
             commands,
             events,
             _thread: thread,
@@ -83,6 +86,11 @@ impl Session {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// The project folder the session works in.
+    pub fn project_dir(&self) -> &str {
+        &self.project_dir
     }
 
     /// Receives events from now on.

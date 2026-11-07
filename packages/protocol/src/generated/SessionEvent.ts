@@ -4,7 +4,15 @@ import type { TokenUsage } from "./TokenUsage";
 /**
  * Something that happened in a session, in order.
  */
-export type SessionEvent = { "type": "turn_started", text: string, } | { "type": "text_delta", text: string, } | { "type": "tool_started", call_id: string, tool: string, summary: string, } | { "type": "permission_requested", request_id: number, tool: string, summary: string, } | { "type": "tool_finished", call_id: string, ok: boolean, output: string, } | { "type": "turn_completed", usage: TokenUsage, 
+export type SessionEvent = { "type": "turn_started", text: string, } | { "type": "text_delta", text: string, } | { "type": "tool_started", call_id: string, tool: string, summary: string, } | { "type": "permission_requested", request_id: number, tool: string, summary: string, } | { "type": "tool_finished", call_id: string, ok: boolean, output: string, } | { "type": "model_call_completed", model: string, usage: TokenUsage, duration_ms: number, 
+/**
+ * Time to the first streamed text; absent when the call produced no text.
+ */
+time_to_first_token_ms: number | null, 
+/**
+ * Completion tokens per second after the first token (or over the whole call).
+ */
+tokens_per_sec: number | null, cost_usd: number | null, } | { "type": "turn_completed", usage: TokenUsage, 
 /**
  * Absent when the model has no configured prices.
  */
