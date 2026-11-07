@@ -1224,6 +1224,21 @@ dependencies = [
 [[package]]
 name = "imperium-core"
 version = "0.1.0"
+dependencies = [
+ "axum",
+ "getrandom 0.4.3",
+ "imperium-config",
+ "imperium-models",
+ "imperium-protocol",
+ "imperium-tools",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "imperium-models"
