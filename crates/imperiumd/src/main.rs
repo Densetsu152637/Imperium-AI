@@ -63,6 +63,13 @@ async fn run() -> anyhow::Result<()> {
     let local = imperiumd::LocalRuntime::start(&paths, &settings);
     let daemon = DaemonState::new(paths.clone(), settings, local);
     daemon.start_pets();
+    let resumed = daemon.resume_sessions();
+    if resumed > 0 {
+        tracing::info!(
+            sessions = resumed,
+            "continued sessions from before the restart"
+        );
+    }
     if let Some(address) = daemon
         .start_phone()
         .await

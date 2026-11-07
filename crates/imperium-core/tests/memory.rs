@@ -90,6 +90,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
         launcher: None,
+        resume: false,
         instructions: None,
         media: None,
         web: None,

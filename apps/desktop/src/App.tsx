@@ -15,6 +15,7 @@ import type {
   PetStateInfo,
   ModelListResult,
   SessionListResult,
+  SessionSummary,
   SessionSubscribeResult,
 } from "@imperium/protocol";
 
@@ -58,6 +59,9 @@ export function App() {
   // Each connection attempt gets a generation; a superseded attempt (React's development
   // double-mount, a retry) closes its own client instead of adding a second listener.
   const generation = useRef(0);
+  // Sessions this window already follows, so a session.created notice for one it started
+  // itself does not subscribe twice.
+  const known = useRef(new Set<string>());
   const current = useRef<DaemonClient | null>(null);
 
   const connect = useCallback(async (connection?: DaemonConnection) => {
@@ -94,6 +98,19 @@ export function App() {
           setApprovals((all) => [...all.filter((a) => a.id !== approval.id), approval]);
           return;
         }
+        if (notification.method === "session.created") {
+          const summary = notification.params as SessionSummary;
+          // Give a session this window is creating time to register before following it.
+          window.setTimeout(async () => {
+            if (known.current.has(summary.session_id) || attempt !== generation.current) return;
+            known.current.add(summary.session_id);
+            const { history } = await client.call<SessionSubscribeResult>("session.subscribe", {
+              session_id: summary.session_id,
+            });
+            setSessions((all) => ({ ...all, [summary.session_id]: history.reduce(applyEvent, newSession(summary)) }));
+          }, 500);
+          return;
+        }
         if (notification.method !== "session.event") return;
         const params = notification.params as SessionEventParams;
         modBus.emit(params);
@@ -112,6 +129,7 @@ export function App() {
           return [summary.session_id, history.reduce(applyEvent, newSession(summary))] as const;
         }),
       );
+      known.current = new Set(restored.map(([id]) => id));
       setSessions(Object.fromEntries(restored));
       setModelTable(await client.call<ModelListResult>("models.list"));
       setLocalModels(await client.call<LocalModelListResult>("models.local"));
@@ -173,6 +191,7 @@ export function App() {
     if (!client || !project) return;
     try {
       const created = await client.call<SessionCreateResult>("session.create", { project_dir: project });
+      known.current.add(created.session_id);
       const summary = {
         session_id: created.session_id,
         project_dir: project,

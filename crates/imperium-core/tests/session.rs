@@ -82,6 +82,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
         launcher: None,
+        resume: false,
         instructions: None,
         media: None,
         web: None,

@@ -126,6 +126,7 @@ async fn agents_research_and_cite_sources() {
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
         launcher: None,
+        resume: false,
         instructions: None,
         media: None,
         web: Some(WebTools {
@@ -252,6 +253,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
         launcher: None,
+        resume: false,
         instructions: None,
         media: None,
         web: Some(WebTools {

@@ -204,6 +204,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
         launcher: None,
+        resume: false,
         instructions: None,
         media: None,
         web: None,

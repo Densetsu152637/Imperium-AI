@@ -12,7 +12,9 @@ use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_media::{ImageBackend, Media, Service};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
-use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
+use imperium_protocol::methods::{
+    LocalModelListResult, ModelListResult, ModelRow, SESSION_CREATED, SessionSummary,
+};
 use imperium_protocol::session::{AgentEvent, PermissionDecision, ROOT_AGENT, SessionEvent};
 use imperium_tools::{Sandbox, Workspace};
 use imperium_web::{SearchProvider, Web};
@@ -29,6 +31,8 @@ use crate::scheduler::Scheduler;
 /// Options for [`DaemonState::create_session_with`].
 #[derive(Debug, Default)]
 pub struct SessionOptions {
+    /// Continue this earlier session (after a restart) instead of starting a new one.
+    pub resume_id: Option<String>,
     /// Tools that run without asking.
     pub pre_approved: Vec<String>,
     pub launcher: Option<Arc<dyn imperium_core::SessionLauncher>>,
@@ -285,6 +289,53 @@ impl DaemonState {
         }
     }
 
+    /// Re-opens sessions active within `agents.resume_days`, from their journals and saved
+    /// conversations. Returns how many continued.
+    pub fn resume_sessions(&self) -> usize {
+        let dir = self.paths.data_dir().join("sessions");
+        let cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(
+                self.settings.agents.resume_days * 86_400,
+            ))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return 0;
+        };
+        let mut resumed = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(id) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".meta.json"))
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let journal = dir.join(format!("{id}.jsonl"));
+            let recent = std::fs::metadata(&journal)
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|modified| modified >= cutoff);
+            let meta: Option<serde_json::Value> = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok());
+            let (Some(meta), true) = (meta, recent) else {
+                continue;
+            };
+            let project = meta["project_dir"].as_str().unwrap_or_default();
+            let model = meta["model"].as_str();
+            let options = SessionOptions {
+                resume_id: Some(id.clone()),
+                ..SessionOptions::default()
+            };
+            match self.create_session_with(project, model, options) {
+                Ok(_) => resumed += 1,
+                Err(error) => tracing::warn!(session = %id, %error, "could not resume the session"),
+            }
+        }
+        resumed
+    }
+
     /// Where UI mods are installed.
     pub fn mods_dir(&self) -> std::path::PathBuf {
         self.paths.config_dir().join("mods")
@@ -432,7 +483,13 @@ impl DaemonState {
         let context = self.context(Path::new(project_dir), &mut notices);
         mcp.append(&mut extensions.servers);
         notices.append(&mut extensions.notices);
-        let id = new_session_id().map_err(|error| CreateError::Start(error.to_string()))?;
+        let resume = options.resume_id.is_some();
+        let id = match options.resume_id.clone() {
+            Some(id) => id,
+            None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
+        };
+        let remember = options.launcher.is_none();
+        let model_spec = model.spec.clone();
         let session = Session::spawn(SessionConfig {
             journal_path: self
                 .paths
@@ -454,6 +511,7 @@ impl DaemonState {
             context,
             enforce: self.settings.workflow.enforce,
             pre_approved: options.pre_approved,
+            resume,
             launcher: options.launcher,
             instructions: options.instructions,
             web: self.web_tools(),
@@ -465,6 +523,22 @@ impl DaemonState {
             max_steps: self.settings.agents.max_steps,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
+        // Ordinary sessions are remembered so they continue after a restart; project agents
+        // start afresh with the daemon.
+        if remember {
+            let meta = serde_json::json!({
+                "project_dir": project_dir,
+                "model": model_spec,
+            });
+            let path = self
+                .paths
+                .data_dir()
+                .join("sessions")
+                .join(format!("{id}.meta.json"));
+            if let Err(error) = std::fs::write(&path, meta.to_string()) {
+                tracing::warn!(path = %path.display(), %error, "could not record the session");
+            }
+        }
         let events = session.subscribe();
         if let Some(pets) = self.pets() {
             pets.watch(id.clone(), session.subscribe());
@@ -474,6 +548,15 @@ impl DaemonState {
             .lock()
             .expect("session map lock is never poisoned by a panic while held")
             .insert(id, Arc::clone(&session));
+        self.announce(
+            SESSION_CREATED,
+            SessionSummary {
+                session_id: session.id().to_string(),
+                project_dir: session.project_dir().to_string(),
+                model: session.model().to_string(),
+                isolation: session.isolation().to_string(),
+            },
+        );
         Ok((session, events))
     }
 

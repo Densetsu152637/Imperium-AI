@@ -128,6 +128,21 @@ impl Agent {
         }
     }
 
+    /// The conversation so far.
+    pub fn messages(&self) -> &[ChatMessage] {
+        &self.messages
+    }
+
+    /// Continues an earlier conversation: its messages after the instructions, which stay
+    /// this agent's current ones.
+    pub fn restore(&mut self, messages: Vec<ChatMessage>) {
+        let earlier = messages
+            .into_iter()
+            .skip_while(|message| matches!(message, ChatMessage::System { .. }));
+        self.messages.truncate(1);
+        self.messages.extend(earlier);
+    }
+
     fn emit(&self, event: SessionEvent) {
         self.shared.emitter.emit(&self.id, event);
     }

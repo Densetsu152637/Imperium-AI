@@ -110,6 +110,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
         launcher: None,
+        resume: false,
         instructions: None,
         media: None,
         web: None,

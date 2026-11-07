@@ -57,6 +57,8 @@ pub struct SessionConfig {
     pub web: Option<WebTools>,
     /// Media tools, when any media backend is configured.
     pub media: Option<Arc<imperium_media::Media>>,
+    /// Continue a session from its journal and saved conversation (after a daemon restart).
+    pub resume: bool,
     pub max_steps: u32,
     pub journal_path: PathBuf,
 }
@@ -100,6 +102,11 @@ pub fn new_session_id() -> Result<String, getrandom::Error> {
 impl Session {
     /// Starts the session's root agent task. Must be called from within a Tokio runtime.
     pub fn spawn(config: SessionConfig) -> std::io::Result<Self> {
+        let previous = if config.resume {
+            crate::journal::read_events(&config.journal_path)
+        } else {
+            Vec::new()
+        };
         let journal = Journal::open(&config.journal_path)?;
         let (commands, receiver) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(EVENT_BUFFER);
@@ -108,6 +115,7 @@ impl Session {
         let project_dir = config.workspace.root_display();
         let isolation = config.workspace.sandbox().label();
         let history = History::default();
+        history.lock().extend(previous);
         let emitter = Emitter {
             session_id: id.clone(),
             journal: Mutex::new(journal),
@@ -259,6 +267,24 @@ async fn run(
         true,
         "root".into(),
     );
+    let messages_path = crate::journal::messages_path(&config.journal_path);
+    if config.resume {
+        if let Some(messages) = std::fs::read_to_string(&messages_path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+        {
+            root.restore(messages);
+        }
+        // A turn the restart cut off never finished; say so, so clients stop waiting for it.
+        if shared.emitter.turn_was_running() {
+            shared.emitter.emit(
+                ROOT_AGENT,
+                SessionEvent::TurnFailed {
+                    message: "the daemon stopped during this turn".into(),
+                },
+            );
+        }
+    }
     let mut queued = VecDeque::new();
     loop {
         let text = match queued.pop_front() {
@@ -280,25 +306,29 @@ async fn run(
             continue;
         };
         let recalled = shared.recall(&text);
-        let turn = root.run_turn(text, recalled);
-        tokio::pin!(turn);
-        let mut handles_open = true;
-        loop {
-            tokio::select! {
-                _ = &mut turn => break,
-                command = commands.recv(), if handles_open => match command {
-                    Some(Command::Respond { request_id, decision }) => {
-                        shared.broker.resolve(request_id, decision);
-                    }
-                    Some(Command::Message(text)) => queued.push_back(text),
-                    // Every handle is gone: nobody can answer, so deny what is pending.
-                    None => {
-                        handles_open = false;
-                        shared.broker.deny_all();
-                    }
-                },
+        let handles_open = {
+            let turn = root.run_turn(text, recalled);
+            tokio::pin!(turn);
+            let mut handles_open = true;
+            loop {
+                tokio::select! {
+                    _ = &mut turn => break,
+                    command = commands.recv(), if handles_open => match command {
+                        Some(Command::Respond { request_id, decision }) => {
+                            shared.broker.resolve(request_id, decision);
+                        }
+                        Some(Command::Message(text)) => queued.push_back(text),
+                        // Every handle is gone: nobody can answer, so deny what is pending.
+                        None => {
+                            handles_open = false;
+                            shared.broker.deny_all();
+                        }
+                    },
+                }
             }
-        }
+            handles_open
+        };
+        save_messages(&messages_path, root.messages());
         if !handles_open {
             return;
         }
@@ -544,5 +574,34 @@ impl WebTools {
             let domain = domain.to_ascii_lowercase();
             host == domain || host.ends_with(&format!(".{domain}"))
         })
+    }
+}
+
+/// Keeps the root conversation so the session can continue after a daemon restart.
+fn save_messages(path: &std::path::Path, messages: &[imperium_models::ChatMessage]) {
+    match serde_json::to_vec(messages) {
+        Ok(bytes) => {
+            if let Err(error) = std::fs::write(path, bytes) {
+                tracing::warn!(path = %path.display(), %error, "could not save the conversation");
+            }
+        }
+        Err(error) => tracing::warn!(%error, "could not serialise the conversation"),
+    }
+}
+
+impl Emitter {
+    /// Whether the root's last recorded turn started without finishing.
+    fn turn_was_running(&self) -> bool {
+        self.history
+            .lock()
+            .iter()
+            .rev()
+            .filter(|event| event.agent_id == ROOT_AGENT)
+            .find_map(|event| match event.event {
+                SessionEvent::TurnStarted { .. } => Some(true),
+                SessionEvent::TurnCompleted { .. } | SessionEvent::TurnFailed { .. } => Some(false),
+                _ => None,
+            })
+            .unwrap_or(false)
     }
 }
