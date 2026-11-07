@@ -9,10 +9,6 @@ use crate::{ToolError, Workspace};
 const MAX_STREAM_CHARS: usize = 30_000;
 pub(crate) const DEFAULT_TIMEOUT_S: u64 = 120;
 
-/// Runs a shell command in the workspace root (`cmd /C` on Windows, `sh -c` elsewhere).
-///
-/// On timeout the shell is killed; processes it started may keep running until they exit
-/// (process-tree cleanup arrives with the OS sandbox tier).
 /// A command line run through the platform shell: `sh -c`, or `cmd /C` on Windows, where the
 /// line is passed verbatim because cmd does not understand the quoting other programs expect.
 pub fn shell(command: &str) -> Command {
@@ -30,13 +26,19 @@ pub fn shell(command: &str) -> Command {
     }
 }
 
+/// Runs a shell command in the workspace root under the workspace's isolation tier (`cmd /C`
+/// on Windows, `sh -c` elsewhere, or inside the OS sandbox or container).
+///
+/// On timeout the shell is killed; processes it started may keep running until they exit
+/// (in the container tier the container is removed with them).
 pub async fn run_command(
     workspace: &Workspace,
     command: &str,
     timeout: Duration,
 ) -> Result<String, ToolError> {
-    let child = shell(command)
-        .current_dir(workspace.root())
+    let child = workspace
+        .sandbox()
+        .command(workspace.root(), command)?
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

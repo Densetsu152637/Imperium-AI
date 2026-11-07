@@ -135,6 +135,8 @@ pub struct SessionSummary {
     pub session_id: String,
     pub project_dir: String,
     pub model: String,
+    /// Where the session's commands run, such as `tier 0 · folder policy`.
+    pub isolation: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -166,6 +168,7 @@ pub struct SessionCreateParams {
 pub struct SessionCreateResult {
     pub session_id: String,
     pub model: String,
+    pub isolation: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

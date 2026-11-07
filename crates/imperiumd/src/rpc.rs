@@ -174,6 +174,7 @@ impl Connection {
                             session_id: session.id().to_string(),
                             project_dir: session.project_dir().to_string(),
                             model: session.model().to_string(),
+                            isolation: session.isolation().to_string(),
                         })
                         .collect(),
                 })
@@ -253,6 +254,7 @@ impl Connection {
             SessionCreateResult {
                 session_id: session.id().to_string(),
                 model: session.model().to_string(),
+                isolation: session.isolation().to_string(),
             },
             events,
         ))

@@ -16,8 +16,8 @@ pub use secrets::{SecretError, SecretName, delete_secret, load_secret, store_sec
 pub use settings::{
     ActionSettings, AgentSettings, AutofixSettings, CatalogEntry, DaemonSettings, EndpointSettings,
     Enforce, ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HookSettings,
-    LLAMACPP_ENDPOINT, LlamaCppSettings, Location, McpServerSettings, McpSettings, MemorySettings,
-    MemoryWrite, ModelSettings, Preference, ProjectSettings, RoutingRule, RoutingSettings,
-    RuntimeSettings, ScheduleSettings, SecretRef, Settings, Tier, TriggerSettings,
-    WorkflowSettings, WritePolicy,
+    IsolationSettings, LLAMACPP_ENDPOINT, LlamaCppSettings, Location, McpServerSettings,
+    McpSettings, MemorySettings, MemoryWrite, ModelSettings, Preference, ProjectSettings,
+    RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef, Settings, Tier,
+    TriggerSettings, WorkflowSettings, WritePolicy,
 };

@@ -56,6 +56,8 @@ pub struct Settings {
     pub workflow: WorkflowSettings,
     #[serde(default)]
     pub github: GithubSettings,
+    #[serde(default)]
+    pub isolation: IsolationSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -132,6 +134,9 @@ impl Settings {
                 ));
             }
         }
+        if !matches!(self.isolation.tier.as_str(), "policy" | "os" | "container") {
+            return Err("isolation.tier must be policy, os, or container".into());
+        }
         if !matches!(self.github.autofix.push.as_str(), "ask" | "auto") {
             return Err("github.autofix.push must be ask or auto".into());
         }
@@ -184,6 +189,29 @@ impl Default for AutofixSettings {
             max_attempts_per_pr: 3,
             poll_s: 120,
             model: None,
+        }
+    }
+}
+
+/// Where agents' commands run (see docs/05-tools-and-isolation.md#isolation-tiers).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct IsolationSettings {
+    /// `policy` (tier 0), `os` (tier 1), or `container` (tier 2).
+    pub tier: String,
+    pub container_runtime: String,
+    pub container_image: String,
+    /// Whether sandboxed and container commands may use the network.
+    pub network: bool,
+}
+
+impl Default for IsolationSettings {
+    fn default() -> Self {
+        IsolationSettings {
+            tier: "policy".into(),
+            container_runtime: "docker".into(),
+            container_image: "ubuntu:24.04".into(),
+            network: true,
         }
     }
 }
