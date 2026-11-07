@@ -429,6 +429,8 @@ pub struct WorkflowSettings {
     /// Workflow folders, such as a clone of Agent-Custom-Workflow.
     pub packs: Vec<PathBuf>,
     pub enforce: Enforce,
+    /// With no `packs`, use the bundled Agent-Custom-Workflow snapshot.
+    pub default_pack: bool,
 }
 
 impl Default for WorkflowSettings {
@@ -437,6 +439,7 @@ impl Default for WorkflowSettings {
             enabled: true,
             packs: Vec::new(),
             enforce: Enforce::Warn,
+            default_pack: true,
         }
     }
 }

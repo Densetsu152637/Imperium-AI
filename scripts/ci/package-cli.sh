@@ -25,6 +25,8 @@ for bin in imperium imperiumd; do
   fi
 done
 cp LICENSE README.md "$stage/"
+# The bundled default workflow pack and pets are found beside the daemon.
+cp -R policy pets "$stage/"
 
 tar -czf "dist/$name.tar.gz" -C dist/stage "$name"
 rm -rf dist/stage

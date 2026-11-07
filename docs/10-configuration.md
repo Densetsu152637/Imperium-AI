@@ -63,6 +63,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `memory.max_index_tokens`, `memory.max_recall_tokens` | `1500`, `1500` | Budgets for the index in agent instructions and for recalled memories |
 | `workflow.enabled` | `true` | Serve workflow packs and project instruction files to agents ([18](18-workflow-contract.md)) |
 | `workflow.packs` | none | Workflow folders, such as a clone of Agent-Custom-Workflow |
+| `workflow.default_pack` | `true` | With no `packs`, use the bundled Agent-Custom-Workflow snapshot |
 | `workflow.enforce` | `warn` | `required-before-action` refuses writes and commands until required context is loaded; `warn` and `off` do not |
 | `<config>/mods/<id>/` | none | UI mods (folders with `mod.json`), shown as panels; see [UI mods](06-extensibility.md#ui-mods) |
 | `schedules` | none | `[[schedules]]` with `id`, `trigger` (`cron`, `every`, or `at`), `action` (`project` and one of `prompt`, `command`, or `agent` (a message for the project agent), optional `model`, `timeout_s`), `missed`, `overlap`, `notify`, `enabled`; see [schedules](14-projects-and-automation.md#schedules) |
