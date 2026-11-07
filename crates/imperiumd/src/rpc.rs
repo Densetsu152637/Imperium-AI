@@ -5,13 +5,14 @@ use std::sync::Arc;
 use imperium_core::Session;
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
-    Accepted, Handshake, HandshakeParams, HandshakeResult, LocalModelList, LocalModelListParams,
-    Method, ModList, ModListParams, ModelList, ModelListParams, Peer, Ping, PingParams, PingResult,
-    ScheduleList, ScheduleListParams, ScheduleListResult, ScheduleRun, ScheduleRunParams,
-    ScheduleRunResult, SessionCreate, SessionCreateParams, SessionCreateResult, SessionList,
-    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSend,
-    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult,
-    SessionSummary,
+    Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
+    ApprovalRespondParams, ApprovalRespondResult, Handshake, HandshakeParams, HandshakeResult,
+    LocalModelList, LocalModelListParams, Method, ModList, ModListParams, ModelList,
+    ModelListParams, Peer, Ping, PingParams, PingResult, ScheduleList, ScheduleListParams,
+    ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionCreate,
+    SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
+    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe,
+    SessionSubscribeParams, SessionSubscribeResult, SessionSummary,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -98,6 +99,18 @@ impl Connection {
             ModelList::NAME => call::<ModelList>(request.params, |_: ModelListParams| {
                 Ok(self.state.model_table())
             }),
+            ApprovalList::NAME => call::<ApprovalList>(request.params, |_: ApprovalListParams| {
+                Ok(ApprovalListResult {
+                    approvals: self.state.approvals().list(),
+                })
+            }),
+            ApprovalRespond::NAME => {
+                call::<ApprovalRespond>(request.params, |params: ApprovalRespondParams| {
+                    Ok(ApprovalRespondResult {
+                        found: self.state.approvals().respond(params.id, params.approve),
+                    })
+                })
+            }
             ScheduleList::NAME => call::<ScheduleList>(request.params, |_: ScheduleListParams| {
                 Ok(self
                     .state

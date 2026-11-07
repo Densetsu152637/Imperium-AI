@@ -12,11 +12,12 @@ use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
-use imperium_protocol::session::AgentEvent;
+use imperium_protocol::session::{AgentEvent, ROOT_AGENT, SessionEvent};
 use imperium_tools::Workspace;
 use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
 
+use crate::approvals::Approvals;
 use crate::local::LocalRuntime;
 use crate::scheduler::Scheduler;
 
@@ -31,6 +32,7 @@ pub struct DaemonState {
     /// Notifications for every connected client, such as schedule runs.
     announcements: broadcast::Sender<Notification>,
     scheduler: OnceLock<Arc<Scheduler>>,
+    approvals: Approvals,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -55,12 +57,22 @@ impl DaemonState {
             local,
             announcements: broadcast::channel(256).0,
             scheduler: OnceLock::new(),
+            approvals: Approvals::default(),
         })
     }
 
     /// Starts running `[[schedules]]`. Call once, inside the Tokio runtime.
     pub fn start_scheduler(self: &Arc<Self>) -> Arc<Scheduler> {
         Arc::clone(self.scheduler.get_or_init(|| Scheduler::start(self)))
+    }
+
+    pub fn approvals(&self) -> &Approvals {
+        &self.approvals
+    }
+
+    /// Starts GitHub auto-fix when it is enabled and repositories are watched.
+    pub fn start_autofix(self: &Arc<Self>, github: Arc<dyn imperium_github::GitHub>) {
+        crate::autofix::start(self, github);
     }
 
     pub fn scheduler(&self) -> Option<&Arc<Scheduler>> {
@@ -108,6 +120,71 @@ impl DaemonState {
         project_dir: &str,
         model: Option<&str>,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
+        self.create_session_with(project_dir, model, Vec::new())
+    }
+
+    /// Runs `prompt` in a new session and waits for the root's turn to end:
+    /// `(ok, the reply or error, session id)`.
+    pub async fn run_prompt(
+        &self,
+        project_dir: &str,
+        model: Option<&str>,
+        prompt: String,
+        pre_approved: Vec<String>,
+        timeout: std::time::Duration,
+    ) -> (bool, String, Option<String>) {
+        let (session, mut events) = match self.create_session_with(project_dir, model, pre_approved)
+        {
+            Ok(created) => created,
+            Err(error) => return (false, error.to_string(), None),
+        };
+        let session_id = Some(session.id().to_string());
+        if session.send(prompt).is_err() {
+            return (
+                false,
+                "the session closed before it started".into(),
+                session_id,
+            );
+        }
+        let mut reply = String::new();
+        let outcome = tokio::time::timeout(timeout, async {
+            loop {
+                match events.recv().await {
+                    Ok(event) if event.agent_id == ROOT_AGENT => match event.event {
+                        SessionEvent::TextDelta { text } => reply.push_str(&text),
+                        SessionEvent::TurnCompleted { .. } => return Ok(()),
+                        SessionEvent::TurnFailed { message } => return Err(message),
+                        _ => {}
+                    },
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err("the session ended".to_string());
+                    }
+                }
+            }
+        })
+        .await;
+        match outcome {
+            Ok(Ok(())) => (true, reply.trim().to_string(), session_id),
+            Ok(Err(message)) => (false, message, session_id),
+            Err(_) => (
+                false,
+                format!(
+                    "timed out after {} s (a permission request may be waiting)",
+                    timeout.as_secs()
+                ),
+                session_id,
+            ),
+        }
+    }
+
+    /// Starts a session whose `pre_approved` tools run without asking.
+    pub fn create_session_with(
+        &self,
+        project_dir: &str,
+        model: Option<&str>,
+        pre_approved: Vec<String>,
+    ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
         let workspace = Workspace::new(Path::new(project_dir))
             .map_err(|error| CreateError::Project(project_dir.to_string(), error))?;
         let model = resolve_model(&self.settings, model, imperium_config::load_secret)?;
@@ -142,6 +219,7 @@ impl DaemonState {
             extensions,
             context,
             enforce: self.settings.workflow.enforce,
+            pre_approved,
             memory: self.settings.memory.enabled.then(|| SessionMemory {
                 store: Store::new(self.paths.data_dir(), Some(Path::new(project_dir))),
                 settings: self.settings.memory.clone(),

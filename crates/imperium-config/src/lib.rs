@@ -14,9 +14,9 @@ pub use layers::{Config, ConfigError, Explained, Layer, Source, load};
 pub use paths::{Paths, PathsError};
 pub use secrets::{SecretError, SecretName, delete_secret, load_secret, store_secret};
 pub use settings::{
-    ActionSettings, AgentSettings, CatalogEntry, DaemonSettings, EndpointSettings, Enforce,
-    ExtensionSettings, HardwareSettings, HookSettings, LLAMACPP_ENDPOINT, LlamaCppSettings,
-    Location, McpServerSettings, McpSettings, MemorySettings, MemoryWrite, ModelSettings,
-    Preference, RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef,
-    Settings, Tier, TriggerSettings, WorkflowSettings, WritePolicy,
+    ActionSettings, AgentSettings, AutofixSettings, CatalogEntry, DaemonSettings, EndpointSettings,
+    Enforce, ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HookSettings,
+    LLAMACPP_ENDPOINT, LlamaCppSettings, Location, McpServerSettings, McpSettings, MemorySettings,
+    MemoryWrite, ModelSettings, Preference, RoutingRule, RoutingSettings, RuntimeSettings,
+    ScheduleSettings, SecretRef, Settings, Tier, TriggerSettings, WorkflowSettings, WritePolicy,
 };

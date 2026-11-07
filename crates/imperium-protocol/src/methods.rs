@@ -450,3 +450,77 @@ pub struct ScheduleEventParams {
     pub session_id: Option<String>,
     pub summary: String,
 }
+
+/// Notification sent to every client when unattended work needs a yes or no.
+pub const APPROVAL_REQUESTED: &str = "approval.requested";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ApprovalInfo {
+    #[ts(type = "number")]
+    pub id: u64,
+    /// What is being approved, such as `push`.
+    pub kind: String,
+    pub summary: String,
+    pub requested_at: String,
+}
+
+/// `approvals.list`: pending approval requests.
+#[derive(Debug)]
+pub struct ApprovalList;
+
+impl Method for ApprovalList {
+    const NAME: &'static str = "approvals.list";
+    type Params = ApprovalListParams;
+    type Result = ApprovalListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ApprovalListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ApprovalListResult {
+    pub approvals: Vec<ApprovalInfo>,
+}
+
+/// `approvals.respond`: approve or decline a pending request.
+#[derive(Debug)]
+pub struct ApprovalRespond;
+
+impl Method for ApprovalRespond {
+    const NAME: &'static str = "approvals.respond";
+    type Params = ApprovalRespondParams;
+    type Result = ApprovalRespondResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ApprovalRespondParams {
+    #[ts(type = "number")]
+    pub id: u64,
+    pub approve: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ApprovalRespondResult {
+    /// False when the request was already answered or never existed.
+    pub found: bool,
+}
+
+/// Notification sent to every client as auto-fix works on a pull request.
+pub const AUTOFIX_EVENT: &str = "autofix.event";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AutofixEventParams {
+    pub repo: String,
+    #[ts(type = "number")]
+    pub pull_request: u64,
+    /// `started`, `awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, or `stopped`.
+    pub status: String,
+    pub session_id: Option<String>,
+    pub summary: String,
+}

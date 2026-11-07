@@ -17,6 +17,7 @@ imperium-automation = { version = "0.1.0", path = "../imperium-automation" }
 imperium-config = { version = "0.1.0", path = "../imperium-config" }
 imperium-core = { version = "0.1.0", path = "../imperium-core" }
 imperium-extensions = { version = "0.1.0", path = "../imperium-extensions" }
+imperium-github = { version = "0.1.0", path = "../imperium-github" }
 imperium-local = { version = "0.1.0", path = "../imperium-local" }
 imperium-mcp = { version = "0.1.0", path = "../imperium-mcp" }
 imperium-memory = { version = "0.1.0", path = "../imperium-memory" }
@@ -37,6 +38,7 @@ workspace = true
 [dev-dependencies]
 futures-util = "0.3.34"
 imperium-config = { path = "../imperium-config" }
+imperium-github = { path = "../imperium-github" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net"] }
 tokio-tungstenite = "0.30.0"

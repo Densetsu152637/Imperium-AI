@@ -1,3 +1,4 @@
+mod approvals;
 mod chat;
 mod local;
 mod memory;
@@ -59,6 +60,11 @@ enum Command {
         #[arg(long, global = true)]
         project: Option<PathBuf>,
     },
+    /// Requests from unattended work (such as auto-fix pushes) waiting for a yes or no.
+    Approvals {
+        #[command(subcommand)]
+        command: ApprovalsCommand,
+    },
     /// Scheduled tasks the daemon runs.
     Schedule {
         #[command(subcommand)]
@@ -97,6 +103,16 @@ enum MemoryCommand {
         #[arg(long)]
         scope: Option<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ApprovalsCommand {
+    /// List pending requests.
+    List,
+    /// Approve a request.
+    Approve { id: u64 },
+    /// Decline a request.
+    Deny { id: u64 },
 }
 
 #[derive(Debug, Subcommand)]
@@ -185,6 +201,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
+        Command::Approvals { command } => match command {
+            ApprovalsCommand::List => approvals::list(),
+            ApprovalsCommand::Approve { id } => approvals::respond(id, true),
+            ApprovalsCommand::Deny { id } => approvals::respond(id, false),
+        },
         Command::Schedule {
             command: ScheduleCommand::List,
         } => schedule::list(),

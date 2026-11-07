@@ -63,6 +63,7 @@ async fn run() -> anyhow::Result<()> {
     let local = imperiumd::LocalRuntime::start(&paths, &settings);
     let daemon = DaemonState::new(paths.clone(), settings, local);
     daemon.start_scheduler();
+    daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));
     let server = tokio::spawn(imperiumd::serve(listener, token, daemon, async {
         stopped.await.ok();
     }));
