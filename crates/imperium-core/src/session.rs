@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 
 use crate::agent::Agent;
 use crate::journal::Journal;
-use crate::{CatalogModel, ResolvedModel};
+use crate::{CatalogModel, LocalModels, ResolvedModel};
 
 /// Events kept for slow subscribers before they start missing some.
 const EVENT_BUFFER: usize = 1024;
@@ -26,6 +26,8 @@ pub struct SessionConfig {
     /// Models subagents may be routed to.
     pub catalog: Vec<CatalogModel>,
     pub routing: RoutingSettings,
+    /// The supervised local runtime, when one is configured.
+    pub local: Option<Arc<dyn LocalModels>>,
     pub max_steps: u32,
     pub journal_path: PathBuf,
 }
@@ -149,6 +151,7 @@ pub(crate) struct Shared {
     pub catalog: Vec<CatalogModel>,
     pub routing: RoutingSettings,
     pub fallback_model: ResolvedModel,
+    pub local: Option<Arc<dyn LocalModels>>,
     pub max_steps: u32,
     /// Tools the user allowed for the rest of the session, for every agent.
     pub allowed_tools: Mutex<HashSet<&'static str>>,
@@ -176,6 +179,7 @@ async fn run(
         catalog: config.catalog,
         routing: config.routing,
         fallback_model: config.model.clone(),
+        local: config.local,
         max_steps: config.max_steps,
         allowed_tools: Mutex::new(HashSet::new()),
         next_task: AtomicU32::new(0),

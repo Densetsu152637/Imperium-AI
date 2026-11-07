@@ -1,4 +1,5 @@
 mod chat;
+mod local;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -41,6 +42,33 @@ enum Command {
     Secret {
         #[command(subcommand)]
         command: SecretCommand,
+    },
+    /// Local models in the configured model folders.
+    Models {
+        #[command(subcommand)]
+        command: ModelsCommand,
+    },
+    /// Inference runtimes.
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ModelsCommand {
+    /// List GGUF models in models.folders, whether each fits in memory, and what is loaded.
+    Local,
+}
+
+#[derive(Debug, Subcommand)]
+enum RuntimeCommand {
+    /// Download and verify the llama.cpp runtime pack for this machine.
+    Install {
+        /// Pack to install, such as `windows-x64-vulkan`; defaults to the configured backend
+        /// (`runtime.llamacpp.backend`), or the one that suits this machine.
+        #[arg(long)]
+        pack: Option<String>,
     },
 }
 
@@ -87,6 +115,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Secret {
             command: SecretCommand::Delete { name },
         } => delete_secret(&name),
+        Command::Models {
+            command: ModelsCommand::Local,
+        } => local::list(),
+        Command::Runtime {
+            command: RuntimeCommand::Install { pack },
+        } => local::install_runtime(pack),
     }
 }
 

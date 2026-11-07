@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use imperium_models::Pricing;
 use serde::Deserialize;
@@ -14,6 +15,19 @@ port = 0
 [agents]
 # Model calls an agent may make in one turn before it stops.
 max_steps = 50
+
+[runtime.llamacpp]
+# Runtime pack: auto, cpu, vulkan, cuda12, cuda13, rocm, or metal. custom_path overrides it.
+backend = "auto"
+# Seconds a loaded model may sit unused before it is unloaded.
+idle_unload_s = 900
+# Context length and parallel slots each loaded model is started with.
+context = 8192
+parallel = 2
+# KV cache type: f16, q8_0, or q4_0.
+cache_type = "f16"
+# System memory kept free for everything else when placing models.
+ram_headroom_mb = 2048
 "#;
 
 /// Typed view of the merged configuration. Keys this build does not know are ignored, so a
@@ -29,16 +43,38 @@ pub struct Settings {
     pub endpoints: BTreeMap<String, EndpointSettings>,
     #[serde(default)]
     pub routing: RoutingSettings,
+    pub runtime: RuntimeSettings,
+    #[serde(default)]
+    pub hardware: HardwareSettings,
 }
+
+/// The endpoint id that names models served by the supervised llama.cpp runtime, as in
+/// `llamacpp:<local model id>`.
+pub const LLAMACPP_ENDPOINT: &str = "llamacpp";
 
 impl Settings {
     /// Checks rules that span keys: model table ids are unique, and routing rules name models
     /// that exist in the table.
     pub fn validate(&self) -> Result<(), String> {
+        if self.endpoints.contains_key(LLAMACPP_ENDPOINT) {
+            return Err(format!(
+                "endpoints.{LLAMACPP_ENDPOINT} is reserved for local models in models.folders"
+            ));
+        }
         let mut seen = std::collections::BTreeSet::new();
         for entry in &self.models.catalog {
             if !seen.insert(entry.id.as_str()) {
                 return Err(format!("models.catalog: id {:?} is used twice", entry.id));
+            }
+            let served_locally = entry
+                .spec
+                .split_once(':')
+                .is_some_and(|(endpoint, _)| endpoint == LLAMACPP_ENDPOINT);
+            if served_locally && entry.location != Location::Local {
+                return Err(format!(
+                    "models.catalog: {:?} runs on llama.cpp, so its location must be local",
+                    entry.id
+                ));
             }
         }
         for (index, rule) in self.routing.rules.iter().enumerate() {
@@ -74,6 +110,41 @@ pub struct ModelSettings {
     /// Models subagents may be routed to.
     #[serde(default)]
     pub catalog: Vec<CatalogEntry>,
+    /// Folders scanned recursively for GGUF models.
+    #[serde(default)]
+    pub folders: Vec<PathBuf>,
+}
+
+/// Inference runtimes the daemon supervises.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RuntimeSettings {
+    pub llamacpp: LlamaCppSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct LlamaCppSettings {
+    pub backend: String,
+    /// A `llama-server` executable to use instead of a runtime pack.
+    #[serde(default)]
+    pub custom_path: Option<PathBuf>,
+    pub idle_unload_s: u64,
+    pub context: u32,
+    pub parallel: u32,
+    pub cache_type: String,
+    pub ram_headroom_mb: u64,
+    /// Extra arguments passed to every `llama-server`.
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+}
+
+/// Overrides for the hardware probe, for machines it cannot read (or to plan as if memory were
+/// smaller). Values are in MiB.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct HardwareSettings {
+    #[serde(default)]
+    pub vram_mb: Option<u64>,
+    #[serde(default)]
+    pub ram_mb: Option<u64>,
 }
 
 /// One row of the model table, written as `[[models.catalog]]`.

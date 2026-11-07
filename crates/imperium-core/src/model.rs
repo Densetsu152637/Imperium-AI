@@ -1,7 +1,10 @@
 use imperium_config::{
-    Location, Preference, RoutingSettings, SecretError, SecretName, Settings, Tier,
+    LLAMACPP_ENDPOINT, Location, Preference, RoutingSettings, SecretError, SecretName, Settings,
+    Tier,
 };
 use imperium_models::{Endpoint, Pricing};
+
+use crate::local::{Availability, LocalModels};
 
 /// A model chosen for a session: where to call it, its id, and its prices.
 #[derive(Debug, Clone)]
@@ -11,6 +14,9 @@ pub struct ResolvedModel {
     pub endpoint: Endpoint,
     pub model: String,
     pub pricing: Option<Pricing>,
+    /// Served by the supervised llama.cpp runtime: `model` is the local model id, and the
+    /// endpoint is filled in when the agent takes a slot on it.
+    pub local: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +47,18 @@ pub fn resolve_model(
         .split_once(':')
         .filter(|(endpoint, model)| !endpoint.is_empty() && !model.is_empty())
         .ok_or_else(|| ModelError::BadSpec(spec.to_string()))?;
+    if endpoint_id == LLAMACPP_ENDPOINT {
+        return Ok(ResolvedModel {
+            spec: spec.to_string(),
+            endpoint: Endpoint {
+                base_url: String::new(),
+                api_key: None,
+            },
+            model: model.to_string(),
+            pricing: None,
+            local: true,
+        });
+    }
     let endpoint = settings
         .endpoints
         .get(endpoint_id)
@@ -59,6 +77,7 @@ pub fn resolve_model(
         },
         model: model.to_string(),
         pricing: endpoint.pricing.get(model).copied(),
+        local: false,
     })
 }
 
@@ -82,7 +101,9 @@ pub struct TaskRequest<'a> {
     pub tags: &'a [String],
 }
 
-/// Picks a subagent's model:
+/// Picks a subagent's model. Local models are considered only when `local` reports they can run
+/// (loaded with a free slot, or fitting in free memory); a loaded model is preferred to loading
+/// one, and nothing in use is evicted, so when memory is short the choice falls to hosted models.
 ///
 /// 1. a model the agent named, if it is in the table;
 /// 2. the first `[[routing.rules]]` entry matching the task's tier and tags decides: its `use`
@@ -96,10 +117,18 @@ pub fn route(
     routing: &RoutingSettings,
     fallback: &ResolvedModel,
     request: TaskRequest<'_>,
+    local: Option<&dyn LocalModels>,
 ) -> ResolvedModel {
+    let availability = |c: &CatalogModel| match (c.model.local, local) {
+        (false, _) => Availability::Loaded,
+        (true, Some(local)) => local.availability(&c.model.model),
+        (true, None) => Availability::Unavailable,
+    };
+    let usable = |c: &&CatalogModel| availability(c) != Availability::Unavailable;
     if let Some(named) = request.named
         && let Some(chosen) = catalog
             .iter()
+            .filter(usable)
             .find(|c| c.id == named || c.model.spec == named)
     {
         return chosen.model.clone();
@@ -118,6 +147,7 @@ pub fn route(
             .use_models
             .iter()
             .filter_map(|id| catalog.iter().find(|c| &c.id == id))
+            .filter(usable)
             .find(|c| in_location(c));
         if let Some(chosen) = preferred {
             return chosen.model.clone();
@@ -133,14 +163,19 @@ pub fn route(
             .model
             .pricing
             .map_or(0.0, |p| p.input_usd_per_mtok + p.output_usd_per_mtok);
-        (!preferred, price)
+        (!preferred, price, availability(c))
     };
     catalog
         .iter()
+        .filter(usable)
         .filter(|c| c.tier >= request.tier && in_location(c))
         .min_by(|a, b| {
             let (a_rank, b_rank) = (rank(a), rank(b));
-            a_rank.0.cmp(&b_rank.0).then(a_rank.1.total_cmp(&b_rank.1))
+            a_rank
+                .0
+                .cmp(&b_rank.0)
+                .then(a_rank.1.total_cmp(&b_rank.1))
+                .then(a_rank.2.cmp(&b_rank.2))
         })
         .map_or_else(|| fallback.clone(), |chosen| chosen.model.clone())
 }
@@ -208,6 +243,7 @@ mod tests {
                         output_usd_per_mtok: p,
                         cached_input_usd_per_mtok: None,
                     }),
+                    local: false,
                 },
                 tier,
                 location,
@@ -231,11 +267,12 @@ mod tests {
             },
             model: "session".into(),
             pricing: None,
+            local: false,
         }
     }
 
     fn pick(routing: &RoutingSettings, request: TaskRequest<'_>) -> String {
-        route(&catalog(), routing, &fallback(), request).model
+        route(&catalog(), routing, &fallback(), request, None).model
     }
 
     #[test]
@@ -312,6 +349,92 @@ mod tests {
             ..coding
         };
         assert_eq!(pick(&routing, by_spec), "local");
+    }
+
+    /// Local models with fixed availability, standing in for the llama.cpp supervisor.
+    #[derive(Debug)]
+    struct FakeLocal(Vec<(&'static str, Availability)>);
+
+    impl LocalModels for FakeLocal {
+        fn availability(&self, model: &str) -> Availability {
+            self.0
+                .iter()
+                .find(|(id, _)| *id == model)
+                .map_or(Availability::Unavailable, |(_, availability)| *availability)
+        }
+
+        fn acquire<'a>(&'a self, _model: &'a str) -> crate::local::AcquireFuture<'a> {
+            Box::pin(async { Err("not used".to_string()) })
+        }
+    }
+
+    fn local_catalog() -> Vec<CatalogModel> {
+        let local_row = |id: &str| {
+            let mut row = catalog().remove(2);
+            row.id = id.into();
+            row.model.model = id.into();
+            row.model.local = true;
+            row
+        };
+        let mut rows = catalog();
+        rows.retain(|c| c.id == "mid");
+        rows.extend([local_row("small"), local_row("large")]);
+        rows
+    }
+
+    #[test]
+    fn local_placement_reuses_loaded_models_and_falls_back_to_hosted() {
+        let routing = RoutingSettings {
+            prefer: Preference::Local,
+            ..RoutingSettings::default()
+        };
+        let request = TaskRequest::default();
+        let pick = |local: &FakeLocal| {
+            route(
+                &local_catalog(),
+                &routing,
+                &fallback(),
+                request,
+                Some(local),
+            )
+            .model
+        };
+        // Both fit: the loaded one is reused rather than loading the other.
+        let one_loaded = FakeLocal(vec![
+            ("small", Availability::Fits),
+            ("large", Availability::Loaded),
+        ]);
+        assert_eq!(pick(&one_loaded), "large");
+        let none_loaded = FakeLocal(vec![
+            ("small", Availability::Fits),
+            ("large", Availability::Fits),
+        ]);
+        assert_eq!(pick(&none_loaded), "small");
+        // Memory is short and nothing is loaded: the hosted model is used.
+        let short = FakeLocal(vec![
+            ("small", Availability::Unavailable),
+            ("large", Availability::Unavailable),
+        ]);
+        assert_eq!(pick(&short), "mid");
+        // Without a local runtime, local rows are never chosen, even by name.
+        let named = TaskRequest {
+            named: Some("small"),
+            ..request
+        };
+        assert_eq!(
+            route(&local_catalog(), &routing, &fallback(), named, None).model,
+            "mid"
+        );
+    }
+
+    #[test]
+    fn llamacpp_specs_resolve_to_local_models() {
+        let resolved = resolve_model(&settings(ENDPOINTS), Some("llamacpp:qwen3-8b-q4"), |_| {
+            Ok(None)
+        })
+        .unwrap();
+        assert!(resolved.local);
+        assert_eq!(resolved.model, "qwen3-8b-q4");
     }
 
     #[test]

@@ -41,6 +41,16 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `endpoints.<id>.base_url` | — | OpenAI-compatible base URL, ending before `/chat/completions` |
 | `endpoints.<id>.api_key` | none | `{ secret = "<name>" }`, read from the keychain when a session starts |
 | `endpoints.<id>.pricing."<model>"` | none | `{ input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok? }`; models without prices report no cost |
+| `models.folders` | none | Folders scanned for GGUF models, served as `llamacpp:<id>` (the `llamacpp` endpoint id is reserved) |
+| `runtime.llamacpp.backend` | `auto` | Runtime pack: `auto`, `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` |
+| `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of a pack |
+| `runtime.llamacpp.context` | `8192` | Context per slot each loaded model is started with |
+| `runtime.llamacpp.parallel` | `2` | Slots per loaded model (agents served at once) |
+| `runtime.llamacpp.cache_type` | `f16` | KV cache type: `f16`, `q8_0`, or `q4_0` |
+| `runtime.llamacpp.idle_unload_s` | `900` | Seconds an unused model stays loaded |
+| `runtime.llamacpp.ram_headroom_mb` | `2048` | System memory kept free when placing models |
+| `runtime.llamacpp.extra_args` | none | Extra `llama-server` arguments, for example `["--flash-attn", "on"]` |
+| `hardware.vram_mb`, `hardware.ram_mb` | probed | Override the hardware probe |
 
 Configuration is read when the daemon starts; restart it after editing.
 

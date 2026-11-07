@@ -418,6 +418,31 @@ api_key = { secret = 'Bad Name' }",
                 .settings()
                 .unwrap_err();
         assert!(error.to_string().contains("missing"), "{error}");
+
+        let cloud_llama = "[[models.catalog]]\nid = \"q\"\nspec = \"llamacpp:q\"\nlocation = \"cloud\"\ntier = \"basic\"";
+        let error = Config::from_layers([
+            Layer::defaults(),
+            layer(Source::User("u".into()), cloud_llama),
+        ])
+        .settings()
+        .unwrap_err();
+        assert!(error.to_string().contains("must be local"), "{error}");
+        let reserved = "[endpoints.llamacpp]\nbase_url = \"http://x/v1\"";
+        let error =
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), reserved)])
+                .settings()
+                .unwrap_err();
+        assert!(error.to_string().contains("reserved"), "{error}");
+    }
+
+    #[test]
+    fn local_model_settings_have_defaults() {
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let llamacpp = &settings.runtime.llamacpp;
+        assert_eq!(llamacpp.backend, "auto");
+        assert_eq!((llamacpp.context, llamacpp.parallel), (8192, 2));
+        assert!(settings.models.folders.is_empty());
+        assert_eq!(settings.hardware.vram_mb, None);
     }
 
     #[test]

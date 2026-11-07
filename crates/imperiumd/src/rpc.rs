@@ -5,11 +5,11 @@ use std::sync::Arc;
 use imperium_core::Session;
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
-    Accepted, Handshake, HandshakeParams, HandshakeResult, Method, ModelList, ModelListParams,
-    Peer, Ping, PingParams, PingResult, SessionCreate, SessionCreateParams, SessionCreateResult,
-    SessionList, SessionListParams, SessionListResult, SessionRespond, SessionRespondParams,
-    SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
-    SessionSubscribeResult, SessionSummary,
+    Accepted, Handshake, HandshakeParams, HandshakeResult, LocalModelList, LocalModelListParams,
+    Method, ModelList, ModelListParams, Peer, Ping, PingParams, PingResult, SessionCreate,
+    SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
+    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe,
+    SessionSubscribeParams, SessionSubscribeResult, SessionSummary,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -96,6 +96,11 @@ impl Connection {
             ModelList::NAME => call::<ModelList>(request.params, |_: ModelListParams| {
                 Ok(self.state.model_table())
             }),
+            LocalModelList::NAME => {
+                call::<LocalModelList>(request.params, |_: LocalModelListParams| {
+                    Ok(self.state.local_models())
+                })
+            }
             SessionList::NAME => call::<SessionList>(request.params, |_: SessionListParams| {
                 Ok(SessionListResult {
                     sessions: self
@@ -249,6 +254,7 @@ mod tests {
         Connection::new(DaemonState::new(
             Paths::under(std::path::Path::new("unused")),
             settings,
+            None,
         ))
     }
 
@@ -370,6 +376,7 @@ mod tests {
         let mut connection = Connection::new(DaemonState::new(
             Paths::under(std::path::Path::new("unused")),
             settings,
+            None,
         ));
         connection.handle_text(&request(
             1,

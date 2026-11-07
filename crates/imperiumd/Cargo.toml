@@ -14,6 +14,7 @@ constant_time_eq = "0.6.1"
 getrandom = "0.4.3"
 imperium-config = { version = "0.1.0", path = "../imperium-config" }
 imperium-core = { version = "0.1.0", path = "../imperium-core" }
+imperium-local = { version = "0.1.0", path = "../imperium-local" }
 imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
 imperium-tools = { version = "0.1.0", path = "../imperium-tools" }
 serde = "1.0.229"

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use imperium_config::{Location, Tier};
-use imperium_models::{ChatMessage, ChatRequest, ToolCall, ToolSpec, Usage, stream_chat};
+use imperium_models::{ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage, stream_chat};
 use imperium_protocol::session::{
     PermissionDecision, Plan, PlanStep, SessionEvent, StepStatus, TokenUsage,
 };
@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio::task::JoinHandle;
 
 use crate::session::{Shared, lock};
-use crate::{ResolvedModel, TaskRequest, route};
+use crate::{LocalLease, ResolvedModel, TaskRequest, route};
 
 /// Longest tool output or report shown in events (the model receives the full text).
 const EVENT_OUTPUT_CHARS: usize = 2_000;
@@ -104,6 +104,16 @@ impl Agent {
         self.messages.push(ChatMessage::User { content: text });
         let tools = self.tool_specs();
         let mut total = Usage::default();
+        // A local model is held (and loaded if needed) for the whole turn.
+        let (endpoint, _lease) = match self.endpoint().await {
+            Ok(endpoint) => endpoint,
+            Err(message) => {
+                self.emit(SessionEvent::TurnFailed {
+                    message: message.clone(),
+                });
+                return self.outcome(message, false, total);
+            }
+        };
         let mut reply = String::new();
         let max_steps = self.shared.max_steps;
         for step in 1..=max_steps {
@@ -116,7 +126,7 @@ impl Agent {
             let mut first_text = None;
             let emitter = &self.shared.emitter;
             let id = &self.id;
-            let result = stream_chat(&self.shared.http, &self.model.endpoint, request, |text| {
+            let result = stream_chat(&self.shared.http, &endpoint, request, |text| {
                 first_text.get_or_insert_with(Instant::now);
                 emitter.emit(
                     id,
@@ -169,6 +179,27 @@ impl Agent {
             message: message.clone(),
         });
         self.outcome(message, false, total)
+    }
+
+    /// Where to send this turn's model calls, with the slot held on a local model.
+    async fn endpoint(&self) -> Result<(Endpoint, Option<LocalLease>), String> {
+        if !self.model.local {
+            return Ok((self.model.endpoint.clone(), None));
+        }
+        let local = self
+            .shared
+            .local
+            .as_deref()
+            .ok_or("local models are not available: no llama.cpp runtime is configured")?;
+        let lease = local
+            .acquire(&self.model.model)
+            .await
+            .map_err(|error| format!("could not load local model {}: {error}", self.model.model))?;
+        let endpoint = Endpoint {
+            base_url: lease.base_url.clone(),
+            api_key: None,
+        };
+        Ok((endpoint, Some(lease)))
     }
 
     fn outcome(&self, text: String, ok: bool, usage: Usage) -> TurnOutcome {
@@ -360,6 +391,7 @@ impl Agent {
                 location,
                 tags: &args.tags,
             },
+            self.shared.local.as_deref(),
         );
         let task_id = self.shared.next_task_id();
         self.emit(SessionEvent::TaskSpawned {

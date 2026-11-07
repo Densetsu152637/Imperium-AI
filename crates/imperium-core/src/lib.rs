@@ -7,8 +7,10 @@
 
 mod agent;
 mod journal;
+mod local;
 mod model;
 mod session;
 
+pub use local::{AcquireFuture, Availability, LocalLease, LocalModels};
 pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
 pub use session::{Session, SessionClosed, SessionConfig, new_session_id};

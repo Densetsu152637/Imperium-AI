@@ -2,12 +2,14 @@
 //! app, remote hosts) talk to it over JSON-RPC on a local, token-protected WebSocket.
 
 mod endpoint;
+mod local;
 mod rpc;
 mod server;
 mod state;
 mod token;
 
 pub use endpoint::EndpointFile;
+pub use local::LocalRuntime;
 pub use rpc::{Connection, Handled, Subscription};
 pub use server::serve;
 pub use state::{CreateError, DaemonState};
