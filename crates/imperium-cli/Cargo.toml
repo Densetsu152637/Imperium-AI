@@ -1,0 +1,17 @@
+[package]
+name = "imperium-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Imperium command-line client"
+
+[[bin]]
+name = "imperium"
+path = "src/main.rs"
+
+[dependencies]
+
+[lints]
+workspace = true
