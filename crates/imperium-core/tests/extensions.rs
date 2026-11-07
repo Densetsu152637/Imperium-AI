@@ -111,6 +111,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         pre_approved: Vec::new(),
         launcher: None,
         instructions: None,
+        web: None,
         max_steps: 5,
         journal_path: project.path().join(".journal.jsonl"),
     })

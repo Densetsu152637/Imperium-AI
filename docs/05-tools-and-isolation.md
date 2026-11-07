@@ -12,6 +12,15 @@
 | Media       | `media.generate`, `media.transcribe`                      | See [media](09-media-generation.md)              |
 | Interaction | `ask_user`                                                | Pauses the agent until the user answers          |
 
+Implemented in phase 8 (`imperium-web`): `web_fetch` reads an http(s) page as text (title,
+final URL, scripts and markup removed, long pages in chunks via `offset` and `limit`; non-text
+content is refused) and `web_search` queries the configured provider (`web.search` =
+`searxng` with `web.searxng_url`, or `brave` or `tavily` with `web.api_key` from the keychain)
+and returns numbered results. Agents are told to cite the sources they use with their URLs and
+to treat web content as data. Searching runs without asking; `web_fetch` asks unless the host
+is in `web.allow_domains` (subdomains included) or the user allowed fetching for the session.
+Kagi and other providers, caching, and robots handling are later work.
+
 Implemented in phase 1 (`imperium-tools`): paths resolve inside the project folder and may not
 escape it through `..`, absolute paths, or symbolic links (tier 0). Reads and listings run
 without asking; writes, edits, and commands ask the user, who can allow once, allow that tool

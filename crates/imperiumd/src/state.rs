@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use imperium_config::{Paths, Settings};
 use imperium_core::{
-    CatalogModel, LocalModels, ModelError, Session, SessionConfig, SessionMemory, new_session_id,
-    resolve_model,
+    CatalogModel, LocalModels, ModelError, Session, SessionConfig, SessionMemory, WebTools,
+    new_session_id, resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_memory::Store;
@@ -14,6 +14,7 @@ use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
 use imperium_protocol::session::{AgentEvent, PermissionDecision, ROOT_AGENT, SessionEvent};
 use imperium_tools::{Sandbox, Workspace};
+use imperium_web::{SearchProvider, Web};
 use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
 
@@ -124,6 +125,33 @@ impl DaemonState {
 
     pub fn announcements(&self) -> broadcast::Receiver<Notification> {
         self.announcements.subscribe()
+    }
+
+    /// Web tools from `[web]`; a provider whose key is missing is left out with a warning.
+    fn web_tools(&self) -> Option<WebTools> {
+        let web = &self.settings.web;
+        if !web.enabled {
+            return None;
+        }
+        let key = || {
+            let name = &web.api_key.as_ref()?.secret;
+            imperium_config::load_secret(name).ok().flatten()
+        };
+        let provider = match web.search.as_str() {
+            "searxng" if !web.searxng_url.is_empty() => Some(SearchProvider::Searxng {
+                url: web.searxng_url.clone(),
+            }),
+            "brave" => key().map(|api_key| SearchProvider::Brave { api_key }),
+            "tavily" => key().map(|api_key| SearchProvider::Tavily { api_key }),
+            _ => None,
+        };
+        if web.search != "none" && provider.is_none() {
+            tracing::warn!(provider = %web.search, "web search is not configured completely (URL or key missing)");
+        }
+        Some(WebTools {
+            web: Web::new(provider),
+            allow_domains: web.allow_domains.clone(),
+        })
     }
 
     /// The isolation tier commands run under, from `[isolation]`.
@@ -313,6 +341,7 @@ impl DaemonState {
             pre_approved: options.pre_approved,
             launcher: options.launcher,
             instructions: options.instructions,
+            web: self.web_tools(),
             memory: self.settings.memory.enabled.then(|| SessionMemory {
                 store: Store::new(self.paths.data_dir(), Some(Path::new(project_dir))),
                 settings: self.settings.memory.clone(),

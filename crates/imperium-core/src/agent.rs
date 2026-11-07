@@ -108,6 +108,10 @@ impl Agent {
             system.push_str("\n\n");
             system.push_str(&memory_instructions(memory, can_delegate));
         }
+        if shared.web.is_some() {
+            system.push_str("\n\n");
+            system.push_str(imperium_web::CITATION_INSTRUCTIONS);
+        }
         if can_delegate && let Some(instructions) = &shared.instructions {
             system.push_str("\n\n");
             system.push_str(instructions);
@@ -140,6 +144,9 @@ impl Agent {
         }
         if self.can_delegate && self.shared.launcher.is_some() {
             tools.push(start_session_spec());
+        }
+        if let Some(web) = &self.shared.web {
+            tools.extend(web.web.tool_specs());
         }
         if self.shared.memory.is_some() {
             tools.extend([memory_search_spec(), memory_read_spec()]);
@@ -472,6 +479,73 @@ impl Agent {
         imperium_extensions::skills::load(skill, args.file.as_deref())
     }
 
+    /// Runs `web_search` (through the configured provider) or `web_fetch` (asking first unless
+    /// the domain is allowed or the user allowed fetching for the session).
+    async fn run_web(&self, call: &ToolCall) -> String {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            url: String,
+            #[serde(default)]
+            query: String,
+            #[serde(default)]
+            offset: usize,
+            #[serde(default)]
+            limit: usize,
+            #[serde(default)]
+            count: Option<usize>,
+        }
+        let name = call.function.name.as_str();
+        let finish = |ok: bool, output: String| {
+            self.emit(SessionEvent::ToolFinished {
+                call_id: call.id.clone(),
+                ok,
+                output: truncate(&output, EVENT_OUTPUT_CHARS),
+            });
+            output
+        };
+        let Some(tools) = &self.shared.web else {
+            return finish(false, "error: web tools are off".into());
+        };
+        let args: Args = match parse(&call.function.arguments) {
+            Ok(args) => args,
+            Err(error) => return finish(false, format!("error: {error}")),
+        };
+        let summary = if name == "web_fetch" {
+            format!("fetch {}", args.url)
+        } else {
+            format!("search the web for {:?}", args.query)
+        };
+        if let Some(blocked) = self.before_tool(name, &call.function.arguments).await {
+            return finish(false, blocked);
+        }
+        let needs_approval = name == "web_fetch" && !tools.allows(&args.url);
+        if needs_approval && !self.approve(name, &summary).await {
+            return finish(false, "The user denied this action.".into());
+        }
+        self.emit(SessionEvent::ToolStarted {
+            call_id: call.id.clone(),
+            tool: name.to_string(),
+            summary,
+        });
+        let result = if name == "web_fetch" {
+            tools.web.fetch(&args.url, args.offset, args.limit).await
+        } else {
+            tools
+                .web
+                .search(&args.query, args.count.unwrap_or(8))
+                .await
+                .map(|hits| imperium_web::render_hits(&hits))
+        };
+        let (ok, output) = match result {
+            Ok(output) => (true, output),
+            Err(error) => (false, format!("error: {error}")),
+        };
+        self.after_tool(name, &call.function.arguments, ok, &output)
+            .await;
+        finish(ok, output)
+    }
+
     /// Asks the user to approve a call to `tool`, unless they allowed it for the session.
     async fn approve(&self, tool: &str, summary: &str) -> bool {
         if lock(&self.shared.allowed_tools).contains(tool) {
@@ -614,6 +688,9 @@ impl Agent {
                 AgentTool::MemoryRemember
             }
             _ if self.shared.mcp.find(name).is_some() => return self.run_mcp(call).await,
+            "web_fetch" | "web_search" if self.shared.web.is_some() => {
+                return self.run_web(call).await;
+            }
             _ => return self.run_builtin(call).await,
         };
         let summary = match tool {

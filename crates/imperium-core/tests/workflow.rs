@@ -173,6 +173,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
         pre_approved: Vec::new(),
         launcher: None,
         instructions: None,
+        web: None,
         max_steps: 8,
         journal_path: project.path().join(".journal.jsonl"),
     })

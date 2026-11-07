@@ -58,6 +58,8 @@ pub struct Settings {
     pub github: GithubSettings,
     #[serde(default)]
     pub isolation: IsolationSettings,
+    #[serde(default)]
+    pub web: WebSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -139,6 +141,12 @@ impl Settings {
                 ));
             }
         }
+        if !matches!(
+            self.web.search.as_str(),
+            "none" | "searxng" | "brave" | "tavily"
+        ) {
+            return Err("web.search must be none, searxng, brave, or tavily".into());
+        }
         if !matches!(self.isolation.tier.as_str(), "policy" | "os" | "container") {
             return Err("isolation.tier must be policy, os, or container".into());
         }
@@ -194,6 +202,34 @@ impl Default for AutofixSettings {
             max_attempts_per_pr: 3,
             poll_s: 120,
             model: None,
+        }
+    }
+}
+
+/// Web tools (see docs/05-tools-and-isolation.md#built-in-tools).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct WebSettings {
+    /// Offer `web_fetch` (and `web_search` with a provider) to agents.
+    pub enabled: bool,
+    /// `none`, `searxng`, `brave`, or `tavily`.
+    pub search: String,
+    /// A SearXNG instance with the JSON format enabled.
+    pub searxng_url: String,
+    /// The Brave or Tavily key, from the keychain.
+    pub api_key: Option<SecretRef>,
+    /// Domains `web_fetch` may read without asking (subdomains included).
+    pub allow_domains: Vec<String>,
+}
+
+impl Default for WebSettings {
+    fn default() -> Self {
+        WebSettings {
+            enabled: true,
+            search: "none".into(),
+            searxng_url: String::new(),
+            api_key: None,
+            allow_domains: Vec::new(),
         }
     }
 }
