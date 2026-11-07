@@ -25,4 +25,4 @@ cost_usd: number | null,
 /**
  * Model calls made in this turn.
  */
-steps: number, } | { "type": "turn_failed", message: string, } | { "type": "notice", message: string, };
+steps: number, } | { "type": "turn_failed", message: string, } | { "type": "notice", message: string, } | { "type": "memory_used", names: Array<string>, } | { "type": "memory_saved", name: string, scope: string, };

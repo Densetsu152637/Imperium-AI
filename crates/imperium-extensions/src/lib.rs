@@ -2,7 +2,7 @@
 
 pub mod commands;
 pub mod hooks;
-mod markdown;
+pub mod markdown;
 pub mod plugins;
 pub mod skills;
 

@@ -5,9 +5,11 @@ use std::time::{Duration, Instant};
 
 use imperium_config::{Paths, Settings};
 use imperium_core::{
-    CatalogModel, LocalModels, ModelError, Session, SessionConfig, new_session_id, resolve_model,
+    CatalogModel, LocalModels, ModelError, Session, SessionConfig, SessionMemory, new_session_id,
+    resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
+use imperium_memory::Store;
 use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
 use imperium_protocol::session::AgentEvent;
 use imperium_tools::Workspace;
@@ -96,6 +98,10 @@ impl DaemonState {
             mcp,
             notices,
             extensions,
+            memory: self.settings.memory.enabled.then(|| SessionMemory {
+                store: Store::new(self.paths.data_dir(), Some(Path::new(project_dir))),
+                settings: self.settings.memory.clone(),
+            }),
             max_steps: self.settings.agents.max_steps,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;

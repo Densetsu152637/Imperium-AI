@@ -54,6 +54,10 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `mcp.servers.<name>` | none | An MCP server: `command`, `args`, `env` for stdio, or `url`, `headers`, `bearer_token` for HTTP; `allow` (tools that run without asking), `enabled`, `timeout_s` (default 60); see [MCP](05-tools-and-isolation.md#mcp) |
 | `mcp.trusted_projects` | none | Project folders whose `.mcp.json` servers may start |
 | `extensions.plugin_dirs` | none | More plugin folders (Claude Code layout), besides `<config>/plugins` |
+| `memory.enabled` | `true` | Global and project memory ([17](17-memory.md)) |
+| `memory.write.global`, `.project`, `.project_private` | `ask`, `ask`, `auto` | Whether agents may save memories in each scope: `auto`, `ask`, or `off` |
+| `memory.recall` | `true` | Put the best-matching memories before each message |
+| `memory.max_index_tokens`, `memory.max_recall_tokens` | `1500`, `1500` | Budgets for the index in agent instructions and for recalled memories |
 | `hooks` | none | `[[hooks]]` entries with `event`, optional `matcher`, `command`, and `timeout_s`; see [hooks](06-extensibility.md#hooks) |
 
 Configuration is read when the daemon starts; restart it after editing.

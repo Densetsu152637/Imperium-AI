@@ -77,6 +77,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         mcp: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
+        memory: None,
         max_steps: 5,
         journal_path: dir.join(".journal/test.jsonl"),
     })

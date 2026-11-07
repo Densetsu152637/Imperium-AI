@@ -93,6 +93,12 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
     case "notice":
       next.push({ kind: "notice", message: event.message });
       break;
+    case "memory_used":
+      next.push({ kind: "notice", message: `Recalled ${event.names.join(", ")}` });
+      break;
+    case "memory_saved":
+      next.push({ kind: "notice", message: `Saved memory ${event.name} (${event.scope})` });
+      break;
     default:
       break;
   }

@@ -1,0 +1,19 @@
+[package]
+name = "imperium-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Global and project memory for Imperium agents: entries, search, recall, and write policy"
+
+[dependencies]
+imperium-extensions = { version = "0.1.0", path = "../imperium-extensions" }
+thiserror = "2.0.21"
+tracing = "0.1.44"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

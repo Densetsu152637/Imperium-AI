@@ -2149,6 +2149,7 @@ dependencies = [
  "futures-util",
  "imperium-config",
  "imperium-local",
+ "imperium-memory",
  "imperium-protocol",
  "imperiumd",
  "reqwest",
@@ -2184,6 +2185,7 @@ dependencies = [
  "imperium-config",
  "imperium-extensions",
  "imperium-mcp",
+ "imperium-memory",
  "imperium-models",
  "imperium-protocol",
  "imperium-tools",
@@ -2262,6 +2264,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "imperium-memory"
+version = "0.1.0"
+dependencies = [
+ "imperium-extensions",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "imperium-models"
 version = "0.1.0"
 dependencies = [
@@ -2310,6 +2322,7 @@ dependencies = [
  "imperium-extensions",
  "imperium-local",
  "imperium-mcp",
+ "imperium-memory",
  "imperium-protocol",
  "imperium-tools",
  "serde",

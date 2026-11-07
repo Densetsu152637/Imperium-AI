@@ -154,6 +154,12 @@ async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()
             SessionEvent::TurnCompleted { .. } => {}
             SessionEvent::TurnFailed { message } => println!("\n{tag}failed: {message}"),
             SessionEvent::Notice { message } => println!("\n{tag}note: {message}"),
+            SessionEvent::MemoryUsed { names } => {
+                println!("\n{tag}· recalled {}", names.join(", "));
+            }
+            SessionEvent::MemorySaved { name, scope } => {
+                println!("\n{tag}· saved memory {name} ({scope})");
+            }
         }
     }
 }

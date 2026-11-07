@@ -17,6 +17,7 @@ imperium-core = { version = "0.1.0", path = "../imperium-core" }
 imperium-extensions = { version = "0.1.0", path = "../imperium-extensions" }
 imperium-local = { version = "0.1.0", path = "../imperium-local" }
 imperium-mcp = { version = "0.1.0", path = "../imperium-mcp" }
+imperium-memory = { version = "0.1.0", path = "../imperium-memory" }
 imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
 imperium-tools = { version = "0.1.0", path = "../imperium-tools" }
 serde = "1.0.229"

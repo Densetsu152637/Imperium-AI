@@ -96,6 +96,10 @@ pub enum SessionEvent {
     /// Something the user should know that is not part of a turn, such as an MCP server that
     /// could not start.
     Notice { message: String },
+    /// Memories recalled into the agent's context for this turn.
+    MemoryUsed { names: Vec<String> },
+    /// The agent saved a memory.
+    MemorySaved { name: String, scope: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

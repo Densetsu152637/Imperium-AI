@@ -5,6 +5,19 @@ conventions, lessons from past mistakes, and pointers to useful resources. Memor
 editable files with a search index on top, scoped so that the right facts reach the right
 agents and nothing private leaves the machine by accident.
 
+**Implemented (phase 5, `imperium-memory`):** the three file scopes below, entries with front
+matter, a regenerated `INDEX.md` per scope, term-based search (inverse document frequency
+weighted by name, description, and body), and a redaction check that refuses entries that
+look like keys or tokens. Every agent's instructions carry the index (within
+`max_index_tokens`); agents have `memory_search` and `memory_read`, and the root also has
+`memory_remember`, which follows the scope's write policy (`ask` shows the entry in a
+permission prompt). With `recall`, the best matches for each message are placed before it in
+a `<relevant-memories>` block marked as data (within `max_recall_tokens`), and the session
+reports `memory_used` and `memory_saved` events. `imperium memory list/search/show/forget`
+works on the folders directly. Not yet: embeddings, `[[links]]` traversal, stale-reference
+checks, consolidation, import/export, `memory.cloud`, the desktop Memory panel, and the
+`memory.*` protocol methods.
+
 ## Scopes
 
 | Scope              | Holds                                                         | Stored in                                         | Shared by           |
