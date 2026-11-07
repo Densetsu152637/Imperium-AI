@@ -1,3 +1,5 @@
+mod chat;
+
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -21,6 +23,15 @@ struct Cli {
 enum Command {
     /// Check that imperiumd is running and measure a round trip.
     Ping,
+    /// Chat with an agent in a project folder.
+    Chat {
+        /// Project folder the agent works in; defaults to the current directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Model as `<endpoint>:<model>`; defaults to `models.default`.
+        #[arg(long)]
+        model: Option<String>,
+    },
     /// Inspect configuration.
     Config {
         #[command(subcommand)]
@@ -66,6 +77,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Ping => ping(),
+        Command::Chat { project, model } => chat::run(project, model),
         Command::Config {
             command: ConfigCommand::Explain { key, project },
         } => explain(&key, project),
@@ -79,39 +91,49 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn ping() -> anyhow::Result<()> {
-    let paths = Paths::from_env()?;
-    let endpoint = read_endpoint(&paths.daemon_endpoint_file())?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("could not start the async runtime")?;
-    runtime.block_on(async {
-        let me = Peer {
-            name: "imperium-cli".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-        };
-        let mut client = Client::connect(&endpoint, me).await.with_context(|| {
-            format!(
-                "imperiumd at {} did not answer; it may have stopped without removing {}",
-                endpoint.url,
-                paths.daemon_endpoint_file().display()
-            )
-        })?;
+    block_on(async {
+        let (mut client, url) = connect().await?;
         let sent = Instant::now();
         let pong = client.call::<Ping>(PingParams {}).await?;
         let round_trip = sent.elapsed();
         let daemon = client.daemon();
         println!(
-            "{} {} (protocol {}) at {}: up {:.1} s, round trip {:.2} ms",
+            "{} {} (protocol {}) at {url}: up {:.1} s, round trip {:.2} ms",
             daemon.daemon.name,
             daemon.daemon.version,
             daemon.protocol,
-            endpoint.url,
             pong.uptime_ms as f64 / 1000.0,
             round_trip.as_secs_f64() * 1000.0,
         );
         Ok(())
     })
+}
+
+/// Runs a future on a single-threaded runtime; the CLI does one thing at a time.
+fn block_on<T>(future: impl std::future::Future<Output = anyhow::Result<T>>) -> anyhow::Result<T> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("could not start the async runtime")?
+        .block_on(future)
+}
+
+/// Connects to the running daemon and returns the client and the daemon's URL.
+async fn connect() -> anyhow::Result<(Client, String)> {
+    let paths = Paths::from_env()?;
+    let endpoint = read_endpoint(&paths.daemon_endpoint_file())?;
+    let me = Peer {
+        name: "imperium-cli".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
+    };
+    let client = Client::connect(&endpoint, me).await.with_context(|| {
+        format!(
+            "imperiumd at {} did not answer; it may have stopped without removing {}",
+            endpoint.url,
+            paths.daemon_endpoint_file().display()
+        )
+    })?;
+    Ok((client, endpoint.url))
 }
 
 fn explain(key: &str, project: Option<PathBuf>) -> anyhow::Result<()> {

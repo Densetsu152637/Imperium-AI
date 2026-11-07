@@ -1,10 +1,11 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use futures_util::{SinkExt, StreamExt};
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
 use imperium_protocol::jsonrpc::{
-    ErrorObject, JsonRpcVersion, Outcome, Request, RequestId, Response,
+    ErrorObject, JsonRpcVersion, Notification, Outcome, Request, RequestId, Response,
 };
 use imperium_protocol::methods::{Handshake, HandshakeParams, HandshakeResult, Method, Peer};
 use tokio::net::TcpStream;
@@ -50,6 +51,8 @@ pub struct Client {
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     next_id: i64,
     daemon: HandshakeResult,
+    /// Notifications that arrived while waiting for a response.
+    pending: VecDeque<Notification>,
 }
 
 impl Client {
@@ -71,6 +74,7 @@ impl Client {
         let mut connection = Client {
             socket,
             next_id: 1,
+            pending: VecDeque::new(),
             daemon: HandshakeResult {
                 daemon: Peer {
                     name: String::new(),
@@ -121,7 +125,31 @@ impl Client {
         }
     }
 
+    /// The next server notification, in arrival order.
+    pub async fn next_notification(&mut self) -> Result<Notification, ClientError> {
+        if let Some(notification) = self.pending.pop_front() {
+            return Ok(notification);
+        }
+        match self.next_message().await? {
+            Incoming::Notification(notification) => Ok(notification),
+            Incoming::Response(response) => Err(ClientError::Protocol(format!(
+                "unexpected response to request {:?}",
+                response.id
+            ))),
+        }
+    }
+
+    /// Reads frames until a response arrives, queueing notifications for later.
     async fn next_response(&mut self) -> Result<Response, ClientError> {
+        loop {
+            match self.next_message().await? {
+                Incoming::Response(response) => return Ok(response),
+                Incoming::Notification(notification) => self.pending.push_back(notification),
+            }
+        }
+    }
+
+    async fn next_message(&mut self) -> Result<Incoming, ClientError> {
         loop {
             let message = self
                 .socket
@@ -131,7 +159,18 @@ impl Client {
                 .map_err(|error| ClientError::Connect(Box::new(error)))?;
             match message {
                 Message::Text(text) => {
-                    return serde_json::from_str(text.as_str()).map_err(protocol_error);
+                    let value: serde_json::Value =
+                        serde_json::from_str(text.as_str()).map_err(protocol_error)?;
+                    // Notifications carry a method and no id; responses carry an id.
+                    return if value.get("method").is_some() && value.get("id").is_none() {
+                        serde_json::from_value(value)
+                            .map(Incoming::Notification)
+                            .map_err(protocol_error)
+                    } else {
+                        serde_json::from_value(value)
+                            .map(Incoming::Response)
+                            .map_err(protocol_error)
+                    };
                 }
                 Message::Close(_) => {
                     return Err(ClientError::Protocol(
@@ -142,6 +181,11 @@ impl Client {
             }
         }
     }
+}
+
+enum Incoming {
+    Response(Response),
+    Notification(Notification),
 }
 
 fn protocol_error(error: serde_json::Error) -> ClientError {
