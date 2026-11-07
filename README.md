@@ -68,6 +68,12 @@ cargo run --bin imperium -- chat --project path/to/project
 Local servers such as llama.cpp, LM Studio, or Ollama work the same way with their
 OpenAI-compatible URL and no `api_key`.
 
+The desktop app needs the daemon running, then:
+
+```bash
+pnpm --filter @imperium/desktop tauri dev
+```
+
 ## Documentation
 
 Start at [docs/README.md](docs/README.md).
