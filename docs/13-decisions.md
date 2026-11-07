@@ -20,6 +20,8 @@
 | D14 | Planning is a runtime feature (plan objects, plan phase, approval modes) | Keeps weaker open models on track; plans visible and editable | Prompt-only planning | — |
 | D15 | One daemon process; every agent is a task on a multi-threaded Tokio runtime with a worker per core | Agents run in parallel across cores; idle agents cost no CPU; no thread per session to manage | A thread per session (agents of one session confined to one core); multi-process sessions | CPU-heavy tools need isolation from agent tasks |
 | D16 | GitHub auto-fix responders run as ordinary sessions, push only to PR branches, and never merge, close, approve, or force-push | Keeps automation reviewable and reversible | Fully autonomous merging | Users ask for merge automation with required approvals |
+| D17 | Memory is one-fact-per-file Markdown in global, project (shared and private), and session scopes, with an index always in context, search on demand, and approval before writes by default | Editable, reviewable, Git-friendly, and compatible with Claude Code memory and policy-pack lessons; approval keeps wrong facts out | A vector database as the source of truth; automatic writes without review | Memory volume makes file-based storage slow |
+| D18 | Workflows follow a public, versioned contract; a built-in retriever serves a load manifest (deterministic triggers first, semantic suggestions second) and agents load the items themselves | Every kind of agent, model, and host loads the same instructions, visibly and auditably | Stuffing whole workflows into every prompt; letting each model decide what to read unaided | Manifests prove too coarse for small-context local models |
 
 ## Open questions
 
