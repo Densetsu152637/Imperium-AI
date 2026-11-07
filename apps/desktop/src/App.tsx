@@ -160,7 +160,12 @@ export function App() {
     if (!client || !project) return;
     try {
       const created = await client.call<SessionCreateResult>("session.create", { project_dir: project });
-      const summary = { session_id: created.session_id, project_dir: project, model: created.model };
+      const summary = {
+        session_id: created.session_id,
+        project_dir: project,
+        model: created.model,
+        isolation: created.isolation,
+      };
       setSessions((all) => ({ ...all, [created.session_id]: newSession(summary) }));
       setSelected(created.session_id);
     } catch (error) {

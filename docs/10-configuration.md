@@ -63,6 +63,8 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `workflow.enforce` | `warn` | `required-before-action` refuses writes and commands until required context is loaded; `warn` and `off` do not |
 | `<config>/mods/<id>/` | none | UI mods (folders with `mod.json`), shown as panels; see [UI mods](06-extensibility.md#ui-mods) |
 | `schedules` | none | `[[schedules]]` with `id`, `trigger` (`cron`, `every`, or `at`), `action` (`project` and one of `prompt`, `command`, or `agent` (a message for the project agent), optional `model`, `timeout_s`), `missed`, `overlap`, `notify`, `enabled`; see [schedules](14-projects-and-automation.md#schedules) |
+| `isolation.tier` | `policy` | Where agents' commands run: `policy` (tier 0), `os` (bubblewrap or Seatbelt), or `container` ([tiers](05-tools-and-isolation.md#isolation-tiers)) |
+| `isolation.container_runtime`, `container_image`, `network` | `docker`, `ubuntu:24.04`, `true` | Container tier settings; `network = false` cuts sandboxed and container commands off the network |
 | `projects` | none | `[[projects]]` with `path`, `agent` (run a project agent), `agent_model`, `max_sessions` (2), `max_sessions_per_day` (20) |
 | `github.watch` | none | `[[github.watch]]` with `repo` (`owner/name`) and `project` (a local clone whose `origin` is that repository) |
 | `github.autofix.enabled` | `false` | Fix the user's pull requests whose checks fail ([auto-fix](14-projects-and-automation.md#github-auto-fix)) |

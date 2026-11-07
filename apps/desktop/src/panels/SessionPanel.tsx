@@ -44,7 +44,7 @@ export function SessionPanel({ session, onSend, onRespond }: Props) {
       <div className="session-env">
         <span title="Project folder">{session.summary.project_dir}</span>
         <span title="Model">{session.summary.model}</span>
-        <span title="Isolation tier">tier 0 · folder policy</span>
+        <span title="Isolation tier">{session.summary.isolation}</span>
         <span title="Session cost">{formatCost(sum.costUsd)}</span>
         <label className="toggle">
           <input type="checkbox" checked={rendered} onChange={(event) => setRendered(event.target.checked)} />

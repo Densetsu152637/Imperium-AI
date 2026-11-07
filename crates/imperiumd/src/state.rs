@@ -13,7 +13,7 @@ use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
 use imperium_protocol::session::{AgentEvent, PermissionDecision, ROOT_AGENT, SessionEvent};
-use imperium_tools::Workspace;
+use imperium_tools::{Sandbox, Workspace};
 use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
 
@@ -124,6 +124,22 @@ impl DaemonState {
 
     pub fn announcements(&self) -> broadcast::Receiver<Notification> {
         self.announcements.subscribe()
+    }
+
+    /// The isolation tier commands run under, from `[isolation]`.
+    fn sandbox(&self) -> Sandbox {
+        let isolation = &self.settings.isolation;
+        match isolation.tier.as_str() {
+            "os" => Sandbox::Os {
+                network: isolation.network,
+            },
+            "container" => Sandbox::Container {
+                runtime: isolation.container_runtime.clone(),
+                image: isolation.container_image.clone(),
+                network: isolation.network,
+            },
+            _ => Sandbox::Policy,
+        }
     }
 
     /// Where UI mods are installed.
@@ -260,7 +276,8 @@ impl DaemonState {
         options: SessionOptions,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
         let workspace = Workspace::new(Path::new(project_dir))
-            .map_err(|error| CreateError::Project(project_dir.to_string(), error))?;
+            .map_err(|error| CreateError::Project(project_dir.to_string(), error))?
+            .with_sandbox(self.sandbox());
         let model = resolve_model(&self.settings, model, imperium_config::load_secret)?;
         let catalog = self.catalog();
         let (mut mcp, mut notices) = crate::mcp::session_servers(

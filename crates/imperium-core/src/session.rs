@@ -78,6 +78,7 @@ pub struct Session {
     id: String,
     model: String,
     project_dir: String,
+    isolation: String,
     commands: mpsc::UnboundedSender<Command>,
     events: broadcast::Sender<AgentEvent>,
     /// Every event so far, so late subscribers can catch up.
@@ -101,6 +102,7 @@ impl Session {
         let id = config.id.clone();
         let model = config.model.spec.clone();
         let project_dir = config.workspace.root_display();
+        let isolation = config.workspace.sandbox().label();
         let history = History::default();
         let emitter = Emitter {
             session_id: id.clone(),
@@ -113,6 +115,7 @@ impl Session {
             id,
             model,
             project_dir,
+            isolation,
             commands,
             events,
             history,
@@ -131,6 +134,11 @@ impl Session {
     /// The project folder the session works in.
     pub fn project_dir(&self) -> &str {
         &self.project_dir
+    }
+
+    /// Where the session's commands run.
+    pub fn isolation(&self) -> &str {
+        &self.isolation
     }
 
     /// Receives events from now on.

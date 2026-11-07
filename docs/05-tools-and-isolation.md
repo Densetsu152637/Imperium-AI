@@ -79,6 +79,20 @@ Decisions are logged in the session journal.
 
 The UI always shows the active tier for each session and agent.
 
+**Implemented (phase 7):** `isolation.tier` chooses where `run_command` (and auto-fix and
+scheduled sessions' commands) run, and each session reports its tier (`session.list`,
+`session.create`, and the session header). `policy` is tier 0. `os` runs commands under
+bubblewrap on Linux (the filesystem read-only except the workspace and a private `/tmp`, its own
+process namespace, `--unshare-net` without network) or Seatbelt on macOS (`sandbox-exec`: writes
+only to the workspace and temporary folders, network denied without network); on Windows the
+tier is not available yet and commands fail rather than running unsandboxed. `container` runs
+commands with `isolation.container_runtime` (default `docker`) in `isolation.container_image`
+(default `ubuntu:24.04`) with only the workspace mounted at `/workspace`, removed afterwards,
+and `--network none` without network. `isolation.network` (default `true`) applies to both.
+The file tools stay tier 0 (they run in the daemon, confined to the workspace). Not yet: policy
+forcing tiers per model or agent, GPU flags for containers, Windows AppContainer, and a default
+dev image.
+
 | Tier            | Boundary                                                                     | Protects against                                    | Does not protect against                           |
 | --------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |
 | 0 — Policy      | Daemon refuses built-in file tools outside allowed roots                     | Model mistakes with built-in tools                  | Code run through `exec`, which has the user's full rights |

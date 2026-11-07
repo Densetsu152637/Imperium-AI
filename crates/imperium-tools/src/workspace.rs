@@ -1,12 +1,13 @@
 use std::path::{Component, Path, PathBuf};
 
-use crate::ToolError;
+use crate::{Sandbox, ToolError};
 
 /// The folder an agent works in. Paths given to tools resolve inside it and may not escape it,
 /// including through `..` or symbolic links.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     root: PathBuf,
+    sandbox: Sandbox,
 }
 
 impl Workspace {
@@ -19,11 +20,23 @@ impl Workspace {
                 format!("{} is not a directory", root.display()),
             ));
         }
-        Ok(Workspace { root })
+        Ok(Workspace {
+            root,
+            sandbox: Sandbox::Policy,
+        })
+    }
+
+    /// The same workspace with commands run under `sandbox`.
+    pub fn with_sandbox(self, sandbox: Sandbox) -> Self {
+        Workspace { sandbox, ..self }
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn sandbox(&self) -> &Sandbox {
+        &self.sandbox
     }
 
     /// Resolves a path (relative to the root, or absolute inside it) to an absolute path inside
