@@ -1,5 +1,5 @@
-// The main session panel: title and status, environment header, usage-limit controls,
-// conversation, composer, and the context, outputs, and cost sections underneath.
+// The main session panel: a header with title and status, environment, usage-limit controls,
+// and the folded context and outputs sections; then the conversation and the composer.
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -34,7 +34,11 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
   }, [entryCount, lastLength]);
 
   if (!session) {
-    return <p className="empty">Open a project folder and start a session to begin.</p>;
+    return (
+      <div className="session-empty">
+        <p className="empty">Open a project folder and start a session to begin.</p>
+      </div>
+    );
   }
   const sum = totals(session.calls);
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
@@ -47,35 +51,77 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
 
   return (
     <div className="session">
-      <div className="session-head">
-        <ProjectIcon choice={icons.iconFor(session.summary.project_dir)} />
-        <h3 className="session-title" title={sessionTitle(session)}>
-          {sessionTitle(session)}
-        </h3>
-        <StatusBadge session={session} />
-        {session.status === "paused" && (
-          <button className="resume-now" onClick={onResumeNow}>
-            Resume now
-          </button>
-        )}
-      </div>
+      <header className="session-top">
+        <div className="session-head">
+          <ProjectIcon choice={icons.iconFor(session.summary.project_dir)} />
+          <h3 className="session-title" title={sessionTitle(session)}>
+            {sessionTitle(session)}
+          </h3>
+          <StatusBadge session={session} />
+          {session.status === "paused" && (
+            <button className="resume-now primary" onClick={onResumeNow}>
+              Resume now
+            </button>
+          )}
+        </div>
 
-      <div className="session-env">
-        <span title={session.summary.project_dir}>{projectName(session.summary.project_dir)}</span>
-        <span title="Model">{session.summary.model}</span>
-        <span title="Isolation tier">{session.summary.isolation}</span>
-        <span title="Session cost">{formatCost(sum.costUsd)}</span>
-        <label className="toggle">
-          <input type="checkbox" checked={rendered} onChange={(event) => setRendered(event.target.checked)} />
-          Markdown
-        </label>
-      </div>
+        <div className="session-env">
+          <span title={session.summary.project_dir}>{projectName(session.summary.project_dir)}</span>
+          <span title="Model">{session.summary.model}</span>
+          <span title="Isolation tier">{session.summary.isolation}</span>
+          <span title="Session cost">{formatCost(sum.costUsd)}</span>
+          <label className="toggle">
+            <input type="checkbox" checked={rendered} onChange={(event) => setRendered(event.target.checked)} />
+            Markdown
+          </label>
+        </div>
 
-      <ResumeControls
-        key={session.summary.session_id}
-        policy={session.summary.resume_policy}
-        onSave={onSetResumePolicy}
-      />
+        {/* Settings and statistics fold away so the conversation keeps the room. */}
+        <div className="session-tools">
+          <ResumeControls
+            key={session.summary.session_id}
+            policy={session.summary.resume_policy}
+            onSave={onSetResumePolicy}
+          />
+          <details className="session-details">
+            <summary>
+              Context and outputs{" "}
+              <span className="muted">
+                · {formatCount(sum.prompt)} prompt tokens · {session.calls.length} model calls
+              </span>
+            </summary>
+            <div className="session-sections">
+              <section>
+                <h3>Context</h3>
+                <dl>
+                  <dt>Prompt tokens</dt>
+                  <dd>{formatCount(sum.prompt)}</dd>
+                  <dt>Cached</dt>
+                  <dd>{formatCount(sum.cached)}</dd>
+                  <dt>Completion</dt>
+                  <dd>{formatCount(sum.completion)}</dd>
+                  <dt>Model calls</dt>
+                  <dd>{session.calls.length}</dd>
+                </dl>
+              </section>
+              <section>
+                <h3>Outputs</h3>
+                {outputs.length === 0 ? (
+                  <p className="muted">No tool output yet.</p>
+                ) : (
+                  <ul className="outputs">
+                    {outputs.slice(-8).map((tool, index) => (
+                      <li key={index} className={tool.ok === false ? "failed" : undefined} title={tool.output}>
+                        {tool.summary}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </div>
+          </details>
+        </div>
+      </header>
 
       {session.plan && <PlanView plan={session.plan} />}
 
@@ -104,42 +150,14 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
               send();
             }
           }}
-          rows={3}
+          rows={1}
         />
-        <button type="submit" disabled={!draft.trim()}>
-          Send
+        <button type="submit" className="send" disabled={!draft.trim()} aria-label="Send" title="Send (Enter)">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 19V5M5 12l7-7 7 7" />
+          </svg>
         </button>
       </form>
-
-      <div className="session-sections">
-        <section>
-          <h3>Context</h3>
-          <dl>
-            <dt>Prompt tokens</dt>
-            <dd>{formatCount(sum.prompt)}</dd>
-            <dt>Cached</dt>
-            <dd>{formatCount(sum.cached)}</dd>
-            <dt>Completion</dt>
-            <dd>{formatCount(sum.completion)}</dd>
-            <dt>Model calls</dt>
-            <dd>{session.calls.length}</dd>
-          </dl>
-        </section>
-        <section>
-          <h3>Outputs</h3>
-          {outputs.length === 0 ? (
-            <p className="muted">No tool output yet.</p>
-          ) : (
-            <ul className="outputs">
-              {outputs.slice(-8).map((tool, index) => (
-                <li key={index} className={tool.ok === false ? "failed" : undefined} title={tool.output}>
-                  {tool.summary}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </div>
     </div>
   );
 }
@@ -188,7 +206,9 @@ function EntryView({
             <span className="muted">Answered</span>
           ) : (
             <span className="buttons">
-              <button onClick={() => onRespond(entry.requestId, "allow")}>Allow</button>
+              <button className="primary" onClick={() => onRespond(entry.requestId, "allow")}>
+                Allow
+              </button>
               <button onClick={() => onRespond(entry.requestId, "allow_for_session")}>Always this session</button>
               <button className="danger" onClick={() => onRespond(entry.requestId, "deny")}>
                 Deny
@@ -313,7 +333,7 @@ function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Prop
               Revert
             </button>
           )}
-          <button type="submit" disabled={!dirty || !valid || saving}>
+          <button type="submit" className="primary" disabled={!dirty || !valid || saving}>
             {saving ? "Saving…" : "Save"}
           </button>
         </span>

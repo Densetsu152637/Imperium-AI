@@ -9,14 +9,17 @@
   dividers; sizes are remembered.
 - Session panel: environment header (project, model, isolation tier, cost), conversation with
   assistant replies rendered as Markdown (GitHub-flavoured, raw HTML disabled; a toggle shows
-  the raw text), inline permission prompts (allow, always this session, deny), composer, and
-  context and outputs sections.
+  the raw text), inline permission prompts (allow, always this session, deny), a floating
+  composer, and context and outputs sections folded into the header.
 - Telemetry panel: per-call tokens, time to first token, tokens per second, and cost, with
   session totals.
 - Display settings: UI scale, prose and code text scale, density, and line length. They are
   stored per viewer in local storage for now and move into the daemon's configuration with
   the settings UI.
-- Light and dark themes follow the system.
+- Light and dark themes follow the system: metallic black and graphite with a petrol-teal
+  accent and silver hairline trims by default, and a matching brushed-silver light theme. Side
+  columns are brushed-metal rails; the conversation is a centred column with the user's turns
+  as pills on the right.
 
 Not yet: dragging panels and modules between columns, the edit-layout mode, detachable windows,
 project layout overrides, mods, and themes beyond light and dark.

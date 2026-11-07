@@ -296,8 +296,8 @@ export function App() {
   return (
     <div className="app">
       <header className="titlebar">
-        <strong>Imperium</strong>
-        <span className="muted">
+        <strong className="brand">Imperium</strong>
+        <span className="muted connection" data-state={status.kind}>
           {status.kind === "connected"
             ? `${status.client.daemon?.daemon.name} ${status.client.daemon?.daemon.version}`
             : status.kind === "connecting"
@@ -305,7 +305,7 @@ export function App() {
               : "Disconnected"}
         </span>
         <span className="spacer" />
-        <button onClick={() => setShowSettings((open) => !open)} aria-expanded={showSettings}>
+        <button className="ghost" onClick={() => setShowSettings((open) => !open)} aria-expanded={showSettings}>
           Display
         </button>
       </header>
@@ -436,25 +436,44 @@ function ConnectScreen({ message, onConnect }: { message: string; onConnect: (co
   const [token, setToken] = useState("");
   return (
     <div className="connect">
-      <h1>Not connected to imperiumd</h1>
-      <p>{message}</p>
-      <p className="muted">
-        Start the daemon with <code>imperiumd</code>
-        {insideTauri() ? ", then retry." : ". In a browser, paste the url and token from its daemon.json."}
-      </p>
-      {!insideTauri() && (
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            onConnect({ url: url.trim(), token: token.trim() });
-          }}
-        >
-          <input placeholder="ws://127.0.0.1:port/rpc" value={url} onChange={(e) => setUrl(e.target.value)} />
-          <input placeholder="token" type="password" value={token} onChange={(e) => setToken(e.target.value)} />
-          <button type="submit">Connect</button>
-        </form>
-      )}
-      {insideTauri() && <button onClick={() => onConnect()}>Retry</button>}
+      <div className="connect-card">
+        <h1>Not connected to imperiumd</h1>
+        <p>{message}</p>
+        <p className="muted">
+          Start the daemon with <code>imperiumd</code>
+          {insideTauri() ? ", then retry." : ". In a browser, paste the url and token from its daemon.json."}
+        </p>
+        {!insideTauri() && (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              onConnect({ url: url.trim(), token: token.trim() });
+            }}
+          >
+            <input
+              aria-label="Daemon URL"
+              placeholder="ws://127.0.0.1:port/rpc"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+            />
+            <input
+              aria-label="Token"
+              placeholder="token"
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+            />
+            <button type="submit" className="primary">
+              Connect
+            </button>
+          </form>
+        )}
+        {insideTauri() && (
+          <button className="primary" onClick={() => onConnect()}>
+            Retry
+          </button>
+        )}
+      </div>
     </div>
   );
 }

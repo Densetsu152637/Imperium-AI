@@ -66,7 +66,9 @@ export function SettingsMenu({ settings, onChange, onClose }: Props) {
           </label>
         ))}
       </fieldset>
-      <button onClick={onClose}>Done</button>
+      <button className="primary" onClick={onClose}>
+        Done
+      </button>
     </div>
   );
 }
