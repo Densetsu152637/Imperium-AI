@@ -102,9 +102,82 @@ pub enum ModelError {
     #[error("request to the model endpoint failed: {0}")]
     Http(#[from] reqwest::Error),
     #[error("model endpoint returned HTTP {status}: {body}")]
-    Status { status: u16, body: String },
+    Status {
+        status: u16,
+        body: String,
+        /// Seconds until the provider says to try again, from `Retry-After` or a
+        /// rate-limit reset header.
+        retry_after_s: Option<u64>,
+    },
     #[error("could not decode the model's stream: {0}")]
     Decode(String),
+}
+
+impl ModelError {
+    /// Whether the provider refused for now (rate or usage limit, overload) rather than for
+    /// good, so waiting and retrying can succeed.
+    pub fn is_usage_limit(&self) -> bool {
+        matches!(
+            self,
+            ModelError::Status {
+                status: 429 | 503 | 529,
+                ..
+            }
+        )
+    }
+
+    /// When the provider says to retry, in seconds, if it said.
+    pub fn retry_after_s(&self) -> Option<u64> {
+        match self {
+            ModelError::Status { retry_after_s, .. } => *retry_after_s,
+            _ => None,
+        }
+    }
+}
+
+/// Seconds to wait from `Retry-After` (seconds) or common reset headers (seconds, or an RFC
+/// 3339 time).
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    let names = [
+        "retry-after",
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-reset-tokens",
+        "x-ratelimit-reset",
+        "anthropic-ratelimit-requests-reset",
+        "anthropic-ratelimit-tokens-reset",
+    ];
+    names
+        .iter()
+        .filter_map(|name| headers.get(*name)?.to_str().ok())
+        .filter_map(parse_wait)
+        .max()
+}
+
+fn parse_wait(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<f64>() {
+        return Some(seconds.ceil().max(0.0) as u64);
+    }
+    // Durations such as "6m0s" or "1.5s".
+    if value.ends_with('s') && value.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        let mut total = 0.0;
+        let mut number = String::new();
+        for c in value.chars() {
+            if c.is_ascii_digit() || c == '.' {
+                number.push(c);
+                continue;
+            }
+            let unit = match c {
+                'h' => 3600.0,
+                'm' => 60.0,
+                's' => 1.0,
+                _ => return None,
+            };
+            total += std::mem::take(&mut number).parse::<f64>().ok()? * unit;
+        }
+        return Some(total.ceil() as u64);
+    }
+    None
 }
 
 /// Streams a chat completion, calling `on_text` with each text fragment as it arrives, and
@@ -145,10 +218,12 @@ pub async fn stream_chat(
     let response = builder.send().await?;
     let status = response.status();
     if !status.is_success() {
+        let retry_after_s = retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
         return Err(ModelError::Status {
             status: status.as_u16(),
             body: body.chars().take(2000).collect(),
+            retry_after_s,
         });
     }
 
@@ -377,7 +452,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(error, ModelError::Status { status: 401, ref body } if body == "bad key"),
+            matches!(error, ModelError::Status { status: 401, ref body, .. } if body == "bad key"),
             "{error}"
         );
     }
@@ -407,5 +482,21 @@ mod tests {
             serde_json::to_value(&tool).unwrap(),
             json!({"role":"tool","tool_call_id":"c1","content":"ok"})
         );
+    }
+
+    #[test]
+    fn reset_hints_are_read_in_their_common_forms() {
+        assert_eq!(parse_wait("120"), Some(120));
+        assert_eq!(parse_wait("1.2"), Some(2));
+        assert_eq!(parse_wait("6m0s"), Some(360));
+        assert_eq!(parse_wait("1h2m3s"), Some(3723));
+        assert_eq!(parse_wait("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+        let limited = ModelError::Status {
+            status: 429,
+            body: String::new(),
+            retry_after_s: Some(30),
+        };
+        assert!(limited.is_usage_limit());
+        assert_eq!(limited.retry_after_s(), Some(30));
     }
 }

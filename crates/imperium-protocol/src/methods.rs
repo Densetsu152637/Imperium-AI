@@ -137,6 +137,12 @@ pub struct SessionSummary {
     pub model: String,
     /// Where the session's commands run, such as `tier 0 · folder policy`.
     pub isolation: String,
+    /// The session's first message, for lists.
+    pub title: String,
+    pub status: crate::session::SessionStatus,
+    /// What it watches, when watching or merged.
+    pub status_detail: Option<String>,
+    pub resume_policy: crate::session::ResumePolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -765,3 +771,35 @@ pub struct PhoneRevokeResult {
 /// Notification sent to every client when a session starts, whoever started it (a client, a
 /// schedule, a project agent, or auto-fix). The payload is a [`SessionSummary`].
 pub const SESSION_CREATED: &str = "session.created";
+
+/// `session.control`: change how a session waits for usage resets, resume it now, or set what
+/// pull request it watches.
+#[derive(Debug)]
+pub struct SessionControl;
+
+impl Method for SessionControl {
+    const NAME: &'static str = "session.control";
+    type Params = SessionControlParams;
+    type Result = SessionControlResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionControlParams {
+    pub session_id: String,
+    /// `set_resume_policy` (with `resume_policy`, or none to use the default), `resume_now`,
+    /// `watch` (with `repo` and `pull_request`), or `unwatch`.
+    #[ts(type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\"")]
+    pub action: String,
+    #[serde(default)]
+    pub resume_policy: Option<crate::session::ResumePolicy>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub pull_request: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionControlResult {}

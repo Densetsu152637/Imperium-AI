@@ -62,6 +62,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         pre_approved: Vec::new(),
         launcher: None,
         resume,
+        resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         media: None,
         web: None,
@@ -120,8 +121,10 @@ async fn sessions_continue_after_a_restart() {
     let mut closed_off = false;
     for _ in 0..50 {
         let (history, _) = after_crash.subscribe_with_history();
-        closed_off = matches!(&history.last().unwrap().event,
-            SessionEvent::TurnFailed { message } if message.contains("stopped during this turn"));
+        closed_off = history.iter().rev().take(3).any(|event| {
+            matches!(&event.event,
+            SessionEvent::TurnFailed { message } if message.contains("stopped during this turn"))
+        });
         if closed_off {
             break;
         }

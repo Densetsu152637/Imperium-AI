@@ -19,6 +19,7 @@ pub use settings::{
     ImageSettings, IsolationSettings, LLAMACPP_ENDPOINT, LlamaCppSettings, Location,
     McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings, MemorySettings,
     MemoryWrite, ModelSettings, PetSettings, PhoneSettings, Preference, ProjectSettings,
-    RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef, Settings, Tier,
-    TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings, WritePolicy,
+    ResumeSettings, RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef,
+    Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings,
+    WritePolicy,
 };

@@ -125,6 +125,26 @@ model; the parent model never needs to name one, though it may express a prefere
 
 ## Persistence
 
+**Session status (implemented):** every session has an explicit status, sent as
+`status_changed` events and in `session.list`: `idle`, `working` (a turn is running),
+`needs_attention` (a permission request is waiting, or the last turn failed), `paused`
+(waiting for a usage limit to reset), `watching` (idle while following a pull request's checks,
+with the pull request as detail), and `merged` (that pull request merged). Auto-fix sessions
+watch their pull request after pushing; any session can be set to watch one with
+`session.control` (`watch`, `unwatch`), and the daemon's watcher marks it merged or ends the
+watch when the pull request closes.
+
+**Usage limits (implemented):** when a model call is refused for a usage or rate limit (HTTP
+429, 503, or 529), the turn waits instead of failing, following the session's resume policy:
+`wait_for_reset` (the provider's `Retry-After` or rate-limit reset header, else retry every
+interval; the default), `at_time` (wait for a local time such as `03:00`, then retry every
+interval), `retry_every` (every N minutes), or `stop` (fail the turn at once), giving up after
+`max_wait_hours`. While waiting the session is `paused` and reports `paused` (with the resume
+time) and `resumed` events. The default comes from `[resume]`; each session can override it,
+and be resumed early, with `session.control` (`set_resume_policy`, `resume_now`) — the
+desktop's session header has these as *Usage limits* and *Resume now*. A session's override is
+not yet kept across daemon restarts.
+
 Every event is appended to the session journal, `<data>/sessions/<session-id>.jsonl` (one JSON
 object per line with an `at_ms` timestamp; implemented). A running session also keeps its events in memory
 so clients that attach later replay them. Sessions continue after a daemon restart

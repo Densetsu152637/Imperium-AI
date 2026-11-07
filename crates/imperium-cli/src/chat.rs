@@ -171,6 +171,23 @@ async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()
                     documentation.len()
                 );
             }
+            SessionEvent::Paused {
+                until_unix_ms,
+                reason,
+            } => {
+                let until = chrono::DateTime::from_timestamp_millis(
+                    i64::try_from(until_unix_ms).unwrap_or(0),
+                )
+                .map(|time| {
+                    time.with_timezone(&chrono::Local)
+                        .format("%H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+                println!("\n{tag}· usage limit; waiting until {until} ({reason})");
+            }
+            SessionEvent::Resumed {} => println!("\n{tag}· resuming"),
+            SessionEvent::StatusChanged { .. } => {}
             SessionEvent::MediaCreated { path, kind, .. } => {
                 println!("\n{tag}· created {kind}: {path}");
             }

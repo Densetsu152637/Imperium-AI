@@ -205,6 +205,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
+        resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         media: None,
         web: None,

@@ -68,6 +68,8 @@ pub struct Settings {
     pub media: MediaSettings,
     #[serde(default)]
     pub phone: PhoneSettings,
+    #[serde(default)]
+    pub resume: ResumeSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -150,6 +152,15 @@ impl Settings {
             }
         }
         if !matches!(
+            self.resume.mode.as_str(),
+            "wait_for_reset" | "at_time" | "retry_every" | "stop"
+        ) {
+            return Err("resume.mode must be wait_for_reset, at_time, retry_every, or stop".into());
+        }
+        if self.resume.mode == "at_time" && self.resume.at_time.is_none() {
+            return Err("resume.at_time (HH:MM) is needed when resume.mode = \"at_time\"".into());
+        }
+        if !matches!(
             self.web.search.as_str(),
             "none" | "searxng" | "brave" | "tavily"
         ) {
@@ -210,6 +221,29 @@ impl Default for AutofixSettings {
             max_attempts_per_pr: 3,
             poll_s: 120,
             model: None,
+        }
+    }
+}
+
+/// How sessions wait when a provider's usage or rate limit is hit (each session can override).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ResumeSettings {
+    /// `wait_for_reset`, `at_time`, `retry_every`, or `stop`.
+    pub mode: String,
+    /// `HH:MM` local time, for `at_time`.
+    pub at_time: Option<String>,
+    pub retry_every_minutes: u32,
+    pub max_wait_hours: u32,
+}
+
+impl Default for ResumeSettings {
+    fn default() -> Self {
+        ResumeSettings {
+            mode: "wait_for_reset".into(),
+            at_time: None,
+            retry_every_minutes: 5,
+            max_wait_hours: 12,
         }
     }
 }

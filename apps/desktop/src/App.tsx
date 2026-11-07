@@ -7,6 +7,9 @@ import type {
   ApprovalInfo,
   ApprovalListResult,
   PermissionDecision,
+  ResumePolicy,
+  SessionControlParams,
+  SessionControlResult,
   SessionCreateResult,
   SessionEventParams,
   LocalModelListResult,
@@ -32,7 +35,8 @@ import { PetPanel } from "./panels/PetPanel";
 import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
-import { applyEvent, markAnswered, newSession, type SessionState } from "./sessions";
+import { normalizeProject, useProjectIcons } from "./projectIcons";
+import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
 import { applySettings, loadSettings, saveSettings, type DisplaySettings } from "./settings";
 import { SettingsMenu } from "./SettingsMenu";
 
@@ -42,7 +46,9 @@ export function App() {
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
   const [sessions, setSessions] = useState<Record<string, SessionState>>({});
   const [extraProjects, setExtraProjects] = useState<string[]>([]);
+  // The project new sessions start in, and whether the Sessions list shows only its sessions.
   const [project, setProject] = useState<string | null>(null);
+  const [projectView, setProjectView] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [settings, setSettings] = useState<DisplaySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
@@ -53,6 +59,7 @@ export function App() {
   const [pets, setPets] = useState<PetListResult | null>(null);
   const [petState, setPetState] = useState<PetStateInfo | null>(null);
   const modBus = useMemo(() => new ModBus(), []);
+  const icons = useProjectIcons();
 
   useEffect(() => applySettings(settings), [settings]);
 
@@ -86,7 +93,9 @@ export function App() {
       let pending: SessionEventParams[] | null = [];
       const apply = ({ session_id, agent_id, event }: SessionEventParams) =>
         setSessions((all) =>
-          all[session_id] ? { ...all, [session_id]: applyEvent(all[session_id], { agent_id, event }) } : all,
+          all[session_id]
+            ? { ...all, [session_id]: { ...applyEvent(all[session_id], { agent_id, event }), updatedAt: Date.now() } }
+            : all,
         );
       client.onNotification((notification) => {
         if (notification.method === "pet.state") {
@@ -102,12 +111,22 @@ export function App() {
           const summary = notification.params as SessionSummary;
           // Give a session this window is creating time to register before following it.
           window.setTimeout(async () => {
-            if (known.current.has(summary.session_id) || attempt !== generation.current) return;
+            if (attempt !== generation.current) return;
+            if (known.current.has(summary.session_id)) {
+              // One this window created: take the daemon's fuller summary (title, resume policy).
+              setSessions((all) =>
+                all[summary.session_id] ? { ...all, [summary.session_id]: { ...all[summary.session_id], summary } } : all,
+              );
+              return;
+            }
             known.current.add(summary.session_id);
             const { history } = await client.call<SessionSubscribeResult>("session.subscribe", {
               session_id: summary.session_id,
             });
-            setSessions((all) => ({ ...all, [summary.session_id]: history.reduce(applyEvent, newSession(summary)) }));
+            setSessions((all) => ({
+              ...all,
+              [summary.session_id]: history.reduce(applyEvent, newSession(summary, Date.now())),
+            }));
           }, 500);
           return;
         }
@@ -122,11 +141,12 @@ export function App() {
       });
       const { sessions: running } = await client.call<SessionListResult>("session.list");
       const restored = await Promise.all(
-        running.map(async (summary) => {
+        running.map(async (summary, index) => {
           const { history } = await client.call<SessionSubscribeResult>("session.subscribe", {
             session_id: summary.session_id,
           });
-          return [summary.session_id, history.reduce(applyEvent, newSession(summary))] as const;
+          // Restored sessions keep the daemon's order (later ones first) until they change here.
+          return [summary.session_id, history.reduce(applyEvent, newSession(summary, index))] as const;
         }),
       );
       known.current = new Set(restored.map(([id]) => id));
@@ -141,7 +161,10 @@ export function App() {
       const queued = pending;
       pending = null;
       queued.forEach(apply);
-      setProject((selected) => selected ?? restored[0]?.[1].summary.project_dir ?? null);
+      setProject((selected) => {
+        const first = restored[0]?.[1].summary.project_dir;
+        return selected ?? (first ? normalizeProject(first) : null);
+      });
       setStatus({ kind: "connected", client });
     } catch (error) {
       if (attempt === generation.current) {
@@ -160,10 +183,13 @@ export function App() {
   }, [connect]);
 
   const projects = useMemo(
-    () => [...new Set([...Object.values(sessions).map((s) => s.summary.project_dir), ...extraProjects])].sort(),
+    () =>
+      [
+        ...new Set([...Object.values(sessions).map((s) => s.summary.project_dir), ...extraProjects].map(normalizeProject)),
+      ].sort(),
     [sessions, extraProjects],
   );
-  const projectSessions = Object.values(sessions).filter((s) => s.summary.project_dir === project);
+  const allSessions = useMemo(() => Object.values(sessions), [sessions]);
   const session = selected ? (sessions[selected] ?? null) : null;
   const client = status.kind === "connected" ? status.client : null;
 
@@ -183,8 +209,13 @@ export function App() {
   const openFolder = async () => {
     const folder = await pickFolder();
     if (!folder) return;
-    setExtraProjects((all) => [...all, folder]);
-    setProject(folder);
+    setExtraProjects((all) => [...all, normalizeProject(folder)]);
+    showProject(normalizeProject(folder));
+  };
+
+  const showProject = (next: string) => {
+    setProject(normalizeProject(next));
+    setProjectView(true);
   };
 
   const startSession = async () => {
@@ -192,13 +223,18 @@ export function App() {
     try {
       const created = await client.call<SessionCreateResult>("session.create", { project_dir: project });
       known.current.add(created.session_id);
-      const summary = {
+      // The rest of the summary arrives with the daemon's session.created notice.
+      const summary: SessionSummary = {
         session_id: created.session_id,
         project_dir: project,
         model: created.model,
         isolation: created.isolation,
+        title: "",
+        status: "idle",
+        status_detail: null,
+        resume_policy: DEFAULT_RESUME_POLICY,
       };
-      setSessions((all) => ({ ...all, [created.session_id]: newSession(summary) }));
+      setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
       setSelected(created.session_id);
     } catch (error) {
       report(error);
@@ -213,6 +249,43 @@ export function App() {
     if (!client || !selected) return;
     setSessions((all) => ({ ...all, [selected]: markAnswered(all[selected], requestId) }));
     client.call("session.respond", { session_id: selected, request_id: requestId, decision }).catch(report);
+  };
+
+  const control = (sessionId: string, params: Partial<Omit<SessionControlParams, "session_id">>) => {
+    if (!client) return Promise.reject(new Error("Not connected to imperiumd."));
+    const full: SessionControlParams = {
+      session_id: sessionId,
+      action: "set_resume_policy",
+      resume_policy: null,
+      repo: null,
+      pull_request: null,
+      ...params,
+    };
+    return client.call<SessionControlResult>("session.control", full);
+  };
+
+  const setResumePolicy = async (policy: ResumePolicy) => {
+    if (!selected) return;
+    const id = selected;
+    try {
+      await control(id, { action: "set_resume_policy", resume_policy: policy });
+      setSessions((all) =>
+        all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, resume_policy: policy } } } : all,
+      );
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  const resumeNow = () => {
+    if (selected) control(selected, { action: "resume_now" }).catch(report);
+  };
+
+  const selectSession = (sessionId: string) => {
+    setSelected(sessionId);
+    // New sessions start in the project the user is working in.
+    const dir = sessions[sessionId]?.summary.project_dir;
+    if (dir) setProject(normalizeProject(dir));
   };
 
   const updateSettings = (next: DisplaySettings) => {
@@ -256,8 +329,9 @@ export function App() {
                       <ProjectsPanel
                         projects={projects}
                         selected={project}
+                        icons={icons}
                         onSelect={(next) => {
-                          setProject(next);
+                          showProject(next);
                           setSelected(null);
                         }}
                       />
@@ -267,11 +341,25 @@ export function App() {
                     id: "sessions",
                     title: "Sessions",
                     actions: (
-                      <button onClick={startSession} disabled={!project || !client}>
+                      <button
+                        onClick={startSession}
+                        disabled={!project || !client}
+                        title={project ? `New session in ${project}` : "Select a project first"}
+                      >
                         New session
                       </button>
                     ),
-                    body: <SessionsPanel sessions={projectSessions} selected={selected} onSelect={setSelected} />,
+                    body: (
+                      <SessionsPanel
+                        sessions={allSessions}
+                        project={projectView ? project : null}
+                        selected={selected}
+                        icons={icons}
+                        onSelect={selectSession}
+                        onShowProject={showProject}
+                        onShowAll={() => setProjectView(false)}
+                      />
+                    ),
                   },
                   {
                     id: "pet",
@@ -301,7 +389,16 @@ export function App() {
                 panel: {
                   id: "session",
                   title: "Session",
-                  body: <SessionPanel session={session} onSend={send} onRespond={respond} />,
+                  body: (
+                    <SessionPanel
+                      session={session}
+                      icons={icons}
+                      onSend={send}
+                      onRespond={respond}
+                      onSetResumePolicy={setResumePolicy}
+                      onResumeNow={resumeNow}
+                    />
+                  ),
                 },
               },
               {

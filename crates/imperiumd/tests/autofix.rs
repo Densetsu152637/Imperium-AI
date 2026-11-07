@@ -39,6 +39,10 @@ impl GitHub for FakeGitHub {
     fn failure_log<'a>(&'a self, _repo: &'a str, _url: &'a str) -> GhFuture<'a, String> {
         Box::pin(async { Ok("lint: greeting.txt must end with a newline".to_string()) })
     }
+
+    fn pr_state<'a>(&'a self, _repo: &'a str, _number: u64) -> GhFuture<'a, String> {
+        Box::pin(async { Ok("OPEN".to_string()) })
+    }
 }
 
 /// Writes the fix with write_file, then summarises.
