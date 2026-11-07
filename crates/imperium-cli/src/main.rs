@@ -1,6 +1,7 @@
 mod chat;
 mod local;
 mod memory;
+mod schedule;
 mod workflow;
 
 use std::io::{IsTerminal, Read};
@@ -58,6 +59,11 @@ enum Command {
         #[arg(long, global = true)]
         project: Option<PathBuf>,
     },
+    /// Scheduled tasks the daemon runs.
+    Schedule {
+        #[command(subcommand)]
+        command: ScheduleCommand,
+    },
     /// Workflow packs and context retrieval.
     Workflow {
         #[command(subcommand)]
@@ -91,6 +97,14 @@ enum MemoryCommand {
         #[arg(long)]
         scope: Option<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ScheduleCommand {
+    /// List schedules with their next and last runs.
+    List,
+    /// Run a schedule now.
+    Run { id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -171,6 +185,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
+        Command::Schedule {
+            command: ScheduleCommand::List,
+        } => schedule::list(),
+        Command::Schedule {
+            command: ScheduleCommand::Run { id },
+        } => schedule::run(id),
         Command::Workflow {
             command:
                 WorkflowCommand::Resolve {

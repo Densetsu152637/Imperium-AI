@@ -7,9 +7,11 @@ use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, code
 use imperium_protocol::methods::{
     Accepted, Handshake, HandshakeParams, HandshakeResult, LocalModelList, LocalModelListParams,
     Method, ModList, ModListParams, ModelList, ModelListParams, Peer, Ping, PingParams, PingResult,
-    SessionCreate, SessionCreateParams, SessionCreateResult, SessionList, SessionListParams,
-    SessionListResult, SessionRespond, SessionRespondParams, SessionSend, SessionSendParams,
-    SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult, SessionSummary,
+    ScheduleList, ScheduleListParams, ScheduleListResult, ScheduleRun, ScheduleRunParams,
+    ScheduleRunResult, SessionCreate, SessionCreateParams, SessionCreateResult, SessionList,
+    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSend,
+    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult,
+    SessionSummary,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -96,6 +98,26 @@ impl Connection {
             ModelList::NAME => call::<ModelList>(request.params, |_: ModelListParams| {
                 Ok(self.state.model_table())
             }),
+            ScheduleList::NAME => call::<ScheduleList>(request.params, |_: ScheduleListParams| {
+                Ok(self
+                    .state
+                    .scheduler()
+                    .map(|scheduler| scheduler.list())
+                    .unwrap_or(ScheduleListResult {
+                        schedules: Vec::new(),
+                    }))
+            }),
+            ScheduleRun::NAME => {
+                call::<ScheduleRun>(request.params, |params: ScheduleRunParams| {
+                    let scheduler = self.state.scheduler().ok_or_else(|| {
+                        ErrorObject::new(codes::INTERNAL_ERROR, "the scheduler is not running")
+                    })?;
+                    let started = scheduler
+                        .run_now(&self.state, &params.id)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+                    Ok(ScheduleRunResult { started })
+                })
+            }
             ModList::NAME => call::<ModList>(request.params, |_: ModListParams| {
                 Ok(crate::mods::list(&self.state.mods_dir()))
             }),

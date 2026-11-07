@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use imperium_config::{Paths, Settings};
@@ -10,6 +10,7 @@ use imperium_core::{
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_memory::Store;
+use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
 use imperium_protocol::session::AgentEvent;
 use imperium_tools::Workspace;
@@ -17,6 +18,7 @@ use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
 
 use crate::local::LocalRuntime;
+use crate::scheduler::Scheduler;
 
 /// State shared by every connection: configuration and the running sessions.
 #[derive(Debug)]
@@ -26,6 +28,9 @@ pub struct DaemonState {
     settings: Settings,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     local: Option<LocalRuntime>,
+    /// Notifications for every connected client, such as schedule runs.
+    announcements: broadcast::Sender<Notification>,
+    scheduler: OnceLock<Arc<Scheduler>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -48,7 +53,37 @@ impl DaemonState {
             settings,
             sessions: Mutex::new(HashMap::new()),
             local,
+            announcements: broadcast::channel(256).0,
+            scheduler: OnceLock::new(),
         })
+    }
+
+    /// Starts running `[[schedules]]`. Call once, inside the Tokio runtime.
+    pub fn start_scheduler(self: &Arc<Self>) -> Arc<Scheduler> {
+        Arc::clone(self.scheduler.get_or_init(|| Scheduler::start(self)))
+    }
+
+    pub fn scheduler(&self) -> Option<&Arc<Scheduler>> {
+        self.scheduler.get()
+    }
+
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        self.paths.data_dir()
+    }
+
+    /// Sends a notification to every connected client.
+    pub fn announce(&self, method: &str, params: impl serde::Serialize) {
+        let params = serde_json::to_value(params).expect("notifications serialise to JSON");
+        // No receivers just means no client is connected.
+        let _ = self.announcements.send(Notification::new(method, params));
+    }
+
+    pub fn announcements(&self) -> broadcast::Receiver<Notification> {
+        self.announcements.subscribe()
     }
 
     /// Where UI mods are installed.

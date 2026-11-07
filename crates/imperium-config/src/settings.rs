@@ -54,6 +54,9 @@ pub struct Settings {
     pub memory: MemorySettings,
     #[serde(default)]
     pub workflow: WorkflowSettings,
+    /// `[[schedules]]`: tasks the daemon runs on a timetable (see docs/14).
+    #[serde(default)]
+    pub schedules: Vec<ScheduleSettings>,
     /// `[[hooks]]`: commands run at points in a session (see docs/06-extensibility.md#hooks).
     #[serde(default)]
     pub hooks: Vec<HookSettings>,
@@ -99,6 +102,29 @@ impl Settings {
                 ));
             }
         }
+        let mut schedule_ids = std::collections::BTreeSet::new();
+        for schedule in &self.schedules {
+            if !schedule_ids.insert(schedule.id.as_str()) {
+                return Err(format!("schedules: id {:?} is used twice", schedule.id));
+            }
+            let triggers = [
+                &schedule.trigger.cron,
+                &schedule.trigger.every,
+                &schedule.trigger.at,
+            ];
+            if triggers.iter().filter(|t| t.is_some()).count() != 1 {
+                return Err(format!(
+                    "schedules.{}: set exactly one of trigger.cron, trigger.every, or trigger.at",
+                    schedule.id
+                ));
+            }
+            if schedule.action.prompt.is_some() == schedule.action.command.is_some() {
+                return Err(format!(
+                    "schedules.{}: set exactly one of action.prompt or action.command",
+                    schedule.id
+                ));
+            }
+        }
         for (name, server) in &self.mcp.servers {
             if server.command.is_some() == server.url.is_some() {
                 return Err(format!(
@@ -108,6 +134,52 @@ impl Settings {
         }
         Ok(())
     }
+}
+
+/// One `[[schedules]]` entry.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ScheduleSettings {
+    pub id: String,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+    pub trigger: TriggerSettings,
+    pub action: ActionSettings,
+    /// `run_once_on_wake` (default) or `skip`.
+    #[serde(default)]
+    pub missed: Option<String>,
+    /// `skip` (default): do not start a run while the previous one is going; `allow`.
+    #[serde(default)]
+    pub overlap: Option<String>,
+    /// `os` shows a system notification when a run finishes.
+    #[serde(default)]
+    pub notify: Vec<String>,
+}
+
+/// Exactly one of `cron` (five fields, local time), `every` (`30m`), or `at` (a local time).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct TriggerSettings {
+    #[serde(default)]
+    pub cron: Option<String>,
+    #[serde(default)]
+    pub every: Option<String>,
+    #[serde(default)]
+    pub at: Option<String>,
+}
+
+/// A prompt for a new session in `project`, or a shell command run there.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ActionSettings {
+    pub project: PathBuf,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Model for prompt runs, as `<endpoint>:<model>`; defaults to `models.default`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Longest a run may take; default one hour.
+    #[serde(default)]
+    pub timeout_s: Option<u64>,
 }
 
 /// Workflow packs and context retrieval (see docs/18-workflow-contract.md).

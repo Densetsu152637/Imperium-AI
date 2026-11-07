@@ -62,6 +62,7 @@ async fn run() -> anyhow::Result<()> {
     let (stop, stopped) = oneshot::channel();
     let local = imperiumd::LocalRuntime::start(&paths, &settings);
     let daemon = DaemonState::new(paths.clone(), settings, local);
+    daemon.start_scheduler();
     let server = tokio::spawn(imperiumd::serve(listener, token, daemon, async {
         stopped.await.ok();
     }));
