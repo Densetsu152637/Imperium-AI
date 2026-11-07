@@ -69,6 +69,8 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `web.search` | `none` | `searxng` (with `web.searxng_url`), `brave`, or `tavily` (with `web.api_key = { secret = "<name>" }`) |
 | `web.allow_domains` | none | Domains `web_fetch` reads without asking (subdomains included) |
 | `web.browser`, `web.browser_path`, `web.headless` | `true`, found automatically, `true` | Browser tools over CDP (Chrome, Chromium, or Edge) with their own profile |
+| `media.image` | none | `backend = "openai"` with `endpoint` and `model`, or `backend = "comfyui"` with `comfyui_url` and `workflow`; see [media](09-media-generation.md) |
+| `media.speech`, `media.transcription` | none | `endpoint` (an `[endpoints]` entry) and `model`; speech also takes `voice` |
 | `pets.enabled`, `pets.pet` | `true`, first found | The pet and which one ([16](16-pets.md)) |
 | `pets.folders`, `sleep_after_minutes`, `fidget` | none, `5`, `true` | More folders of Pixel Pets v3 packages; when it sleeps; idle fidgets |
 | `isolation.tier` | `policy` | Where agents' commands run: `policy` (tier 0), `os` (bubblewrap or Seatbelt), or `container` ([tiers](05-tools-and-isolation.md#isolation-tiers)) |

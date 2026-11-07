@@ -2207,10 +2207,12 @@ name = "imperium-core"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "getrandom 0.4.3",
  "imperium-config",
  "imperium-extensions",
  "imperium-mcp",
+ "imperium-media",
  "imperium-memory",
  "imperium-models",
  "imperium-protocol",
@@ -2301,6 +2303,21 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "imperium-media"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "imperium-models",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -2403,6 +2420,7 @@ dependencies = [
  "imperium-github",
  "imperium-local",
  "imperium-mcp",
+ "imperium-media",
  "imperium-memory",
  "imperium-pets",
  "imperium-protocol",
@@ -2859,6 +2877,16 @@ name = "mime"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5848f5a9e8117cf94f2f90faac24a87ff81600ff8628c1e3deaab572e76bfa1"
+
+[[package]]
+name = "mime_guess"
+version = "2.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
+dependencies = [
+ "mime",
+ "unicase",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -3896,6 +3924,7 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -5684,6 +5713,12 @@ checksum = "96bd2f2237fe450fcd0a1d2f5f4e91711124f7857ba2e964247776ebeeb7b0c4"
 dependencies = [
  "unic-common",
 ]
+
+[[package]]
+name = "unicase"
+version = "2.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
 
 [[package]]
 name = "unicode-ident"

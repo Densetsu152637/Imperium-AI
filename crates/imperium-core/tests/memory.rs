@@ -91,6 +91,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         pre_approved: Vec::new(),
         launcher: None,
         instructions: None,
+        media: None,
         web: None,
         max_steps: 5,
         journal_path: data.join(format!("{id}.jsonl")),

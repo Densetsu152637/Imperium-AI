@@ -135,6 +135,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         pre_approved: Vec::new(),
         launcher: None,
         instructions: None,
+        media: None,
         web: None,
         max_steps: 5,
         journal_path: dir.path().join("journal.jsonl"),

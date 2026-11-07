@@ -55,6 +55,8 @@ pub struct SessionConfig {
     pub instructions: Option<String>,
     /// Web tools, when enabled.
     pub web: Option<WebTools>,
+    /// Media tools, when any media backend is configured.
+    pub media: Option<Arc<imperium_media::Media>>,
     pub max_steps: u32,
     pub journal_path: PathBuf,
 }
@@ -199,6 +201,7 @@ pub(crate) struct Shared {
     pub launcher: Option<Arc<dyn SessionLauncher>>,
     pub instructions: Option<String>,
     pub web: Option<WebTools>,
+    pub media: Option<Arc<imperium_media::Media>>,
     next_task: AtomicU32,
 }
 
@@ -239,6 +242,7 @@ async fn run(
         launcher: config.launcher,
         instructions: config.instructions,
         web: config.web,
+        media: config.media,
         next_task: AtomicU32::new(0),
     });
     shared

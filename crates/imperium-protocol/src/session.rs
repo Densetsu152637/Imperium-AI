@@ -115,6 +115,13 @@ pub enum SessionEvent {
         title: String,
         screenshot: String,
     },
+    /// An agent generated a media file (relative to the project), with what produced it.
+    MediaCreated {
+        path: String,
+        #[ts(type = "\"image\" | \"speech\"")]
+        kind: String,
+        prompt: String,
+    },
 }
 
 /// An instruction file or section in a context manifest.

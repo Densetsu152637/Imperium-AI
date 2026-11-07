@@ -127,6 +127,7 @@ async fn agents_research_and_cite_sources() {
         pre_approved: Vec::new(),
         launcher: None,
         instructions: None,
+        media: None,
         web: Some(WebTools {
             web: Web::new(Some(SearchProvider::Searxng { url: searxng })),
             allow_domains: vec!["127.0.0.1".into()],
@@ -252,6 +253,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
         pre_approved: Vec::new(),
         launcher: None,
         instructions: None,
+        media: None,
         web: Some(WebTools {
             web: Web::new(None),
             allow_domains: vec!["127.0.0.1".into()],

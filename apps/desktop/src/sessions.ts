@@ -96,6 +96,9 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
     case "notice":
       next.push({ kind: "notice", message: event.message });
       break;
+    case "media_created":
+      next.push({ kind: "notice", message: `Created ${event.kind} ${event.path}` });
+      break;
     case "memory_used":
       next.push({ kind: "notice", message: `Recalled ${event.names.join(", ")}` });
       break;
