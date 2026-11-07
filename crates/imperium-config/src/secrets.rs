@@ -35,6 +35,14 @@ impl FromStr for SecretName {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for SecretName {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 impl fmt::Display for SecretName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -60,6 +68,15 @@ pub fn store_secret(name: &SecretName, value: &str) -> Result<(), SecretError> {
     }
     keyring::Entry::new(KEYCHAIN_SERVICE, name.as_str())?.set_password(value)?;
     Ok(())
+}
+
+/// Reads a secret. Returns `None` when no secret has that name.
+pub fn load_secret(name: &SecretName) -> Result<Option<String>, SecretError> {
+    match keyring::Entry::new(KEYCHAIN_SERVICE, name.as_str())?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Removes a secret. Returns whether one existed.

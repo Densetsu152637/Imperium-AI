@@ -12,5 +12,7 @@ mod settings;
 
 pub use layers::{Config, ConfigError, Explained, Layer, Source, load};
 pub use paths::{Paths, PathsError};
-pub use secrets::{SecretError, SecretName, delete_secret, store_secret};
-pub use settings::{DaemonSettings, Settings};
+pub use secrets::{SecretError, SecretName, delete_secret, load_secret, store_secret};
+pub use settings::{
+    AgentSettings, DaemonSettings, EndpointSettings, ModelSettings, SecretRef, Settings,
+};
