@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -567,9 +567,13 @@ impl DaemonState {
         if !workflow.enabled {
             return None;
         }
+        let builtin = (workflow.packs.is_empty() && workflow.default_pack)
+            .then(bundled_pack)
+            .flatten();
         let packs = workflow
             .packs
             .iter()
+            .chain(builtin.as_ref())
             .filter_map(|root| match Pack::load(root) {
                 Ok(pack) => Some(pack),
                 Err(error) => {
@@ -680,5 +684,32 @@ impl DaemonState {
             .expect("session map lock is never poisoned by a panic while held")
             .get(id)
             .cloned()
+    }
+}
+
+/// The bundled default workflow pack: `policy/agent-custom-workflow` beside the daemon (or one
+/// level up, as installers lay it out), or in the source tree for development builds.
+fn bundled_pack() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let beside = exe.parent()?;
+    [
+        beside.join("policy/agent-custom-workflow"),
+        beside.join("../policy/agent-custom-workflow"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../policy/agent-custom-workflow"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.join("AGENTS.md").is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bundled_workflow_pack_is_found_and_loads() {
+        let pack = bundled_pack().expect("the source tree has policy/agent-custom-workflow");
+        let loaded = Pack::load(&pack).unwrap();
+        assert!(loaded.roles.contains_key("root") && loaded.roles.contains_key("leaf"));
+        assert!(!loaded.candidates.is_empty());
     }
 }

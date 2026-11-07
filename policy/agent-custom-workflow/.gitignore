@@ -1,0 +1,3 @@
+.claude/worktrees/
+local-paths/*
+!local-paths/README.md

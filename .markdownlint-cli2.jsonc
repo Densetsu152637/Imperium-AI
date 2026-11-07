@@ -4,5 +4,5 @@
     "MD033": false,
     "MD060": false
   },
-  "ignores": ["**/node_modules/**", "target/**"]
+  "ignores": ["**/node_modules/**", "target/**", "policy/**"]
 }
