@@ -15,7 +15,7 @@ CLI/TUI, and phone — shows the same pet in the same state.
   their meaning, so they work without redrawing.
 - **Existing pet folders** (`~/.claude/pets`, `CLAUDE_PETS_DIR`) can be added as extra pet
   folders, so pets made for the Claude Code plugin work unchanged.
-- Pixel Pets is Apache-2.0; bundled pets and tools ship with its `LICENSE` and `NOTICE`. Each
+- Pixel Pets is MIT-licensed; bundled pets and tools ship with its `LICENSE` and `NOTICE`. Each
   pet keeps its own licence from `pet.json`.
 
 ## Engine (`imperium-pets`)
