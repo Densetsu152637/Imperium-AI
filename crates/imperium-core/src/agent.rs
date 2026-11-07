@@ -122,7 +122,12 @@ impl Agent {
         first_text: Option<Instant>,
     ) -> SessionEvent {
         let duration = started.elapsed();
-        let generating = first_text.map_or(duration, |first| first.elapsed());
+        // Generation speed after the first token, unless the endpoint delivered everything at
+        // once (a buffered response), where only the whole call's duration is meaningful.
+        let after_first = first_text.map(|first| first.elapsed());
+        let generating = after_first
+            .filter(|window| window.as_millis() >= 100)
+            .unwrap_or(duration);
         let tokens_per_sec = (usage.completion_tokens > 0 && !generating.is_zero())
             .then(|| usage.completion_tokens as f64 / generating.as_secs_f64());
         SessionEvent::ModelCallCompleted {

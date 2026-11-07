@@ -1,9 +1,9 @@
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
 
 use futures_util::{SinkExt, StreamExt};
 use imperium_protocol::PROTOCOL_VERSION;
-use imperium_protocol::discovery::DaemonEndpoint;
+pub use imperium_protocol::discovery::read_endpoint;
+use imperium_protocol::discovery::{DaemonEndpoint, EndpointError};
 use imperium_protocol::jsonrpc::{
     ErrorObject, JsonRpcVersion, Notification, Outcome, Request, RequestId, Response,
 };
@@ -15,34 +15,14 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    #[error("imperiumd is not running (no endpoint file at {})", .0.display())]
-    DaemonNotRunning(PathBuf),
-    #[error("could not read the endpoint file {}: {source}", path.display())]
-    Endpoint {
-        path: PathBuf,
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
+    #[error(transparent)]
+    Endpoint(#[from] EndpointError),
     #[error("could not connect to imperiumd: {0}")]
     Connect(Box<tungstenite::Error>),
     #[error("imperiumd returned error {}: {}", .0.code, .0.message)]
     Rpc(ErrorObject),
     #[error("protocol error: {0}")]
     Protocol(String),
-}
-
-/// Reads the endpoint file a running daemon writes on startup.
-pub fn read_endpoint(path: &Path) -> Result<DaemonEndpoint, ClientError> {
-    let bytes = std::fs::read(path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => ClientError::DaemonNotRunning(path.to_path_buf()),
-        _ => ClientError::Endpoint {
-            path: path.to_path_buf(),
-            source: Box::new(error),
-        },
-    })?;
-    serde_json::from_slice(&bytes).map_err(|error| ClientError::Endpoint {
-        path: path.to_path_buf(),
-        source: Box::new(error),
-    })
 }
 
 /// A handshaken connection to the daemon. Calls are sequential: one request, one reply.

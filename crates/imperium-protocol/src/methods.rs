@@ -116,7 +116,7 @@ pub struct SessionSubscribe;
 impl Method for SessionSubscribe {
     const NAME: &'static str = "session.subscribe";
     type Params = SessionSubscribeParams;
-    type Result = Accepted;
+    type Result = SessionSubscribeResult;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -141,6 +141,13 @@ pub struct SessionSummary {
 #[ts(export)]
 pub struct SessionSubscribeParams {
     pub session_id: String,
+}
+
+/// Every event the session has emitted so far; later ones arrive as notifications.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSubscribeResult {
+    pub history: Vec<crate::session::SessionEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

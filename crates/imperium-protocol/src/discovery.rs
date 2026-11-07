@@ -4,6 +4,8 @@
 //! `imperium_config::Paths::daemon_endpoint_file`) when it starts and removes it on shutdown.
 //! The file is readable only by the user who started the daemon.
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 use crate::ProtocolVersion;
@@ -28,6 +30,47 @@ impl std::fmt::Debug for DaemonEndpoint {
             .field("protocol", &self.protocol)
             .finish()
     }
+}
+
+/// Why a daemon endpoint could not be read.
+#[derive(Debug)]
+pub enum EndpointError {
+    /// No endpoint file: the daemon is not running.
+    NotRunning(PathBuf),
+    /// The file exists but could not be read or parsed.
+    Unreadable { path: PathBuf, reason: String },
+}
+
+impl std::fmt::Display for EndpointError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EndpointError::NotRunning(path) => write!(
+                f,
+                "imperiumd is not running (no endpoint file at {})",
+                path.display()
+            ),
+            EndpointError::Unreadable { path, reason } => write!(
+                f,
+                "could not read the endpoint file {}: {reason}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EndpointError {}
+
+/// Reads the endpoint file a running daemon writes on startup.
+pub fn read_endpoint(path: &Path) -> Result<DaemonEndpoint, EndpointError> {
+    let unreadable = |reason: String| EndpointError::Unreadable {
+        path: path.to_path_buf(),
+        reason,
+    };
+    let bytes = std::fs::read(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => EndpointError::NotRunning(path.to_path_buf()),
+        _ => unreadable(error.to_string()),
+    })?;
+    serde_json::from_slice(&bytes).map_err(|error| unreadable(error.to_string()))
 }
 
 #[cfg(test)]

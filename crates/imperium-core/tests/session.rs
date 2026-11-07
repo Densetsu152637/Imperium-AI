@@ -151,6 +151,9 @@ async fn an_approved_write_changes_the_file_and_the_turn_reports_cost() {
     );
     let journal = std::fs::read_to_string(dir.path().join(".journal/test.jsonl")).unwrap();
     assert_eq!(journal.lines().count(), 8);
+    let (history, _) = session.subscribe_with_history();
+    assert_eq!(history.len(), 8);
+    assert!(matches!(history[0], SessionEvent::TurnStarted { .. }));
     assert!(journal.contains(r#""type":"turn_completed""#));
 }
 

@@ -8,7 +8,8 @@ use imperium_protocol::methods::{
     Accepted, Handshake, HandshakeParams, HandshakeResult, Method, Peer, Ping, PingParams,
     PingResult, SessionCreate, SessionCreateParams, SessionCreateResult, SessionList,
     SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSend,
-    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSummary,
+    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult,
+    SessionSummary,
 };
 use imperium_protocol::session::SessionEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -108,12 +109,13 @@ impl Connection {
             }),
             SessionSubscribe::NAME => {
                 call::<SessionSubscribe>(request.params, |params: SessionSubscribeParams| {
-                    let session = self.session(&params.session_id)?;
+                    let (history, events) =
+                        self.session(&params.session_id)?.subscribe_with_history();
                     subscription = Some(Subscription {
                         session_id: params.session_id,
-                        events: session.subscribe(),
+                        events,
                     });
-                    Ok(Accepted {})
+                    Ok(SessionSubscribeResult { history })
                 })
             }
             SessionSend::NAME => {
