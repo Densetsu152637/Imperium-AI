@@ -115,6 +115,20 @@ pub enum SessionEvent {
         title: String,
         screenshot: String,
     },
+    /// A model call hit a usage or rate limit; the turn waits until `until_unix_ms` (or until
+    /// resumed early), following the session's resume policy.
+    Paused {
+        #[ts(type = "number")]
+        until_unix_ms: u64,
+        reason: String,
+    },
+    /// The wait ended and the turn continues.
+    Resumed {},
+    /// The session's status changed. `detail` names what it watches, such as `owner/repo#12`.
+    StatusChanged {
+        status: SessionStatus,
+        detail: Option<String>,
+    },
     /// An agent generated a media file (relative to the project), with what produced it.
     MediaCreated {
         path: String,
@@ -212,4 +226,39 @@ mod tests {
             json!("allow_for_session")
         );
     }
+}
+
+/// What a session is doing, as clients show it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SessionStatus {
+    /// Nothing running; ready for a message.
+    Idle,
+    /// A turn is running.
+    Working,
+    /// Waiting on the user: a permission request, or a turn that failed.
+    NeedsAttention,
+    /// Waiting for a usage limit to reset.
+    Paused,
+    /// Idle, watching a pull request's checks so failures are fixed reactively.
+    Watching,
+    /// Its pull request merged.
+    Merged,
+}
+
+/// How a session waits when a provider says usage has run out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ResumePolicy {
+    /// `wait_for_reset` (the provider's reset time, else retry every interval), `at_time`
+    /// (wait for a local time such as 03:00, then retry every interval), `retry_every`, or
+    /// `stop` (fail the turn).
+    #[ts(type = "\"wait_for_reset\" | \"at_time\" | \"retry_every\" | \"stop\"")]
+    pub mode: String,
+    /// `HH:MM`, local time, for `at_time`.
+    pub at_time: Option<String>,
+    pub retry_every_minutes: u32,
+    /// Give up (fail the turn) after waiting this long in one turn.
+    pub max_wait_hours: u32,
 }

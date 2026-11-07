@@ -11,6 +11,7 @@ mod launcher;
 mod local;
 mod model;
 mod session;
+mod status;
 
 pub use launcher::{LaunchFuture, SessionLauncher};
 pub use local::{AcquireFuture, Availability, LocalLease, LocalModels};
@@ -18,3 +19,15 @@ pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_mo
 pub use session::{
     BrowserSetup, Session, SessionClosed, SessionConfig, SessionMemory, WebTools, new_session_id,
 };
+pub use status::next_attempt;
+
+/// The resume policy used when nothing is configured: wait for the provider's reset, retrying
+/// every five minutes, for up to twelve hours.
+pub fn default_resume_policy() -> imperium_protocol::session::ResumePolicy {
+    imperium_protocol::session::ResumePolicy {
+        mode: "wait_for_reset".into(),
+        at_time: None,
+        retry_every_minutes: 5,
+        max_wait_hours: 12,
+    }
+}

@@ -31,6 +31,8 @@ pub trait GitHub: Send + Sync + fmt::Debug {
     fn failing_prs<'a>(&'a self, repo: &'a str) -> GhFuture<'a, Vec<FailingPr>>;
     /// The failed steps' log for a check, from its details URL.
     fn failure_log<'a>(&'a self, repo: &'a str, details_url: &'a str) -> GhFuture<'a, String>;
+    /// A pull request's state: `OPEN`, `MERGED`, or `CLOSED`.
+    fn pr_state<'a>(&'a self, repo: &'a str, number: u64) -> GhFuture<'a, String>;
 }
 
 /// Uses the `gh` CLI and whatever account it is signed in to.
@@ -54,6 +56,15 @@ async fn gh(args: &[&str]) -> Result<String, String> {
 }
 
 impl GitHub for GhCli {
+    fn pr_state<'a>(&'a self, repo: &'a str, number: u64) -> GhFuture<'a, String> {
+        Box::pin(async move {
+            let number = number.to_string();
+            let json = gh(&["pr", "view", &number, "--repo", repo, "--json", "state"]).await?;
+            let value: Value = serde_json::from_str(&json).map_err(|error| error.to_string())?;
+            Ok(value["state"].as_str().unwrap_or("OPEN").to_string())
+        })
+    }
+
     fn failing_prs<'a>(&'a self, repo: &'a str) -> GhFuture<'a, Vec<FailingPr>> {
         Box::pin(async move {
             let json = gh(&[

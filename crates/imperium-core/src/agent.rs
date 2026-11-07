@@ -219,20 +219,47 @@ impl Agent {
                 messages: &self.messages,
                 tools: &tools,
             };
-            let started = Instant::now();
+            let mut started = Instant::now();
             let mut first_text = None;
-            let emitter = &self.shared.emitter;
-            let id = &self.id;
-            let result = stream_chat(&self.shared.http, &endpoint, request, |text| {
-                first_text.get_or_insert_with(Instant::now);
-                emitter.emit(
-                    id,
-                    SessionEvent::TextDelta {
-                        text: text.to_string(),
-                    },
-                );
-            })
-            .await;
+            let mut waits = 0;
+            let mut waited = std::time::Duration::ZERO;
+            let result = loop {
+                let emitter = &self.shared.emitter;
+                let id = &self.id;
+                let result = stream_chat(&self.shared.http, &endpoint, request, |text| {
+                    first_text.get_or_insert_with(Instant::now);
+                    emitter.emit(
+                        id,
+                        SessionEvent::TextDelta {
+                            text: text.to_string(),
+                        },
+                    );
+                })
+                .await;
+                // Usage ran out: wait as the session's resume policy says, then try again.
+                let Err(error) = &result else { break result };
+                if !error.is_usage_limit() {
+                    break result;
+                }
+                let now = chrono::Local::now();
+                let policy = self.shared.controls.policy();
+                let Some(until) =
+                    crate::next_attempt(&policy, error.retry_after_s(), waits, waited, now)
+                else {
+                    break result;
+                };
+                self.emit(SessionEvent::Paused {
+                    until_unix_ms: u64::try_from(until.timestamp_millis()).unwrap_or(0),
+                    reason: error.to_string(),
+                });
+                let pause = Instant::now();
+                self.shared.controls.pause_until(until).await;
+                waited += pause.elapsed();
+                waits += 1;
+                self.emit(SessionEvent::Resumed {});
+                started = Instant::now();
+                first_text = None;
+            };
             let completion = match result {
                 Ok(completion) => completion,
                 Err(error) => {

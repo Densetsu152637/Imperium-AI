@@ -862,3 +862,289 @@ button.sort {
   image-rendering: pixelated;
   cursor: pointer;
 }
+
+/* Project icons: a glyph on a coloured tile, and the picker that changes it */
+.project-icon {
+  --tile: calc(1.75rem * var(--space-scale, 1));
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--tile);
+  height: var(--tile);
+  border-radius: calc(var(--radius) + 1px);
+  color: #fff;
+}
+
+.project-icon.small {
+  --tile: 1.25rem;
+  border-radius: var(--radius);
+}
+
+.project-icon svg {
+  width: 62%;
+  height: 62%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* A list row with an icon button beside the main button. */
+.list .row {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--space) * 0.5);
+  min-width: 0;
+}
+
+.list .row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.list .icon-button {
+  width: auto;
+  flex: none;
+  padding: 0.15rem;
+  border-color: transparent;
+  background: transparent;
+}
+
+.list .icon-button[aria-expanded="true"] {
+  border-color: var(--accent);
+}
+
+.icon-picker {
+  margin: calc(var(--space) * 0.25) 0 calc(var(--space) * 0.5);
+  padding: var(--space);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.icon-grid,
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(2.1rem, 1fr));
+  gap: calc(var(--space) * 0.5);
+}
+
+.icon-grid button,
+.swatch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.2rem;
+  background: transparent;
+  border: 2px solid transparent;
+}
+
+.icon-grid button[aria-pressed="true"],
+.swatch[aria-pressed="true"] {
+  border-color: var(--text);
+}
+
+.swatch {
+  aspect-ratio: 1;
+  min-height: 1.6rem;
+  border-radius: 999px;
+}
+
+.swatch[aria-pressed="true"]::after {
+  content: "✓";
+  color: #fff;
+  font-size: 0.8rem;
+}
+
+.icon-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(var(--space) * 0.5);
+}
+
+/* The picker sits inside a list, whose borderless full-width row buttons it must not inherit. */
+.list .icon-picker-actions button {
+  width: auto;
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+/* Sessions list: global, or one project's with a way back */
+.sessions-scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(var(--space) * 0.5) var(--space);
+  margin-bottom: var(--space);
+  padding-bottom: calc(var(--space) * 0.5);
+  border-bottom: 1px solid var(--border);
+}
+
+.sessions-scope .back {
+  font-size: 0.85rem;
+}
+
+.scope-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.scope-name > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list .row-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.list .row-meta .badge {
+  flex: none;
+}
+
+/* Session status: a mark and words, with colour as a third cue */
+.badge.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-mark {
+  font-size: 0.7rem;
+}
+
+.badge.status.idle {
+  color: var(--muted);
+}
+
+.badge.status.working {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.badge.status.needs_attention {
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.badge.status.paused {
+  border-style: dashed;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.badge.status.watching {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.badge.status.merged {
+  border-color: var(--ok);
+  background: var(--ok);
+  color: var(--surface);
+}
+
+/* Session header: icon, title, status, and the usage-limit controls */
+.session-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(var(--space) * 0.5) var(--space);
+}
+
+.session-title {
+  flex: 1 1 12rem;
+  min-width: 0;
+  margin: 0;
+  font-size: 1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resume-now {
+  border-color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.usage-limits {
+  font-size: 0.8rem;
+}
+
+.usage-limits summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.usage-limits form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(var(--space) * 0.5) var(--space);
+  margin-top: calc(var(--space) * 0.5);
+  padding: calc(var(--space) * 0.75) var(--space);
+  background: var(--surface-2);
+  border-radius: var(--radius);
+}
+
+.usage-limits label {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.usage-limits select,
+.usage-limits input {
+  font: inherit;
+  color: inherit;
+  padding: 0.15rem 0.35rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.usage-limits input[type="number"] {
+  width: 4.5rem;
+}
+
+.usage-actions {
+  display: inline-flex;
+  gap: calc(var(--space) * 0.5);
+  margin-left: auto;
+}
+
+/* Narrow panels: session rows drop the project/model line, the limits stack. */
+@container (max-width: 16rem) {
+  .list .row-meta .detail {
+    display: none;
+  }
+}
+
+@container (max-width: 26rem) {
+  .usage-limits form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .usage-actions {
+    margin-left: 0;
+  }
+}

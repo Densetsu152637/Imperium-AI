@@ -156,3 +156,14 @@ including ligatures for code.
 
 Full keyboard navigation, visible focus, screen-reader labels, reduced-motion support, and
 WCAG AA contrast for shipped themes.
+
+## Projects and sessions (implemented)
+
+Each project has an icon: a glyph on a coloured tile, chosen from the path by default and
+changeable by clicking it in the Projects panel (choices are kept per viewer). The Sessions
+panel lists every session across projects, each with its project's icon to the left of its
+title and a status badge (idle, working, needs attention, paused with its resume time,
+watching with its pull request, merged); sessions needing attention sort first. Clicking a
+session's icon opens that project's view, which lists only its sessions, with *All sessions*
+to return; clicking the row opens the session. The session header shows the status and the
+*Usage limits* controls (how to wait when usage runs out, and *Resume now* while paused).

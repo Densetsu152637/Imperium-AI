@@ -1,7 +1,7 @@
 // Session state built from the daemon's event stream: the root agent's transcript, each
 // subagent's task, the current plan, and the per-call telemetry the panels display.
 
-import type { AgentEvent, Plan, SessionSummary, TokenUsage } from "@imperium/protocol";
+import type { AgentEvent, Plan, ResumePolicy, SessionStatus, SessionSummary, TokenUsage } from "@imperium/protocol";
 
 export const ROOT = "root";
 
@@ -46,9 +46,24 @@ export type SessionState = {
   busy: boolean;
   /** The agent's browser after its latest action. */
   browser: { url: string; title: string; screenshot: string } | null;
+  status: SessionStatus;
+  /** What a watching or merged session follows, such as `owner/repo#12`. */
+  statusDetail: string | null;
+  /** While waiting out a usage limit: when the session tries again. */
+  pause: { untilMs: number; reason: string } | null;
+  /** When this window last saw the session change, for ordering lists. */
+  updatedAt: number;
 };
 
-export const newSession = (summary: SessionSummary): SessionState => ({
+/** The daemon's default, for sessions this window creates before their summary arrives. */
+export const DEFAULT_RESUME_POLICY: ResumePolicy = {
+  mode: "wait_for_reset",
+  at_time: null,
+  retry_every_minutes: 5,
+  max_wait_hours: 12,
+};
+
+export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState => ({
   summary,
   entries: [],
   tasks: {},
@@ -56,7 +71,28 @@ export const newSession = (summary: SessionSummary): SessionState => ({
   calls: [],
   busy: false,
   browser: null,
+  status: summary.status,
+  statusDetail: summary.status_detail,
+  pause: null,
+  updatedAt,
 });
+
+/** A pause time as `HH:MM`, with the weekday when it is not today. */
+export function formatResumeTime(unixMs: number): string {
+  const at = new Date(unixMs);
+  const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return at.toDateString() === new Date().toDateString()
+    ? time
+    : `${at.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
+/** The session's name for lists and headers: its title, else its first message. */
+export function sessionTitle(session: SessionState): string {
+  const title = session.summary.title.trim();
+  if (title) return title;
+  const first = session.entries.find((entry) => entry.kind === "user")?.text.trim();
+  return first ? first.split("\n")[0].slice(0, 80) : "New session";
+}
 
 /** Applies one event to a transcript; returns a new array (inputs are never mutated). */
 function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
@@ -116,6 +152,18 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
     case "context_loaded":
       next.push({ kind: "notice", message: `Loaded ${event.references.join(", ")}` });
       break;
+    case "paused":
+      next.push({
+        kind: "notice",
+        message:
+          event.until_unix_ms > 0
+            ? `Usage limit reached; waiting until ${formatResumeTime(event.until_unix_ms)}`
+            : "Usage limit reached; waiting",
+      });
+      break;
+    case "resumed":
+      next.push({ kind: "notice", message: "Resumed" });
+      break;
     default:
       break;
   }
@@ -140,7 +188,13 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
     ];
   }
 
-  let { tasks, plan, calls, busy, browser } = state;
+  let { tasks, plan, calls, busy, browser, status, statusDetail, pause } = state;
+  if (event.type === "status_changed") {
+    status = event.status;
+    statusDetail = event.detail;
+  }
+  if (event.type === "paused") pause = { untilMs: event.until_unix_ms, reason: event.reason };
+  if (event.type === "resumed") pause = null;
   if (event.type === "browser_view") {
     browser = { url: event.url, title: event.title, screenshot: event.screenshot };
   }
@@ -187,7 +241,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
         : { ...task, entries: applyToEntries(task.entries, agentEvent) };
     tasks = { ...tasks, [agentId]: updated };
   }
-  return { ...state, entries, tasks, plan, calls, busy, browser };
+  return { ...state, entries, tasks, plan, calls, busy, browser, status, statusDetail, pause };
 }
 
 export function markAnswered(state: SessionState, requestId: number): SessionState {

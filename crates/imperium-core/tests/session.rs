@@ -48,12 +48,18 @@ fn text_body(text: &str) -> String {
     )
 }
 
+/// The next event, skipping status changes (tested on their own in tests/usage_limits.rs).
 async fn next(events: &mut broadcast::Receiver<AgentEvent>) -> SessionEvent {
-    tokio::time::timeout(Duration::from_secs(10), events.recv())
-        .await
-        .expect("an event within 10 s")
-        .unwrap()
-        .event
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap()
+            .event;
+        if !matches!(event, SessionEvent::StatusChanged { .. }) {
+            return event;
+        }
+    }
 }
 
 fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
@@ -83,6 +89,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
+        resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         media: None,
         web: None,
@@ -167,9 +174,16 @@ async fn an_approved_write_changes_the_file_and_the_turn_reports_cost() {
         "hi"
     );
     let journal = std::fs::read_to_string(dir.path().join(".journal/test.jsonl")).unwrap();
-    assert_eq!(journal.lines().count(), 8);
     let (history, _) = session.subscribe_with_history();
-    assert_eq!(history.len(), 8);
+    // Eight turn events, plus the status changes they caused (working, needs attention while
+    // asking, working, idle).
+    let statuses = history
+        .iter()
+        .filter(|event| matches!(event.event, SessionEvent::StatusChanged { .. }))
+        .count();
+    assert_eq!(history.len() - statuses, 8);
+    assert_eq!(statuses, 4);
+    assert_eq!(journal.lines().count(), history.len());
     assert!(matches!(history[0].event, SessionEvent::TurnStarted { .. }));
     assert!(history.iter().all(|event| event.agent_id == "root"));
     assert!(journal.contains(r#""type":"turn_completed""#));

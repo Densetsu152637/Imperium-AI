@@ -110,6 +110,7 @@ async fn agents_generate_images_and_audio() {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
+        resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         media: Some(Arc::new(Media {
             image: Some(ImageBackend::OpenAi(service("sdxl"))),

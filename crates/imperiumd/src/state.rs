@@ -15,7 +15,9 @@ use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
     LocalModelListResult, ModelListResult, ModelRow, SESSION_CREATED, SessionSummary,
 };
-use imperium_protocol::session::{AgentEvent, PermissionDecision, ROOT_AGENT, SessionEvent};
+use imperium_protocol::session::{
+    AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
+};
 use imperium_tools::{Sandbox, Workspace};
 use imperium_web::{SearchProvider, Web};
 use imperium_workflow::{ContextIndex, Pack};
@@ -55,6 +57,8 @@ pub struct DaemonState {
     pets: OnceLock<Option<Arc<PetEngine>>>,
     devices: Devices,
     phone_address: OnceLock<std::net::SocketAddr>,
+    /// Pull requests sessions watch: session id to (repo, number).
+    watches: Mutex<HashMap<String, (String, u64)>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +89,7 @@ impl DaemonState {
             pets: OnceLock::new(),
             devices,
             phone_address: OnceLock::new(),
+            watches: Mutex::new(HashMap::new()),
         })
     }
 
@@ -151,8 +156,11 @@ impl DaemonState {
         &self.approvals
     }
 
-    /// Starts GitHub auto-fix when it is enabled and repositories are watched.
+    /// Starts GitHub auto-fix when it is enabled and repositories are watched, and the watcher
+    /// for pull requests sessions follow.
     pub fn start_autofix(self: &Arc<Self>, github: Arc<dyn imperium_github::GitHub>) {
+        let poll = std::time::Duration::from_secs(self.settings.github.autofix.poll_s.max(10));
+        crate::autofix::watch_pull_requests(self, Arc::clone(&github), poll);
         crate::autofix::start(self, github);
     }
 
@@ -336,6 +344,41 @@ impl DaemonState {
         resumed
     }
 
+    /// The configured resume policy for usage limits.
+    fn resume_policy(&self) -> ResumePolicy {
+        let resume = &self.settings.resume;
+        ResumePolicy {
+            mode: resume.mode.clone(),
+            at_time: resume.at_time.clone(),
+            retry_every_minutes: resume.retry_every_minutes,
+            max_wait_hours: resume.max_wait_hours,
+        }
+    }
+
+    /// Links a session to a pull request it watches; the watcher marks it merged when the
+    /// pull request merges. `None` stops watching.
+    pub fn watch(&self, session: &Session, target: Option<(String, u64)>) {
+        let key = session.id().to_string();
+        match target {
+            Some((repo, number)) => {
+                session.set_watch(Some((SessionStatus::Watching, format!("{repo}#{number}"))));
+                lock_watches(&self.watches).insert(key, (repo, number));
+            }
+            None => {
+                session.set_watch(None);
+                lock_watches(&self.watches).remove(&key);
+            }
+        }
+    }
+
+    /// Pull requests sessions watch, by session id.
+    pub fn watched(&self) -> Vec<(String, String, u64)> {
+        lock_watches(&self.watches)
+            .iter()
+            .map(|(id, (repo, number))| (id.clone(), repo.clone(), *number))
+            .collect()
+    }
+
     /// Where UI mods are installed.
     pub fn mods_dir(&self) -> std::path::PathBuf {
         self.paths.config_dir().join("mods")
@@ -512,6 +555,7 @@ impl DaemonState {
             enforce: self.settings.workflow.enforce,
             pre_approved: options.pre_approved,
             resume,
+            resume_policy: self.resume_policy(),
             launcher: options.launcher,
             instructions: options.instructions,
             web: self.web_tools(),
@@ -548,15 +592,7 @@ impl DaemonState {
             .lock()
             .expect("session map lock is never poisoned by a panic while held")
             .insert(id, Arc::clone(&session));
-        self.announce(
-            SESSION_CREATED,
-            SessionSummary {
-                session_id: session.id().to_string(),
-                project_dir: session.project_dir().to_string(),
-                model: session.model().to_string(),
-                isolation: session.isolation().to_string(),
-            },
-        );
+        self.announce(SESSION_CREATED, summary(&session));
         Ok((session, events))
     }
 
@@ -699,6 +735,29 @@ fn bundled_pack() -> Option<PathBuf> {
     ]
     .into_iter()
     .find(|candidate| candidate.join("AGENTS.md").is_file())
+}
+
+fn lock_watches(
+    watches: &Mutex<HashMap<String, (String, u64)>>,
+) -> std::sync::MutexGuard<'_, HashMap<String, (String, u64)>> {
+    watches
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A session as lists show it.
+pub fn summary(session: &Session) -> SessionSummary {
+    let (status, status_detail) = session.status();
+    SessionSummary {
+        session_id: session.id().to_string(),
+        project_dir: session.project_dir().to_string(),
+        model: session.model().to_string(),
+        isolation: session.isolation().to_string(),
+        title: session.title(),
+        status,
+        status_detail,
+        resume_policy: session.resume_policy(),
+    }
 }
 
 #[cfg(test)]

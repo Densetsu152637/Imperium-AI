@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use imperium_config::RoutingSettings;
-use imperium_protocol::session::{AgentEvent, PermissionDecision, ROOT_AGENT, SessionEvent};
+use imperium_protocol::session::{
+    AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
+};
 use imperium_tools::Workspace;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -18,6 +20,7 @@ use serde_json::json;
 
 use crate::agent::Agent;
 use crate::journal::Journal;
+use crate::status::Controls;
 use crate::{CatalogModel, LocalModels, ResolvedModel, SessionLauncher};
 
 /// Events kept for slow subscribers before they start missing some.
@@ -59,6 +62,8 @@ pub struct SessionConfig {
     pub media: Option<Arc<imperium_media::Media>>,
     /// Continue a session from its journal and saved conversation (after a daemon restart).
     pub resume: bool,
+    /// How turns wait when usage runs out, unless the session overrides it.
+    pub resume_policy: ResumePolicy,
     pub max_steps: u32,
     pub journal_path: PathBuf,
 }
@@ -85,6 +90,8 @@ pub struct Session {
     model: String,
     project_dir: String,
     isolation: String,
+    controls: Arc<Controls>,
+    emitter: Arc<Emitter>,
     commands: mpsc::UnboundedSender<Command>,
     events: broadcast::Sender<AgentEvent>,
     /// Every event so far, so late subscribers can catch up.
@@ -116,18 +123,26 @@ impl Session {
         let isolation = config.workspace.sandbox().label();
         let history = History::default();
         history.lock().extend(previous);
-        let emitter = Emitter {
+        let controls = Arc::new(Controls::new(config.resume_policy.clone()));
+        // Bring the status in line with the replayed history before anything new happens.
+        for event in history.lock().iter() {
+            controls.observe(event);
+        }
+        let emitter = Arc::new(Emitter {
             session_id: id.clone(),
             journal: Mutex::new(journal),
             history: history.clone(),
             events: events.clone(),
-        };
-        let task = tokio::spawn(run(config, receiver, emitter));
+            controls: Arc::clone(&controls),
+        });
+        let task = tokio::spawn(run(config, receiver, Arc::clone(&emitter)));
         Ok(Session {
             id,
             model,
             project_dir,
             isolation,
+            controls,
+            emitter,
             commands,
             events,
             history,
@@ -151,6 +166,45 @@ impl Session {
     /// Where the session's commands run.
     pub fn isolation(&self) -> &str {
         &self.isolation
+    }
+
+    /// The session's first message, for lists.
+    pub fn title(&self) -> String {
+        self.history
+            .lock()
+            .iter()
+            .find_map(|event| match &event.event {
+                SessionEvent::TurnStarted { text } if event.agent_id == ROOT_AGENT => {
+                    Some(text.chars().take(80).collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn status(&self) -> (SessionStatus, Option<String>) {
+        self.controls.status()
+    }
+
+    pub fn resume_policy(&self) -> ResumePolicy {
+        self.controls.policy()
+    }
+
+    /// Overrides how this session waits for usage resets; `None` restores the default.
+    pub fn set_resume_policy(&self, policy: Option<ResumePolicy>) {
+        self.controls.set_policy(policy);
+    }
+
+    /// Ends a usage-limit wait now; the model call is retried at once.
+    pub fn resume_now(&self) {
+        self.controls.resume_now();
+    }
+
+    /// Marks the session as watching something (a pull request), as merged, or neither.
+    pub fn set_watch(&self, overlay: Option<(SessionStatus, String)>) {
+        if let Some(event) = self.controls.set_overlay(overlay) {
+            self.emitter.emit_raw(ROOT_AGENT, event);
+        }
     }
 
     /// Receives events from now on.
@@ -190,7 +244,8 @@ impl Session {
 /// State shared by every agent in a session.
 pub(crate) struct Shared {
     pub session_id: String,
-    pub emitter: Emitter,
+    pub emitter: Arc<Emitter>,
+    pub controls: Arc<Controls>,
     pub broker: PermissionBroker,
     pub http: reqwest::Client,
     pub workspace: Workspace,
@@ -224,7 +279,7 @@ impl Shared {
 async fn run(
     config: SessionConfig,
     mut commands: mpsc::UnboundedReceiver<Command>,
-    emitter: Emitter,
+    emitter: Arc<Emitter>,
 ) {
     for message in config.notices {
         emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
@@ -232,6 +287,7 @@ async fn run(
     let mcp = connect_mcp(config.mcp, &emitter).await;
     let shared = Arc::new(Shared {
         session_id: config.id.clone(),
+        controls: Arc::clone(&emitter.controls),
         emitter,
         broker: PermissionBroker::default(),
         http: reqwest::Client::new(),
@@ -336,19 +392,38 @@ async fn run(
 }
 
 /// Journals, records, and broadcasts events, attributing each to an agent.
+#[derive(Debug)]
 pub(crate) struct Emitter {
     session_id: String,
     journal: Mutex<Journal>,
     history: History,
     events: broadcast::Sender<AgentEvent>,
+    controls: Arc<Controls>,
 }
 
 impl Emitter {
+    /// Records and broadcasts an event, followed by a status change it causes.
     pub fn emit(&self, agent_id: &str, event: SessionEvent) {
         let event = AgentEvent {
             agent_id: agent_id.to_string(),
             event,
         };
+        let changed = self.controls.observe(&event);
+        self.record(event);
+        if let Some(status) = changed {
+            self.emit_raw(ROOT_AGENT, status);
+        }
+    }
+
+    /// Records and broadcasts an event without updating the status from it.
+    pub fn emit_raw(&self, agent_id: &str, event: SessionEvent) {
+        self.record(AgentEvent {
+            agent_id: agent_id.to_string(),
+            event,
+        });
+    }
+
+    fn record(&self, event: AgentEvent) {
         if let Err(error) = lock(&self.journal).record(&event) {
             tracing::warn!(session = %self.session_id, %error, "could not write the session journal");
         }

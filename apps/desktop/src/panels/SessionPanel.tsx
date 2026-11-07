@@ -1,21 +1,27 @@
-// The main session panel: environment header, conversation, composer, and the context,
-// outputs, and cost sections underneath.
+// The main session panel: title and status, environment header, usage-limit controls,
+// conversation, composer, and the context, outputs, and cost sections underneath.
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { PermissionDecision, Plan } from "@imperium/protocol";
+import type { PermissionDecision, Plan, ResumePolicy } from "@imperium/protocol";
 
-import { formatCost, formatCount, totals, type Entry, type SessionState } from "../sessions";
+import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
+import { formatCost, formatCount, sessionTitle, totals, type Entry, type SessionState } from "../sessions";
+import { StatusBadge } from "./StatusBadge";
 
 type Props = {
   session: SessionState | null;
+  icons: ProjectIcons;
   onSend: (text: string) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
+  /** Resolves once the daemon accepted the policy. */
+  onSetResumePolicy: (policy: ResumePolicy) => Promise<void>;
+  onResumeNow: () => void;
 };
 
-export function SessionPanel({ session, onSend, onRespond }: Props) {
+export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePolicy, onResumeNow }: Props) {
   const [draft, setDraft] = useState("");
   const [rendered, setRendered] = useState(true);
   const end = useRef<HTMLDivElement>(null);
@@ -41,8 +47,21 @@ export function SessionPanel({ session, onSend, onRespond }: Props) {
 
   return (
     <div className="session">
+      <div className="session-head">
+        <ProjectIcon choice={icons.iconFor(session.summary.project_dir)} />
+        <h3 className="session-title" title={sessionTitle(session)}>
+          {sessionTitle(session)}
+        </h3>
+        <StatusBadge session={session} />
+        {session.status === "paused" && (
+          <button className="resume-now" onClick={onResumeNow}>
+            Resume now
+          </button>
+        )}
+      </div>
+
       <div className="session-env">
-        <span title="Project folder">{session.summary.project_dir}</span>
+        <span title={session.summary.project_dir}>{projectName(session.summary.project_dir)}</span>
         <span title="Model">{session.summary.model}</span>
         <span title="Isolation tier">{session.summary.isolation}</span>
         <span title="Session cost">{formatCost(sum.costUsd)}</span>
@@ -51,6 +70,12 @@ export function SessionPanel({ session, onSend, onRespond }: Props) {
           Markdown
         </label>
       </div>
+
+      <ResumeControls
+        key={session.summary.session_id}
+        policy={session.summary.resume_policy}
+        onSave={onSetResumePolicy}
+      />
 
       {session.plan && <PlanView plan={session.plan} />}
 
@@ -184,6 +209,117 @@ function EntryView({
     case "notice":
       return <p className="notice">{entry.message}</p>;
   }
+}
+
+const RESUME_MODES: Record<ResumePolicy["mode"], string> = {
+  wait_for_reset: "Wait for the provider's reset",
+  at_time: "Resume at a set time",
+  retry_every: "Retry every N minutes",
+  stop: "Stop and tell me",
+};
+
+/** One line saying what the session does when usage runs out. */
+function describePolicy(policy: ResumePolicy): string {
+  switch (policy.mode) {
+    case "wait_for_reset":
+      return "wait for reset";
+    case "at_time":
+      return `resume at ${policy.at_time ?? "—"}`;
+    case "retry_every":
+      return `retry every ${policy.retry_every_minutes} min`;
+    case "stop":
+      return "stop";
+  }
+}
+
+/** What the session does when a provider says usage has run out; edited as a draft, then saved. */
+function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Props["onSetResumePolicy"] }) {
+  const [draft, setDraft] = useState(policy);
+  const [saving, setSaving] = useState(false);
+  // A policy changed elsewhere (another window, the daemon) replaces an unedited draft.
+  const [saved, setSaved] = useState(policy);
+  if (policy !== saved) {
+    setSaved(policy);
+    setDraft(policy);
+  }
+  const dirty = JSON.stringify(draft) !== JSON.stringify(policy);
+  const valid = draft.mode !== "at_time" || /^\d{2}:\d{2}$/.test(draft.at_time ?? "");
+  const set = (change: Partial<ResumePolicy>) => setDraft((current) => ({ ...current, ...change }));
+  const retries = draft.mode !== "stop";
+
+  return (
+    <details className="usage-limits">
+      <summary>
+        Usage limits <span className="muted">· {describePolicy(policy)}</span>
+      </summary>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!dirty || !valid) return;
+          setSaving(true);
+          onSave(draft).finally(() => setSaving(false));
+        }}
+      >
+        <label>
+          When usage runs out:
+          <select value={draft.mode} onChange={(event) => set({ mode: event.target.value as ResumePolicy["mode"] })}>
+            {Object.entries(RESUME_MODES).map(([mode, label]) => (
+              <option key={mode} value={mode}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {draft.mode === "at_time" && (
+          <label>
+            At
+            <input
+              type="time"
+              required
+              value={draft.at_time ?? ""}
+              onChange={(event) => set({ at_time: event.target.value || null })}
+            />
+          </label>
+        )}
+        {retries && (
+          <label title={draft.mode === "retry_every" ? undefined : "How often to retry when no reset time is known"}>
+            {draft.mode === "retry_every" ? "Every" : "Retry every"}
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              value={draft.retry_every_minutes}
+              onChange={(event) => set({ retry_every_minutes: Math.max(1, Math.round(Number(event.target.value) || 1)) })}
+            />
+            min
+          </label>
+        )}
+        {retries && (
+          <label>
+            Give up after
+            <input
+              type="number"
+              min={1}
+              max={168}
+              value={draft.max_wait_hours}
+              onChange={(event) => set({ max_wait_hours: Math.max(1, Math.round(Number(event.target.value) || 1)) })}
+            />
+            h
+          </label>
+        )}
+        <span className="usage-actions">
+          {dirty && (
+            <button type="button" onClick={() => setDraft(policy)}>
+              Revert
+            </button>
+          )}
+          <button type="submit" disabled={!dirty || !valid || saving}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </span>
+      </form>
+    </details>
+  );
 }
 
 const STEP_MARK: Record<Plan["steps"][number]["status"], string> = {

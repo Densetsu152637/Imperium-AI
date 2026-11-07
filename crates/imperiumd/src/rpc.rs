@@ -18,7 +18,7 @@ use imperium_protocol::methods::{
     ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionCreate,
     SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
     SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe,
-    SessionSubscribeParams, SessionSubscribeResult, SessionSummary,
+    SessionSubscribeParams, SessionSubscribeResult,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -27,6 +27,7 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
 use crate::state::{CreateError, DaemonState};
+use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 
 /// A session's events, to be forwarded to this connection as notifications.
 #[derive(Debug)]
@@ -217,6 +218,35 @@ impl Connection {
                     })
                 })
             }
+            SessionControl::NAME => {
+                call::<SessionControl>(request.params, |params: SessionControlParams| {
+                    let session = self.state.session(&params.session_id).ok_or_else(|| {
+                        ErrorObject::new(codes::SESSION_NOT_FOUND, "no such session")
+                    })?;
+                    match params.action.as_str() {
+                        "set_resume_policy" => session.set_resume_policy(params.resume_policy),
+                        "resume_now" => session.resume_now(),
+                        "watch" => {
+                            let (Some(repo), Some(number)) = (params.repo, params.pull_request)
+                            else {
+                                return Err(ErrorObject::new(
+                                    codes::INVALID_PARAMS,
+                                    "watch needs repo and pull_request",
+                                ));
+                            };
+                            self.state.watch(&session, Some((repo, number)));
+                        }
+                        "unwatch" => self.state.watch(&session, None),
+                        other => {
+                            return Err(ErrorObject::new(
+                                codes::INVALID_PARAMS,
+                                format!("unknown action {other:?}"),
+                            ));
+                        }
+                    }
+                    Ok(SessionControlResult {})
+                })
+            }
             ApprovalList::NAME => call::<ApprovalList>(request.params, |_: ApprovalListParams| {
                 Ok(ApprovalListResult {
                     approvals: self.state.approvals().list(),
@@ -263,12 +293,7 @@ impl Connection {
                         .state
                         .sessions()
                         .iter()
-                        .map(|session| SessionSummary {
-                            session_id: session.id().to_string(),
-                            project_dir: session.project_dir().to_string(),
-                            model: session.model().to_string(),
-                            isolation: session.isolation().to_string(),
-                        })
+                        .map(|session| crate::state::summary(session))
                         .collect(),
                 })
             }),

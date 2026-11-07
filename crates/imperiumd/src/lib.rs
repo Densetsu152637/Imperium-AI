@@ -17,7 +17,7 @@ mod state;
 mod token;
 
 pub use approvals::Approvals;
-pub use autofix::fix_ci;
+pub use autofix::{fix_ci, watch_pull_requests};
 pub use endpoint::EndpointFile;
 pub use local::LocalRuntime;
 pub use pets::PetEngine;

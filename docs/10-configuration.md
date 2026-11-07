@@ -34,6 +34,8 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | ------------- | ------- | -------------------------------------------------------------- |
 | `daemon.port` | `0`     | Port of the local WebSocket listener; `0` picks a free port at each start |
 | `agents.max_steps` | `50` | Model calls an agent may make in one turn before it stops |
+| `resume.mode` | `wait_for_reset` | When a provider's usage runs out: `wait_for_reset`, `at_time`, `retry_every`, or `stop` (each session can override it) |
+| `resume.at_time`, `retry_every_minutes`, `max_wait_hours` | none, `5`, `12` | Local `HH:MM` for `at_time`; retry interval; longest wait in one turn |
 | `agents.resume_days` | `7` | Sessions active within this many days continue after the daemon restarts |
 | `models.catalog` | none | The model table: `[[models.catalog]]` rows with `id`, `spec`, `location` (`local` or `cloud`), `tier` (`basic`, `standard`, `strong`, `frontier`), and optional `tags`; see [routing](04-models-and-routing.md#routing) |
 | `routing.prefer` | `cheapest` | Tie-breaker among suitable models: `cheapest`, `local`, or `cloud` |

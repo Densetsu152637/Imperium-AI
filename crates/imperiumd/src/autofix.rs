@@ -190,7 +190,13 @@ pub async fn fix_ci(
         }
     }
     match git::push(&worktree, &pr.branch).await {
-        Ok(()) => announce(state, repo, pr.number, "pushed", session_id, summary),
+        Ok(()) => {
+            // The fix session now watches the pull request until it merges.
+            if let Some(session) = session_id.as_deref().and_then(|id| state.session(id)) {
+                state.watch(&session, Some((repo.clone(), pr.number)));
+            }
+            announce(state, repo, pr.number, "pushed", session_id, summary);
+        }
         Err(error) => announce(state, repo, pr.number, "failed", session_id, error),
     }
 }
@@ -231,4 +237,36 @@ fn announce(
             summary,
         },
     );
+}
+
+/// Checks pull requests that sessions watch: merged ones mark their session merged, closed
+/// ones end the watch. Runs every `poll` while the daemon runs.
+pub fn watch_pull_requests(daemon: &Arc<DaemonState>, github: Arc<dyn GitHub>, poll: Duration) {
+    let daemon = Arc::downgrade(daemon);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(poll).await;
+            let Some(state) = daemon.upgrade() else {
+                return;
+            };
+            for (session_id, repo, number) in state.watched() {
+                let Some(session) = state.session(&session_id) else {
+                    continue;
+                };
+                match github.pr_state(&repo, number).await.as_deref() {
+                    Ok("MERGED") => {
+                        session.set_watch(Some((
+                            imperium_protocol::session::SessionStatus::Merged,
+                            format!("{repo}#{number}"),
+                        )));
+                    }
+                    Ok("CLOSED") => state.watch(&session, None),
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::debug!(%repo, number, %error, "could not check a watched pull request")
+                    }
+                }
+            }
+        }
+    });
 }
