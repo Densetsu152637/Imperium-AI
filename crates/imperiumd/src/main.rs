@@ -1,4 +1,5 @@
 use std::fs::{File, TryLockError};
+use std::io::IsTerminal;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
@@ -21,6 +22,8 @@ fn main() -> anyhow::Result<()> {
         .with_env_filter(
             EnvFilter::try_from_env("IMPERIUM_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_writer(std::io::stderr)
         .init();
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(IO_THREADS)

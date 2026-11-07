@@ -1,0 +1,149 @@
+use std::path::{Path, PathBuf};
+
+use futures_util::{SinkExt, StreamExt};
+use imperium_protocol::PROTOCOL_VERSION;
+use imperium_protocol::discovery::DaemonEndpoint;
+use imperium_protocol::jsonrpc::{
+    ErrorObject, JsonRpcVersion, Outcome, Request, RequestId, Response,
+};
+use imperium_protocol::methods::{Handshake, HandshakeParams, HandshakeResult, Method, Peer};
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::{self, Message};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ClientError {
+    #[error("imperiumd is not running (no endpoint file at {})", .0.display())]
+    DaemonNotRunning(PathBuf),
+    #[error("could not read the endpoint file {}: {source}", path.display())]
+    Endpoint {
+        path: PathBuf,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    #[error("could not connect to imperiumd: {0}")]
+    Connect(Box<tungstenite::Error>),
+    #[error("imperiumd returned error {}: {}", .0.code, .0.message)]
+    Rpc(ErrorObject),
+    #[error("protocol error: {0}")]
+    Protocol(String),
+}
+
+/// Reads the endpoint file a running daemon writes on startup.
+pub fn read_endpoint(path: &Path) -> Result<DaemonEndpoint, ClientError> {
+    let bytes = std::fs::read(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => ClientError::DaemonNotRunning(path.to_path_buf()),
+        _ => ClientError::Endpoint {
+            path: path.to_path_buf(),
+            source: Box::new(error),
+        },
+    })?;
+    serde_json::from_slice(&bytes).map_err(|error| ClientError::Endpoint {
+        path: path.to_path_buf(),
+        source: Box::new(error),
+    })
+}
+
+/// A handshaken connection to the daemon. Calls are sequential: one request, one reply.
+#[derive(Debug)]
+pub struct Client {
+    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    next_id: i64,
+    daemon: HandshakeResult,
+}
+
+impl Client {
+    /// Connects with the endpoint's token and performs `system.handshake`.
+    pub async fn connect(endpoint: &DaemonEndpoint, client: Peer) -> Result<Self, ClientError> {
+        let mut request = endpoint
+            .url
+            .as_str()
+            .into_client_request()
+            .map_err(|error| ClientError::Connect(Box::new(error)))?;
+        let authorization = format!("Bearer {}", endpoint.token)
+            .parse()
+            .map_err(|_| ClientError::Protocol("endpoint token is not a valid header".into()))?;
+        request.headers_mut().insert("Authorization", authorization);
+        let (socket, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .map_err(|error| ClientError::Connect(Box::new(error)))?;
+
+        let mut connection = Client {
+            socket,
+            next_id: 1,
+            daemon: HandshakeResult {
+                daemon: Peer {
+                    name: String::new(),
+                    version: String::new(),
+                },
+                protocol: PROTOCOL_VERSION,
+            },
+        };
+        connection.daemon = connection
+            .call::<Handshake>(HandshakeParams {
+                client,
+                protocol: PROTOCOL_VERSION,
+            })
+            .await?;
+        Ok(connection)
+    }
+
+    /// What the daemon reported in the handshake.
+    pub fn daemon(&self) -> &HandshakeResult {
+        &self.daemon
+    }
+
+    pub async fn call<M: Method>(&mut self, params: M::Params) -> Result<M::Result, ClientError> {
+        let id = RequestId::Number(self.next_id);
+        self.next_id += 1;
+        let request = Request {
+            jsonrpc: JsonRpcVersion,
+            id: id.clone(),
+            method: M::NAME.to_string(),
+            params: Some(serde_json::to_value(params).map_err(protocol_error)?),
+        };
+        let text = serde_json::to_string(&request).map_err(protocol_error)?;
+        self.socket
+            .send(Message::Text(text.into()))
+            .await
+            .map_err(|error| ClientError::Connect(Box::new(error)))?;
+
+        let response = self.next_response().await?;
+        if response.id.as_ref() != Some(&id) {
+            return Err(ClientError::Protocol(format!(
+                "expected a reply to request {id:?}, got {:?}",
+                response.id
+            )));
+        }
+        match response.outcome {
+            Outcome::Result(value) => serde_json::from_value(value).map_err(protocol_error),
+            Outcome::Error(error) => Err(ClientError::Rpc(error)),
+        }
+    }
+
+    async fn next_response(&mut self) -> Result<Response, ClientError> {
+        loop {
+            let message = self
+                .socket
+                .next()
+                .await
+                .ok_or_else(|| ClientError::Protocol("imperiumd closed the connection".into()))?
+                .map_err(|error| ClientError::Connect(Box::new(error)))?;
+            match message {
+                Message::Text(text) => {
+                    return serde_json::from_str(text.as_str()).map_err(protocol_error);
+                }
+                Message::Close(_) => {
+                    return Err(ClientError::Protocol(
+                        "imperiumd closed the connection".into(),
+                    ));
+                }
+                Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
+            }
+        }
+    }
+}
+
+fn protocol_error(error: serde_json::Error) -> ClientError {
+    ClientError::Protocol(error.to_string())
+}
