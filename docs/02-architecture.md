@@ -102,6 +102,7 @@ apps/mobile/            Phone app (phase 11)
 pets/                   Bundled default pet packs
 packages/protocol/      Generated TypeScript protocol types
 packages/mod-sdk/       UI mod SDK (@imperium/mod-sdk)
+examples/mods/          Example UI mods
 packages/ui/            Shared React components and design tokens
 sidecars/media/         Python media sidecar (uv project)
 runtimes/               Pinned runtime versions (llama.cpp ref, vLLM version)

@@ -6,10 +6,10 @@ use imperium_core::Session;
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, Handshake, HandshakeParams, HandshakeResult, LocalModelList, LocalModelListParams,
-    Method, ModelList, ModelListParams, Peer, Ping, PingParams, PingResult, SessionCreate,
-    SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
-    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe,
-    SessionSubscribeParams, SessionSubscribeResult, SessionSummary,
+    Method, ModList, ModListParams, ModelList, ModelListParams, Peer, Ping, PingParams, PingResult,
+    SessionCreate, SessionCreateParams, SessionCreateResult, SessionList, SessionListParams,
+    SessionListResult, SessionRespond, SessionRespondParams, SessionSend, SessionSendParams,
+    SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult, SessionSummary,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -95,6 +95,9 @@ impl Connection {
             }),
             ModelList::NAME => call::<ModelList>(request.params, |_: ModelListParams| {
                 Ok(self.state.model_table())
+            }),
+            ModList::NAME => call::<ModList>(request.params, |_: ModListParams| {
+                Ok(crate::mods::list(&self.state.mods_dir()))
             }),
             LocalModelList::NAME => {
                 call::<LocalModelList>(request.params, |_: LocalModelListParams| {

@@ -90,6 +90,20 @@ export default defineMod({
 });
 ```
 
+**Implemented (phase 5):** mods installed in `<config>/mods/<id>/` with a `mod.json`
+(`id`, `name`, `version`, `entry` (default `index.js`), `permissions`, and
+`contributes.panels` with `id` and `title`) are listed by the daemon's `mods.list` and shown as
+panels in the right-hand column. Each panel runs in its own frame with `sandbox="allow-scripts"`
+and no same-origin access, so the mod cannot reach the app window, the daemon token, or other
+mods. `@imperium/mod-sdk` (`packages/mod-sdk`) provides `defineMod` and the context types;
+inside the frame the bare import resolves through an import map, so both bundled and unbundled
+mods work. The context offers `telemetry.subscribe("call.completed", ...)` (permission
+`telemetry:read`), `sessions.subscribe(...)` (raw session events, `sessions:read`), and
+`panel(id).render(html | node)`; the app forwards only the events a mod's permissions allow.
+Theme tokens are copied into the frame. An example lives in
+`examples/mods/tokens-per-dollar/`. Other contribution points, install and update commands,
+permission prompts at install, and trusted main-context mods are later work.
+
 Contribution points: new panels, modules placeable inside any panel
 ([layout](07-desktop-ui.md#modules-inside-panels)), extensions to any panel's slots, panel wrappers and
 replacements ([panels](07-desktop-ui.md#panels)), status-bar items, message renderers (custom

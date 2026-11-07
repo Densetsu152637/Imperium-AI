@@ -51,6 +51,11 @@ impl DaemonState {
         })
     }
 
+    /// Where UI mods are installed.
+    pub fn mods_dir(&self) -> std::path::PathBuf {
+        self.paths.config_dir().join("mods")
+    }
+
     /// Local models, the hardware they are planned against, and what is loaded.
     pub fn local_models(&self) -> LocalModelListResult {
         self.local

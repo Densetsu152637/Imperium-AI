@@ -332,3 +332,45 @@ pub struct RuntimeInfo {
     pub installed: bool,
     pub llama_cpp_ref: String,
 }
+
+/// `mods.list`: UI mods installed in `<config>/mods`, with their entry modules.
+#[derive(Debug)]
+pub struct ModList;
+
+impl Method for ModList {
+    const NAME: &'static str = "mods.list";
+    type Params = ModListParams;
+    type Result = ModListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModListResult {
+    pub mods: Vec<ModInfo>,
+    /// Mods that could not be loaded, with the reason.
+    pub problems: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// `telemetry:read`, `sessions:read`; the desktop app forwards only what is granted.
+    pub permissions: Vec<String>,
+    pub panels: Vec<ModPanel>,
+    /// The entry ES module's source.
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModPanel {
+    pub id: String,
+    pub title: String,
+}
