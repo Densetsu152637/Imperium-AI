@@ -13,21 +13,29 @@ pub(crate) const DEFAULT_TIMEOUT_S: u64 = 120;
 ///
 /// On timeout the shell is killed; processes it started may keep running until they exit
 /// (process-tree cleanup arrives with the OS sandbox tier).
+/// A command line run through the platform shell: `sh -c`, or `cmd /C` on Windows, where the
+/// line is passed verbatim because cmd does not understand the quoting other programs expect.
+pub fn shell(command: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut process = Command::new("cmd");
+        process.arg("/C").raw_arg(command);
+        process
+    }
+    #[cfg(not(windows))]
+    {
+        let mut process = Command::new("sh");
+        process.arg("-c").arg(command);
+        process
+    }
+}
+
 pub async fn run_command(
     workspace: &Workspace,
     command: &str,
     timeout: Duration,
 ) -> Result<String, ToolError> {
-    let mut process = if cfg!(windows) {
-        let mut process = Command::new("cmd");
-        process.arg("/C").arg(command);
-        process
-    } else {
-        let mut process = Command::new("sh");
-        process.arg("-c").arg(command);
-        process
-    };
-    let child = process
+    let child = shell(command)
         .current_dir(workspace.root())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -76,6 +84,22 @@ mod tests {
             .unwrap();
         assert!(output.starts_with("exit code 3"), "{output}");
         assert!(output.contains("hello"), "{output}");
+    }
+
+    #[tokio::test]
+    async fn quoted_arguments_reach_the_shell_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        std::fs::write(dir.path().join("two words.txt"), "inside").unwrap();
+        let read = if cfg!(windows) {
+            r#"type "two words.txt""#
+        } else {
+            r#"cat "two words.txt""#
+        };
+        let output = run_command(&workspace, read, Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(output.contains("inside"), "{output}");
     }
 
     #[tokio::test]

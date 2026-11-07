@@ -9,7 +9,9 @@ use imperium_tools::Workspace;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use imperium_extensions::{Extensions, HookEvent, Verdict};
 use imperium_mcp::{McpServers, ServerSpec};
+use serde_json::json;
 
 use crate::agent::Agent;
 use crate::journal::Journal;
@@ -34,6 +36,8 @@ pub struct SessionConfig {
     pub mcp: Vec<ServerSpec>,
     /// Shown to the user when the session starts, such as servers that were left out.
     pub notices: Vec<String>,
+    /// Skills, hooks, and slash commands.
+    pub extensions: Extensions,
     pub max_steps: u32,
     pub journal_path: PathBuf,
 }
@@ -162,6 +166,7 @@ pub(crate) struct Shared {
     /// Tools the user allowed for the rest of the session, for every agent.
     pub allowed_tools: Mutex<HashSet<String>>,
     pub mcp: McpServers,
+    pub extensions: Extensions,
     next_task: AtomicU32,
 }
 
@@ -194,8 +199,16 @@ async fn run(
         max_steps: config.max_steps,
         allowed_tools: Mutex::new(HashSet::new()),
         mcp,
+        extensions: config.extensions,
         next_task: AtomicU32::new(0),
     });
+    shared
+        .hook(
+            HookEvent::SessionStart,
+            None,
+            json!({"session_id": config.id, "project_dir": shared.workspace.root_display()}),
+        )
+        .await;
     let mut root = Agent::new(ROOT_AGENT.into(), Arc::clone(&shared), config.model, true);
     let mut queued = VecDeque::new();
     loop {
@@ -213,6 +226,9 @@ async fn run(
                 }
                 None => return,
             },
+        };
+        let Some(text) = shared.prepare_prompt(text).await else {
+            continue;
         };
         let turn = root.run_turn(text);
         tokio::pin!(turn);
@@ -337,4 +353,49 @@ async fn connect_mcp(specs: Vec<ServerSpec>, emitter: &Emitter) -> McpServers {
         );
     }
     servers
+}
+
+impl Shared {
+    /// Runs the hooks for `event`; blocking events return the hooks' verdict.
+    pub(crate) async fn hook(
+        &self,
+        event: HookEvent,
+        tool: Option<&str>,
+        payload: serde_json::Value,
+    ) -> Verdict {
+        if self.extensions.hooks.is_empty() {
+            return Verdict::Allow;
+        }
+        self.extensions
+            .hooks
+            .run(event, tool, &payload, self.workspace.root())
+            .await
+    }
+
+    /// Expands a slash command and runs `prompt.submit` hooks. `None` when the message should
+    /// not start a turn; the user is told why.
+    async fn prepare_prompt(&self, text: String) -> Option<String> {
+        let notice = |message: String| {
+            self.emitter
+                .emit(ROOT_AGENT, SessionEvent::Notice { message });
+        };
+        let text = match imperium_extensions::commands::expand(&self.extensions.commands, &text) {
+            Some(Ok(expanded)) => expanded,
+            Some(Err(error)) => {
+                notice(error);
+                return None;
+            }
+            None => text,
+        };
+        match self
+            .hook(HookEvent::PromptSubmit, None, json!({"prompt": text}))
+            .await
+        {
+            Verdict::Allow => Some(text),
+            Verdict::Block(reason) => {
+                notice(format!("A hook blocked this message: {reason}"));
+                None
+            }
+        }
+    }
 }

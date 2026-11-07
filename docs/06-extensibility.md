@@ -21,6 +21,24 @@ or registries, and all declared through manifests with explicit permissions.
 Plugins written natively for Imperium use `imperium-plugin.toml`, a superset that adds
 permissions, UI mod entry points, and router hints.
 
+**Implemented (phase 5, `imperium-extensions`):**
+
+- **Skills:** folders with a `SKILL.md` (front matter `name` and `description`) in
+  `<config>/skills/`, the project's `.imperium/skills/` and `.claude/skills/`, and plugins'
+  `skills/`; the first of a name wins. Every agent's instructions list each skill's
+  description, and agents call `load_skill` (`name`, optional `file` for a resource inside the
+  skill folder) to load one.
+- **Slash commands:** Markdown templates in `<config>/commands/`, the project's
+  `.imperium/commands/` and `.claude/commands/`, and plugins' `commands/` (also reachable as
+  `/<plugin>:<name>`; subfolders give `/<folder>:<name>`). A message starting with
+  `/<name> args` is replaced by the template with `$ARGUMENTS` and `$1`, `$2`, ... filled in.
+- **Plugins:** folders with `.claude-plugin/plugin.json` in `<config>/plugins/` or
+  `extensions.plugin_dirs` contribute skills, commands, `hooks/hooks.json`, and `.mcp.json`
+  servers (named `<plugin>_<server>`), with `${CLAUDE_PLUGIN_ROOT}` expanded. `agents/` and
+  `imperium-plugin.toml` are reported as not yet supported.
+- **Hooks:** see below. Problems (a skill without a description, an unsupported hook event)
+  are shown as session notices.
+
 ## Hooks
 
 Hook events: `session.start`, `session.end`, `prompt.submit`, `tool.before`, `tool.after`,
@@ -30,6 +48,28 @@ Hook events: `session.start`, `session.end`, `prompt.submit`, `tool.before`, `to
 - A hook is a command (any executable receiving JSON on stdin) or an HTTP endpoint.
 - `tool.before` and `prompt.submit` hooks can allow, deny, or rewrite; others observe.
 - Hooks run with timeouts and inside the session's isolation tier.
+
+**Implemented (phase 5):** command hooks for `session.start`, `prompt.submit`, `tool.before`,
+`tool.after`, `agent.spawn`, and `agent.complete`, from `[[hooks]]` in the user configuration
+and from installed plugins (a project's own hooks are not run, since opening a repository
+would run its commands). A hook runs through the shell in the project folder with
+`IMPERIUM_PROJECT_DIR` (and `CLAUDE_PROJECT_DIR`) set and receives the event as JSON on stdin
+(`hook_event`, `tool_name`, `tool_input`, and event fields such as `prompt` or `tool_output`).
+`tool.before` and `prompt.submit` hooks block by exiting with code 2 (stderr is the reason) or
+printing `{"decision": "block", "reason": "..."}`; a blocked tool call tells the model why,
+and a blocked message is reported to the user. Other failures are logged and do not block.
+Matchers name tools, `|`-separated, and accept Claude Code's names (`Bash`, `Edit|Write`,
+`Read`); Claude Code event names (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`,
+`SessionStart`, `SubagentStop`, `Stop`) map to the events above. Rewriting, HTTP hooks, and
+the other events are later work.
+
+```toml
+[[hooks]]
+event = "tool.before"
+matcher = "run_command"
+command = "python D:/hooks/check_command.py"
+timeout_s = 10
+```
 
 ## UI mods
 

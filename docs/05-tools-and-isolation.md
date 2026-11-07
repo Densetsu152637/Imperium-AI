@@ -5,7 +5,7 @@
 | Tool group  | Tools                                                     | Notes                                            |
 | ----------- | --------------------------------------------------------- | ------------------------------------------------ |
 | Files       | `read_file`, `write_file`, `edit_file`, `list_dir` (implemented); glob and grep planned | Exact-match unique edits; reads numbered and paged with `offset`/`limit` |
-| Execution   | `run_command` (implemented); background processes planned | Runs in the project root via `cmd /C` or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr |
+| Execution   | `run_command` (implemented); background processes planned | Runs in the project root via `cmd /C` (the line passed verbatim) or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr |
 | Web         | `web.search`, `web.fetch`                                 | Search providers: SearXNG (self-hosted), Brave, Tavily, Kagi; pluggable |
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
 | Agents      | `spawn_agent`, `await_tasks`, `send_to_task`, `cancel_task` | See [agent engine](03-agent-engine.md)        |

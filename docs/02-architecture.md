@@ -76,7 +76,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-tools`      | Built-in tools: fs, exec, web search, fetch, browser (CDP)             |
 | `imperium-mcp`        | MCP client (stdio, streamable HTTP; implemented) and server bridge (planned) |
 | `imperium-sandbox`    | Isolation tiers: policy guard, container driver, SSH transport         |
-| `imperium-extensions` | Plugin, skill, and hook loading; manifest compatibility layers         |
+| `imperium-extensions` | Plugin, skill, hook, and slash-command loading; Claude Code plugin compatibility (implemented) |
 | `imperium-policy`     | Policy pack resolution, layering, and prompt assembly                  |
 | `imperium-config`     | Layered config, schema validation, keychain access                     |
 | `imperium-telemetry`  | Metrics, traces, cost ledger, OpenTelemetry export                     |

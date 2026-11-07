@@ -48,6 +48,11 @@ pub struct Settings {
     pub hardware: HardwareSettings,
     #[serde(default)]
     pub mcp: McpSettings,
+    #[serde(default)]
+    pub extensions: ExtensionSettings,
+    /// `[[hooks]]`: commands run at points in a session (see docs/06-extensibility.md#hooks).
+    #[serde(default)]
+    pub hooks: Vec<HookSettings>,
 }
 
 /// The endpoint id that names models served by the supervised llama.cpp runtime, as in
@@ -99,6 +104,27 @@ impl Settings {
         }
         Ok(())
     }
+}
+
+/// Where plugins are loaded from, besides `<config>/plugins`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ExtensionSettings {
+    /// Plugin folders, or folders of plugins, in the Claude Code layout.
+    #[serde(default)]
+    pub plugin_dirs: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct HookSettings {
+    /// `session.start`, `prompt.submit`, `tool.before`, `tool.after`, `agent.spawn`, or
+    /// `agent.complete` (Claude Code names such as `PreToolUse` also work).
+    pub event: String,
+    /// Tool names, `|`-separated; empty matches every tool.
+    #[serde(default)]
+    pub matcher: String,
+    pub command: String,
+    #[serde(default)]
+    pub timeout_s: Option<u64>,
 }
 
 /// MCP servers available to every session.
