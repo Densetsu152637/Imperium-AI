@@ -23,6 +23,13 @@
 4. Append results; repeat until the model ends its turn, the budget is exhausted, or the task
    is cancelled.
 
+**Implemented (phase 1):** a single agent per session with steps 2–4: streaming model calls
+with the built-in tools, sequential tool execution with permission prompts, and a stop after
+`agents.max_steps` model calls per turn. The system prompt is a fixed instruction naming the
+project folder; policy layers, memory, hooks, and concurrent tool calls come later. Each turn
+emits `turn_started`, `text_delta`, `permission_requested`, `tool_started`, `tool_finished`,
+and `turn_completed` (token usage, cost, model calls) or `turn_failed`.
+
 Tool calling works with native function-calling models and, as a fallback, a constrained
 JSON/grammar format (llama.cpp grammars, vLLM guided decoding) for models without native
 support.
@@ -104,5 +111,7 @@ model; the parent model never needs to name one, though it may express a prefere
 
 ## Persistence
 
-Every event is appended to the session journal. Transcripts, task trees, and artefacts are
-browsable and exportable; sessions resume after restart.
+Every event is appended to the session journal, `<data>/sessions/<session-id>.jsonl` (one JSON
+object per line with an `at_ms` timestamp; implemented). Planned: transcripts, task trees, and
+artefacts browsable and exportable, and sessions that resume after a restart (today a
+session ends when the daemon stops).

@@ -6,7 +6,7 @@ demonstrated, not assumed.
 | Phase | Theme | Scope | Exit criteria |
 | ----- | ----- | ----- | ------------- |
 | 0 | Foundations (done) | Workspace scaffold, protocol crate + TS export, config and keychain, CI green on all OSes | `imperiumd` starts, `imperium ping` round-trips; generated TS types checked in CI |
-| 1 | Core agent | Agent loop, OpenAI-compatible endpoints, file and exec tools, permission prompts, session journal, CLI chat | A CLI session edits files in a project folder using a hosted model, with cost recorded |
+| 1 | Core agent (in review) | Agent loop, OpenAI-compatible endpoints, file and exec tools, permission prompts, session journal, CLI chat | A CLI session edits files in a project folder using a hosted model, with cost recorded |
 | 2 | Desktop shell | Tauri app, tiling layout, scaling controls, conversation, telemetry pane | Ultrawide and 4K layouts verified; live tokens/sec and cost per call |
 | 3 | Planning and delegation | Plan phase and plan tools, plan UI, `spawn_agent`/`await_tasks`, task tree UI, budgets, router v1 (rules + cost scoring) | Root plans, delegates steps to 3 subagents on different endpoints, and uses no tokens while waiting |
 | 4 | Local models | Model folders, GGUF parsing, runtime packs, llama.cpp supervision, hardware probe, memory planner | Router reuses a loaded model or falls back to hosted when memory is short |

@@ -33,6 +33,13 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | Key           | Default | Meaning                                                        |
 | ------------- | ------- | -------------------------------------------------------------- |
 | `daemon.port` | `0`     | Port of the local WebSocket listener; `0` picks a free port at each start |
+| `agents.max_steps` | `50` | Model calls an agent may make in one turn before it stops |
+| `models.default` | none | Model for new sessions, as `<endpoint>:<model>` (split at the first `:`, so `ollama:qwen3:8b` works) |
+| `endpoints.<id>.base_url` | — | OpenAI-compatible base URL, ending before `/chat/completions` |
+| `endpoints.<id>.api_key` | none | `{ secret = "<name>" }`, read from the keychain when a session starts |
+| `endpoints.<id>.pricing."<model>"` | none | `{ input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok? }`; models without prices report no cost |
+
+Configuration is read when the daemon starts; restart it after editing.
 
 ## Secrets
 
@@ -42,7 +49,6 @@ reference secrets by name only:
 
 ```toml
 [endpoints.openrouter]
-kind = "openai"
 base_url = "https://openrouter.ai/api/v1"
 api_key = { secret = "openrouter" }   # resolved from the keychain
 ```

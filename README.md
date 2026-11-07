@@ -48,6 +48,26 @@ pnpm install && bash scripts/check-web.sh   # TypeScript packages
 
 Set `IMPERIUM_HOME` to keep a development daemon's files apart from your own.
 
+To chat with an agent, add an endpoint to your config file (see
+[configuration](docs/10-configuration.md#implemented-settings)) and restart the daemon:
+
+```toml
+[models]
+default = "openrouter:qwen/qwen3-coder"
+
+[endpoints.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key = { secret = "openrouter" }   # store it with: imperium secret set openrouter
+pricing."qwen/qwen3-coder" = { input_usd_per_mtok = 0.2, output_usd_per_mtok = 0.8 }
+```
+
+```bash
+cargo run --bin imperium -- chat --project path/to/project
+```
+
+Local servers such as llama.cpp, LM Studio, or Ollama work the same way with their
+OpenAI-compatible URL and no `api_key`.
+
 ## Documentation
 
 Start at [docs/README.md](docs/README.md).
