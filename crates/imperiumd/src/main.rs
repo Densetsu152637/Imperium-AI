@@ -7,7 +7,7 @@ use anyhow::{Context, bail};
 use imperium_config::Paths;
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
-use imperiumd::{AccessToken, EndpointFile};
+use imperiumd::{AccessToken, DaemonState, EndpointFile};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tracing_subscriber::EnvFilter;
@@ -62,7 +62,8 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!(%address, protocol = %PROTOCOL_VERSION, "imperiumd listening");
 
     let (stop, stopped) = oneshot::channel();
-    let server = tokio::spawn(imperiumd::serve(listener, token, async {
+    let daemon = DaemonState::new(paths.clone(), settings);
+    let server = tokio::spawn(imperiumd::serve(listener, token, daemon, async {
         stopped.await.ok();
     }));
     tokio::signal::ctrl_c()

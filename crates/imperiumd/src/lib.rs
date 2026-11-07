@@ -4,9 +4,11 @@
 mod endpoint;
 mod rpc;
 mod server;
+mod state;
 mod token;
 
 pub use endpoint::EndpointFile;
-pub use rpc::Connection;
+pub use rpc::{Connection, Handled, Subscription};
 pub use server::serve;
+pub use state::{CreateError, DaemonState};
 pub use token::AccessToken;

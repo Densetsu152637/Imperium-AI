@@ -60,6 +60,15 @@ impl Workspace {
         Ok(resolved)
     }
 
+    /// The root as people write it: without Windows' `\\?\` verbatim prefix on drive paths.
+    pub fn root_display(&self) -> String {
+        let shown = self.root.display().to_string();
+        match shown.strip_prefix(r"\\?\") {
+            Some(rest) if !rest.starts_with("UNC") => rest.to_string(),
+            _ => shown,
+        }
+    }
+
     /// A path for display to the model and user: relative to the root, with `/` separators.
     pub fn display(&self, path: &Path) -> String {
         let relative = path.strip_prefix(&self.root).unwrap_or(path);
@@ -83,6 +92,7 @@ mod tests {
         let new_file = workspace.resolve("src/new/main.rs").unwrap();
         assert_eq!(workspace.display(&new_file), "src/new/main.rs");
         assert_eq!(workspace.display(&workspace.resolve(".").unwrap()), ".");
+        assert!(!workspace.root_display().starts_with(r"\\?\"));
 
         for outside in ["..", "../x", "src/../../x", "nothing/../../x"] {
             assert!(

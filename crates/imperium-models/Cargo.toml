@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "OpenAI-compatible model endpoint client for Imperium"
 
 [dependencies]
 futures-util = "0.3.34"

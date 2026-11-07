@@ -33,7 +33,7 @@ impl Agent {
              to inspect and change files and to run commands; paths are relative to the project \
              folder. Work step by step, check your changes, and finish with a short summary of \
              what you did.",
-            workspace.root().display()
+            workspace.root_display()
         );
         Agent {
             http: reqwest::Client::new(),

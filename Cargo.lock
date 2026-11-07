@@ -1193,6 +1193,7 @@ name = "imperium-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "futures-util",
  "imperium-config",
@@ -1285,10 +1286,13 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "imperium-config",
+ "imperium-core",
  "imperium-protocol",
+ "imperium-tools",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
