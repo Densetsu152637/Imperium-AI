@@ -51,19 +51,25 @@ jobs:
             runner: windows-latest
             vulkan: true
             flags: -DGGML_NATIVE=OFF -DGGML_VULKAN=ON
+          # Ninja avoids depending on CUDA's Visual Studio integration.
           - pack: windows-x64-cuda12
             runner: windows-latest
             cuda: 12.9.1
             cuda_method: network
-            flags: -DGGML_NATIVE=OFF -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=61;75;80;86;89;90;120
+            msvc_arch: x64
+            flags: -G Ninja -DGGML_NATIVE=OFF -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=61;75;80;86;89;90;120 -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler
           - pack: windows-x64-cuda13
             runner: windows-latest
             cuda: 13.3.1
             cuda_method: network
-            flags: -DGGML_NATIVE=OFF -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;100;120
+            msvc_arch: x64
+            flags: -G Ninja -DGGML_NATIVE=OFF -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;100;120 -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler
+          # MSVC cannot build portable ARM64 CPU variants; use llama.cpp's clang toolchain.
           - pack: windows-arm64-cpu
             runner: windows-11-arm
-            flags: -DGGML_NATIVE=OFF
+            msvc_arch: arm64
+            toolchain: cmake/arm64-windows-llvm.cmake
+            flags: -G Ninja -DGGML_NATIVE=OFF
           - pack: macos-arm64-metal
             runner: macos-latest
             flags: -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
@@ -76,6 +82,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - if: matrix.msvc_arch
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: ${{ matrix.msvc_arch }}
+      - if: matrix.msvc_arch
+        shell: bash
+        run: python -m pip install ninja
       - if: matrix.cuda
         uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
         with:
@@ -90,6 +103,7 @@ jobs:
         env:
           PACK: ${{ matrix.pack }}
           CMAKE_FLAGS: ${{ matrix.flags }}
+          LLAMA_TOOLCHAIN: ${{ matrix.toolchain }}
         run: bash scripts/ci/build-llama-runtime.sh "$PACK"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

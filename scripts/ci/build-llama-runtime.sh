@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build one llama.cpp runtime pack into dist/: build-llama-runtime.sh <pack-id>
-# Extra CMake flags come from $CMAKE_FLAGS (whitespace-separated).
+# Extra CMake flags come from $CMAKE_FLAGS (whitespace-separated); $LLAMA_TOOLCHAIN optionally
+# names a toolchain file inside the llama.cpp source tree.
 set -euo pipefail
 
 pack="$1"
@@ -12,6 +13,9 @@ read -ra flags <<< "${CMAKE_FLAGS:-}"
 src="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/llama.cpp"
 rm -rf "$src"
 git clone --depth 1 --branch "$LLAMA_CPP_REF" https://github.com/ggml-org/llama.cpp "$src"
+if [ -n "${LLAMA_TOOLCHAIN:-}" ]; then
+  flags+=("-DCMAKE_TOOLCHAIN_FILE=$src/$LLAMA_TOOLCHAIN")
+fi
 
 if [[ "$pack" == *rocm* ]]; then
   HIPCXX="$(hipconfig -l)/clang"
