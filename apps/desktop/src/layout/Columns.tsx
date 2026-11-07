@@ -43,6 +43,11 @@ function Split({
   const [sizes, setSizes] = useState(() =>
     initial && !localStorage.getItem(`${STORAGE_KEY}.${storageKey}`) ? initial : loadSizes(storageKey, children.length),
   );
+  // Panels added or removed after the first render (mods load later) start from equal (or
+  // remembered) sizes for the new count, so no panel is left without room.
+  if (sizes.length !== children.length) {
+    setSizes(loadSizes(storageKey, children.length));
+  }
   const container = useRef<HTMLDivElement>(null);
 
   const startDrag = (index: number) => (event: ReactPointerEvent) => {

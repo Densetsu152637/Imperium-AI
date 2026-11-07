@@ -1,0 +1,8 @@
+{
+  "id": "tokens-per-dollar",
+  "name": "Tokens per dollar",
+  "version": "0.1.0",
+  "entry": "index.js",
+  "permissions": ["telemetry:read"],
+  "contributes": { "panels": [{ "id": "tpd", "title": "Tokens / $", "slot": "sidebar.right" }] }
+}

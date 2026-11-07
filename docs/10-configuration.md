@@ -61,6 +61,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `workflow.enabled` | `true` | Serve workflow packs and project instruction files to agents ([18](18-workflow-contract.md)) |
 | `workflow.packs` | none | Workflow folders, such as a clone of Agent-Custom-Workflow |
 | `workflow.enforce` | `warn` | `required-before-action` refuses writes and commands until required context is loaded; `warn` and `off` do not |
+| `<config>/mods/<id>/` | none | UI mods (folders with `mod.json`), shown as panels; see [UI mods](06-extensibility.md#ui-mods) |
 | `hooks` | none | `[[hooks]]` entries with `event`, optional `matcher`, `command`, and `timeout_s`; see [hooks](06-extensibility.md#hooks) |
 
 Configuration is read when the daemon starts; restart it after editing.

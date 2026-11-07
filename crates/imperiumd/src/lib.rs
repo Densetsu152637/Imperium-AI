@@ -4,6 +4,7 @@
 mod endpoint;
 mod local;
 mod mcp;
+mod mods;
 mod rpc;
 mod server;
 mod state;

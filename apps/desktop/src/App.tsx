@@ -8,6 +8,7 @@ import type {
   SessionCreateResult,
   SessionEventParams,
   LocalModelListResult,
+  ModListResult,
   ModelListResult,
   SessionListResult,
   SessionSubscribeResult,
@@ -19,6 +20,7 @@ import { Columns } from "./layout/Columns";
 import { ProjectsPanel, SessionsPanel } from "./panels/NavigationPanels";
 import { SessionPanel } from "./panels/SessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
+import { ModBus, ModFrame } from "./mods/ModFrame";
 import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
@@ -38,6 +40,8 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
+  const [mods, setMods] = useState<ModListResult | null>(null);
+  const modBus = useMemo(() => new ModBus(), []);
 
   useEffect(() => applySettings(settings), [settings]);
 
@@ -73,6 +77,7 @@ export function App() {
       client.onNotification((notification) => {
         if (notification.method !== "session.event") return;
         const params = notification.params as SessionEventParams;
+        modBus.emit(params);
         if (pending) pending.push(params);
         else apply(params);
       });
@@ -91,6 +96,7 @@ export function App() {
       setSessions(Object.fromEntries(restored));
       setModelTable(await client.call<ModelListResult>("models.list"));
       setLocalModels(await client.call<LocalModelListResult>("models.local"));
+      setMods(await client.call<ModListResult>("mods.list"));
       const queued = pending;
       pending = null;
       queued.forEach(apply);
@@ -101,7 +107,7 @@ export function App() {
         setStatus({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
       }
     }
-  }, []);
+  }, [modBus]);
 
   useEffect(() => {
     void connect();
@@ -237,6 +243,13 @@ export function App() {
                     body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} />,
                   },
                   { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
+                  ...(mods?.mods ?? []).flatMap((mod) =>
+                    mod.panels.map((panel) => ({
+                      id: `mod:${mod.id}:${panel.id}`,
+                      title: panel.title,
+                      body: <ModFrame mod={mod} panelId={panel.id} bus={modBus} />,
+                    })),
+                  ),
                 ],
               },
             ]}
