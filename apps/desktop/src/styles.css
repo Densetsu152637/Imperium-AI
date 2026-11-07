@@ -594,3 +594,120 @@ button.danger {
     scroll-behavior: auto !important;
   }
 }
+
+/* Plan, delegated tasks, and the agents panel */
+.plan {
+  width: 100%;
+  max-width: var(--prose-max);
+  margin: 0 auto;
+  padding: calc(var(--space) * 0.75) var(--space);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-size: 0.9rem;
+}
+
+.plan summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.plan ol {
+  list-style: none;
+  margin: calc(var(--space) * 0.5) 0 0;
+  padding: 0;
+}
+
+.plan .mark {
+  display: inline-block;
+  width: 1.3em;
+  color: var(--muted);
+}
+
+.plan .done {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.plan .in_progress .mark,
+.plan .in_progress {
+  color: var(--accent);
+}
+
+.plan .blocked {
+  color: var(--danger);
+}
+
+.task-line {
+  width: 100%;
+  max-width: var(--prose-max);
+  margin: 0 auto;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.badge {
+  display: inline-block;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.badge.running {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.badge.finished {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.badge.failed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space);
+}
+
+.tasks summary {
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.tasks .brief {
+  flex-basis: 100%;
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-activity {
+  margin: calc(var(--space) * 0.5) 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.task-activity .failed {
+  color: var(--danger);
+}
+
+.task-report {
+  font-size: 0.85rem;
+  border-left: 2px solid var(--border);
+  padding-left: var(--space);
+}

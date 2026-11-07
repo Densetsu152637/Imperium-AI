@@ -30,6 +30,13 @@ pub struct TurnOutcome {
     pub cost_usd: Option<f64>,
 }
 
+/// Tools the agent loop handles itself rather than `imperium-tools`.
+enum AgentTool {
+    UpdatePlan,
+    SpawnAgent,
+    AwaitTasks,
+}
+
 struct TaskReport {
     task_id: String,
     model: String,
@@ -206,11 +213,26 @@ impl Agent {
     async fn run_tool(&mut self, call: &ToolCall) -> String {
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
-        let result = match name {
-            "update_plan" => self.update_plan(arguments),
-            "spawn_agent" if self.can_delegate => self.spawn_agent(arguments),
-            "await_tasks" if self.can_delegate => self.await_tasks(arguments).await,
+        let tool = match name {
+            "update_plan" => AgentTool::UpdatePlan,
+            "spawn_agent" if self.can_delegate => AgentTool::SpawnAgent,
+            "await_tasks" if self.can_delegate => AgentTool::AwaitTasks,
             _ => return self.run_builtin(call).await,
+        };
+        let summary = match tool {
+            AgentTool::UpdatePlan => "update the plan",
+            AgentTool::SpawnAgent => "delegate a task",
+            AgentTool::AwaitTasks => "wait for subagents",
+        };
+        self.emit(SessionEvent::ToolStarted {
+            call_id: call.id.clone(),
+            tool: name.to_string(),
+            summary: summary.to_string(),
+        });
+        let result = match tool {
+            AgentTool::UpdatePlan => self.update_plan(arguments),
+            AgentTool::SpawnAgent => self.spawn_agent(arguments),
+            AgentTool::AwaitTasks => self.await_tasks(arguments).await,
         };
         let (ok, output) = match result {
             Ok(output) => (true, output),

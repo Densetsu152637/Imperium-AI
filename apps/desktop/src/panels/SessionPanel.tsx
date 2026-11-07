@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { PermissionDecision } from "@imperium/protocol";
+import type { PermissionDecision, Plan } from "@imperium/protocol";
 
 import { formatCost, formatCount, totals, type Entry, type SessionState } from "../sessions";
 
@@ -51,6 +51,8 @@ export function SessionPanel({ session, onSend, onRespond }: Props) {
           Markdown
         </label>
       </div>
+
+      {session.plan && <PlanView plan={session.plan} />}
 
       <div className="conversation" aria-live="polite">
         {session.entries.map((entry, index) => (
@@ -144,11 +146,18 @@ function EntryView({
           {entry.output && <pre>{entry.output}</pre>}
         </details>
       );
+    case "task":
+      return (
+        <div className="task-line">
+          → <strong>{entry.taskId}</strong> on {entry.model}: {entry.brief.split("\n")[0]}
+        </div>
+      );
     case "permission":
       return (
         <div className="permission" role="group" aria-label="Permission request">
           <span>
-            Allow <strong>{entry.summary}</strong>?
+            {entry.agentId !== "root" && <span className="badge running">{entry.agentId}</span>} Allow{" "}
+            <strong>{entry.summary}</strong>?
           </span>
           {entry.answered ? (
             <span className="muted">Answered</span>
@@ -173,4 +182,33 @@ function EntryView({
     case "error":
       return <p className="error">Turn failed: {entry.message}</p>;
   }
+}
+
+const STEP_MARK: Record<Plan["steps"][number]["status"], string> = {
+  pending: "○",
+  in_progress: "▸",
+  done: "✓",
+  blocked: "!",
+  skipped: "–",
+};
+
+function PlanView({ plan }: { plan: Plan }) {
+  const done = plan.steps.filter((step) => step.status === "done").length;
+  return (
+    <details className="plan" open>
+      <summary>
+        Plan{plan.goal ? `: ${plan.goal}` : ""}{" "}
+        <span className="muted">
+          {done}/{plan.steps.length}
+        </span>
+      </summary>
+      <ol>
+        {plan.steps.map((step, index) => (
+          <li key={index} className={`step ${step.status}`}>
+            <span className="mark">{STEP_MARK[step.status]}</span> {step.title}
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
 }
