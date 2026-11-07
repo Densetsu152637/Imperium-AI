@@ -14,6 +14,8 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::task::JoinHandle;
 
+use imperium_extensions::{HookEvent, Verdict};
+
 use crate::session::{Shared, lock};
 use crate::{LocalLease, ResolvedModel, TaskRequest, route};
 
@@ -35,6 +37,7 @@ enum AgentTool {
     UpdatePlan,
     SpawnAgent,
     AwaitTasks,
+    LoadSkill,
 }
 
 struct TaskReport {
@@ -75,6 +78,13 @@ impl Agent {
                  you did, what you found, and anything left undone."
             )
         };
+        let mut system = system;
+        if !shared.extensions.skills.is_empty() {
+            system.push_str("\n\n");
+            system.push_str(&imperium_extensions::skills::listing(
+                &shared.extensions.skills,
+            ));
+        }
         Agent {
             id,
             shared,
@@ -93,6 +103,9 @@ impl Agent {
         let mut tools = specs();
         tools.extend(self.shared.mcp.tool_specs());
         tools.push(update_plan_spec());
+        if !self.shared.extensions.skills.is_empty() {
+            tools.push(load_skill_spec());
+        }
         if self.can_delegate {
             tools.extend([spawn_agent_spec(), await_tasks_spec()]);
         }
@@ -182,6 +195,49 @@ impl Agent {
         self.outcome(message, false, total)
     }
 
+    /// Runs `tool.before` hooks; returns the message for the model when one blocks the call.
+    async fn before_tool(&self, tool: &str, arguments: &str) -> Option<String> {
+        let payload = json!({"agent_id": self.id, "tool_input": tool_input(arguments)});
+        match self
+            .shared
+            .hook(HookEvent::ToolBefore, Some(tool), payload)
+            .await
+        {
+            Verdict::Allow => None,
+            Verdict::Block(reason) => Some(format!("A hook blocked this call: {reason}")),
+        }
+    }
+
+    async fn after_tool(&self, tool: &str, arguments: &str, ok: bool, output: &str) {
+        let payload = json!({
+            "agent_id": self.id,
+            "tool_input": tool_input(arguments),
+            "ok": ok,
+            "tool_output": truncate(output, REPORT_CHARS),
+        });
+        self.shared
+            .hook(HookEvent::ToolAfter, Some(tool), payload)
+            .await;
+    }
+
+    fn load_skill(&self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            name: String,
+            #[serde(default)]
+            file: Option<String>,
+        }
+        let args: Args = parse(arguments)?;
+        let skill = self
+            .shared
+            .extensions
+            .skills
+            .iter()
+            .find(|skill| skill.name == args.name)
+            .ok_or_else(|| format!("no skill named {:?}", args.name))?;
+        imperium_extensions::skills::load(skill, args.file.as_deref())
+    }
+
     /// Asks the user to approve a call to `tool`, unless they allowed it for the session.
     async fn approve(&self, tool: &str, summary: &str) -> bool {
         if lock(&self.shared.allowed_tools).contains(tool) {
@@ -224,6 +280,9 @@ impl Agent {
             tool.server,
             truncate(arguments, 200)
         );
+        if let Some(blocked) = self.before_tool(name, arguments).await {
+            return finish(false, blocked);
+        }
         if !tool.allowed && !self.approve(name, &summary).await {
             return finish(false, "The user denied this action.".into());
         }
@@ -232,10 +291,12 @@ impl Agent {
             tool: name.to_string(),
             summary,
         });
-        match self.shared.mcp.call(name, arguments).await {
-            Ok(output) => finish(true, output),
-            Err(error) => finish(false, format!("error: {error}")),
-        }
+        let (ok, output) = match self.shared.mcp.call(name, arguments).await {
+            Ok(output) => (true, output),
+            Err(error) => (false, format!("error: {error}")),
+        };
+        self.after_tool(name, arguments, ok, &output).await;
+        finish(ok, output)
     }
 
     /// Where to send this turn's model calls, with the slot held on a local model.
@@ -305,6 +366,7 @@ impl Agent {
             "update_plan" => AgentTool::UpdatePlan,
             "spawn_agent" if self.can_delegate => AgentTool::SpawnAgent,
             "await_tasks" if self.can_delegate => AgentTool::AwaitTasks,
+            "load_skill" if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
             _ if self.shared.mcp.find(name).is_some() => return self.run_mcp(call).await,
             _ => return self.run_builtin(call).await,
         };
@@ -312,6 +374,7 @@ impl Agent {
             AgentTool::UpdatePlan => "update the plan",
             AgentTool::SpawnAgent => "delegate a task",
             AgentTool::AwaitTasks => "wait for subagents",
+            AgentTool::LoadSkill => "load a skill",
         };
         self.emit(SessionEvent::ToolStarted {
             call_id: call.id.clone(),
@@ -322,6 +385,7 @@ impl Agent {
             AgentTool::UpdatePlan => self.update_plan(arguments),
             AgentTool::SpawnAgent => self.spawn_agent(arguments),
             AgentTool::AwaitTasks => self.await_tasks(arguments).await,
+            AgentTool::LoadSkill => self.load_skill(arguments),
         };
         let (ok, output) = match result {
             Ok(output) => (true, output),
@@ -350,6 +414,9 @@ impl Agent {
         };
         let tool = invocation.tool_name();
         let summary = invocation.summary();
+        if let Some(blocked) = self.before_tool(tool, &call.function.arguments).await {
+            return finish(false, blocked);
+        }
         if invocation.access() != Access::Read && !self.approve(tool, &summary).await {
             return finish(false, "The user denied this action.".into());
         }
@@ -358,10 +425,13 @@ impl Agent {
             tool: tool.to_string(),
             summary,
         });
-        match invocation.execute(&self.shared.workspace).await {
-            Ok(output) => finish(true, output),
-            Err(error) => finish(false, format!("error: {error}")),
-        }
+        let (ok, output) = match invocation.execute(&self.shared.workspace).await {
+            Ok(output) => (true, output),
+            Err(error) => (false, format!("error: {error}")),
+        };
+        self.after_tool(tool, &call.function.arguments, ok, &output)
+            .await;
+        finish(ok, output)
     }
 
     fn update_plan(&self, arguments: &str) -> Result<String, String> {
@@ -447,8 +517,22 @@ impl Agent {
         let spec = model.spec.clone();
         // Each subagent is its own task, so subagents run in parallel across the runtime's threads.
         let handle = tokio::spawn(async move {
+            shared
+                .hook(
+                    HookEvent::AgentSpawn,
+                    None,
+                    json!({"task_id": id, "brief": args.brief, "model": spec}),
+                )
+                .await;
             let mut agent = Agent::new(id.clone(), Arc::clone(&shared), model, false);
             let outcome = agent.run_turn(args.brief).await;
+            shared
+                .hook(
+                    HookEvent::AgentComplete,
+                    None,
+                    json!({"task_id": id, "ok": outcome.ok, "report": truncate(&outcome.text, REPORT_CHARS)}),
+                )
+                .await;
             shared.emitter.emit(
                 &id,
                 SessionEvent::TaskFinished {
@@ -515,6 +599,23 @@ fn parse<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T, String> {
         arguments
     };
     serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))
+}
+
+/// Tool arguments as JSON for hooks, or the raw text when they do not parse.
+fn tool_input(arguments: &str) -> serde_json::Value {
+    serde_json::from_str(arguments).unwrap_or_else(|_| arguments.into())
+}
+
+fn load_skill_spec() -> ToolSpec {
+    ToolSpec {
+        name: "load_skill".into(),
+        description: "Load a skill's instructions by name, or one of its resource files with file."
+            .into(),
+        parameters: json!({"type": "object", "properties": {
+            "name": {"type": "string"},
+            "file": {"type": "string", "description": "A resource path inside the skill, as listed when it loads"}
+        }, "required": ["name"]}),
+    }
 }
 
 fn update_plan_spec() -> ToolSpec {

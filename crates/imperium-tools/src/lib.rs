@@ -6,5 +6,6 @@ mod files;
 mod invocation;
 mod workspace;
 
+pub use exec::shell;
 pub use invocation::{Access, Invocation, ToolError, specs};
 pub use workspace::Workspace;

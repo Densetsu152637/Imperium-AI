@@ -14,7 +14,8 @@ pub use layers::{Config, ConfigError, Explained, Layer, Source, load};
 pub use paths::{Paths, PathsError};
 pub use secrets::{SecretError, SecretName, delete_secret, load_secret, store_secret};
 pub use settings::{
-    AgentSettings, CatalogEntry, DaemonSettings, EndpointSettings, HardwareSettings,
-    LLAMACPP_ENDPOINT, LlamaCppSettings, Location, McpServerSettings, McpSettings, ModelSettings,
-    Preference, RoutingRule, RoutingSettings, RuntimeSettings, SecretRef, Settings, Tier,
+    AgentSettings, CatalogEntry, DaemonSettings, EndpointSettings, ExtensionSettings,
+    HardwareSettings, HookSettings, LLAMACPP_ENDPOINT, LlamaCppSettings, Location,
+    McpServerSettings, McpSettings, ModelSettings, Preference, RoutingRule, RoutingSettings,
+    RuntimeSettings, SecretRef, Settings, Tier,
 };

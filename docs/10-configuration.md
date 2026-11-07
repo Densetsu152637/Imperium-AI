@@ -53,6 +53,8 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `hardware.vram_mb`, `hardware.ram_mb` | probed | Override the hardware probe |
 | `mcp.servers.<name>` | none | An MCP server: `command`, `args`, `env` for stdio, or `url`, `headers`, `bearer_token` for HTTP; `allow` (tools that run without asking), `enabled`, `timeout_s` (default 60); see [MCP](05-tools-and-isolation.md#mcp) |
 | `mcp.trusted_projects` | none | Project folders whose `.mcp.json` servers may start |
+| `extensions.plugin_dirs` | none | More plugin folders (Claude Code layout), besides `<config>/plugins` |
+| `hooks` | none | `[[hooks]]` entries with `event`, optional `matcher`, `command`, and `timeout_s`; see [hooks](06-extensibility.md#hooks) |
 
 Configuration is read when the daemon starts; restart it after editing.
 

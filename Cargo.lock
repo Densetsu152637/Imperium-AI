@@ -2182,6 +2182,7 @@ dependencies = [
  "axum",
  "getrandom 0.4.3",
  "imperium-config",
+ "imperium-extensions",
  "imperium-mcp",
  "imperium-models",
  "imperium-protocol",
@@ -2206,6 +2207,20 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+]
+
+[[package]]
+name = "imperium-extensions"
+version = "0.1.0"
+dependencies = [
+ "imperium-mcp",
+ "imperium-tools",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2292,6 +2307,7 @@ dependencies = [
  "getrandom 0.4.3",
  "imperium-config",
  "imperium-core",
+ "imperium-extensions",
  "imperium-local",
  "imperium-mcp",
  "imperium-protocol",

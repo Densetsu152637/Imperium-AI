@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use imperium_config::{Paths, Settings};
 use imperium_core::{
     CatalogModel, LocalModels, ModelError, Session, SessionConfig, new_session_id, resolve_model,
 };
+use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
 use imperium_protocol::session::AgentEvent;
 use imperium_tools::Workspace;
@@ -68,11 +69,14 @@ impl DaemonState {
             .map_err(|error| CreateError::Project(project_dir.to_string(), error))?;
         let model = resolve_model(&self.settings, model, imperium_config::load_secret)?;
         let catalog = self.catalog();
-        let (mcp, notices) = crate::mcp::session_servers(
+        let (mut mcp, mut notices) = crate::mcp::session_servers(
             &self.settings,
             Path::new(project_dir),
             imperium_config::load_secret,
         );
+        let mut extensions = self.extensions(Path::new(project_dir));
+        mcp.append(&mut extensions.servers);
+        notices.append(&mut extensions.notices);
         let id = new_session_id().map_err(|error| CreateError::Start(error.to_string()))?;
         let session = Session::spawn(SessionConfig {
             journal_path: self
@@ -91,6 +95,7 @@ impl DaemonState {
             }),
             mcp,
             notices,
+            extensions,
             max_steps: self.settings.agents.max_steps,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
@@ -101,6 +106,27 @@ impl DaemonState {
             .expect("session map lock is never poisoned by a panic while held")
             .insert(id, Arc::clone(&session));
         Ok((session, events))
+    }
+
+    /// Skills, hooks, slash commands, and plugins for a session in `project_dir`.
+    fn extensions(&self, project_dir: &Path) -> Extensions {
+        imperium_extensions::load(&Sources {
+            config_dir: self.paths.config_dir().to_path_buf(),
+            project_dir: project_dir.to_path_buf(),
+            plugin_dirs: self.settings.extensions.plugin_dirs.clone(),
+            hooks: self
+                .settings
+                .hooks
+                .iter()
+                .map(|hook| ConfiguredHook {
+                    event: hook.event.clone(),
+                    matcher: hook.matcher.clone(),
+                    command: hook.command.clone(),
+                    timeout_s: hook.timeout_s,
+                })
+                .collect(),
+            server_timeout: Duration::from_secs(60),
+        })
     }
 
     /// Resolves `[[models.catalog]]` for routing subagents. Entries that cannot be used (an
