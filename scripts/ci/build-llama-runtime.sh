@@ -27,8 +27,11 @@ name="imperium-runtime-llama.cpp-$pack"
 out="$root/dist/stage/$name"
 cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
   -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON \
-  -DLLAMA_BUILD_SERVER=ON -DLLAMA_CURL=OFF -DCMAKE_INSTALL_PREFIX="$out" "${flags[@]}"
-cmake --build "$src/build" --config Release --parallel
+  -DLLAMA_BUILD_SERVER=ON -DCMAKE_INSTALL_PREFIX="$out" "${flags[@]}"
+# nvcc compiling many architectures at once runs hosted runners out of memory.
+jobs=()
+if [[ "$pack" == *cuda* ]]; then jobs=(2); fi
+cmake --build "$src/build" --config Release --parallel "${jobs[@]}"
 cmake --install "$src/build" --config Release
 
 # CUDA packs carry the redistributable runtime libraries.
