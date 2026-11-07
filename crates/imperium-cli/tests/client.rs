@@ -137,5 +137,11 @@ async fn a_wrong_token_fails_to_connect() {
 fn a_missing_endpoint_file_means_the_daemon_is_not_running() {
     let dir = tempfile::tempdir().unwrap();
     let error = read_endpoint(&dir.path().join("daemon.json")).unwrap_err();
-    assert!(matches!(error, ClientError::DaemonNotRunning(_)), "{error}");
+    assert!(
+        matches!(
+            error,
+            imperium_protocol::discovery::EndpointError::NotRunning(_)
+        ),
+        "{error}"
+    );
 }

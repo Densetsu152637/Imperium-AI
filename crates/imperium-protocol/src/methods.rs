@@ -99,6 +99,57 @@ impl Method for SessionRespond {
     type Result = Accepted;
 }
 
+/// `session.list`: the sessions running in this daemon.
+#[derive(Debug)]
+pub struct SessionList;
+
+impl Method for SessionList {
+    const NAME: &'static str = "session.list";
+    type Params = SessionListParams;
+    type Result = SessionListResult;
+}
+
+/// `session.subscribe`: receive a session's `session.event` notifications on this connection.
+#[derive(Debug)]
+pub struct SessionSubscribe;
+
+impl Method for SessionSubscribe {
+    const NAME: &'static str = "session.subscribe";
+    type Params = SessionSubscribeParams;
+    type Result = SessionSubscribeResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionListResult {
+    pub sessions: Vec<SessionSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub project_dir: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSubscribeParams {
+    pub session_id: String,
+}
+
+/// Every event the session has emitted so far; later ones arrive as notifications.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSubscribeResult {
+    pub history: Vec<crate::session::SessionEvent>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionCreateParams {

@@ -7,11 +7,11 @@ demonstrated, not assumed.
 | ----- | ----- | ----- | ------------- |
 | 0 | Foundations (done) | Workspace scaffold, protocol crate + TS export, config and keychain, CI green on all OSes | `imperiumd` starts, `imperium ping` round-trips; generated TS types checked in CI |
 | 1 | Core agent (in review) | Agent loop, OpenAI-compatible endpoints, file and exec tools, permission prompts, session journal, CLI chat | A CLI session edits files in a project folder using a hosted model, with cost recorded |
-| 2 | Desktop shell | Tauri app, tiling layout, scaling controls, conversation, telemetry pane | Ultrawide and 4K layouts verified; live tokens/sec and cost per call |
+| 2 | Desktop shell (in review) | Tauri app, tiling layout, scaling controls, conversation, telemetry pane | Ultrawide and 4K layouts verified; live tokens/sec and cost per call |
 | 3 | Planning and delegation | Plan phase and plan tools, plan UI, `spawn_agent`/`await_tasks`, task tree UI, budgets, router v1 (rules + cost scoring) | Root plans, delegates steps to 3 subagents on different endpoints, and uses no tokens while waiting |
 | 4 | Local models | Model folders, GGUF parsing, runtime packs, llama.cpp supervision, hardware probe, memory planner | Router reuses a loaded model or falls back to hosted when memory is short |
 | 5 | Ecosystem | MCP client, skills, hooks, Claude Code plugin compatibility, UI mod SDK, policy packs | Third-party MCP server, skill, and UI mod work unmodified; default policy can be disabled |
-| 6 | Projects and automation | Projects, project agents, schedules, daemon at login | A cron schedule runs while the window is closed and notifies on completion |
+| 6 | Projects and automation | Projects, project agents, schedules, daemon at login, GitHub events and auto-fix responders | A cron schedule runs while the window is closed and notifies on completion; a failing PR check is fixed and pushed after approval |
 | 7 | Isolation and remote | OS sandbox tier, container tier, SSH hosts, vLLM (Linux/WSL2/remote) | Remote project runs on an SSH host's GPU from the local desktop |
 | 8 | Web and browser | Web search providers, fetch, CDP browser tools | Agent researches and cites sources; browser pane mirrors agent actions |
 | 9 | Pets | Pet engine, pack format, renderers, importers | Pet reflects agent state in desktop, TUI, and phone |

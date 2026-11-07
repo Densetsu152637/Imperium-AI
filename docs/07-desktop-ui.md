@@ -1,5 +1,26 @@
 # 07 — Desktop interface
 
+## Implemented in phase 2
+
+- The Tauri 2 shell (`apps/desktop`) reads the daemon's endpoint file through a native command
+  and the React interface connects over the WebSocket with the subprotocol token. In a plain
+  browser (development preview) it asks for the URL and token instead.
+- The default view below, built from columns of spanning or stacked panels with draggable
+  dividers; sizes are remembered.
+- Session panel: environment header (project, model, isolation tier, cost), conversation with
+  assistant replies rendered as Markdown (GitHub-flavoured, raw HTML disabled; a toggle shows
+  the raw text), inline permission prompts (allow, always this session, deny), composer, and
+  context and outputs sections.
+- Telemetry panel: per-call tokens, time to first token, tokens per second, and cost, with
+  session totals.
+- Display settings: UI scale, prose and code text scale, density, and line length. They are
+  stored per viewer in local storage for now and move into the daemon's configuration with
+  the settings UI.
+- Light and dark themes follow the system.
+
+Not yet: dragging panels and modules between columns, the edit-layout mode, detachable windows,
+project layout overrides, mods, and themes beyond light and dark.
+
 ## Shell
 
 Tauri 2 with a React + TypeScript + Vite frontend. The Tauri Rust side is thin: it launches or

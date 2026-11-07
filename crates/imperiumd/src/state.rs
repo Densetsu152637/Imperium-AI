@@ -73,6 +73,19 @@ impl DaemonState {
         Ok((session, events))
     }
 
+    /// Every running session, ordered by id.
+    pub fn sessions(&self) -> Vec<Arc<Session>> {
+        let mut sessions: Vec<_> = self
+            .sessions
+            .lock()
+            .expect("session map lock is never poisoned by a panic while held")
+            .values()
+            .cloned()
+            .collect();
+        sessions.sort_by(|a, b| a.id().cmp(b.id()));
+        sessions
+    }
+
     pub fn session(&self, id: &str) -> Option<Arc<Session>> {
         self.sessions
             .lock()

@@ -39,8 +39,9 @@
   The port is `daemon.port` (default `0`: a free port chosen at each start). The upgrade must
   carry `Authorization: Bearer <token>`; anything else gets HTTP 401. The token is 32 random
   bytes generated at every launch. It is never bound to a public interface. Browser-based
-  clients, which cannot set headers, will use a subprotocol-based token in phase 2; Unix
-  domain sockets and Windows named pipes are planned for SSH forwarding.
+  clients (the desktop webview), which cannot set headers, instead offer the subprotocols
+  `imperium.v0` and `imperium.token.<token>`; the daemon selects `imperium.v0`. Unix domain
+  sockets and Windows named pipes are planned for SSH forwarding.
 - **Discovery (implemented):** on start the daemon writes `<data>/daemon.json` (URL, token,
   PID, protocol version), readable only by the user (mode 0600 on Unix; per-user directory ACL
   on Windows), and removes it on shutdown. It holds a lock on `<data>/daemon.lock`, so only one
@@ -49,6 +50,10 @@
 - **Handshake (implemented):** every connection's first call must be `system.handshake`
   (client name/version and protocol version). Other calls before it fail with `-32002`. The
   daemon refuses a different protocol major with `-32001`. `system.ping` returns uptime.
+- **Sessions (implemented):** `session.create` (the caller is subscribed), `session.list`,
+  `session.subscribe` (returns the session's full event history so far, then streams new
+  events with no gap or duplicate), `session.send`, and `session.respond`. Events arrive as
+  `session.event` notifications.
 - Schema defined in Rust (`imperium-protocol`) and exported to TypeScript with `ts-rs` into
   `packages/protocol/src/generated/` whenever `cargo test` runs. `scripts/check-rust.sh` (run
   by CI) fails if the checked-in files differ. The pnpm package `@imperium/protocol`
