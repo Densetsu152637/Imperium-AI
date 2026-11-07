@@ -83,6 +83,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         pre_approved: Vec::new(),
         launcher: None,
         instructions: None,
+        media: None,
         web: None,
         max_steps: 5,
         journal_path: dir.join(".journal/test.jsonl"),

@@ -62,6 +62,8 @@ pub struct Settings {
     pub web: WebSettings,
     #[serde(default)]
     pub pets: PetSettings,
+    #[serde(default)]
+    pub media: MediaSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -206,6 +208,43 @@ impl Default for AutofixSettings {
             model: None,
         }
     }
+}
+
+/// Media tools (see docs/09-media-generation.md).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct MediaSettings {
+    #[serde(default)]
+    pub image: Option<ImageSettings>,
+    #[serde(default)]
+    pub speech: Option<MediaServiceSettings>,
+    #[serde(default)]
+    pub transcription: Option<MediaServiceSettings>,
+}
+
+/// Image generation through an `[endpoints]` entry's OpenAI-compatible images API, or ComfyUI.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ImageSettings {
+    /// `openai` (an images API) or `comfyui`.
+    pub backend: String,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub comfyui_url: Option<String>,
+    /// An API-format ComfyUI workflow containing `{{prompt}}`.
+    #[serde(default)]
+    pub workflow: Option<PathBuf>,
+}
+
+/// An OpenAI-compatible speech or transcription service from `[endpoints]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct MediaServiceSettings {
+    pub endpoint: String,
+    pub model: String,
+    /// Speech only.
+    #[serde(default)]
+    pub voice: Option<String>,
 }
 
 /// Pets (see docs/16-pets.md).

@@ -171,6 +171,9 @@ async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()
                     documentation.len()
                 );
             }
+            SessionEvent::MediaCreated { path, kind, .. } => {
+                println!("\n{tag}· created {kind}: {path}");
+            }
             SessionEvent::BrowserView { url, title, .. } => {
                 println!("\n{tag}· browser: {title} ({url})");
             }

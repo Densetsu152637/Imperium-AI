@@ -9,6 +9,7 @@ use imperium_core::{
     WebTools, new_session_id, resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
+use imperium_media::{ImageBackend, Media, Service};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
@@ -142,6 +143,58 @@ impl DaemonState {
 
     pub fn announcements(&self) -> broadcast::Receiver<Notification> {
         self.announcements.subscribe()
+    }
+
+    /// Media backends from `[media]`, using `[endpoints]` for URLs and keys.
+    fn media(&self) -> Option<Arc<Media>> {
+        let settings = &self.settings.media;
+        let service = |endpoint: &str, model: &str| -> Option<Service> {
+            let endpoint_settings = self.settings.endpoints.get(endpoint)?;
+            let api_key = endpoint_settings.api_key.as_ref().and_then(|reference| {
+                imperium_config::load_secret(&reference.secret)
+                    .ok()
+                    .flatten()
+            });
+            Some(Service {
+                base_url: endpoint_settings.base_url.trim_end_matches('/').to_string(),
+                api_key,
+                model: model.to_string(),
+            })
+        };
+        let image = settings
+            .image
+            .as_ref()
+            .and_then(|image| match image.backend.as_str() {
+                "comfyui" => {
+                    let workflow = std::fs::read_to_string(image.workflow.as_ref()?).ok()?;
+                    Some(ImageBackend::ComfyUi {
+                        url: image
+                            .comfyui_url
+                            .clone()
+                            .unwrap_or_else(|| "http://127.0.0.1:8188".into())
+                            .trim_end_matches('/')
+                            .to_string(),
+                        workflow,
+                    })
+                }
+                _ => service(image.endpoint.as_deref()?, &image.model).map(ImageBackend::OpenAi),
+            });
+        let speech = settings.speech.as_ref().and_then(|speech| {
+            Some((
+                service(&speech.endpoint, &speech.model)?,
+                speech.voice.clone().unwrap_or_else(|| "alloy".into()),
+            ))
+        });
+        let transcription = settings
+            .transcription
+            .as_ref()
+            .and_then(|transcription| service(&transcription.endpoint, &transcription.model));
+        let media = Media {
+            image,
+            speech,
+            transcription,
+        };
+        (!media.is_empty()).then(|| Arc::new(media))
     }
 
     /// Web tools from `[web]`; a provider whose key is missing is left out with a warning.
@@ -374,6 +427,7 @@ impl DaemonState {
             launcher: options.launcher,
             instructions: options.instructions,
             web: self.web_tools(),
+            media: self.media(),
             memory: self.settings.memory.enabled.then(|| SessionMemory {
                 store: Store::new(self.paths.data_dir(), Some(Path::new(project_dir))),
                 settings: self.settings.memory.clone(),

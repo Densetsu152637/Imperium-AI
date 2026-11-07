@@ -205,6 +205,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         pre_approved: Vec::new(),
         launcher: None,
         instructions: None,
+        media: None,
         web: None,
         max_steps: 10,
         journal_path: dir.path().join("journal.jsonl"),

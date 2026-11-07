@@ -145,6 +145,9 @@ impl Agent {
         if self.can_delegate && self.shared.launcher.is_some() {
             tools.push(start_session_spec());
         }
+        if let Some(media) = &self.shared.media {
+            tools.extend(media.tool_specs());
+        }
         if let Some(web) = &self.shared.web {
             tools.extend(web.web.tool_specs());
             if web.browser.is_some() {
@@ -549,6 +552,104 @@ impl Agent {
         finish(ok, output)
     }
 
+    /// Generates images or speech into the project's media folder, or transcribes audio. Each
+    /// call asks first (it may cost money or send data to a service) unless allowed for the
+    /// session.
+    async fn run_media(&self, call: &ToolCall) -> String {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            prompt: String,
+            #[serde(default)]
+            text: String,
+            #[serde(default)]
+            voice: Option<String>,
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            path: String,
+            #[serde(default)]
+            width: Option<u32>,
+            #[serde(default)]
+            height: Option<u32>,
+        }
+        let name = call.function.name.as_str();
+        let finish = |ok: bool, output: String| {
+            self.emit(SessionEvent::ToolFinished {
+                call_id: call.id.clone(),
+                ok,
+                output: truncate(&output, EVENT_OUTPUT_CHARS),
+            });
+            output
+        };
+        let Some(media) = &self.shared.media else {
+            return finish(false, "error: media tools are off".into());
+        };
+        let args: Args = match parse(&call.function.arguments) {
+            Ok(args) => args,
+            Err(error) => return finish(false, format!("error: {error}")),
+        };
+        let summary = match name {
+            "media_image" => format!("generate an image: {}", truncate(&args.prompt, 200)),
+            "media_speak" => format!("speak: {}", truncate(&args.text, 200)),
+            _ => format!("transcribe {}", args.path),
+        };
+        if let Some(blocked) = self.before_tool(name, &call.function.arguments).await {
+            return finish(false, blocked);
+        }
+        if !self.approve(name, &summary).await {
+            return finish(false, "The user denied this action.".into());
+        }
+        self.emit(SessionEvent::ToolStarted {
+            call_id: call.id.clone(),
+            tool: name.to_string(),
+            summary,
+        });
+        let root = self.shared.workspace.root();
+        let http = &self.shared.http;
+        let result = match name {
+            "media_image" => {
+                let size = (args.width.unwrap_or(1024), args.height.unwrap_or(1024));
+                media
+                    .image(http, root, &args.prompt, size, args.name.as_deref())
+                    .await
+                    .map(|path| {
+                        self.emit(SessionEvent::MediaCreated {
+                            path: path.clone(),
+                            kind: "image".into(),
+                            prompt: args.prompt.clone(),
+                        });
+                        format!("saved {path}")
+                    })
+            }
+            "media_speak" => media
+                .speak(
+                    http,
+                    root,
+                    &args.text,
+                    args.voice.as_deref(),
+                    args.name.as_deref(),
+                )
+                .await
+                .map(|path| {
+                    self.emit(SessionEvent::MediaCreated {
+                        path: path.clone(),
+                        kind: "speech".into(),
+                        prompt: args.text.clone(),
+                    });
+                    format!("saved {path}")
+                }),
+            _ => media.transcribe(http, root, &args.path).await,
+        };
+        let (ok, output) = match result {
+            Ok(output) => (true, output),
+            Err(error) => (false, format!("error: {error}")),
+        };
+        self.after_tool(name, &call.function.arguments, ok, &output)
+            .await;
+        finish(ok, output)
+    }
+
     /// Drives the session's browser. Opening a page follows the web_fetch domain rule; clicking
     /// and typing always ask unless allowed for the session. Each action is mirrored to
     /// clients as a `browser_view` event.
@@ -792,6 +893,9 @@ impl Agent {
                 AgentTool::MemoryRemember
             }
             _ if self.shared.mcp.find(name).is_some() => return self.run_mcp(call).await,
+            "media_image" | "media_speak" | "media_transcribe" if self.shared.media.is_some() => {
+                return self.run_media(call).await;
+            }
             "web_fetch" | "web_search" if self.shared.web.is_some() => {
                 return self.run_web(call).await;
             }

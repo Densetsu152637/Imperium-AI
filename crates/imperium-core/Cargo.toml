@@ -12,6 +12,7 @@ getrandom = "0.4.3"
 imperium-config = { version = "0.1.0", path = "../imperium-config" }
 imperium-extensions = { version = "0.1.0", path = "../imperium-extensions" }
 imperium-mcp = { version = "0.1.0", path = "../imperium-mcp" }
+imperium-media = { version = "0.1.0", path = "../imperium-media" }
 imperium-memory = { version = "0.1.0", path = "../imperium-memory" }
 imperium-models = { version = "0.1.0", path = "../imperium-models" }
 imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
@@ -30,9 +31,11 @@ workspace = true
 
 [dev-dependencies]
 axum = "0.8.9"
+base64 = "0.23.1"
 imperium-config = { path = "../imperium-config" }
 imperium-extensions = { path = "../imperium-extensions" }
 imperium-mcp = { path = "../imperium-mcp" }
+imperium-media = { path = "../imperium-media" }
 imperium-memory = { path = "../imperium-memory" }
 imperium-web = { path = "../imperium-web" }
 imperium-workflow = { path = "../imperium-workflow" }

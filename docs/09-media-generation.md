@@ -4,6 +4,35 @@ Text and tool-calling models run through the runtimes in [04](04-models-and-rout
 Image, video, and audio models mostly require Python, so they run in a supervised **media
 sidecar** or through **ComfyUI**.
 
+**Implemented (phase 10, `imperium-media`):** three agent tools, offered when configured.
+`media_image` generates through an OpenAI-compatible images API (an `[endpoints]` entry and a
+model; base64 or URL responses) or through ComfyUI (`comfyui_url` and an API-format workflow
+file whose text contains `{{prompt}}`, and optionally `{{seed}}`, `{{width}}`, `{{height}}`;
+queued with `/prompt`, polled through `/history`, downloaded from `/view`). `media_speak` uses
+an OpenAI-compatible speech API and `media_transcribe` an OpenAI-compatible transcription API
+(LocalAI, whisper.cpp front-ends, or hosted services); transcription reads only files inside
+the project. Generated files are written to the project's `media/` folder with a `.json`
+provenance file beside each (prompt or text, model, size, time), and the session reports a
+`media_created` event. Every media call asks first unless allowed for the session, since it can
+cost money or send data to a service. Not yet: the managed Python sidecar, video, editing,
+the gallery pane, and scheduling media jobs with the memory planner.
+
+```toml
+[media.image]
+backend = "comfyui"
+comfyui_url = "http://127.0.0.1:8188"
+workflow = "D:/ComfyUI/workflows/sdxl_api.json"
+
+[media.speech]
+endpoint = "localai"      # an [endpoints] entry
+model = "kokoro"
+voice = "af_heart"
+
+[media.transcription]
+endpoint = "localai"
+model = "whisper-large-v3"
+```
+
 ## Backends
 
 | Modality              | Default backend                         | Alternatives                              |
