@@ -19,3 +19,13 @@ workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# keyring needs one native backend per platform; without these it silently uses an in-memory mock.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", features = ["apple-native"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6.3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust"] }
