@@ -2,6 +2,12 @@
 
 ## Default policy pack
 
+**Status (phase 5):** packs load from folders listed in `workflow.packs` (for example a clone of
+Agent-Custom-Workflow) through the [workflow contract](18-workflow-contract.md); a bundled
+snapshot, updates, and personality selection are later work. `workflow.enabled = false` turns
+off packs and project instruction files entirely; with no packs configured only the project's
+own instruction files are served.
+
 Imperium ships with [Agent-Custom-Workflow](https://github.com/Densetsu152637/Agent-Custom-Workflow)
 as its default **policy pack**: the root/manager/leaf roles, delegation defaults, validation,
 git, research, debugging, and other workflows, plus personalities.

@@ -99,6 +99,17 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
     case "memory_saved":
       next.push({ kind: "notice", message: `Saved memory ${event.name} (${event.scope})` });
       break;
+    case "context_manifest": {
+      const required = event.items.filter((item) => item.required).length;
+      next.push({
+        kind: "notice",
+        message: `Context for ${event.role}: ${required} required, ${event.documentation.length} documentation pointers`,
+      });
+      break;
+    }
+    case "context_loaded":
+      next.push({ kind: "notice", message: `Loaded ${event.references.join(", ")}` });
+      break;
     default:
       break;
   }

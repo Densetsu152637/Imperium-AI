@@ -130,6 +130,8 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         notices: vec!["hello from the daemon".into()],
         extensions: Default::default(),
         memory: None,
+        context: None,
+        enforce: imperium_config::Enforce::Warn,
         max_steps: 5,
         journal_path: dir.path().join("journal.jsonl"),
     })

@@ -86,6 +86,8 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
                 ..MemorySettings::default()
             },
         }),
+        context: None,
+        enforce: imperium_config::Enforce::Warn,
         max_steps: 5,
         journal_path: data.join(format!("{id}.jsonl")),
     })

@@ -52,6 +52,8 @@ pub struct Settings {
     pub extensions: ExtensionSettings,
     #[serde(default)]
     pub memory: MemorySettings,
+    #[serde(default)]
+    pub workflow: WorkflowSettings,
     /// `[[hooks]]`: commands run at points in a session (see docs/06-extensibility.md#hooks).
     #[serde(default)]
     pub hooks: Vec<HookSettings>,
@@ -106,6 +108,36 @@ impl Settings {
         }
         Ok(())
     }
+}
+
+/// Workflow packs and context retrieval (see docs/18-workflow-contract.md).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct WorkflowSettings {
+    /// Off turns off workflow packs and project instruction files entirely.
+    pub enabled: bool,
+    /// Workflow folders, such as a clone of Agent-Custom-Workflow.
+    pub packs: Vec<PathBuf>,
+    pub enforce: Enforce,
+}
+
+impl Default for WorkflowSettings {
+    fn default() -> Self {
+        WorkflowSettings {
+            enabled: true,
+            packs: Vec::new(),
+            enforce: Enforce::Warn,
+        }
+    }
+}
+
+/// Whether agents must load their required context before writing or running anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Enforce {
+    RequiredBeforeAction,
+    Warn,
+    Off,
 }
 
 /// Global and project memory (see docs/17-memory.md).

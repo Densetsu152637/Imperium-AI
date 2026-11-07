@@ -1,6 +1,7 @@
 mod chat;
 mod local;
 mod memory;
+mod workflow;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -57,6 +58,11 @@ enum Command {
         #[arg(long, global = true)]
         project: Option<PathBuf>,
     },
+    /// Workflow packs and context retrieval.
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
+    },
     /// Inference runtimes.
     Runtime {
         #[command(subcommand)]
@@ -84,6 +90,24 @@ enum MemoryCommand {
         /// global, project, or project-private; defaults to where the name is found.
         #[arg(long)]
         scope: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkflowCommand {
+    /// Show the load manifest an agent in a role would get for a task.
+    Resolve {
+        /// The task or message.
+        task: String,
+        /// root, manager, leaf, or a role the pack's manifest defines.
+        #[arg(long, default_value = "root")]
+        role: String,
+        /// Project folder; defaults to the current directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Workflow folders to use instead of workflow.packs.
+        #[arg(long = "pack")]
+        packs: Vec<PathBuf>,
     },
 }
 
@@ -147,6 +171,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
+        Command::Workflow {
+            command:
+                WorkflowCommand::Resolve {
+                    task,
+                    role,
+                    project,
+                    packs,
+                },
+        } => workflow::resolve(&role, &task, project, packs),
         Command::Memory { command, project } => match command {
             MemoryCommand::List => memory::list(project),
             MemoryCommand::Search { query } => memory::search(&query, project),

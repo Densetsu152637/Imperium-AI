@@ -160,6 +160,20 @@ async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()
             SessionEvent::MemorySaved { name, scope } => {
                 println!("\n{tag}· saved memory {name} ({scope})");
             }
+            SessionEvent::ContextManifest {
+                role,
+                items,
+                documentation,
+            } => {
+                let required = items.iter().filter(|item| item.required).count();
+                println!(
+                    "\n{tag}· context for {role}: {required} required, {} documentation pointers",
+                    documentation.len()
+                );
+            }
+            SessionEvent::ContextLoaded { references } => {
+                println!("\n{tag}· loaded {}", references.join(", "));
+            }
         }
     }
 }

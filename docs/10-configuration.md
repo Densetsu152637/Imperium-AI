@@ -58,6 +58,9 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `memory.write.global`, `.project`, `.project_private` | `ask`, `ask`, `auto` | Whether agents may save memories in each scope: `auto`, `ask`, or `off` |
 | `memory.recall` | `true` | Put the best-matching memories before each message |
 | `memory.max_index_tokens`, `memory.max_recall_tokens` | `1500`, `1500` | Budgets for the index in agent instructions and for recalled memories |
+| `workflow.enabled` | `true` | Serve workflow packs and project instruction files to agents ([18](18-workflow-contract.md)) |
+| `workflow.packs` | none | Workflow folders, such as a clone of Agent-Custom-Workflow |
+| `workflow.enforce` | `warn` | `required-before-action` refuses writes and commands until required context is loaded; `warn` and `off` do not |
 | `hooks` | none | `[[hooks]]` entries with `event`, optional `matcher`, `command`, and `timeout_s`; see [hooks](06-extensibility.md#hooks) |
 
 Configuration is read when the daemon starts; restart it after editing.

@@ -193,6 +193,8 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
+        context: None,
+        enforce: imperium_config::Enforce::Warn,
         max_steps: 10,
         journal_path: dir.path().join("journal.jsonl"),
     })

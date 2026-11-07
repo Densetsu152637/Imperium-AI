@@ -2151,6 +2151,7 @@ dependencies = [
  "imperium-local",
  "imperium-memory",
  "imperium-protocol",
+ "imperium-workflow",
  "imperiumd",
  "reqwest",
  "rpassword",
@@ -2189,6 +2190,7 @@ dependencies = [
  "imperium-models",
  "imperium-protocol",
  "imperium-tools",
+ "imperium-workflow",
  "reqwest",
  "serde",
  "serde_json",
@@ -2309,6 +2311,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "imperium-workflow"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml 1.2.1+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
 name = "imperiumd"
 version = "0.1.0"
 dependencies = [
@@ -2325,6 +2338,7 @@ dependencies = [
  "imperium-memory",
  "imperium-protocol",
  "imperium-tools",
+ "imperium-workflow",
  "serde",
  "serde_json",
  "tempfile",
