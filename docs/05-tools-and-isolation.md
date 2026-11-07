@@ -107,6 +107,19 @@ dev image.
 
 ## SSH hosts
 
+**Implemented (phase 7):** `imperium remote connect <destination>` (a `user@host` or a `Host`
+from `~/.ssh/config`) runs `imperium daemon endpoint` on the host over SSH (`BatchMode`, so
+keys come from the SSH agent and no password is ever asked for or stored), starting the
+host's daemon with `imperium daemon start` if it is not running, then forwards a free local
+port to the remote daemon's loopback port (`ssh -N -L`, with `ExitOnForwardFailure` and
+keep-alives) until Ctrl+C. The forwarded endpoint, with the remote daemon's per-launch token,
+is recorded in `<data>/remotes/<name>.json` (readable only by the user on Unix) and removed on
+disconnect; `imperium --remote <name> <command>` talks to the remote daemon, which owns the
+host's files, processes, models, and GPUs (its own `models.folders`, runtimes, and isolation
+apply). Not yet: installing `imperiumd` on the host, Unix-socket binding, `~/.ssh/config`
+discovery in the app, choosing a remote in the desktop app (its connection form accepts the
+recorded URL and token), and cross-host routing.
+
 - Hosts are configured from `~/.ssh/config` entries or added manually; keys stay in the user's
   SSH agent. Imperium never stores SSH passwords.
 - On first connect, Imperium installs or updates a matching `imperiumd` on the host (with
