@@ -3,6 +3,7 @@ mod autostart;
 mod chat;
 mod local;
 mod memory;
+mod phone;
 mod project;
 mod remote;
 mod schedule;
@@ -67,6 +68,11 @@ enum Command {
         /// Project folder; defaults to the current directory.
         #[arg(long, global = true)]
         project: Option<PathBuf>,
+    },
+    /// Paired phones.
+    Phone {
+        #[command(subcommand)]
+        command: PhoneCommand,
     },
     /// Remote hosts over SSH.
     Remote {
@@ -139,6 +145,16 @@ enum DaemonCommand {
     Start,
     /// Print the running daemon's endpoint as JSON (used by `imperium remote connect`).
     Endpoint,
+}
+
+#[derive(Debug, Subcommand)]
+enum PhoneCommand {
+    /// Show a one-time code for pairing a phone.
+    Pair,
+    /// List paired phones.
+    Devices,
+    /// Unpair a phone.
+    Revoke { id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -266,6 +282,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
+        Command::Phone { command } => match command {
+            PhoneCommand::Pair => phone::pair(),
+            PhoneCommand::Devices => phone::devices(),
+            PhoneCommand::Revoke { id } => phone::revoke(id),
+        },
         Command::Remote {
             command:
                 RemoteCommand::Connect {

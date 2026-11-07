@@ -66,14 +66,18 @@ async fn upgrade(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let daemon = Arc::clone(&state.daemon);
-    ws.protocols([SUBPROTOCOL])
-        .on_upgrade(move |socket| run_connection(socket, daemon))
+    ws.protocols([SUBPROTOCOL]).on_upgrade(move |socket| {
+        let announcements = daemon.announcements();
+        run_connection(socket, Connection::new(daemon), announcements)
+    })
 }
 
 /// Reads requests and writes responses, interleaving notifications from subscribed sessions.
-async fn run_connection(mut socket: WebSocket, daemon: Arc<DaemonState>) {
-    let mut announcements = daemon.announcements();
-    let mut connection = Connection::new(daemon);
+pub(crate) async fn run_connection(
+    mut socket: WebSocket,
+    mut connection: Connection,
+    mut announcements: broadcast::Receiver<Notification>,
+) {
     let (notify, mut notifications) = mpsc::unbounded_channel::<Notification>();
     loop {
         let outgoing = tokio::select! {

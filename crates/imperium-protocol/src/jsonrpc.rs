@@ -143,6 +143,8 @@ pub mod codes {
     pub const SESSION_NOT_FOUND: i32 = -32003;
     /// The requested model cannot be used (unknown endpoint, missing key, no default).
     pub const MODEL_UNAVAILABLE: i32 = -32004;
+    /// The caller is not allowed to use this method (a paired phone outside its scopes).
+    pub const FORBIDDEN: i32 = -32005;
 }
 
 #[cfg(test)]

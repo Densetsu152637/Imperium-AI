@@ -10,8 +10,10 @@ use imperium_protocol::methods::{
     ApprovalRespondParams, ApprovalRespondResult, Handshake, HandshakeParams, HandshakeResult,
     LocalModelList, LocalModelListParams, Method, ModList, ModListParams, ModelList,
     ModelListParams, Peer, PetInteract, PetInteractParams, PetInteractResult, PetList,
-    PetListParams, PetListResult, PetStrip, PetStripParams, PetStripResult, Ping, PingParams,
-    PingResult, ProjectAgentRow, ProjectList, ProjectListParams, ProjectListResult, ProjectMessage,
+    PetListParams, PetListResult, PetStrip, PetStripParams, PetStripResult, PhoneDevices,
+    PhoneDevicesParams, PhoneDevicesResult, PhonePair, PhonePairParams, PhonePairResult,
+    PhoneRevoke, PhoneRevokeParams, PhoneRevokeResult, Ping, PingParams, PingResult,
+    ProjectAgentRow, ProjectList, ProjectListParams, ProjectListResult, ProjectMessage,
     ProjectMessageParams, ProjectMessageResult, ScheduleList, ScheduleListParams,
     ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionCreate,
     SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
@@ -45,6 +47,8 @@ pub struct Handled {
 pub struct Connection {
     state: Arc<DaemonState>,
     handshake_done: bool,
+    /// For a paired phone: the only methods it may call.
+    allowed: Option<Vec<&'static str>>,
 }
 
 impl Connection {
@@ -52,6 +56,16 @@ impl Connection {
         Connection {
             state,
             handshake_done: false,
+            allowed: None,
+        }
+    }
+
+    /// A connection limited to `allowed` methods (a paired phone's scopes).
+    pub fn restricted(state: Arc<DaemonState>, allowed: Vec<&'static str>) -> Self {
+        Connection {
+            state,
+            handshake_done: false,
+            allowed: Some(allowed),
         }
     }
 
@@ -87,6 +101,38 @@ impl Connection {
                 codes::HANDSHAKE_REQUIRED,
                 "call system.handshake first",
             )),
+            method
+                if self
+                    .allowed
+                    .as_ref()
+                    .is_some_and(|allowed| !allowed.contains(&method)) =>
+            {
+                Err(ErrorObject::new(
+                    codes::FORBIDDEN,
+                    format!("{method} is not allowed for this device"),
+                ))
+            }
+            PhonePair::NAME => call::<PhonePair>(request.params, |_: PhonePairParams| {
+                Ok(PhonePairResult {
+                    pairing: self.state.devices().new_code(),
+                    url: self.state.phone_url(),
+                })
+            }),
+            PhoneDevices::NAME => call::<PhoneDevices>(request.params, |_: PhoneDevicesParams| {
+                Ok(PhoneDevicesResult {
+                    devices: self.state.devices().list(),
+                })
+            }),
+            PhoneRevoke::NAME => {
+                call::<PhoneRevoke>(request.params, |params: PhoneRevokeParams| {
+                    let found = self
+                        .state
+                        .devices()
+                        .revoke(&params.id)
+                        .map_err(|message| ErrorObject::new(codes::INTERNAL_ERROR, message))?;
+                    Ok(PhoneRevokeResult { found })
+                })
+            }
             Ping::NAME => call::<Ping>(request.params, |_: PingParams| {
                 Ok(PingResult {
                     uptime_ms: self.state.uptime_ms(),

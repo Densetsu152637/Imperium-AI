@@ -64,6 +64,8 @@ pub struct Settings {
     pub pets: PetSettings,
     #[serde(default)]
     pub media: MediaSettings,
+    #[serde(default)]
+    pub phone: PhoneSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -208,6 +210,15 @@ impl Default for AutofixSettings {
             model: None,
         }
     }
+}
+
+/// The phone listener (see docs/15-mobile-and-remote.md). Off unless `bind` is set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct PhoneSettings {
+    /// Address to serve phones on, such as a Tailscale address `100.101.102.103:7681`. It adds
+    /// no encryption of its own, so use a private overlay network or a trusted LAN.
+    #[serde(default)]
+    pub bind: Option<String>,
 }
 
 /// Media tools (see docs/09-media-generation.md).
