@@ -76,6 +76,10 @@ place to set them:
 
 ## Pack format
 
+The public, versioned contract for packs (manifest, front matter, triggers) and the context
+retrieval that serves pack files to agents are defined in
+[18 — Workflow contract](18-workflow-contract.md); the summary below predates it.
+
 A pack is a directory or Git repository with an `imperium-pack.toml`:
 
 ```toml
