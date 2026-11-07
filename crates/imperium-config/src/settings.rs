@@ -50,6 +50,8 @@ pub struct Settings {
     pub mcp: McpSettings,
     #[serde(default)]
     pub extensions: ExtensionSettings,
+    #[serde(default)]
+    pub memory: MemorySettings,
     /// `[[hooks]]`: commands run at points in a session (see docs/06-extensibility.md#hooks).
     #[serde(default)]
     pub hooks: Vec<HookSettings>,
@@ -104,6 +106,57 @@ impl Settings {
         }
         Ok(())
     }
+}
+
+/// Global and project memory (see docs/17-memory.md).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct MemorySettings {
+    pub enabled: bool,
+    /// Whether agents may save memories in each scope: `auto`, `ask`, or `off`.
+    pub write: MemoryWrite,
+    /// Add the best-matching memories to each message before the root agent sees it.
+    pub recall: bool,
+    pub max_index_tokens: usize,
+    pub max_recall_tokens: usize,
+}
+
+impl Default for MemorySettings {
+    fn default() -> Self {
+        MemorySettings {
+            enabled: true,
+            write: MemoryWrite::default(),
+            recall: true,
+            max_index_tokens: 1500,
+            max_recall_tokens: 1500,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct MemoryWrite {
+    pub global: WritePolicy,
+    pub project: WritePolicy,
+    pub project_private: WritePolicy,
+}
+
+impl Default for MemoryWrite {
+    fn default() -> Self {
+        MemoryWrite {
+            global: WritePolicy::Ask,
+            project: WritePolicy::Ask,
+            project_private: WritePolicy::Auto,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WritePolicy {
+    Auto,
+    Ask,
+    Off,
 }
 
 /// Where plugins are loaded from, besides `<config>/plugins`.

@@ -13,4 +13,4 @@ mod session;
 
 pub use local::{AcquireFuture, Availability, LocalLease, LocalModels};
 pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
-pub use session::{Session, SessionClosed, SessionConfig, new_session_id};
+pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};

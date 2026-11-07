@@ -78,6 +78,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-sandbox`    | Isolation tiers: policy guard, container driver, SSH transport         |
 | `imperium-extensions` | Plugin, skill, hook, and slash-command loading; Claude Code plugin compatibility (implemented) |
 | `imperium-policy`     | Policy pack resolution, layering, and prompt assembly                  |
+| `imperium-memory`     | Global and project memory: entries, index, search, redaction (implemented) |
 | `imperium-config`     | Layered config, schema validation, keychain access                     |
 | `imperium-telemetry`  | Metrics, traces, cost ledger, OpenTelemetry export                     |
 | `imperium-automation` | Projects' persistent agents and schedules                              |

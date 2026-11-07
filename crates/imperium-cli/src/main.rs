@@ -1,5 +1,6 @@
 mod chat;
 mod local;
+mod memory;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -48,6 +49,14 @@ enum Command {
         #[command(subcommand)]
         command: ModelsCommand,
     },
+    /// Saved memories for the current project (or --project) and global ones.
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommand,
+        /// Project folder; defaults to the current directory.
+        #[arg(long, global = true)]
+        project: Option<PathBuf>,
+    },
     /// Inference runtimes.
     Runtime {
         #[command(subcommand)]
@@ -59,6 +68,23 @@ enum Command {
 enum ModelsCommand {
     /// List GGUF models in models.folders, whether each fits in memory, and what is loaded.
     Local,
+}
+
+#[derive(Debug, Subcommand)]
+enum MemoryCommand {
+    /// List memories: global, the project's shared ones, and your private project notes.
+    List,
+    /// Find memories relevant to a query.
+    Search { query: String },
+    /// Show one memory.
+    Show { name: String },
+    /// Delete a memory.
+    Forget {
+        name: String,
+        /// global, project, or project-private; defaults to where the name is found.
+        #[arg(long)]
+        scope: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -121,6 +147,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
+        Command::Memory { command, project } => match command {
+            MemoryCommand::List => memory::list(project),
+            MemoryCommand::Search { query } => memory::search(&query, project),
+            MemoryCommand::Show { name } => memory::show(&name, project),
+            MemoryCommand::Forget { name, scope } => memory::forget(&name, scope, project),
+        },
     }
 }
 
