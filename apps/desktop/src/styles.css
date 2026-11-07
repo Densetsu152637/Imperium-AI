@@ -584,6 +584,11 @@ pre {
   white-space: nowrap;
 }
 
+/* Session titles sit a step below the base size so long titles fit the rail. */
+.sessions .list .name {
+  font-size: 0.875rem;
+}
+
 .list .detail {
   font-size: 0.75rem;
   color: var(--muted);
@@ -1836,7 +1841,7 @@ button.sort:hover:not(:disabled) {
   flex: 1 1 12rem;
   min-width: 0;
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 0.92rem;
   font-weight: 600;
   letter-spacing: -0.005em;
   overflow: hidden;
