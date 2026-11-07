@@ -327,6 +327,47 @@ mod tests {
     }
 
     #[test]
+    fn endpoints_parse_with_secret_references_and_pricing() {
+        let config = Config::from_layers([
+            Layer::defaults(),
+            layer(
+                Source::User("u".into()),
+                r#"
+                [models]
+                default = "openrouter:qwen/qwen3-coder"
+
+                [endpoints.openrouter]
+                base_url = "https://openrouter.ai/api/v1"
+                api_key = { secret = "openrouter" }
+                pricing."qwen/qwen3-coder" = { input_usd_per_mtok = 0.2, output_usd_per_mtok = 0.8 }
+                "#,
+            ),
+        ]);
+        let settings = config.settings().unwrap();
+        let endpoint = &settings.endpoints["openrouter"];
+        assert_eq!(
+            endpoint.api_key.as_ref().unwrap().secret.as_str(),
+            "openrouter"
+        );
+        assert_eq!(
+            endpoint.pricing["qwen/qwen3-coder"].output_usd_per_mtok,
+            0.8
+        );
+        assert_eq!(settings.agents.max_steps, 50);
+
+        let bad_secret = Config::from_layers([
+            Layer::defaults(),
+            layer(
+                Source::User("u".into()),
+                "[endpoints.x]
+base_url = 'u'
+api_key = { secret = 'Bad Name' }",
+            ),
+        ]);
+        assert!(bad_secret.settings().is_err());
+    }
+
+    #[test]
     fn settings_report_values_of_the_wrong_type() {
         let config = Config::from_layers([
             Layer::defaults(),

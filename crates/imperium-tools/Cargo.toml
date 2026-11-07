@@ -1,0 +1,22 @@
+[package]
+name = "imperium-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Built-in agent tools (files, commands) confined to a workspace"
+
+[dependencies]
+imperium-models = { version = "0.1.0", path = "../imperium-models" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["process", "fs", "time", "io-util", "rt"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt", "macros", "process", "fs", "time"] }

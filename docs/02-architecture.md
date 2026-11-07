@@ -127,7 +127,7 @@ Setting `IMPERIUM_HOME` puts all three under one root as `config/`, `data/`, and
 - **Shared I/O runtime.** A small multi-threaded Tokio runtime (2 worker threads, implemented)
   runs the transport, connection handling, and the event bus. Async I/O keeps idle
   connections and waiting agents at near-zero CPU.
-- **Thread per session (planned, phase 1).** Each session runs on its own OS thread with a
+- **Thread per session (implemented).** Each session runs on its own OS thread with a
   single-threaded Tokio runtime. A busy session cannot starve others or the transport, session
   state needs no cross-thread locking, and a panicking session is contained to its thread. The
   I/O runtime and session threads talk over channels; an idle session thread is blocked on its

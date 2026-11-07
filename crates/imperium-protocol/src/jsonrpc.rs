@@ -87,6 +87,26 @@ impl Response {
     }
 }
 
+/// A message from daemon to client that needs no reply, such as a session event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Notification {
+    pub jsonrpc: JsonRpcVersion,
+    pub method: String,
+    #[ts(type = "unknown")]
+    pub params: Value,
+}
+
+impl Notification {
+    pub fn new(method: impl Into<String>, params: Value) -> Self {
+        Notification {
+            jsonrpc: JsonRpcVersion,
+            method: method.into(),
+            params,
+        }
+    }
+}
+
 /// A JSON-RPC error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -119,6 +139,10 @@ pub mod codes {
     pub const INCOMPATIBLE_PROTOCOL: i32 = -32001;
     /// A method other than `system.handshake` was called before the handshake.
     pub const HANDSHAKE_REQUIRED: i32 = -32002;
+    /// No session has the given id.
+    pub const SESSION_NOT_FOUND: i32 = -32003;
+    /// The requested model cannot be used (unknown endpoint, missing key, no default).
+    pub const MODEL_UNAVAILABLE: i32 = -32004;
 }
 
 #[cfg(test)]

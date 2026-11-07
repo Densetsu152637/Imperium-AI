@@ -10,9 +10,17 @@ use tokio_tungstenite::tungstenite::{self, Message};
 async fn start_server(token: &str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}/rpc", listener.local_addr().unwrap());
+    let settings = imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+        .settings()
+        .unwrap();
+    let daemon = imperiumd::DaemonState::new(
+        imperium_config::Paths::under(std::path::Path::new("unused")),
+        settings,
+    );
     tokio::spawn(imperiumd::serve(
         listener,
         AccessToken::from(token.to_string()),
+        daemon,
         std::future::pending(),
     ));
     url
