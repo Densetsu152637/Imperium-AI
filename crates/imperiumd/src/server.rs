@@ -72,6 +72,7 @@ async fn upgrade(
 
 /// Reads requests and writes responses, interleaving notifications from subscribed sessions.
 async fn run_connection(mut socket: WebSocket, daemon: Arc<DaemonState>) {
+    let mut announcements = daemon.announcements();
     let mut connection = Connection::new(daemon);
     let (notify, mut notifications) = mpsc::unbounded_channel::<Notification>();
     loop {
@@ -97,6 +98,11 @@ async fn run_connection(mut socket: WebSocket, daemon: Arc<DaemonState>) {
                 serde_json::to_string(&handled.response)
             }
             Some(notification) = notifications.recv() => serde_json::to_string(&notification),
+            announcement = announcements.recv() => match announcement {
+                Ok(notification) => serde_json::to_string(&notification),
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
         };
         let text = outgoing.expect("protocol messages serialise to JSON");
         if socket.send(Message::Text(text.into())).await.is_err() {

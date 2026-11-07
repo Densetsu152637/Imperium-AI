@@ -62,6 +62,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `workflow.packs` | none | Workflow folders, such as a clone of Agent-Custom-Workflow |
 | `workflow.enforce` | `warn` | `required-before-action` refuses writes and commands until required context is loaded; `warn` and `off` do not |
 | `<config>/mods/<id>/` | none | UI mods (folders with `mod.json`), shown as panels; see [UI mods](06-extensibility.md#ui-mods) |
+| `schedules` | none | `[[schedules]]` with `id`, `trigger` (`cron`, `every`, or `at`), `action` (`project` and `prompt` or `command`, optional `model`, `timeout_s`), `missed`, `overlap`, `notify`, `enabled`; see [schedules](14-projects-and-automation.md#schedules) |
 | `hooks` | none | `[[hooks]]` entries with `event`, optional `matcher`, `command`, and `timeout_s`; see [hooks](06-extensibility.md#hooks) |
 
 Configuration is read when the daemon starts; restart it after editing.

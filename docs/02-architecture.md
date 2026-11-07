@@ -82,7 +82,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-memory`     | Global and project memory: entries, index, search, redaction (implemented) |
 | `imperium-config`     | Layered config, schema validation, keychain access                     |
 | `imperium-telemetry`  | Metrics, traces, cost ledger, OpenTelemetry export                     |
-| `imperium-automation` | Projects' persistent agents and schedules                              |
+| `imperium-automation` | Schedule triggers (cron, interval, one-shot), missed runs, run history (implemented); project agents (planned) |
 | `imperium-remote`     | Device pairing, encrypted remote transport, relay client               |
 | `imperium-pets`       | Pet engine, pack loading, WASM behaviour host                          |
 | `imperiumd`           | Daemon binary                                                          |

@@ -77,6 +77,22 @@ A long-lived agent per project that watches for work and **dispatches it into ne
 Schedules let tasks run automatically with the flexibility of provider-side scheduled tasks and
 routines, but locally.
 
+**Implemented (phase 6, `imperium-automation` and the daemon's scheduler):** `[[schedules]]` in
+the user configuration with a `cron` (five fields, local time; names, lists, ranges, steps),
+`every` (`90s`, `30m`, `2h`, `1d`), or `at` (a local time) trigger, and a `prompt` (a new
+session in `action.project`, with an optional `model`) or `command` (a shell command run there)
+action, with `timeout_s` (default one hour). The daemon runs them whether or not a window is
+open. Missed runs follow `missed` (`run_once_on_wake`, the default, or `skip`), judged from the
+run history in `<data>/schedules/history.json`; `overlap` is `skip` (default) or `allow`. Every
+connected client receives `schedule.event` notifications (`started`, `completed`, `failed`,
+with the session id and a summary), and `notify = ["os"]` also shows a system notification.
+`imperium schedule list` and `imperium schedule run <id>` use the `schedules.list` and
+`schedules.run` protocol methods. A prompt run whose session asks for permission waits for an
+answer from a client until it times out; approval queues arrive with the project agent. Not
+yet: time zones other than local, jitter, file, Git, webhook, and event triggers, the project
+agent and hook actions, conditions, project-level schedules, `schedule.*` hook events, and the
+desktop Schedules pane.
+
 ### Triggers
 
 | Trigger     | Example                                       |

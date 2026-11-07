@@ -374,3 +374,79 @@ pub struct ModPanel {
     pub id: String,
     pub title: String,
 }
+
+/// `schedules.list`: configured schedules with their next and last runs.
+#[derive(Debug)]
+pub struct ScheduleList;
+
+impl Method for ScheduleList {
+    const NAME: &'static str = "schedules.list";
+    type Params = ScheduleListParams;
+    type Result = ScheduleListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduleListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduleListResult {
+    pub schedules: Vec<ScheduleRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduleRow {
+    pub id: String,
+    pub enabled: bool,
+    /// The trigger as written, such as `cron 0 8 * * MON-FRI`.
+    pub trigger: String,
+    /// `prompt` or `command`.
+    pub action: String,
+    pub project: String,
+    /// RFC 3339 local times.
+    pub next_run: Option<String>,
+    pub last_run: Option<String>,
+    pub last_ok: Option<bool>,
+    pub running: bool,
+    /// Why the schedule cannot run, if it cannot.
+    pub problem: Option<String>,
+}
+
+/// `schedules.run`: start a schedule now.
+#[derive(Debug)]
+pub struct ScheduleRun;
+
+impl Method for ScheduleRun {
+    const NAME: &'static str = "schedules.run";
+    type Params = ScheduleRunParams;
+    type Result = ScheduleRunResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduleRunParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduleRunResult {
+    /// False when the schedule was already running and does not allow overlap.
+    pub started: bool,
+}
+
+/// Notification sent to every client when a scheduled run starts or ends.
+pub const SCHEDULE_EVENT: &str = "schedule.event";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduleEventParams {
+    pub schedule_id: String,
+    #[ts(type = "\"started\" | \"completed\" | \"failed\"")]
+    pub status: String,
+    /// The session a prompt run created.
+    pub session_id: Option<String>,
+    pub summary: String,
+}
