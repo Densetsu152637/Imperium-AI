@@ -17,6 +17,7 @@
 | D11 | Phone app connects end-to-end encrypted to paired computers (LAN, overlay network, or relay) | No data leaves the user's control | Hosted cloud backend holding sessions | — |
 | D12 | Pets run in the daemon and render in every client | Consistent state; zero model cost | UI-only pets | — |
 | D13 | Licence: MIT | Owner's choice | — | — |
+| D14 | Planning is a runtime feature (plan objects, plan phase, approval modes) | Keeps weaker open models on track; plans visible and editable | Prompt-only planning | — |
 
 ## Open questions
 

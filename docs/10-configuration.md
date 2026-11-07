@@ -67,6 +67,10 @@ max_concurrent = 8
 default_tier = "policy"   # policy | os | container | remote
 exec_from_hosted_models = "container"
 
+[worktrees]                # full options: 14-projects-and-automation.md#worktrees
+mode = "per-session"
+location = "data"
+
 [policy]
 pack = "builtin:agent-custom-workflow"
 personality = "luxion"

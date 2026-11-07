@@ -27,6 +27,31 @@ Tool calling works with native function-calling models and, as a fallback, a con
 JSON/grammar format (llama.cpp grammars, vLLM guided decoding) for models without native
 support.
 
+## Planning
+
+Planning is built into the runtime (`imperium-core`), not left to prompts, so every agent —
+whatever model it runs on — works toward an explicit, tracked goal.
+
+- **Plan object.** Each agent can hold a plan: a goal, acceptance criteria, and ordered steps
+  (`pending`, `in_progress`, `done`, `blocked`, `skipped`), each optionally linked to the tasks
+  delegated for it. Plans are stored in the session journal and streamed to clients
+  (`plan.updated`), where the UI shows them as a live checklist.
+- **Automatic planning.** When a request is non-trivial (a classifier pass, configurable
+  thresholds, or the policy pack's rules), the engine runs a **plan phase** first: the agent
+  may only read and search, then proposes a plan. Small requests skip straight to execution.
+- **Plan approval modes:** `auto` (execute immediately), `review` (user approves or edits the
+  plan; default for root agents), or `policy` (the policy pack decides by scope or risk).
+- **Plans drive delegation.** Independent steps can be turned into subagent tasks in one
+  action; the parent's plan advances as completion events arrive, without extra model calls.
+- **Staying on course.** The engine injects a compact plan summary into each turn, flags turns
+  that make no progress against the current step, and prompts a re-plan when steps fail, the
+  budget burns faster than progress, or the user changes the goal. Re-plans keep a diff of what
+  changed.
+- **Verification step.** Plans end with a check against the acceptance criteria; the agent
+  reports what is met, what is not, and what was not verified.
+- Tools: `plan.propose`, `plan.update`, `plan.advance`, `plan.complete`. Project agents
+  ([14](14-projects-and-automation.md)) use the same plans for long-running goals.
+
 ## Reactive delegation
 
 Delegation must not burn tokens while subagents work.

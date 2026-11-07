@@ -18,6 +18,40 @@ A project defines:
 Projects are listed in the sidebar; opening a folder that has `.imperium/` (or any folder)
 creates or reopens its project.
 
+## Worktrees
+
+For Git projects, sessions and parallel writing subagents can each work in their own Git
+worktree, so concurrent edits never collide. Worktree behaviour is explicit configuration, set
+globally and overridable per project:
+
+```toml
+[worktrees]
+mode = "per-session"            # off | per-session | per-writer (each writing subagent gets one)
+location = "data"               # data | sibling | in-repo | custom
+custom_path = ""                # used when location = "custom"; may contain {project} and {session}
+branch_prefix = "imperium/"     # branches are <prefix><session-or-task-slug>
+base = "default"                # default branch, current branch, or a named ref
+cleanup = "on-archive"          # on-archive | on-merge | manual
+keep_unmerged = true            # never delete a worktree with unmerged or uncommitted work
+max_worktrees = 20              # per project
+max_disk_gb = 50                # per project; new worktrees are refused above this
+```
+
+| `location` | Path                                                      |
+| ---------- | --------------------------------------------------------- |
+| `data`     | `<data>/worktrees/<project>/<name>` (default; outside the repo) |
+| `sibling`  | `<repo>/../<repo-name>.worktrees/<name>`                  |
+| `in-repo`  | `<repo>/.imperium/worktrees/<name>` (added to `.git/info/exclude`) |
+| `custom`   | `custom_path` with placeholders expanded                  |
+
+- A Worktrees pane lists every worktree with its branch, owning session or task, ahead/behind
+  counts, dirty state, and disk use, with actions to open, sync with base, merge, or remove.
+- Merging a writer's worktree back is an explicit step (by the parent agent under policy, or by
+  the user); conflicts are reported, never force-resolved.
+- On SSH hosts, worktrees are created on the host using the host's configuration.
+- Non-Git projects can use copy-on-write snapshots (where the filesystem supports them) or run
+  writers sequentially.
+
 ## Project agent
 
 A long-lived agent per project that watches for work and **dispatches it into new sessions**.
