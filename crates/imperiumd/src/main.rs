@@ -63,6 +63,13 @@ async fn run() -> anyhow::Result<()> {
     let local = imperiumd::LocalRuntime::start(&paths, &settings);
     let daemon = DaemonState::new(paths.clone(), settings, local);
     daemon.start_pets();
+    if let Some(address) = daemon
+        .start_phone()
+        .await
+        .context("could not start the phone listener")?
+    {
+        tracing::info!(%address, "phones can connect");
+    }
     daemon.start_project_agents();
     daemon.start_scheduler();
     daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));

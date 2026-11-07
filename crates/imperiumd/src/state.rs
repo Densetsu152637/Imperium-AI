@@ -22,6 +22,7 @@ use tokio::sync::broadcast;
 use crate::approvals::Approvals;
 use crate::local::LocalRuntime;
 use crate::pets::PetEngine;
+use crate::phone::Devices;
 use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
 
@@ -48,6 +49,8 @@ pub struct DaemonState {
     approvals: Approvals,
     project_agents: ProjectAgents,
     pets: OnceLock<Option<Arc<PetEngine>>>,
+    devices: Devices,
+    phone_address: OnceLock<std::net::SocketAddr>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -64,6 +67,7 @@ impl DaemonState {
     /// `local` is the local model runtime, when `models.folders` are configured
     /// ([`LocalRuntime::start`]).
     pub fn new(paths: Paths, settings: Settings, local: Option<LocalRuntime>) -> Arc<Self> {
+        let devices = Devices::load(paths.data_dir().join("devices.json"));
         Arc::new(DaemonState {
             started: Instant::now(),
             paths,
@@ -75,12 +79,38 @@ impl DaemonState {
             approvals: Approvals::default(),
             project_agents: ProjectAgents::default(),
             pets: OnceLock::new(),
+            devices,
+            phone_address: OnceLock::new(),
         })
     }
 
     /// Starts running `[[schedules]]`. Call once, inside the Tokio runtime.
     pub fn start_scheduler(self: &Arc<Self>) -> Arc<Scheduler> {
         Arc::clone(self.scheduler.get_or_init(|| Scheduler::start(self)))
+    }
+
+    pub fn devices(&self) -> &Devices {
+        &self.devices
+    }
+
+    /// Starts the phone listener when `phone.bind` is set. Call once.
+    pub async fn start_phone(self: &Arc<Self>) -> std::io::Result<Option<std::net::SocketAddr>> {
+        let Some(bind) = &self.settings.phone.bind else {
+            return Ok(None);
+        };
+        let address = bind
+            .parse()
+            .map_err(|error| std::io::Error::other(format!("phone.bind {bind:?}: {error}")))?;
+        let bound = crate::phone::start(self, address).await?;
+        let _ = self.phone_address.set(bound);
+        Ok(Some(bound))
+    }
+
+    /// The phone app's address, when the phone listener is on.
+    pub fn phone_url(&self) -> Option<String> {
+        self.phone_address
+            .get()
+            .map(|address| format!("http://{address}/"))
     }
 
     /// Starts the pet engine (when pets are on and one is installed). Call once.

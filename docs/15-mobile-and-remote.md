@@ -3,6 +3,23 @@
 A phone app lets users follow and drive sessions running on their own computers. The computer
 does all the work; the phone is a client of its daemon, like the desktop app.
 
+**Implemented (phase 11, first stage):** with `phone.bind` set (for example a Tailscale address
+and port), the daemon serves phones on a second listener, separate from the local desktop
+listener: the phone web app at `/` (a mobile page that pairs, then shows approvals with
+Approve and Decline, live schedule and auto-fix activity, and running sessions), `POST /pair`,
+and a WebSocket at `/rpc`. `imperium phone pair` (`phone.pair`) shows a one-time eight-digit
+code that expires after five minutes; the phone exchanges it for a random device token, of
+which only the SHA-256 is stored in `<data>/devices.json` with the device's name and scopes.
+Paired connections are limited to their scopes (`read`: listing sessions, schedules,
+approvals, and projects, following sessions, the pet; `approve`: answering approvals and
+patting the pet); anything else is refused with error `-32005`. `imperium phone devices` and
+`imperium phone revoke <id>` list and unpair phones; a revoked token cannot reconnect. The
+listener adds no encryption of its own, so for use away from home bind it to a private overlay
+network (Tailscale, ZeroTier, WireGuard), which encrypts the traffic; on a LAN it is as private
+as that network. Not yet: QR pairing, Noise key exchange and end-to-end encryption, mDNS, the
+relay, push notifications, the Tauri mobile app, replying to sessions from the phone, and
+per-device scope editing.
+
 ## Scope
 
 - List paired computers, their projects, and sessions; see live status and telemetry.

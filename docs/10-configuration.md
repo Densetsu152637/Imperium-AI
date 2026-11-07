@@ -71,6 +71,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `web.browser`, `web.browser_path`, `web.headless` | `true`, found automatically, `true` | Browser tools over CDP (Chrome, Chromium, or Edge) with their own profile |
 | `media.image` | none | `backend = "openai"` with `endpoint` and `model`, or `backend = "comfyui"` with `comfyui_url` and `workflow`; see [media](09-media-generation.md) |
 | `media.speech`, `media.transcription` | none | `endpoint` (an `[endpoints]` entry) and `model`; speech also takes `voice` |
+| `phone.bind` | off | Address to serve paired phones on, such as a Tailscale address with a port; see [mobile](15-mobile-and-remote.md) |
 | `pets.enabled`, `pets.pet` | `true`, first found | The pet and which one ([16](16-pets.md)) |
 | `pets.folders`, `sleep_after_minutes`, `fidget` | none, `5`, `true` | More folders of Pixel Pets v3 packages; when it sleeps; idle fidgets |
 | `isolation.tier` | `policy` | Where agents' commands run: `policy` (tier 0), `os` (bubblewrap or Seatbelt), or `container` ([tiers](05-tools-and-isolation.md#isolation-tiers)) |

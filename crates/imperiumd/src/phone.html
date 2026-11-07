@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16181d">
+<title>Imperium</title>
+<style>
+  :root { --bg: #f6f6f4; --panel: #fff; --fg: #1b1c1f; --muted: #6b6f78; --border: #dcdde1; --accent: #b45309; --ok: #15803d; --danger: #b91c1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181d; --panel: #1f2229; --fg: #e8e9ec; --muted: #9aa0ab; --border: #30343d; --accent: #f59e0b; --ok: #4ade80; --danger: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.45 system-ui, sans-serif; }
+  h1 { font-size: 1.2rem; margin: 0 0 12px; }
+  h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 20px 0 8px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 8px; }
+  .muted { color: var(--muted); font-size: 0.85rem; }
+  button { font: inherit; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--fg); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .actions button { flex: 1; }
+  input { font: inherit; width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--fg); margin-bottom: 8px; }
+  .status { font-size: 0.85rem; color: var(--muted); }
+  .ok { color: var(--ok); } .bad { color: var(--danger); }
+</style>
+</head>
+<body>
+<h1>Imperium</h1>
+<p class="status" id="status">Starting…</p>
+
+<section id="pairing" hidden>
+  <div class="card">
+    <p>Pair this phone with your computer. Run <code>imperium phone pair</code> there and enter the code.</p>
+    <input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="8-digit code">
+    <input id="name" placeholder="This phone's name" value="Phone">
+    <button class="primary" id="pair">Pair</button>
+  </div>
+</section>
+
+<section id="main" hidden>
+  <h2>Waiting for you</h2>
+  <div id="approvals"><p class="muted">Nothing is waiting for approval.</p></div>
+  <h2>Activity</h2>
+  <div id="activity"><p class="muted">Schedules and fixes appear here as they run.</p></div>
+  <h2>Sessions</h2>
+  <div id="sessions"></div>
+  <p><button id="forget">Unpair this phone</button></p>
+</section>
+
+<script>
+const KEY = "imperium.phone.token";
+const $ = (id) => document.getElementById(id);
+const status = (text, kind) => { $("status").textContent = text; $("status").className = "status " + (kind || ""); };
+const escape = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+let token = null;
+try { token = localStorage.getItem(KEY); } catch {}
+let socket = null, nextId = 1;
+const waiting = new Map();
+const approvals = new Map();
+
+function call(method, params) {
+  const id = nextId++;
+  socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params: params || {} }));
+  return new Promise((resolve, reject) => waiting.set(id, { resolve, reject }));
+}
+
+function renderApprovals() {
+  const list = $("approvals");
+  if (approvals.size === 0) { list.innerHTML = '<p class="muted">Nothing is waiting for approval.</p>'; return; }
+  list.innerHTML = "";
+  for (const approval of approvals.values()) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<div><strong>${escape(approval.kind)}</strong></div><div>${escape(approval.summary)}</div>
+      <div class="actions"><button class="primary" data-yes>Approve</button><button data-no>Decline</button></div>`;
+    card.querySelector("[data-yes]").onclick = () => respond(approval.id, true);
+    card.querySelector("[data-no]").onclick = () => respond(approval.id, false);
+    list.append(card);
+  }
+}
+
+async function respond(id, approve) {
+  try {
+    await call("approvals.respond", { id, approve });
+    approvals.delete(id);
+    renderApprovals();
+  } catch (error) { status("Could not answer: " + error, "bad"); }
+}
+
+function activity(text) {
+  const list = $("activity");
+  if (list.querySelector(".muted")) list.innerHTML = "";
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = `<div>${escape(text)}</div><div class="muted">${new Date().toLocaleTimeString()}</div>`;
+  list.prepend(card);
+  while (list.children.length > 20) list.lastChild.remove();
+}
+
+function connect() {
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  socket = new WebSocket(`${scheme}://${location.host}/rpc`, ["imperium.v0", "imperium.token." + token]);
+  socket.onopen = async () => {
+    try {
+      await call("system.handshake", { client: { name: "imperium-phone", version: "0.1.0" }, protocol: { major: 0, minor: 2 } });
+      status("Connected", "ok");
+      for (const approval of (await call("approvals.list")).approvals) approvals.set(approval.id, approval);
+      renderApprovals();
+      const sessions = (await call("session.list")).sessions;
+      $("sessions").innerHTML = sessions.length
+        ? sessions.map((s) => `<div class="card"><div>${escape(s.project_dir)}</div><div class="muted">${escape(s.model)} · ${escape(s.isolation)}</div></div>`).join("")
+        : '<p class="muted">No sessions are running.</p>';
+    } catch (error) { status("Error: " + error, "bad"); }
+  };
+  socket.onmessage = (message) => {
+    const data = JSON.parse(message.data);
+    if (data.id && waiting.has(data.id)) {
+      const { resolve, reject } = waiting.get(data.id);
+      waiting.delete(data.id);
+      data.error ? reject(data.error.message) : resolve(data.result);
+      return;
+    }
+    const p = data.params || {};
+    if (data.method === "approval.requested") { approvals.set(p.id, p); renderApprovals(); activity("Approval needed: " + p.summary); }
+    if (data.method === "schedule.event" && p.status !== "started") activity(`Schedule ${p.schedule_id} ${p.status}: ${p.summary}`);
+    if (data.method === "autofix.event") activity(`${p.repo}#${p.pull_request}: ${p.status}`);
+  };
+  socket.onclose = (event) => {
+    if (event.code === 1006 && !socket.everOpened) { status("This phone is not paired, or the pairing was revoked.", "bad"); showPairing(); return; }
+    status("Disconnected; reconnecting…", "bad");
+    setTimeout(connect, 3000);
+  };
+  socket.addEventListener("open", () => { socket.everOpened = true; });
+}
+
+function showPairing() { $("pairing").hidden = false; $("main").hidden = true; }
+function showMain() { $("pairing").hidden = true; $("main").hidden = false; connect(); }
+
+$("pair").onclick = async () => {
+  status("Pairing…");
+  const response = await fetch("/pair", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: $("code").value.trim(), name: $("name").value.trim() || "Phone" }) });
+  if (!response.ok) { status(await response.text(), "bad"); return; }
+  token = (await response.json()).token;
+  try { localStorage.setItem(KEY, token); } catch {}
+  showMain();
+};
+$("forget").onclick = () => { try { localStorage.removeItem(KEY); } catch {} location.reload(); };
+
+if (token) { showMain(); } else { status("Not paired yet"); showPairing(); }
+</script>
+</body>
+</html>
