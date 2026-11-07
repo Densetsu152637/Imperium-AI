@@ -33,11 +33,14 @@ function Split({
   storageKey,
   axis,
   initial,
+  className,
   children,
 }: {
   storageKey: string;
   axis: "row" | "column";
   initial?: number[];
+  /** Extra classes, so a column can be styled as a whole (the side rails). */
+  className?: string;
   children: ReactNode[];
 }) {
   const [sizes, setSizes] = useState(() =>
@@ -76,7 +79,7 @@ function Split({
   };
 
   return (
-    <div ref={container} className={`split split-${axis}`}>
+    <div ref={container} className={`split split-${axis}${className ? ` ${className}` : ""}`}>
       {children.map((child, index) => (
         <div key={index} className="split-cell" style={{ flexGrow: sizes[index], flexBasis: 0 }}>
           {child}
@@ -96,7 +99,7 @@ function Split({
 
 function Panel({ panel }: { panel: PanelSpec }) {
   return (
-    <section className="panel" aria-labelledby={`panel-${panel.id}`}>
+    <section className="panel" data-panel={panel.id} aria-labelledby={`panel-${panel.id}`}>
       <header className="panel-header">
         <h2 id={`panel-${panel.id}`}>{panel.title}</h2>
         {panel.actions}
@@ -113,7 +116,7 @@ export function Columns({ columns, initial }: { columns: ColumnSpec[]; initial?:
         column.mode === "span" ? (
           <Panel key={column.id} panel={column.panel} />
         ) : (
-          <Split key={column.id} storageKey={`stack.${column.id}`} axis="column">
+          <Split key={column.id} storageKey={`stack.${column.id}`} axis="column" className={`rail rail-${column.id}`}>
             {column.panels.map((panel) => (
               <Panel key={panel.id} panel={panel} />
             ))}

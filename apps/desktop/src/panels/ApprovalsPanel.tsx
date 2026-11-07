@@ -20,7 +20,9 @@ export function ApprovalsPanel({
             <span className="badge">{approval.kind}</span> {approval.summary}
           </p>
           <div className="approval-actions">
-            <button onClick={() => onRespond(approval.id, true)}>Approve</button>
+            <button className="primary" onClick={() => onRespond(approval.id, true)}>
+              Approve
+            </button>
             <button onClick={() => onRespond(approval.id, false)}>Decline</button>
           </div>
         </li>
