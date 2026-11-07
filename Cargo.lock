@@ -2215,6 +2215,7 @@ dependencies = [
  "imperium-models",
  "imperium-protocol",
  "imperium-tools",
+ "imperium-web",
  "imperium-workflow",
  "reqwest",
  "serde",
@@ -2348,6 +2349,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "imperium-web"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "imperium-models",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "imperium-workflow"
 version = "0.1.0"
 dependencies = [
@@ -2378,6 +2392,7 @@ dependencies = [
  "imperium-memory",
  "imperium-protocol",
  "imperium-tools",
+ "imperium-web",
  "imperium-workflow",
  "notify-rust",
  "serde",
@@ -3874,6 +3889,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",

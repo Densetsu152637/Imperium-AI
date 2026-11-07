@@ -23,6 +23,7 @@ imperium-mcp = { version = "0.1.0", path = "../imperium-mcp" }
 imperium-memory = { version = "0.1.0", path = "../imperium-memory" }
 imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
 imperium-tools = { version = "0.1.0", path = "../imperium-tools" }
+imperium-web = { version = "0.1.0", path = "../imperium-web" }
 imperium-workflow = { version = "0.1.0", path = "../imperium-workflow" }
 notify-rust = "4.18.2"
 serde = "1.0.229"
