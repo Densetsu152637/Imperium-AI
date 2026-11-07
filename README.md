@@ -34,7 +34,8 @@ React interface that users can restyle, extend, or replace.
 
 ## Development
 
-Phase 0 has the Rust core: the daemon, the CLI, the protocol, and configuration.
+Phase 0 provides the Rust core (daemon, CLI, protocol, configuration) and the TypeScript
+protocol package.
 
 ```bash
 cargo build
@@ -42,6 +43,7 @@ cargo run --bin imperiumd          # leave running; Ctrl+C stops it
 cargo run --bin imperium -- ping   # in another terminal
 cargo run --bin imperium -- config explain daemon.port
 bash scripts/check-rust.sh         # what CI runs: fmt, clippy, tests, generated-type drift
+pnpm install && bash scripts/check-web.sh   # TypeScript packages
 ```
 
 Set `IMPERIUM_HOME` to keep a development daemon's files apart from your own.
