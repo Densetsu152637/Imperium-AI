@@ -125,10 +125,10 @@ impl Scheduler {
                     id: id.clone(),
                     enabled: entry.settings.enabled,
                     trigger: format!("{kind} {value}"),
-                    action: if entry.settings.action.prompt.is_some() {
-                        "prompt".into()
-                    } else {
-                        "command".into()
+                    action: match &entry.settings.action {
+                        action if action.prompt.is_some() => "prompt".into(),
+                        action if action.agent.is_some() => "agent".into(),
+                        _ => "command".into(),
                     },
                     project: entry.settings.action.project.display().to_string(),
                     next_run: next.get(id).copied().flatten().map(|at| at.to_rfc3339()),
@@ -236,6 +236,20 @@ async fn run(
         .timeout_s
         .map_or(DEFAULT_TIMEOUT, Duration::from_secs);
     let project = action.project.display().to_string();
+    if let Some(message) = &action.agent {
+        let text = format!("Schedule {} fired: {message}", settings.id);
+        return if daemon.tell_project_agent(&action.project, text) {
+            (true, "delivered to the project agent".into(), None)
+        } else {
+            (
+                false,
+                format!(
+                    "{project} has no running project agent (set agent = true under [[projects]])"
+                ),
+                None,
+            )
+        };
+    }
     if let Some(command) = &action.command {
         return match run_command(command, &action.project, timeout).await {
             Ok((ok, output)) => (ok, output, None),

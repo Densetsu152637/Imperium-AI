@@ -8,11 +8,13 @@ use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
     ApprovalRespondParams, ApprovalRespondResult, Handshake, HandshakeParams, HandshakeResult,
     LocalModelList, LocalModelListParams, Method, ModList, ModListParams, ModelList,
-    ModelListParams, Peer, Ping, PingParams, PingResult, ScheduleList, ScheduleListParams,
-    ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionCreate,
-    SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
-    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe,
-    SessionSubscribeParams, SessionSubscribeResult, SessionSummary,
+    ModelListParams, Peer, Ping, PingParams, PingResult, ProjectAgentRow, ProjectList,
+    ProjectListParams, ProjectListResult, ProjectMessage, ProjectMessageParams,
+    ProjectMessageResult, ScheduleList, ScheduleListParams, ScheduleListResult, ScheduleRun,
+    ScheduleRunParams, ScheduleRunResult, SessionCreate, SessionCreateParams, SessionCreateResult,
+    SessionList, SessionListParams, SessionListResult, SessionRespond, SessionRespondParams,
+    SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
+    SessionSubscribeResult, SessionSummary,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -99,6 +101,29 @@ impl Connection {
             ModelList::NAME => call::<ModelList>(request.params, |_: ModelListParams| {
                 Ok(self.state.model_table())
             }),
+            ProjectList::NAME => call::<ProjectList>(request.params, |_: ProjectListParams| {
+                Ok(ProjectListResult {
+                    agents: self
+                        .state
+                        .project_agents()
+                        .list()
+                        .into_iter()
+                        .map(|(project, session_id)| ProjectAgentRow {
+                            project: project.display().to_string(),
+                            session_id,
+                        })
+                        .collect(),
+                })
+            }),
+            ProjectMessage::NAME => {
+                call::<ProjectMessage>(request.params, |params: ProjectMessageParams| {
+                    Ok(ProjectMessageResult {
+                        delivered: self
+                            .state
+                            .tell_project_agent(std::path::Path::new(&params.project), params.text),
+                    })
+                })
+            }
             ApprovalList::NAME => call::<ApprovalList>(request.params, |_: ApprovalListParams| {
                 Ok(ApprovalListResult {
                     approvals: self.state.approvals().list(),

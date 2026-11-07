@@ -1,7 +1,9 @@
 mod approvals;
+mod autostart;
 mod chat;
 mod local;
 mod memory;
+mod project;
 mod schedule;
 mod workflow;
 
@@ -60,6 +62,16 @@ enum Command {
         #[arg(long, global = true)]
         project: Option<PathBuf>,
     },
+    /// The daemon itself.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+    /// Project agents.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
     /// Requests from unattended work (such as auto-fix pushes) waiting for a yes or no.
     Approvals {
         #[command(subcommand)]
@@ -102,6 +114,28 @@ enum MemoryCommand {
         /// global, project, or project-private; defaults to where the name is found.
         #[arg(long)]
         scope: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DaemonCommand {
+    /// Start imperiumd when you log in (enable, disable, or status).
+    Autostart {
+        #[arg(value_parser = ["enable", "disable", "status"])]
+        action: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProjectCommand {
+    /// List projects with a running agent.
+    List,
+    /// Send a message to a project's agent.
+    Tell {
+        text: String,
+        /// Project folder; defaults to the current directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
     },
 }
 
@@ -201,6 +235,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
+        Command::Daemon {
+            command: DaemonCommand::Autostart { action },
+        } => match action.as_str() {
+            "enable" => autostart::enable(),
+            "disable" => autostart::disable(),
+            _ => autostart::status(),
+        },
+        Command::Project { command } => match command {
+            ProjectCommand::List => project::list(),
+            ProjectCommand::Tell { text, project } => project::tell(text, project),
+        },
         Command::Approvals { command } => match command {
             ApprovalsCommand::List => approvals::list(),
             ApprovalsCommand::Approve { id } => approvals::respond(id, true),

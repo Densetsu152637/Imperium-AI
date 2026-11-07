@@ -56,6 +56,19 @@ max_disk_gb = 50                # per project; new worktrees are refused above t
 
 A long-lived agent per project that watches for work and **dispatches it into new sessions**.
 
+**Implemented (phase 6):** `[[projects]]` entries with `agent = true` get an agent when the
+daemon starts: an ordinary session (it appears in the session list and can be talked to) with
+coordinator instructions and a `start_session` tool. It is woken by messages only: a schedule
+with `action.agent`, `imperium project tell "<text>"` (`projects.message`), or a report from a
+session it started, delivered as `Session <id> finished. Its report: ...` when that session's
+turn ends. It uses no tokens between events. `max_sessions` (default 2) caps sessions running
+at once and `max_sessions_per_day` (default 20) per day. Permission requests from the agent and
+its sessions, and from scheduled prompt runs, become approval requests (the Approvals panel,
+`imperium approvals`). `imperium daemon autostart enable|disable|status` starts `imperiumd` at
+login (a per-user `Run` registry value on Windows, a LaunchAgent on macOS, an XDG autostart
+entry on Linux). Not yet: file, Git, and webhook wake-ups, cost budgets, a tray icon, and
+notes beyond the agent's memory tools.
+
 - **Toggle per project** (off by default). When off, nothing runs in the background.
 - **Runs only while the daemon runs**, i.e. while the computer is on and the user is logged in.
   An optional "start daemon at login" setting (and a tray icon) keeps it available without the

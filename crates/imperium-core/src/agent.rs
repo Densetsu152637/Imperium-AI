@@ -46,6 +46,7 @@ enum AgentTool {
     MemoryRead,
     MemoryRemember,
     ContextLoad,
+    StartSession,
 }
 
 struct TaskReport {
@@ -107,6 +108,10 @@ impl Agent {
             system.push_str("\n\n");
             system.push_str(&memory_instructions(memory, can_delegate));
         }
+        if can_delegate && let Some(instructions) = &shared.instructions {
+            system.push_str("\n\n");
+            system.push_str(instructions);
+        }
         Agent {
             id,
             shared,
@@ -132,6 +137,9 @@ impl Agent {
         }
         if self.shared.context.is_some() {
             tools.push(context_load_spec());
+        }
+        if self.can_delegate && self.shared.launcher.is_some() {
+            tools.push(start_session_spec());
         }
         if self.shared.memory.is_some() {
             tools.extend([memory_search_spec(), memory_read_spec()]);
@@ -311,6 +319,29 @@ impl Agent {
             self.emit(SessionEvent::ContextLoaded { references: loaded });
         }
         Ok(out)
+    }
+
+    /// Hands a brief to the daemon as a new session (project agents only).
+    async fn start_session(&self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            brief: String,
+            #[serde(default)]
+            model: Option<String>,
+        }
+        let args: Args = parse(arguments)?;
+        if args.brief.trim().is_empty() {
+            return Err("brief must not be empty".into());
+        }
+        let launcher = self
+            .shared
+            .launcher
+            .as_ref()
+            .ok_or("this session cannot start sessions")?;
+        let id = launcher.launch(&args.brief, args.model.as_deref()).await?;
+        Ok(format!(
+            "started session {id}; its report will arrive as a message when it finishes"
+        ))
     }
 
     fn memory(&self) -> Result<&SessionMemory, String> {
@@ -574,6 +605,9 @@ impl Agent {
             "await_tasks" if self.can_delegate => AgentTool::AwaitTasks,
             "load_skill" if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
             "context_load" if self.shared.context.is_some() => AgentTool::ContextLoad,
+            "start_session" if self.can_delegate && self.shared.launcher.is_some() => {
+                AgentTool::StartSession
+            }
             "memory_search" if self.shared.memory.is_some() => AgentTool::MemorySearch,
             "memory_read" if self.shared.memory.is_some() => AgentTool::MemoryRead,
             "memory_remember" if self.shared.memory.is_some() && self.can_delegate => {
@@ -588,6 +622,7 @@ impl Agent {
             AgentTool::AwaitTasks => "wait for subagents",
             AgentTool::LoadSkill => "load a skill",
             AgentTool::ContextLoad => "load workflow context",
+            AgentTool::StartSession => "start a session",
             AgentTool::MemorySearch => "search memory",
             AgentTool::MemoryRead => "read a memory",
             AgentTool::MemoryRemember => "save a memory",
@@ -603,6 +638,7 @@ impl Agent {
             AgentTool::AwaitTasks => self.await_tasks(arguments).await,
             AgentTool::LoadSkill => self.load_skill(arguments),
             AgentTool::ContextLoad => self.context_load(arguments),
+            AgentTool::StartSession => self.start_session(arguments).await,
             AgentTool::MemorySearch => self.memory_search(arguments),
             AgentTool::MemoryRead => self.memory_read(arguments),
             AgentTool::MemoryRemember => self.memory_remember(arguments).await,
@@ -883,6 +919,17 @@ fn manifest_event(manifest: &LoadManifest) -> SessionEvent {
                 summary: pointer.summary.clone(),
             })
             .collect(),
+    }
+}
+
+fn start_session_spec() -> ToolSpec {
+    ToolSpec {
+        name: "start_session".into(),
+        description: "Start a new session in this project with a self-contained brief; it runs on its own and its report arrives later as a message. You use no tokens while it runs.".into(),
+        parameters: json!({"type": "object", "properties": {
+            "brief": {"type": "string"},
+            "model": {"type": "string", "description": "Optional model table id or <endpoint>:<model>"}
+        }, "required": ["brief"]}),
     }
 }
 

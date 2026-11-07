@@ -81,6 +81,8 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         context: None,
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
+        launcher: None,
+        instructions: None,
         max_steps: 5,
         journal_path: dir.join(".journal/test.jsonl"),
     })

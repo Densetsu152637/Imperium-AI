@@ -12,14 +12,24 @@ use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
-use imperium_protocol::session::{AgentEvent, ROOT_AGENT, SessionEvent};
+use imperium_protocol::session::{AgentEvent, PermissionDecision, ROOT_AGENT, SessionEvent};
 use imperium_tools::Workspace;
 use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
 
 use crate::approvals::Approvals;
 use crate::local::LocalRuntime;
+use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
+
+/// Options for [`DaemonState::create_session_with`].
+#[derive(Debug, Default)]
+pub struct SessionOptions {
+    /// Tools that run without asking.
+    pub pre_approved: Vec<String>,
+    pub launcher: Option<Arc<dyn imperium_core::SessionLauncher>>,
+    pub instructions: Option<String>,
+}
 
 /// State shared by every connection: configuration and the running sessions.
 #[derive(Debug)]
@@ -33,6 +43,7 @@ pub struct DaemonState {
     announcements: broadcast::Sender<Notification>,
     scheduler: OnceLock<Arc<Scheduler>>,
     approvals: Approvals,
+    project_agents: ProjectAgents,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,12 +69,29 @@ impl DaemonState {
             announcements: broadcast::channel(256).0,
             scheduler: OnceLock::new(),
             approvals: Approvals::default(),
+            project_agents: ProjectAgents::default(),
         })
     }
 
     /// Starts running `[[schedules]]`. Call once, inside the Tokio runtime.
     pub fn start_scheduler(self: &Arc<Self>) -> Arc<Scheduler> {
         Arc::clone(self.scheduler.get_or_init(|| Scheduler::start(self)))
+    }
+
+    pub fn project_agents(&self) -> &ProjectAgents {
+        &self.project_agents
+    }
+
+    /// Starts the agents of projects with `agent = true`.
+    pub fn start_project_agents(self: &Arc<Self>) {
+        crate::project_agent::start(self);
+    }
+
+    /// Wakes a project's agent with a message; false when the project has no agent.
+    pub fn tell_project_agent(&self, project: &Path, text: String) -> bool {
+        self.project_agents
+            .get(project)
+            .is_some_and(|agent| agent.send(text).is_ok())
     }
 
     pub fn approvals(&self) -> &Approvals {
@@ -120,21 +148,24 @@ impl DaemonState {
         project_dir: &str,
         model: Option<&str>,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
-        self.create_session_with(project_dir, model, Vec::new())
+        self.create_session_with(project_dir, model, SessionOptions::default())
     }
 
     /// Runs `prompt` in a new session and waits for the root's turn to end:
-    /// `(ok, the reply or error, session id)`.
+    /// `(ok, the reply or error, session id)`. Permission requests become approval requests.
     pub async fn run_prompt(
-        &self,
+        self: &Arc<Self>,
         project_dir: &str,
         model: Option<&str>,
         prompt: String,
         pre_approved: Vec<String>,
         timeout: std::time::Duration,
     ) -> (bool, String, Option<String>) {
-        let (session, mut events) = match self.create_session_with(project_dir, model, pre_approved)
-        {
+        let options = SessionOptions {
+            pre_approved,
+            ..SessionOptions::default()
+        };
+        let (session, events) = match self.create_session_with(project_dir, model, options) {
             Ok(created) => created,
             Err(error) => return (false, error.to_string(), None),
         };
@@ -146,44 +177,87 @@ impl DaemonState {
                 session_id,
             );
         }
+        match self.wait_for_turn(&session, events, timeout).await {
+            Ok(reply) => (true, reply, session_id),
+            Err(message) => (false, message, session_id),
+        }
+    }
+
+    /// Waits for the root agent's turn to end, returning its reply. Permission requests from
+    /// any of the session's agents are queued as approval requests, since nobody may be
+    /// watching the session.
+    pub async fn wait_for_turn(
+        self: &Arc<Self>,
+        session: &Arc<Session>,
+        mut events: broadcast::Receiver<AgentEvent>,
+        timeout: std::time::Duration,
+    ) -> Result<String, String> {
         let mut reply = String::new();
         let outcome = tokio::time::timeout(timeout, async {
             loop {
-                match events.recv().await {
-                    Ok(event) if event.agent_id == ROOT_AGENT => match event.event {
-                        SessionEvent::TextDelta { text } => reply.push_str(&text),
-                        SessionEvent::TurnCompleted { .. } => return Ok(()),
-                        SessionEvent::TurnFailed { message } => return Err(message),
-                        _ => {}
-                    },
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                let event = match events.recv().await {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
                         return Err("the session ended".to_string());
                     }
+                };
+                let root = event.agent_id == ROOT_AGENT;
+                match event.event {
+                    SessionEvent::PermissionRequested {
+                        request_id,
+                        tool,
+                        summary,
+                    } => self.bridge_permission(session, request_id, &tool, summary),
+                    SessionEvent::TextDelta { text } if root => reply.push_str(&text),
+                    SessionEvent::TurnCompleted { .. } if root => return Ok(()),
+                    SessionEvent::TurnFailed { message } if root => return Err(message),
+                    _ => {}
                 }
             }
         })
         .await;
         match outcome {
-            Ok(Ok(())) => (true, reply.trim().to_string(), session_id),
-            Ok(Err(message)) => (false, message, session_id),
-            Err(_) => (
-                false,
-                format!(
-                    "timed out after {} s (a permission request may be waiting)",
-                    timeout.as_secs()
-                ),
-                session_id,
-            ),
+            Ok(Ok(())) => Ok(reply.trim().to_string()),
+            Ok(Err(message)) => Err(message),
+            Err(_) => Err(format!(
+                "timed out after {} s (an approval may be waiting)",
+                timeout.as_secs()
+            )),
         }
     }
 
-    /// Starts a session whose `pre_approved` tools run without asking.
+    /// Answers a session's permission request through the approval queue.
+    pub fn bridge_permission(
+        self: &Arc<Self>,
+        session: &Arc<Session>,
+        request_id: u64,
+        tool: &str,
+        summary: String,
+    ) {
+        let answer = self.approvals.request(
+            self,
+            "tool",
+            format!("{tool} in session {}: {summary}", session.id()),
+        );
+        let session = Arc::clone(session);
+        tokio::spawn(async move {
+            let decision = if answer.await.unwrap_or(false) {
+                PermissionDecision::Allow
+            } else {
+                PermissionDecision::Deny
+            };
+            let _ = session.respond(request_id, decision);
+        });
+    }
+
+    /// Starts a session with extra options: pre-approved tools, or a project agent's launcher
+    /// and instructions.
     pub fn create_session_with(
         &self,
         project_dir: &str,
         model: Option<&str>,
-        pre_approved: Vec<String>,
+        options: SessionOptions,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
         let workspace = Workspace::new(Path::new(project_dir))
             .map_err(|error| CreateError::Project(project_dir.to_string(), error))?;
@@ -219,7 +293,9 @@ impl DaemonState {
             extensions,
             context,
             enforce: self.settings.workflow.enforce,
-            pre_approved,
+            pre_approved: options.pre_approved,
+            launcher: options.launcher,
+            instructions: options.instructions,
             memory: self.settings.memory.enabled.then(|| SessionMemory {
                 store: Store::new(self.paths.data_dir(), Some(Path::new(project_dir))),
                 settings: self.settings.memory.clone(),
