@@ -35,10 +35,68 @@ layout of panels, and every panel — including the built-in ones — is customi
 
 ## Layout
 
-- **Tiling workspace:** panels split horizontally and vertically, tabbed, resizable, and
-  detachable into separate windows. Layouts are saved per project and shareable as presets
-  (a preset includes panel instances and their settings, and lists the mods it needs).
-- Mods contribute new panels and slot content through [UI mods](06-extensibility.md#ui-mods).
+### Default view
+
+```text
+┌────────────────────┬──────────────────────────────────────────────────────┐
+│ Projects           │ Session: <name>                                      │
+│ (environments)     │ ┌──────────────────────────────────────────────────┐ │
+│                    │ │ Environment · model · isolation tier · budget    │ │
+│ stackable          │ ├──────────────────────────────────────────────────┤ │
+├────────────────────┤ │ Conversation and plan                            │ │
+│ Sessions           │ │                                                  │ │
+│ (of the selected   │ ├────────────────┬─────────────────┬───────────────┤ │
+│  project)          │ │ Context        │ Outputs         │ Worktrees     │ │
+│                    │ │ breakdown      │ (artefacts)     │               │ │
+│ stackable          │ └────────────────┴─────────────────┴───────────────┘ │
+│                    │ spans full height                                    │
+└────────────────────┴──────────────────────────────────────────────────────┘
+```
+
+- **Projects panel** (top left): projects / environments, their location (local, container,
+  SSH host), project-agent status, and schedules.
+- **Sessions panel** (bottom left): sessions in the selected project, with status, cost, and
+  pending approvals.
+- **Main session panel** (middle, full height): the selected session. It is built from
+  sections — environment header, conversation and plan, context breakdown (tokens by system
+  prompt, policy, tools, files, and history against the window size), outputs, and worktrees —
+  each of which is itself a movable, replaceable module.
+
+Wide screens add further columns (agent tree, telemetry, terminal, browser) through layout
+presets; see [scaling and wide displays](#scaling-and-wide-displays).
+
+### Columns, spanning, and stacking
+
+- The window is a row of **columns**; each column holds either one **spanning** panel or a
+  **stack** of panels.
+- A panel declares its height behaviour:
+  - `span` — always takes the full height of its column (default for the main session panel).
+    Other panels cannot be stacked above or below it.
+  - `stack` — shares its column with other stackable panels, split by draggable dividers,
+    collapsible to a title bar, and tabbable when space is short (default for projects and
+    sessions).
+  The user can override a panel's default in its settings.
+- Columns and stack dividers are resizable; sizes are stored as proportions so layouts adapt
+  across monitors.
+
+### Modules inside panels
+
+- **Mods live in panels.** A UI mod contributes **modules** (self-contained views such as a
+  telemetry chart, a pet, or a cost meter) that can be placed into a panel's section areas or
+  slots, or opened as panels of their own.
+- Built-in sections (environment header, context breakdown, outputs, worktrees, ...) are
+  modules too, so users can reorder, remove, or swap them with mod-provided modules.
+
+### Rearranging
+
+- Everything is drag-and-drop: drag a panel's title bar to another column, into a stack, or
+  out into a new window; drag a module between panels. Drop targets preview the result.
+- An **edit layout** mode shows all drop zones, panel boundaries, and hidden modules; outside
+  it, layouts are locked to prevent accidental changes.
+- Layouts are saved per project (with a global default) and shareable as presets (a preset
+  includes panel instances, module placement, and settings, and lists the mods it needs).
+  "Reset layout" always restores the default view.
+- Mods contribute new panels, modules, and slot content through [UI mods](06-extensibility.md#ui-mods).
 - **Agent tree** shows every agent with its model, status, tokens, cost, and budget; selecting
   one opens its transcript.
 - **Command palette** reaches every action; all actions are keyboard-bindable.

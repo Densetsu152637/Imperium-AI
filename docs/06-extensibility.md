@@ -50,7 +50,8 @@ export default defineMod({
 });
 ```
 
-Contribution points: new panels, extensions to any panel's slots, panel wrappers and
+Contribution points: new panels, modules placeable inside any panel
+([layout](07-desktop-ui.md#modules-inside-panels)), extensions to any panel's slots, panel wrappers and
 replacements ([panels](07-desktop-ui.md#panels)), status-bar items, message renderers (custom
 rendering per content type), command-palette commands, settings pages, themes (CSS tokens),
 and layout presets. Trusted mods may opt into running in the main webview context for
