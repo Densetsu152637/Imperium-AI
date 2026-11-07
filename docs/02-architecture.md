@@ -33,14 +33,28 @@
 
 ## Protocol
 
-- JSON-RPC 2.0 requests and responses, plus server-pushed **event streams** (subscriptions).
-- Transport: WebSocket on `127.0.0.1` with a per-launch bearer token (written to a user-only
-  file), or a Unix domain socket / Windows named pipe. Never bound to a public interface by
-  default.
-- Schema defined in Rust (`imperium-protocol`) and exported to TypeScript with `ts-rs` /
-  JSON Schema, published as `@imperium/protocol`. CI fails if the generated types drift.
-- Versioned: `protocol.version` in the handshake; additive changes bump minor, breaking
-  changes bump major and keep the previous major for one release.
+- JSON-RPC 2.0 requests and responses, plus server-pushed **event streams** (subscriptions,
+  planned).
+- **Transport (implemented):** a WebSocket at `ws://127.0.0.1:<port>/rpc`, text frames only.
+  The port is `daemon.port` (default `0`: a free port chosen at each start). The upgrade must
+  carry `Authorization: Bearer <token>`; anything else gets HTTP 401. The token is 32 random
+  bytes generated at every launch. It is never bound to a public interface. Browser-based
+  clients, which cannot set headers, will use a subprotocol-based token in phase 2; Unix
+  domain sockets and Windows named pipes are planned for SSH forwarding.
+- **Discovery (implemented):** on start the daemon writes `<data>/daemon.json` (URL, token,
+  PID, protocol version), readable only by the user (mode 0600 on Unix; per-user directory ACL
+  on Windows), and removes it on shutdown. It holds a lock on `<data>/daemon.lock`, so only one
+  daemon runs per user; a second start exits with "already running". A daemon killed without
+  cleanup leaves a stale `daemon.json`, which the next start overwrites.
+- **Handshake (implemented):** every connection's first call must be `system.handshake`
+  (client name/version and protocol version). Other calls before it fail with `-32002`. The
+  daemon refuses a different protocol major with `-32001`. `system.ping` returns uptime.
+- Schema defined in Rust (`imperium-protocol`) and exported to TypeScript with `ts-rs` into
+  `packages/protocol/src/generated/` whenever `cargo test` runs. `scripts/check-rust.sh` (run
+  by CI) fails if the checked-in files differ. The package will be published as
+  `@imperium/protocol` once the web workspace exists.
+- Versioned: `ProtocolVersion { major, minor }` in the handshake (currently 0.1); additive
+  changes bump minor, breaking changes bump major and keep the previous major for one release.
 
 Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `tool.*`,
 `mcp.*`, `plugin.*`, `policy.*`, `config.*`, `secret.*` (write-only), `telemetry.*`, `fs.*`.
@@ -95,19 +109,31 @@ the root). Python uses `uv` with a committed `uv.lock`.
 
 Resolved with platform conventions (`directories` crate):
 
-| Kind      | Linux                         | Windows                       | macOS                                     |
-| --------- | ----------------------------- | ----------------------------- | ----------------------------------------- |
-| Config    | `~/.config/imperium`          | `%APPDATA%\Imperium`          | `~/Library/Application Support/Imperium` |
-| Data      | `~/.local/share/imperium`     | `%LOCALAPPDATA%\Imperium`     | `~/Library/Application Support/Imperium`  |
-| Cache     | `~/.cache/imperium`           | `%LOCALAPPDATA%\Imperium\cache` | `~/Library/Caches/Imperium`             |
+| Kind      | Linux                         | Windows                          | macOS                                     |
+| --------- | ----------------------------- | -------------------------------- | ----------------------------------------- |
+| Config    | `~/.config/imperium`          | `%APPDATA%\Imperium\config`      | `~/Library/Application Support/Imperium` |
+| Data      | `~/.local/share/imperium`     | `%LOCALAPPDATA%\Imperium\data`   | `~/Library/Application Support/Imperium`  |
+| Cache     | `~/.cache/imperium`           | `%LOCALAPPDATA%\Imperium\cache`  | `~/Library/Caches/Imperium`               |
 
-Data holds session transcripts (SQLite + append-only JSONL), the cost ledger, installed
-plugins, runtime packs, and policy snapshots. `IMPERIUM_HOME` overrides all three.
+Data holds the daemon's endpoint and lock files and, later, session transcripts (SQLite +
+append-only JSONL), the cost ledger, installed plugins, runtime packs, and policy snapshots.
+Setting `IMPERIUM_HOME` puts all three under one root as `config/`, `data/`, and `cache/`.
 
 ## Concurrency and failure
 
-- One Tokio runtime; each agent turn, tool call, and runtime is a task with a cancellation
-  token. Cancelling a parent cancels its subtree unless a child is marked `detached`.
+- **One process.** `imperiumd` hosts everything; model runtimes and sidecars are the only
+  child processes.
+- **Shared I/O runtime.** A small multi-threaded Tokio runtime (2 worker threads, implemented)
+  runs the transport, connection handling, and the event bus. Async I/O keeps idle
+  connections and waiting agents at near-zero CPU.
+- **Thread per session (planned, phase 1).** Each session runs on its own OS thread with a
+  single-threaded Tokio runtime. A busy session cannot starve others or the transport, session
+  state needs no cross-thread locking, and a panicking session is contained to its thread. The
+  I/O runtime and session threads talk over channels; an idle session thread is blocked on its
+  channel and uses no CPU.
+- Within a session, each agent turn, tool call, and runtime request is a task with a
+  cancellation token. Cancelling a parent cancels its subtree unless a child is marked
+  `detached`.
 - Runtime crashes surface as events; in-flight requests on that runtime fail with a retryable
   error and the router may re-route them.
 - Session state is journaled before each model call, so a daemon restart resumes sessions at

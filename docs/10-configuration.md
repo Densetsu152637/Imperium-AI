@@ -12,9 +12,27 @@ Later layers override earlier ones, key by key:
 5. Session overrides
 6. Environment variables (`IMPERIUM_*`) and CLI flags
 
-`imperium config explain <key>` shows the effective value and its source. The desktop settings
-UI edits the same files; every setting has a schema entry (published as JSON Schema for editor
-completion).
+Implemented so far (phase 0): defaults, user config, project config, and environment
+variables. Host config, session overrides, and CLI flags arrive with the features that need
+them.
+
+- **Environment variables** use `IMPERIUM_<SECTION>__<KEY>` with a double underscore between
+  levels, for example `IMPERIUM_DAEMON__PORT=8080` sets `daemon.port`. Values are read as TOML
+  (`8080`, `true`, `["a"]`) and otherwise as plain strings. Only nested keys can be set this
+  way; `IMPERIUM_HOME` is not configuration (it relocates all data directories).
+- **Unknown keys are ignored**, so a config written for a newer version still loads; a known
+  key with the wrong type is an error naming the problem.
+- `imperium config explain <key> [--project <dir>]` shows the effective value and the layer
+  that set it (for example `set by environment variable IMPERIUM_DAEMON__PORT`).
+
+The desktop settings UI will edit the same files; every setting will have a schema entry
+(published as JSON Schema for editor completion).
+
+### Implemented settings
+
+| Key           | Default | Meaning                                                        |
+| ------------- | ------- | -------------------------------------------------------------- |
+| `daemon.port` | `0`     | Port of the local WebSocket listener; `0` picks a free port at each start |
 
 ## Secrets
 
@@ -29,8 +47,13 @@ base_url = "https://openrouter.ai/api/v1"
 api_key = { secret = "openrouter" }   # resolved from the keychain
 ```
 
-Headless Linux without a Secret Service falls back to an encrypted file unlocked by a
-passphrase. Secrets are never written to logs, transcripts, telemetry, or exported sessions,
+Secret names are 1–64 characters of lowercase letters, digits, `.`, `_`, and `-`, starting
+with a letter or digit. Today `imperium secret set <name>` (value from standard input, or a
+prompt without echo) and `imperium secret delete <name>` write the keychain directly; the
+`secret.*` protocol methods arrive with the desktop settings UI.
+
+Headless Linux without a Secret Service will fall back to an encrypted file unlocked by a
+passphrase (not yet implemented; today such systems report a keychain error). Secrets are never written to logs, transcripts, telemetry, or exported sessions,
 and the protocol exposes `secret.set` / `secret.delete` but no read.
 
 ## Example
