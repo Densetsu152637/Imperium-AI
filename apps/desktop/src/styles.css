@@ -778,3 +778,14 @@ button.sort {
     display: none;
   }
 }
+
+/* Local models */
+.local-models .warning {
+  font-size: 0.8rem;
+  color: var(--warn, var(--danger));
+  margin: 0 0 var(--space);
+}
+
+.local-models .badge {
+  white-space: nowrap;
+}

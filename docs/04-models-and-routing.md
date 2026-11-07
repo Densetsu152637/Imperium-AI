@@ -30,6 +30,16 @@ pricing API); users can pin or hide entries.
 
 ## Local model discovery
 
+**Implemented (phase 4):** `models.folders` are scanned recursively when the daemon starts
+(symbolic links to folders are not followed). GGUF files, split sets (`name-00001-of-0000N`,
+counted once with the parts' total size, skipped if a part is missing), and `mmproj`
+projectors (attached to the other models in their folder) are recognised. Each model's id is
+its file name without `.gguf` or the split suffix; use it as `llamacpp:<id>`. GGUF headers are
+read for architecture, layers, head counts, embedding and head sizes, context length, and
+quantisation, skipping the tokenizer arrays. `imperium models local` and the desktop's Local
+models panel list what was found and whether each fits. Watching folders for changes, network
+and SSH paths, Hugging Face directories, and Hub downloads are later work.
+
 - Users configure any number of **model folders** (local paths, network shares, or paths on an
   SSH host). The daemon scans them recursively and watches for changes.
 - Recognised: GGUF files (including split `-00001-of-0000N` sets and `mmproj` projectors) for
@@ -41,6 +51,16 @@ pricing API); users can pin or hide entries.
 
 ## Runtimes
 
+**Implemented (phase 4):** `imperium runtime install [--pack <id>]` downloads the pack for
+this machine (or `runtime.llamacpp.backend`) from the `runtime-llama.cpp-<ref>` release,
+checks it against the release's `SHA256SUMS`, and unpacks it under
+`<data>/runtimes/llama.cpp/<ref>/`. `runtime.llamacpp.custom_path` points at your own
+`llama-server` instead. The daemon starts one `llama-server` per loaded model on a free
+loopback port with `--parallel` slots, waits for `/health`, logs its output to
+`<data>/logs/llama-<id>.log`, and stops it when it has been idle for `idle_unload_s` or the
+daemon exits. An agent holds a slot for its whole turn; a model whose slots are all busy
+queues further turns until one frees. vLLM is later work.
+
 - **llama.cpp:** runtime packs per backend (CPU, CUDA, Vulkan, ROCm, Metal) are built by CI
   ([11](11-ci-cd.md#runtime-packs)) and downloaded on demand, verified by SHA-256. Users can
   point at their own `llama-server` build instead.
@@ -51,6 +71,16 @@ pricing API); users can pin or hide entries.
   subagents concurrently.
 
 ## Hardware awareness
+
+**Implemented (phase 4):** at start the daemon probes system memory and cores (`sysinfo`) and
+NVIDIA GPUs (`nvidia-smi`); Apple Silicon is planned as unified memory. `[hardware] vram_mb`
+and `ram_mb` override the probe for GPUs it cannot read, or to plan as if memory were smaller.
+The budget is the free VRAM and the available RAM less `runtime.llamacpp.ram_headroom_mb`,
+measured once at start; loaded models reserve what the planner estimated (the runtime overhead
+is a fixed 512 MiB). AMD/Intel/Metal probes, live re-measurement, and calibration against
+measured usage are later work. `backend = "auto"` picks `cuda13` for an NVIDIA driver of the
+580 series or newer, `cuda12` for older drivers, `metal` on Apple Silicon, and `cpu`
+otherwise; set `vulkan` or `rocm` explicitly.
 
 The daemon maintains a live **resource map**:
 
@@ -64,6 +94,11 @@ The daemon maintains a live **resource map**:
 required = weights + kv_bytes_per_token × context × parallel_slots + runtime_overhead
 fits     = required ≤ free_vram (full offload)  or  partial offload within RAM headroom
 ```
+
+In the implementation, `context` is per slot, so llama.cpp is started with
+`--ctx-size context × parallel`. When a model does not fit on the GPU, as many whole layers as
+fit (after the overhead) are offloaded and the rest must fit in the RAM budget; otherwise the
+model does not fit.
 
 KV bytes per token come from GGUF metadata (layers × KV heads × head dim × 2 × cache-type
 bytes). Estimates are calibrated against measured usage after each load and stored per model.
@@ -110,8 +145,15 @@ A subagent's model is chosen as follows:
 Agents pass `tier`, `location`, `tags`, and `model` to `spawn_agent`. Ids must be unique and
 rules may only name ids in the table; the daemon refuses to start otherwise. Rows whose
 endpoint is unknown or whose key is missing are skipped with a warning. `models.list` returns
-the table, and the desktop app shows it in a searchable, sortable Models panel. The scoring,
-hardware placement, and escalation below are later work.
+the table, and the desktop app shows it in a searchable, sortable Models panel.
+
+**Implemented (phase 4):** rows with spec `llamacpp:<id>` (location must be `local`) are
+placed by the memory planner. A local row is considered only while it can run: loaded, or
+fitting in the memory not held by models in use (idle models are unloaded to make room). In
+each ranking step a loaded model beats one that would have to be loaded, and nothing in use is
+evicted, so when memory is short the choice falls to the next suitable row, typically hosted.
+A session's own model can also be `llamacpp:<id>`. The cost scoring with load latency and
+queue delay, capability filters, and escalation below are later work.
 
 For each task, the router builds the candidate set and scores it:
 

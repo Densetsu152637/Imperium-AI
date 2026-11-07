@@ -7,6 +7,7 @@ import type {
   PermissionDecision,
   SessionCreateResult,
   SessionEventParams,
+  LocalModelListResult,
   ModelListResult,
   SessionListResult,
   SessionSubscribeResult,
@@ -18,6 +19,7 @@ import { Columns } from "./layout/Columns";
 import { ProjectsPanel, SessionsPanel } from "./panels/NavigationPanels";
 import { SessionPanel } from "./panels/SessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
+import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { applyEvent, markAnswered, newSession, type SessionState } from "./sessions";
@@ -35,6 +37,7 @@ export function App() {
   const [settings, setSettings] = useState<DisplaySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
+  const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
 
   useEffect(() => applySettings(settings), [settings]);
 
@@ -87,6 +90,7 @@ export function App() {
       );
       setSessions(Object.fromEntries(restored));
       setModelTable(await client.call<ModelListResult>("models.list"));
+      setLocalModels(await client.call<LocalModelListResult>("models.local"));
       const queued = pending;
       pending = null;
       queued.forEach(apply);
@@ -118,6 +122,10 @@ export function App() {
 
   const report = (error: unknown) =>
     window.alert(error instanceof Error ? error.message : String(error));
+
+  const refreshLocalModels = () => {
+    client?.call<LocalModelListResult>("models.local").then(setLocalModels, report);
+  };
 
   const openFolder = async () => {
     const folder = await pickFolder();
@@ -223,6 +231,11 @@ export function App() {
                 panels: [
                   { id: "agents", title: "Agents", body: <AgentsPanel session={session} /> },
                   { id: "models", title: "Models", body: <ModelsPanel table={modelTable} /> },
+                  {
+                    id: "local-models",
+                    title: "Local models",
+                    body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} />,
+                  },
                   { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
                 ],
               },

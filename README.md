@@ -68,6 +68,19 @@ cargo run --bin imperium -- chat --project path/to/project
 Local servers such as llama.cpp, LM Studio, or Ollama work the same way with their
 OpenAI-compatible URL and no `api_key`.
 
+To have Imperium load GGUF models itself, list your model folders, install the llama.cpp
+runtime pack for your hardware, and use a model as `llamacpp:<id>`:
+
+```toml
+[models]
+folders = ["D:/Models"]
+```
+
+```bash
+cargo run --bin imperium -- runtime install
+cargo run --bin imperium -- models local
+```
+
 The desktop app needs the daemon running, then:
 
 ```bash

@@ -16,6 +16,7 @@ async fn start_server(token: &str) -> String {
     let daemon = imperiumd::DaemonState::new(
         imperium_config::Paths::under(std::path::Path::new("unused")),
         settings,
+        None,
     );
     tokio::spawn(imperiumd::serve(
         listener,

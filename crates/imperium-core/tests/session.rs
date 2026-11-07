@@ -64,6 +64,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
             spec: "fake:model".into(),
             endpoint,
             model: "model".into(),
+            local: false,
             pricing: Some(Pricing {
                 input_usd_per_mtok: 1.0,
                 output_usd_per_mtok: 2.0,
@@ -72,6 +73,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
+        local: None,
         max_steps: 5,
         journal_path: dir.join(".journal/test.jsonl"),
     })

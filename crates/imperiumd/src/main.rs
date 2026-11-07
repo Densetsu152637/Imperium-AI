@@ -60,7 +60,8 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!(%address, protocol = %PROTOCOL_VERSION, "imperiumd listening");
 
     let (stop, stopped) = oneshot::channel();
-    let daemon = DaemonState::new(paths.clone(), settings);
+    let local = imperiumd::LocalRuntime::start(&paths, &settings);
+    let daemon = DaemonState::new(paths.clone(), settings, local);
     let server = tokio::spawn(imperiumd::serve(listener, token, daemon, async {
         stopped.await.ok();
     }));

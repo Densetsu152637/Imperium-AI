@@ -231,3 +231,104 @@ pub struct ModelRow {
     /// False when the row names an endpoint that is not configured.
     pub endpoint_configured: bool,
 }
+
+/// `models.local`: models found in `models.folders`, the hardware they are planned against, and
+/// which are loaded.
+#[derive(Debug)]
+pub struct LocalModelList;
+
+impl Method for LocalModelList {
+    const NAME: &'static str = "models.local";
+    type Params = LocalModelListParams;
+    type Result = LocalModelListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LocalModelListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LocalModelListResult {
+    /// False when no `models.folders` are configured.
+    pub enabled: bool,
+    pub folders: Vec<String>,
+    pub models: Vec<LocalModelRow>,
+    /// Files that looked like models but could not be used, with the reason.
+    pub skipped: Vec<SkippedModel>,
+    pub hardware: Option<HardwareInfo>,
+    pub runtime: Option<RuntimeInfo>,
+}
+
+/// A GGUF model found in a model folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LocalModelRow {
+    /// Use as `llamacpp:<id>` in `[[models.catalog]]`.
+    pub id: String,
+    pub path: String,
+    pub architecture: Option<String>,
+    pub quantization: Option<String>,
+    pub parts: u32,
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    #[ts(type = "number | null")]
+    pub context_length: Option<u64>,
+    /// Memory needed at the configured context and slots.
+    #[ts(type = "number")]
+    pub required_bytes: u64,
+    /// How the model would load on this machine when nothing else is loaded.
+    #[ts(type = "\"gpu\" | \"partial\" | \"cpu\" | \"none\"")]
+    pub placement: String,
+    pub gpu_layers: Option<u32>,
+    pub loaded: bool,
+    pub slots: u32,
+    pub slots_in_use: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SkippedModel {
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HardwareInfo {
+    pub gpus: Vec<GpuInfo>,
+    #[ts(type = "number")]
+    pub ram_total_bytes: u64,
+    #[ts(type = "number")]
+    pub ram_available_bytes: u64,
+    pub cpu_cores: u32,
+    pub unified_memory: bool,
+    /// Some values come from `[hardware]` settings rather than the probe.
+    pub overridden: bool,
+    /// Memory local models may use: free VRAM, and free RAM less the headroom.
+    #[ts(type = "number")]
+    pub budget_vram_bytes: u64,
+    #[ts(type = "number")]
+    pub budget_ram_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GpuInfo {
+    pub name: String,
+    pub vendor: String,
+    #[ts(type = "number")]
+    pub vram_total_bytes: u64,
+    #[ts(type = "number")]
+    pub vram_free_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeInfo {
+    /// The runtime pack in use, such as `windows-x64-cuda13`, or `custom`.
+    pub pack: String,
+    pub server_path: String,
+    pub installed: bool,
+    pub llama_cpp_ref: String,
+}

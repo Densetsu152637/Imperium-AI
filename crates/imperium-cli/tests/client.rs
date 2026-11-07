@@ -45,7 +45,7 @@ fn daemon_with(config: &str, data: &std::path::Path) -> Arc<DaemonState> {
     ])
     .settings()
     .unwrap();
-    DaemonState::new(Paths::under(data), settings)
+    DaemonState::new(Paths::under(data), settings, None)
 }
 
 #[tokio::test]

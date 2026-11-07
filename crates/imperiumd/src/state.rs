@@ -5,12 +5,14 @@ use std::time::Instant;
 
 use imperium_config::{Paths, Settings};
 use imperium_core::{
-    CatalogModel, ModelError, Session, SessionConfig, new_session_id, resolve_model,
+    CatalogModel, LocalModels, ModelError, Session, SessionConfig, new_session_id, resolve_model,
 };
-use imperium_protocol::methods::{ModelListResult, ModelRow};
+use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
 use imperium_protocol::session::AgentEvent;
 use imperium_tools::Workspace;
 use tokio::sync::broadcast;
+
+use crate::local::LocalRuntime;
 
 /// State shared by every connection: configuration and the running sessions.
 #[derive(Debug)]
@@ -19,6 +21,7 @@ pub struct DaemonState {
     paths: Paths,
     settings: Settings,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    local: Option<LocalRuntime>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -32,13 +35,23 @@ pub enum CreateError {
 }
 
 impl DaemonState {
-    pub fn new(paths: Paths, settings: Settings) -> Arc<Self> {
+    /// `local` is the local model runtime, when `models.folders` are configured
+    /// ([`LocalRuntime::start`]).
+    pub fn new(paths: Paths, settings: Settings, local: Option<LocalRuntime>) -> Arc<Self> {
         Arc::new(DaemonState {
             started: Instant::now(),
             paths,
             settings,
             sessions: Mutex::new(HashMap::new()),
+            local,
         })
+    }
+
+    /// Local models, the hardware they are planned against, and what is loaded.
+    pub fn local_models(&self) -> LocalModelListResult {
+        self.local
+            .as_ref()
+            .map_or_else(crate::local::disabled, LocalRuntime::listing)
     }
 
     pub fn uptime_ms(&self) -> u64 {
@@ -67,6 +80,10 @@ impl DaemonState {
             model,
             catalog,
             routing: self.settings.routing.clone(),
+            local: self.local.as_ref().map(|local| {
+                let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
+                supervisor
+            }),
             max_steps: self.settings.agents.max_steps,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
