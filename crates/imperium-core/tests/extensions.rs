@@ -106,6 +106,8 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         notices: Vec::new(),
         extensions,
         memory: None,
+        context: None,
+        enforce: imperium_config::Enforce::Warn,
         max_steps: 5,
         journal_path: project.path().join(".journal.jsonl"),
     })

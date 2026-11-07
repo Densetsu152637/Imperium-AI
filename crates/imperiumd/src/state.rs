@@ -13,6 +13,7 @@ use imperium_memory::Store;
 use imperium_protocol::methods::{LocalModelListResult, ModelListResult, ModelRow};
 use imperium_protocol::session::AgentEvent;
 use imperium_tools::Workspace;
+use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
 
 use crate::local::LocalRuntime;
@@ -77,6 +78,7 @@ impl DaemonState {
             imperium_config::load_secret,
         );
         let mut extensions = self.extensions(Path::new(project_dir));
+        let context = self.context(Path::new(project_dir), &mut notices);
         mcp.append(&mut extensions.servers);
         notices.append(&mut extensions.notices);
         let id = new_session_id().map_err(|error| CreateError::Start(error.to_string()))?;
@@ -98,6 +100,8 @@ impl DaemonState {
             mcp,
             notices,
             extensions,
+            context,
+            enforce: self.settings.workflow.enforce,
             memory: self.settings.memory.enabled.then(|| SessionMemory {
                 store: Store::new(self.paths.data_dir(), Some(Path::new(project_dir))),
                 settings: self.settings.memory.clone(),
@@ -112,6 +116,27 @@ impl DaemonState {
             .expect("session map lock is never poisoned by a panic while held")
             .insert(id, Arc::clone(&session));
         Ok((session, events))
+    }
+
+    /// Workflow packs and the project's instructions and documentation, unless the workflow is
+    /// turned off. Packs that cannot be read are reported in `notices`.
+    fn context(&self, project_dir: &Path, notices: &mut Vec<String>) -> Option<Arc<ContextIndex>> {
+        let workflow = &self.settings.workflow;
+        if !workflow.enabled {
+            return None;
+        }
+        let packs = workflow
+            .packs
+            .iter()
+            .filter_map(|root| match Pack::load(root) {
+                Ok(pack) => Some(pack),
+                Err(error) => {
+                    notices.push(format!("workflow pack skipped: {error}"));
+                    None
+                }
+            })
+            .collect();
+        Some(Arc::new(ContextIndex::new(packs, project_dir)))
     }
 
     /// Skills, hooks, slash commands, and plugins for a session in `project_dir`.

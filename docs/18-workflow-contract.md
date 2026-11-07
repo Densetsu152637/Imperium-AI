@@ -9,6 +9,28 @@ The goal is consistency: a root agent on a hosted frontier model, a subagent on 
 model, and an agent in another host (Claude Code, Codex) given the same task and role are
 served the same files, load them the same way, and leave the same audit trail.
 
+**Implemented (phase 5, `imperium-workflow`):** workflow packs listed in `workflow.packs` load
+from their folders, with an optional `imperium-workflow.toml` (`name`, `entry`, `[roles]`) and
+otherwise by convention: list items in the entry index (`AGENTS.md`) become candidates whose
+label (the words before the link and the link text) is the trigger, and links to
+`AGENTS.root.md`, `AGENTS.manager.md`, or `AGENTS.leaf.md` are that role's files. For each new
+message or delegated brief the resolver builds a deterministic manifest: the project's
+`AGENTS.md`, `CLAUDE.md`, and `.imperium/policy/*.md`; each pack's entry index and role files;
+every candidate sharing a word with the request (word forms such as `debug`/`debugging` and
+`push`/`pushes` match); and up to five pointers into the project's README and `docs/` (a section
+quoting a path the request names, or sharing three or more words). References are
+`<pack>:<path>[#anchor]` or `project:<path>[#anchor]`. The manifest is placed before the message
+in a `<context-manifest>` block; agents load items with the `context_load` tool; the session
+reports `context_manifest` and `context_loaded` events. `workflow.enforce =
+"required-before-action"` refuses writes, commands, and MCP calls until the required items are
+loaded. Subagents take their role from `spawn_agent`'s `role` (default `leaf`); the root is
+`root`. `imperium workflow resolve [--role] [--pack] "<task>"` prints a manifest.
+
+Not yet: front matter triggers (tools, paths, events), `depends_on`, budgets, suggested
+(semantic) items, intent classification by a local model, inline mode, re-resolution on tool
+use, `context.search`, the MCP server, `workflow validate/inspect`, Git-URL packs, a bundled
+default pack, and resolving `local-paths` values from settings.
+
 ## Principles
 
 - **The retriever chooses; the agent loads.** Retrieval returns a *load manifest* (which files

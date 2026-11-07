@@ -19,6 +19,7 @@ imperium-config = { version = "0.1.0", path = "../imperium-config" }
 imperium-local = { version = "0.1.0", path = "../imperium-local" }
 imperium-memory = { version = "0.1.0", path = "../imperium-memory" }
 imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
+imperium-workflow = { version = "0.1.0", path = "../imperium-workflow" }
 reqwest = "0.13.5"
 rpassword = "7.5.4"
 serde = "1.0.229"

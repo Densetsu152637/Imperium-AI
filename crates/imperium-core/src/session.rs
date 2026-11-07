@@ -9,10 +9,11 @@ use imperium_tools::Workspace;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use imperium_config::{MemorySettings, WritePolicy};
+use imperium_config::{Enforce, MemorySettings, WritePolicy};
 use imperium_extensions::{Extensions, HookEvent, Verdict};
 use imperium_mcp::{McpServers, ServerSpec};
 use imperium_memory::{Scope, Store};
+use imperium_workflow::ContextIndex;
 use serde_json::json;
 
 use crate::agent::Agent;
@@ -42,6 +43,9 @@ pub struct SessionConfig {
     pub extensions: Extensions,
     /// Global and project memory, when enabled.
     pub memory: Option<SessionMemory>,
+    /// Workflow packs and project instructions, when enabled.
+    pub context: Option<Arc<ContextIndex>>,
+    pub enforce: Enforce,
     pub max_steps: u32,
     pub journal_path: PathBuf,
 }
@@ -173,6 +177,8 @@ pub(crate) struct Shared {
     pub mcp: McpServers,
     pub extensions: Extensions,
     pub memory: Option<SessionMemory>,
+    pub context: Option<Arc<ContextIndex>>,
+    pub enforce: Enforce,
     next_task: AtomicU32,
 }
 
@@ -208,6 +214,8 @@ async fn run(
         mcp,
         extensions: config.extensions,
         memory: config.memory,
+        context: config.context,
+        enforce: config.enforce,
         next_task: AtomicU32::new(0),
     });
     shared
@@ -217,7 +225,13 @@ async fn run(
             json!({"session_id": config.id, "project_dir": shared.workspace.root_display()}),
         )
         .await;
-    let mut root = Agent::new(ROOT_AGENT.into(), Arc::clone(&shared), config.model, true);
+    let mut root = Agent::new(
+        ROOT_AGENT.into(),
+        Arc::clone(&shared),
+        config.model,
+        true,
+        "root".into(),
+    );
     let mut queued = VecDeque::new();
     loop {
         let text = match queued.pop_front() {

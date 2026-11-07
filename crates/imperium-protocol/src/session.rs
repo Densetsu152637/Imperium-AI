@@ -100,6 +100,33 @@ pub enum SessionEvent {
     MemoryUsed { names: Vec<String> },
     /// The agent saved a memory.
     MemorySaved { name: String, scope: String },
+    /// What the workflow says this agent should load for its role and task.
+    ContextManifest {
+        role: String,
+        items: Vec<ContextItem>,
+        documentation: Vec<ContextPointer>,
+    },
+    /// The agent loaded workflow or documentation references.
+    ContextLoaded { references: Vec<String> },
+}
+
+/// An instruction file or section in a context manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ContextItem {
+    pub reference: String,
+    pub reason: String,
+    pub required: bool,
+    pub tokens: u32,
+}
+
+/// A pointer to project documentation in a context manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ContextPointer {
+    pub reference: String,
+    pub reason: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -1,20 +1,22 @@
 //! One agent's conversation and its turn loop, including planning and delegation.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage, stream_chat};
 use imperium_protocol::session::{
-    PermissionDecision, Plan, PlanStep, SessionEvent, StepStatus, TokenUsage,
+    ContextItem, ContextPointer, PermissionDecision, Plan, PlanStep, SessionEvent, StepStatus,
+    TokenUsage,
 };
 use imperium_tools::{Access, Invocation, specs};
+use imperium_workflow::LoadManifest;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::task::JoinHandle;
 
-use imperium_config::WritePolicy;
+use imperium_config::{Enforce, WritePolicy};
 use imperium_extensions::{HookEvent, Verdict};
 use imperium_memory::{NewEntry, Scope};
 
@@ -43,6 +45,7 @@ enum AgentTool {
     MemorySearch,
     MemoryRead,
     MemoryRemember,
+    ContextLoad,
 }
 
 struct TaskReport {
@@ -60,10 +63,20 @@ pub struct Agent {
     /// Only the root agent delegates; subagents do their brief themselves.
     can_delegate: bool,
     tasks: HashMap<String, JoinHandle<TaskReport>>,
+    /// The workflow role whose files this agent loads: `root`, or what the delegator asked.
+    role: String,
+    /// Required references from the latest manifest that are not loaded yet.
+    unloaded: Mutex<Vec<String>>,
 }
 
 impl Agent {
-    pub fn new(id: String, shared: Arc<Shared>, model: ResolvedModel, can_delegate: bool) -> Self {
+    pub fn new(
+        id: String,
+        shared: Arc<Shared>,
+        model: ResolvedModel,
+        can_delegate: bool,
+        role: String,
+    ) -> Self {
         let root = shared.workspace.root_display();
         let system = if can_delegate {
             format!(
@@ -101,6 +114,8 @@ impl Agent {
             messages: vec![ChatMessage::System { content: system }],
             can_delegate,
             tasks: HashMap::new(),
+            role,
+            unloaded: Mutex::new(Vec::new()),
         }
     }
 
@@ -114,6 +129,9 @@ impl Agent {
         tools.push(update_plan_spec());
         if !self.shared.extensions.skills.is_empty() {
             tools.push(load_skill_spec());
+        }
+        if self.shared.context.is_some() {
+            tools.push(context_load_spec());
         }
         if self.shared.memory.is_some() {
             tools.extend([memory_search_spec(), memory_read_spec()]);
@@ -132,10 +150,18 @@ impl Agent {
     /// as part of it.
     pub async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
         self.emit(SessionEvent::TurnStarted { text: text.clone() });
-        let content = match context {
-            Some(context) => format!("{context}\n\n{text}"),
-            None => text,
-        };
+        let mut preamble: Vec<String> = Vec::new();
+        if let Some(index) = &self.shared.context {
+            let manifest = index.resolve(&self.role, &text);
+            if !manifest.is_empty() {
+                *lock(&self.unloaded) = manifest.required().map(str::to_string).collect();
+                self.emit(manifest_event(&manifest));
+                preamble.push(manifest.render());
+            }
+        }
+        preamble.extend(context);
+        preamble.push(text);
+        let content = preamble.join("\n\n");
         self.messages.push(ChatMessage::User { content });
         let tools = self.tool_specs();
         let mut total = Usage::default();
@@ -239,6 +265,52 @@ impl Agent {
         self.shared
             .hook(HookEvent::ToolAfter, Some(tool), payload)
             .await;
+    }
+
+    /// Under `required-before-action`, the message refusing a write or command while required
+    /// context is unloaded.
+    fn missing_context(&self) -> Option<String> {
+        if self.shared.enforce != Enforce::RequiredBeforeAction {
+            return None;
+        }
+        let unloaded = lock(&self.unloaded);
+        (!unloaded.is_empty()).then(|| {
+            format!(
+                "error: load the required context first with context_load: {}",
+                unloaded.join(", ")
+            )
+        })
+    }
+
+    fn context_load(&self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            references: Vec<String>,
+        }
+        let args: Args = parse(arguments)?;
+        let index = self
+            .shared
+            .context
+            .as_ref()
+            .ok_or("no workflow is configured")?;
+        let mut out = String::new();
+        let mut loaded = Vec::new();
+        for reference in &args.references {
+            match index.load(reference) {
+                Ok(text) => {
+                    out.push_str(&format!(
+                        "<loaded reference=\"{reference}\">\n{text}\n</loaded>\n"
+                    ));
+                    loaded.push(reference.clone());
+                }
+                Err(error) => out.push_str(&format!("could not load {reference}: {error}\n")),
+            }
+        }
+        lock(&self.unloaded).retain(|reference| !loaded.contains(reference));
+        if !loaded.is_empty() {
+            self.emit(SessionEvent::ContextLoaded { references: loaded });
+        }
+        Ok(out)
     }
 
     fn memory(&self) -> Result<&SessionMemory, String> {
@@ -414,6 +486,9 @@ impl Agent {
         if let Some(blocked) = self.before_tool(name, arguments).await {
             return finish(false, blocked);
         }
+        if let Some(missing) = self.missing_context() {
+            return finish(false, missing);
+        }
         if !tool.allowed && !self.approve(name, &summary).await {
             return finish(false, "The user denied this action.".into());
         }
@@ -498,6 +573,7 @@ impl Agent {
             "spawn_agent" if self.can_delegate => AgentTool::SpawnAgent,
             "await_tasks" if self.can_delegate => AgentTool::AwaitTasks,
             "load_skill" if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
+            "context_load" if self.shared.context.is_some() => AgentTool::ContextLoad,
             "memory_search" if self.shared.memory.is_some() => AgentTool::MemorySearch,
             "memory_read" if self.shared.memory.is_some() => AgentTool::MemoryRead,
             "memory_remember" if self.shared.memory.is_some() && self.can_delegate => {
@@ -511,6 +587,7 @@ impl Agent {
             AgentTool::SpawnAgent => "delegate a task",
             AgentTool::AwaitTasks => "wait for subagents",
             AgentTool::LoadSkill => "load a skill",
+            AgentTool::ContextLoad => "load workflow context",
             AgentTool::MemorySearch => "search memory",
             AgentTool::MemoryRead => "read a memory",
             AgentTool::MemoryRemember => "save a memory",
@@ -525,6 +602,7 @@ impl Agent {
             AgentTool::SpawnAgent => self.spawn_agent(arguments),
             AgentTool::AwaitTasks => self.await_tasks(arguments).await,
             AgentTool::LoadSkill => self.load_skill(arguments),
+            AgentTool::ContextLoad => self.context_load(arguments),
             AgentTool::MemorySearch => self.memory_search(arguments),
             AgentTool::MemoryRead => self.memory_read(arguments),
             AgentTool::MemoryRemember => self.memory_remember(arguments).await,
@@ -558,6 +636,11 @@ impl Agent {
         let summary = invocation.summary();
         if let Some(blocked) = self.before_tool(tool, &call.function.arguments).await {
             return finish(false, blocked);
+        }
+        if invocation.access() != Access::Read
+            && let Some(missing) = self.missing_context()
+        {
+            return finish(false, missing);
         }
         if invocation.access() != Access::Read && !self.approve(tool, &summary).await {
             return finish(false, "The user denied this action.".into());
@@ -622,6 +705,8 @@ impl Agent {
             location: Option<String>,
             #[serde(default)]
             tags: Vec<String>,
+            #[serde(default)]
+            role: Option<String>,
         }
         let args: Args = parse(arguments)?;
         if args.brief.trim().is_empty() {
@@ -666,7 +751,8 @@ impl Agent {
                     json!({"task_id": id, "brief": args.brief, "model": spec}),
                 )
                 .await;
-            let mut agent = Agent::new(id.clone(), Arc::clone(&shared), model, false);
+            let role = args.role.unwrap_or_else(|| "leaf".into());
+            let mut agent = Agent::new(id.clone(), Arc::clone(&shared), model, false, role);
             let outcome = agent.run_turn(args.brief, None).await;
             shared
                 .hook(
@@ -773,6 +859,41 @@ fn memory_instructions(memory: &SessionMemory, can_write: bool) -> String {
         text.push_str(&index);
     }
     text
+}
+
+fn manifest_event(manifest: &LoadManifest) -> SessionEvent {
+    SessionEvent::ContextManifest {
+        role: manifest.role.clone(),
+        items: manifest
+            .items
+            .iter()
+            .map(|item| ContextItem {
+                reference: item.reference.clone(),
+                reason: item.reason.clone(),
+                required: item.required,
+                tokens: item.tokens,
+            })
+            .collect(),
+        documentation: manifest
+            .documentation
+            .iter()
+            .map(|pointer| ContextPointer {
+                reference: pointer.reference.clone(),
+                reason: pointer.reason.clone(),
+                summary: pointer.summary.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn context_load_spec() -> ToolSpec {
+    ToolSpec {
+        name: "context_load".into(),
+        description: "Load workflow instructions or project documentation by reference, as listed in your context manifest (<pack>:<path>[#section] or project:<path>[#section]).".into(),
+        parameters: json!({"type": "object", "properties": {
+            "references": {"type": "array", "items": {"type": "string"}}
+        }, "required": ["references"]}),
+    }
 }
 
 fn memory_search_spec() -> ToolSpec {
