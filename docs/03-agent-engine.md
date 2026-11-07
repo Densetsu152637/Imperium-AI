@@ -37,6 +37,11 @@ support.
 
 ## Planning
 
+**Implemented (phase 3):** the `update_plan` tool (a goal and steps with `pending`,
+`in_progress`, `done`, `blocked`, or `skipped`) and the `plan_updated` event, shown as a live
+checklist in the desktop app and the CLI. Not yet: the automatic plan phase, approval modes,
+progress checks, and re-planning described below.
+
 Planning is built into the runtime (`imperium-core`), not left to prompts, so every agent —
 whatever model it runs on — works toward an explicit, tracked goal.
 
@@ -61,6 +66,14 @@ whatever model it runs on — works toward an explicit, tracked goal.
   ([14](14-projects-and-automation.md)) use the same plans for long-running goals.
 
 ## Reactive delegation
+
+**Implemented (phase 3):** the root agent has `spawn_agent` (a self-contained brief, an optional
+minimum tier, or a named catalog model) and `await_tasks` (some or all task ids). Each subagent
+is its own task running in parallel; `await_tasks` waits on them with no model calls and returns
+their reports (up to 8,000 characters each). Subagents cannot delegate further (depth 1) and
+share the session's permission approvals. Events carry an `agent_id` (`root`, or the task id),
+and the session emits `task_spawned` and `task_finished` (status, report, tokens, cost).
+Not yet: `send_to_task`, budgets per task, deeper trees, and cancellation.
 
 Delegation must not burn tokens while subagents work.
 

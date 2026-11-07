@@ -1,5 +1,5 @@
 // Connects to the daemon and arranges the default view: Projects and Sessions stacked on the
-// left, the session spanning the middle, telemetry on the right.
+// left, the session spanning the middle, agents, models, and telemetry stacked on the right.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -7,6 +7,7 @@ import type {
   PermissionDecision,
   SessionCreateResult,
   SessionEventParams,
+  ModelListResult,
   SessionListResult,
   SessionSubscribeResult,
 } from "@imperium/protocol";
@@ -16,6 +17,8 @@ import { findDaemon, insideTauri, pickFolder, rememberDevConnection } from "./da
 import { Columns } from "./layout/Columns";
 import { ProjectsPanel, SessionsPanel } from "./panels/NavigationPanels";
 import { SessionPanel } from "./panels/SessionPanel";
+import { AgentsPanel } from "./panels/AgentsPanel";
+import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { applyEvent, markAnswered, newSession, type SessionState } from "./sessions";
 import { applySettings, loadSettings, saveSettings, type DisplaySettings } from "./settings";
@@ -31,6 +34,7 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [settings, setSettings] = useState<DisplaySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
+  const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
 
   useEffect(() => applySettings(settings), [settings]);
 
@@ -59,8 +63,10 @@ export function App() {
       if (connection) rememberDevConnection(connection);
       // Events that arrive while sessions are being restored wait here, then apply in order.
       let pending: SessionEventParams[] | null = [];
-      const apply = ({ session_id, event }: SessionEventParams) =>
-        setSessions((all) => (all[session_id] ? { ...all, [session_id]: applyEvent(all[session_id], event) } : all));
+      const apply = ({ session_id, agent_id, event }: SessionEventParams) =>
+        setSessions((all) =>
+          all[session_id] ? { ...all, [session_id]: applyEvent(all[session_id], { agent_id, event }) } : all,
+        );
       client.onNotification((notification) => {
         if (notification.method !== "session.event") return;
         const params = notification.params as SessionEventParams;
@@ -80,6 +86,7 @@ export function App() {
         }),
       );
       setSessions(Object.fromEntries(restored));
+      setModelTable(await client.call<ModelListResult>("models.list"));
       const queued = pending;
       pending = null;
       queued.forEach(apply);
@@ -213,7 +220,11 @@ export function App() {
               {
                 id: "right",
                 mode: "stack",
-                panels: [{ id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> }],
+                panels: [
+                  { id: "agents", title: "Agents", body: <AgentsPanel session={session} /> },
+                  { id: "models", title: "Models", body: <ModelsPanel table={modelTable} /> },
+                  { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
+                ],
               },
             ]}
           />

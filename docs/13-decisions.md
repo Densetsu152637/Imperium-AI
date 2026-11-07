@@ -18,7 +18,7 @@
 | D12 | Pets use the Pixel Pets v3 format, with the arbiter in the daemon and rendering in every client | Existing format and pets (including Codex imports); consistent state; zero model cost | Own pack format; UI-only pets | Pixel Pets format v4 |
 | D13 | Licence: MIT | Owner's choice | — | — |
 | D14 | Planning is a runtime feature (plan objects, plan phase, approval modes) | Keeps weaker open models on track; plans visible and editable | Prompt-only planning | — |
-| D15 | One daemon process: a small shared Tokio I/O runtime plus one OS thread with a single-threaded Tokio runtime per session | Sessions are isolated from each other and from the transport; async I/O keeps idle work near zero CPU | Multi-process sessions; all sessions as tasks on one shared runtime | Thread count becomes a problem with very many open sessions |
+| D15 | One daemon process; every agent is a task on a multi-threaded Tokio runtime with a worker per core | Agents run in parallel across cores; idle agents cost no CPU; no thread per session to manage | A thread per session (agents of one session confined to one core); multi-process sessions | CPU-heavy tools need isolation from agent tasks |
 | D16 | GitHub auto-fix responders run as ordinary sessions, push only to PR branches, and never merge, close, approve, or force-push | Keeps automation reviewable and reversible | Fully autonomous merging | Users ask for merge automation with required approvals |
 
 ## Open questions

@@ -106,7 +106,7 @@ async fn a_chat_turn_streams_events_to_the_client() {
         assert_eq!(notification.method, SESSION_EVENT);
         let params: SessionEventParams = serde_json::from_value(notification.params).unwrap();
         assert_eq!(params.session_id, session.session_id);
-        match params.event {
+        match params.agent_event.event {
             SessionEvent::TextDelta { text: delta } => text.push_str(&delta),
             SessionEvent::TurnCompleted { usage, .. } => {
                 assert_eq!(usage.prompt_tokens, 9);

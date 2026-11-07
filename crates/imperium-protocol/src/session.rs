@@ -10,6 +10,18 @@ pub const SESSION_EVENT: &str = "session.event";
 #[ts(export)]
 pub struct SessionEventParams {
     pub session_id: String,
+    #[serde(flatten)]
+    pub agent_event: AgentEvent,
+}
+
+/// The id of a session's root agent; subagents use their task id (`t1`, `t2`, ...).
+pub const ROOT_AGENT: &str = "root";
+
+/// An event and the agent it came from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentEvent {
+    pub agent_id: String,
     pub event: SessionEvent,
 }
 
@@ -54,6 +66,23 @@ pub enum SessionEvent {
         tokens_per_sec: Option<f64>,
         cost_usd: Option<f64>,
     },
+    /// The agent replaced its plan.
+    PlanUpdated { plan: Plan },
+    /// The agent delegated a task to a subagent, whose events carry `task_id` as agent id.
+    TaskSpawned {
+        task_id: String,
+        brief: String,
+        model: String,
+    },
+    /// A subagent finished; its parent receives `report` when it awaits the task.
+    TaskFinished {
+        task_id: String,
+        ok: bool,
+        /// The subagent's final reply, truncated for display.
+        report: String,
+        usage: TokenUsage,
+        cost_usd: Option<f64>,
+    },
     /// The agent finished the turn.
     TurnCompleted {
         usage: TokenUsage,
@@ -75,6 +104,32 @@ pub struct TokenUsage {
     pub completion_tokens: u64,
     #[ts(type = "number")]
     pub cached_tokens: u64,
+}
+
+/// A goal and the steps toward it, kept by an agent with the `update_plan` tool.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Plan {
+    pub goal: String,
+    pub steps: Vec<PlanStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PlanStep {
+    pub title: String,
+    pub status: StepStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum StepStatus {
+    Pending,
+    InProgress,
+    Done,
+    Blocked,
+    Skipped,
 }
 
 /// The user's answer to a permission request.

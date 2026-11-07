@@ -4,8 +4,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use imperium_config::{Paths, Settings};
-use imperium_core::{ModelError, Session, SessionConfig, new_session_id, resolve_model};
-use imperium_protocol::session::SessionEvent;
+use imperium_core::{
+    CatalogModel, ModelError, Session, SessionConfig, new_session_id, resolve_model,
+};
+use imperium_protocol::methods::{ModelListResult, ModelRow};
+use imperium_protocol::session::AgentEvent;
 use imperium_tools::Workspace;
 use tokio::sync::broadcast;
 
@@ -47,10 +50,11 @@ impl DaemonState {
         &self,
         project_dir: &str,
         model: Option<&str>,
-    ) -> Result<(Arc<Session>, broadcast::Receiver<SessionEvent>), CreateError> {
+    ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
         let workspace = Workspace::new(Path::new(project_dir))
             .map_err(|error| CreateError::Project(project_dir.to_string(), error))?;
         let model = resolve_model(&self.settings, model, imperium_config::load_secret)?;
+        let catalog = self.catalog();
         let id = new_session_id().map_err(|error| CreateError::Start(error.to_string()))?;
         let session = Session::spawn(SessionConfig {
             journal_path: self
@@ -61,6 +65,8 @@ impl DaemonState {
             id: id.clone(),
             workspace,
             model,
+            catalog,
+            routing: self.settings.routing.clone(),
             max_steps: self.settings.agents.max_steps,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
@@ -71,6 +77,65 @@ impl DaemonState {
             .expect("session map lock is never poisoned by a panic while held")
             .insert(id, Arc::clone(&session));
         Ok((session, events))
+    }
+
+    /// Resolves `[[models.catalog]]` for routing subagents. Entries that cannot be used (an
+    /// unknown endpoint, a missing key) are skipped with a warning rather than failing the session.
+    fn catalog(&self) -> Vec<CatalogModel> {
+        self.settings
+            .models
+            .catalog
+            .iter()
+            .filter_map(|entry| {
+                match resolve_model(
+                    &self.settings,
+                    Some(&entry.spec),
+                    imperium_config::load_secret,
+                ) {
+                    Ok(model) => Some(CatalogModel {
+                        id: entry.id.clone(),
+                        model,
+                        tier: entry.tier,
+                        location: entry.location,
+                        tags: entry.tags.clone(),
+                    }),
+                    Err(error) => {
+                        tracing::warn!(model = %entry.spec, %error, "skipping catalog model");
+                        None
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// The configured model table, with prices from each endpoint's pricing.
+    pub fn model_table(&self) -> ModelListResult {
+        let models = self
+            .settings
+            .models
+            .catalog
+            .iter()
+            .map(|entry| {
+                let (endpoint_id, model) = entry.spec.split_once(':').unwrap_or((&entry.spec, ""));
+                let endpoint = self.settings.endpoints.get(endpoint_id);
+                let pricing = endpoint.and_then(|endpoint| endpoint.pricing.get(model));
+                ModelRow {
+                    id: entry.id.clone(),
+                    spec: entry.spec.clone(),
+                    location: entry.location.as_str().into(),
+                    tier: entry.tier.as_str().into(),
+                    tags: entry.tags.clone(),
+                    input_usd_per_mtok: pricing.map(|p| p.input_usd_per_mtok),
+                    output_usd_per_mtok: pricing.map(|p| p.output_usd_per_mtok),
+                    endpoint_configured: endpoint.is_some(),
+                }
+            })
+            .collect();
+        ModelListResult {
+            models,
+            prefer: self.settings.routing.prefer.as_str().into(),
+            rules: u32::try_from(self.settings.routing.rules.len()).unwrap_or(u32::MAX),
+        }
     }
 
     /// Every running session, ordered by id.

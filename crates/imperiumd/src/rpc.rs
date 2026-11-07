@@ -5,13 +5,13 @@ use std::sync::Arc;
 use imperium_core::Session;
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
-    Accepted, Handshake, HandshakeParams, HandshakeResult, Method, Peer, Ping, PingParams,
-    PingResult, SessionCreate, SessionCreateParams, SessionCreateResult, SessionList,
-    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSend,
-    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult,
-    SessionSummary,
+    Accepted, Handshake, HandshakeParams, HandshakeResult, Method, ModelList, ModelListParams,
+    Peer, Ping, PingParams, PingResult, SessionCreate, SessionCreateParams, SessionCreateResult,
+    SessionList, SessionListParams, SessionListResult, SessionRespond, SessionRespondParams,
+    SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
+    SessionSubscribeResult, SessionSummary,
 };
-use imperium_protocol::session::SessionEvent;
+use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -23,7 +23,7 @@ use crate::state::{CreateError, DaemonState};
 #[derive(Debug)]
 pub struct Subscription {
     pub session_id: String,
-    pub events: broadcast::Receiver<SessionEvent>,
+    pub events: broadcast::Receiver<AgentEvent>,
 }
 
 /// The reply to one frame, plus any subscription the call started.
@@ -92,6 +92,9 @@ impl Connection {
                     events,
                 });
                 Ok(result)
+            }),
+            ModelList::NAME => call::<ModelList>(request.params, |_: ModelListParams| {
+                Ok(self.state.model_table())
             }),
             SessionList::NAME => call::<SessionList>(request.params, |_: SessionListParams| {
                 Ok(SessionListResult {
@@ -166,7 +169,7 @@ impl Connection {
     fn create_session(
         &self,
         params: SessionCreateParams,
-    ) -> Result<(SessionCreateResult, broadcast::Receiver<SessionEvent>), ErrorObject> {
+    ) -> Result<(SessionCreateResult, broadcast::Receiver<AgentEvent>), ErrorObject> {
         let (session, events) = self
             .state
             .create_session(&params.project_dir, params.model.as_deref())
@@ -334,6 +337,54 @@ mod tests {
             json!({"session_id": "missing", "text": "hi"}),
         ));
         assert_eq!(error_code(&no_session), Some(codes::SESSION_NOT_FOUND));
+    }
+
+    #[test]
+    fn the_model_table_lists_rows_with_prices() {
+        let config: toml::Table = r#"
+            [endpoints.cloud]
+            base_url = "https://example.com/v1"
+            pricing."big" = { input_usd_per_mtok = 2.0, output_usd_per_mtok = 8.0 }
+
+            [[models.catalog]]
+            id = "big"
+            spec = "cloud:big"
+            location = "cloud"
+            tier = "strong"
+
+            [[models.catalog]]
+            id = "laptop"
+            spec = "nowhere:small"
+            location = "local"
+            tier = "basic"
+            tags = ["code"]
+        "#
+        .parse()
+        .unwrap();
+        let settings = Config::from_layers([
+            Layer::defaults(),
+            Layer::new(imperium_config::Source::User("u".into()), config),
+        ])
+        .settings()
+        .unwrap();
+        let mut connection = Connection::new(DaemonState::new(
+            Paths::under(std::path::Path::new("unused")),
+            settings,
+        ));
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        let handled = connection.handle_text(&request(2, ModelList::NAME, json!({})));
+        let Outcome::Result(result) = handled.response.outcome else {
+            panic!("models.list failed");
+        };
+        assert_eq!(result["prefer"], "cheapest");
+        assert_eq!(result["models"][0]["input_usd_per_mtok"], 2.0);
+        assert_eq!(result["models"][0]["endpoint_configured"], true);
+        assert_eq!(result["models"][1]["location"], "local");
+        assert_eq!(result["models"][1]["endpoint_configured"], false);
     }
 
     #[test]
