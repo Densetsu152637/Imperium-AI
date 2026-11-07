@@ -13,8 +13,7 @@ use imperium_config::ScheduleSettings;
 use imperium_protocol::methods::{
     SCHEDULE_EVENT, ScheduleEventParams, ScheduleListResult, ScheduleRow,
 };
-use imperium_protocol::session::{ROOT_AGENT, SessionEvent};
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::Notify;
 
 use crate::DaemonState;
 
@@ -244,48 +243,16 @@ async fn run(
         };
     }
     let prompt = action.prompt.clone().unwrap_or_default();
-    let (session, mut events) = match daemon.create_session(&project, action.model.as_deref()) {
-        Ok(created) => created,
-        Err(error) => return (false, error.to_string(), None),
-    };
-    let session_id = Some(session.id().to_string());
-    if session.send(prompt).is_err() {
-        return (
-            false,
-            "the session closed before it started".into(),
-            session_id,
-        );
-    }
-    let mut reply = String::new();
-    let outcome = tokio::time::timeout(timeout, async {
-        loop {
-            match events.recv().await {
-                Ok(event) if event.agent_id == ROOT_AGENT => match event.event {
-                    SessionEvent::TextDelta { text } => reply.push_str(&text),
-                    SessionEvent::TurnCompleted { .. } => return Ok(()),
-                    SessionEvent::TurnFailed { message } => return Err(message),
-                    _ => {}
-                },
-                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => {
-                    return Err("the session ended".to_string());
-                }
-            }
-        }
-    })
-    .await;
-    match outcome {
-        Ok(Ok(())) => (true, truncate(reply.trim()), session_id),
-        Ok(Err(message)) => (false, truncate(&message), session_id),
-        Err(_) => (
-            false,
-            format!(
-                "timed out after {} s (a permission request may be waiting)",
-                timeout.as_secs()
-            ),
-            session_id,
-        ),
-    }
+    let (ok, summary, session_id) = daemon
+        .run_prompt(
+            &project,
+            action.model.as_deref(),
+            prompt,
+            Vec::new(),
+            timeout,
+        )
+        .await;
+    (ok, truncate(&summary), session_id)
 }
 
 async fn run_command(

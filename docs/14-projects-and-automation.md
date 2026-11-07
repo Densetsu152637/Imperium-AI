@@ -147,6 +147,26 @@ Projects linked to a GitHub repository can react to repository activity automati
 pull request whose checks fail, answer review comments, triage new issues, and investigate
 failed workflow runs.
 
+**Implemented (phase 6, `imperium-github` and the daemon's auto-fix):** with
+`github.autofix.enabled`, the daemon polls each `[[github.watch]]` repository (every `poll_s`,
+default 120 s) through the `gh` CLI for the signed-in user's open pull requests whose latest
+commit has a failed check. For each new failing commit it runs **Fix CI**: it prepares a
+worktree of the pull request's branch from the watch's local clone
+(`<data>/worktrees/<owner>__<repo>/pr-<n>`, on a local `imperium/fix-pr-<n>` branch), gives a
+new session the failed checks and the end of the failed job's log (`gh run view --job
+--log-failed`), with file writes, edits, and commands pre-approved inside that worktree,
+commits whatever it changed with an `Imperium-Auto-Fix: session <id>` trailer, and, with
+`push = "ask"` (the default), queues an approval request; only on approval does it push to the
+pull request's branch, as a plain push. It never force-pushes, merges, closes, or approves.
+After `max_attempts_per_pr` (default 3) failing commits on one pull request it stops and
+says so. Progress goes to every client as `autofix.event` notifications (`started`,
+`awaiting_approval`, `pushed`, `declined`, `nothing`, `failed`, `stopped`); approvals are
+answered in the desktop app's Approvals panel or with `imperium approvals list|approve|deny`
+(`approvals.list` and `approvals.respond`, with `approval.requested` notifications). Not yet:
+review, conflict, triage, and workflow-failure responders, `github.*` hook events, webhooks,
+labelled or all pull requests, budgets, `comment`, and persisting attempt counts across
+restarts.
+
 ### Events
 
 Delivered by polling the GitHub API (default, works behind NAT) or by a webhook through the

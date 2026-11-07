@@ -2253,6 +2253,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "imperium-github"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "imperium-local"
 version = "0.1.0"
 dependencies = [
@@ -2360,6 +2372,7 @@ dependencies = [
  "imperium-config",
  "imperium-core",
  "imperium-extensions",
+ "imperium-github",
  "imperium-local",
  "imperium-mcp",
  "imperium-memory",

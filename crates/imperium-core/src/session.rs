@@ -46,6 +46,9 @@ pub struct SessionConfig {
     /// Workflow packs and project instructions, when enabled.
     pub context: Option<Arc<ContextIndex>>,
     pub enforce: Enforce,
+    /// Tools that run without asking, as if the user had allowed them for the session (for
+    /// unattended sessions such as auto-fix, in their own worktree).
+    pub pre_approved: Vec<String>,
     pub max_steps: u32,
     pub journal_path: PathBuf,
 }
@@ -210,7 +213,7 @@ async fn run(
         fallback_model: config.model.clone(),
         local: config.local,
         max_steps: config.max_steps,
-        allowed_tools: Mutex::new(HashSet::new()),
+        allowed_tools: Mutex::new(config.pre_approved.into_iter().collect()),
         mcp,
         extensions: config.extensions,
         memory: config.memory,

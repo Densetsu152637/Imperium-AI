@@ -54,6 +54,8 @@ pub struct Settings {
     pub memory: MemorySettings,
     #[serde(default)]
     pub workflow: WorkflowSettings,
+    #[serde(default)]
+    pub github: GithubSettings,
     /// `[[schedules]]`: tasks the daemon runs on a timetable (see docs/14).
     #[serde(default)]
     pub schedules: Vec<ScheduleSettings>,
@@ -125,6 +127,9 @@ impl Settings {
                 ));
             }
         }
+        if !matches!(self.github.autofix.push.as_str(), "ask" | "auto") {
+            return Err("github.autofix.push must be ask or auto".into());
+        }
         for (name, server) in &self.mcp.servers {
             if server.command.is_some() == server.url.is_some() {
                 return Err(format!(
@@ -133,6 +138,48 @@ impl Settings {
             }
         }
         Ok(())
+    }
+}
+
+/// GitHub watching and auto-fix (see docs/14-projects-and-automation.md#github-auto-fix).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct GithubSettings {
+    #[serde(default)]
+    pub watch: Vec<GithubWatch>,
+    #[serde(default)]
+    pub autofix: AutofixSettings,
+}
+
+/// One `[[github.watch]]` entry: a repository and the local clone fixes are made from.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct GithubWatch {
+    /// `owner/name`.
+    pub repo: String,
+    /// A local clone whose `origin` is the repository.
+    pub project: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct AutofixSettings {
+    pub enabled: bool,
+    /// `ask` (default): pushes wait for approval; `auto` pushes without asking.
+    pub push: String,
+    pub max_attempts_per_pr: u32,
+    pub poll_s: u64,
+    /// Model for fix sessions; defaults to `models.default`.
+    pub model: Option<String>,
+}
+
+impl Default for AutofixSettings {
+    fn default() -> Self {
+        AutofixSettings {
+            enabled: false,
+            push: "ask".into(),
+            max_attempts_per_pr: 3,
+            poll_s: 120,
+            model: None,
+        }
     }
 }
 
