@@ -61,7 +61,8 @@ max_session_cost_usd = 5.0
 
 [agents]
 max_depth = 3
-max_concurrent = 8
+max_concurrent = 8        # replaces local-paths/plan.md
+manager_pool = "excluded" # replaces local-paths/pool-managers.md
 
 [isolation]
 default_tier = "policy"   # policy | os | container | remote

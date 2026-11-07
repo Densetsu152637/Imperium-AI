@@ -28,7 +28,7 @@ globally and overridable per project:
 [worktrees]
 mode = "per-session"            # off | per-session | per-writer (each writing subagent gets one)
 location = "data"               # data | sibling | in-repo | custom
-custom_path = ""                # used when location = "custom"; may contain {project} and {session}
+custom_path = ""                # used when location = "custom"; placeholders: {project}, {repo}, {session}, {task}
 branch_prefix = "imperium/"     # branches are <prefix><session-or-task-slug>
 base = "default"                # default branch, current branch, or a named ref
 cleanup = "on-archive"          # on-archive | on-merge | manual

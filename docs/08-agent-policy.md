@@ -40,6 +40,40 @@ Users can **disable** the default pack entirely, replace it with another pack (a
 repository following the pack layout), or disable individual workflows. The settings UI shows
 the effective policy and which layer each rule came from.
 
+## Personalities
+
+- Personalities come from two places: those shipped in the active pack (`personalities/`) and
+  **local personalities** the user creates, stored in `<config>/personalities/<id>.md`
+  (outside any repository, never uploaded).
+- *Settings → Personalities* lists both, previews them, and has an editor for creating,
+  duplicating (for example, start from a pack personality and adjust it), renaming, and
+  deleting local personalities. Pack personalities are read-only; editing one saves a local
+  copy.
+- A local personality with the same id as a pack one takes precedence, and the list marks it as
+  overriding.
+- Selection is a setting (`policy.personality`), global with an optional project override, and
+  applies only to the root agent, as the pack's personality rules require.
+
+## Local paths come from app settings
+
+Agent-Custom-Workflow reads per-user machine values from its gitignored `local-paths/` files.
+Under Imperium those values come from **Imperium's configuration instead**, so there is one
+place to set them:
+
+| `local-paths` file  | Imperium setting                                                 |
+| ------------------- | ---------------------------------------------------------------- |
+| `worktrees.md`      | `worktrees.location` / `worktrees.custom_path` ([14](14-projects-and-automation.md#worktrees)) |
+| `plan.md`           | `agents.max_concurrent` (the subagent cap)                       |
+| `pool-managers.md`  | `agents.manager_pool` (how managers count toward the agent pool) |
+
+- The pack manifest declares this mapping (`local_paths` below), and the Imperium host adapter
+  tells agents to resolve these values through the app rather than reading files.
+- The daemon injects the resolved values into the policy context; `local-paths/` files in the
+  pack directory are ignored, and the policy view says so if any exist.
+- A value missing from config falls back to the pack's default rule, as a missing file does
+  today.
+- Placeholders map across: `<repository-name>` → `{repo}`, `<task-id>` → `{task}`.
+
 ## Pack format
 
 A pack is a directory or Git repository with an `imperium-pack.toml`:
@@ -52,6 +86,11 @@ roles = { root = "workflows/AGENTS.root.md", manager = "workflows/AGENTS.manager
           leaf = "workflows/AGENTS.leaf.md" }
 personalities = "personalities/"
 adapter = "guides/host-adapters.md#imperium"
+
+[local_paths]                       # pack files whose values come from Imperium settings
+"worktrees.md" = "worktrees.custom_path"
+"plan.md" = "agents.max_concurrent"
+"pool-managers.md" = "agents.manager_pool"
 ```
 
 Packs without a manifest are loaded by convention from `AGENTS.md`.
