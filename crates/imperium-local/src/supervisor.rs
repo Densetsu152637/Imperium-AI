@@ -13,20 +13,21 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use imperium_config::LlamaCppSettings;
+use imperium_config::{LlamaCppSettings, VllmSettings};
 use imperium_core::{AcquireFuture, Availability, LocalLease, LocalModels};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::hardware::Hardware;
-use crate::planner::{Budget, Footprint, Placement, place};
-use crate::scan::LocalModel;
+use crate::planner::{Budget, Footprint, Placement, place, place_on_gpu};
+use crate::scan::{Format, LocalModel};
 
 /// How often idle models are checked for unloading.
 const IDLE_CHECK: Duration = Duration::from_secs(15);
 
 /// What a server is started with.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LaunchSpec {
+    pub format: Format,
     pub model_id: String,
     pub model_path: PathBuf,
     pub mmproj: Option<PathBuf>,
@@ -35,12 +36,42 @@ pub struct LaunchSpec {
     pub slots: u32,
     pub gpu_layers: u32,
     pub cache_type: String,
+    /// vLLM's `--gpu-memory-utilization` (the share of GPU memory it may take).
+    pub gpu_memory_utilization: f64,
     pub extra_args: Vec<String>,
 }
 
 impl LaunchSpec {
-    /// `llama-server` arguments, without the port.
+    /// The runtime's arguments, without the port.
     pub fn args(&self) -> Vec<String> {
+        match self.format {
+            Format::Gguf => self.llama_args(),
+            Format::Safetensors => self.vllm_args(),
+        }
+    }
+
+    /// `vllm serve` arguments; the model is served under its id.
+    fn vllm_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "serve".into(),
+            self.model_path.display().to_string(),
+            "--host".into(),
+            "127.0.0.1".into(),
+            "--served-model-name".into(),
+            self.model_id.clone(),
+            "--max-model-len".into(),
+            (self.context / self.slots.max(1)).to_string(),
+            "--max-num-seqs".into(),
+            self.slots.to_string(),
+            "--gpu-memory-utilization".into(),
+            format!("{:.2}", self.gpu_memory_utilization),
+        ];
+        args.extend(self.extra_args.iter().cloned());
+        args
+    }
+
+    /// `llama-server` arguments.
+    fn llama_args(&self) -> Vec<String> {
         let mut args = vec![
             "--model".into(),
             self.model_path.display().to_string(),
@@ -82,6 +113,15 @@ pub trait Launcher: Send + Sync + fmt::Debug {
     fn launch<'a>(&'a self, spec: &'a LaunchSpec) -> LaunchFuture<'a>;
 }
 
+/// Runtimes other than llama.cpp.
+#[derive(Debug, Clone, Default)]
+pub struct Runtimes {
+    pub vllm: VllmSettings,
+    /// vLLM is supported on Linux (including WSL2); elsewhere Hugging Face models are listed
+    /// but cannot be loaded.
+    pub vllm_available: bool,
+}
+
 /// A loaded model as the status view shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedStatus {
@@ -114,6 +154,9 @@ impl Loaded {
 pub struct Supervisor {
     models: Vec<LocalModel>,
     settings: LlamaCppSettings,
+    vllm: VllmSettings,
+    /// Whether vLLM can run here; Hugging Face models are unavailable otherwise.
+    vllm_available: bool,
     launcher: Arc<dyn Launcher>,
     /// Memory free when the supervisor started, less the RAM headroom.
     budget: Budget,
@@ -142,6 +185,7 @@ impl Supervisor {
     pub fn start(
         models: Vec<LocalModel>,
         settings: LlamaCppSettings,
+        runtimes: Runtimes,
         hardware: &Hardware,
         launcher: Arc<dyn Launcher>,
     ) -> Arc<Self> {
@@ -151,9 +195,12 @@ impl Supervisor {
             ram_bytes: hardware.ram_available_bytes.saturating_sub(headroom),
             unified: hardware.unified_memory,
         };
+        let vllm_available = runtimes.vllm_available;
         let supervisor = Arc::new(Supervisor {
             models,
             settings,
+            vllm: runtimes.vllm,
+            vllm_available,
             launcher,
             budget,
             loaded: Mutex::new(HashMap::new()),
@@ -190,12 +237,23 @@ impl Supervisor {
     /// can be unloaded to make room).
     pub fn placement(&self, model: &LocalModel) -> Option<Placement> {
         let loaded = lock(&self.loaded);
-        place(self.footprint(model), self.free_budget(&loaded, true))
+        self.place(model, self.free_budget(&loaded, true))
     }
 
     /// Where `model` would go on an empty machine, for listings.
     pub fn placement_when_idle(&self, model: &LocalModel) -> Option<Placement> {
-        place(self.footprint(model), self.budget)
+        self.place(model, self.budget)
+    }
+
+    /// llama.cpp can split a model between GPU and RAM; vLLM needs it all on the GPU, and
+    /// cannot run where vLLM is unavailable.
+    fn place(&self, model: &LocalModel, budget: Budget) -> Option<Placement> {
+        let footprint = self.footprint(model);
+        match model.format {
+            Format::Gguf => place(footprint, budget),
+            Format::Safetensors if self.vllm_available => place_on_gpu(footprint, budget),
+            Format::Safetensors => None,
+        }
     }
 
     pub fn loaded(&self) -> Vec<LoadedStatus> {
@@ -272,14 +330,19 @@ impl Supervisor {
         let placement = {
             let mut loaded = lock(&self.loaded);
             let footprint = self.footprint(&model);
-            let placement = place(footprint, self.free_budget(&loaded, true)).ok_or_else(|| {
-                format!(
-                    "not enough free memory for {id} (needs {} MiB)",
-                    footprint.required_bytes() / (1024 * 1024)
-                )
-            })?;
+            let placement = self
+                .place(&model, self.free_budget(&loaded, true))
+                .ok_or_else(|| {
+                    format!(
+                        "not enough free memory for {id} (needs {} MiB)",
+                        footprint.required_bytes() / (1024 * 1024)
+                    )
+                })?;
             // Make room by unloading idle models only when the model does not fit beside them.
-            if place(footprint, self.free_budget(&loaded, false)).is_none() {
+            if self
+                .place(&model, self.free_budget(&loaded, false))
+                .is_none()
+            {
                 loaded.retain(|other, entry| {
                     let keep = entry.in_use() > 0;
                     if !keep {
@@ -290,7 +353,15 @@ impl Supervisor {
             }
             placement
         };
+        let vllm = &self.vllm;
         let spec = LaunchSpec {
+            format: model.format,
+            gpu_memory_utilization: if self.budget.vram_bytes == 0 {
+                vllm.max_gpu_memory_utilization
+            } else {
+                (placement.vram_bytes as f64 / self.budget.vram_bytes as f64 + 0.05)
+                    .min(vllm.max_gpu_memory_utilization)
+            },
             model_id: id.to_string(),
             model_path: model.path.clone(),
             mmproj: model.mmproj.clone(),
@@ -298,7 +369,10 @@ impl Supervisor {
             slots: self.settings.parallel.max(1),
             gpu_layers: placement.gpu_layers,
             cache_type: self.settings.cache_type.clone(),
-            extra_args: self.settings.extra_args.clone(),
+            extra_args: match model.format {
+                Format::Gguf => self.settings.extra_args.clone(),
+                Format::Safetensors => vllm.extra_args.clone(),
+            },
         };
         tracing::info!(model = %id, gpu_layers = placement.gpu_layers, "loading local model");
         let server = self.launcher.launch(&spec).await?;
@@ -453,6 +527,7 @@ mod tests {
                 ..GgufInfo::default()
             },
             mmproj: None,
+            format: Format::Gguf,
         }
     }
 
@@ -488,6 +563,7 @@ mod tests {
         Supervisor::start(
             vec![model("a", 6), model("b", 6), model("huge", 40)],
             settings(),
+            Runtimes::default(),
             &hardware,
             launcher,
         )
@@ -541,6 +617,8 @@ mod tests {
     #[test]
     fn launch_arguments_carry_the_plan() {
         let spec = LaunchSpec {
+            format: Format::Gguf,
+            gpu_memory_utilization: 0.9,
             model_id: "m".into(),
             model_path: PathBuf::from("m.gguf"),
             mmproj: Some(PathBuf::from("proj.gguf")),
@@ -560,5 +638,60 @@ mod tests {
             args.ends_with("--mmproj proj.gguf --flash-attn on"),
             "{args}"
         );
+        let vllm = LaunchSpec {
+            format: Format::Safetensors,
+            model_path: PathBuf::from("/models/Qwen3-8B"),
+            model_id: "Qwen3-8B".into(),
+            gpu_memory_utilization: 0.456,
+            extra_args: Vec::new(),
+            ..spec
+        };
+        assert_eq!(
+            vllm.args().join(" "),
+            "serve /models/Qwen3-8B --host 127.0.0.1 --served-model-name Qwen3-8B \
+             --max-model-len 8192 --max-num-seqs 2 --gpu-memory-utilization 0.46"
+        );
+    }
+
+    #[tokio::test]
+    async fn hugging_face_models_need_vllm() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let mut hf = model("hf", 2);
+        hf.format = Format::Safetensors;
+        let hardware = Hardware {
+            gpus: vec![Gpu {
+                name: "test".into(),
+                vendor: "nvidia".into(),
+                vram_total_bytes: 10 * GIB,
+                vram_free_bytes: 10 * GIB,
+                driver: None,
+            }],
+            ram_total_bytes: 0,
+            ram_available_bytes: 0,
+            cpu_cores: 8,
+            unified_memory: false,
+            overridden: true,
+        };
+        let without = Supervisor::start(
+            vec![hf.clone()],
+            settings(),
+            Runtimes::default(),
+            &hardware,
+            launcher.clone(),
+        );
+        assert_eq!(without.availability("hf"), Availability::Unavailable);
+        let with = Supervisor::start(
+            vec![hf],
+            settings(),
+            Runtimes {
+                vllm_available: true,
+                ..Runtimes::default()
+            },
+            &hardware,
+            launcher,
+        );
+        assert_eq!(with.availability("hf"), Availability::Fits);
+        let lease = with.acquire("hf").await.unwrap();
+        assert_eq!(lease.base_url, "http://fake/hf/v1");
     }
 }

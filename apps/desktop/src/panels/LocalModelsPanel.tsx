@@ -66,7 +66,7 @@ export function LocalModelsPanel({
         <tbody>
           {listing.models.map((row) => (
             <tr key={row.id} className={row.placement === "none" && !row.loaded ? "unusable" : undefined} title={row.path}>
-              <td>{row.id}</td>
+              <td>{`${row.runtime}:${row.id}`}</td>
               <td>{row.quantization ?? "?"}</td>
               <td>{gib(row.size_bytes)}</td>
               <td>{gib(row.required_bytes)}</td>

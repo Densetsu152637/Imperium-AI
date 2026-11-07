@@ -106,6 +106,7 @@ fn supervisor(launcher: Arc<FakeLlama>, vram_gib: u64) -> Arc<Supervisor> {
             ..GgufInfo::default()
         },
         mmproj: None,
+        format: imperium_local::scan::Format::Gguf,
     };
     let hardware = Hardware {
         gpus: vec![Gpu {
@@ -131,7 +132,13 @@ fn supervisor(launcher: Arc<FakeLlama>, vram_gib: u64) -> Arc<Supervisor> {
         ram_headroom_mb: 0,
         extra_args: Vec::new(),
     };
-    Supervisor::start(vec![model], settings, &hardware, launcher)
+    Supervisor::start(
+        vec![model],
+        settings,
+        imperium_local::supervisor::Runtimes::default(),
+        &hardware,
+        launcher,
+    )
 }
 
 /// Runs one delegating turn and returns the model each task was routed to.

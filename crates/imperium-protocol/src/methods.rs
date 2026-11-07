@@ -267,8 +267,11 @@ pub struct LocalModelListResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LocalModelRow {
-    /// Use as `llamacpp:<id>` in `[[models.catalog]]`.
+    /// Use as `<runtime>:<id>` (`llamacpp:` or `vllm:`) in `[[models.catalog]]`.
     pub id: String,
+    /// `llamacpp` for GGUF files, `vllm` for Hugging Face folders.
+    #[ts(type = "\"llamacpp\" | \"vllm\"")]
+    pub runtime: String,
     pub path: String,
     pub architecture: Option<String>,
     pub quantization: Option<String>,

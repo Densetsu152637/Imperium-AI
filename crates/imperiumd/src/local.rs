@@ -8,8 +8,8 @@ use imperium_local::hardware::{Hardware, probe};
 use imperium_local::planner::Placement;
 use imperium_local::process::ProcessLauncher;
 use imperium_local::runtime::{llama_cpp_ref, server_path};
-use imperium_local::scan::{Skipped, scan};
-use imperium_local::supervisor::Supervisor;
+use imperium_local::scan::{Format, Skipped, scan};
+use imperium_local::supervisor::{Runtimes, Supervisor};
 use imperium_protocol::methods::{
     GpuInfo, HardwareInfo, LocalModelListResult, LocalModelRow, RuntimeInfo, SkippedModel,
 };
@@ -46,11 +46,23 @@ impl LocalRuntime {
         for skipped in &found.skipped {
             tracing::warn!(path = %skipped.path.display(), reason = %skipped.reason, "skipped model file");
         }
+        let vllm = &settings.runtime.vllm;
         let launcher = Arc::new(ProcessLauncher::new(
             server.clone(),
+            PathBuf::from(&vllm.command),
             paths.data_dir().join("logs"),
         ));
-        let supervisor = Supervisor::start(found.models, llamacpp.clone(), &hardware, launcher);
+        let runtimes = Runtimes {
+            vllm: vllm.clone(),
+            vllm_available: cfg!(target_os = "linux"),
+        };
+        let supervisor = Supervisor::start(
+            found.models,
+            llamacpp.clone(),
+            runtimes,
+            &hardware,
+            launcher,
+        );
         Some(LocalRuntime {
             supervisor,
             folders,
@@ -73,6 +85,10 @@ impl LocalRuntime {
                 let status = loaded.iter().find(|l| l.model_id == model.id);
                 LocalModelRow {
                     id: model.id.clone(),
+                    runtime: match model.format {
+                        Format::Gguf => "llamacpp".into(),
+                        Format::Safetensors => "vllm".into(),
+                    },
                     path: model.path.display().to_string(),
                     architecture: model.info.architecture.clone(),
                     quantization: model.info.quantization().map(str::to_string),

@@ -76,6 +76,23 @@ pub fn cache_element_bytes(cache_type: &str) -> f64 {
     }
 }
 
+/// Places a model on the GPU only (vLLM cannot offload to system memory).
+pub fn place_on_gpu(footprint: Footprint, budget: Budget) -> Option<Placement> {
+    let required = footprint.required_bytes();
+    let room = if budget.unified {
+        budget.ram_bytes
+    } else {
+        budget.vram_bytes
+    };
+    (required <= room).then_some(Placement {
+        gpu_layers: u32::MAX,
+        all_layers_on_gpu: true,
+        vram_bytes: if budget.unified { 0 } else { required },
+        ram_bytes: if budget.unified { required } else { 0 },
+        required_bytes: required,
+    })
+}
+
 /// Places a model: entirely on the GPU if it fits, otherwise as many layers as fit with the rest
 /// in system memory, otherwise `None`.
 pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
@@ -186,6 +203,21 @@ mod tests {
             ..cpu_only
         };
         assert!(place(footprint(), unified).unwrap().all_layers_on_gpu);
+    }
+
+    #[test]
+    fn gpu_only_placement_never_spills_to_ram() {
+        let short = Budget {
+            vram_bytes: 3 * GIB,
+            ram_bytes: 64 * GIB,
+            unified: false,
+        };
+        assert_eq!(place_on_gpu(footprint(), short), None);
+        let roomy = Budget {
+            vram_bytes: 8 * GIB,
+            ..short
+        };
+        assert!(place_on_gpu(footprint(), roomy).unwrap().all_layers_on_gpu);
     }
 
     #[test]

@@ -5,9 +5,13 @@
  */
 export type LocalModelRow = { 
 /**
- * Use as `llamacpp:<id>` in `[[models.catalog]]`.
+ * Use as `<runtime>:<id>` (`llamacpp:` or `vllm:`) in `[[models.catalog]]`.
  */
-id: string, path: string, architecture: string | null, quantization: string | null, parts: number, size_bytes: number, context_length: number | null, 
+id: string, 
+/**
+ * `llamacpp` for GGUF files, `vllm` for Hugging Face folders.
+ */
+runtime: "llamacpp" | "vllm", path: string, architecture: string | null, quantization: string | null, parts: number, size_bytes: number, context_length: number | null, 
 /**
  * Memory needed at the configured context and slots.
  */
