@@ -24,7 +24,6 @@
 | Question | Owner | Needed by |
 | -------- | ----- | --------- |
 | Add an Imperium host-adapter section to Agent-Custom-Workflow | User | Phase 5 |
-| Publish Pixel-Pets on GitHub (its README already points to `Densetsu152637/Pixel-Pets`) | User | Phase 9 |
 | Tauri mobile vs React Native for the phone app (prototype both briefly) | Maintainers | Phase 11 |
 | Offer a hosted relay and push service, or self-host only? | User | Phase 11 |
 | Windows code-signing provider | User | 1.0 |

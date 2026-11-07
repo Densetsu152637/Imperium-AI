@@ -1,7 +1,7 @@
 # 16 — Pets
 
 Pets are animated pixel companions that act out what the agents are doing. Imperium uses the
-Pixel Pets **format v3** (`Densetsu152637/Pixel-Pets`) as its native pet
+[Pixel Pets](https://github.com/Densetsu152637/Pixel-Pets) **format v3** as its native pet
 format and implements its behaviour engine in the Rust runtime, so every client — desktop,
 CLI/TUI, and phone — shows the same pet in the same state.
 
