@@ -171,6 +171,9 @@ async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()
                     documentation.len()
                 );
             }
+            SessionEvent::BrowserView { url, title, .. } => {
+                println!("\n{tag}· browser: {title} ({url})");
+            }
             SessionEvent::ContextLoaded { references } => {
                 println!("\n{tag}· loaded {}", references.join(", "));
             }

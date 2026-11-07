@@ -2,6 +2,7 @@
 //! Tavily) and `web_fetch`, which reads a page as text. Results carry their URLs so agents can
 //! cite sources.
 
+pub mod browser;
 pub mod html;
 
 use std::time::Duration;

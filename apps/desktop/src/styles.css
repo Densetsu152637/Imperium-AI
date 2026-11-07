@@ -824,3 +824,23 @@ button.sort {
   display: flex;
   gap: var(--space);
 }
+
+/* Browser mirror */
+.browser-view {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.browser-view figcaption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: calc(var(--space) * 0.5);
+}
+
+.browser-view img {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}

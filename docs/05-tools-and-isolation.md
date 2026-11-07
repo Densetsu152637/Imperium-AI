@@ -21,6 +21,16 @@ to treat web content as data. Searching runs without asking; `web_fetch` asks un
 is in `web.allow_domains` (subdomains included) or the user allowed fetching for the session.
 Kagi and other providers, caching, and robots handling are later work.
 
+Browser tools (`browser_open`, `browser_read`, `browser_click`, `browser_type`) drive Chrome,
+Chromium, or Edge over the DevTools Protocol, found in the usual install locations or set with
+`web.browser_path`. The browser runs with its own profile in `<data>/browser` (never the user's
+profile, so no saved logins), headless by default (`web.headless`), started on first use and
+shared by a session's agents. Opening a page follows the `web_fetch` domain rule; clicking and
+typing always ask unless allowed for the session. After every action the session emits a
+`browser_view` event with the page's URL, title, and a JPEG screenshot, which the desktop's
+Browser panel shows, so the user sees what the agent sees. Screenshots for vision models,
+tabs, downloads, and a visible pane the user can take over are later work.
+
 Implemented in phase 1 (`imperium-tools`): paths resolve inside the project folder and may not
 escape it through `..`, absolute paths, or symbolic links (tier 0). Reads and listings run
 without asking; writes, edits, and commands ask the user, who can allow once, allow that tool
