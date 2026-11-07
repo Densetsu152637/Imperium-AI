@@ -93,9 +93,16 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
   out into a new window; drag a module between panels. Drop targets preview the result.
 - An **edit layout** mode shows all drop zones, panel boundaries, and hidden modules; outside
   it, layouts are locked to prevent accidental changes.
-- Layouts are saved per project (with a global default) and shareable as presets (a preset
-  includes panel instances, module placement, and settings, and lists the mods it needs).
-  "Reset layout" always restores the default view.
+- **Layouts are global.** One layout applies to every project, and changes to it apply
+  everywhere.
+- **Project overrides are explicit.** A project uses its own layout only after the user
+  chooses *Save as project layout* for it; nothing creates one automatically. While an override
+  is active the Projects panel and window title show a marker, and *Use global layout*
+  removes it. Overrides are stored in user config, keyed by project (or in
+  `.imperium/layout.json` when the user chooses to share it with the project).
+- Layouts can be exported and shared as presets (a preset includes panel instances, module
+  placement, and settings, and lists the mods it needs). "Reset layout" restores the default
+  view.
 - Mods contribute new panels, modules, and slot content through [UI mods](06-extensibility.md#ui-mods).
 - **Agent tree** shows every agent with its model, status, tokens, cost, and budget; selecting
   one opens its transcript.

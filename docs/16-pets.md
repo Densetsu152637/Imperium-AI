@@ -1,90 +1,100 @@
 # 16 — Pets
 
-Pets are animated pixel companions that act out what the agents are doing. They are built into
-the Rust runtime so every client — desktop, CLI/TUI, and phone — shows the same pet in the same
-state, and they are fully moddable.
+Pets are animated pixel companions that act out what the agents are doing. Imperium uses the
+Pixel Pets **format v3** (`Densetsu152637/Pixel-Pets`) as its native pet
+format and implements its behaviour engine in the Rust runtime, so every client — desktop,
+CLI/TUI, and phone — shows the same pet in the same state.
 
-> **To confirm:** the exact "pixel-pets" asset format to stay compatible with. Until a
-> reference spec is chosen, Imperium defines its own pack format (below) and supports other
-> formats through importers.
+## Compatibility
 
-## Design
+- **Native format: Pixel Pets v3** (`spriteVersionNumber: 3`): a folder with `pet.json`, an
+  8 × 22 atlas (`spritesheet.png`), and per-animation `strips/`. The format document in the
+  Pixel Pets repository (`docs/pet-format-v3.md`) is normative; Imperium follows its package
+  layout, atlas, pixel-art rules, 22 animations, fallbacks, and P0–P6 priorities.
+- **Codex pets** (`hatch-pet` v1/v2) import through the Pixel Pets importer; rows 0–10 keep
+  their meaning, so they work without redrawing.
+- **Existing pet folders** (`~/.claude/pets`, `CLAUDE_PETS_DIR`) can be added as extra pet
+  folders, so pets made for the Claude Code plugin work unchanged.
+- Pixel Pets is Apache-2.0; bundled pets and tools ship with its `LICENSE` and `NOTICE`. Each
+  pet keeps its own licence from `pet.json`.
 
-- **State lives in the daemon** (`imperium-pets` crate). The pet engine subscribes to the
-  session event bus and drives a state machine; clients only render.
-- **Zero model cost.** Pets react to events (tool calls, delegation, errors, approvals,
-  completion, idle time, token throughput). They never call a model unless a pet pack opts in
-  to an LLM "voice" with its own budget and model rule.
-- **One pet per project** by default, optionally one per session or per agent (useful for
-  seeing many subagents at a glance in the agent tree).
+## Engine (`imperium-pets`)
 
-## States and triggers
+The Pixel Pets **arbiter** is implemented in Rust inside the daemon, which removes the v3
+plugin's current limits:
 
-| State              | Triggered by                                    |
-| ------------------ | ----------------------------------------------- |
-| `idle` / `sleep`   | No activity for N seconds / minutes             |
-| `think`            | Model call streaming                            |
-| `work`             | Tool executing (variants per tool group: `read`, `write`, `exec`, `web`) |
-| `delegate`         | `spawn_agent`; pet "summons" helpers per subagent |
-| `wait`             | Awaiting subagents or user approval             |
-| `celebrate`        | Task or session completed successfully          |
-| `fail`             | Error, refusal, budget exhausted                |
-| `eat` / `grow`     | Optional stats: tokens processed, tasks completed |
+| Pixel Pets v3 plugin limit                 | In Imperium                                                     |
+| ------------------------------------------ | --------------------------------------------------------------- |
+| One chat; sources are the main turn and its subagents | Sources are every session, subagent, project agent, and schedule across all projects |
+| Pet lives in a pane inside one window      | Pane, panel module, **and** an optional floating always-on-top overlay that can pop out of the window |
+| Permission prompts inferred from tool verdicts | Exact events from the daemon (`approval.requested`, `approval.resolved`) |
+| "Denied" recognised from error wording     | Typed permission-decision events                                |
+| Terminal shows a text line                 | TUI crops frames itself (Kitty/Sixel graphics, or half-block truecolour) |
 
-Packs may define extra states and map any hook or telemetry event to them, with conditions
-(for example `tokens_per_sec > 50 → run`).
+Arbiter rules are as in the format: loops are states and one-shots are reactions; one-shots
+interrupt only equal or lower priority; one-shots within 1500 ms coalesce; `minMs` prevents
+flicker; `waking` plays first after `sleeping`; a `look` glance toward a new source; hidden
+after `duck-in` until `pop-out`. **Pets never call a model.**
 
-## Pack format
+## Event mapping
 
-A pet pack is a folder or Git repository:
+| Imperium event                                   | Animation                                        |
+| ------------------------------------------------ | ------------------------------------------------ |
+| Session opened / daemon starts                   | `pop-out`, then `waving`                         |
+| Agent turn running / ends cleanly / errors       | `working` loop / `jumping` / `failed`            |
+| `spawn_agent`                                    | `summoning`, then that source's `working` (`review` for reviewer roles) |
+| Subagent completes / fails                       | `jumping` / `failed`, with a glance toward it    |
+| Approval requested (any source)                  | `waiting`; `alert` if another source holds the pet |
+| Permission denied, step retried, re-plan         | `confused`                                       |
+| Plan completed and verified; commit, merge, tests pass | `celebrating`                              |
+| Context compaction                               | `eating`                                         |
+| Schedule fires while idle                        | `waking` (if asleep), then `working`             |
+| User pats or clicks the pet                      | `petted`                                         |
+| Idle past the sleep threshold / while idle       | `sleeping` / `fidget` every 20–60 s              |
 
-```text
-my-pet/
-  pet.toml           metadata, states, transitions, event bindings
-  sprites/           sprite sheets (PNG) or individual frames
-  sounds/            optional
-  script.wasm        optional behaviour logic (WASI, sandboxed)
+Look directions map sources to screen positions: the active session's panel, the agent tree
+row of a subagent, or the Projects panel for another project.
+
+## Imperium extensions (optional)
+
+Pixel Pets ignores unknown top-level fields, so Imperium adds an optional `imperium` object to
+`pet.json`. A pet without it behaves exactly as the format defines.
+
+```json
+{
+  "imperium": {
+    "bindings": [
+      { "event": "telemetry.call.completed", "when": "tokens_per_sec > 80", "animation": "walk-right" },
+      { "event": "budget.warning", "animation": "alert" }
+    ],
+    "behaviour": "behaviour.wasm",
+    "scope": "project"
+  }
+}
 ```
 
-```toml
-id = "ember"
-name = "Ember"
-size = [32, 32]                 # native pixel size; scaled by integer factors only
-palette = "sprites/palette.png" # optional, enables theme recolouring
+- **`bindings`** remap or add triggers for any hook or telemetry event, including custom
+  animations (rows 22+).
+- **`behaviour`**: an optional sandboxed WASM module (no I/O beyond the pet API) for moods,
+  growth, or mini-interactions.
+- **`scope`**: `global` (one pet for everything, default), `project`, `session`, or `agent`
+  (a small pet per agent in the agent tree).
 
-[states.idle]
-sheet = "sprites/idle.png"
-frames = 4
-fps = 6
-loop = true
+## Rendering and options
 
-[states.work]
-sheet = "sprites/work.png"
-frames = 8
-fps = 12
+- Desktop: a **Pet module** that can live in any panel ([07](07-desktop-ui.md#modules-inside-panels)),
+  plus the floating overlay. Frames are cropped from strips and scaled with nearest-neighbour;
+  `prefers-reduced-motion` shows first frames only.
+- Options follow the Pixel Pets plugin: `pet`, `sleepAfterMinutes`, `fidget`, `size`,
+  `petsDir` (Imperium accepts a list of pet folders), plus `overlay` and `scope`.
+- Protocol: `pet.list`, `pet.install`, `pet.select`, `pet.state` (subscription), and
+  `pet.interact`. Pets follow the extension permission model
+  ([06](06-extensibility.md#permissions-model-for-extensions)) and see agent status events only,
+  never transcript content.
 
-[[bindings]]
-event = "tool.before"
-when = "tool.group == 'exec'"
-state = "work"
-```
+## Creating pets
 
-- Optional **WASM behaviour scripts** (sandboxed, no I/O except the pet API) allow custom
-  logic such as moods, evolution, or mini-interactions, without trusting native code.
-- **Importers** convert other formats (sprite sheets with JSON frame data such as Aseprite
-  exports, and the chosen pixel-pets format) into packs.
-
-## Rendering
-
-| Client     | Rendering                                                                 |
-| ---------- | ------------------------------------------------------------------------- |
-| Desktop    | Canvas in a pane, the status bar, or an optional always-on-top transparent overlay window; nearest-neighbour integer scaling |
-| CLI / TUI  | Half-block (▀) truecolour rendering, or Kitty/Sixel graphics where supported |
-| Phone      | Notification and session-header widget                                    |
-
-## Protocol
-
-`pet.list`, `pet.install`, `pet.select`, `pet.state` (subscription), and `pet.interact`
-(click/pet/feed events routed to the pack's script). Pet packs follow the extension permission
-model ([06](06-extensibility.md#permissions-model-for-extensions)); by default they may read
-agent status events only, not transcript content.
+The Pixel Pets skills (`hatch-pet`, `import-codex-pet`, `pet-format`) are Agent Skills, so
+they run in Imperium directly; image generation routes through the
+[media backends](09-media-generation.md). Imperium validates packages in Rust against the same
+rules as `tools/validate_pet.py`.

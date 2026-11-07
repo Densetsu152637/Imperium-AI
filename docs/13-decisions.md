@@ -15,7 +15,7 @@
 | D9 | Agent-Custom-Workflow is the default, overridable policy pack | User's own workflow; open and forkable | Hard-coded prompts | — |
 | D10 | Projects are environments; project agents are event-driven and run only while the daemon runs | Matches desktop lifetime; zero idle token cost | Cloud-hosted always-on agents | Users need off-machine persistence |
 | D11 | Phone app connects end-to-end encrypted to paired computers (LAN, overlay network, or relay) | No data leaves the user's control | Hosted cloud backend holding sessions | — |
-| D12 | Pets run in the daemon and render in every client | Consistent state; zero model cost | UI-only pets | — |
+| D12 | Pets use the Pixel Pets v3 format, with the arbiter in the daemon and rendering in every client | Existing format and pets (including Codex imports); consistent state; zero model cost | Own pack format; UI-only pets | Pixel Pets format v4 |
 | D13 | Licence: MIT | Owner's choice | — | — |
 | D14 | Planning is a runtime feature (plan objects, plan phase, approval modes) | Keeps weaker open models on track; plans visible and editable | Prompt-only planning | — |
 
@@ -23,8 +23,8 @@
 
 | Question | Owner | Needed by |
 | -------- | ----- | --------- |
-| Which "pixel-pets" format should packs be compatible with? (link to spec) | User | Phase 9 |
-| Add an MIT licence and an Imperium host-adapter section to Agent-Custom-Workflow before bundling | User | Phase 5 |
+| Add an Imperium host-adapter section to Agent-Custom-Workflow | User | Phase 5 |
+| Publish Pixel-Pets on GitHub (its README already points to `Densetsu152637/Pixel-Pets`) | User | Phase 9 |
 | Tauri mobile vs React Native for the phone app (prototype both briefly) | Maintainers | Phase 11 |
 | Offer a hosted relay and push service, or self-host only? | User | Phase 11 |
 | Windows code-signing provider | User | 1.0 |

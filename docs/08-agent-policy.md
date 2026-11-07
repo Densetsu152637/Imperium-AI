@@ -9,7 +9,7 @@ git, research, debugging, and other workflows, plus personalities.
 - A snapshot is bundled in `policy/` at a pinned commit so the app works offline.
 - Updates are fetched from the upstream repository on request (or on a schedule), shown as a
   diff, and applied only after the user accepts. The pinned commit is recorded per session.
-- The pack is MIT-licensed upstream before bundling (see [decisions](13-decisions.md)).
+- The pack is MIT-licensed upstream.
 - Upstream adds an **Imperium host adapter** section alongside its Claude Code and Codex
   adapters, mapping its concepts to Imperium tools (`spawn_agent`, `await_tasks`, routing
   hints, telemetry).
