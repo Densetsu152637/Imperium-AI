@@ -4,6 +4,7 @@ mod chat;
 mod local;
 mod memory;
 mod project;
+mod remote;
 mod schedule;
 mod workflow;
 
@@ -22,9 +23,14 @@ use imperium_protocol::methods::{Peer, Ping, PingParams};
 #[derive(Debug, Parser)]
 #[command(name = "imperium", version)]
 struct Cli {
+    /// Talk to a remote daemon connected with `imperium remote connect`.
+    #[arg(long, global = true)]
+    remote: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
+
+static REMOTE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -61,6 +67,11 @@ enum Command {
         /// Project folder; defaults to the current directory.
         #[arg(long, global = true)]
         project: Option<PathBuf>,
+    },
+    /// Remote hosts over SSH.
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommand,
     },
     /// The daemon itself.
     Daemon {
@@ -123,6 +134,25 @@ enum DaemonCommand {
     Autostart {
         #[arg(value_parser = ["enable", "disable", "status"])]
         action: String,
+    },
+    /// Start imperiumd in the background.
+    Start,
+    /// Print the running daemon's endpoint as JSON (used by `imperium remote connect`).
+    Endpoint,
+}
+
+#[derive(Debug, Subcommand)]
+enum RemoteCommand {
+    /// Forward a host's imperiumd over SSH (starting it there if needed) until Ctrl+C.
+    Connect {
+        /// An SSH destination: user@host, or a Host from ~/.ssh/config.
+        destination: String,
+        /// Name used with --remote; defaults to the destination.
+        #[arg(long)]
+        name: Option<String>,
+        /// Local port for the forward; a free one by default.
+        #[arg(long)]
+        local_port: Option<u16>,
     },
 }
 
@@ -217,6 +247,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
+    let _ = REMOTE.set(cli.remote);
     match cli.command {
         Command::Ping => ping(),
         Command::Chat { project, model } => chat::run(project, model),
@@ -235,6 +266,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
+        Command::Remote {
+            command:
+                RemoteCommand::Connect {
+                    destination,
+                    name,
+                    local_port,
+                },
+        } => remote::connect(&destination, name, local_port),
+        Command::Daemon {
+            command: DaemonCommand::Start,
+        } => remote::start_daemon(),
+        Command::Daemon {
+            command: DaemonCommand::Endpoint,
+        } => remote::print_endpoint(),
         Command::Daemon {
             command: DaemonCommand::Autostart { action },
         } => match action.as_str() {
@@ -306,7 +351,11 @@ fn block_on<T>(future: impl std::future::Future<Output = anyhow::Result<T>>) -> 
 /// Connects to the running daemon and returns the client and the daemon's URL.
 async fn connect() -> anyhow::Result<(Client, String)> {
     let paths = Paths::from_env()?;
-    let endpoint = read_endpoint(&paths.daemon_endpoint_file())?;
+    let file = match REMOTE.get().and_then(Option::as_deref) {
+        Some(name) => remote::endpoint_file(&paths, name),
+        None => paths.daemon_endpoint_file(),
+    };
+    let endpoint = read_endpoint(&file)?;
     let me = Peer {
         name: "imperium-cli".into(),
         version: env!("CARGO_PKG_VERSION").into(),
@@ -315,7 +364,7 @@ async fn connect() -> anyhow::Result<(Client, String)> {
         format!(
             "imperiumd at {} did not answer; it may have stopped without removing {}",
             endpoint.url,
-            paths.daemon_endpoint_file().display()
+            file.display()
         )
     })?;
     Ok((client, endpoint.url))
