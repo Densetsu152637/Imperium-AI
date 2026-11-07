@@ -189,6 +189,8 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
             ..RoutingSettings::default()
         },
         local: Some(local),
+        mcp: Vec::new(),
+        notices: Vec::new(),
         max_steps: 10,
         journal_path: dir.path().join("journal.jsonl"),
     })

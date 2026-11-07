@@ -74,7 +74,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-models`     | Endpoint clients, model registry, router, cost accounting              |
 | `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, llama.cpp supervision (vLLM later) |
 | `imperium-tools`      | Built-in tools: fs, exec, web search, fetch, browser (CDP)             |
-| `imperium-mcp`        | MCP client (stdio, streamable HTTP) and server bridge                  |
+| `imperium-mcp`        | MCP client (stdio, streamable HTTP; implemented) and server bridge (planned) |
 | `imperium-sandbox`    | Isolation tiers: policy guard, container driver, SSH transport         |
 | `imperium-extensions` | Plugin, skill, and hook loading; manifest compatibility layers         |
 | `imperium-policy`     | Policy pack resolution, layering, and prompt assembly                  |

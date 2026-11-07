@@ -10,6 +10,7 @@ description = "Imperium sessions and the agent loop"
 [dependencies]
 getrandom = "0.4.3"
 imperium-config = { version = "0.1.0", path = "../imperium-config" }
+imperium-mcp = { version = "0.1.0", path = "../imperium-mcp" }
 imperium-models = { version = "0.1.0", path = "../imperium-models" }
 imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
 imperium-tools = { version = "0.1.0", path = "../imperium-tools" }
@@ -26,5 +27,6 @@ workspace = true
 [dev-dependencies]
 axum = "0.8.9"
 imperium-config = { path = "../imperium-config" }
+imperium-mcp = { path = "../imperium-mcp" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time"] }

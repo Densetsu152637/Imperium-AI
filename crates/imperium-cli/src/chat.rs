@@ -153,6 +153,7 @@ async fn follow_turn(client: &mut Client, session_id: &str) -> anyhow::Result<()
             }
             SessionEvent::TurnCompleted { .. } => {}
             SessionEvent::TurnFailed { message } => println!("\n{tag}failed: {message}"),
+            SessionEvent::Notice { message } => println!("\n{tag}note: {message}"),
         }
     }
 }

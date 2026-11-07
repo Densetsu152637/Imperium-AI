@@ -181,6 +181,8 @@ function EntryView({
       );
     case "error":
       return <p className="error">Turn failed: {entry.message}</p>;
+    case "notice":
+      return <p className="notice">{entry.message}</p>;
   }
 }
 

@@ -93,6 +93,9 @@ pub enum SessionEvent {
     },
     /// The turn stopped because of an error.
     TurnFailed { message: String },
+    /// Something the user should know that is not part of a turn, such as an MCP server that
+    /// could not start.
+    Notice { message: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -68,6 +68,11 @@ impl DaemonState {
             .map_err(|error| CreateError::Project(project_dir.to_string(), error))?;
         let model = resolve_model(&self.settings, model, imperium_config::load_secret)?;
         let catalog = self.catalog();
+        let (mcp, notices) = crate::mcp::session_servers(
+            &self.settings,
+            Path::new(project_dir),
+            imperium_config::load_secret,
+        );
         let id = new_session_id().map_err(|error| CreateError::Start(error.to_string()))?;
         let session = Session::spawn(SessionConfig {
             journal_path: self
@@ -84,6 +89,8 @@ impl DaemonState {
                 let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
                 supervisor
             }),
+            mcp,
+            notices,
             max_steps: self.settings.agents.max_steps,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
