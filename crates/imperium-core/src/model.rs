@@ -1,6 +1,6 @@
 use imperium_config::{
     LLAMACPP_ENDPOINT, Location, Preference, RoutingSettings, SecretError, SecretName, Settings,
-    Tier,
+    Tier, VLLM_ENDPOINT,
 };
 use imperium_models::{Endpoint, Pricing};
 
@@ -47,7 +47,7 @@ pub fn resolve_model(
         .split_once(':')
         .filter(|(endpoint, model)| !endpoint.is_empty() && !model.is_empty())
         .ok_or_else(|| ModelError::BadSpec(spec.to_string()))?;
-    if endpoint_id == LLAMACPP_ENDPOINT {
+    if endpoint_id == LLAMACPP_ENDPOINT || endpoint_id == VLLM_ENDPOINT {
         return Ok(ResolvedModel {
             spec: spec.to_string(),
             endpoint: Endpoint {
@@ -435,6 +435,9 @@ mod tests {
         .unwrap();
         assert!(resolved.local);
         assert_eq!(resolved.model, "qwen3-8b-q4");
+        let vllm =
+            resolve_model(&settings(ENDPOINTS), Some("vllm:Qwen3-8B"), |_| Ok(None)).unwrap();
+        assert!(vllm.local);
     }
 
     #[test]

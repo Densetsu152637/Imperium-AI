@@ -20,6 +20,16 @@ pub struct LocalModel {
     pub info: GgufInfo,
     /// A multimodal projector in the same folder, passed to llama.cpp as `--mmproj`.
     pub mmproj: Option<PathBuf>,
+    pub format: Format,
+}
+
+/// How a model is stored, which decides the runtime that serves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// A GGUF file, served by llama.cpp.
+    Gguf,
+    /// A Hugging Face folder (`config.json` and safetensors), served by vLLM.
+    Safetensors,
 }
 
 /// Something skipped while scanning, reported rather than failing the scan.
@@ -42,17 +52,32 @@ pub fn scan(folders: &[PathBuf]) -> Scan {
     let mut ids = BTreeMap::new();
     for folder in folders {
         let mut files = Vec::new();
-        collect(folder, &mut files, &mut scan.skipped);
+        let mut hf_dirs = Vec::new();
+        collect(folder, &mut files, &mut hf_dirs, &mut scan.skipped);
         files.sort();
+        hf_dirs.sort();
         for dir_files in group_by_dir(&files) {
             add_dir(&dir_files, &mut scan, &mut ids);
+        }
+        for dir in hf_dirs {
+            add_hf_dir(&dir, &mut scan, &mut ids);
         }
     }
     scan.models.sort_by(|a, b| a.id.cmp(&b.id));
     scan
 }
 
-fn collect(dir: &Path, files: &mut Vec<PathBuf>, skipped: &mut Vec<Skipped>) {
+/// Gathers GGUF files, and Hugging Face model folders (not searched further), under `dir`.
+fn collect(
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+    hf_dirs: &mut Vec<PathBuf>,
+    skipped: &mut Vec<Skipped>,
+) {
+    if is_hf_dir(dir) {
+        hf_dirs.push(dir.to_path_buf());
+        return;
+    }
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) => {
@@ -69,7 +94,7 @@ fn collect(dir: &Path, files: &mut Vec<PathBuf>, skipped: &mut Vec<Skipped>) {
         };
         let path = entry.path();
         if kind.is_dir() {
-            collect(&path, files, skipped);
+            collect(&path, files, hf_dirs, skipped);
         } else if path
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
@@ -155,8 +180,92 @@ fn add_dir(files: &[&PathBuf], scan: &mut Scan, ids: &mut BTreeMap<String, PathB
             size_bytes,
             info,
             mmproj: mmproj.clone(),
+            format: Format::Gguf,
         });
     }
+}
+
+fn is_hf_dir(dir: &Path) -> bool {
+    dir.join("config.json").is_file()
+        && fs::read_dir(dir).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext == "safetensors")
+            })
+        })
+}
+
+/// Adds a Hugging Face model folder, reading its shape from `config.json`.
+fn add_hf_dir(dir: &Path, scan: &mut Scan, ids: &mut BTreeMap<String, PathBuf>) {
+    let skip = |reason: String| Skipped {
+        path: dir.to_path_buf(),
+        reason,
+    };
+    let id = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let config: serde_json::Value = match fs::read_to_string(dir.join("config.json"))
+        .map_err(|error| error.to_string())
+        .and_then(|text| serde_json::from_str(&text).map_err(|error| error.to_string()))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            scan.skipped.push(skip(format!("config.json: {error}")));
+            return;
+        }
+    };
+    if let Some(first) = ids.get(&id) {
+        scan.skipped.push(skip(format!(
+            "id {id:?} is already used by {}",
+            first.display()
+        )));
+        return;
+    }
+    let size_bytes = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "safetensors")
+        })
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|meta| meta.len())
+        .sum();
+    // Multimodal configs nest the language model's shape under text_config.
+    let shape = config.get("text_config").unwrap_or(&config);
+    let number = |key: &str| shape.get(key).and_then(serde_json::Value::as_u64);
+    let info = GgufInfo {
+        architecture: config
+            .get("architectures")
+            .and_then(|list| list.get(0))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        name: Some(id.clone()),
+        block_count: number("num_hidden_layers"),
+        embedding_length: number("hidden_size"),
+        head_count: number("num_attention_heads"),
+        head_count_kv: number("num_key_value_heads"),
+        key_length: number("head_dim"),
+        value_length: number("head_dim"),
+        context_length: number("max_position_embeddings"),
+        ..GgufInfo::default()
+    };
+    ids.insert(id.clone(), dir.to_path_buf());
+    scan.models.push(LocalModel {
+        id,
+        path: dir.to_path_buf(),
+        parts: 1,
+        size_bytes,
+        info,
+        mmproj: None,
+        format: Format::Safetensors,
+    });
 }
 
 /// Splits `name-00001-of-00003` into (`name`, 1, 3).
@@ -216,6 +325,33 @@ mod tests {
         assert_eq!(scan.models.len(), 1);
         assert_eq!(scan.models[0].info.name.as_deref(), Some("a"));
         assert_eq!(scan.skipped.len(), 2);
+    }
+
+    #[test]
+    fn hugging_face_folders_are_found_and_not_searched_further() {
+        let root = tempfile::tempdir().unwrap();
+        let model = root.path().join("Qwen3-8B");
+        fs::create_dir_all(model.join("nested")).unwrap();
+        fs::write(
+            model.join("config.json"),
+            r#"{"architectures": ["Qwen3ForCausalLM"], "num_hidden_layers": 36, "hidden_size": 4096,
+                "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128,
+                "max_position_embeddings": 40960}"#,
+        )
+        .unwrap();
+        fs::write(model.join("model-00001-of-00002.safetensors"), vec![0; 300]).unwrap();
+        fs::write(model.join("model-00002-of-00002.safetensors"), vec![0; 200]).unwrap();
+        fs::write(model.join("nested/inner.gguf"), llama("ignored")).unwrap();
+        let scan = scan(&[root.path().to_path_buf()]);
+        assert_eq!(scan.models.len(), 1);
+        let found = &scan.models[0];
+        assert_eq!(
+            (found.id.as_str(), found.format),
+            ("Qwen3-8B", Format::Safetensors)
+        );
+        assert_eq!(found.size_bytes, 500);
+        assert_eq!(found.info.architecture.as_deref(), Some("Qwen3ForCausalLM"));
+        assert_eq!(found.info.kv_bytes_per_token(2.0), Some(36 * 8 * 256 * 2));
     }
 
     #[test]

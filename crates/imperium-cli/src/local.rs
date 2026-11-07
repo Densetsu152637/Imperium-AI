@@ -80,7 +80,7 @@ pub fn list() -> anyhow::Result<()> {
             };
             println!(
                 "{:<40} {:>8} {:>7.1} GiB  needs {:>6.1} GiB  {}",
-                model.id,
+                format!("{}:{}", model.runtime, model.id),
                 model.quantization.as_deref().unwrap_or("?"),
                 model.size_bytes as f64 / GIB,
                 model.required_bytes as f64 / GIB,
@@ -91,7 +91,7 @@ pub fn list() -> anyhow::Result<()> {
             println!("skipped {}: {}", skipped.path, skipped.reason);
         }
         if !listing.models.is_empty() {
-            println!("\nUse a model as `llamacpp:<id>` in [[models.catalog]] or --model.");
+            println!("\nUse a model by the name shown, in [[models.catalog]] or with --model.");
         }
         Ok(())
     })

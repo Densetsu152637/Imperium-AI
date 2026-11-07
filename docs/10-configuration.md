@@ -41,7 +41,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `endpoints.<id>.base_url` | — | OpenAI-compatible base URL, ending before `/chat/completions` |
 | `endpoints.<id>.api_key` | none | `{ secret = "<name>" }`, read from the keychain when a session starts |
 | `endpoints.<id>.pricing."<model>"` | none | `{ input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok? }`; models without prices report no cost |
-| `models.folders` | none | Folders scanned for GGUF models, served as `llamacpp:<id>` (the `llamacpp` endpoint id is reserved) |
+| `models.folders` | none | Folders scanned for GGUF models (`llamacpp:<id>`) and Hugging Face folders (`vllm:<id>`); the `llamacpp` and `vllm` endpoint ids are reserved |
 | `runtime.llamacpp.backend` | `auto` | Runtime pack: `auto`, `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` |
 | `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of a pack |
 | `runtime.llamacpp.context` | `8192` | Context per slot each loaded model is started with |
@@ -51,6 +51,8 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `runtime.llamacpp.ram_headroom_mb` | `2048` | System memory kept free when placing models |
 | `runtime.llamacpp.extra_args` | none | Extra `llama-server` arguments, for example `["--flash-attn", "on"]` |
 | `hardware.vram_mb`, `hardware.ram_mb` | probed | Override the hardware probe |
+| `runtime.vllm.command` | `vllm` | The `vllm` executable for Hugging Face model folders (`vllm:<id>`; Linux and WSL2) |
+| `runtime.vllm.max_gpu_memory_utilization`, `extra_args` | `0.9`, none | Cap on vLLM's share of GPU memory; extra `vllm serve` arguments |
 | `mcp.servers.<name>` | none | An MCP server: `command`, `args`, `env` for stdio, or `url`, `headers`, `bearer_token` for HTTP; `allow` (tools that run without asking), `enabled`, `timeout_s` (default 60); see [MCP](05-tools-and-isolation.md#mcp) |
 | `mcp.trusted_projects` | none | Project folders whose `.mcp.json` servers may start |
 | `extensions.plugin_dirs` | none | More plugin folders (Claude Code layout), besides `<config>/plugins` |

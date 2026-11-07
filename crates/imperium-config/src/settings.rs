@@ -73,27 +73,32 @@ pub struct Settings {
 /// `llamacpp:<local model id>`.
 pub const LLAMACPP_ENDPOINT: &str = "llamacpp";
 
+/// The endpoint id that names Hugging Face models served by supervised vLLM, as in
+/// `vllm:<folder name>`.
+pub const VLLM_ENDPOINT: &str = "vllm";
+
 impl Settings {
     /// Checks rules that span keys: model table ids are unique, and routing rules name models
     /// that exist in the table.
     pub fn validate(&self) -> Result<(), String> {
-        if self.endpoints.contains_key(LLAMACPP_ENDPOINT) {
-            return Err(format!(
-                "endpoints.{LLAMACPP_ENDPOINT} is reserved for local models in models.folders"
-            ));
+        for reserved in [LLAMACPP_ENDPOINT, VLLM_ENDPOINT] {
+            if self.endpoints.contains_key(reserved) {
+                return Err(format!(
+                    "endpoints.{reserved} is reserved for local models in models.folders"
+                ));
+            }
         }
         let mut seen = std::collections::BTreeSet::new();
         for entry in &self.models.catalog {
             if !seen.insert(entry.id.as_str()) {
                 return Err(format!("models.catalog: id {:?} is used twice", entry.id));
             }
-            let served_locally = entry
-                .spec
-                .split_once(':')
-                .is_some_and(|(endpoint, _)| endpoint == LLAMACPP_ENDPOINT);
+            let served_locally = entry.spec.split_once(':').is_some_and(|(endpoint, _)| {
+                endpoint == LLAMACPP_ENDPOINT || endpoint == VLLM_ENDPOINT
+            });
             if served_locally && entry.location != Location::Local {
                 return Err(format!(
-                    "models.catalog: {:?} runs on llama.cpp, so its location must be local",
+                    "models.catalog: {:?} runs on this machine, so its location must be local",
                     entry.id
                 ));
             }
@@ -457,9 +462,32 @@ pub struct ModelSettings {
 }
 
 /// Inference runtimes the daemon supervises.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RuntimeSettings {
     pub llamacpp: LlamaCppSettings,
+    #[serde(default)]
+    pub vllm: VllmSettings,
+}
+
+/// vLLM serves Hugging Face model folders (Linux, WSL2, or a remote host).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct VllmSettings {
+    /// The `vllm` executable (from a managed environment, or on `PATH`).
+    pub command: String,
+    /// Upper bound for vLLM's `--gpu-memory-utilization`.
+    pub max_gpu_memory_utilization: f64,
+    pub extra_args: Vec<String>,
+}
+
+impl Default for VllmSettings {
+    fn default() -> Self {
+        VllmSettings {
+            command: "vllm".into(),
+            max_gpu_memory_utilization: 0.9,
+            extra_args: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

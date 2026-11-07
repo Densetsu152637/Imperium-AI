@@ -61,6 +61,18 @@ loopback port with `--parallel` slots, waits for `/health`, logs its output to
 daemon exits. An agent holds a slot for its whole turn; a model whose slots are all busy
 queues further turns until one frees. vLLM is later work.
 
+**Implemented (phase 7):** Hugging Face model folders (a `config.json` with safetensors files)
+in `models.folders` are discovered as `vllm:<folder name>`, their shape read from `config.json`
+(including `text_config` for multimodal models). They are planned GPU-only (vLLM does not
+offload to system memory) and served by a supervised `vllm serve <folder>
+--served-model-name <id>` on a free loopback port, with `--max-model-len` (the per-slot
+context), `--max-num-seqs` (the slots), and a `--gpu-memory-utilization` sized to the model's
+share of free VRAM plus 5%, capped by `runtime.vllm.max_gpu_memory_utilization`. vLLM is
+available on Linux (including WSL2) through `runtime.vllm.command` (default `vllm` on `PATH`);
+elsewhere such models are listed but unavailable, so routing falls back. Managed `uv`
+environments and the Docker image are later work; on another platform, run Imperium on a
+Linux host and use it through [SSH](05-tools-and-isolation.md#ssh-hosts).
+
 - **llama.cpp:** runtime packs per backend (CPU, CUDA, Vulkan, ROCm, Metal) are built by CI
   ([11](11-ci-cd.md#runtime-packs)) and downloaded on demand, verified by SHA-256. Users can
   point at their own `llama-server` build instead.
