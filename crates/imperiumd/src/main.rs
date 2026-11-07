@@ -62,6 +62,7 @@ async fn run() -> anyhow::Result<()> {
     let (stop, stopped) = oneshot::channel();
     let local = imperiumd::LocalRuntime::start(&paths, &settings);
     let daemon = DaemonState::new(paths.clone(), settings, local);
+    daemon.start_pets();
     daemon.start_project_agents();
     daemon.start_scheduler();
     daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));

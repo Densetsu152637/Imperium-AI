@@ -20,6 +20,7 @@ use tokio::sync::broadcast;
 
 use crate::approvals::Approvals;
 use crate::local::LocalRuntime;
+use crate::pets::PetEngine;
 use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
 
@@ -45,6 +46,7 @@ pub struct DaemonState {
     scheduler: OnceLock<Arc<Scheduler>>,
     approvals: Approvals,
     project_agents: ProjectAgents,
+    pets: OnceLock<Option<Arc<PetEngine>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,12 +73,27 @@ impl DaemonState {
             scheduler: OnceLock::new(),
             approvals: Approvals::default(),
             project_agents: ProjectAgents::default(),
+            pets: OnceLock::new(),
         })
     }
 
     /// Starts running `[[schedules]]`. Call once, inside the Tokio runtime.
     pub fn start_scheduler(self: &Arc<Self>) -> Arc<Scheduler> {
         Arc::clone(self.scheduler.get_or_init(|| Scheduler::start(self)))
+    }
+
+    /// Starts the pet engine (when pets are on and one is installed). Call once.
+    pub fn start_pets(self: &Arc<Self>) {
+        let engine = PetEngine::start(self);
+        let _ = self.pets.set(engine);
+    }
+
+    pub fn pets(&self) -> Option<&Arc<PetEngine>> {
+        self.pets.get().and_then(Option::as_ref)
+    }
+
+    pub fn config_dir(&self) -> &Path {
+        self.paths.config_dir()
     }
 
     pub fn project_agents(&self) -> &ProjectAgents {
@@ -365,6 +382,9 @@ impl DaemonState {
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
         let events = session.subscribe();
+        if let Some(pets) = self.pets() {
+            pets.watch(id.clone(), session.subscribe());
+        }
         let session = Arc::new(session);
         self.sessions
             .lock()

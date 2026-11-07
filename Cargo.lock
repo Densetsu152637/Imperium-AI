@@ -2328,6 +2328,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "imperium-pets"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "imperium-protocol"
 version = "0.1.0"
 dependencies = [
@@ -2381,6 +2391,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.23.1",
  "chrono",
  "constant_time_eq",
  "futures-util",
@@ -2393,6 +2404,7 @@ dependencies = [
  "imperium-local",
  "imperium-mcp",
  "imperium-memory",
+ "imperium-pets",
  "imperium-protocol",
  "imperium-tools",
  "imperium-web",

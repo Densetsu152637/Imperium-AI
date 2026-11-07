@@ -60,6 +60,8 @@ pub struct Settings {
     pub isolation: IsolationSettings,
     #[serde(default)]
     pub web: WebSettings,
+    #[serde(default)]
+    pub pets: PetSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -202,6 +204,31 @@ impl Default for AutofixSettings {
             max_attempts_per_pr: 3,
             poll_s: 120,
             model: None,
+        }
+    }
+}
+
+/// Pets (see docs/16-pets.md).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct PetSettings {
+    pub enabled: bool,
+    /// The pet's id; the first found when unset.
+    pub pet: Option<String>,
+    /// Folders of Pixel Pets v3 packages, besides `<config>/pets`.
+    pub folders: Vec<PathBuf>,
+    pub sleep_after_minutes: u64,
+    pub fidget: bool,
+}
+
+impl Default for PetSettings {
+    fn default() -> Self {
+        PetSettings {
+            enabled: true,
+            pet: None,
+            folders: Vec::new(),
+            sleep_after_minutes: 5,
+            fidget: true,
         }
     }
 }

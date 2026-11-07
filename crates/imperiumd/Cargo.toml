@@ -10,6 +10,7 @@ description = "The Imperium daemon"
 [dependencies]
 anyhow = "1.0.104"
 axum = { version = "0.8.9", features = ["ws"] }
+base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 constant_time_eq = "0.6.1"
 getrandom = "0.4.3"
@@ -21,6 +22,7 @@ imperium-github = { version = "0.1.0", path = "../imperium-github" }
 imperium-local = { version = "0.1.0", path = "../imperium-local" }
 imperium-mcp = { version = "0.1.0", path = "../imperium-mcp" }
 imperium-memory = { version = "0.1.0", path = "../imperium-memory" }
+imperium-pets = { version = "0.1.0", path = "../imperium-pets" }
 imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
 imperium-tools = { version = "0.1.0", path = "../imperium-tools" }
 imperium-web = { version = "0.1.0", path = "../imperium-web" }

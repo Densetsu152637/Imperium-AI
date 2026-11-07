@@ -1,0 +1,10 @@
+Pixel Pets
+Copyright 2026 Nicholas Bisset. Licensed under the MIT License (see LICENSE).
+
+The pet package format (an 8-column atlas, the Codex v2 row layout for rows 0-10,
+and the idea of cutting animation frames from generated strips) derives from
+OpenAI's "hatch-pet" skill (https://github.com/openai/skills), Apache-2.0.
+The tools under tools/ are original implementations written against that
+layout; they carry no hatch-pet source code. If a file later incorporates
+hatch-pet code it must say "derived from OpenAI's hatch-pet skill, Apache-2.0,
+modified" in a header comment.
