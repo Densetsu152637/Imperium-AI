@@ -24,6 +24,7 @@ import { SessionPanel } from "./panels/SessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
+import { BrowserPanel } from "./panels/BrowserPanel";
 import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
@@ -273,6 +274,7 @@ export function App() {
                     body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} />,
                   },
                   { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
+                  { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },
                   ...(mods?.mods ?? []).flatMap((mod) =>
                     mod.panels.map((panel) => ({
                       id: `mod:${mod.id}:${panel.id}`,

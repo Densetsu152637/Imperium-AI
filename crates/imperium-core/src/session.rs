@@ -507,6 +507,17 @@ impl Shared {
 pub struct WebTools {
     pub web: imperium_web::Web,
     pub allow_domains: Vec<String>,
+    /// The browser to drive and its profile folder, when browser tools are on.
+    pub browser: Option<BrowserSetup>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrowserSetup {
+    pub program: PathBuf,
+    pub profile_dir: PathBuf,
+    pub headless: bool,
+    /// Started on first use and shared by the session's agents.
+    pub instance: Arc<tokio::sync::Mutex<Option<imperium_web::browser::Browser>>>,
 }
 
 impl WebTools {

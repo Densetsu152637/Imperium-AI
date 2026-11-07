@@ -108,6 +108,13 @@ pub enum SessionEvent {
     },
     /// The agent loaded workflow or documentation references.
     ContextLoaded { references: Vec<String> },
+    /// The agent's browser after an action: page, title, and a JPEG screenshot (base64), so
+    /// clients can mirror it.
+    BrowserView {
+        url: String,
+        title: String,
+        screenshot: String,
+    },
 }
 
 /// An instruction file or section in a context manifest.

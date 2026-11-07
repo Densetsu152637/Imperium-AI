@@ -44,6 +44,8 @@ export type SessionState = {
   plan: Plan | null;
   calls: ModelCall[];
   busy: boolean;
+  /** The agent's browser after its latest action. */
+  browser: { url: string; title: string; screenshot: string } | null;
 };
 
 export const newSession = (summary: SessionSummary): SessionState => ({
@@ -53,6 +55,7 @@ export const newSession = (summary: SessionSummary): SessionState => ({
   plan: null,
   calls: [],
   busy: false,
+  browser: null,
 });
 
 /** Applies one event to a transcript; returns a new array (inputs are never mutated). */
@@ -134,7 +137,10 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
     ];
   }
 
-  let { tasks, plan, calls, busy } = state;
+  let { tasks, plan, calls, busy, browser } = state;
+  if (event.type === "browser_view") {
+    browser = { url: event.url, title: event.title, screenshot: event.screenshot };
+  }
   if (event.type === "model_call_completed") {
     calls = [
       ...calls,
@@ -178,7 +184,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
         : { ...task, entries: applyToEntries(task.entries, agentEvent) };
     tasks = { ...tasks, [agentId]: updated };
   }
-  return { ...state, entries, tasks, plan, calls, busy };
+  return { ...state, entries, tasks, plan, calls, busy, browser };
 }
 
 export function markAnswered(state: SessionState, requestId: number): SessionState {

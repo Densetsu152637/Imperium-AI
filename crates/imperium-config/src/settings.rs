@@ -220,6 +220,12 @@ pub struct WebSettings {
     pub api_key: Option<SecretRef>,
     /// Domains `web_fetch` may read without asking (subdomains included).
     pub allow_domains: Vec<String>,
+    /// Offer browser tools (Chrome, Chromium, or Edge over CDP).
+    pub browser: bool,
+    /// The browser to drive; found automatically when empty.
+    pub browser_path: Option<PathBuf>,
+    /// Run the browser without a window (the desktop app mirrors it either way).
+    pub headless: bool,
 }
 
 impl Default for WebSettings {
@@ -230,6 +236,9 @@ impl Default for WebSettings {
             searxng_url: String::new(),
             api_key: None,
             allow_domains: Vec::new(),
+            browser: true,
+            browser_path: None,
+            headless: true,
         }
     }
 }

@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use imperium_config::{Paths, Settings};
 use imperium_core::{
-    CatalogModel, LocalModels, ModelError, Session, SessionConfig, SessionMemory, WebTools,
-    new_session_id, resolve_model,
+    BrowserSetup, CatalogModel, LocalModels, ModelError, Session, SessionConfig, SessionMemory,
+    WebTools, new_session_id, resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_memory::Store;
@@ -148,9 +148,24 @@ impl DaemonState {
         if web.search != "none" && provider.is_none() {
             tracing::warn!(provider = %web.search, "web search is not configured completely (URL or key missing)");
         }
+        let browser = web
+            .browser
+            .then(|| {
+                web.browser_path
+                    .clone()
+                    .or_else(imperium_web::browser::find_browser)
+            })
+            .flatten()
+            .map(|program| BrowserSetup {
+                program,
+                profile_dir: self.paths.data_dir().join("browser"),
+                headless: web.headless,
+                instance: Arc::default(),
+            });
         Some(WebTools {
             web: Web::new(provider),
             allow_domains: web.allow_domains.clone(),
+            browser,
         })
     }
 

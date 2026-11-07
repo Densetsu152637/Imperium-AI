@@ -147,6 +147,9 @@ impl Agent {
         }
         if let Some(web) = &self.shared.web {
             tools.extend(web.web.tool_specs());
+            if web.browser.is_some() {
+                tools.extend(browser_specs());
+            }
         }
         if self.shared.memory.is_some() {
             tools.extend([memory_search_spec(), memory_read_spec()]);
@@ -546,6 +549,107 @@ impl Agent {
         finish(ok, output)
     }
 
+    /// Drives the session's browser. Opening a page follows the web_fetch domain rule; clicking
+    /// and typing always ask unless allowed for the session. Each action is mirrored to
+    /// clients as a `browser_view` event.
+    async fn run_browser(&self, call: &ToolCall) -> String {
+        #[derive(Deserialize)]
+        struct Args {
+            #[serde(default)]
+            url: String,
+            #[serde(default)]
+            selector: String,
+            #[serde(default)]
+            text: String,
+            #[serde(default)]
+            submit: bool,
+        }
+        let name = call.function.name.as_str();
+        let finish = |ok: bool, output: String| {
+            self.emit(SessionEvent::ToolFinished {
+                call_id: call.id.clone(),
+                ok,
+                output: truncate(&output, EVENT_OUTPUT_CHARS),
+            });
+            output
+        };
+        let Some((tools, setup)) = self
+            .shared
+            .web
+            .as_ref()
+            .and_then(|tools| Some((tools, tools.browser.as_ref()?)))
+        else {
+            return finish(false, "error: browser tools are off".into());
+        };
+        let args: Args = match parse(&call.function.arguments) {
+            Ok(args) => args,
+            Err(error) => return finish(false, format!("error: {error}")),
+        };
+        let summary = match name {
+            "browser_open" => format!("open {} in the browser", args.url),
+            "browser_click" => format!("click {} in the browser", args.selector),
+            "browser_type" => format!("type into {} in the browser", args.selector),
+            _ => "read the browser page".into(),
+        };
+        if let Some(blocked) = self.before_tool(name, &call.function.arguments).await {
+            return finish(false, blocked);
+        }
+        let needs_approval = match name {
+            "browser_open" => !tools.allows(&args.url),
+            "browser_click" | "browser_type" => true,
+            _ => false,
+        };
+        if needs_approval && !self.approve(name, &summary).await {
+            return finish(false, "The user denied this action.".into());
+        }
+        self.emit(SessionEvent::ToolStarted {
+            call_id: call.id.clone(),
+            tool: name.to_string(),
+            summary,
+        });
+        let mut guard = setup.instance.lock().await;
+        if guard.is_none() {
+            match imperium_web::browser::Browser::launch(
+                &setup.program,
+                &setup.profile_dir,
+                setup.headless,
+            )
+            .await
+            {
+                Ok(browser) => *guard = Some(browser),
+                Err(error) => return finish(false, format!("error: {error}")),
+            }
+        }
+        let Some(browser) = guard.as_mut() else {
+            return finish(false, "error: the browser is not running".into());
+        };
+        let result = match name {
+            "browser_open" => browser.open(&args.url).await,
+            "browser_click" => browser.click(&args.selector).await,
+            "browser_type" => {
+                browser
+                    .type_text(&args.selector, &args.text, args.submit)
+                    .await
+            }
+            _ => browser.read().await,
+        };
+        if let Ok(view) = browser.view().await {
+            self.emit(SessionEvent::BrowserView {
+                url: view.url,
+                title: view.title,
+                screenshot: view.screenshot,
+            });
+        }
+        drop(guard);
+        let (ok, output) = match result {
+            Ok(output) => (true, output),
+            Err(error) => (false, format!("error: {error}")),
+        };
+        self.after_tool(name, &call.function.arguments, ok, &output)
+            .await;
+        finish(ok, output)
+    }
+
     /// Asks the user to approve a call to `tool`, unless they allowed it for the session.
     async fn approve(&self, tool: &str, summary: &str) -> bool {
         if lock(&self.shared.allowed_tools).contains(tool) {
@@ -690,6 +794,15 @@ impl Agent {
             _ if self.shared.mcp.find(name).is_some() => return self.run_mcp(call).await,
             "web_fetch" | "web_search" if self.shared.web.is_some() => {
                 return self.run_web(call).await;
+            }
+            "browser_open" | "browser_read" | "browser_click" | "browser_type"
+                if self
+                    .shared
+                    .web
+                    .as_ref()
+                    .is_some_and(|web| web.browser.is_some()) =>
+            {
+                return self.run_browser(call).await;
             }
             _ => return self.run_builtin(call).await,
         };
@@ -997,6 +1110,38 @@ fn manifest_event(manifest: &LoadManifest) -> SessionEvent {
             })
             .collect(),
     }
+}
+
+fn browser_specs() -> Vec<ToolSpec> {
+    let spec = |name: &str, description: &str, parameters: serde_json::Value| ToolSpec {
+        name: name.into(),
+        description: description.into(),
+        parameters,
+    };
+    vec![
+        spec(
+            "browser_open",
+            "Open a page in the browser and return its text. Use for pages that need JavaScript or interaction; web_fetch is cheaper for plain pages.",
+            json!({"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}),
+        ),
+        spec(
+            "browser_read",
+            "Return the current browser page's title, URL, and text.",
+            json!({"type": "object", "properties": {}}),
+        ),
+        spec(
+            "browser_click",
+            "Click the first element matching a CSS selector.",
+            json!({"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}),
+        ),
+        spec(
+            "browser_type",
+            "Type text into the first element matching a CSS selector; submit its form if asked.",
+            json!({"type": "object", "properties": {
+                "selector": {"type": "string"}, "text": {"type": "string"}, "submit": {"type": "boolean"}
+            }, "required": ["selector", "text"]}),
+        ),
+    ]
 }
 
 fn start_session_spec() -> ToolSpec {
