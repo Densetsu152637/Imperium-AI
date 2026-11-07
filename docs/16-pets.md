@@ -5,6 +5,24 @@ Pets are animated pixel companions that act out what the agents are doing. Imper
 format and implements its behaviour engine in the Rust runtime, so every client — desktop,
 CLI/TUI, and phone — shows the same pet in the same state.
 
+**Implemented (phase 9, `imperium-pets` and the daemon's pet engine):** Pixel Pets v3
+packages load and are checked as the format requires (`spriteVersionNumber` 3, `id` equal to
+the folder, cell sizes 16–128, strips present at frames × cell size and at most 96 KiB, `idle`
+drawn, overrides and custom animations on rows 22+), with fallback chains for animations a
+pet does not draw. The arbiter implements the format's rules (loops per source, priorities,
+one-shots interrupting only equal or lower priority, 1500 ms coalescing, `minMs`, P5
+transitions, `waking` before reacting while asleep, `duck-in`/`pop-out` hiding, `alert`,
+sleeping after `pets.sleep_after_minutes`, and fidgets) with injected time. One pet per daemon
+is fed by every session's and subagent's status events (never transcript text) and sends
+`pet.state` to every client with the start time, so all clients draw in phase. The desktop's
+Pet panel draws the strip frame by frame with nearest-neighbour scaling (first frame only with
+reduced motion) and pats the pet on click (`pet.interact`); `pet.list` and `pet.strip` serve
+the metadata and strips. Pets are found in `pets.folders`, `<config>/pets`, `~/.claude/pets`,
+and a `pets/` folder next to the daemon; Pixel Clawd ships in the repository's `pets/` with the
+Pixel Pets licence and notice. Not yet: the `look` glance, the `imperium` bindings, WASM
+behaviours, scopes other than global, the floating overlay, TUI drawing, `pet.install`/
+`pet.select`, approval and schedule events, and the Codex importer.
+
 ## Compatibility
 
 - **Native format: Pixel Pets v3** (`spriteVersionNumber: 3`): a folder with `pet.json`, an

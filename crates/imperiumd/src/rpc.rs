@@ -2,19 +2,21 @@
 
 use std::sync::Arc;
 
+use base64::Engine;
 use imperium_core::Session;
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
     ApprovalRespondParams, ApprovalRespondResult, Handshake, HandshakeParams, HandshakeResult,
     LocalModelList, LocalModelListParams, Method, ModList, ModListParams, ModelList,
-    ModelListParams, Peer, Ping, PingParams, PingResult, ProjectAgentRow, ProjectList,
-    ProjectListParams, ProjectListResult, ProjectMessage, ProjectMessageParams,
-    ProjectMessageResult, ScheduleList, ScheduleListParams, ScheduleListResult, ScheduleRun,
-    ScheduleRunParams, ScheduleRunResult, SessionCreate, SessionCreateParams, SessionCreateResult,
-    SessionList, SessionListParams, SessionListResult, SessionRespond, SessionRespondParams,
-    SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
-    SessionSubscribeResult, SessionSummary,
+    ModelListParams, Peer, PetInteract, PetInteractParams, PetInteractResult, PetList,
+    PetListParams, PetListResult, PetStrip, PetStripParams, PetStripResult, Ping, PingParams,
+    PingResult, ProjectAgentRow, ProjectList, ProjectListParams, ProjectListResult, ProjectMessage,
+    ProjectMessageParams, ProjectMessageResult, ScheduleList, ScheduleListParams,
+    ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionCreate,
+    SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
+    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe,
+    SessionSubscribeParams, SessionSubscribeResult, SessionSummary,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -101,6 +103,51 @@ impl Connection {
             ModelList::NAME => call::<ModelList>(request.params, |_: ModelListParams| {
                 Ok(self.state.model_table())
             }),
+            PetList::NAME => call::<PetList>(request.params, |_: PetListParams| {
+                Ok(match self.state.pets() {
+                    Some(pets) => PetListResult {
+                        pets: pets.pets(),
+                        selected: Some(pets.selected().to_string()),
+                        state: pets.state(),
+                    },
+                    None => PetListResult {
+                        pets: Vec::new(),
+                        selected: None,
+                        state: None,
+                    },
+                })
+            }),
+            PetStrip::NAME => call::<PetStrip>(request.params, |params: PetStripParams| {
+                let png = self
+                    .state
+                    .pets()
+                    .and_then(|pets| pets.strip(&params.animation))
+                    .ok_or_else(|| {
+                        ErrorObject::new(
+                            codes::INVALID_PARAMS,
+                            format!("the pet does not draw {}", params.animation),
+                        )
+                    })?;
+                Ok(PetStripResult {
+                    png_base64: base64::engine::general_purpose::STANDARD.encode(png),
+                })
+            }),
+            PetInteract::NAME => {
+                call::<PetInteract>(request.params, |params: PetInteractParams| {
+                    if let Some(pets) = self.state.pets() {
+                        let animation = match params.kind.as_str() {
+                            "hide" => "duck-in",
+                            "show" => "pop-out",
+                            _ => "petted",
+                        };
+                        pets.report(
+                            "user".into(),
+                            imperium_pets::PetEvent::Once(animation.into()),
+                        );
+                    }
+                    Ok(PetInteractResult {})
+                })
+            }
             ProjectList::NAME => call::<ProjectList>(request.params, |_: ProjectListParams| {
                 Ok(ProjectListResult {
                     agents: self

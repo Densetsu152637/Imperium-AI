@@ -11,6 +11,8 @@ import type {
   SessionEventParams,
   LocalModelListResult,
   ModListResult,
+  PetListResult,
+  PetStateInfo,
   ModelListResult,
   SessionListResult,
   SessionSubscribeResult,
@@ -25,6 +27,7 @@ import { AgentsPanel } from "./panels/AgentsPanel";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
 import { BrowserPanel } from "./panels/BrowserPanel";
+import { PetPanel } from "./panels/PetPanel";
 import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
@@ -46,6 +49,8 @@ export function App() {
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
   const [mods, setMods] = useState<ModListResult | null>(null);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
+  const [pets, setPets] = useState<PetListResult | null>(null);
+  const [petState, setPetState] = useState<PetStateInfo | null>(null);
   const modBus = useMemo(() => new ModBus(), []);
 
   useEffect(() => applySettings(settings), [settings]);
@@ -80,6 +85,10 @@ export function App() {
           all[session_id] ? { ...all, [session_id]: applyEvent(all[session_id], { agent_id, event }) } : all,
         );
       client.onNotification((notification) => {
+        if (notification.method === "pet.state") {
+          setPetState(notification.params as PetStateInfo);
+          return;
+        }
         if (notification.method === "approval.requested") {
           const approval = notification.params as ApprovalInfo;
           setApprovals((all) => [...all.filter((a) => a.id !== approval.id), approval]);
@@ -108,6 +117,9 @@ export function App() {
       setLocalModels(await client.call<LocalModelListResult>("models.local"));
       setMods(await client.call<ModListResult>("mods.list"));
       setApprovals((await client.call<ApprovalListResult>("approvals.list")).approvals);
+      const petList = await client.call<PetListResult>("pet.list");
+      setPets(petList);
+      setPetState((current) => current ?? petList.state);
       const queued = pending;
       pending = null;
       queued.forEach(apply);
@@ -241,6 +253,17 @@ export function App() {
                       </button>
                     ),
                     body: <SessionsPanel sessions={projectSessions} selected={selected} onSelect={setSelected} />,
+                  },
+                  {
+                    id: "pet",
+                    title: pets?.pets.find((p) => p.id === pets.selected)?.display_name ?? "Pet",
+                    body: (
+                      <PetPanel
+                        client={client}
+                        pet={pets?.pets.find((p) => p.id === pets.selected) ?? null}
+                        state={petState}
+                      />
+                    ),
                   },
                   ...(approvals.length > 0
                     ? [
