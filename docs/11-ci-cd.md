@@ -94,7 +94,15 @@ Optional; builds succeed unsigned when they are absent.
 | `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`             | macOS notarisation             |
 | Windows signing (Azure Trusted Signing, to be decided)    | Windows code signing           |
 
-## Repository settings to apply
+## Repository settings
 
-- Branch protection on `main`: require `CI gate`, linear history.
-- Create the `experimental` branch when experimental work begins.
+`main` is protected (applied 2026-11-07):
+
+- Changes land through pull requests; direct pushes are rejected, including for admins.
+- The `CI gate` check must pass. Branches need not be up to date with `main` before merging.
+- Linear history; no force pushes or deletion; review conversations must be resolved.
+- GitHub requires no approving review, because the sole maintainer cannot approve their own
+  pull requests. The maintainer's explicit go-ahead is the approval, and the maintainer merges
+  or authorises the merge.
+
+Still to do: create the `experimental` branch when experimental work begins.
