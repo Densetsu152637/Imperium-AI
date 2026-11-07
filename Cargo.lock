@@ -1251,6 +1251,14 @@ dependencies = [
 [[package]]
 name = "imperium-tools"
 version = "0.1.0"
+dependencies = [
+ "imperium-models",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "imperiumd"
