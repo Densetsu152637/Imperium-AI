@@ -19,6 +19,7 @@
 | D13 | Licence: MIT | Owner's choice | — | — |
 | D14 | Planning is a runtime feature (plan objects, plan phase, approval modes) | Keeps weaker open models on track; plans visible and editable | Prompt-only planning | — |
 | D15 | One daemon process: a small shared Tokio I/O runtime plus one OS thread with a single-threaded Tokio runtime per session | Sessions are isolated from each other and from the transport; async I/O keeps idle work near zero CPU | Multi-process sessions; all sessions as tasks on one shared runtime | Thread count becomes a problem with very many open sessions |
+| D16 | GitHub auto-fix responders run as ordinary sessions, push only to PR branches, and never merge, close, approve, or force-push | Keeps automation reviewable and reversible | Fully autonomous merging | Users ask for merge automation with required approvals |
 
 ## Open questions
 
