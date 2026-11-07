@@ -1,0 +1,10 @@
+# Add cargo, npm, and uv entries when their manifests land (see docs/11-ci-cd.md).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

@@ -1,0 +1,97 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: stable, prerelease, or experimental
+        type: string
+        required: true
+      version:
+        description: Semantic version stamped into the bundles
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: bundle (${{ matrix.id }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-x64
+            runner: ubuntu-22.04
+            rust_targets: x86_64-unknown-linux-gnu
+            tauri_target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+          - id: linux-arm64
+            runner: ubuntu-22.04-arm
+            rust_targets: aarch64-unknown-linux-gnu
+            tauri_target: aarch64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+          - id: windows-x64
+            runner: windows-latest
+            rust_targets: x86_64-pc-windows-msvc
+            tauri_target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+          - id: windows-arm64
+            runner: windows-11-arm
+            rust_targets: aarch64-pc-windows-msvc
+            tauri_target: aarch64-pc-windows-msvc
+            bundles: nsis
+          - id: macos-universal
+            runner: macos-latest
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            tauri_target: universal-apple-darwin
+            bundles: app,dmg
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_targets }}
+      - if: runner.os == 'Linux'
+        run: bash scripts/ci/install-linux-deps.sh
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.id }}
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build desktop bundles
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          TAURI_TARGET: ${{ matrix.tauri_target }}
+          BUNDLES: ${{ matrix.bundles }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/ci/build-desktop.sh "$TAURI_TARGET" "$BUNDLES" "$VERSION"
+      - name: Package CLI
+        shell: bash
+        env:
+          PLATFORM_ID: ${{ matrix.id }}
+          RUST_TARGETS: ${{ matrix.rust_targets }}
+        run: bash scripts/ci/package-cli.sh "$PLATFORM_ID" "$RUST_TARGETS"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: imperium-${{ inputs.channel }}-${{ matrix.id }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
