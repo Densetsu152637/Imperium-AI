@@ -70,6 +70,13 @@ bytes). Estimates are calibrated against measured usage after each load and stor
 
 ## Routing
 
+**Implemented (phase 3, router v1):** subagents are routed with `[[models.catalog]]` entries
+(`spec` and `tier`: `basic`, `standard`, `strong`, `frontier`). A named catalog model wins;
+otherwise the cheapest model at or above the requested tier (default `standard`) by input plus
+output price, with unpriced (local) models treated as free; otherwise the session's model.
+Catalog entries that cannot be resolved (unknown endpoint, missing key) are skipped with a
+warning. The scoring, hardware placement, and escalation below are later work.
+
 For each task, the router builds the candidate set and scores it:
 
 1. **Filter:** capabilities, context length, quality tier ≥ required, policy allow-list,

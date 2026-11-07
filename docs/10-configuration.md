@@ -34,6 +34,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | ------------- | ------- | -------------------------------------------------------------- |
 | `daemon.port` | `0`     | Port of the local WebSocket listener; `0` picks a free port at each start |
 | `agents.max_steps` | `50` | Model calls an agent may make in one turn before it stops |
+| `models.catalog` | none | `[[models.catalog]]` entries with `spec` and `tier` (`basic`, `standard`, `strong`, `frontier`) that subagents may be routed to |
 | `models.default` | none | Model for new sessions, as `<endpoint>:<model>` (split at the first `:`, so `ollama:qwen3:8b` works) |
 | `endpoints.<id>.base_url` | — | OpenAI-compatible base URL, ending before `/chat/completions` |
 | `endpoints.<id>.api_key` | none | `{ secret = "<name>" }`, read from the keychain when a session starts |

@@ -129,14 +129,12 @@ Setting `IMPERIUM_HOME` puts all three under one root as `config/`, `data/`, and
 
 - **One process.** `imperiumd` hosts everything; model runtimes and sidecars are the only
   child processes.
-- **Shared I/O runtime.** A small multi-threaded Tokio runtime (2 worker threads, implemented)
-  runs the transport, connection handling, and the event bus. Async I/O keeps idle
-  connections and waiting agents at near-zero CPU.
-- **Thread per session (implemented).** Each session runs on its own OS thread with a
-  single-threaded Tokio runtime. A busy session cannot starve others or the transport, session
-  state needs no cross-thread locking, and a panicking session is contained to its thread. The
-  I/O runtime and session threads talk over channels; an idle session thread is blocked on its
-  channel and uses no CPU.
+- **Task per agent (implemented).** The daemon runs one multi-threaded Tokio runtime with a
+  worker per core. Every agent (a session's root and each subagent) is its own task on it, so
+  agents run in parallel across cores, a busy agent cannot block the transport, and an idle
+  agent waiting on the model, the user, or its subagents uses no CPU. Agents in a session
+  share state through `Arc` and short-held locks; the transport talks to sessions over
+  channels.
 - Within a session, each agent turn, tool call, and runtime request is a task with a
   cancellation token. Cancelling a parent cancels its subtree unless a child is marked
   `detached`.

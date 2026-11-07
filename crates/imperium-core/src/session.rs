@@ -158,7 +158,7 @@ impl Shared {
     }
 }
 
-/// The session thread's main loop: one root turn at a time, in message order, while
+/// The root agent's task: one turn at a time, in message order, while
 /// permission answers are routed to whichever agent asked.
 async fn run(
     config: SessionConfig,
@@ -282,7 +282,7 @@ impl PermissionBroker {
     }
 }
 
-/// The session's events so far, shared between the session thread and its handles.
+/// The session's events so far, shared between its agents and its handles.
 #[derive(Debug, Clone, Default)]
 struct History(Arc<Mutex<Vec<AgentEvent>>>);
 
