@@ -32,6 +32,20 @@ React interface that users can restyle, extend, or replace.
 - **Built for ultrawide.** Independent font and density scaling, tiling panes, readable line lengths.
 - **Linux, Windows, and macOS** from the first release.
 
+## Development
+
+Phase 0 has the Rust core: the daemon, the CLI, the protocol, and configuration.
+
+```bash
+cargo build
+cargo run --bin imperiumd          # leave running; Ctrl+C stops it
+cargo run --bin imperium -- ping   # in another terminal
+cargo run --bin imperium -- config explain daemon.port
+bash scripts/check-rust.sh         # what CI runs: fmt, clippy, tests, generated-type drift
+```
+
+Set `IMPERIUM_HOME` to keep a development daemon's files apart from your own.
+
 ## Documentation
 
 Start at [docs/README.md](docs/README.md).
