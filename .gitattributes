@@ -3,3 +3,5 @@
 *.ico binary
 *.icns binary
 *.wasm binary
+# ts-rs output contains trailing spaces; it is regenerated, not edited.
+packages/protocol/src/generated/** -whitespace linguist-generated
