@@ -91,6 +91,7 @@ impl Agent {
 
     fn tool_specs(&self) -> Vec<ToolSpec> {
         let mut tools = specs();
+        tools.extend(self.shared.mcp.tool_specs());
         tools.push(update_plan_spec());
         if self.can_delegate {
             tools.extend([spawn_agent_spec(), await_tasks_spec()]);
@@ -181,6 +182,62 @@ impl Agent {
         self.outcome(message, false, total)
     }
 
+    /// Asks the user to approve a call to `tool`, unless they allowed it for the session.
+    async fn approve(&self, tool: &str, summary: &str) -> bool {
+        if lock(&self.shared.allowed_tools).contains(tool) {
+            return true;
+        }
+        let (request_id, answer) = self.shared.broker.request();
+        self.emit(SessionEvent::PermissionRequested {
+            request_id,
+            tool: tool.to_string(),
+            summary: summary.to_string(),
+        });
+        match answer.await.unwrap_or(PermissionDecision::Deny) {
+            PermissionDecision::Allow => true,
+            PermissionDecision::AllowForSession => {
+                lock(&self.shared.allowed_tools).insert(tool.to_string());
+                true
+            }
+            PermissionDecision::Deny => false,
+        }
+    }
+
+    /// Calls an MCP tool, asking first unless the server's `allow` list covers it.
+    async fn run_mcp(&self, call: &ToolCall) -> String {
+        let name = call.function.name.as_str();
+        let arguments = call.function.arguments.as_str();
+        let finish = |ok: bool, output: String| {
+            self.emit(SessionEvent::ToolFinished {
+                call_id: call.id.clone(),
+                ok,
+                output: truncate(&output, EVENT_OUTPUT_CHARS),
+            });
+            output
+        };
+        let Some(tool) = self.shared.mcp.find(name) else {
+            return finish(false, format!("error: unknown tool {name}"));
+        };
+        let summary = format!(
+            "{} on MCP server {}: {}",
+            tool.name,
+            tool.server,
+            truncate(arguments, 200)
+        );
+        if !tool.allowed && !self.approve(name, &summary).await {
+            return finish(false, "The user denied this action.".into());
+        }
+        self.emit(SessionEvent::ToolStarted {
+            call_id: call.id.clone(),
+            tool: name.to_string(),
+            summary,
+        });
+        match self.shared.mcp.call(name, arguments).await {
+            Ok(output) => finish(true, output),
+            Err(error) => finish(false, format!("error: {error}")),
+        }
+    }
+
     /// Where to send this turn's model calls, with the slot held on a local model.
     async fn endpoint(&self) -> Result<(Endpoint, Option<LocalLease>), String> {
         if !self.model.local {
@@ -248,6 +305,7 @@ impl Agent {
             "update_plan" => AgentTool::UpdatePlan,
             "spawn_agent" if self.can_delegate => AgentTool::SpawnAgent,
             "await_tasks" if self.can_delegate => AgentTool::AwaitTasks,
+            _ if self.shared.mcp.find(name).is_some() => return self.run_mcp(call).await,
             _ => return self.run_builtin(call).await,
         };
         let summary = match tool {
@@ -292,23 +350,8 @@ impl Agent {
         };
         let tool = invocation.tool_name();
         let summary = invocation.summary();
-        let pre_approved = lock(&self.shared.allowed_tools).contains(tool);
-        if invocation.access() != Access::Read && !pre_approved {
-            let (request_id, answer) = self.shared.broker.request();
-            self.emit(SessionEvent::PermissionRequested {
-                request_id,
-                tool: tool.to_string(),
-                summary: summary.clone(),
-            });
-            match answer.await.unwrap_or(PermissionDecision::Deny) {
-                PermissionDecision::Allow => {}
-                PermissionDecision::AllowForSession => {
-                    lock(&self.shared.allowed_tools).insert(tool);
-                }
-                PermissionDecision::Deny => {
-                    return finish(false, "The user denied this action.".into());
-                }
-            }
+        if invocation.access() != Access::Read && !self.approve(tool, &summary).await {
+            return finish(false, "The user denied this action.".into());
         }
         self.emit(SessionEvent::ToolStarted {
             call_id: call.id.clone(),

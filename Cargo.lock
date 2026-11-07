@@ -2182,6 +2182,7 @@ dependencies = [
  "axum",
  "getrandom 0.4.3",
  "imperium-config",
+ "imperium-mcp",
  "imperium-models",
  "imperium-protocol",
  "imperium-tools",
@@ -2225,6 +2226,21 @@ dependencies = [
  "sysinfo",
  "tar",
  "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "imperium-mcp"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "imperium-models",
+ "reqwest",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -2277,6 +2293,7 @@ dependencies = [
  "imperium-config",
  "imperium-core",
  "imperium-local",
+ "imperium-mcp",
  "imperium-protocol",
  "imperium-tools",
  "serde",

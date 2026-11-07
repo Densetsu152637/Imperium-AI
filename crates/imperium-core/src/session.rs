@@ -9,6 +9,8 @@ use imperium_tools::Workspace;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use imperium_mcp::{McpServers, ServerSpec};
+
 use crate::agent::Agent;
 use crate::journal::Journal;
 use crate::{CatalogModel, LocalModels, ResolvedModel};
@@ -28,6 +30,10 @@ pub struct SessionConfig {
     pub routing: RoutingSettings,
     /// The supervised local runtime, when one is configured.
     pub local: Option<Arc<dyn LocalModels>>,
+    /// MCP servers to start for the session.
+    pub mcp: Vec<ServerSpec>,
+    /// Shown to the user when the session starts, such as servers that were left out.
+    pub notices: Vec<String>,
     pub max_steps: u32,
     pub journal_path: PathBuf,
 }
@@ -154,7 +160,8 @@ pub(crate) struct Shared {
     pub local: Option<Arc<dyn LocalModels>>,
     pub max_steps: u32,
     /// Tools the user allowed for the rest of the session, for every agent.
-    pub allowed_tools: Mutex<HashSet<&'static str>>,
+    pub allowed_tools: Mutex<HashSet<String>>,
+    pub mcp: McpServers,
     next_task: AtomicU32,
 }
 
@@ -171,6 +178,10 @@ async fn run(
     mut commands: mpsc::UnboundedReceiver<Command>,
     emitter: Emitter,
 ) {
+    for message in config.notices {
+        emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
+    }
+    let mcp = connect_mcp(config.mcp, &emitter).await;
     let shared = Arc::new(Shared {
         emitter,
         broker: PermissionBroker::default(),
@@ -182,6 +193,7 @@ async fn run(
         local: config.local,
         max_steps: config.max_steps,
         allowed_tools: Mutex::new(HashSet::new()),
+        mcp,
         next_task: AtomicU32::new(0),
     });
     let mut root = Agent::new(ROOT_AGENT.into(), Arc::clone(&shared), config.model, true);
@@ -304,4 +316,25 @@ impl History {
 /// interrupts its holder.
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Starts the session's MCP servers before its first turn, telling the user about any that
+/// failed. Messages sent meanwhile wait in the command queue.
+async fn connect_mcp(specs: Vec<ServerSpec>, emitter: &Emitter) -> McpServers {
+    if specs.is_empty() {
+        return McpServers::default();
+    }
+    let (servers, failed) = McpServers::connect(specs).await;
+    for failure in failed {
+        emitter.emit(
+            ROOT_AGENT,
+            SessionEvent::Notice {
+                message: format!(
+                    "MCP server {} is unavailable: {}",
+                    failure.server, failure.reason
+                ),
+            },
+        );
+    }
+    servers
 }

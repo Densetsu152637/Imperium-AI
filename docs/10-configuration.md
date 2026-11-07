@@ -51,6 +51,8 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `runtime.llamacpp.ram_headroom_mb` | `2048` | System memory kept free when placing models |
 | `runtime.llamacpp.extra_args` | none | Extra `llama-server` arguments, for example `["--flash-attn", "on"]` |
 | `hardware.vram_mb`, `hardware.ram_mb` | probed | Override the hardware probe |
+| `mcp.servers.<name>` | none | An MCP server: `command`, `args`, `env` for stdio, or `url`, `headers`, `bearer_token` for HTTP; `allow` (tools that run without asking), `enabled`, `timeout_s` (default 60); see [MCP](05-tools-and-isolation.md#mcp) |
+| `mcp.trusted_projects` | none | Project folders whose `.mcp.json` servers may start |
 
 Configuration is read when the daemon starts; restart it after editing.
 

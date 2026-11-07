@@ -23,6 +23,40 @@ external agents can use Imperium's tools.
 
 ## MCP
 
+**Implemented (phase 5, `imperium-mcp`):** each session starts its MCP servers before its
+first turn: stdio processes (newline-delimited JSON-RPC, stopped with the session) and
+streamable-HTTP endpoints (JSON or SSE responses, `Mcp-Session-Id` kept), using MCP revision
+`2025-06-18`. Tools are listed (following pagination) and offered to the root and subagents as
+`mcp__<server>__<tool>`. A call asks for approval unless the server's `allow` list names the
+tool (or `"*"`), or the user allowed it for the session; the result's text, resource text, and
+descriptions of other content are returned to the model, and a tool-reported error fails the
+call. Servers that fail to start are reported as session notices; the session carries on
+without them. Server pings are answered; other server requests (sampling, roots,
+elicitation) are refused for now.
+
+Servers come from `[mcp.servers.<name>]` in the user configuration (a `command` with `args`
+and `env`, or a `url` with `headers` and an optional `bearer_token = { secret = "<name>" }`),
+and from a project's `.mcp.json` (the Claude Code format, with `${VAR}` and `${VAR:-default}`
+expansion) only when the project folder is listed in `mcp.trusted_projects`, since a cloned
+repository could otherwise run any command. A configured server overrides a project server of
+the same name.
+
+```toml
+[mcp.servers.github]
+url = "https://api.githubcopilot.com/mcp/"
+bearer_token = { secret = "github" }
+allow = ["get_issue", "list_pull_requests"]
+
+[mcp.servers.files]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "D:/Notes"]
+
+[mcp]
+trusted_projects = ["D:/Git Repositories/Imperium-AI"]
+```
+
+Planned:
+
 - Client support for stdio and streamable-HTTP MCP servers, including tools, resources,
   prompts, and server-initiated sampling (routed through Imperium's router and budgets).
 - Servers are configured globally, per project, or by plugins; each has its own permission

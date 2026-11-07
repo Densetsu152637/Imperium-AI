@@ -789,3 +789,10 @@ button.sort {
 .local-models .badge {
   white-space: nowrap;
 }
+
+.notice {
+  font-size: 0.85rem;
+  color: var(--muted);
+  border-left: 2px solid var(--border);
+  padding-left: var(--space);
+}

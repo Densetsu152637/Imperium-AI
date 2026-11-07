@@ -12,7 +12,8 @@ export type Entry =
   | { kind: "permission"; agentId: string; requestId: number; tool: string; summary: string; answered: boolean }
   | { kind: "task"; taskId: string; brief: string; model: string }
   | { kind: "turn"; usage: TokenUsage; costUsd: number | null; steps: number }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  | { kind: "notice"; message: string };
 
 export type TaskState = {
   taskId: string;
@@ -88,6 +89,9 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
       break;
     case "turn_failed":
       next.push({ kind: "error", message: event.message });
+      break;
+    case "notice":
+      next.push({ kind: "notice", message: event.message });
       break;
     default:
       break;

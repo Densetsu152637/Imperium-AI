@@ -46,6 +46,8 @@ pub struct Settings {
     pub runtime: RuntimeSettings,
     #[serde(default)]
     pub hardware: HardwareSettings,
+    #[serde(default)]
+    pub mcp: McpSettings,
 }
 
 /// The endpoint id that names models served by the supervised llama.cpp runtime, as in
@@ -88,8 +90,55 @@ impl Settings {
                 ));
             }
         }
+        for (name, server) in &self.mcp.servers {
+            if server.command.is_some() == server.url.is_some() {
+                return Err(format!(
+                    "mcp.servers.{name}: set exactly one of command or url"
+                ));
+            }
+        }
         Ok(())
     }
+}
+
+/// MCP servers available to every session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct McpSettings {
+    #[serde(default)]
+    pub servers: BTreeMap<String, McpServerSettings>,
+    /// Project folders whose `.mcp.json` servers may start. Other projects' files are reported
+    /// but not run, since a cloned repository could otherwise run any command.
+    #[serde(default)]
+    pub trusted_projects: Vec<PathBuf>,
+}
+
+/// One `[mcp.servers.<name>]` entry: a local command or a streamable-HTTP URL.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct McpServerSettings {
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// Sent as `Authorization: Bearer <secret>` to an HTTP server.
+    #[serde(default)]
+    pub bearer_token: Option<SecretRef>,
+    /// Tools that run without asking, by MCP tool name, or `"*"` for all of them.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub timeout_s: Option<u64>,
+}
+
+fn enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
