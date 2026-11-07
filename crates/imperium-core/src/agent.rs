@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use imperium_config::Tier;
+use imperium_config::{Location, Tier};
 use imperium_models::{ChatMessage, ChatRequest, ToolCall, ToolSpec, Usage, stream_chat};
 use imperium_protocol::session::{
     PermissionDecision, Plan, PlanStep, SessionEvent, StepStatus, TokenUsage,
@@ -15,7 +15,7 @@ use serde_json::json;
 use tokio::task::JoinHandle;
 
 use crate::session::{Shared, lock};
-use crate::{ResolvedModel, route};
+use crate::{ResolvedModel, TaskRequest, route};
 
 /// Longest tool output or report shown in events (the model receives the full text).
 const EVENT_OUTPUT_CHARS: usize = 2_000;
@@ -332,6 +332,10 @@ impl Agent {
             tier: Option<String>,
             #[serde(default)]
             model: Option<String>,
+            #[serde(default)]
+            location: Option<String>,
+            #[serde(default)]
+            tags: Vec<String>,
         }
         let args: Args = parse(arguments)?;
         if args.brief.trim().is_empty() {
@@ -341,11 +345,21 @@ impl Agent {
             Some(tier) => tier.parse::<Tier>()?,
             None => Tier::default(),
         };
+        let location = args
+            .location
+            .as_deref()
+            .map(str::parse::<Location>)
+            .transpose()?;
         let model = route(
             &self.shared.catalog,
+            &self.shared.routing,
             &self.shared.fallback_model,
-            args.model.as_deref(),
-            tier,
+            TaskRequest {
+                named: args.model.as_deref(),
+                tier,
+                location,
+                tags: &args.tags,
+            },
         );
         let task_id = self.shared.next_task_id();
         self.emit(SessionEvent::TaskSpawned {
@@ -449,7 +463,9 @@ fn spawn_agent_spec() -> ToolSpec {
         parameters: json!({"type": "object", "properties": {
             "brief": {"type": "string"},
             "tier": {"type": "string", "enum": ["basic", "standard", "strong", "frontier"], "description": "Minimum model capability; the cheapest suitable model is chosen. Default standard."},
-            "model": {"type": "string", "description": "A specific <endpoint>:<model> from the catalog"}
+            "model": {"type": "string", "description": "A model table id (or <endpoint>:<model>) to use"},
+            "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match"}
         }, "required": ["brief"]}),
     }
 }

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use imperium_config::RoutingSettings;
 use imperium_protocol::session::{AgentEvent, PermissionDecision, ROOT_AGENT, SessionEvent};
 use imperium_tools::Workspace;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -24,6 +25,7 @@ pub struct SessionConfig {
     pub model: ResolvedModel,
     /// Models subagents may be routed to.
     pub catalog: Vec<CatalogModel>,
+    pub routing: RoutingSettings,
     pub max_steps: u32,
     pub journal_path: PathBuf,
 }
@@ -145,6 +147,7 @@ pub(crate) struct Shared {
     pub http: reqwest::Client,
     pub workspace: Workspace,
     pub catalog: Vec<CatalogModel>,
+    pub routing: RoutingSettings,
     pub fallback_model: ResolvedModel,
     pub max_steps: u32,
     /// Tools the user allowed for the rest of the session, for every agent.
@@ -171,6 +174,7 @@ async fn run(
         http: reqwest::Client::new(),
         workspace: config.workspace,
         catalog: config.catalog,
+        routing: config.routing,
         fallback_model: config.model.clone(),
         max_steps: config.max_steps,
         allowed_tools: Mutex::new(HashSet::new()),

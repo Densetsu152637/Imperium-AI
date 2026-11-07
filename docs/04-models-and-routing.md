@@ -70,12 +70,48 @@ bytes). Estimates are calibrated against measured usage after each load and stor
 
 ## Routing
 
-**Implemented (phase 3, router v1):** subagents are routed with `[[models.catalog]]` entries
-(`spec` and `tier`: `basic`, `standard`, `strong`, `frontier`). A named catalog model wins;
-otherwise the cheapest model at or above the requested tier (default `standard`) by input plus
-output price, with unpriced (local) models treated as free; otherwise the session's model.
-Catalog entries that cannot be resolved (unknown endpoint, missing key) are skipped with a
-warning. The scoring, hardware placement, and escalation below are later work.
+**Implemented (phase 3, router v1):** routing uses your **model table**, a list of
+`[[models.catalog]]` rows that delegation rules and agents refer to by id:
+
+```toml
+[[models.catalog]]
+id = "qwen-local"                     # unique; used by rules and spawn_agent
+spec = "llamacpp:qwen3-coder-30b"     # <endpoint>:<model>
+location = "local"                    # local | cloud (required)
+tier = "standard"                     # basic | standard | strong | frontier
+tags = ["code"]
+
+[[models.catalog]]
+id = "sonnet"
+spec = "openrouter:anthropic/claude-sonnet"
+location = "cloud"
+tier = "strong"
+
+[routing]
+prefer = "local"                      # cheapest (default) | local | cloud
+
+[[routing.rules]]                     # first matching rule wins
+when_tag = "code"                     # optional; also when_tier = "strong"
+location = "local"                    # optional restriction
+use = ["qwen-local"]                  # optional ids, tried in order
+```
+
+A subagent's model is chosen as follows:
+
+1. A model the agent named (`spawn_agent`'s `model`, by id or spec), if it is in the table.
+2. The first rule whose `when_tier` (exact) and `when_tag` match the task: its `use` ids are
+   tried in order (tier is not checked for an explicit choice; the location restriction is),
+   then its `location` restricts the remaining choice.
+3. The suitable rows (at or above the requested tier, default `standard`, and in the requested
+   or rule location) ranked by `prefer`, then by input plus output price, with unpriced rows
+   counted as free.
+4. The session's own model.
+
+Agents pass `tier`, `location`, `tags`, and `model` to `spawn_agent`. Ids must be unique and
+rules may only name ids in the table; the daemon refuses to start otherwise. Rows whose
+endpoint is unknown or whose key is missing are skipped with a warning. `models.list` returns
+the table, and the desktop app shows it in a searchable, sortable Models panel. The scoring,
+hardware placement, and escalation below are later work.
 
 For each task, the router builds the candidate set and scores it:
 

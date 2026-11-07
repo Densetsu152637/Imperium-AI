@@ -32,3 +32,4 @@ imperium-config = { path = "../imperium-config" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net"] }
 tokio-tungstenite = "0.30.0"
+toml = "1.2.1"

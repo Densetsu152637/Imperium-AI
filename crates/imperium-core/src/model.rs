@@ -1,4 +1,6 @@
-use imperium_config::{SecretError, SecretName, Settings, Tier};
+use imperium_config::{
+    Location, Preference, RoutingSettings, SecretError, SecretName, Settings, Tier,
+};
 use imperium_models::{Endpoint, Pricing};
 
 /// A model chosen for a session: where to call it, its id, and its prices.
@@ -60,40 +62,93 @@ pub fn resolve_model(
     })
 }
 
-/// A model subagents may be routed to, with its capability tier.
+/// A row of the model table, resolved and ready to call.
 #[derive(Debug, Clone)]
 pub struct CatalogModel {
+    pub id: String,
     pub model: ResolvedModel,
     pub tier: Tier,
+    pub location: Location,
+    pub tags: Vec<String>,
 }
 
-/// Picks a subagent's model (router v1): the model the parent named if it is in the catalog,
-/// otherwise the cheapest catalog model at or above the requested tier, otherwise `fallback`.
-/// Unpriced models count as free, so local models win ties.
+/// What a delegating agent asked for.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TaskRequest<'a> {
+    /// A model table id or `<endpoint>:<model>` spec.
+    pub named: Option<&'a str>,
+    pub tier: Tier,
+    pub location: Option<Location>,
+    pub tags: &'a [String],
+}
+
+/// Picks a subagent's model:
+///
+/// 1. a model the agent named, if it is in the table;
+/// 2. the first `[[routing.rules]]` entry matching the task's tier and tags decides: its `use`
+///    list is tried in order (an explicit choice, so tier is not checked; location is), then
+///    its location restriction applies to the rest;
+/// 3. otherwise the suitable models (at or above the tier, in the requested location) are
+///    ranked by `routing.prefer`, then by price, with unpriced models counted as free;
+/// 4. otherwise `fallback`, the session's model.
 pub fn route(
     catalog: &[CatalogModel],
+    routing: &RoutingSettings,
     fallback: &ResolvedModel,
-    named: Option<&str>,
-    tier: Tier,
+    request: TaskRequest<'_>,
 ) -> ResolvedModel {
-    if let Some(named) = named.and_then(|spec| catalog.iter().find(|c| c.model.spec == spec)) {
-        return named.model.clone();
+    if let Some(named) = request.named
+        && let Some(chosen) = catalog
+            .iter()
+            .find(|c| c.id == named || c.model.spec == named)
+    {
+        return chosen.model.clone();
     }
-    let price = |model: &ResolvedModel| {
-        model
+    let rule = routing.rules.iter().find(|rule| {
+        rule.when_tier.is_none_or(|tier| tier == request.tier)
+            && rule
+                .when_tag
+                .as_ref()
+                .is_none_or(|tag| request.tags.contains(tag))
+    });
+    let location = request.location.or(rule.and_then(|rule| rule.location));
+    let in_location = |c: &CatalogModel| location.is_none_or(|wanted| c.location == wanted);
+    if let Some(rule) = rule {
+        let preferred = rule
+            .use_models
+            .iter()
+            .filter_map(|id| catalog.iter().find(|c| &c.id == id))
+            .find(|c| in_location(c));
+        if let Some(chosen) = preferred {
+            return chosen.model.clone();
+        }
+    }
+    let rank = |c: &CatalogModel| {
+        let preferred = match routing.prefer {
+            Preference::Cheapest => true,
+            Preference::Local => c.location == Location::Local,
+            Preference::Cloud => c.location == Location::Cloud,
+        };
+        let price = c
+            .model
             .pricing
-            .map_or(0.0, |p| p.input_usd_per_mtok + p.output_usd_per_mtok)
+            .map_or(0.0, |p| p.input_usd_per_mtok + p.output_usd_per_mtok);
+        (!preferred, price)
     };
     catalog
         .iter()
-        .filter(|candidate| candidate.tier >= tier)
-        .min_by(|a, b| price(&a.model).total_cmp(&price(&b.model)))
+        .filter(|c| c.tier >= request.tier && in_location(c))
+        .min_by(|a, b| {
+            let (a_rank, b_rank) = (rank(a), rank(b));
+            a_rank.0.cmp(&b_rank.0).then(a_rank.1.total_cmp(&b_rank.1))
+        })
         .map_or_else(|| fallback.clone(), |chosen| chosen.model.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imperium_config::RoutingRule;
     use imperium_config::{Config, Layer, Source};
 
     fn settings(extra: &str) -> Settings {
@@ -137,51 +192,126 @@ mod tests {
         assert!(matches!(missing, Err(ModelError::MissingSecret(..))));
     }
 
-    #[test]
-    fn routing_picks_the_cheapest_model_at_or_above_the_tier() {
-        let model = |spec: &str, price: Option<f64>| ResolvedModel {
-            spec: spec.into(),
+    fn catalog() -> Vec<CatalogModel> {
+        let row = |id: &str, price: Option<f64>, tier: Tier, location: Location, tags: &[&str]| {
+            CatalogModel {
+                id: id.into(),
+                model: ResolvedModel {
+                    spec: format!("endpoint:{id}"),
+                    endpoint: Endpoint {
+                        base_url: String::new(),
+                        api_key: None,
+                    },
+                    model: id.into(),
+                    pricing: price.map(|p| Pricing {
+                        input_usd_per_mtok: p,
+                        output_usd_per_mtok: p,
+                        cached_input_usd_per_mtok: None,
+                    }),
+                },
+                tier,
+                location,
+                tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            }
+        };
+        vec![
+            row("cheap", Some(0.1), Tier::Basic, Location::Cloud, &[]),
+            row("mid", Some(1.0), Tier::Standard, Location::Cloud, &["code"]),
+            row("local", None, Tier::Standard, Location::Local, &["code"]),
+            row("big", Some(5.0), Tier::Strong, Location::Cloud, &[]),
+        ]
+    }
+
+    fn fallback() -> ResolvedModel {
+        ResolvedModel {
+            spec: "session".into(),
             endpoint: Endpoint {
                 base_url: String::new(),
                 api_key: None,
             },
-            model: spec.into(),
-            pricing: price.map(|p| Pricing {
-                input_usd_per_mtok: p,
-                output_usd_per_mtok: p,
-                cached_input_usd_per_mtok: None,
-            }),
+            model: "session".into(),
+            pricing: None,
+        }
+    }
+
+    fn pick(routing: &RoutingSettings, request: TaskRequest<'_>) -> String {
+        route(&catalog(), routing, &fallback(), request).model
+    }
+
+    #[test]
+    fn routing_ranks_by_preference_then_price() {
+        let cheapest = RoutingSettings::default();
+        let basic = TaskRequest {
+            tier: Tier::Basic,
+            ..TaskRequest::default()
         };
-        let catalog = [
-            CatalogModel {
-                model: model("cheap", Some(0.1)),
-                tier: Tier::Basic,
-            },
-            CatalogModel {
-                model: model("mid", Some(1.0)),
-                tier: Tier::Standard,
-            },
-            CatalogModel {
-                model: model("local", None),
-                tier: Tier::Standard,
-            },
-            CatalogModel {
-                model: model("big", Some(5.0)),
-                tier: Tier::Strong,
-            },
-        ];
-        let fallback = model("session", None);
-        assert_eq!(route(&catalog, &fallback, None, Tier::Basic).spec, "local");
-        assert_eq!(route(&catalog, &fallback, None, Tier::Strong).spec, "big");
-        assert_eq!(
-            route(&catalog, &fallback, Some("mid"), Tier::Basic).spec,
-            "mid"
-        );
-        assert_eq!(
-            route(&catalog, &fallback, Some("unknown"), Tier::Frontier).spec,
-            "session"
-        );
-        assert_eq!(route(&[], &fallback, None, Tier::Basic).spec, "session");
+        assert_eq!(pick(&cheapest, basic), "local");
+        let strong = TaskRequest {
+            tier: Tier::Strong,
+            ..TaskRequest::default()
+        };
+        assert_eq!(pick(&cheapest, strong), "big");
+
+        let cloud_first = RoutingSettings {
+            prefer: Preference::Cloud,
+            ..RoutingSettings::default()
+        };
+        assert_eq!(pick(&cloud_first, basic), "cheap");
+
+        let cloud_only = TaskRequest {
+            location: Some(Location::Cloud),
+            ..basic
+        };
+        assert_eq!(pick(&cheapest, cloud_only), "cheap");
+        let local_strong = TaskRequest {
+            location: Some(Location::Local),
+            ..strong
+        };
+        assert_eq!(pick(&cheapest, local_strong), "session");
+    }
+
+    #[test]
+    fn named_models_and_rules_take_precedence() {
+        let routing = RoutingSettings {
+            prefer: Preference::Cheapest,
+            rules: vec![
+                RoutingRule {
+                    when_tag: Some("code".into()),
+                    location: Some(Location::Cloud),
+                    use_models: vec!["local".into(), "mid".into()],
+                    ..RoutingRule::default()
+                },
+                RoutingRule {
+                    when_tier: Some(Tier::Frontier),
+                    use_models: vec!["big".into()],
+                    ..RoutingRule::default()
+                },
+            ],
+        };
+        let code = ["code".to_string()];
+        let coding = TaskRequest {
+            tier: Tier::Basic,
+            tags: &code,
+            ..TaskRequest::default()
+        };
+        // "local" is listed first but the rule restricts to cloud, so "mid" is used.
+        assert_eq!(pick(&routing, coding), "mid");
+        // An explicit use list is honoured even above the models' tier.
+        let frontier = TaskRequest {
+            tier: Tier::Frontier,
+            ..TaskRequest::default()
+        };
+        assert_eq!(pick(&routing, frontier), "big");
+        let named = TaskRequest {
+            named: Some("cheap"),
+            ..coding
+        };
+        assert_eq!(pick(&routing, named), "cheap");
+        let by_spec = TaskRequest {
+            named: Some("endpoint:local"),
+            ..coding
+        };
+        assert_eq!(pick(&routing, by_spec), "local");
     }
 
     #[test]

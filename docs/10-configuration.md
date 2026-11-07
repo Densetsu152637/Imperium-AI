@@ -34,7 +34,9 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | ------------- | ------- | -------------------------------------------------------------- |
 | `daemon.port` | `0`     | Port of the local WebSocket listener; `0` picks a free port at each start |
 | `agents.max_steps` | `50` | Model calls an agent may make in one turn before it stops |
-| `models.catalog` | none | `[[models.catalog]]` entries with `spec` and `tier` (`basic`, `standard`, `strong`, `frontier`) that subagents may be routed to |
+| `models.catalog` | none | The model table: `[[models.catalog]]` rows with `id`, `spec`, `location` (`local` or `cloud`), `tier` (`basic`, `standard`, `strong`, `frontier`), and optional `tags`; see [routing](04-models-and-routing.md#routing) |
+| `routing.prefer` | `cheapest` | Tie-breaker among suitable models: `cheapest`, `local`, or `cloud` |
+| `routing.rules` | none | `[[routing.rules]]` delegation rules with optional `when_tier`, `when_tag`, `location`, and `use` (model table ids in order) |
 | `models.default` | none | Model for new sessions, as `<endpoint>:<model>` (split at the first `:`, so `ollama:qwen3:8b` works) |
 | `endpoints.<id>.base_url` | — | OpenAI-compatible base URL, ending before `/chat/completions` |
 | `endpoints.<id>.api_key` | none | `{ secret = "<name>" }`, read from the keychain when a session starts |

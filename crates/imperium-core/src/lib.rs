@@ -10,5 +10,5 @@ mod journal;
 mod model;
 mod session;
 
-pub use model::{CatalogModel, ModelError, ResolvedModel, resolve_model, route};
+pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
 pub use session::{Session, SessionClosed, SessionConfig, new_session_id};

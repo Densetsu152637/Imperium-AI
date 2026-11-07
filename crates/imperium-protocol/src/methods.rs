@@ -188,3 +188,46 @@ pub struct SessionRespondParams {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Accepted {}
+
+/// `models.list`: the model table that delegation rules and `spawn_agent` refer to.
+#[derive(Debug)]
+pub struct ModelList;
+
+impl Method for ModelList {
+    const NAME: &'static str = "models.list";
+    type Params = ModelListParams;
+    type Result = ModelListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelListParams {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelListResult {
+    pub models: Vec<ModelRow>,
+    /// `routing.prefer`: how ties between suitable models are broken.
+    #[ts(type = "\"cheapest\" | \"local\" | \"cloud\"")]
+    pub prefer: String,
+    /// Number of `[[routing.rules]]` entries.
+    pub rules: u32,
+}
+
+/// One row of the model table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelRow {
+    pub id: String,
+    /// `<endpoint>:<model>`.
+    pub spec: String,
+    #[ts(type = "\"local\" | \"cloud\"")]
+    pub location: String,
+    #[ts(type = "\"basic\" | \"standard\" | \"strong\" | \"frontier\"")]
+    pub tier: String,
+    pub tags: Vec<String>,
+    pub input_usd_per_mtok: Option<f64>,
+    pub output_usd_per_mtok: Option<f64>,
+    /// False when the row names an endpoint that is not configured.
+    pub endpoint_configured: bool,
+}

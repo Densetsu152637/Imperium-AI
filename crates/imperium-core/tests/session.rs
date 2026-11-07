@@ -71,6 +71,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
             }),
         },
         catalog: Vec::new(),
+        routing: imperium_config::RoutingSettings::default(),
         max_steps: 5,
         journal_path: dir.join(".journal/test.jsonl"),
     })

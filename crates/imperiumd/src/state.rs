@@ -7,6 +7,7 @@ use imperium_config::{Paths, Settings};
 use imperium_core::{
     CatalogModel, ModelError, Session, SessionConfig, new_session_id, resolve_model,
 };
+use imperium_protocol::methods::{ModelListResult, ModelRow};
 use imperium_protocol::session::AgentEvent;
 use imperium_tools::Workspace;
 use tokio::sync::broadcast;
@@ -65,6 +66,7 @@ impl DaemonState {
             workspace,
             model,
             catalog,
+            routing: self.settings.routing.clone(),
             max_steps: self.settings.agents.max_steps,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
@@ -91,8 +93,11 @@ impl DaemonState {
                     imperium_config::load_secret,
                 ) {
                     Ok(model) => Some(CatalogModel {
+                        id: entry.id.clone(),
                         model,
                         tier: entry.tier,
+                        location: entry.location,
+                        tags: entry.tags.clone(),
                     }),
                     Err(error) => {
                         tracing::warn!(model = %entry.spec, %error, "skipping catalog model");
@@ -101,6 +106,36 @@ impl DaemonState {
                 }
             })
             .collect()
+    }
+
+    /// The configured model table, with prices from each endpoint's pricing.
+    pub fn model_table(&self) -> ModelListResult {
+        let models = self
+            .settings
+            .models
+            .catalog
+            .iter()
+            .map(|entry| {
+                let (endpoint_id, model) = entry.spec.split_once(':').unwrap_or((&entry.spec, ""));
+                let endpoint = self.settings.endpoints.get(endpoint_id);
+                let pricing = endpoint.and_then(|endpoint| endpoint.pricing.get(model));
+                ModelRow {
+                    id: entry.id.clone(),
+                    spec: entry.spec.clone(),
+                    location: entry.location.as_str().into(),
+                    tier: entry.tier.as_str().into(),
+                    tags: entry.tags.clone(),
+                    input_usd_per_mtok: pricing.map(|p| p.input_usd_per_mtok),
+                    output_usd_per_mtok: pricing.map(|p| p.output_usd_per_mtok),
+                    endpoint_configured: endpoint.is_some(),
+                }
+            })
+            .collect();
+        ModelListResult {
+            models,
+            prefer: self.settings.routing.prefer.as_str().into(),
+            rules: u32::try_from(self.settings.routing.rules.len()).unwrap_or(u32::MAX),
+        }
     }
 
     /// Every running session, ordered by id.
