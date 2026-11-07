@@ -4,13 +4,19 @@
 
 | Tool group  | Tools                                                     | Notes                                            |
 | ----------- | --------------------------------------------------------- | ------------------------------------------------ |
-| Files       | `fs.read`, `fs.write`, `fs.edit`, `fs.list`, `fs.glob`, `fs.grep` | Exact-match edits; reads paged         |
-| Execution   | `exec.run`, `exec.start`, `exec.input`, `exec.stop`       | Foreground and background processes              |
+| Files       | `read_file`, `write_file`, `edit_file`, `list_dir` (implemented); glob and grep planned | Exact-match unique edits; reads numbered and paged with `offset`/`limit` |
+| Execution   | `run_command` (implemented); background processes planned | Runs in the project root via `cmd /C` or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr |
 | Web         | `web.search`, `web.fetch`                                 | Search providers: SearXNG (self-hosted), Brave, Tavily, Kagi; pluggable |
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
 | Agents      | `spawn_agent`, `await_tasks`, `send_to_task`, `cancel_task` | See [agent engine](03-agent-engine.md)        |
 | Media       | `media.generate`, `media.transcribe`                      | See [media](09-media-generation.md)              |
 | Interaction | `ask_user`                                                | Pauses the agent until the user answers          |
+
+Implemented in phase 1 (`imperium-tools`): paths resolve inside the project folder and may not
+escape it through `..`, absolute paths, or symbolic links (tier 0). Reads and listings run
+without asking; writes, edits, and commands ask the user, who can allow once, allow that tool
+for the rest of the session, or deny. On timeout the shell is killed, but processes it started
+may keep running until the OS sandbox tier adds process-tree cleanup.
 
 All tools are described by JSON Schema and are also exposed over an MCP server endpoint, so
 external agents can use Imperium's tools.

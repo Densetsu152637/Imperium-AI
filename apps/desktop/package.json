@@ -1,0 +1,31 @@
+{
+  "name": "@imperium/desktop",
+  "version": "0.1.0",
+  "description": "The Imperium desktop app (Tauri shell around a React interface)",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.4",
+    "@tauri-apps/plugin-dialog": "2.8.4",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@imperium/protocol": "workspace:*",
+    "@tauri-apps/cli": "2.12.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.2.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.6"
+  }
+}

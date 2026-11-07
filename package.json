@@ -1,0 +1,8 @@
+{
+  "name": "imperium",
+  "private": true,
+  "packageManager": "pnpm@10.21.0",
+  "engines": {
+    "node": ">=24"
+  }
+}

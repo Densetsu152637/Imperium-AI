@@ -44,6 +44,8 @@ pub enum ConfigError {
     },
     #[error("invalid configuration: {0}")]
     Invalid(Box<toml::de::Error>),
+    #[error("invalid configuration: {0}")]
+    Inconsistent(String),
 }
 
 /// One configuration layer and where it came from.
@@ -179,9 +181,11 @@ impl Config {
     }
 
     pub fn settings(&self) -> Result<Settings, ConfigError> {
-        Value::Table(self.merged.clone())
+        let settings: Settings = Value::Table(self.merged.clone())
             .try_into()
-            .map_err(|error| ConfigError::Invalid(Box::new(error)))
+            .map_err(|error| ConfigError::Invalid(Box::new(error)))?;
+        settings.validate().map_err(ConfigError::Inconsistent)?;
+        Ok(settings)
     }
 }
 
@@ -324,6 +328,96 @@ mod tests {
     fn defaults_parse_into_settings() {
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
         assert_eq!(settings.daemon.port, 0);
+    }
+
+    #[test]
+    fn endpoints_parse_with_secret_references_and_pricing() {
+        let config = Config::from_layers([
+            Layer::defaults(),
+            layer(
+                Source::User("u".into()),
+                r#"
+                [models]
+                default = "openrouter:qwen/qwen3-coder"
+
+                [endpoints.openrouter]
+                base_url = "https://openrouter.ai/api/v1"
+                api_key = { secret = "openrouter" }
+                pricing."qwen/qwen3-coder" = { input_usd_per_mtok = 0.2, output_usd_per_mtok = 0.8 }
+                "#,
+            ),
+        ]);
+        let settings = config.settings().unwrap();
+        let endpoint = &settings.endpoints["openrouter"];
+        assert_eq!(
+            endpoint.api_key.as_ref().unwrap().secret.as_str(),
+            "openrouter"
+        );
+        assert_eq!(
+            endpoint.pricing["qwen/qwen3-coder"].output_usd_per_mtok,
+            0.8
+        );
+        assert_eq!(settings.agents.max_steps, 50);
+
+        let bad_secret = Config::from_layers([
+            Layer::defaults(),
+            layer(
+                Source::User("u".into()),
+                "[endpoints.x]
+base_url = 'u'
+api_key = { secret = 'Bad Name' }",
+            ),
+        ]);
+        assert!(bad_secret.settings().is_err());
+    }
+
+    #[test]
+    fn the_model_table_needs_unique_ids_and_known_rule_targets() {
+        let table = r#"
+            [[models.catalog]]
+            id = "local-coder"
+            spec = "llama:qwen"
+            location = "local"
+            tier = "standard"
+            tags = ["code"]
+
+            [[models.catalog]]
+            id = "cloud-big"
+            spec = "openrouter:big"
+            location = "cloud"
+            tier = "strong"
+
+            [routing]
+            prefer = "local"
+
+            [[routing.rules]]
+            when_tag = "code"
+            use = ["local-coder"]
+        "#;
+        let settings =
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), table)])
+                .settings()
+                .unwrap();
+        assert_eq!(settings.models.catalog[0].location, crate::Location::Local);
+        assert_eq!(settings.routing.rules[0].use_models, ["local-coder"]);
+
+        let duplicate = format!(
+            "{table}\n[[models.catalog]]\nid = \"cloud-big\"\nspec = \"x:y\"\nlocation = \"cloud\"\ntier = \"basic\""
+        );
+        let error = Config::from_layers([
+            Layer::defaults(),
+            layer(Source::User("u".into()), &duplicate),
+        ])
+        .settings()
+        .unwrap_err();
+        assert!(error.to_string().contains("used twice"), "{error}");
+
+        let unknown = format!("{table}\n[[routing.rules]]\nuse = [\"missing\"]");
+        let error =
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), &unknown)])
+                .settings()
+                .unwrap_err();
+        assert!(error.to_string().contains("missing"), "{error}");
     }
 
     #[test]

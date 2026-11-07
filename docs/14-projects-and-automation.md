@@ -124,3 +124,65 @@ notify = ["desktop", "phone"]
 Schedules emit `schedule.fire`, `schedule.complete`, and `schedule.failed` hook events, and
 hooks can create, pause, or trigger schedules through the CLI or protocol. A plugin can ship
 schedules and hooks together (for example, a "nightly dependency audit" plugin).
+
+## GitHub auto-fix
+
+Projects linked to a GitHub repository can react to repository activity automatically: fix a
+pull request whose checks fail, answer review comments, triage new issues, and investigate
+failed workflow runs.
+
+### Events
+
+Delivered by polling the GitHub API (default, works behind NAT) or by a webhook through the
+optional relay ([15](15-mobile-and-remote.md#connectivity)). Each becomes a hook event, so
+plugins and user hooks can react too.
+
+| Hook event              | Raised when                                                         |
+| ----------------------- | ------------------------------------------------------------------- |
+| `github.check.failed`   | A check run or workflow fails on a watched pull request or branch   |
+| `github.pr.review`      | A review or review comment arrives on a watched pull request        |
+| `github.pr.conflict`    | A watched pull request can no longer merge cleanly                  |
+| `github.issue.opened`   | An issue is opened (optionally filtered by label)                   |
+| `github.issue.comment`  | Someone comments on a watched issue or mentions the bot handle      |
+| `github.workflow.failed` | A workflow run fails on a watched branch (for example `main` or a schedule) |
+
+### Built-in responders
+
+| Responder        | Does                                                                                   |
+| ---------------- | -------------------------------------------------------------------------------------- |
+| **Fix CI**       | Reads the failed job's logs, reproduces locally where possible, commits a fix to the PR branch in its own worktree, and pushes |
+| **Address review** | Applies requested changes, replies to each comment with what changed, and resolves threads it addressed |
+| **Resolve conflicts** | Merges the base branch in a worktree, resolves conflicts, runs checks, and pushes |
+| **Triage issue** | Labels, asks for missing details, links duplicates, and optionally opens a draft PR with a fix |
+| **Workflow failure** | Opens or updates an issue with the failure's cause, or starts Fix CI when it maps to an open PR |
+
+Each responder runs as a normal session (reviewable later, journaled, routed and budgeted like
+any other) started by the project agent or directly by the event.
+
+### Configuration and guardrails
+
+```toml
+[[github.watch]]
+repo = "Densetsu152637/Imperium-AI"
+branches = ["main"]                 # workflow failures on these branches
+pull_requests = "mine"              # mine | labelled | all
+issues = { labels = ["auto-triage"] }
+
+[github.autofix]
+enabled = true
+responders = ["fix_ci", "address_review", "resolve_conflicts"]
+max_attempts_per_pr = 3             # stop and notify after this many failed fixes
+budget_usd_per_day = 2.0
+push = "ask"                        # ask | auto: ask queues an approval before each push
+comment = "auto"                    # replies and issue comments
+```
+
+- **Never** force-pushes, merges, closes, or approves; those stay with people. Pushes go to the
+  pull request's own branch only, never to protected branches.
+- Every push and comment is attributed (commit trailer and a comment footer) and recorded in the
+  session journal.
+- With `push = "ask"`, the fix waits as an approval request in the desktop and phone apps.
+- Repeated failures with the same cause stop after `max_attempts_per_pr` and notify instead of
+  looping.
+- Authentication uses the `gh` CLI's login or a GitHub App / fine-grained token stored in the
+  keychain, scoped to the watched repositories.

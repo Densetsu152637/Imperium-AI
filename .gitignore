@@ -1,1 +1,5 @@
 /target
+node_modules/
+packages/protocol/src/index.ts
+apps/desktop/dist/
+apps/desktop/src-tauri/gen/

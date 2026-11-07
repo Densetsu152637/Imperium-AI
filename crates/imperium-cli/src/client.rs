@@ -1,10 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::collections::VecDeque;
 
 use futures_util::{SinkExt, StreamExt};
 use imperium_protocol::PROTOCOL_VERSION;
-use imperium_protocol::discovery::DaemonEndpoint;
+pub use imperium_protocol::discovery::read_endpoint;
+use imperium_protocol::discovery::{DaemonEndpoint, EndpointError};
 use imperium_protocol::jsonrpc::{
-    ErrorObject, JsonRpcVersion, Outcome, Request, RequestId, Response,
+    ErrorObject, JsonRpcVersion, Notification, Outcome, Request, RequestId, Response,
 };
 use imperium_protocol::methods::{Handshake, HandshakeParams, HandshakeResult, Method, Peer};
 use tokio::net::TcpStream;
@@ -14,13 +15,8 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    #[error("imperiumd is not running (no endpoint file at {})", .0.display())]
-    DaemonNotRunning(PathBuf),
-    #[error("could not read the endpoint file {}: {source}", path.display())]
-    Endpoint {
-        path: PathBuf,
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
+    #[error(transparent)]
+    Endpoint(#[from] EndpointError),
     #[error("could not connect to imperiumd: {0}")]
     Connect(Box<tungstenite::Error>),
     #[error("imperiumd returned error {}: {}", .0.code, .0.message)]
@@ -29,27 +25,14 @@ pub enum ClientError {
     Protocol(String),
 }
 
-/// Reads the endpoint file a running daemon writes on startup.
-pub fn read_endpoint(path: &Path) -> Result<DaemonEndpoint, ClientError> {
-    let bytes = std::fs::read(path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => ClientError::DaemonNotRunning(path.to_path_buf()),
-        _ => ClientError::Endpoint {
-            path: path.to_path_buf(),
-            source: Box::new(error),
-        },
-    })?;
-    serde_json::from_slice(&bytes).map_err(|error| ClientError::Endpoint {
-        path: path.to_path_buf(),
-        source: Box::new(error),
-    })
-}
-
 /// A handshaken connection to the daemon. Calls are sequential: one request, one reply.
 #[derive(Debug)]
 pub struct Client {
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     next_id: i64,
     daemon: HandshakeResult,
+    /// Notifications that arrived while waiting for a response.
+    pending: VecDeque<Notification>,
 }
 
 impl Client {
@@ -71,6 +54,7 @@ impl Client {
         let mut connection = Client {
             socket,
             next_id: 1,
+            pending: VecDeque::new(),
             daemon: HandshakeResult {
                 daemon: Peer {
                     name: String::new(),
@@ -121,7 +105,31 @@ impl Client {
         }
     }
 
+    /// The next server notification, in arrival order.
+    pub async fn next_notification(&mut self) -> Result<Notification, ClientError> {
+        if let Some(notification) = self.pending.pop_front() {
+            return Ok(notification);
+        }
+        match self.next_message().await? {
+            Incoming::Notification(notification) => Ok(notification),
+            Incoming::Response(response) => Err(ClientError::Protocol(format!(
+                "unexpected response to request {:?}",
+                response.id
+            ))),
+        }
+    }
+
+    /// Reads frames until a response arrives, queueing notifications for later.
     async fn next_response(&mut self) -> Result<Response, ClientError> {
+        loop {
+            match self.next_message().await? {
+                Incoming::Response(response) => return Ok(response),
+                Incoming::Notification(notification) => self.pending.push_back(notification),
+            }
+        }
+    }
+
+    async fn next_message(&mut self) -> Result<Incoming, ClientError> {
         loop {
             let message = self
                 .socket
@@ -131,7 +139,18 @@ impl Client {
                 .map_err(|error| ClientError::Connect(Box::new(error)))?;
             match message {
                 Message::Text(text) => {
-                    return serde_json::from_str(text.as_str()).map_err(protocol_error);
+                    let value: serde_json::Value =
+                        serde_json::from_str(text.as_str()).map_err(protocol_error)?;
+                    // Notifications carry a method and no id; responses carry an id.
+                    return if value.get("method").is_some() && value.get("id").is_none() {
+                        serde_json::from_value(value)
+                            .map(Incoming::Notification)
+                            .map_err(protocol_error)
+                    } else {
+                        serde_json::from_value(value)
+                            .map(Incoming::Response)
+                            .map_err(protocol_error)
+                    };
                 }
                 Message::Close(_) => {
                     return Err(ClientError::Protocol(
@@ -142,6 +161,11 @@ impl Client {
             }
         }
     }
+}
+
+enum Incoming {
+    Response(Response),
+    Notification(Notification),
 }
 
 fn protocol_error(error: serde_json::Error) -> ClientError {

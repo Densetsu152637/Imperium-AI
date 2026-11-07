@@ -23,11 +23,24 @@
 4. Append results; repeat until the model ends its turn, the budget is exhausted, or the task
    is cancelled.
 
+**Implemented (phase 1):** a single agent per session with steps 2–4: streaming model calls
+with the built-in tools, sequential tool execution with permission prompts, and a stop after
+`agents.max_steps` model calls per turn. The system prompt is a fixed instruction naming the
+project folder; policy layers, memory, hooks, and concurrent tool calls come later. Each turn
+emits `turn_started`, `text_delta`, `permission_requested`, `tool_started`, `tool_finished`,
+`model_call_completed` after every model call (tokens, duration, time to first token, tokens
+per second, cost), and `turn_completed` (token usage, cost, model calls) or `turn_failed`.
+
 Tool calling works with native function-calling models and, as a fallback, a constrained
 JSON/grammar format (llama.cpp grammars, vLLM guided decoding) for models without native
 support.
 
 ## Planning
+
+**Implemented (phase 3):** the `update_plan` tool (a goal and steps with `pending`,
+`in_progress`, `done`, `blocked`, or `skipped`) and the `plan_updated` event, shown as a live
+checklist in the desktop app and the CLI. Not yet: the automatic plan phase, approval modes,
+progress checks, and re-planning described below.
 
 Planning is built into the runtime (`imperium-core`), not left to prompts, so every agent —
 whatever model it runs on — works toward an explicit, tracked goal.
@@ -53,6 +66,14 @@ whatever model it runs on — works toward an explicit, tracked goal.
   ([14](14-projects-and-automation.md)) use the same plans for long-running goals.
 
 ## Reactive delegation
+
+**Implemented (phase 3):** the root agent has `spawn_agent` (a self-contained brief, an optional
+minimum tier, or a named catalog model) and `await_tasks` (some or all task ids). Each subagent
+is its own task running in parallel; `await_tasks` waits on them with no model calls and returns
+their reports (up to 8,000 characters each). Subagents cannot delegate further (depth 1) and
+share the session's permission approvals. Events carry an `agent_id` (`root`, or the task id),
+and the session emits `task_spawned` and `task_finished` (status, report, tokens, cost).
+Not yet: `send_to_task`, budgets per task, deeper trees, and cancellation.
 
 Delegation must not burn tokens while subagents work.
 
@@ -104,5 +125,8 @@ model; the parent model never needs to name one, though it may express a prefere
 
 ## Persistence
 
-Every event is appended to the session journal. Transcripts, task trees, and artefacts are
-browsable and exportable; sessions resume after restart.
+Every event is appended to the session journal, `<data>/sessions/<session-id>.jsonl` (one JSON
+object per line with an `at_ms` timestamp; implemented). A running session also keeps its events in memory
+so clients that attach later replay them. Planned: transcripts, task trees, and artefacts
+browsable and exportable, and sessions that resume after a restart (today a session ends when
+the daemon stops).

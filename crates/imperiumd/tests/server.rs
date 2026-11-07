@@ -10,9 +10,17 @@ use tokio_tungstenite::tungstenite::{self, Message};
 async fn start_server(token: &str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}/rpc", listener.local_addr().unwrap());
+    let settings = imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+        .settings()
+        .unwrap();
+    let daemon = imperiumd::DaemonState::new(
+        imperium_config::Paths::under(std::path::Path::new("unused")),
+        settings,
+    );
     tokio::spawn(imperiumd::serve(
         listener,
         AccessToken::from(token.to_string()),
+        daemon,
         std::future::pending(),
     ));
     url
@@ -43,6 +51,28 @@ async fn an_authorised_client_can_handshake_and_ping() {
             matches!(response.outcome, Outcome::Result(_)),
             "{response:?}"
         );
+    }
+}
+
+#[tokio::test]
+async fn a_browser_client_can_send_the_token_as_a_subprotocol() {
+    let url = start_server("secret").await;
+    let mut request = url.clone().into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        "imperium.v0, imperium.token.secret".parse().unwrap(),
+    );
+    let (_, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(response.headers()["sec-websocket-protocol"], "imperium.v0");
+
+    let mut wrong = url.into_client_request().unwrap();
+    wrong.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        "imperium.v0, imperium.token.wrong".parse().unwrap(),
+    );
+    match tokio_tungstenite::connect_async(wrong).await {
+        Err(tungstenite::Error::Http(response)) => assert_eq!(response.status(), 401),
+        other => panic!("expected 401, got {other:?}"),
     }
 }
 

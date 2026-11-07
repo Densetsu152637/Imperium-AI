@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::ProtocolVersion;
+use crate::session::PermissionDecision;
 
 /// A daemon method: its wire name and the shapes of its params and result.
 pub trait Method {
@@ -65,4 +66,168 @@ pub struct PingResult {
     /// Milliseconds since the daemon started.
     #[ts(type = "number")]
     pub uptime_ms: u64,
+}
+
+/// `session.create`: starts a session in a project folder. The calling connection receives the
+/// session's `session.event` notifications.
+#[derive(Debug)]
+pub struct SessionCreate;
+
+impl Method for SessionCreate {
+    const NAME: &'static str = "session.create";
+    type Params = SessionCreateParams;
+    type Result = SessionCreateResult;
+}
+
+/// `session.send`: sends a user message. Messages sent during a turn run after it finishes.
+#[derive(Debug)]
+pub struct SessionSend;
+
+impl Method for SessionSend {
+    const NAME: &'static str = "session.send";
+    type Params = SessionSendParams;
+    type Result = Accepted;
+}
+
+/// `session.respond`: answers a `permission_requested` event.
+#[derive(Debug)]
+pub struct SessionRespond;
+
+impl Method for SessionRespond {
+    const NAME: &'static str = "session.respond";
+    type Params = SessionRespondParams;
+    type Result = Accepted;
+}
+
+/// `session.list`: the sessions running in this daemon.
+#[derive(Debug)]
+pub struct SessionList;
+
+impl Method for SessionList {
+    const NAME: &'static str = "session.list";
+    type Params = SessionListParams;
+    type Result = SessionListResult;
+}
+
+/// `session.subscribe`: receive a session's `session.event` notifications on this connection.
+#[derive(Debug)]
+pub struct SessionSubscribe;
+
+impl Method for SessionSubscribe {
+    const NAME: &'static str = "session.subscribe";
+    type Params = SessionSubscribeParams;
+    type Result = SessionSubscribeResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionListResult {
+    pub sessions: Vec<SessionSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub project_dir: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSubscribeParams {
+    pub session_id: String,
+}
+
+/// Every event the session has emitted so far; later ones arrive as notifications.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSubscribeResult {
+    pub history: Vec<crate::session::AgentEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionCreateParams {
+    /// Absolute path of the project folder the session works in.
+    pub project_dir: String,
+    /// `<endpoint>:<model>`; defaults to `models.default` from the configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionCreateResult {
+    pub session_id: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSendParams {
+    pub session_id: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionRespondParams {
+    pub session_id: String,
+    #[ts(type = "number")]
+    pub request_id: u64,
+    pub decision: PermissionDecision,
+}
+
+/// An empty acknowledgement.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Accepted {}
+
+/// `models.list`: the model table that delegation rules and `spawn_agent` refer to.
+#[derive(Debug)]
+pub struct ModelList;
+
+impl Method for ModelList {
+    const NAME: &'static str = "models.list";
+    type Params = ModelListParams;
+    type Result = ModelListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelListParams {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelListResult {
+    pub models: Vec<ModelRow>,
+    /// `routing.prefer`: how ties between suitable models are broken.
+    #[ts(type = "\"cheapest\" | \"local\" | \"cloud\"")]
+    pub prefer: String,
+    /// Number of `[[routing.rules]]` entries.
+    pub rules: u32,
+}
+
+/// One row of the model table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelRow {
+    pub id: String,
+    /// `<endpoint>:<model>`.
+    pub spec: String,
+    #[ts(type = "\"local\" | \"cloud\"")]
+    pub location: String,
+    #[ts(type = "\"basic\" | \"standard\" | \"strong\" | \"frontier\"")]
+    pub tier: String,
+    pub tags: Vec<String>,
+    pub input_usd_per_mtok: Option<f64>,
+    pub output_usd_per_mtok: Option<f64>,
+    /// False when the row names an endpoint that is not configured.
+    pub endpoint_configured: bool,
 }

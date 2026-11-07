@@ -7,14 +7,11 @@ use anyhow::{Context, bail};
 use imperium_config::Paths;
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
-use imperiumd::{AccessToken, EndpointFile};
+use imperiumd::{AccessToken, DaemonState, EndpointFile};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tracing_subscriber::EnvFilter;
 
-/// Threads for the shared I/O runtime. Sessions will run on their own threads
-/// (see docs/02-architecture.md#concurrency-and-failure), so this stays small.
-const IO_THREADS: usize = 2;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 fn main() -> anyhow::Result<()> {
@@ -25,9 +22,10 @@ fn main() -> anyhow::Result<()> {
         .with_ansi(std::io::stderr().is_terminal())
         .with_writer(std::io::stderr)
         .init();
+    // One worker per core (Tokio's default): every agent is a task, so busy agents spread
+    // across cores while idle ones cost nothing (see docs/02-architecture.md).
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(IO_THREADS)
-        .thread_name("imperiumd-io")
+        .thread_name("imperiumd-worker")
         .enable_all()
         .build()
         .context("could not start the I/O runtime")?
@@ -62,7 +60,8 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!(%address, protocol = %PROTOCOL_VERSION, "imperiumd listening");
 
     let (stop, stopped) = oneshot::channel();
-    let server = tokio::spawn(imperiumd::serve(listener, token, async {
+    let daemon = DaemonState::new(paths.clone(), settings);
+    let server = tokio::spawn(imperiumd::serve(listener, token, daemon, async {
         stopped.await.ok();
     }));
     tokio::signal::ctrl_c()
