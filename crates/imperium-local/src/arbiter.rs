@@ -4,22 +4,18 @@
 //!
 //! - A model with a slot in use, or a call queued for one, is never swapped out ([`Use::Busy`]).
 //! - A model whose agents are all waiting for subagents, or done, is swapped out when the
-//!   newcomer does not fit beside it, or would get less than half the GPU memory beside it that
-//!   it gets once the model is gone ([`Use::Free`]). A newcomer that fits beside it about as
-//!   well loads beside it.
+//!   newcomer does not fit beside it, or gets `swap_gain` times the GPU memory once the model is
+//!   gone that it would get beside it ([`Use::Free`]). Otherwise the newcomer loads beside it.
 //! - A model with an agent mid-turn on it ([`Use::Claimed`]) is expected back soon: the newcomer
 //!   waits for that agent to finish or start waiting, up to `min_residency`. After that it loads
 //!   beside the model if it can, and swaps it out only when nothing else fits and the model has
 //!   been loaded at least `min_residency`.
-//! - When swapping is paused (the swaps per minute are used up, or swapping is off) and the
-//!   newcomer does not fit beside the loaded models, it is refused rather than left waiting.
+//! - When the swaps allowed per minute are used up, a newcomer that does not fit beside the
+//!   loaded models waits for the window to move on; when swapping is off, it is refused.
 
 use std::time::Duration;
 
 use crate::planner::{Budget, Placement};
-
-/// A swap must at least double the GPU memory the newcomer gets beside the loaded models.
-const SWAP_GAIN: u64 = 2;
 
 /// What a loaded model is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,11 +44,29 @@ pub(crate) struct Resident {
     pub idle_for: Duration,
 }
 
+/// Whether models may be swapped out now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Swaps {
+    Allowed,
+    /// The swaps allowed this minute are used up.
+    Spent,
+    /// `max_swaps_per_min` is 0.
+    Off,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Policy {
     pub min_residency: Duration,
-    /// False once the swaps allowed per minute are used up.
-    pub may_swap: bool,
+    pub swaps: Swaps,
+    /// How many times the GPU memory a newcomer gets beside the loaded models it must get once
+    /// free models are gone for them to be swapped out (`swap_gain`).
+    pub gain: f64,
+}
+
+impl Policy {
+    fn may_swap(&self) -> bool {
+        self.swaps == Swaps::Allowed
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,8 +80,8 @@ pub(crate) enum Decision {
     Wait,
     /// The model does not fit even on an empty machine.
     TooBig,
-    /// It does not fit beside the loaded models and swapping is paused.
-    SwapsPaused,
+    /// It does not fit beside the loaded models and swapping is off.
+    SwapsOff,
 }
 
 /// What loading a model would take, for routing.
@@ -77,7 +91,8 @@ pub(crate) enum Outlook {
     Fits,
     /// It needs models nobody has a slot on swapped out.
     Swap,
-    /// Models in use are in the way, or swapping is paused and it does not fit beside them.
+    /// Models in use are in the way, or swapping is spent or off and it does not fit beside
+    /// them.
     Unavailable,
 }
 
@@ -96,13 +111,13 @@ pub(crate) fn decide(
     let beside = place(left_after(budget, residents, &[]));
     let free = candidates(residents, |r| r.use_ == Use::Free);
     let best_now = place(left_after(budget, residents, &free));
-    if policy.may_swap && worth_swapping(&best_now, &beside) {
+    if policy.may_swap() && worth_swapping(&best_now, &beside, policy.gain) {
         return evict_fewest(&place, budget, residents, &free, &best_now);
     }
     let aged = waited >= policy.min_residency;
     let idle = candidates(residents, |r| r.use_ != Use::Busy);
     let settled = place(left_after(budget, residents, &idle));
-    if policy.may_swap && !aged && worth_swapping(&settled, &beside) {
+    if policy.may_swap() && !aged && worth_swapping(&settled, &beside, policy.gain) {
         // An agent mid-turn, such as an orchestrator about to wait for this subagent, holds a
         // model that is in the way; it is usually moments from letting go.
         return Decision::Wait;
@@ -113,11 +128,12 @@ pub(crate) fn decide(
             placement,
         };
     }
-    if !policy.may_swap {
-        return Decision::SwapsPaused;
-    }
-    if !aged {
-        return Decision::Wait;
+    match policy.swaps {
+        Swaps::Off => return Decision::SwapsOff,
+        // Once the window moves on; bounded by `max_wait_s`.
+        Swaps::Spent => return Decision::Wait,
+        Swaps::Allowed if !aged => return Decision::Wait,
+        Swaps::Allowed => {}
     }
     let movable = candidates(residents, |r| {
         r.use_ == Use::Free || (r.use_ == Use::Claimed && r.resident_for >= policy.min_residency)
@@ -134,16 +150,16 @@ pub(crate) fn outlook(
     place: impl Fn(Budget) -> Option<Placement>,
     budget: Budget,
     residents: &[Resident],
-    may_swap: bool,
+    policy: Policy,
 ) -> Outlook {
     let beside = place(left_after(budget, residents, &[]));
     let idle = candidates(residents, |r| r.use_ != Use::Busy);
     let best = place(left_after(budget, residents, &idle));
     if best.is_none() {
         Outlook::Unavailable
-    } else if !worth_swapping(&best, &beside) {
+    } else if !worth_swapping(&best, &beside, policy.gain) {
         Outlook::Fits
-    } else if may_swap {
+    } else if policy.may_swap() {
         Outlook::Swap
     } else if beside.is_some() {
         Outlook::Fits
@@ -227,11 +243,11 @@ fn evict_fewest(
 }
 
 /// Whether swapping models out to reach `gain` is worth it over `base`: the model does not fit
-/// otherwise, or gets at least [`SWAP_GAIN`] times the GPU memory.
-fn worth_swapping(gain: &Option<Placement>, base: &Option<Placement>) -> bool {
+/// otherwise, or gets more than `factor` times the GPU memory (with 1, any more at all).
+fn worth_swapping(gain: &Option<Placement>, base: &Option<Placement>, factor: f64) -> bool {
     match (gain, base) {
         (Some(_), None) => true,
-        (Some(gain), Some(base)) => base.vram_bytes.saturating_mul(SWAP_GAIN) < gain.vram_bytes,
+        (Some(gain), Some(base)) => (base.vram_bytes as f64) * factor < gain.vram_bytes as f64,
         (None, _) => false,
     }
 }
@@ -284,7 +300,8 @@ mod tests {
     fn policy() -> Policy {
         Policy {
             min_residency: Duration::from_secs(30),
-            may_swap: true,
+            swaps: Swaps::Allowed,
+            gain: 2.0,
         }
     }
 
@@ -323,7 +340,17 @@ mod tests {
         let residents = [resident("small", Use::Free, 5)];
         let decision = decide(six_gib, budget(), &residents, Duration::ZERO, policy());
         assert_eq!(evicted(&decision), Some(Vec::new()));
-        assert_eq!(outlook(six_gib, budget(), &residents, true), Outlook::Fits);
+        assert_eq!(
+            outlook(six_gib, budget(), &residents, policy()),
+            Outlook::Fits
+        );
+        // With a gain of 1, any more GPU memory alone is worth the swap.
+        let eager = Policy {
+            gain: 1.0,
+            ..policy()
+        };
+        let decision = decide(six_gib, budget(), &residents, Duration::ZERO, eager);
+        assert_eq!(evicted(&decision), Some(vec!["small".into()]));
     }
 
     #[test]
@@ -339,7 +366,7 @@ mod tests {
             Decision::Wait
         );
         assert_eq!(
-            outlook(six_gib, no_ram, &residents, true),
+            outlook(six_gib, no_ram, &residents, policy()),
             Outlook::Unavailable
         );
     }
@@ -361,7 +388,10 @@ mod tests {
             policy(),
         );
         assert_eq!(evicted(&aged), Some(Vec::new()));
-        assert_eq!(outlook(six_gib, budget(), &residents, true), Outlook::Swap);
+        assert_eq!(
+            outlook(six_gib, budget(), &residents, policy()),
+            Outlook::Swap
+        );
     }
 
     #[test]
@@ -384,9 +414,9 @@ mod tests {
     }
 
     #[test]
-    fn when_swapping_is_paused_the_newcomer_loads_beside_or_is_refused() {
+    fn when_swaps_are_spent_the_newcomer_loads_beside_or_waits_and_when_off_is_refused() {
         let paused = Policy {
-            may_swap: false,
+            swaps: Swaps::Spent,
             ..policy()
         };
         let residents = [resident("orchestrator", Use::Free, 8)];
@@ -400,17 +430,28 @@ mod tests {
             )),
             Some(Vec::new())
         );
-        assert_eq!(outlook(six_gib, budget(), &residents, false), Outlook::Fits);
+        assert_eq!(
+            outlook(six_gib, budget(), &residents, paused),
+            Outlook::Fits
+        );
         let no_ram = Budget {
             ram_bytes: 0,
             ..budget()
         };
         assert_eq!(
             decide(six_gib, no_ram, &residents, Duration::ZERO, paused),
-            Decision::SwapsPaused
+            Decision::Wait
+        );
+        let off = Policy {
+            swaps: Swaps::Off,
+            ..policy()
+        };
+        assert_eq!(
+            decide(six_gib, no_ram, &residents, Duration::ZERO, off),
+            Decision::SwapsOff
         );
         assert_eq!(
-            outlook(six_gib, no_ram, &residents, false),
+            outlook(six_gib, no_ram, &residents, paused),
             Outlook::Unavailable
         );
     }

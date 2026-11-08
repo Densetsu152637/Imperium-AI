@@ -124,7 +124,8 @@ reuses the same `llama-server`. What changed is how long a slot is held:
   `await_tasks` leave the slots to the sessions that are working, even on a model with a single
   slot. The model is loaded on the first call, and stays loaded within `idle_unload_s` of the last
   call that used it. Hosted endpoints are unaffected.
-- **A queue.** Calls that find every slot busy wait first-come, first-served. `models.local`,
+- **A queue.** Calls that find every slot busy wait first-come, first-served, for at most
+  `max_wait_s` (stage 2d; default 600 s), after which the call fails. `models.local`,
   `imperium models local`, and the desktop's Local models panel show each loaded model's slots in
   use and `queued` (calls waiting), and each `model_call_completed` event carries `queue_wait_ms`,
   the time that call waited for a slot (`duration_ms` and the time to first token start after it;
@@ -159,20 +160,23 @@ memory arbiter for every session (`crates/imperium-local/src/arbiter.rs` holds t
   and *claimed* otherwise.
 - **When.** A model that fits beside the loaded models loads beside them. Free models are
   swapped out, least recently used first and as few as needed, only when the newcomer does not
-  fit beside them, or would get less than half the GPU memory beside them that it gets once they
-  are gone (so a subagent model does not run mostly from RAM next to a sleeping orchestrator). If
+  fit beside them, or gets more than `swap_gain` times the GPU memory once they are gone than it
+  would beside them. The default, 2.0, keeps a subagent model from running mostly from RAM next
+  to a sleeping orchestrator while not swapping for a small gain; 1.0 swaps whenever the
+  newcomer would get more GPU memory alone, so subagents run fully on the GPU (as G14 measures). If
   only a claimed model is in the way, it waits for that model's agent to start waiting or finish
   its turn (an orchestrator that spawns a subagent usually starts waiting moments later), for up
   to `min_residency_s`. After that it loads beside the claimed model if it fits at all, and swaps
   the claimed model out only when nothing else fits and that model has been loaded at least
   `min_residency_s`.
 - **Bounded waits.** A call whose model is in the way of models in use waits for them and then
-  loads, including a model swapped out between one agent's calls, instead of failing. The wait
-  is bounded: a model too big for the whole budget fails at once; a model that does not fit
-  beside the loaded ones while swapping is paused (the `max_swaps_per_min` limit was reached
-  within the last minute, or it is 0) fails at once with the same not-enough-memory error; and
-  any call, whether waiting for room or for a slot, fails after `max_wait_s` (default 600 s) with
-  an error naming the setting.
+  loads, including a model swapped out between one agent's calls, instead of failing. A call
+  that needs a swap while the `max_swaps_per_min` limit is spent waits for the minute to move on
+  (an orchestrator coming back to its own model keeps its turn). The waits are bounded: a model
+  too big for the whole budget fails at once; with `max_swaps_per_min = 0` (swapping off), a
+  model that does not fit beside the loaded ones fails at once with the same not-enough-memory
+  error; and any call, whether waiting for room or for a slot, fails after `max_wait_s` (default
+  600 s) with an error naming the setting.
 - **Swap out with state.** Before a model is unloaded, each slot holding the prompt of an agent
   that can still come back (mid-turn, or waiting for its subagents) is saved with `POST /slots/{id}?action=save` into `<data>/swap`, which `llama-server` is started
   with as `--slot-save-path`. Files are keyed by the agent and by the model: its id, the file's
@@ -198,8 +202,9 @@ memory arbiter for every session (`crates/imperium-local/src/arbiter.rs` holds t
   batch ahead of it.
 - **No thrashing.** Loads and unloads run one at a time (they contend for the disk and the PCIe
   bus); a call that arrives mid-swap waits its turn. A swapped-out server is stopped and its
-  process has exited before the next model starts, and a launch that fails is tried once more.
-  At most `max_swaps_per_min` swaps happen per minute; beyond that, calls that need a swap fail
+  process has exited before the next model starts. A launch that fails quickly (the process
+  exits or does not start) is tried once more; one that ran out the 600 s load timeout is not.
+  At most `max_swaps_per_min` swaps happen per minute; beyond that, calls that need a swap wait
   (see bounded waits), and the router treats such models as unavailable so new tasks go to the
   next suitable row.
 - **The prompt cache yields.** When a model is swapped out only because another model's

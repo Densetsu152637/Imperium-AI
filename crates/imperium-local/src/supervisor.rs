@@ -17,7 +17,7 @@
 //! model that is not loaded wait in arrival order, and a loaded model takes on new agents only
 //! while no earlier call for another model is waiting, so work is batched by model and nothing
 //! waits longer than the batch ahead of it. Loads and unloads run one at a time, swaps are
-//! limited per minute (past the limit a model that does not fit is refused), no call waits
+//! limited per minute (past the limit a call that needs one waits for the minute), no call waits
 //! longer than `max_wait_s`, and idle models are unloaded after `idle_unload_s`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -33,7 +33,7 @@ use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels, LocalPr
 use imperium_config::{LlamaCppSettings, VllmSettings};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, broadcast};
 
-use crate::arbiter::{self, Decision, Outlook, Policy, Resident, Use};
+use crate::arbiter::{self, Decision, Outlook, Policy, Resident, Swaps, Use};
 use crate::backend::{self, RuntimeBackend};
 use crate::hardware::Hardware;
 use crate::planner::{Budget, Footprint, Placement, prompt_cache_mb};
@@ -135,7 +135,46 @@ pub trait Server: Send + Sync {
 }
 
 pub type LaunchFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Box<dyn Server>, String>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<Box<dyn Server>, LaunchError>> + Send + 'a>>;
+
+/// Why a server did not start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchError {
+    pub message: String,
+    /// It was still loading when the launcher gave up, so trying again would wait as long.
+    pub timed_out: bool,
+}
+
+impl LaunchError {
+    pub fn timed_out(message: String) -> Self {
+        LaunchError {
+            message,
+            timed_out: true,
+        }
+    }
+}
+
+/// A failure that came quickly, such as the process exiting or not starting.
+impl From<String> for LaunchError {
+    fn from(message: String) -> Self {
+        LaunchError {
+            message,
+            timed_out: false,
+        }
+    }
+}
+
+impl From<&str> for LaunchError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+impl fmt::Display for LaunchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
 
 /// Starts servers; [`ProcessLauncher`] runs the spec's runtime as a process, tests use
 /// in-process fakes.
@@ -386,8 +425,9 @@ struct State {
     loaded: HashMap<String, Loaded>,
     calls: Vec<Call>,
     next_call: u64,
-    /// When models were swapped out to make room, within the last [`SWAP_WINDOW`].
-    swaps: VecDeque<Instant>,
+    /// When models were swapped out to make room, within the last [`SWAP_WINDOW`] (Tokio's
+    /// clock, which tests can advance).
+    swaps: VecDeque<tokio::time::Instant>,
     /// Seconds each model last took to load, to estimate a swap.
     load_seconds: HashMap<String, f64>,
 }
@@ -407,7 +447,7 @@ impl State {
     }
 
     /// Whether another swap fits within `max_per_min`.
-    fn may_swap(&mut self, max_per_min: u32) -> bool {
+    fn swaps(&mut self, max_per_min: u32) -> Swaps {
         while self
             .swaps
             .front()
@@ -415,7 +455,13 @@ impl State {
         {
             self.swaps.pop_front();
         }
-        self.swaps.len() < max_per_min as usize
+        if max_per_min == 0 {
+            Swaps::Off
+        } else if self.swaps.len() < max_per_min as usize {
+            Swaps::Allowed
+        } else {
+            Swaps::Spent
+        }
     }
 }
 
@@ -743,7 +789,8 @@ impl Supervisor {
     fn policy(&self, state: &mut State) -> Policy {
         Policy {
             min_residency: Duration::from_secs(self.settings.min_residency_s),
-            may_swap: state.may_swap(self.settings.max_swaps_per_min),
+            swaps: state.swaps(self.settings.max_swaps_per_min),
+            gain: self.settings.swap_gain,
         }
     }
 
@@ -782,8 +829,8 @@ impl Supervisor {
         let deadline = tokio::time::Instant::now() + max_wait;
         let too_long = || {
             format!(
-                "waited {} s for local model {id} (runtime.llamacpp.max_wait_s) while the models \
-                 in its way stayed in use",
+                "waited {} s for a slot on local model {id} or for room to load it \
+                 (runtime.llamacpp.max_wait_s)",
                 max_wait.as_secs()
             )
         };
@@ -912,12 +959,11 @@ impl Supervisor {
         );
         let (evict, placement) = match decision {
             Decision::TooBig => return Err(no_room()),
-            Decision::SwapsPaused => {
+            Decision::SwapsOff => {
                 return Err(format!(
-                    "{}: it does not fit beside the loaded models, and swapping is paused \
-                     (runtime.llamacpp.max_swaps_per_min = {})",
-                    no_room(),
-                    self.settings.max_swaps_per_min
+                    "{}: it does not fit beside the loaded models, and swapping is off \
+                     (runtime.llamacpp.max_swaps_per_min = 0)",
+                    no_room()
                 ));
             }
             Decision::Wait => return Ok(Plan::Wait),
@@ -930,7 +976,7 @@ impl Supervisor {
             .filter_map(|id| state.loaded.remove_entry(id))
             .collect();
         if !victims.is_empty() {
-            state.swaps.push_back(Instant::now());
+            state.swaps.push_back(tokio::time::Instant::now());
         }
         Ok(Plan::Load(Load {
             backend,
@@ -989,19 +1035,21 @@ impl Supervisor {
         };
         tracing::info!(model = %model.id, gpu_layers = placement.gpu_layers, cache_ram_mb, "loading local model");
         let started = Instant::now();
+        // A quick failure, such as the process exiting while it starts, is tried once more; one
+        // that ran out the launcher's time is not.
         let launched = match self.launcher.launch(&spec).await {
-            Ok(server) => Ok(server),
-            Err(error) => {
+            Err(error) if !error.timed_out => {
                 tracing::warn!(model = %model.id, %error, "could not start the model; trying once more");
                 self.launcher.launch(&spec).await
             }
+            launched => launched,
         };
         let server: Arc<dyn Server> = match launched {
             Ok(server) => Arc::from(server),
             Err(error) => {
                 drop(swapping);
                 self.changed.notify_waiters();
-                return Err(error);
+                return Err(error.message);
             }
         };
         let seconds = started.elapsed().as_secs_f64();
@@ -1227,12 +1275,12 @@ impl LocalModels for Supervisor {
             };
         }
         let residents = self.residents(&state);
-        let may_swap = self.policy(&mut state).may_swap;
+        let policy = self.policy(&mut state);
         let outlook = arbiter::outlook(
             |budget| backend.place(footprint, budget),
             self.budget,
             &residents,
-            may_swap,
+            policy,
         );
         match outlook {
             Outlook::Fits => Availability::Fits,
@@ -1340,6 +1388,7 @@ mod tests {
             swap_cache_mb: 0,
             min_residency_s: 30,
             max_swaps_per_min: 6,
+            swap_gain: 2.0,
             max_wait_s: 600,
             extra_args: Vec::new(),
         }

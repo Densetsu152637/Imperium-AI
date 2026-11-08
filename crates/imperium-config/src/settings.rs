@@ -43,8 +43,12 @@ swap_cache_mb = 8192
 # been waiting for may swap it out; a model nothing is waiting for can go at once.
 min_residency_s = 30
 # Swaps allowed per minute; beyond it, a call for a model that does not fit beside the loaded
-# ones fails, and routing sends new work to a hosted model. 0 turns swapping off.
+# ones waits for the minute to move on, and routing sends new work to a hosted model. 0 turns
+# swapping off: such a call fails at once.
 max_swaps_per_min = 6
+# Idle models are swapped out for a model that fits beside them only when it gets this many
+# times the GPU memory alone; 1.0 swaps whenever it gets more, so subagents run fully on the GPU.
+swap_gain = 2.0
 # Longest a call waits for room or a slot on a local model before it fails.
 max_wait_s = 600
 "#;
@@ -691,7 +695,7 @@ impl Default for VllmSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct LlamaCppSettings {
     pub backend: String,
     /// A `llama-server` executable to use instead of a runtime pack.
@@ -711,6 +715,9 @@ pub struct LlamaCppSettings {
     pub min_residency_s: u64,
     /// Swaps per minute before swapping pauses; 0 turns swapping off.
     pub max_swaps_per_min: u32,
+    /// How many times the GPU memory a model must get alone, over beside idle models, for them
+    /// to be swapped out for it.
+    pub swap_gain: f64,
     /// Longest a call waits for room or a slot on a local model.
     pub max_wait_s: u64,
     /// Extra arguments passed to every `llama-server`.

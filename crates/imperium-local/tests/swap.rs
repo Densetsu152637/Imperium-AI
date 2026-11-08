@@ -17,8 +17,8 @@ use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
 use imperium_local::scan::{Format, LocalModel};
 use imperium_local::supervisor::{
-    LaunchFuture, LaunchSpec, Launcher, Runtimes, Server, SlotFuture, SlotTransfer, StopFuture,
-    Supervisor, SwapDirection, SwapEvent,
+    LaunchError, LaunchFuture, LaunchSpec, Launcher, Runtimes, Server, SlotFuture, SlotTransfer,
+    StopFuture, Supervisor, SwapDirection, SwapEvent,
 };
 
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -39,8 +39,10 @@ struct Log {
     in_use: Mutex<HashMap<String, u32>>,
     /// Models stopped while a lease on them was held.
     stopped_in_use: Mutex<Vec<String>>,
-    /// Launches that fail before the next one succeeds.
+    /// Launches that fail quickly before the next one succeeds.
     launch_failures: AtomicU32,
+    /// Launches that time out before the next one succeeds.
+    launch_timeouts: AtomicU32,
 }
 
 impl Log {
@@ -136,6 +138,13 @@ impl Launcher for FakeLauncher {
                 failures.fetch_sub(1, Ordering::SeqCst);
                 return Err("the server exited while loading".into());
             }
+            let timeouts = &self.log.launch_timeouts;
+            if timeouts.load(Ordering::SeqCst) > 0 {
+                timeouts.fetch_sub(1, Ordering::SeqCst);
+                return Err(LaunchError::timed_out(
+                    "the model did not load in time".into(),
+                ));
+            }
             Ok(Box::new(FakeServer {
                 model: spec.model_id.clone(),
                 url: format!("http://fake/{}/v1", spec.model_id),
@@ -180,6 +189,7 @@ fn settings() -> LlamaCppSettings {
         swap_cache_mb: 1024,
         min_residency_s: 30,
         max_swaps_per_min: 6,
+        swap_gain: 2.0,
         max_wait_s: 600,
         extra_args: Vec::new(),
     }
@@ -412,29 +422,29 @@ async fn swap_reloads_a_model_evicted_between_calls() {
     assert!(lock(&log.stopped_in_use).is_empty());
 }
 
-#[tokio::test]
-async fn swap_limit_pauses_swapping_and_refuses_what_does_not_fit() {
+#[tokio::test(start_paused = true)]
+async fn swap_limit_holds_a_call_until_the_minute_moves_on() {
     let (supervisor, log) = start(LlamaCppSettings {
         max_swaps_per_min: 1,
         ..settings()
     });
     call(&supervisor, &log, "emperor", "a/root", Duration::ZERO).await;
     call(&supervisor, &log, "worker", "b/root", Duration::ZERO).await;
-    // One swap this minute: the router is told to look elsewhere, and a call fails at once
-    // rather than waiting for the window.
+    // One swap this minute: the router is told to look elsewhere, but an orchestrator coming
+    // back to its own model waits for the window instead of losing its turn.
     assert_eq!(
         supervisor.availability("emperor"),
         Availability::Unavailable
     );
-    let refused = tokio::time::timeout(
-        Duration::from_millis(300),
-        supervisor.acquire("emperor", "a/root"),
-    )
-    .await
-    .expect("the call does not wait");
-    let error = refused.unwrap_err();
-    assert!(error.contains("swapping is paused"), "{error}");
-    assert_eq!(supervisor.loaded()[0].model_id, "worker");
+    let asked = tokio::time::Instant::now();
+    let lease = supervisor.acquire("emperor", "a/root").await.unwrap();
+    let waited = asked.elapsed();
+    assert!(
+        waited >= Duration::from_secs(59) && waited <= Duration::from_secs(61),
+        "{waited:?}"
+    );
+    assert_eq!(supervisor.loaded()[0].model_id, "emperor");
+    drop(lease);
 }
 
 #[tokio::test]
@@ -484,6 +494,19 @@ async fn swap_waits_for_the_old_server_to_exit_and_retries_a_failed_launch() {
             "launch worker",
             "launch worker"
         ]
+    );
+}
+
+#[tokio::test]
+async fn swap_does_not_retry_a_launch_that_timed_out() {
+    let (supervisor, log) = start(settings());
+    call(&supervisor, &log, "emperor", "a/root", Duration::ZERO).await;
+    log.launch_timeouts.store(1, Ordering::SeqCst);
+    let error = supervisor.acquire("worker", "b/root").await.unwrap_err();
+    assert!(error.contains("did not load in time"), "{error}");
+    assert_eq!(
+        log.steps(),
+        ["launch emperor", "stop emperor", "launch worker"]
     );
 }
 

@@ -10,7 +10,7 @@ use tokio::process::{Child, Command};
 
 use crate::backend::{LLAMA_CPP, VLLM};
 use crate::supervisor::{
-    LaunchFuture, LaunchSpec, Launcher, Server, SlotFuture, SlotTransfer, StopFuture,
+    LaunchError, LaunchFuture, LaunchSpec, Launcher, Server, SlotFuture, SlotTransfer, StopFuture,
 };
 
 /// How long a model may take to load before the launch is abandoned.
@@ -65,7 +65,7 @@ impl ProcessLauncher {
             .ok_or_else(|| format!("no executable is set for the {runtime} runtime"))
     }
 
-    async fn start(&self, spec: &LaunchSpec) -> Result<Box<dyn Server>, String> {
+    async fn start(&self, spec: &LaunchSpec) -> Result<Box<dyn Server>, LaunchError> {
         let program = self.program(spec.backend.id())?;
         spec.backend.check_program(program)?;
         let port = free_port()?;
@@ -93,12 +93,12 @@ impl ProcessLauncher {
                 root: base,
                 http: self.http.clone(),
             })),
-            Ok(Err(message)) => Err(format!("{message}; see {}", log_path.display())),
-            Err(_) => Err(format!(
+            Ok(Err(message)) => Err(format!("{message}; see {}", log_path.display()).into()),
+            Err(_) => Err(LaunchError::timed_out(format!(
                 "the model did not load within {} s; see {}",
                 LOAD_TIMEOUT.as_secs(),
                 log_path.display()
-            )),
+            ))),
         }
     }
 
@@ -272,6 +272,10 @@ mod tests {
             extra_args: Vec::new(),
         };
         let error = launcher.launch(&spec).await.err().unwrap();
-        assert!(error.contains("imperium runtime install"), "{error}");
+        assert!(
+            error.message.contains("imperium runtime install"),
+            "{error}"
+        );
+        assert!(!error.timed_out, "a missing server fails at once");
     }
 }

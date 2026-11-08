@@ -31,4 +31,4 @@ imperium-models = { path = "../imperium-models" }
 imperium-protocol = { path = "../imperium-protocol" }
 imperium-tools = { path = "../imperium-tools" }
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "test-util"] }
