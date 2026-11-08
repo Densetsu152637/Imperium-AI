@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use base64::Engine;
-use imperium_core::{Session, SwitchError};
+use imperium_core::{QueueError, Session, SwitchError};
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
@@ -37,6 +37,9 @@ use imperium_protocol::methods::{
     ModelDownloadCancelResult, ModelDownloads, ModelDownloadsParams, ModelDownloadsResult,
 };
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
+use imperium_protocol::methods::{
+    SessionQueue, SessionQueueParams, SessionQueueResult, SessionSendResult,
+};
 
 /// A session's events, to be forwarded to this connection as notifications.
 #[derive(Debug)]
@@ -351,10 +354,20 @@ impl Connection {
             }
             SessionSend::NAME => {
                 call::<SessionSend>(request.params, |params: SessionSendParams| {
-                    self.session(&params.session_id)?
-                        .send(params.text)
-                        .map_err(stopped)?;
-                    Ok(Accepted {})
+                    let id = self
+                        .session(&params.session_id)?
+                        .send_message(
+                            params.text,
+                            params.mode.unwrap_or_default(),
+                            params.agent_id.as_deref(),
+                        )
+                        .map_err(queue_error)?;
+                    Ok(SessionSendResult { id })
+                })
+            }
+            SessionQueue::NAME => {
+                call::<SessionQueue>(request.params, |params: SessionQueueParams| {
+                    self.queue(params)
                 })
             }
             SessionRespond::NAME => {
@@ -493,6 +506,40 @@ impl Connection {
         }
     }
 
+    /// `session.queue`: lists, edits, or removes an agent's queued messages.
+    fn queue(&self, params: SessionQueueParams) -> Result<SessionQueueResult, ErrorObject> {
+        let session = self.session(&params.session_id)?;
+        let agent = params.agent_id.as_deref();
+        let id = || {
+            params
+                .id
+                .as_deref()
+                .ok_or_else(|| ErrorObject::new(codes::INVALID_PARAMS, "this action needs id"))
+        };
+        match params.action.as_str() {
+            "list" => {}
+            "remove" => session.remove_queued(agent, id()?).map_err(queue_error)?,
+            "edit" => {
+                let text = params
+                    .text
+                    .clone()
+                    .ok_or_else(|| ErrorObject::new(codes::INVALID_PARAMS, "edit needs text"))?;
+                session
+                    .edit_queued(agent, id()?, text)
+                    .map_err(queue_error)?;
+            }
+            other => {
+                return Err(ErrorObject::new(
+                    codes::INVALID_PARAMS,
+                    format!("unknown queue action {other:?}; use list, edit, or remove"),
+                ));
+            }
+        }
+        Ok(SessionQueueResult {
+            messages: session.queue(agent).map_err(queue_error)?,
+        })
+    }
+
     fn session(&self, id: &str) -> Result<Arc<Session>, ErrorObject> {
         self.state
             .session(id)
@@ -510,6 +557,16 @@ fn reply(response: Response) -> Handled {
 
 fn stopped(error: imperium_core::SessionClosed) -> ErrorObject {
     ErrorObject::new(codes::INTERNAL_ERROR, error.to_string())
+}
+
+fn queue_error(error: QueueError) -> ErrorObject {
+    let code = match error {
+        QueueError::Closed => codes::INTERNAL_ERROR,
+        QueueError::UnknownAgent(_) | QueueError::UnknownMessage(_) | QueueError::Empty => {
+            codes::INVALID_PARAMS
+        }
+    };
+    ErrorObject::new(code, error.to_string())
 }
 
 fn switch_error(error: SwitchError) -> ErrorObject {
