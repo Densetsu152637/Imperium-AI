@@ -8,7 +8,8 @@ import type { Entry, Nursery } from "./nursery.ts";
 import { resolveAnimation } from "./pet.ts";
 import { busyOf, busySubs } from "./route.ts";
 import { fitSize, frameAt } from "./render.ts";
-import { newWalker, stepWalker } from "./wander.ts";
+import { angleTo, reachPx } from "./play.ts";
+import { PLAY_SPEED, newWalker, nextDelay, stepWalker } from "./wander.ts";
 import type { Walker } from "./wander.ts";
 
 export const CSS = `
@@ -25,7 +26,8 @@ export const CSS = `
 .cell { position: relative; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px 6px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius, 6px); min-width: 0; }
 .cell[data-state="working"] { border-color: var(--accent); }
 .cell[data-state="waiting"] { border-color: var(--danger); }
-.stage { display: flex; align-items: flex-end; justify-content: center; width: 100%; overflow: hidden; }
+.stage { display: flex; align-items: flex-end; justify-content: center; width: 100%; }
+.cell[data-play] { z-index: 1; }
 .sprite { image-rendering: pixelated; background-repeat: no-repeat; cursor: pointer; flex: none; }
 .sprite.missing { border: 1px dashed var(--border); box-sizing: border-box; }
 .label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
@@ -39,7 +41,7 @@ export const CSS = `
 export type GridOptions = {
   /** Sprite size in px (the cell is fitted inside a size x size square). */
   size: number;
-  /** Idle pets wander and a button takes one out ("My nursery"). */
+  /** A button takes a pet out ("My nursery"). */
   mine: boolean;
   /** Show the count of busy subagents on a pet (global nursery). */
   badges: boolean;
@@ -170,11 +172,21 @@ export class Grid {
     let name = cur.name;
     let anim = cur.kind === "look" ? "look" : resolveAnimation(pet.catalog, cur.name);
     let startedAt = cur.startedAt;
+    let look: number | null = cur.look;
     let offset = 0;
-    if (this.opts.mine) {
-      const walk = this.wander(cell, pet, cur.name === "idle", now, dt);
-      offset = walk.x;
-      if (walk.anim) [anim, name, startedAt] = [walk.anim, walk.anim, walk.since];
+    if (reduced) {
+      cell.walker = null;
+      delete cell.el.dataset.play;
+    } else {
+      const idle = cur.name === "idle" && cur.kind === "loop";
+      const moved = this.move(cell, entry.key, pet, idle, now, dt);
+      offset = moved.x;
+      if (moved.anim) {
+        anim = moved.anim;
+        name = moved.name;
+        startedAt = moved.since;
+        look = moved.look ?? look;
+      }
     }
     let url = this.lib.strip(pet.id, anim);
     if (url === undefined && this.lib.failed(pet.id, anim)) {
@@ -185,7 +197,7 @@ export class Grid {
     if (!def) return;
     const fit = fitSize(pet.cell, this.opts.size);
     this.size(cell, fit, def.frames);
-    const frame = reduced ? 0 : cur.kind === "look" && anim === "look" ? lookIndex(cur.look ?? 180) : frameAt(def.durations, now - startedAt, def.loop);
+    const frame = reduced ? 0 : anim === "look" ? lookIndex(look ?? 180) : frameAt(def.durations, now - startedAt, def.loop);
     const pos = `${-frame * fit.width}px 0`;
     if (pos !== cell.pos) {
       cell.pos = pos;
@@ -208,19 +220,64 @@ export class Grid {
     cell.sprite.style.backgroundSize = `${fit.width * frames}px ${fit.height}px`;
   }
 
-  // An idle pet drifts to a spot now and then, drawn with a walk animation when the pet has one.
-  private wander(cell: Cell, pet: LoadedPet, idle: boolean, now: number, dt: number): { x: number; anim: string | null; since: number } {
+  private centre(cell: Cell): { x: number; y: number } {
+    return { x: cell.el.offsetLeft + cell.el.offsetWidth / 2, y: cell.el.offsetTop };
+  }
+
+  /** The pets standing left and right of `key` in its row of the grid. */
+  neighbors(key: string): string[] {
+    const keys = this.nursery.sorted().map((e) => e.key);
+    const i = keys.indexOf(key);
+    const here = this.cells.get(key);
+    if (!here) return [];
+    return [keys[i - 1], keys[i + 1]].flatMap((k) => {
+      const other = k === undefined ? undefined : this.cells.get(k);
+      return k !== undefined && other && Math.abs(other.el.offsetTop - here.el.offsetTop) < 4 ? [k] : [];
+    });
+  }
+
+  // Where the pet stands this frame. While it plays (and the arbiter shows idle) the script's pose
+  // drives it: walk toward or away from the partner, face it, or sleep. Otherwise an idle pet
+  // drifts to a spot now and then, and a busy one eases back to its slot.
+  private move(cell: Cell, key: string, pet: LoadedPet, idle: boolean, now: number, dt: number): { x: number; anim: string | null; name: string; since: number; look: number | null } {
     const prev = (cell.walker ??= newWalker(now, Math.random));
-    let { walker, dir } = stepWalker(prev, now, dt, idle, Math.random);
-    const walk = dir === 0 ? null : resolveAnimation(pet.catalog, dir > 0 ? "walk-right" : "walk-left");
-    // A pet without walk cells stays put rather than sliding in its idle pose.
-    if (walk === "idle") {
-      walker = { ...walker, x: prev.x, target: prev.x };
-      dir = 0;
+    const info = idle ? this.nursery.playInfo(key) : null;
+    const walkAnim = (dir: number): string => resolveAnimation(pet.catalog, dir > 0 ? "walk-right" : "walk-left");
+    const hasWalk = walkAnim(1) !== "idle" || walkAnim(-1) !== "idle";
+    let anim: string | null = null;
+    let look: number | null = null;
+    let next: typeof prev;
+    let dir = 0;
+    if (info) {
+      const other = this.cells.get(info.partner);
+      const me = this.centre(cell);
+      const at = other ? this.centre(other) : me;
+      const dx = at.x - me.x;
+      const target = info.pose.mode === "walk" ? Math.round(info.pose.toward * reachPx(dx, this.opts.size)) : prev.x;
+      const r = stepWalker({ ...prev, target, nextAt: Infinity }, now, dt, true, Math.random, 0, PLAY_SPEED);
+      next = r.walker;
+      dir = r.dir;
+      if (info.pose.mode === "look" && resolveAnimation(pet.catalog, "look") === "look") {
+        anim = "look";
+        look = angleTo(dx, at.y - me.y);
+      } else if (info.pose.mode === "sleep" && resolveAnimation(pet.catalog, "sleeping") !== "idle") anim = resolveAnimation(pet.catalog, "sleeping");
+      else if (dir !== 0 && walkAnim(dir) !== "idle") anim = walkAnim(dir);
+      cell.el.dataset.play = info.pose.mode;
+    } else {
+      delete cell.el.dataset.play;
+      let w = prev;
+      // Play just ended or was cut short: head back to the slot, then wander again.
+      if (prev.nextAt === Infinity) w = { ...prev, target: 0, nextAt: now + nextDelay(Math.random) };
+      // A pet that draws no walk animation never wanders; it only slides home.
+      if (!hasWalk) w = { ...w, nextAt: Math.max(w.nextAt, now + 5000) };
+      const r = stepWalker(w, now, dt, idle, Math.random);
+      next = r.walker;
+      dir = r.dir;
+      if (idle && dir !== 0 && walkAnim(dir) !== "idle") anim = walkAnim(dir);
     }
     if (dir !== cell.dir) [cell.dir, cell.walkSince] = [dir, now];
-    cell.walker = walker;
-    return { x: walker.x, anim: dir === 0 ? null : walk, since: cell.walkSince };
+    cell.walker = next;
+    return { x: next.x, anim, name: anim ?? "", since: anim === "look" || anim === null ? 0 : anim.startsWith("walk") ? cell.walkSince : 0, look };
   }
 }
 

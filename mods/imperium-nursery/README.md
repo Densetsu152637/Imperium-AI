@@ -1,7 +1,7 @@
 # Imperium Nursery
 
 A UI mod for the Imperium desktop app where many pets live at once. It is built on the
-[Pixel Pets](https://github.com/Densetsu152637/Pixel-Pets) behaviour engine (MIT), ported to
+Pixel Pets v3 behaviour engine from [Imperium Nursery](https://github.com/Densetsu152637/Imperium-Nursery) (MIT), ported to
 run inside a mod frame, and gives every pet its own arbiter, so each one idles, works, waits,
 sleeps and reacts on its own.
 
@@ -31,11 +31,33 @@ transcript text.
   working, 5 subagents"). Working and waiting sessions come first. The pet hears all of its
   session's events, so a subagent that needs you makes it show `alert`.
 - **My nursery** (panel `mine`): your own pets. Pick any installed pet, give it an optional
-  nickname and press **Put in**; press **×** on a pet to take it out. Residents idle, wander
+  nickname and press **Put in**; press **×** on a pet to take it out. Residents idle, wander, play with each other
   and fidget, fall asleep after a minute, and play `petted` when clicked. Who lives there is
   kept across restarts.
 
 Clicking a pet in any nursery pats it.
+
+## Play
+
+Every 15 to 45 seconds, if two pets that stand next to each other are both free, they act out
+a short scripted interaction, picked at random:
+
+- **greet**: they turn toward each other with the `look` cells, then both wave.
+- **chase**: one walks toward the other, which walks away; both jump at the end.
+- **high-five**: they approach each other and jump in sync.
+- **nap together**: drowsy pets settle side by side, sleep for a while, then wake (`waking`).
+- **show-off**: one celebrates, the other watches (`look`) and then waves.
+
+A pet is free when it is awake, shows an idle-level animation (idle, fidget, look), is not at
+work for an agent, is not a finished subagent waiting to leave, and has not been touched in the
+last few seconds. Play goes through each pet's own arbiter as ordinary one-shots, plus a pose
+(walk, look, sleep) laid over `idle`; it never outranks anything. Any real event for either
+pet, or a pat, ends the interaction for both at once and they return to their slots. A pet that
+does not draw an animation falls back along its chain (a pet without walk strips slides
+instead, one without `celebrating` jumps). Movement stays within a band of about 40 px around
+each pet's slot, so the labelled grid stays usable. With `prefers-reduced-motion` nothing
+moves and nothing plays. The **Play** checkbox next to the Pets select (stored as `play`, on by
+default) turns it off.
 
 ## Which pet an agent gets
 
@@ -48,7 +70,7 @@ specific pet. The choice is stored as `agentPets`.
 
 Any pet installed for Imperium shows up: Pixel Pets v3 packages in the pets folders
 (`pets.folders`, `<config>/pets`, `~/.claude/pets`, a `pets/` folder next to the daemon). Pets
-made with the Pixel Pets `hatch-pet` skill land in the pets folder and appear in the
+made with the `hatch-pet` skill of the [pet-hatchery plugin](https://github.com/Densetsu152637/Imperium-Nursery/tree/main/plugins/pet-hatchery) land in the pets folder and appear in the
 nurseries (reopen the panel after installing one). A pet that does not draw an animation falls
 back along its chain, ending in `idle`.
 

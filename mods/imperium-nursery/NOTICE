@@ -1,7 +1,7 @@
 Imperium Nursery
 Copyright 2026 Nicholas Bisset. Licensed under the MIT License.
 
-Parts of this mod are ported from Pixel Pets (https://github.com/Densetsu152637/Pixel-Pets),
+Parts of this mod are ported from Pixel Pets (Imperium Nursery, https://github.com/Densetsu152637/Imperium-Nursery),
 Copyright (c) 2026 Nicholas Bisset, MIT License (see LICENSE-pixel-pets):
 the behaviour arbiter (src/arbiter.ts and its types), the pet package parser and animation
 table (src/pet.ts), the reviewer detection (src/events.ts), and the frame-timing helpers

@@ -1,7 +1,7 @@
 # 16 — Pets
 
-Pets are animated pixel companions that act out what the agents are doing. Imperium uses the
-[Pixel Pets](https://github.com/Densetsu152637/Pixel-Pets) **format v3** as its native pet
+Pets are animated pixel companions that act out what the agents are doing. Imperium uses
+the Pixel Pets v3 format from [Imperium Nursery](https://github.com/Densetsu152637/Imperium-Nursery) as its native pet
 format and implements its behaviour engine in the Rust runtime, so every client — desktop,
 CLI/TUI, and phone — shows the same pet in the same state.
 
@@ -122,7 +122,11 @@ working subagents) and **My nursery** (pets you put in with an optional nickname
 again; residents idle, wander, sleep and play `petted` when clicked). It reads session
 snapshots and events, the installed pets and its own storage through the
 [mod SDK](06-extensibility.md), maps events as in [Event mapping](#event-mapping), and sees status only, never
-transcripts. See the mod's `README.md` for the details.
+transcripts. Free pets also play: now and then (every 15 to 45 seconds) two idle neighbours act
+out a short scripted interaction (greet, chase, high-five, nap together, show-off), walking
+toward each other inside a small band around their slots. Pets at work never play, any real
+event or a pat ends it at once, and `prefers-reduced-motion` turns it off. A "Play" checkbox
+in each panel switches it off (the `play` setting). See the mod's `README.md` for the details.
 
 ## Creating pets
 

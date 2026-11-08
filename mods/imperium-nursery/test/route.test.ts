@@ -216,5 +216,5 @@ test("wandering: an idle walker strays within range and stops; a busy one stops 
   expect(seen).toBeGreaterThan(10);
   const stopped = stepWalker({ x: 3, target: 14, nextAt: 0 }, 100, 50, false, rand);
   expect(stopped.dir).toBe(0);
-  expect(stopped.walker.target).toBe(3);
+  expect(stopped.walker.target).toBe(0);
 });

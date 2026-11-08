@@ -7,6 +7,8 @@ import { advance, current, dispatch, initial, nextWake } from "./arbiter.ts";
 import type { Current, Env, PetEvent } from "./arbiter.ts";
 import { isReviewer } from "./events.ts";
 import { clip, hash } from "./pick.ts";
+import { DROWSY_MS, chooseKind, dueShots, isOver, nextPlayDelay, pickPair, roleOf, startPlay } from "./play.ts";
+import type { Candidate, Play, Pose } from "./play.ts";
 import { REMOVE_MS, ROOT, busyOf, busySubs, keyOf, repair, routeEvent } from "./route.ts";
 import type { Mode } from "./route.ts";
 import type { PetsArbiter } from "./types.ts";
@@ -49,6 +51,21 @@ export class Nursery {
   private retired = new Set<string>();
   private serial = 0;
   onChange: () => void = () => {};
+  /** The `play` setting: pets that are free now and then play with a neighbour. */
+  playEnabled = true;
+  /** The interaction in progress, if any (one at a time per nursery). */
+  playing: Play | null = null;
+  /** Randomness for play; tests inject a seeded one. */
+  rand: () => number = Math.random;
+  /** Which pets stand next to `key`; the view replaces this with the grid's real layout. */
+  neighbors: (key: string) => string[] = (key) => {
+    const keys = this.sorted().map((e) => e.key);
+    const i = keys.indexOf(key);
+    return [keys[i - 1], keys[i + 1]].flatMap((k) => (k === undefined ? [] : [k]));
+  };
+  // When play may next start; 0 means "not set yet" (set from the next tick's clock).
+  private nextPlayAt = 0;
+  private clock = 0;
 
   readonly mode: Mode | "mine";
   private deps: Deps;
@@ -98,7 +115,15 @@ export class Nursery {
   }
 
   private remove(key: string): void {
+    this.endPlayFor(key);
     this.entries.delete(key);
+  }
+
+  /** A real event (or a pat, or the pet leaving) ends any play the pet is in, for both pets. */
+  private endPlayFor(key: string): void {
+    if (!this.playing?.keys.includes(key)) return;
+    this.playing = null;
+    this.nextPlayAt = 0;
   }
 
   // --- the nurseries -------------------------------------------------------------------
@@ -122,6 +147,7 @@ export class Nursery {
       }
       if (step.removeAfterMs !== undefined) entry.removeAt = now + step.removeAfterMs;
       if (step.overlay) entry.overlayEnds[step.overlay.source] = now + step.overlay.ms;
+      this.endPlayFor(entry.key);
       this.send(entry, step.events, now);
       changed = true;
     }
@@ -206,10 +232,68 @@ export class Nursery {
   pat(key: string, now: number): void {
     const entry = this.entries.get(key);
     if (!entry) return;
+    this.endPlayFor(key);
     this.send(entry, [{ type: "shot", name: "petted", source: "main" }], now);
   }
 
   // --- reading --------------------------------------------------------------------------
+
+  /** What pet `key` is doing in the play in progress: its pose and its partner's key. */
+  playInfo(key: string): { pose: Pose; partner: string } | null {
+    return this.playing ? roleOf(this.playing, key, this.clock) : null;
+  }
+
+  /**
+   * Runs play: delivers the shots now due, ends it when it is over or either pet got real work,
+   * and now and then starts a new one between two free neighbours. `reduced` (reduced motion)
+   * or `playEnabled` false stops it altogether.
+   */
+  tickPlay(now: number, reduced: boolean): void {
+    this.clock = now;
+    if (!this.playEnabled || reduced) {
+      this.playing = null;
+      this.nextPlayAt = 0;
+      return;
+    }
+    const playing = this.playing;
+    if (playing) {
+      const pair = playing.keys.map((k) => this.entries.get(k));
+      if (pair.some((e) => !e || e.removeAt !== null || busyOf(e.arbiter))) {
+        this.playing = null;
+        this.nextPlayAt = 0;
+        return;
+      }
+      const due = dueShots(playing, now);
+      this.playing = due.play;
+      for (const { key, name } of due.shots) {
+        const entry = this.entries.get(key);
+        if (entry) this.send(entry, [{ type: "shot", name, source: "main" }], now);
+      }
+      if (isOver(due.play, now)) {
+        this.playing = null;
+        this.nextPlayAt = now + nextPlayDelay(this.rand);
+      }
+      return;
+    }
+    if (this.nextPlayAt === 0) {
+      this.nextPlayAt = now + nextPlayDelay(this.rand);
+      return;
+    }
+    if (now < this.nextPlayAt) return;
+    const cands: Candidate[] = [...this.entries.values()].map((e) => {
+      const cur = this.view(e, now);
+      return { key: e.key, shown: cur.name, kind: cur.kind, hidden: cur.isHidden, busy: busyOf(e.arbiter) !== null, leaving: e.removeAt !== null, inPlay: false, quietFor: now - e.arbiter.activeAt };
+    });
+    const pair = pickPair(cands, this.neighbors, this.rand);
+    if (!pair) {
+      this.nextPlayAt = now + 5000;
+      return;
+    }
+    const drowsy = pair.a.quietFor >= DROWSY_MS && pair.b.quietFor >= DROWSY_MS;
+    this.playing = startPlay(chooseKind(this.rand, drowsy), [pair.a.key, pair.b.key], now, this.rand);
+    this.nextPlayAt = 0;
+    this.tickPlay(now, reduced);
+  }
 
   /** Changes of their own: pets leave, overlays end. True when the membership changed. */
   tick(now: number): boolean {

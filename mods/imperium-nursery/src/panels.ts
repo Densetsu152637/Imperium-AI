@@ -9,7 +9,7 @@ import { Nursery } from "./nursery.ts";
 import type { Deps } from "./nursery.ts";
 import { MIX, count, pickPet } from "./pick.ts";
 import { allDrawn } from "./pet.ts";
-import { CSS, FrameLoop, Grid } from "./view.ts";
+import { CSS, FrameLoop, Grid, reducedMotion } from "./view.ts";
 
 const SLEEP_AGENT_MS = 180_000;
 const SLEEP_MINE_MS = 60_000;
@@ -72,6 +72,29 @@ function petSetting(ctx: ModContext, lib: PetLibrary, bar: HTMLElement, setting:
   bar.append(labelled("Pets", select));
 }
 
+/** The "Play" checkbox: whether free pets play with their neighbours (`play`, on by default). */
+function playToggle(ctx: ModContext, bar: HTMLElement, nursery: Nursery, on: boolean): void {
+  const box = el("input");
+  box.type = "checkbox";
+  box.checked = on;
+  nursery.playEnabled = on;
+  box.addEventListener("change", () => {
+    nursery.playEnabled = box.checked;
+    void ctx.storage.set("play", box.checked);
+  });
+  bar.append(labelled("Play", box));
+}
+
+/** Runs every frame before painting: membership changes, then play. */
+function frameWork(loop: FrameLoop, nursery: Nursery, grid: Grid): void {
+  nursery.neighbors = (key) => grid.neighbors(key);
+  loop.onFrame(() => {
+    const now = Date.now();
+    nursery.tick(now);
+    nursery.tickPlay(now, reducedMotion());
+  });
+}
+
 const reading = async <T>(ctx: ModContext, key: string, fallback: T): Promise<T> => {
   try {
     return (await ctx.storage.get<T>(key)) ?? fallback;
@@ -126,6 +149,7 @@ async function sessionsPanel(ctx: ModContext, mode: "session" | "global"): Promi
     setting = value;
     nursery.reassign(Date.now());
   });
+  playToggle(ctx, bar, nursery, await reading(ctx, "play", true));
   if (mode === "session") {
     nursery.pinned = await reading<string | null>(ctx, "pinnedSession", null);
     pick.addEventListener("change", () => {
@@ -147,7 +171,7 @@ async function sessionsPanel(ctx: ModContext, mode: "session" | "global"): Promi
   refresh();
 
   loop.add(grid);
-  loop.onFrame(() => nursery.tick(Date.now()));
+  frameWork(loop, nursery, grid);
   loop.start();
 }
 
@@ -209,10 +233,11 @@ async function minePanel(ctx: ModContext): Promise<void> {
     save();
   });
   bar.append(labelled("Pet", which), nick, put);
+  playToggle(ctx, bar, nursery, await reading(ctx, "play", true));
   nursery.onChange();
 
   loop.add(grid);
-  loop.onFrame(() => nursery.tick(Date.now()));
+  frameWork(loop, nursery, grid);
   loop.start();
 }
 
