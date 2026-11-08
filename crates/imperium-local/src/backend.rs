@@ -129,6 +129,10 @@ impl RuntimeBackend for LlamaCpp {
             "--cache-type-v".into(),
             spec.cache_type.clone(),
             // MiB of host memory for the prompts of slots that were reused; 0 disables it.
+            // Never add `--slot-prompt-similarity 0`: requests are pinned to a slot with
+            // `id_slot`, and it is the server's default similarity threshold that saves a pinned
+            // slot's old prompt to this cache and restores the agent's own (llama.cpp
+            // b12180, `get_available_slot`); 0 would skip both and re-read every prompt.
             "--cache-ram".into(),
             spec.cache_ram_mb.to_string(),
             "--jinja".into(),

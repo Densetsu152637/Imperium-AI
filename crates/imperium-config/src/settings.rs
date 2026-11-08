@@ -32,7 +32,8 @@ cache_type = "f16"
 ram_headroom_mb = 2048
 # Host memory (MiB) for llama.cpp's prompt cache, which keeps the prompts of agents that lost
 # their slot to another so they are restored instead of read again. It is capped to the memory
-# left after the model, counts against the budget, and 0 turns it off.
+# left after the model and the models loaded beside it, counts against the budget, and 0 turns
+# it off.
 cache_ram_mb = 8192
 "#;
 

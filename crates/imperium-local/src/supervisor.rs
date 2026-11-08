@@ -467,8 +467,9 @@ impl Supervisor {
         let backend = self.backend(model.format).ok_or_else(no_room)?;
         let (mut placement, room) = {
             let mut loaded = lock(&self.loaded);
-            let room = self.free_budget(&loaded, true);
-            let placement = backend.place(footprint, room).ok_or_else(no_room)?;
+            let placement = backend
+                .place(footprint, self.free_budget(&loaded, true))
+                .ok_or_else(no_room)?;
             // Make room by unloading idle models only when the model does not fit beside them.
             if backend
                 .place(footprint, self.free_budget(&loaded, false))
@@ -482,7 +483,9 @@ impl Supervisor {
                     keep
                 });
             }
-            (placement, room)
+            // What is left once the models that stay loaded are counted: idle models that fit
+            // beside this one keep their memory, so the cache must not be sized from it.
+            (placement, self.free_budget(&loaded, false))
         };
         // The prompt cache takes what the setting asks of the RAM left after the model, and
         // counts against the budget like the model does.
@@ -1052,5 +1055,40 @@ mod tests {
         let (off, launcher) = start(32, 0);
         drop(off.acquire("a", "h").await.unwrap());
         assert_eq!(cache_arg(&launcher), "0");
+    }
+
+    #[tokio::test]
+    async fn the_prompt_cache_leaves_room_for_idle_models_that_stay_loaded() {
+        // 12 GiB of RAM; two small models fit beside each other on the 10 GiB GPU.
+        let hardware = Hardware {
+            ram_available_bytes: 12 * GIB,
+            ..hardware()
+        };
+        let launcher = Arc::new(FakeLauncher::default());
+        let launch: Arc<dyn Launcher> = launcher.clone();
+        let settings = LlamaCppSettings {
+            cache_ram_mb: 8192,
+            ..settings()
+        };
+        let supervisor = Supervisor::start(
+            vec![model("first", 2), model("second", 2)],
+            settings,
+            Runtimes::default(),
+            &hardware,
+            launch,
+        );
+        // The first model's cache takes 8 GiB and it goes idle, but stays loaded.
+        drop(supervisor.acquire("first", "h").await.unwrap());
+        let lease = supervisor.acquire("second", "h").await.unwrap();
+        let loaded = supervisor.loaded();
+        assert_eq!(loaded.len(), 2, "the idle model was not unloaded");
+        // Only 4 GiB of the 12 are left for the second model's cache, not the 8 GiB asked for.
+        let launched = lock(&launcher.launched);
+        let args = &launched[1].1;
+        let at = args.iter().position(|arg| arg == "--cache-ram").unwrap();
+        assert_eq!(args[at + 1], "4096");
+        let committed: u64 = loaded.iter().map(|model| model.ram_bytes).sum();
+        assert!(committed <= 12 * GIB, "{committed} bytes of RAM committed");
+        drop(lease);
     }
 }

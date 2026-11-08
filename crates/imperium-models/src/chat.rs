@@ -186,7 +186,10 @@ fn request_body(request: ChatRequest<'_>) -> serde_json::Value {
         body["tools"] = request.tools.iter().map(ToolSpec::to_wire).collect();
     }
     if let Some(slot) = request.slot {
-        // llama.cpp's chat endpoint passes these on to its completion task.
+        // llama.cpp's chat endpoint passes these on to its completion task. A pinned slot that
+        // holds another prompt still has it saved to the host cache and the agent's own prompt
+        // restored, but only under the server's default `--slot-prompt-similarity` (never 0);
+        // see `LlamaCpp::launch_args`.
         body["id_slot"] = json!(slot);
         body["cache_prompt"] = json!(true);
     }

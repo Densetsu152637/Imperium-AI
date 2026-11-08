@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::post;
 use imperium_core::{
     AcquireFuture, Availability, LocalLease, LocalModels, ResolvedModel, Session, SessionConfig,
@@ -258,4 +260,163 @@ async fn shared_slot() {
         assert_eq!(holders.iter().filter(|holder| **holder == root).count(), 3);
     }
     assert_eq!(held.load(Ordering::SeqCst), 0, "no lease outlives its call");
+}
+
+fn one_slot(base_url: String) -> (Arc<OneSlot>, Arc<AtomicUsize>) {
+    let held = Arc::new(AtomicUsize::new(0));
+    let local = Arc::new(OneSlot {
+        base_url,
+        permits: Arc::new(Semaphore::new(1)),
+        held: Arc::clone(&held),
+        holders: Mutex::new(Vec::new()),
+    });
+    (local, held)
+}
+
+/// The text of the latest user message in a request body.
+fn user_text(body: &Value) -> String {
+    body["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .rev()
+        .find(|message| message["role"] == "user")
+        .and_then(|message| message["content"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn text_reply() -> axum::response::Response {
+    let chunk = json!({"choices":[{"delta":{"content":"done"}}]});
+    (
+        [("content-type", "text/event-stream")],
+        format!(
+            "data: {chunk}
+
+data: [DONE]
+
+"
+        ),
+    )
+        .into_response()
+}
+
+async fn serve(app: Router) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    url
+}
+
+async fn next_event(events: &mut broadcast::Receiver<AgentEvent>) -> SessionEvent {
+    tokio::time::timeout(Duration::from_secs(10), events.recv())
+        .await
+        .expect("an event within 10 s")
+        .unwrap()
+        .event
+}
+
+/// Waits until the root's turn ends; true when it completed.
+async fn turn_ends(events: &mut broadcast::Receiver<AgentEvent>) -> bool {
+    loop {
+        match next_event(events).await {
+            SessionEvent::TurnCompleted { .. } => return true,
+            SessionEvent::TurnFailed { .. } => return false,
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn shared_slot_a_usage_limit_pause_holds_no_slot() {
+    // The "limited" session is refused once, with a one-hour wait; everything else answers.
+    let refused = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let refused = Arc::clone(&refused);
+            move |axum::Json(body): axum::Json<Value>| {
+                let refused = Arc::clone(&refused);
+                async move {
+                    if user_text(&body).contains("limited")
+                        && refused.fetch_add(1, Ordering::SeqCst) == 0
+                    {
+                        return (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            [("retry-after", "3600")],
+                            "usage limit reached",
+                        )
+                            .into_response();
+                    }
+                    text_reply()
+                }
+            }
+        }),
+    );
+    let (local, held) = one_slot(serve(app).await);
+    let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+    let limited = start(0, local.clone(), dirs[0].path());
+    let other = start(1, local.clone(), dirs[1].path());
+    let mut limited_events = limited.subscribe();
+    let mut other_events = other.subscribe();
+
+    limited.send("limited".into()).unwrap();
+    loop {
+        if matches!(
+            next_event(&mut limited_events).await,
+            SessionEvent::Paused { .. }
+        ) {
+            break;
+        }
+    }
+    // Paused for an hour, the root holds nothing: the one slot is free...
+    assert_eq!(held.load(Ordering::SeqCst), 0);
+    // ...so another session runs to completion meanwhile.
+    other.send("work".into()).unwrap();
+    assert!(turn_ends(&mut other_events).await);
+    // Then the paused one resumes and finishes.
+    limited.resume_now();
+    assert!(turn_ends(&mut limited_events).await);
+    assert_eq!(held.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn shared_slot_a_failed_stream_releases_the_slot() {
+    // The "broken" session's stream is malformed; everything else answers.
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|axum::Json(body): axum::Json<Value>| async move {
+            if user_text(&body).contains("broken") {
+                return (
+                    [("content-type", "text/event-stream")],
+                    "data: not json
+
+"
+                    .to_string(),
+                )
+                    .into_response();
+            }
+            text_reply()
+        }),
+    );
+    let (local, held) = one_slot(serve(app).await);
+    let dirs = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+    let broken = start(0, local.clone(), dirs[0].path());
+    let other = start(1, local.clone(), dirs[1].path());
+    let mut broken_events = broken.subscribe();
+    let mut other_events = other.subscribe();
+
+    broken.send("broken".into()).unwrap();
+    assert!(
+        !turn_ends(&mut broken_events).await,
+        "the stream error fails the turn"
+    );
+    assert_eq!(
+        held.load(Ordering::SeqCst),
+        0,
+        "the failed call released its slot"
+    );
+    other.send("work".into()).unwrap();
+    assert!(turn_ends(&mut other_events).await);
+    assert_eq!(held.load(Ordering::SeqCst), 0);
 }

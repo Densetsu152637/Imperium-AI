@@ -138,11 +138,14 @@ reuses the same `llama-server`. What changed is how long a slot is held:
   slot has not seen is processed. vLLM chooses its own sequences and receives neither field.
 - **A prompt cache in host memory.** `llama-server` starts with `--cache-ram`, set from
   `runtime.llamacpp.cache_ram_mb` (default 8192 MiB, llama.cpp's own default) and capped to the
-  RAM left in the budget after the model; the cache counts as RAM held by that model, so other
-  models are planned without it, and `0` turns it off. When a slot is given to another agent,
-  llama.cpp saves the prompt it held there and restores it by prefix when the first agent is
-  back on a different slot, so a switch costs host memory instead of re-reading the prompt.
-  Saving slots to disk (`--slot-save-path`) is stage 2d.
+  RAM left in the budget once the model and every model that stays loaded beside it are counted
+  (idle models are unloaded to make room only when the new model does not fit beside them), so
+  committed RAM never exceeds the budget; `0` turns it off. The cache counts as RAM held by that
+  model, so models loaded later are planned without it. When a pinned slot holds another agent's
+  prompt, llama.cpp saves that prompt to the cache and restores the requesting agent's own by
+  prefix, so a switch costs host memory instead of re-reading the prompt. This relies on the
+  server's default `--slot-prompt-similarity` (Imperium never sets it to 0, which would skip both
+  the save and the restore). Saving slots to disk (`--slot-save-path`) is stage 2d.
 
 A model that is idle between one agent's calls can be unloaded to make room for another model, as
 any idle model can; the agent reloads it on its next call. Making a waiting orchestrator yield

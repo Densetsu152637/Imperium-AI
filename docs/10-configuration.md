@@ -54,7 +54,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `runtime.llamacpp.cache_type` | `f16` | KV cache type: `f16`, `q8_0`, or `q4_0` |
 | `runtime.llamacpp.idle_unload_s` | `900` | Seconds an unused model stays loaded |
 | `runtime.llamacpp.ram_headroom_mb` | `2048` | System memory kept free when placing models |
-| `runtime.llamacpp.cache_ram_mb` | `8192` | Host memory (MiB) for llama.cpp's prompt cache (`--cache-ram`), which restores the prompt of an agent that lost its slot to another instead of reading it again; capped to the RAM left after the model, counted in the memory budget, `0` turns it off |
+| `runtime.llamacpp.cache_ram_mb` | `8192` | Host memory (MiB) for llama.cpp's prompt cache (`--cache-ram`), which restores the prompt of an agent that lost its slot to another instead of reading it again; capped to the RAM left in the budget after the model and the models that stay loaded beside it, counted as RAM held by the model, `0` turns it off |
 | `runtime.llamacpp.extra_args` | none | Extra `llama-server` arguments, for example `["--flash-attn", "on"]` |
 | `hardware.vram_mb`, `hardware.ram_mb` | probed | Override the hardware probe |
 | `runtime.vllm.command` | `vllm` | The `vllm` executable for Hugging Face model folders (`vllm:<id>`; Linux and WSL2) |
