@@ -338,8 +338,12 @@ async fn tools_count_as_the_template_renders_them() {
     let server = Arc::new(Server::default());
     let base_url = serve(Arc::clone(&server), Tokenizer::Template, true).await;
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.txt"), "alpha beta gamma
-").unwrap();
+    std::fs::write(
+        dir.path().join("a.txt"),
+        "alpha beta gamma
+",
+    )
+    .unwrap();
     let session = start(dir.path(), base_url, true);
 
     let breakdowns = run_turn(&session, "please read a.txt").await;

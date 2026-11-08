@@ -361,6 +361,10 @@ pub(crate) struct Call<'a> {
     pub usage: Option<Usage>,
 }
 
+/// A tool set's (built-in, MCP) tokens as a template renders them, or `None` when the server
+/// cannot render templates.
+type RenderedTools = Option<(u64, u64)>;
+
 /// Counts shared by a session's agents: token counts by tokenizer and content, and what each
 /// server reported about itself.
 #[derive(Debug, Default)]
@@ -372,7 +376,7 @@ pub(crate) struct TokenCounter {
     no_tokenizer: Mutex<HashSet<String>>,
     /// The tool block as each model's template renders it, by tokenizer and tool set:
     /// (built-in, MCP) tokens, or `None` when the server cannot render templates.
-    rendered_tools: Mutex<HashMap<(String, u64), Option<(u64, u64)>>>,
+    rendered_tools: Mutex<HashMap<(String, u64), RenderedTools>>,
 }
 
 impl TokenCounter {
@@ -560,8 +564,7 @@ impl TokenCounter {
         let (http, endpoint) = (call.http, call.endpoint);
         let measured = async {
             let bare = llamacpp::template_tokens(http, endpoint, &probe, &[]).await?;
-            let with_builtin =
-                llamacpp::template_tokens(http, endpoint, &probe, &builtin).await?;
+            let with_builtin = llamacpp::template_tokens(http, endpoint, &probe, &builtin).await?;
             let with_all = llamacpp::template_tokens(http, endpoint, &probe, &all).await?;
             Ok::<_, ModelError>((
                 with_builtin.saturating_sub(bare),
