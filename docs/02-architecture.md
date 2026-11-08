@@ -73,7 +73,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-protocol`   | Wire types, method/event definitions, TS export                        |
 | `imperium-core`       | Sessions, agent loop, delegation, task graph, event bus                |
 | `imperium-models`     | Endpoint clients, model registry, router, cost accounting              |
-| `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, llama.cpp supervision (vLLM later) |
+| `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, runtime supervision (llama.cpp, vLLM) |
 | `imperium-tools`      | Built-in tools: files, commands, isolation tiers (implemented)         |
 | `imperium-web`        | Web search providers, page fetching, and a CDP browser (implemented)   |
 | `imperium-mcp`        | MCP client (stdio, streamable HTTP; implemented) and server bridge (planned) |
@@ -105,6 +105,20 @@ Secrets go through the `SecretStore` trait in `imperium-config` (`load`, `store`
 headless runs. The daemon builds one `Arc<dyn SecretStore>` at start and every key lookup
 (endpoint and media keys, web search keys, MCP tokens, the Hugging Face token) reads through it;
 environment variables such as `HF_TOKEN` still take precedence where they did before.
+
+### Swappable implementations
+
+Each replaceable subsystem is a trait with built-in implementations chosen by name, so a new
+one is added without editing its callers:
+
+| Seam | Trait | Built-ins | Chosen by |
+| ---- | ----- | --------- | --------- |
+| Secrets | `SecretStore` (`imperium-config`) | `KeychainSecrets`, `MemorySecrets` | The daemon at start |
+| Local runtimes | `RuntimeBackend` (`imperium-local`) | `LlamaCpp`, `Vllm` | First backend that accepts the model format and is available; `Supervisor::with_backends` sets the list |
+| Web search | `SearchProvider` (`imperium-web`) | `Searxng`, `Brave`, `Tavily` | `web.search` through `SearchProviders::register` / `build` |
+| Image generation | `ImageGenerator` (`imperium-media`) | `OpenAiImages`, `ComfyUi` | `media.image.backend` through `ImageGenerators::register` / `build` |
+| Local model leasing | `LocalModels` (`imperium-api`) | The `imperium-local` supervisor | The daemon at start |
+| GitHub | `GitHub` (`imperium-github`) | REST client | The daemon at start |
 
 Key dependencies (to confirm during phase 0): `tokio`, `axum` / `tokio-tungstenite`,
 `serde`, `reqwest`, `rmcp` (official Rust MCP SDK), `chromiumoxide`, `keyring`, `sysinfo`,
