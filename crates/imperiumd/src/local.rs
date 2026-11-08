@@ -127,6 +127,7 @@ impl LocalRuntime {
                     loaded: status.is_some(),
                     slots: status.map_or(self.supervisor.settings().parallel, |s| s.slots),
                     slots_in_use: status.map_or(0, |s| s.slots_in_use),
+                    queued: status.map_or(0, |s| s.queued),
                 }
             })
             .collect();

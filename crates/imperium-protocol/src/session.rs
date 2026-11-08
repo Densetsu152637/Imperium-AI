@@ -59,6 +59,10 @@ pub enum SessionEvent {
         usage: TokenUsage,
         #[ts(type = "number")]
         duration_ms: u64,
+        /// Time the call waited for a slot on a local model before it started, which
+        /// `duration_ms` leaves out; absent for hosted models.
+        #[ts(type = "number | null")]
+        queue_wait_ms: Option<u64>,
         /// Time to the first streamed text; absent when the call produced no text.
         #[ts(type = "number | null")]
         time_to_first_token_ms: Option<u64>,

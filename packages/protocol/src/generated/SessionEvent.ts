@@ -12,6 +12,11 @@ import type { TokenUsage } from "./TokenUsage";
  */
 export type SessionEvent = { "type": "turn_started", text: string, } | { "type": "text_delta", text: string, } | { "type": "tool_started", call_id: string, tool: string, summary: string, } | { "type": "permission_requested", request_id: number, tool: string, summary: string, } | { "type": "tool_finished", call_id: string, ok: boolean, output: string, } | { "type": "model_call_completed", model: string, usage: TokenUsage, duration_ms: number, 
 /**
+ * Time the call waited for a slot on a local model before it started, which
+ * `duration_ms` leaves out; absent for hosted models.
+ */
+queue_wait_ms: number | null, 
+/**
  * Time to the first streamed text; absent when the call produced no text.
  */
 time_to_first_token_ms: number | null, 

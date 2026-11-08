@@ -2,16 +2,20 @@
 //!
 //! Each model is served by the first available [`RuntimeBackend`] that accepts its format
 //! (`llama-server` for GGUF, `vllm serve` for Hugging Face folders by default).
-//! Each loaded model is one server started with `--parallel <slots>`; an agent holds a slot
-//! (a semaphore permit) for its turn. Memory is reserved per loaded model against the budget
-//! measured when the supervisor started. A model that does not fit may replace models nobody is
-//! using, but never one in use. Idle models are unloaded after `idle_unload_s`.
+//! Each loaded model is one server started with `--parallel <slots>`. An agent takes a slot (a
+//! semaphore permit and a slot index) for one model call and releases it when the call ends, so
+//! agents that are running tools or waiting hold none; callers queue first-come, first-served
+//! while every slot is busy, and an agent gets back the slot it used last when that slot is
+//! free. Memory is reserved per loaded model against the budget measured when the supervisor
+//! started. A model that does not fit may replace models nobody is using, but never one in use.
+//! Idle models are unloaded after `idle_unload_s`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
@@ -41,6 +45,9 @@ pub struct LaunchSpec {
     pub slots: u32,
     pub gpu_layers: u32,
     pub cache_type: String,
+    /// MiB of host memory for llama.cpp's prompt cache (`--cache-ram`), which keeps the prompts
+    /// of slots that were reused by another agent so they need not be read again; 0 disables it.
+    pub cache_ram_mb: u64,
     /// vLLM's `--gpu-memory-utilization` (the share of GPU memory it may take).
     pub gpu_memory_utilization: f64,
     pub extra_args: Vec<String>,
@@ -65,6 +72,7 @@ impl PartialEq for LaunchSpec {
             && self.slots == other.slots
             && self.gpu_layers == other.gpu_layers
             && self.cache_type == other.cache_type
+            && self.cache_ram_mb == other.cache_ram_mb
             && self.gpu_memory_utilization == other.gpu_memory_utilization
             && self.extra_args == other.extra_args
     }
@@ -104,24 +112,125 @@ pub struct LoadedStatus {
     pub base_url: String,
     pub slots: u32,
     pub slots_in_use: u32,
+    /// Calls waiting for a slot.
+    pub queued: u32,
     pub gpu_layers: u32,
     pub vram_bytes: u64,
     pub ram_bytes: u64,
 }
 
+/// Which slots of a server are free, and who used each last.
+#[derive(Debug)]
+struct SlotTable {
+    /// Free slots, the one free the longest first.
+    free: VecDeque<u32>,
+    /// Who held each slot last; its cached prompt is that holder's until someone else takes it.
+    last_holder: Vec<Option<String>>,
+}
+
+impl SlotTable {
+    fn new(slots: u32) -> Self {
+        SlotTable {
+            free: (0..slots).collect(),
+            last_holder: vec![None; slots as usize],
+        }
+    }
+
+    /// The free slot `holder` used last, if nobody has used it since; otherwise the one that
+    /// has been free the longest, so the prompts most recently used survive the longest.
+    fn take(&mut self, holder: &str) -> Option<u32> {
+        let own = self
+            .free
+            .iter()
+            .position(|&slot| self.last_holder[slot as usize].as_deref() == Some(holder));
+        self.free.remove(own.unwrap_or(0))
+    }
+
+    fn give_back(&mut self, slot: u32, holder: &str) {
+        self.last_holder[slot as usize] = Some(holder.to_string());
+        self.free.push_back(slot);
+    }
+}
+
+/// The slots of one running server, shared by its leases and waiters.
+struct SlotPool {
+    base_url: String,
+    slots: u32,
+    /// One permit per free slot; the semaphore queues waiters first-come, first-served.
+    permits: Arc<Semaphore>,
+    table: Mutex<SlotTable>,
+    /// Calls waiting for a permit.
+    waiting: AtomicU32,
+    /// Whether leases carry a slot index the runtime accepts in requests.
+    pins_slots: bool,
+    last_used: Mutex<Instant>,
+}
+
+impl SlotPool {
+    fn new(base_url: String, slots: u32, pins_slots: bool) -> Arc<Self> {
+        Arc::new(SlotPool {
+            base_url,
+            slots,
+            permits: Arc::new(Semaphore::new(slots as usize)),
+            table: Mutex::new(SlotTable::new(slots)),
+            waiting: AtomicU32::new(0),
+            pins_slots,
+            last_used: Mutex::new(Instant::now()),
+        })
+    }
+
+    fn in_use(&self) -> u32 {
+        self.slots - u32::try_from(self.permits.available_permits()).unwrap_or(self.slots)
+    }
+
+    /// Wraps a permit in a lease on the slot `holder` should get.
+    fn lease(
+        self: &Arc<Self>,
+        permit: OwnedSemaphorePermit,
+        holder: &str,
+    ) -> Result<LocalLease, String> {
+        let index = lock(&self.table)
+            .take(holder)
+            .ok_or("a slot permit was granted with no free slot")?;
+        Ok(LocalLease::new(
+            self.base_url.clone(),
+            self.pins_slots.then_some(index),
+            Slot {
+                pool: Arc::clone(self),
+                index,
+                holder: holder.to_string(),
+                _permit: permit,
+            },
+        ))
+    }
+}
+
+/// Counts a call as queued while it waits for a slot, also when the wait is cancelled.
+struct Queued<'a>(&'a AtomicU32);
+
+impl<'a> Queued<'a> {
+    fn new(waiting: &'a AtomicU32) -> Self {
+        waiting.fetch_add(1, Ordering::SeqCst);
+        Queued(waiting)
+    }
+}
+
+impl Drop for Queued<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 struct Loaded {
     /// Held so the server keeps running; dropping it stops the server.
     _server: Box<dyn Server>,
-    base_url: String,
-    slots: u32,
-    permits: Arc<Semaphore>,
+    pool: Arc<SlotPool>,
     placement: Placement,
-    last_used: Arc<Mutex<Instant>>,
 }
 
 impl Loaded {
     fn in_use(&self) -> u32 {
-        self.slots - u32::try_from(self.permits.available_permits()).unwrap_or(self.slots)
+        self.pool.in_use()
     }
 }
 
@@ -253,9 +362,10 @@ impl Supervisor {
             .iter()
             .map(|(id, loaded)| LoadedStatus {
                 model_id: id.clone(),
-                base_url: loaded.base_url.clone(),
-                slots: loaded.slots,
+                base_url: loaded.pool.base_url.clone(),
+                slots: loaded.pool.slots,
                 slots_in_use: loaded.in_use(),
+                queued: loaded.pool.waiting.load(Ordering::SeqCst),
                 gpu_layers: loaded.placement.gpu_layers,
                 vram_bytes: loaded.placement.vram_bytes,
                 ram_bytes: loaded.placement.ram_bytes,
@@ -291,33 +401,59 @@ impl Supervisor {
             .cloned()
     }
 
-    /// Takes a free slot if `id` is loaded and has one.
-    fn try_slot(&self, id: &str) -> Option<LocalLease> {
-        let loaded = lock(&self.loaded);
-        let entry = loaded.get(id)?;
-        let permit = Arc::clone(&entry.permits).try_acquire_owned().ok()?;
-        Some(lease(entry, permit))
-    }
-
-    async fn acquire_slot(&self, id: &str) -> Result<LocalLease, String> {
-        if let Some(lease) = self.try_slot(id) {
-            return Ok(lease);
-        }
-        let _loading = self.loading.lock().await;
-        // Loaded while we waited, or loaded with every slot busy: wait for a slot.
-        let busy = lock(&self.loaded)
-            .get(id)
-            .map(|entry| Arc::clone(&entry.permits));
-        if let Some(permits) = busy {
-            drop(_loading);
-            let permit = permits
+    /// A slot on `id` if it is loaded, waiting for one while every slot is busy; `None` when
+    /// the model is not loaded (or was unloaded while waiting).
+    async fn slot_on_loaded(&self, id: &str, holder: &str) -> Result<Option<LocalLease>, String> {
+        let pool = {
+            // The permit is taken under the lock so an idle model cannot be unloaded between
+            // finding it and using it.
+            let loaded = lock(&self.loaded);
+            let Some(entry) = loaded.get(id) else {
+                return Ok(None);
+            };
+            if let Ok(permit) = Arc::clone(&entry.pool.permits).try_acquire_owned() {
+                return entry.pool.lease(permit, holder).map(Some);
+            }
+            Arc::clone(&entry.pool)
+        };
+        let permit = {
+            let _queued = Queued::new(&pool.waiting);
+            Arc::clone(&pool.permits)
                 .acquire_owned()
                 .await
-                .map_err(|_| "the model was unloaded".to_string())?;
-            let loaded = lock(&self.loaded);
-            let entry = loaded.get(id).ok_or("the model was unloaded")?;
-            return Ok(lease(entry, permit));
+                .map_err(|_| "the model was unloaded".to_string())?
+        };
+        let same_server = lock(&self.loaded)
+            .get(id)
+            .is_some_and(|entry| Arc::ptr_eq(&entry.pool, &pool));
+        if !same_server {
+            return Ok(None);
         }
+        pool.lease(permit, holder).map(Some)
+    }
+
+    async fn acquire_slot(&self, id: &str, holder: &str) -> Result<LocalLease, String> {
+        loop {
+            if let Some(lease) = self.slot_on_loaded(id, holder).await? {
+                return Ok(lease);
+            }
+            let loading = self.loading.lock().await;
+            // Loaded while we waited: take a slot on it instead.
+            if lock(&self.loaded).contains_key(id) {
+                continue;
+            }
+            return self.load(id, holder, loading).await;
+        }
+    }
+
+    /// Loads `id` and takes its first slot. `_loading` keeps other loads out until the model is
+    /// registered.
+    async fn load(
+        &self,
+        id: &str,
+        holder: &str,
+        _loading: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<LocalLease, String> {
         let model = self
             .model(id)
             .ok_or_else(|| format!("no local model {id:?} in models.folders"))?;
@@ -329,11 +465,10 @@ impl Supervisor {
             )
         };
         let backend = self.backend(model.format).ok_or_else(no_room)?;
-        let placement = {
+        let (mut placement, room) = {
             let mut loaded = lock(&self.loaded);
-            let placement = backend
-                .place(footprint, self.free_budget(&loaded, true))
-                .ok_or_else(no_room)?;
+            let room = self.free_budget(&loaded, true);
+            let placement = backend.place(footprint, room).ok_or_else(no_room)?;
             // Make room by unloading idle models only when the model does not fit beside them.
             if backend
                 .place(footprint, self.free_budget(&loaded, false))
@@ -347,8 +482,16 @@ impl Supervisor {
                     keep
                 });
             }
-            placement
+            (placement, room)
         };
+        // The prompt cache takes what the setting asks of the RAM left after the model, and
+        // counts against the budget like the model does.
+        let cache_ram_mb = if backend.slot_aware() {
+            crate::planner::prompt_cache_mb(self.settings.cache_ram_mb, &placement, room)
+        } else {
+            0
+        };
+        placement.ram_bytes += cache_ram_mb * 1024 * 1024;
         let spec = LaunchSpec {
             backend: Arc::clone(backend),
             format: model.format,
@@ -360,31 +503,34 @@ impl Supervisor {
             slots: self.settings.parallel.max(1),
             gpu_layers: placement.gpu_layers,
             cache_type: self.settings.cache_type.clone(),
+            cache_ram_mb,
             extra_args: backend.extra_args(),
         };
-        tracing::info!(model = %id, gpu_layers = placement.gpu_layers, "loading local model");
+        tracing::info!(model = %id, gpu_layers = placement.gpu_layers, cache_ram_mb, "loading local model");
         let server = self.launcher.launch(&spec).await?;
-        let base_url = server.base_url().to_string();
-        let permits = Arc::new(Semaphore::new(spec.slots as usize));
-        let permit = Arc::clone(&permits)
+        let pool = SlotPool::new(
+            server.base_url().to_string(),
+            spec.slots,
+            backend.slot_aware(),
+        );
+        let permit = Arc::clone(&pool.permits)
             .try_acquire_owned()
             .map_err(|_| "a new server has no free slot".to_string())?;
-        let entry = Loaded {
-            _server: server,
-            base_url,
-            slots: spec.slots,
-            permits,
-            placement,
-            last_used: Arc::new(Mutex::new(Instant::now())),
-        };
-        let lease = lease(&entry, permit);
-        lock(&self.loaded).insert(id.to_string(), entry);
+        let lease = pool.lease(permit, holder)?;
+        lock(&self.loaded).insert(
+            id.to_string(),
+            Loaded {
+                _server: server,
+                pool,
+                placement,
+            },
+        );
         Ok(lease)
     }
 
     fn unload_idle_now(&self, idle_for: Duration) {
         lock(&self.loaded).retain(|id, entry| {
-            let idle = entry.in_use() == 0 && lock(&entry.last_used).elapsed() >= idle_for;
+            let idle = entry.in_use() == 0 && lock(&entry.pool.last_used).elapsed() >= idle_for;
             if idle {
                 tracing::info!(model = %id, "unloading idle model");
             }
@@ -393,25 +539,20 @@ impl Supervisor {
     }
 }
 
-fn lease(entry: &Loaded, permit: OwnedSemaphorePermit) -> LocalLease {
-    LocalLease::new(
-        entry.base_url.clone(),
-        Slot {
-            _permit: permit,
-            last_used: Arc::clone(&entry.last_used),
-        },
-    )
-}
-
-/// A held slot; releasing it records when the model was last used.
+/// A held slot; releasing it frees the slot for the next caller and records when the model
+/// was last used.
 struct Slot {
+    pool: Arc<SlotPool>,
+    index: u32,
+    holder: String,
+    /// Released after `drop` has put the slot back, so a waiter that wakes finds it free.
     _permit: OwnedSemaphorePermit,
-    last_used: Arc<Mutex<Instant>>,
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        *lock(&self.last_used) = Instant::now();
+        lock(&self.pool.table).give_back(self.index, &self.holder);
+        *lock(&self.pool.last_used) = Instant::now();
     }
 }
 
@@ -435,7 +576,7 @@ impl LocalModels for Supervisor {
         {
             let loaded = lock(&self.loaded);
             if let Some(entry) = loaded.get(id) {
-                return if entry.permits.available_permits() > 0 {
+                return if entry.pool.permits.available_permits() > 0 {
                     Availability::Loaded
                 } else {
                     // Busy: it can take the work once a slot frees.
@@ -449,8 +590,8 @@ impl LocalModels for Supervisor {
         }
     }
 
-    fn acquire<'a>(&'a self, id: &'a str) -> AcquireFuture<'a> {
-        Box::pin(self.acquire_slot(id))
+    fn acquire<'a>(&'a self, id: &'a str, holder: &'a str) -> AcquireFuture<'a> {
+        Box::pin(self.acquire_slot(id, holder))
     }
 }
 
@@ -532,6 +673,7 @@ mod tests {
             parallel: 2,
             cache_type: "f16".into(),
             ram_headroom_mb: 0,
+            cache_ram_mb: 0,
             extra_args: Vec::new(),
         }
     }
@@ -576,7 +718,10 @@ mod tests {
             Availability::Unavailable
         );
 
-        let (first, second) = tokio::join!(supervisor.acquire("a"), supervisor.acquire("a"));
+        let (first, second) = tokio::join!(
+            supervisor.acquire("a", "holder"),
+            supervisor.acquire("a", "holder")
+        );
         let (first, second) = (first.unwrap(), second.unwrap());
         assert_eq!(first.base_url, "http://fake/a/v1");
         assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
@@ -586,7 +731,7 @@ mod tests {
         assert_eq!(supervisor.availability("b"), Availability::Unavailable);
         drop(second);
         assert_eq!(supervisor.availability("a"), Availability::Loaded);
-        let error = supervisor.acquire("b").await.unwrap_err();
+        let error = supervisor.acquire("b", "holder").await.unwrap_err();
         assert!(error.contains("not enough free memory"), "{error}");
         drop(first);
         assert_eq!(supervisor.loaded()[0].slots_in_use, 0);
@@ -596,10 +741,10 @@ mod tests {
     async fn idle_models_make_room_and_unload_after_the_timeout() {
         let launcher = Arc::new(FakeLauncher::default());
         let supervisor = supervisor(Arc::clone(&launcher));
-        drop(supervisor.acquire("a").await.unwrap());
+        drop(supervisor.acquire("a", "holder").await.unwrap());
         // "a" is idle, so "b" may replace it.
         assert_eq!(supervisor.availability("b"), Availability::Fits);
-        let b = supervisor.acquire("b").await.unwrap();
+        let b = supervisor.acquire("b", "holder").await.unwrap();
         assert_eq!(launcher.running.load(Ordering::SeqCst), 1);
         assert_eq!(supervisor.loaded()[0].model_id, "b");
         supervisor.unload_idle_now(Duration::ZERO);
@@ -623,6 +768,7 @@ mod tests {
             slots: 2,
             gpu_layers: u32::MAX,
             cache_type: "q8_0".into(),
+            cache_ram_mb: 2048,
             extra_args: vec!["--flash-attn".into(), "on".into()],
         };
         let args = spec.args().join(" ");
@@ -631,6 +777,7 @@ mod tests {
             "{args}"
         );
         assert!(args.contains("--cache-type-k q8_0"), "{args}");
+        assert!(args.contains("--cache-ram 2048"), "{args}");
         assert!(
             args.ends_with("--mmproj proj.gguf --flash-attn on"),
             "{args}"
@@ -676,7 +823,7 @@ mod tests {
             launcher.clone(),
         );
         assert_eq!(with.availability("hf"), Availability::Fits);
-        let lease = with.acquire("hf").await.unwrap();
+        let lease = with.acquire("hf", "holder").await.unwrap();
         assert_eq!(lease.base_url, "http://fake/hf/v1");
         let launched = lock(&launcher.launched);
         assert_eq!(launched[0].0, "vllm");
@@ -735,8 +882,8 @@ mod tests {
             launcher.clone(),
         );
         assert_eq!(supervisor.availability("hf"), Availability::Fits);
-        drop(supervisor.acquire("hf").await.unwrap());
-        drop(supervisor.acquire("gguf").await.unwrap());
+        drop(supervisor.acquire("hf", "holder").await.unwrap());
+        drop(supervisor.acquire("gguf", "holder").await.unwrap());
         let launched = lock(&launcher.launched);
         assert_eq!(
             launched[0],
@@ -746,5 +893,164 @@ mod tests {
             )
         );
         assert_eq!(launched[1].0, "llamacpp");
+    }
+
+    #[tokio::test]
+    async fn an_agent_gets_back_the_slot_it_used_last() {
+        let supervisor = supervisor(Arc::new(FakeLauncher::default()));
+        let (a, b) = tokio::join!(
+            supervisor.acquire("a", "agent-a"),
+            supervisor.acquire("a", "agent-b")
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+        let (slot_a, slot_b) = (a.slot.unwrap(), b.slot.unwrap());
+        assert_ne!(slot_a, slot_b);
+        // b's slot has been free the longest, yet a gets its own back.
+        drop(b);
+        drop(a);
+        let again = supervisor.acquire("a", "agent-a").await.unwrap();
+        assert_eq!(again.slot, Some(slot_a));
+        drop(again);
+        let again = supervisor.acquire("a", "agent-b").await.unwrap();
+        assert_eq!(again.slot, Some(slot_b));
+    }
+
+    #[tokio::test]
+    async fn a_newcomer_takes_the_slot_free_the_longest() {
+        let supervisor = supervisor(Arc::new(FakeLauncher::default()));
+        let first = supervisor.acquire("a", "agent-a").await.unwrap();
+        let second = supervisor.acquire("a", "agent-b").await.unwrap();
+        let (slot_a, slot_b) = (first.slot.unwrap(), second.slot.unwrap());
+        // a is free longer than b, so the newcomer overwrites a's prompt and keeps b's.
+        drop(first);
+        drop(second);
+        let newcomer = supervisor.acquire("a", "agent-c").await.unwrap();
+        assert_eq!(newcomer.slot, Some(slot_a));
+        let other = supervisor.acquire("a", "agent-b").await.unwrap();
+        assert_eq!(other.slot, Some(slot_b));
+    }
+
+    #[tokio::test]
+    async fn waiters_get_slots_first_come_first_served_and_show_in_the_queue() {
+        let supervisor = supervisor(Arc::new(FakeLauncher::default()));
+        let held = vec![
+            supervisor.acquire("a", "h0").await.unwrap(),
+            supervisor.acquire("a", "h1").await.unwrap(),
+        ];
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        for name in ["w1", "w2", "w3"] {
+            let supervisor = Arc::clone(&supervisor);
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let lease = supervisor.acquire("a", name).await.unwrap();
+                tx.send((name, lease)).unwrap();
+            });
+            // Let the waiter join the queue before the next one starts.
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        assert_eq!(supervisor.loaded()[0].queued, 3);
+        assert_eq!(supervisor.loaded()[0].slots_in_use, 2);
+        let mut served = Vec::new();
+        let mut holding = Vec::new();
+        for lease in held {
+            drop(lease);
+            let (name, lease) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            served.push(name);
+            holding.push(lease);
+        }
+        assert_eq!(served, ["w1", "w2"]);
+        assert_eq!(supervisor.loaded()[0].queued, 1);
+        holding.pop();
+        let (name, _lease) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(name, "w3");
+        assert_eq!(supervisor.loaded()[0].queued, 0);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_wait_leaves_the_queue() {
+        let supervisor = supervisor(Arc::new(FakeLauncher::default()));
+        let _held = [
+            supervisor.acquire("a", "h0").await.unwrap(),
+            supervisor.acquire("a", "h1").await.unwrap(),
+        ];
+        let waiting =
+            tokio::time::timeout(Duration::from_millis(50), supervisor.acquire("a", "late")).await;
+        assert!(waiting.is_err(), "both slots are busy");
+        assert_eq!(supervisor.loaded()[0].queued, 0);
+    }
+
+    #[tokio::test]
+    async fn only_runtimes_that_address_slots_hand_out_slot_indexes() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let mut hf = model("hf", 2);
+        hf.format = Format::Safetensors;
+        let supervisor = Supervisor::start(
+            vec![hf, model("gguf", 2)],
+            settings(),
+            Runtimes {
+                vllm_available: true,
+                ..Runtimes::default()
+            },
+            &hardware(),
+            launcher,
+        );
+        assert!(
+            supervisor
+                .acquire("gguf", "h")
+                .await
+                .unwrap()
+                .slot
+                .is_some()
+        );
+        assert_eq!(supervisor.acquire("hf", "h").await.unwrap().slot, None);
+    }
+
+    #[tokio::test]
+    async fn the_prompt_cache_is_sized_from_the_ram_left_and_counted() {
+        let with_ram = |ram_gib: u64| Hardware {
+            ram_available_bytes: ram_gib * GIB,
+            ..hardware()
+        };
+        let start = |ram_gib: u64, requested_mb: u64| {
+            let launcher = Arc::new(FakeLauncher::default());
+            let launch: Arc<dyn Launcher> = launcher.clone();
+            let settings = LlamaCppSettings {
+                cache_ram_mb: requested_mb,
+                ..settings()
+            };
+            let supervisor = Supervisor::start(
+                vec![model("a", 6)],
+                settings,
+                Runtimes::default(),
+                &with_ram(ram_gib),
+                launch,
+            );
+            (supervisor, launcher)
+        };
+        let cache_arg = |launcher: &FakeLauncher| {
+            let launched = lock(&launcher.launched);
+            let args = &launched[0].1;
+            let at = args.iter().position(|arg| arg == "--cache-ram").unwrap();
+            args[at + 1].clone()
+        };
+        // Plenty of RAM: the setting applies.
+        let (roomy, launcher) = start(32, 8192);
+        drop(roomy.acquire("a", "h").await.unwrap());
+        assert_eq!(cache_arg(&launcher), "8192");
+        assert_eq!(roomy.loaded()[0].ram_bytes, 8192 * 1024 * 1024);
+        // Four GiB of RAM: capped to it.
+        let (tight, launcher) = start(4, 8192);
+        drop(tight.acquire("a", "h").await.unwrap());
+        assert_eq!(cache_arg(&launcher), "4096");
+        // The setting can turn it off.
+        let (off, launcher) = start(32, 0);
+        drop(off.acquire("a", "h").await.unwrap());
+        assert_eq!(cache_arg(&launcher), "0");
     }
 }

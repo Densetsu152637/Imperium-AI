@@ -19,4 +19,8 @@ required_bytes: number,
 /**
  * How the model would load on this machine when nothing else is loaded.
  */
-placement: "gpu" | "partial" | "cpu" | "none", gpu_layers: number | null, loaded: boolean, slots: number, slots_in_use: number, };
+placement: "gpu" | "partial" | "cpu" | "none", gpu_layers: number | null, loaded: boolean, slots: number, slots_in_use: number, 
+/**
+ * Calls waiting for a slot on this model.
+ */
+queued: number, };

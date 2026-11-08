@@ -67,7 +67,14 @@ pub fn list() -> anyhow::Result<()> {
         }
         for model in &listing.models {
             let state = if model.loaded {
-                format!("loaded, {}/{} slots busy", model.slots_in_use, model.slots)
+                let queue = match model.queued {
+                    0 => String::new(),
+                    queued => format!(", {queued} waiting"),
+                };
+                format!(
+                    "loaded, {}/{} slots busy{queue}",
+                    model.slots_in_use, model.slots
+                )
             } else {
                 match model.placement.as_str() {
                     "partial" => format!(

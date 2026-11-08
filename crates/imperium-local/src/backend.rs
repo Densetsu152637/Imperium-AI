@@ -41,6 +41,13 @@ pub trait RuntimeBackend: Send + Sync + fmt::Debug {
     /// ([`LaunchSpec::gpu_memory_utilization`]); runtimes that size their own memory ignore it.
     fn gpu_memory_utilization(&self, placement: &Placement, budget: Budget) -> f64;
 
+    /// Whether requests can be pinned to a slot by index and the server keeps a host-memory
+    /// prompt cache for slots another agent reused (llama.cpp). Then the supervisor hands each
+    /// lease a slot index, sizes `LaunchSpec::cache_ram_mb`, and counts it in the RAM budget.
+    fn slot_aware(&self) -> bool {
+        false
+    }
+
     /// Extra arguments from the settings, passed to every server of this runtime.
     fn extra_args(&self) -> Vec<String>;
 
@@ -96,6 +103,10 @@ impl RuntimeBackend for LlamaCpp {
         0.0
     }
 
+    fn slot_aware(&self) -> bool {
+        true
+    }
+
     fn extra_args(&self) -> Vec<String> {
         self.extra_args.clone()
     }
@@ -117,6 +128,9 @@ impl RuntimeBackend for LlamaCpp {
             spec.cache_type.clone(),
             "--cache-type-v".into(),
             spec.cache_type.clone(),
+            // MiB of host memory for the prompts of slots that were reused; 0 disables it.
+            "--cache-ram".into(),
+            spec.cache_ram_mb.to_string(),
             "--jinja".into(),
         ];
         if let Some(mmproj) = &spec.mmproj {

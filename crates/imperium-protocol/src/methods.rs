@@ -299,6 +299,8 @@ pub struct LocalModelRow {
     pub loaded: bool,
     pub slots: u32,
     pub slots_in_use: u32,
+    /// Calls waiting for a slot on this model.
+    pub queued: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

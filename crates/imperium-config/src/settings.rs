@@ -30,6 +30,10 @@ parallel = 2
 cache_type = "f16"
 # System memory kept free for everything else when placing models.
 ram_headroom_mb = 2048
+# Host memory (MiB) for llama.cpp's prompt cache, which keeps the prompts of agents that lost
+# their slot to another so they are restored instead of read again. It is capped to the memory
+# left after the model, counts against the budget, and 0 turns it off.
+cache_ram_mb = 8192
 "#;
 
 /// Typed view of the merged configuration. Keys this build does not know are ignored, so a
@@ -685,6 +689,9 @@ pub struct LlamaCppSettings {
     pub parallel: u32,
     pub cache_type: String,
     pub ram_headroom_mb: u64,
+    /// Host memory for llama.cpp's prompt cache (`--cache-ram`), before it is capped to the RAM
+    /// the model leaves free; 0 disables it.
+    pub cache_ram_mb: u64,
     /// Extra arguments passed to every `llama-server`.
     #[serde(default)]
     pub extra_args: Vec<String>,

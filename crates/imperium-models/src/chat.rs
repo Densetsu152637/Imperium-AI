@@ -29,6 +29,10 @@ pub struct ChatRequest<'a> {
     pub model: &'a str,
     pub messages: &'a [ChatMessage],
     pub tools: &'a [ToolSpec],
+    /// For a llama.cpp server: the slot to run the request on (`id_slot`), with the slot's
+    /// cached prompt kept and reused (`cache_prompt`). `None` leaves both to the server, and
+    /// other endpoints never receive these fields.
+    pub slot: Option<u32>,
 }
 
 /// The assembled result of one streamed completion.
@@ -135,15 +139,7 @@ pub async fn stream_chat(
         "{}/chat/completions",
         endpoint.base_url.trim_end_matches('/')
     );
-    let mut body = json!({
-        "model": request.model,
-        "messages": request.messages,
-        "stream": true,
-        "stream_options": { "include_usage": true },
-    });
-    if !request.tools.is_empty() {
-        body["tools"] = request.tools.iter().map(ToolSpec::to_wire).collect();
-    }
+    let body = request_body(request);
     let mut builder = http.post(url).json(&body);
     if let Some(key) = &endpoint.api_key {
         builder = builder.bearer_auth(key);
@@ -176,6 +172,25 @@ pub async fn stream_chat(
         }
     }
     Ok(assembler.finish())
+}
+
+/// The JSON body of a streamed chat completion request.
+fn request_body(request: ChatRequest<'_>) -> serde_json::Value {
+    let mut body = json!({
+        "model": request.model,
+        "messages": request.messages,
+        "stream": true,
+        "stream_options": { "include_usage": true },
+    });
+    if !request.tools.is_empty() {
+        body["tools"] = request.tools.iter().map(ToolSpec::to_wire).collect();
+    }
+    if let Some(slot) = request.slot {
+        // llama.cpp's chat endpoint passes these on to its completion task.
+        body["id_slot"] = json!(slot);
+        body["cache_prompt"] = json!(true);
+    }
+    body
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,6 +354,7 @@ mod tests {
                     content: "hi".into(),
                 }],
                 tools: &[],
+                slot: None,
             },
             |text| streamed.push_str(text),
         )
@@ -384,6 +400,7 @@ mod tests {
                 model: "m",
                 messages: &[],
                 tools: &[],
+                slot: None,
             },
             |_| {},
         )
@@ -393,6 +410,21 @@ mod tests {
             matches!(error, ModelError::Status { status: 401, ref body, .. } if body == "bad key"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn llama_cpp_slots_are_requested_only_when_the_call_has_one() {
+        let request = |slot| ChatRequest {
+            model: "m",
+            messages: &[],
+            tools: &[],
+            slot,
+        };
+        let plain = request_body(request(None));
+        assert!(plain.get("id_slot").is_none() && plain.get("cache_prompt").is_none());
+        let pinned = request_body(request(Some(1)));
+        assert_eq!(pinned["id_slot"], 1);
+        assert_eq!(pinned["cache_prompt"], true);
     }
 
     #[test]

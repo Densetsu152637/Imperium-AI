@@ -235,29 +235,36 @@ impl Agent {
         let (tools, mcp) = self.tool_specs();
         let tool_texts = tool_texts(&tools, mcp);
         let mut total = Usage::default();
-        // A local model is held (and loaded if needed) for the whole turn.
-        let (client, _lease) = match self.client().await {
-            Ok(client) => client,
-            Err(message) => {
-                self.emit(SessionEvent::TurnFailed {
-                    message: message.clone(),
-                });
-                return self.outcome(message, false, total);
-            }
-        };
         let mut reply = String::new();
         let max_steps = self.shared.max_steps;
+        // Names this agent to a local model, which gives it back the slot it used last.
+        let holder = format!("{}/{}", self.shared.session_id, self.id);
         for step in 1..=max_steps {
-            let request = ChatRequest {
-                model: &self.model.model,
-                messages: &self.messages,
-                tools: &tools,
-            };
-            let mut started = Instant::now();
-            let mut first_text = None;
             let mut waits = 0;
             let mut waited = std::time::Duration::ZERO;
-            let result = loop {
+            let (client, queue_wait, started, first_text, result) = loop {
+                // A local model's slot is held for this one request, not for the turn: tool
+                // calls, `await_tasks`, and usage-limit pauses run without one. The model is
+                // loaded here if needed.
+                let queued = Instant::now();
+                let (client, lease) = match self.client(&holder).await {
+                    Ok(taken) => taken,
+                    Err(message) => {
+                        self.emit(SessionEvent::TurnFailed {
+                            message: message.clone(),
+                        });
+                        return self.outcome(message, false, total);
+                    }
+                };
+                let queue_wait = lease.as_ref().map(|_| queued.elapsed());
+                let request = ChatRequest {
+                    model: &self.model.model,
+                    messages: &self.messages,
+                    tools: &tools,
+                    slot: lease.as_ref().and_then(|lease| lease.slot),
+                };
+                let started = Instant::now();
+                let mut first_text = None;
                 let emitter = &self.shared.emitter;
                 let id = &self.id;
                 let mut on_text = |text: &str| {
@@ -270,17 +277,20 @@ impl Agent {
                     );
                 };
                 let result = client.stream(request, &mut on_text).await;
+                drop(lease);
                 // Usage ran out: wait as the session's resume policy says, then try again.
-                let Err(error) = &result else { break result };
+                let Err(error) = &result else {
+                    break (client, queue_wait, started, first_text, result);
+                };
                 if !error.is_usage_limit() {
-                    break result;
+                    break (client, queue_wait, started, first_text, result);
                 }
                 let now = chrono::Local::now();
                 let policy = self.shared.controls.policy();
                 let Some(until) =
                     crate::next_attempt(&policy, error.retry_after_s(), waits, waited, now)
                 else {
-                    break result;
+                    break (client, queue_wait, started, first_text, result);
                 };
                 self.emit(SessionEvent::Paused {
                     until_unix_ms: u64::try_from(until.timestamp_millis()).unwrap_or(0),
@@ -291,8 +301,6 @@ impl Agent {
                 waited += pause.elapsed();
                 waits += 1;
                 self.emit(SessionEvent::Resumed {});
-                started = Instant::now();
-                first_text = None;
             };
             let completion = match result {
                 Ok(completion) => completion,
@@ -308,7 +316,7 @@ impl Agent {
             total.prompt_tokens += usage.prompt_tokens;
             total.completion_tokens += usage.completion_tokens;
             total.cached_tokens += usage.cached_tokens;
-            self.emit(self.call_telemetry(&usage, started, first_text));
+            self.emit(self.call_telemetry(&usage, started, first_text, queue_wait));
             // What this call read: the messages before its reply is appended, and the tools.
             let breakdown = self
                 .shared
@@ -650,9 +658,12 @@ impl Agent {
         finish(ok, output)
     }
 
-    /// The client for this turn's model calls, with the slot held on a local model.
-    async fn client(&self) -> Result<(Arc<dyn ChatClient>, Option<LocalLease>), String> {
-        let (endpoint, lease) = self.endpoint().await?;
+    /// The client for one model call, with the slot held on a local model until the call ends.
+    async fn client(
+        &self,
+        holder: &str,
+    ) -> Result<(Arc<dyn ChatClient>, Option<LocalLease>), String> {
+        let (endpoint, lease) = self.endpoint(holder).await?;
         let kind = &self.model.kind;
         let client = self
             .shared
@@ -662,8 +673,9 @@ impl Agent {
         Ok((client, lease))
     }
 
-    /// Where to send this turn's model calls, with the slot held on a local model.
-    async fn endpoint(&self) -> Result<(Endpoint, Option<LocalLease>), String> {
+    /// Where to send one model call, with the slot held on a local model. Waits for a slot when
+    /// every one is busy, and loads the model first if it is not loaded.
+    async fn endpoint(&self, holder: &str) -> Result<(Endpoint, Option<LocalLease>), String> {
         if !self.model.local {
             return Ok((self.model.endpoint.clone(), None));
         }
@@ -673,7 +685,7 @@ impl Agent {
             .as_deref()
             .ok_or("local models are not available: no llama.cpp runtime is configured")?;
         let lease = local
-            .acquire(&self.model.model)
+            .acquire(&self.model.model, holder)
             .await
             .map_err(|error| format!("could not load local model {}: {error}", self.model.model))?;
         let endpoint = Endpoint {
@@ -701,6 +713,7 @@ impl Agent {
         usage: &Usage,
         started: Instant,
         first_text: Option<Instant>,
+        queue_wait: Option<std::time::Duration>,
     ) -> SessionEvent {
         let duration = started.elapsed();
         // Generation speed after the first token, unless the endpoint delivered everything at
@@ -715,6 +728,7 @@ impl Agent {
             model: self.model.spec.clone(),
             usage: token_usage(usage),
             duration_ms: millis(duration),
+            queue_wait_ms: queue_wait.map(millis),
             time_to_first_token_ms: first_text.map(|first| millis(first - started)),
             tokens_per_sec,
             cost_usd: self.cost(usage),

@@ -17,18 +17,25 @@ pub enum Availability {
     Unavailable,
 }
 
-/// A slot on a loaded local model, held while an agent uses it. Dropping it frees the slot.
+/// A slot on a loaded local model, held for one model call. Dropping it frees the slot, so an
+/// agent takes a lease immediately before each request and drops it when the request ends, and
+/// holds none while it runs tools or waits.
 pub struct LocalLease {
     /// The OpenAI-compatible base URL of the model's server.
     pub base_url: String,
+    /// The server slot this lease owns, for runtimes that address slots by index (llama.cpp's
+    /// `id_slot`); requests sent with the lease are pinned to it so the slot's cached prompt is
+    /// reused. `None` for runtimes that choose their own.
+    pub slot: Option<u32>,
     _release: Box<dyn Send + Sync>,
 }
 
 impl LocalLease {
     /// `release` is dropped with the lease; its `Drop` frees the slot.
-    pub fn new(base_url: String, release: impl Send + Sync + 'static) -> Self {
+    pub fn new(base_url: String, slot: Option<u32>, release: impl Send + Sync + 'static) -> Self {
         LocalLease {
             base_url,
+            slot,
             _release: Box::new(release),
         }
     }
@@ -38,6 +45,7 @@ impl fmt::Debug for LocalLease {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LocalLease")
             .field("base_url", &self.base_url)
+            .field("slot", &self.slot)
             .finish_non_exhaustive()
     }
 }
@@ -48,6 +56,9 @@ pub type AcquireFuture<'a> = Pin<Box<dyn Future<Output = Result<LocalLease, Stri
 pub trait LocalModels: Send + Sync + fmt::Debug {
     /// Where the model with this id stands, without loading anything.
     fn availability(&self, model: &str) -> Availability;
-    /// Takes a slot on the model, loading it first if needed.
-    fn acquire<'a>(&'a self, model: &'a str) -> AcquireFuture<'a>;
+    /// Takes a slot on the model for one call, loading the model first if needed and queueing
+    /// first-come, first-served while every slot is busy. `holder` names the agent asking, so
+    /// the model can give it back the slot it used last, whose cached prompt is still there
+    /// unless another agent has overwritten it.
+    fn acquire<'a>(&'a self, model: &'a str, holder: &'a str) -> AcquireFuture<'a>;
 }

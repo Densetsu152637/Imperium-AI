@@ -180,6 +180,7 @@ mod tests {
             slots: 1,
             gpu_layers: 0,
             cache_type: "f16".into(),
+            cache_ram_mb: 0,
             extra_args: Vec::new(),
         };
         let error = launcher.launch(&spec).await.err().unwrap();

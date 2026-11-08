@@ -403,7 +403,11 @@ mod tests {
                 .map_or(Availability::Unavailable, |(_, availability)| *availability)
         }
 
-        fn acquire<'a>(&'a self, _model: &'a str) -> imperium_api::AcquireFuture<'a> {
+        fn acquire<'a>(
+            &'a self,
+            _model: &'a str,
+            _holder: &'a str,
+        ) -> imperium_api::AcquireFuture<'a> {
             Box::pin(async { Err("not used".to_string()) })
         }
     }

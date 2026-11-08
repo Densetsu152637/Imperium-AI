@@ -112,8 +112,48 @@ checks it against the release's `SHA256SUMS`, and unpacks it under
 `llama-server` instead. The daemon starts one `llama-server` per loaded model on a free
 loopback port with `--parallel` slots, waits for `/health`, logs its output to
 `<data>/logs/llama-<id>.log`, and stops it when it has been idle for `idle_unload_s` or the
-daemon exits. An agent holds a slot for its whole turn; a model whose slots are all busy
-queues further turns until one frees. vLLM is later work.
+daemon exits. vLLM is later work.
+
+**Implemented (stage 2c):** one loaded local model serves many sessions at once. The daemon has
+one supervisor, loaded models are keyed by id, and every session that asks for `llamacpp:<id>`
+reuses the same `llama-server`. What changed is how long a slot is held:
+
+- **A lease per model call.** An agent takes a slot immediately before each streamed request and
+  releases it when the request ends, whether it succeeded or failed. Tool calls, `await_tasks`,
+  waiting for the user, and usage-limit pauses hold no slot, so any number of roots asleep in
+  `await_tasks` leave the slots to the sessions that are working, even on a model with a single
+  slot. The model is loaded on the first call, and stays loaded within `idle_unload_s` of the last
+  call that used it. Hosted endpoints are unaffected.
+- **A queue.** Calls that find every slot busy wait first-come, first-served. `models.local`,
+  `imperium models local`, and the desktop's Local models panel show each loaded model's slots in
+  use and `queued` (calls waiting), and each `model_call_completed` event carries `queue_wait_ms`,
+  the time that call waited for a slot (`duration_ms` and the time to first token start after it;
+  absent for hosted models).
+- **Slot affinity.** The supervisor remembers which agent (session and agent id) used each slot
+  last. A call goes to the free slot its agent used last, whose KV cache still holds the agent's
+  prompt, unless another agent has used it since; otherwise to the slot that has been free the
+  longest, so the prompts used most recently survive longest. The lease carries the slot index
+  and the request is pinned to it with llama.cpp's `id_slot` (also accepted on
+  `/v1/chat/completions`), together with `cache_prompt: true` so only the part of the prompt the
+  slot has not seen is processed. vLLM chooses its own sequences and receives neither field.
+- **A prompt cache in host memory.** `llama-server` starts with `--cache-ram`, set from
+  `runtime.llamacpp.cache_ram_mb` (default 8192 MiB, llama.cpp's own default) and capped to the
+  RAM left in the budget after the model; the cache counts as RAM held by that model, so other
+  models are planned without it, and `0` turns it off. When a slot is given to another agent,
+  llama.cpp saves the prompt it held there and restores it by prefix when the first agent is
+  back on a different slot, so a switch costs host memory instead of re-reading the prompt.
+  Saving slots to disk (`--slot-save-path`) is stage 2d.
+
+A model that is idle between one agent's calls can be unloaded to make room for another model, as
+any idle model can; the agent reloads it on its next call. Making a waiting orchestrator yield
+its model to a subagent's is stage 2d.
+
+**Slots × context (stage 2c, partly open).** `--ctx-size` is the per-slot context times the
+slots (`runtime.llamacpp.context` × `runtime.llamacpp.parallel`), and the memory planner counts
+the KV cache for all of it, so more slots or a bigger window both cost memory. There is no
+setting yet that picks the largest window that still allows N slots for a given amount of free
+memory, or that prefers more slots over a bigger window; that belongs with the context tiers of
+the Emperor plan.
 
 **Implemented (phase 7):** Hugging Face model folders (a `config.json` with safetensors files)
 in `models.folders` are discovered as `vllm:<folder name>`, their shape read from `config.json`
@@ -141,7 +181,7 @@ and passing it to `Supervisor::with_backends`.
   Docker image, or used on a remote host. Imperium never bundles vLLM.
 - Each loaded model is a supervised process with a port, health check, idle timeout, and
   memory reservation. Multiple slots (`--parallel`) let one loaded model serve several
-  subagents concurrently.
+  agents concurrently; an agent holds a slot only while a model call runs.
 
 ## Hardware awareness
 

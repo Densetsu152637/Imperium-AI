@@ -16,7 +16,10 @@ const GIB = 1024 ** 3;
 const gib = (bytes: number): string => `${(bytes / GIB).toFixed(1)} GiB`;
 
 function fit(row: LocalModelRow): string {
-  if (row.loaded) return `loaded · ${row.slots_in_use}/${row.slots} busy`;
+  if (row.loaded) {
+    const queue = row.queued > 0 ? ` · ${row.queued} waiting` : "";
+    return `loaded · ${row.slots_in_use}/${row.slots} busy${queue}`;
+  }
   switch (row.placement) {
     case "gpu":
       return "fits on GPU";

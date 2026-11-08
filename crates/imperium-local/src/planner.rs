@@ -92,6 +92,13 @@ impl Footprint {
     }
 }
 
+/// MiB of host memory for llama.cpp's prompt cache (`--cache-ram`): what the setting asks for,
+/// capped to the RAM left in `budget` after the model at `placement`.
+pub fn prompt_cache_mb(requested_mb: u64, placement: &Placement, budget: Budget) -> u64 {
+    let free_mb = budget.ram_bytes.saturating_sub(placement.ram_bytes) / (1024 * 1024);
+    requested_mb.min(free_mb)
+}
+
 /// Bytes per KV cache element for llama.cpp's `--cache-type-k/v` values.
 pub fn cache_element_bytes(cache_type: &str) -> f64 {
     match cache_type {
@@ -258,6 +265,29 @@ mod tests {
         };
         let placement = place(estimate, budget).unwrap();
         assert!(placement.gpu_layers > 0 && !placement.all_layers_on_gpu);
+    }
+
+    #[test]
+    fn the_prompt_cache_takes_what_the_setting_asks_within_the_ram_left() {
+        let budget = Budget {
+            vram_bytes: 8 * GIB,
+            ram_bytes: 10 * GIB,
+            unified: false,
+        };
+        let on_gpu = place(footprint(), budget).unwrap();
+        assert_eq!(prompt_cache_mb(8192, &on_gpu, budget), 8192);
+        assert_eq!(prompt_cache_mb(0, &on_gpu, budget), 0);
+        // A model that spills into RAM leaves less: 10 GiB less 4 GiB of the model.
+        let split = Placement {
+            ram_bytes: 4 * GIB,
+            ..on_gpu
+        };
+        assert_eq!(prompt_cache_mb(8192, &split, budget), 6144);
+        let full = Placement {
+            ram_bytes: 12 * GIB,
+            ..on_gpu
+        };
+        assert_eq!(prompt_cache_mb(8192, &full, budget), 0);
     }
 
     #[test]
