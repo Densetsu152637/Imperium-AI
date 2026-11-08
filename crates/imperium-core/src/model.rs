@@ -17,6 +17,9 @@ pub struct ResolvedModel {
     /// Served by the supervised llama.cpp runtime: `model` is the local model id, and the
     /// endpoint is filled in when the agent takes a slot on it.
     pub local: bool,
+    /// Tokens the model reads per request, from the model table's `context_window`. A local
+    /// model's server reports its own, which takes precedence.
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +50,13 @@ pub fn resolve_model(
         .split_once(':')
         .filter(|(endpoint, model)| !endpoint.is_empty() && !model.is_empty())
         .ok_or_else(|| ModelError::BadSpec(spec.to_string()))?;
+    let context_window = settings
+        .models
+        .catalog
+        .iter()
+        .find(|entry| entry.spec == spec)
+        .and_then(|entry| entry.context_window)
+        .map(u64::from);
     if endpoint_id == LLAMACPP_ENDPOINT || endpoint_id == VLLM_ENDPOINT {
         return Ok(ResolvedModel {
             spec: spec.to_string(),
@@ -57,6 +67,7 @@ pub fn resolve_model(
             model: model.to_string(),
             pricing: None,
             local: true,
+            context_window,
         });
     }
     let endpoint = settings
@@ -78,6 +89,7 @@ pub fn resolve_model(
         model: model.to_string(),
         pricing: endpoint.pricing.get(model).copied(),
         local: false,
+        context_window,
     })
 }
 
@@ -227,6 +239,20 @@ mod tests {
         assert!(matches!(missing, Err(ModelError::MissingSecret(..))));
     }
 
+    #[test]
+    fn the_context_window_comes_from_the_model_table() {
+        let table = format!(
+            "{ENDPOINTS}\n[[models.catalog]]\nid = \"big\"\nspec = \"hosted:big\"\n\
+             location = \"cloud\"\ntier = \"strong\"\ncontext_window = 32768"
+        );
+        let settings = settings(&table);
+        let big = resolve_model(&settings, Some("hosted:big"), |_| Ok(Some("k".into()))).unwrap();
+        assert_eq!(big.context_window, Some(32768));
+        // Not in the table: unknown, never guessed.
+        let other = resolve_model(&settings, None, |_| Ok(None)).unwrap();
+        assert_eq!(other.context_window, None);
+    }
+
     fn catalog() -> Vec<CatalogModel> {
         let row = |id: &str, price: Option<f64>, tier: Tier, location: Location, tags: &[&str]| {
             CatalogModel {
@@ -244,6 +270,7 @@ mod tests {
                         cached_input_usd_per_mtok: None,
                     }),
                     local: false,
+                    context_window: None,
                 },
                 tier,
                 location,
@@ -268,6 +295,7 @@ mod tests {
             model: "session".into(),
             pricing: None,
             local: false,
+            context_window: None,
         }
     }
 

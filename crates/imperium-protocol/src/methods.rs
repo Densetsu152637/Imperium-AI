@@ -239,6 +239,9 @@ pub struct ModelRow {
     pub output_usd_per_mtok: Option<f64>,
     /// False when the row names an endpoint that is not configured.
     pub endpoint_configured: bool,
+    /// The row's `context_window`, in tokens, when configured.
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 /// `models.local`: models found in `models.folders`, the hardware they are planned against, and

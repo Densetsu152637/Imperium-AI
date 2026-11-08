@@ -66,6 +66,26 @@ pub enum SessionEvent {
         tokens_per_sec: Option<f64>,
         cost_usd: Option<f64>,
     },
+    /// What the model read on the call just completed, by category, from the request exactly as
+    /// sent; follows that call's `model_call_completed`. When the provider reported
+    /// `prompt_tokens`, the categories add up to it.
+    ContextBreakdown {
+        model: String,
+        /// Tokens the model can read per request; absent when unknown.
+        #[ts(type = "number | null")]
+        context_window: Option<u64>,
+        method: TokenCountMethod,
+        /// The request's parts in a fixed order, leaving out empty ones. The last is
+        /// `overhead` (chat template and formatting), which can be negative when the template
+        /// drops text the request carried, such as earlier reasoning.
+        categories: Vec<ContextCategory>,
+        /// The prompt size the provider reported; absent when it reported no usage.
+        #[ts(type = "number | null")]
+        prompt_tokens: Option<u64>,
+        /// Prompt tokens served from the provider's cache.
+        #[ts(type = "number")]
+        cached_tokens: u64,
+    },
     /// The agent replaced its plan.
     PlanUpdated { plan: Plan },
     /// The agent delegated a task to a subagent, whose events carry `task_id` as agent id.
@@ -168,6 +188,36 @@ pub struct TokenUsage {
     pub cached_tokens: u64,
 }
 
+/// One part of a model request in a context breakdown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ContextCategory {
+    /// A stable id: `system_base`, `system_skills`, `system_memory`, `system_citations`,
+    /// `system_project`, `tools_builtin`, `tools_mcp`, `manifest`, `memories`, `user`,
+    /// `assistant`, `tool_results`, or `overhead`. Clients show unknown keys by their label.
+    pub key: String,
+    pub label: String,
+    /// Only `overhead` can be negative.
+    #[ts(type = "number")]
+    pub tokens: i64,
+}
+
+/// How a context breakdown was counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum TokenCountMethod {
+    /// Each part counted with the model's own tokenizer; the overhead is the provider's
+    /// reported prompt size minus the parts.
+    Exact,
+    /// Each part estimated, then scaled so the parts add up to the provider's reported prompt
+    /// size.
+    Calibrated,
+    /// The provider reported no usage: parts are counted with the tokenizer where one is
+    /// available, else estimated, and the formatting overhead is estimated.
+    Estimated,
+}
+
 /// A goal and the steps toward it, kept by an agent with the `update_plan` tool.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -225,6 +275,27 @@ mod tests {
             serde_json::to_value(PermissionDecision::AllowForSession).unwrap(),
             json!("allow_for_session")
         );
+    }
+
+    #[test]
+    fn context_breakdowns_serialise_with_their_method() {
+        let event = SessionEvent::ContextBreakdown {
+            model: "llamacpp:q".into(),
+            context_window: Some(8192),
+            method: TokenCountMethod::Exact,
+            categories: vec![ContextCategory {
+                key: "overhead".into(),
+                label: "Chat template and formatting".into(),
+                tokens: -3,
+            }],
+            prompt_tokens: None,
+            cached_tokens: 0,
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["type"], "context_breakdown");
+        assert_eq!(value["method"], "exact");
+        assert_eq!(value["categories"][0]["tokens"], -3);
+        assert_eq!(value["prompt_tokens"], serde_json::Value::Null);
     }
 }
 

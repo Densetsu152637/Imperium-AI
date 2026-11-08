@@ -1,7 +1,16 @@
 // Session state built from the daemon's event stream: the root agent's transcript, each
 // subagent's task, the current plan, and the per-call telemetry the panels display.
 
-import type { AgentEvent, Plan, ResumePolicy, SessionStatus, SessionSummary, TokenUsage } from "@imperium/protocol";
+import type {
+  AgentEvent,
+  ContextCategory,
+  Plan,
+  ResumePolicy,
+  SessionStatus,
+  SessionSummary,
+  TokenCountMethod,
+  TokenUsage,
+} from "@imperium/protocol";
 
 export const ROOT = "root";
 
@@ -36,6 +45,21 @@ export type ModelCall = {
   costUsd: number | null;
 };
 
+/** What one agent's latest model call read, by category (see docs/03-agent-engine.md). */
+export type ContextBreakdown = {
+  at: number;
+  agentId: string;
+  model: string;
+  /** Tokens the model reads per request; null when unknown. */
+  contextWindow: number | null;
+  method: TokenCountMethod;
+  /** In a fixed order; `overhead` (chat template and formatting) is last and may be negative. */
+  categories: ContextCategory[];
+  /** The provider's reported prompt size; the categories add up to it. */
+  promptTokens: number | null;
+  cachedTokens: number;
+};
+
 export type SessionState = {
   summary: SessionSummary;
   /** The root agent's transcript, plus permission requests from any agent. */
@@ -43,6 +67,8 @@ export type SessionState = {
   tasks: Record<string, TaskState>;
   plan: Plan | null;
   calls: ModelCall[];
+  /** Each agent's latest context breakdown, by agent id. */
+  breakdowns: Record<string, ContextBreakdown>;
   busy: boolean;
   /** The agent's browser after its latest action. */
   browser: { url: string; title: string; screenshot: string } | null;
@@ -69,6 +95,7 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   tasks: {},
   plan: null,
   calls: [],
+  breakdowns: {},
   busy: false,
   browser: null,
   status: summary.status,
@@ -188,7 +215,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
     ];
   }
 
-  let { tasks, plan, calls, busy, browser, status, statusDetail, pause } = state;
+  let { tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause } = state;
   if (event.type === "status_changed") {
     status = event.status;
     statusDetail = event.detail;
@@ -212,6 +239,21 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
         costUsd: event.cost_usd,
       },
     ];
+  }
+  if (event.type === "context_breakdown") {
+    breakdowns = {
+      ...breakdowns,
+      [agentId]: {
+        at: Date.now(),
+        agentId,
+        model: event.model,
+        contextWindow: event.context_window,
+        method: event.method,
+        categories: event.categories,
+        promptTokens: event.prompt_tokens,
+        cachedTokens: event.cached_tokens,
+      },
+    };
   }
 
   if (agentId === ROOT) {
@@ -241,7 +283,25 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
         : { ...task, entries: applyToEntries(task.entries, agentEvent) };
     tasks = { ...tasks, [agentId]: updated };
   }
-  return { ...state, entries, tasks, plan, calls, busy, browser, status, statusDetail, pause };
+  return { ...state, entries, tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause };
+}
+
+/** Tokens a breakdown's request held: the categories, which add up to the reported size. */
+export const breakdownUsed = (breakdown: ContextBreakdown): number =>
+  breakdown.categories.reduce((sum, category) => sum + category.tokens, 0);
+
+/** A token count as `12.3k` or `1.2M`, or as is below a thousand. */
+export function formatTokens(n: number): string {
+  const size = Math.abs(n);
+  if (size >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (size >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(n);
+}
+
+/** `12.3k / 32.8k tokens`, or `12.3k tokens` when the window is unknown. */
+export function describeUse(breakdown: ContextBreakdown): string {
+  const used = formatTokens(breakdownUsed(breakdown));
+  return breakdown.contextWindow ? `${used} / ${formatTokens(breakdown.contextWindow)} tokens` : `${used} tokens`;
 }
 
 export function markAnswered(state: SessionState, requestId: number): SessionState {

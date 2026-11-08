@@ -11,4 +11,8 @@ spec: string, location: "local" | "cloud", tier: "basic" | "standard" | "strong"
 /**
  * False when the row names an endpoint that is not configured.
  */
-endpoint_configured: boolean, };
+endpoint_configured: boolean, 
+/**
+ * The row's `context_window`, in tokens, when configured.
+ */
+context_window: number | null, };

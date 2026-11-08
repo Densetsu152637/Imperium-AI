@@ -19,6 +19,7 @@ use imperium_workflow::ContextIndex;
 use serde_json::json;
 
 use crate::agent::Agent;
+use crate::breakdown::TokenCounter;
 use crate::journal::Journal;
 use crate::status::Controls;
 use crate::{CatalogModel, LocalModels, ResolvedModel, SessionLauncher};
@@ -265,6 +266,8 @@ pub(crate) struct Shared {
     pub instructions: Option<String>,
     pub web: Option<WebTools>,
     pub media: Option<Arc<imperium_media::Media>>,
+    /// Token counts for context breakdowns, shared so agents on one model count text once.
+    pub tokens: TokenCounter,
     next_task: AtomicU32,
 }
 
@@ -307,6 +310,7 @@ async fn run(
         instructions: config.instructions,
         web: config.web,
         media: config.media,
+        tokens: TokenCounter::default(),
         next_task: AtomicU32::new(0),
     });
     shared

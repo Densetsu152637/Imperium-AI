@@ -58,6 +58,7 @@ fn start(url: &str, dir: &std::path::Path, policy: ResumePolicy) -> Session {
             model: "model".into(),
             pricing: None,
             local: false,
+            context_window: None,
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),

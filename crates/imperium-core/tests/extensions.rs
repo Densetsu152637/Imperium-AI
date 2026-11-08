@@ -98,6 +98,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
             model: "model".into(),
             pricing: None,
             local: false,
+            context_window: None,
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),

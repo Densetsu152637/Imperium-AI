@@ -713,6 +713,10 @@ pub struct CatalogEntry {
     /// Free-form labels, such as `code` or `vision`, that rules can match.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Tokens the model reads per request, for context breakdowns. llama.cpp models report
+    /// their own; for other models the window is unknown unless given here.
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 /// Where a model runs.

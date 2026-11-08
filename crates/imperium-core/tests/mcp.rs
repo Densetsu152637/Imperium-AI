@@ -101,6 +101,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
             model: "model".into(),
             pricing: None,
             local: false,
+            context_window: None,
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),

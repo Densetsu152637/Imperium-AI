@@ -2,6 +2,7 @@
 //! so one streaming client covers hosted endpoints, llama.cpp, vLLM, Ollama, and LM Studio.
 
 mod chat;
+pub mod llamacpp;
 mod pricing;
 mod sse;
 

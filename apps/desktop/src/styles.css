@@ -50,6 +50,22 @@
   --warn: #e6b45c;
   --ink: #0b0c0e;
 
+  /* Context breakdown categories: blues for the system prompt, violets for tool definitions,
+     ambers for workflow context and memories, then the conversation and the template */
+  --ctx-system: #4f8fd6;
+  --ctx-system-2: #79aae3;
+  --ctx-system-3: #a3c4ec;
+  --ctx-system-4: #3a6fae;
+  --ctx-system-5: #2b5689;
+  --ctx-tools: #a77fd8;
+  --ctx-tools-2: #cbaaf0;
+  --ctx-manifest: #e6b45c;
+  --ctx-memories: #c98d3f;
+  --ctx-user: var(--accent);
+  --ctx-assistant: var(--ok);
+  --ctx-results: var(--silver);
+  --ctx-overhead: #6b717b;
+
   /* Aliases UI mods read */
   --panel: var(--surface);
   --fg: var(--text);
@@ -105,6 +121,17 @@
     --ok: #155a30;
     --warn: #734a00;
     --ink: #ffffff;
+
+    --ctx-system: #2f6db3;
+    --ctx-system-2: #5a8fcf;
+    --ctx-system-3: #8db2e0;
+    --ctx-system-4: #1f528c;
+    --ctx-system-5: #143a66;
+    --ctx-tools: #7a4fb3;
+    --ctx-tools-2: #a888d6;
+    --ctx-manifest: #b07f1f;
+    --ctx-memories: #8a5a14;
+    --ctx-overhead: #8a909a;
 
     color-scheme: light;
   }
@@ -1083,6 +1110,145 @@ button.danger:hover:not(:disabled) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Context breakdown: what the selected agent's latest model call read */
+.session-sections .context-window-section {
+  grid-column: 1 / -1;
+}
+
+.context-breakdown {
+  display: grid;
+  gap: calc(var(--space) * 0.75);
+  font-size: 0.85rem;
+}
+
+.context-agent {
+  display: flex;
+  align-items: center;
+  gap: var(--space);
+  color: var(--muted);
+}
+
+.context-agent select {
+  min-width: 0;
+  flex: 1;
+}
+
+.session-sections .context-use,
+.session-sections .context-method {
+  margin: 0;
+}
+
+.context-method {
+  font-size: 0.8rem;
+}
+
+.context-bar {
+  display: flex;
+  height: 0.85rem;
+  overflow: hidden;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+}
+
+.context-segment {
+  flex-basis: 0;
+  min-width: 2px;
+  background: var(--ctx-color, var(--muted));
+}
+
+/* A hairline between segments, so neighbouring shades stay apart. */
+.context-segment + .context-segment {
+  box-shadow: inset 1px 0 0 var(--surface-2);
+}
+
+.context-segment.ctx-free {
+  background: transparent;
+}
+
+.context-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-table th,
+.context-table td {
+  padding: 0.12rem 0;
+  font-weight: normal;
+  text-align: right;
+}
+
+.context-table th:first-child {
+  text-align: left;
+}
+
+.context-table thead th {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.context-table tfoot th,
+.context-table tfoot td {
+  border-top: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.context-swatch {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-right: 0.45rem;
+  vertical-align: -0.05rem;
+  background: var(--ctx-color, var(--muted));
+  border-radius: 3px;
+}
+
+.context-swatch.ctx-free {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+}
+
+.ctx-system_base {
+  --ctx-color: var(--ctx-system);
+}
+.ctx-system_skills {
+  --ctx-color: var(--ctx-system-2);
+}
+.ctx-system_memory {
+  --ctx-color: var(--ctx-system-3);
+}
+.ctx-system_citations {
+  --ctx-color: var(--ctx-system-4);
+}
+.ctx-system_project {
+  --ctx-color: var(--ctx-system-5);
+}
+.ctx-tools_builtin {
+  --ctx-color: var(--ctx-tools);
+}
+.ctx-tools_mcp {
+  --ctx-color: var(--ctx-tools-2);
+}
+.ctx-manifest {
+  --ctx-color: var(--ctx-manifest);
+}
+.ctx-memories {
+  --ctx-color: var(--ctx-memories);
+}
+.ctx-user {
+  --ctx-color: var(--ctx-user);
+}
+.ctx-assistant {
+  --ctx-color: var(--ctx-assistant);
+}
+.ctx-tool_results {
+  --ctx-color: var(--ctx-results);
+}
+.ctx-overhead {
+  --ctx-color: var(--ctx-overhead);
 }
 
 /* Telemetry */

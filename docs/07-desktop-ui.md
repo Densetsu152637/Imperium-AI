@@ -83,7 +83,8 @@ layout of panels, and every panel — including the built-in ones — is customi
   pending approvals.
 - **Main session panel** (middle, full height): the selected session. It is built from
   sections — environment header, conversation and plan, context breakdown (tokens by system
-  prompt, policy, tools, files, and history against the window size), outputs, and worktrees —
+  prompt, tools, workflow context, memories, and conversation against the window size; see
+  [context breakdown](#projects-and-sessions-implemented)), outputs, and worktrees —
   each of which is itself a movable, replaceable module.
 
 Wide screens add further columns (agent tree, telemetry, terminal, browser) through layout
@@ -170,3 +171,17 @@ watching with its pull request, merged); sessions needing attention sort first. 
 session's icon opens that project's view, which lists only its sessions, with *All sessions*
 to return; clicking the row opens the session. The session header shows the status and the
 *Usage limits* controls (how to wait when usage runs out, and *Resume now* while paused).
+
+**Context breakdown (implemented):** the header's *Context and outputs* summary shows how full
+the root agent's context was on its latest model call, such as `12.3k / 32.8k tokens` (or just
+the tokens when the window is unknown). Opened, its *Context window* section shows, for the
+selected agent (root first, then each subagent by task id, chosen from a list when there is
+more than one), what that agent's latest call read, from its `context_breakdown` event
+([03](03-agent-engine.md#context-management)): a bar segmented by category against the window
+with the free space last, and a table listing every category by name with its tokens and share
+of the window (or of the request when the window is unknown), the free space, and the total.
+Colour only repeats what the table says in words: the bar has a text label, and each
+segment and swatch is named. Below it, the counting method in words (*Exact, counted with the
+model's tokenizer*; *Calibrated to the provider's count*; *Estimated; the provider reported no
+usage*) and the prompt tokens served from cache. A negative template overhead is listed but not
+drawn. Session totals and recent outputs follow.

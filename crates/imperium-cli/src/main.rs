@@ -46,6 +46,10 @@ enum Command {
         /// Model as `<endpoint>:<model>`; defaults to `models.default`.
         #[arg(long)]
         model: Option<String>,
+        /// After each turn, print one line on how full the model's context is (type /context
+        /// for the full breakdown at any time).
+        #[arg(long)]
+        context: bool,
     },
     /// Inspect configuration.
     Config {
@@ -298,7 +302,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let _ = REMOTE.set(cli.remote);
     match cli.command {
         Command::Ping => ping(),
-        Command::Chat { project, model } => chat::run(project, model),
+        Command::Chat {
+            project,
+            model,
+            context,
+        } => chat::run(project, model, context),
         Command::Config {
             command: ConfigCommand::Explain { key, project },
         } => explain(&key, project),

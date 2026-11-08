@@ -1,6 +1,7 @@
 //! One agent's conversation and its turn loop, including planning and delegation.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -20,6 +21,7 @@ use imperium_config::{Enforce, WritePolicy};
 use imperium_extensions::{HookEvent, Verdict};
 use imperium_memory::{NewEntry, Scope};
 
+use crate::breakdown::{Call, Category, Request, Spans, join_parts, tool_texts};
 use crate::session::{SessionMemory, Shared, lock};
 use crate::{LocalLease, ResolvedModel, TaskRequest, route};
 
@@ -61,6 +63,9 @@ pub struct Agent {
     shared: Arc<Shared>,
     model: ResolvedModel,
     messages: Vec<ChatMessage>,
+    /// The labelled parts of messages this agent built (its system prompt, user messages with
+    /// a preamble), by message index, for context breakdowns.
+    spans: HashMap<usize, Spans>,
     /// Only the root agent delegates; subagents do their brief themselves.
     can_delegate: bool,
     tasks: HashMap<String, JoinHandle<TaskReport>>,
@@ -97,30 +102,36 @@ impl Agent {
                  you did, what you found, and anything left undone."
             )
         };
-        let mut system = system;
+        // Each part is kept with its label, so context breakdowns count them separately.
+        let mut parts = vec![(Category::SystemBase, system)];
         if !shared.extensions.skills.is_empty() {
-            system.push_str("\n\n");
-            system.push_str(&imperium_extensions::skills::listing(
-                &shared.extensions.skills,
+            parts.push((
+                Category::SystemSkills,
+                imperium_extensions::skills::listing(&shared.extensions.skills),
             ));
         }
         if let Some(memory) = &shared.memory {
-            system.push_str("\n\n");
-            system.push_str(&memory_instructions(memory, can_delegate));
+            parts.push((
+                Category::SystemMemory,
+                memory_instructions(memory, can_delegate),
+            ));
         }
         if shared.web.is_some() {
-            system.push_str("\n\n");
-            system.push_str(imperium_web::CITATION_INSTRUCTIONS);
+            parts.push((
+                Category::SystemCitations,
+                imperium_web::CITATION_INSTRUCTIONS.to_string(),
+            ));
         }
         if can_delegate && let Some(instructions) = &shared.instructions {
-            system.push_str("\n\n");
-            system.push_str(instructions);
+            parts.push((Category::SystemProject, instructions.clone()));
         }
+        let (system, spans) = join_parts(parts);
         Agent {
             id,
             shared,
             model,
             messages: vec![ChatMessage::System { content: system }],
+            spans: HashMap::from([(0, spans)]),
             can_delegate,
             tasks: HashMap::new(),
             role,
@@ -141,15 +152,19 @@ impl Agent {
             .skip_while(|message| matches!(message, ChatMessage::System { .. }));
         self.messages.truncate(1);
         self.messages.extend(earlier);
+        self.spans.retain(|index, _| *index == 0);
     }
 
     fn emit(&self, event: SessionEvent) {
         self.shared.emitter.emit(&self.id, event);
     }
 
-    fn tool_specs(&self) -> Vec<ToolSpec> {
+    /// The tools offered to the model, and where the MCP tools sit among them.
+    fn tool_specs(&self) -> (Vec<ToolSpec>, Range<usize>) {
         let mut tools = specs();
+        let mcp_start = tools.len();
         tools.extend(self.shared.mcp.tool_specs());
+        let mcp = mcp_start..tools.len();
         tools.push(update_plan_spec());
         if !self.shared.extensions.skills.is_empty() {
             tools.push(load_skill_spec());
@@ -178,7 +193,7 @@ impl Agent {
         if self.can_delegate {
             tools.extend([spawn_agent_spec(), await_tasks_spec()]);
         }
-        tools
+        (tools, mcp)
     }
 
     /// Runs one turn: model calls and tool calls until the model answers without tools.
@@ -186,20 +201,22 @@ impl Agent {
     /// as part of it.
     pub async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
         self.emit(SessionEvent::TurnStarted { text: text.clone() });
-        let mut preamble: Vec<String> = Vec::new();
+        let mut parts = Vec::new();
         if let Some(index) = &self.shared.context {
             let manifest = index.resolve(&self.role, &text);
             if !manifest.is_empty() {
                 *lock(&self.unloaded) = manifest.required().map(str::to_string).collect();
                 self.emit(manifest_event(&manifest));
-                preamble.push(manifest.render());
+                parts.push((Category::Manifest, manifest.render()));
             }
         }
-        preamble.extend(context);
-        preamble.push(text);
-        let content = preamble.join("\n\n");
+        parts.extend(context.map(|memories| (Category::Memories, memories)));
+        parts.push((Category::User, text));
+        let (content, spans) = join_parts(parts);
+        self.spans.insert(self.messages.len(), spans);
         self.messages.push(ChatMessage::User { content });
-        let tools = self.tool_specs();
+        let (tools, mcp) = self.tool_specs();
+        let tool_texts = tool_texts(&tools, mcp);
         let mut total = Usage::default();
         // A local model is held (and loaded if needed) for the whole turn.
         let (endpoint, _lease) = match self.endpoint().await {
@@ -275,6 +292,25 @@ impl Agent {
             total.completion_tokens += usage.completion_tokens;
             total.cached_tokens += usage.cached_tokens;
             self.emit(self.call_telemetry(&usage, started, first_text));
+            // What this call read: the messages before its reply is appended, and the tools.
+            let breakdown = self
+                .shared
+                .tokens
+                .breakdown(
+                    Call {
+                        http: &self.shared.http,
+                        endpoint: &endpoint,
+                        model: &self.model,
+                        usage: completion.usage,
+                    },
+                    &Request {
+                        messages: &self.messages,
+                        spans: &self.spans,
+                        tools: &tool_texts,
+                    },
+                )
+                .await;
+            self.emit(breakdown);
             if !completion.text.is_empty() {
                 reply = completion.text.clone();
             }

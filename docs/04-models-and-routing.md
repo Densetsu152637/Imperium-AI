@@ -187,6 +187,7 @@ id = "sonnet"
 spec = "openrouter:anthropic/claude-sonnet"
 location = "cloud"
 tier = "strong"
+context_window = 200000               # optional; for context breakdowns (local models report theirs)
 
 [routing]
 prefer = "local"                      # cheapest (default) | local | cloud

@@ -73,6 +73,17 @@ pub struct ToolSpec {
     pub parameters: Value,
 }
 
+impl ToolSpec {
+    /// The tool as sent in a request's `tools` array.
+    pub fn to_wire(&self) -> Value {
+        json!({"type": "function", "function": {
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
+        }})
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Usage {
     pub prompt_tokens: u64,
@@ -199,17 +210,7 @@ pub async fn stream_chat(
         "stream_options": { "include_usage": true },
     });
     if !request.tools.is_empty() {
-        body["tools"] = request
-            .tools
-            .iter()
-            .map(|tool| {
-                json!({"type": "function", "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                }})
-            })
-            .collect();
+        body["tools"] = request.tools.iter().map(ToolSpec::to_wire).collect();
     }
     let mut builder = http.post(url).json(&body);
     if let Some(key) = &endpoint.api_key {
