@@ -96,8 +96,11 @@ const THEME_TOKENS = ["--bg", "--panel", "--fg", "--muted", "--border", "--accen
 function themeCss(): string {
   const style = getComputedStyle(document.documentElement);
   const tokens = THEME_TOKENS.map((token) => `${token}: ${style.getPropertyValue(token)};`).join(" ");
+  // The app sets its typeface on the body, not the root.
+  const text = getComputedStyle(document.body);
   return `:root { ${tokens} color-scheme: light dark; }
-body { margin: 0; padding: 8px; background: transparent; color: var(--fg); font: ${style.getPropertyValue("font-size")} ${style.fontFamily}; }`;
+body { margin: 0; padding: 8px; background: transparent; color: var(--fg); font: ${text.fontSize} ${text.fontFamily}; }
+button, input, select, textarea { font: inherit; }`;
 }
 
 const escapeScript = (text: string) => text.replace(/<\/script/gi, "<\\/script");
