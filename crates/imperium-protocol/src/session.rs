@@ -156,6 +156,34 @@ pub enum SessionEvent {
         kind: String,
         prompt: String,
     },
+    /// The agent's conversation was compacted to fit `model`'s context window: the system
+    /// prompt and the most recent turns were kept verbatim and the older messages replaced by a
+    /// summary that `summary_model` wrote.
+    ContextCompacted {
+        /// The model whose window the conversation was fitted to.
+        model: String,
+        /// The conversation's size for `model` before and after, counted by `method`.
+        #[ts(type = "number")]
+        before_tokens: u64,
+        #[ts(type = "number")]
+        after_tokens: u64,
+        /// Messages replaced by the summary.
+        summarised_messages: u32,
+        /// The tokens the conversation may use: the window less room for the reply.
+        #[ts(type = "number")]
+        budget: u64,
+        #[ts(type = "number | null")]
+        context_window: Option<u64>,
+        method: TokenCountMethod,
+        summary_model: String,
+    },
+    /// The session's model changed; turns from now on use `to`. `compacted` says whether the
+    /// conversation was compacted first (a `context_compacted` event precedes this one).
+    ModelChanged {
+        from: String,
+        to: String,
+        compacted: bool,
+    },
 }
 
 /// An instruction file or section in a context manifest.
@@ -193,8 +221,9 @@ pub struct TokenUsage {
 #[ts(export)]
 pub struct ContextCategory {
     /// A stable id: `system_base`, `system_skills`, `system_memory`, `system_citations`,
-    /// `system_project`, `tools_builtin`, `tools_mcp`, `manifest`, `memories`, `user`,
-    /// `assistant`, `tool_results`, or `overhead`. Clients show unknown keys by their label.
+    /// `system_project`, `tools_builtin`, `tools_mcp`, `summary` (a compacted conversation's
+    /// summary), `manifest`, `memories`, `user`, `assistant`, `tool_results`, or `overhead`.
+    /// Clients show unknown keys by their label.
     pub key: String,
     pub label: String,
     /// Only `overhead` can be negative.

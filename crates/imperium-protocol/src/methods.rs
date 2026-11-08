@@ -976,8 +976,8 @@ pub struct PhoneRevokeResult {
 /// schedule, a project agent, or auto-fix). The payload is a [`SessionSummary`].
 pub const SESSION_CREATED: &str = "session.created";
 
-/// `session.control`: change how a session waits for usage resets, resume it now, or set what
-/// pull request it watches.
+/// `session.control`: change how a session waits for usage resets, resume it now, set what
+/// pull request it watches, switch its model, or compact its conversation.
 #[derive(Debug)]
 pub struct SessionControl;
 
@@ -992,8 +992,12 @@ impl Method for SessionControl {
 pub struct SessionControlParams {
     pub session_id: String,
     /// `set_resume_policy` (with `resume_policy`, or none to use the default), `resume_now`,
-    /// `watch` (with `repo` and `pull_request`), or `unwatch`.
-    #[ts(type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\"")]
+    /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
+    /// for `models.default`; refused while a turn runs), or `compact` (summarise older turns
+    /// now; refused while a turn runs).
+    #[ts(
+        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\""
+    )]
     pub action: String,
     #[serde(default)]
     pub resume_policy: Option<crate::session::ResumePolicy>,
@@ -1002,11 +1006,52 @@ pub struct SessionControlParams {
     #[serde(default)]
     #[ts(type = "number | null")]
     pub pull_request: Option<u64>,
+    /// For `set_model`: a model table id or an `<endpoint>:<model>` spec.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct SessionControlResult {}
+pub struct SessionControlResult {
+    /// For `set_model` and `compact`: the session's model afterwards.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// For `set_model` and `compact`: the conversation measured for that model's window.
+    #[serde(default)]
+    pub context: Option<ContextFit>,
+}
+
+/// A conversation measured against a model's context window, and any compaction it needed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ContextFit {
+    /// The conversation's size as the model will read it (after any compaction).
+    #[ts(type = "number")]
+    pub tokens: u64,
+    /// Absent when the window is unknown; the conversation was then not checked.
+    #[ts(type = "number | null")]
+    pub context_window: Option<u64>,
+    /// The tokens the conversation may use: the window less room for the reply.
+    #[ts(type = "number | null")]
+    pub budget: Option<u64>,
+    pub method: crate::session::TokenCountMethod,
+    /// Present when older turns were summarised to fit.
+    pub compaction: Option<Compaction>,
+}
+
+/// What compacting a conversation did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Compaction {
+    #[ts(type = "number")]
+    pub before_tokens: u64,
+    #[ts(type = "number")]
+    pub after_tokens: u64,
+    pub summarised_messages: u32,
+    /// The model that wrote the summary.
+    pub summary_model: String,
+}
 
 /// `config.describe`: the settings an app may show and change, with their effective values.
 /// Structured lists and maps (endpoints, the model table, routing rules, MCP servers, projects,

@@ -57,3 +57,16 @@ pub fn read_events(path: &Path) -> Vec<AgentEvent> {
 pub fn messages_path(journal: &Path) -> std::path::PathBuf {
     journal.with_extension("messages.json")
 }
+
+/// The model a session's journal last switched its root agent to, if it was ever switched, so
+/// a resumed session keeps it.
+pub fn journalled_model(journal: &Path) -> Option<String> {
+    use imperium_protocol::session::{ROOT_AGENT, SessionEvent};
+    read_events(journal)
+        .into_iter()
+        .rev()
+        .find_map(|event| match event.event {
+            SessionEvent::ModelChanged { to, .. } if event.agent_id == ROOT_AGENT => Some(to),
+            _ => None,
+        })
+}

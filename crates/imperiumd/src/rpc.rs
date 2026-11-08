@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use base64::Engine;
-use imperium_core::Session;
+use imperium_core::{Session, SwitchError};
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
@@ -262,32 +262,8 @@ impl Connection {
                 })
             }
             SessionControl::NAME => {
-                call::<SessionControl>(request.params, |params: SessionControlParams| {
-                    let session = self.state.session(&params.session_id).ok_or_else(|| {
-                        ErrorObject::new(codes::SESSION_NOT_FOUND, "no such session")
-                    })?;
-                    match params.action.as_str() {
-                        "set_resume_policy" => session.set_resume_policy(params.resume_policy),
-                        "resume_now" => session.resume_now(),
-                        "watch" => {
-                            let (Some(repo), Some(number)) = (params.repo, params.pull_request)
-                            else {
-                                return Err(ErrorObject::new(
-                                    codes::INVALID_PARAMS,
-                                    "watch needs repo and pull_request",
-                                ));
-                            };
-                            self.state.watch(&session, Some((repo, number)));
-                        }
-                        "unwatch" => self.state.watch(&session, None),
-                        other => {
-                            return Err(ErrorObject::new(
-                                codes::INVALID_PARAMS,
-                                format!("unknown action {other:?}"),
-                            ));
-                        }
-                    }
-                    Ok(SessionControlResult {})
+                call_later::<SessionControl, _>(request.params, &mut later, |params| {
+                    self.control(params)
                 })
             }
             ApprovalList::NAME => call::<ApprovalList>(request.params, |_: ApprovalListParams| {
@@ -457,6 +433,66 @@ impl Connection {
         ))
     }
 
+    /// `session.control`. Most actions apply at once; switching models and compacting wait for
+    /// the session (compaction asks a model for a summary).
+    fn control(
+        &self,
+        params: SessionControlParams,
+    ) -> impl Future<Output = Result<SessionControlResult, ErrorObject>> + Send + 'static {
+        let state = Arc::clone(&self.state);
+        async move {
+            let session = state
+                .session(&params.session_id)
+                .ok_or_else(|| ErrorObject::new(codes::SESSION_NOT_FOUND, "no such session"))?;
+            let fitted = match params.action.as_str() {
+                "set_resume_policy" => {
+                    session.set_resume_policy(params.resume_policy);
+                    None
+                }
+                "resume_now" => {
+                    session.resume_now();
+                    None
+                }
+                "watch" => {
+                    let (Some(repo), Some(number)) = (params.repo, params.pull_request) else {
+                        return Err(ErrorObject::new(
+                            codes::INVALID_PARAMS,
+                            "watch needs repo and pull_request",
+                        ));
+                    };
+                    state.watch(&session, Some((repo, number)));
+                    None
+                }
+                "unwatch" => {
+                    state.watch(&session, None);
+                    None
+                }
+                "set_model" => {
+                    let model = state
+                        .resolve_model(params.model.as_deref())
+                        .map_err(|error| {
+                            ErrorObject::new(codes::MODEL_UNAVAILABLE, error.to_string())
+                        })?;
+                    Some(session.set_model(model).await.map_err(switch_error)?)
+                }
+                "compact" => Some(session.compact().await.map_err(switch_error)?),
+                other => {
+                    return Err(ErrorObject::new(
+                        codes::INVALID_PARAMS,
+                        format!("unknown action {other:?}"),
+                    ));
+                }
+            };
+            Ok(match fitted {
+                Some(context) => SessionControlResult {
+                    model: Some(session.model()),
+                    context: Some(context),
+                },
+                None => SessionControlResult::default(),
+            })
+        }
+    }
+
     fn session(&self, id: &str) -> Result<Arc<Session>, ErrorObject> {
         self.state
             .session(id)
@@ -474,6 +510,17 @@ fn reply(response: Response) -> Handled {
 
 fn stopped(error: imperium_core::SessionClosed) -> ErrorObject {
     ErrorObject::new(codes::INTERNAL_ERROR, error.to_string())
+}
+
+fn switch_error(error: SwitchError) -> ErrorObject {
+    let code = match &error {
+        SwitchError::Busy => codes::SESSION_BUSY,
+        SwitchError::TooLarge { .. } | SwitchError::NoFit { .. } => codes::CONTEXT_TOO_LARGE,
+        SwitchError::UnknownWindow(_) => codes::INVALID_PARAMS,
+        SwitchError::Unavailable(_) | SwitchError::Summary(_) => codes::MODEL_UNAVAILABLE,
+        SwitchError::Closed => codes::INTERNAL_ERROR,
+    };
+    ErrorObject::new(code, error.to_string())
 }
 
 fn incompatible(client: ProtocolVersion) -> ErrorObject {

@@ -19,8 +19,11 @@ use imperium_models::ChatClients;
 use imperium_workflow::ContextIndex;
 use serde_json::json;
 
+use imperium_protocol::methods::ContextFit;
+
 use crate::agent::Agent;
 use crate::breakdown::TokenCounter;
+use crate::compact::SwitchError;
 use crate::journal::Journal;
 use crate::status::Controls;
 use crate::{CatalogModel, LocalModels, ResolvedModel, SessionLauncher};
@@ -68,12 +71,24 @@ pub struct SessionConfig {
     pub journal_path: PathBuf,
 }
 
+/// The answer to a model switch or a compaction.
+type FitReply = oneshot::Sender<Result<ContextFit, SwitchError>>;
+
 #[derive(Debug)]
 enum Command {
     Message(String),
     Respond {
         request_id: u64,
         decision: PermissionDecision,
+    },
+    /// Switch the root agent's model before the next turn.
+    SetModel {
+        model: Box<ResolvedModel>,
+        reply: FitReply,
+    },
+    /// Compact the root agent's conversation now.
+    Compact {
+        reply: FitReply,
     },
 }
 
@@ -87,7 +102,8 @@ pub struct SessionClosed;
 #[derive(Debug)]
 pub struct Session {
     id: String,
-    model: String,
+    /// The root agent's model spec, updated when it is switched.
+    model: Arc<Mutex<String>>,
     project_dir: String,
     isolation: String,
     controls: Arc<Controls>,
@@ -118,7 +134,7 @@ impl Session {
         let (commands, receiver) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         let id = config.id.clone();
-        let model = config.model.spec.clone();
+        let model = Arc::new(Mutex::new(config.model.spec.clone()));
         let project_dir = config.workspace.root_display();
         let isolation = config.workspace.sandbox().label();
         let history = History::default();
@@ -135,7 +151,12 @@ impl Session {
             events: events.clone(),
             controls: Arc::clone(&controls),
         });
-        let task = tokio::spawn(run(config, receiver, Arc::clone(&emitter)));
+        let task = tokio::spawn(run(
+            config,
+            receiver,
+            Arc::clone(&emitter),
+            Arc::clone(&model),
+        ));
         Ok(Session {
             id,
             model,
@@ -154,8 +175,34 @@ impl Session {
         &self.id
     }
 
-    pub fn model(&self) -> &str {
-        &self.model
+    /// The root agent's model spec.
+    pub fn model(&self) -> String {
+        lock(&self.model).clone()
+    }
+
+    /// Switches the session to `model` from its next turn, keeping the conversation. When the
+    /// conversation does not fit the new model's context window it is compacted first (older
+    /// turns summarised); when it cannot fit, or a turn is running, the session keeps its
+    /// model. The switch is journalled (`model_changed`), so a resumed session keeps it.
+    pub async fn set_model(&self, model: ResolvedModel) -> Result<ContextFit, SwitchError> {
+        let (reply, answer) = oneshot::channel();
+        self.commands
+            .send(Command::SetModel {
+                model: Box::new(model),
+                reply,
+            })
+            .map_err(|_| SwitchError::Closed)?;
+        answer.await.map_err(|_| SwitchError::Closed)?
+    }
+
+    /// Compacts the conversation now for the session's model: the last turns stay verbatim
+    /// and older ones are summarised. Refused while a turn runs.
+    pub async fn compact(&self) -> Result<ContextFit, SwitchError> {
+        let (reply, answer) = oneshot::channel();
+        self.commands
+            .send(Command::Compact { reply })
+            .map_err(|_| SwitchError::Closed)?;
+        answer.await.map_err(|_| SwitchError::Closed)?
     }
 
     /// The project folder the session works in.
@@ -252,7 +299,6 @@ pub(crate) struct Shared {
     pub workspace: Workspace,
     pub catalog: Vec<CatalogModel>,
     pub routing: RoutingSettings,
-    pub fallback_model: ResolvedModel,
     pub local: Option<Arc<dyn LocalModels>>,
     pub max_steps: u32,
     /// Tools the user allowed for the rest of the session, for every agent.
@@ -282,6 +328,7 @@ async fn run(
     config: SessionConfig,
     mut commands: mpsc::UnboundedReceiver<Command>,
     emitter: Arc<Emitter>,
+    model: Arc<Mutex<String>>,
 ) {
     for message in config.notices {
         emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
@@ -303,7 +350,6 @@ async fn run(
         workspace: config.workspace,
         catalog: config.catalog,
         routing: config.routing,
-        fallback_model: config.model.clone(),
         local: config.local,
         max_steps: config.max_steps,
         allowed_tools: Mutex::new(config.pre_approved.into_iter().collect()),
@@ -363,6 +409,27 @@ async fn run(
                     shared.broker.resolve(request_id, decision);
                     continue;
                 }
+                // Between turns: the switch applies from the next one.
+                Some(Command::SetModel {
+                    model: target,
+                    reply,
+                }) => {
+                    let result = root.switch_model(*target).await;
+                    if result.is_ok() {
+                        *lock(&model) = root.model().spec.clone();
+                        save_messages(&messages_path, root.messages());
+                    }
+                    let _ = reply.send(result);
+                    continue;
+                }
+                Some(Command::Compact { reply }) => {
+                    let result = root.compact_now().await;
+                    if result.is_ok() {
+                        save_messages(&messages_path, root.messages());
+                    }
+                    let _ = reply.send(result);
+                    continue;
+                }
                 None => return,
             },
         };
@@ -382,6 +449,10 @@ async fn run(
                             shared.broker.resolve(request_id, decision);
                         }
                         Some(Command::Message(text)) => queued.push_back(text),
+                        // Never mid-turn: the conversation is in use.
+                        Some(Command::SetModel { reply, .. } | Command::Compact { reply }) => {
+                            let _ = reply.send(Err(SwitchError::Busy));
+                        }
                         // Every handle is gone: nobody can answer, so deny what is pending.
                         None => {
                             handles_open = false;

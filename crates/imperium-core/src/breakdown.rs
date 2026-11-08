@@ -45,6 +45,7 @@ pub(crate) enum Category {
     SystemProject,
     ToolsBuiltin,
     ToolsMcp,
+    Summary,
     Manifest,
     Memories,
     User,
@@ -54,7 +55,7 @@ pub(crate) enum Category {
 }
 
 impl Category {
-    const ALL: [Category; 13] = [
+    const ALL: [Category; 14] = [
         Category::SystemBase,
         Category::SystemSkills,
         Category::SystemMemory,
@@ -62,6 +63,7 @@ impl Category {
         Category::SystemProject,
         Category::ToolsBuiltin,
         Category::ToolsMcp,
+        Category::Summary,
         Category::Manifest,
         Category::Memories,
         Category::User,
@@ -79,6 +81,7 @@ impl Category {
             Category::SystemProject => "system_project",
             Category::ToolsBuiltin => "tools_builtin",
             Category::ToolsMcp => "tools_mcp",
+            Category::Summary => "summary",
             Category::Manifest => "manifest",
             Category::Memories => "memories",
             Category::User => "user",
@@ -97,6 +100,7 @@ impl Category {
             Category::SystemProject => "Project instructions",
             Category::ToolsBuiltin => "Built-in tools",
             Category::ToolsMcp => "MCP tools",
+            Category::Summary => "Conversation summary",
             Category::Manifest => "Workflow context manifest",
             Category::Memories => "Recalled memories",
             Category::User => "User messages",
@@ -130,12 +134,17 @@ pub(crate) fn join_parts(parts: Vec<(Category, String)>) -> (String, Spans) {
 }
 
 /// The preamble of a user message the agent did not build in this process (a conversation
-/// restored after a restart): the manifest and recalled memories it wrote are recognised by
-/// the tags it wraps them in.
-fn restored_spans(content: &str) -> Spans {
+/// restored after a restart): the summary, manifest, and recalled memories it wrote are
+/// recognised by the tags it wraps them in.
+pub(crate) fn restored_spans(content: &str) -> Spans {
     let mut spans = Vec::new();
     let mut start = 0;
     for (category, open, close) in [
+        (
+            Category::Summary,
+            "<conversation-summary>",
+            "</conversation-summary>",
+        ),
         (
             Category::Manifest,
             "<context-manifest",
@@ -201,56 +210,89 @@ impl<'a> Request<'a> {
     /// The request's text, segment by segment. Together the segments are everything the
     /// request carries except formatting: roles, call ids, separators, and template markup.
     fn segments(&self) -> Vec<(Category, &'a str)> {
-        let mut segments: Vec<(Category, &'a str)> = Vec::new();
+        self.indexed_segments()
+            .into_iter()
+            .map(|(_, category, text)| (category, text))
+            .collect()
+    }
+
+    /// The segments, each with the index of the message it comes from (`None` for the tools).
+    fn indexed_segments(&self) -> Vec<(Option<usize>, Category, &'a str)> {
+        let mut segments: Vec<(Option<usize>, Category, &'a str)> = Vec::new();
         for (index, message) in self.messages.iter().enumerate() {
             let recorded = self.spans.get(&index);
+            let mut parts: Vec<(Category, &'a str)> = Vec::new();
             match message {
                 ChatMessage::System { content } => match recorded {
-                    Some(spans) => slices(content, spans, &mut segments),
-                    None => segments.push((Category::SystemBase, content)),
+                    Some(spans) => slices(content, spans, &mut parts),
+                    None => parts.push((Category::SystemBase, content)),
                 },
                 ChatMessage::User { content } => match recorded {
-                    Some(spans) => slices(content, spans, &mut segments),
-                    None => slices(content, &restored_spans(content), &mut segments),
+                    Some(spans) => slices(content, spans, &mut parts),
+                    None => slices(content, &restored_spans(content), &mut parts),
                 },
                 ChatMessage::Assistant {
                     content,
                     tool_calls,
                 } => {
                     if let Some(content) = content {
-                        segments.push((Category::Assistant, content));
+                        parts.push((Category::Assistant, content));
                     }
                     for call in tool_calls {
-                        segments.push((Category::Assistant, &call.function.name));
-                        segments.push((Category::Assistant, &call.function.arguments));
+                        parts.push((Category::Assistant, &call.function.name));
+                        parts.push((Category::Assistant, &call.function.arguments));
                     }
                 }
                 ChatMessage::Tool { content, .. } => {
-                    segments.push((Category::ToolResults, content));
+                    parts.push((Category::ToolResults, content));
                 }
             }
+            segments.extend(
+                parts
+                    .into_iter()
+                    .map(|(category, text)| (Some(index), category, text)),
+            );
         }
         for (category, text) in self.tools {
-            segments.push((*category, text));
+            segments.push((None, *category, text));
         }
-        segments.retain(|(_, text)| !text.is_empty());
+        segments.retain(|(_, _, text)| !text.is_empty());
         segments
     }
 
     /// A rough count of the formatting the chat template adds: role markers per message, a
     /// wrapper per tool call, the tool block, and the reply's opening.
     fn formatting_estimate(&self) -> u64 {
-        let calls: usize = self
-            .messages
-            .iter()
-            .map(|message| match message {
-                ChatMessage::Assistant { tool_calls, .. } => tool_calls.len(),
-                _ => 0,
-            })
-            .sum();
-        let tools = if self.tools.is_empty() { 0 } else { 12 };
-        (4 * self.messages.len() + 4 * calls + tools + 3) as u64
+        let messages: u64 = self.messages.iter().map(message_formatting).sum();
+        messages + self.fixed_formatting()
     }
+
+    /// The formatting a request has whatever its messages: the tool block and the reply's
+    /// opening.
+    fn fixed_formatting(&self) -> u64 {
+        let tools = if self.tools.is_empty() { 0 } else { 12 };
+        tools + 3
+    }
+
+    /// The whole request estimated with the heuristic, formatting included.
+    pub(crate) fn estimate(&self) -> u64 {
+        let text: u64 = self
+            .segments()
+            .iter()
+            .map(|(_, text)| estimate_tokens(text))
+            .sum();
+        text + self.formatting_estimate()
+    }
+}
+
+/// The formatting a chat template adds around one message: its role markers and a wrapper per
+/// tool call.
+fn message_formatting(message: &ChatMessage) -> u64 {
+    let calls = match message {
+        ChatMessage::Assistant { tool_calls, .. } => tool_calls.len(),
+        _ => 0,
+    };
+    (4 + 4 * calls) as u64
 }
 
 fn slices<'a>(content: &'a str, spans: &Spans, out: &mut Vec<(Category, &'a str)>) {
@@ -352,6 +394,34 @@ pub(crate) struct Call<'a> {
 /// cannot render templates.
 type RenderedTools = Option<(u64, u64)>;
 
+/// What a model's tokenizer said about a request.
+struct Tokenized {
+    /// Each segment's tokens; `None` when there is no tokenizer or it failed.
+    counts: Option<Vec<u64>>,
+    rendered_tools: RenderedTools,
+    /// The server's context window.
+    window: Option<u64>,
+}
+
+/// A conversation's size as one model would read it, message by message, for fitting it to
+/// that model's context window.
+#[derive(Debug, Clone)]
+pub(crate) struct Measured {
+    /// Each message's tokens, its share of the formatting included.
+    pub messages: Vec<u64>,
+    /// The tool definitions and the request's fixed formatting.
+    pub fixed: u64,
+    pub method: TokenCountMethod,
+    /// The model's context window: its server's, else the model table's; `None` when unknown.
+    pub window: Option<u64>,
+}
+
+impl Measured {
+    pub(crate) fn total(&self) -> u64 {
+        self.fixed + self.messages.iter().sum::<u64>()
+    }
+}
+
 /// Counts shared by a session's agents: token counts by tokenizer and content, and what each
 /// server reported about itself.
 #[derive(Debug, Default)]
@@ -372,54 +442,13 @@ impl TokenCounter {
     pub(crate) async fn breakdown(&self, call: Call<'_>, request: &Request<'_>) -> SessionEvent {
         let segments = request.segments();
         let reported = call.usage.filter(|usage| usage.prompt_tokens > 0);
-        let mut exact = None;
-        let mut window = None;
-        let mut rendered_tools = None;
-        // A client with a tokenizer (llama.cpp) has counts and properties to ask.
-        if let Some(tokenizer) = call.client.tokenizer() {
-            let root = tokenizer.server().to_string();
-            let refused = lock(&self.no_tokenizer).contains(&root);
-            let work = async {
-                let counted = if refused {
-                    None
-                } else {
-                    Some(self.count_all(tokenizer, &call.model.spec, &segments).await)
-                };
-                let rendered = match &counted {
-                    Some(Ok(_)) => {
-                        self.rendered_tools(tokenizer, &call.model.spec, request.tools)
-                            .await
-                    }
-                    _ => None,
-                };
-                (counted, rendered, self.window(tokenizer, &root).await)
-            };
-            match tokio::time::timeout(TOKENIZE_BUDGET, work).await {
-                Ok((counted, rendered, server_window)) => {
-                    window = server_window;
-                    rendered_tools = rendered;
-                    match counted {
-                        None => {}
-                        Some(Ok(counts)) => exact = Some(counts),
-                        Some(Err(error)) => {
-                            tracing::debug!(model = %call.model.spec, %error, "tokenizer unavailable; calibrating");
-                            if matches!(
-                                error,
-                                ModelError::Status {
-                                    status: 400..=499,
-                                    ..
-                                }
-                            ) {
-                                lock(&self.no_tokenizer).insert(root.clone());
-                            }
-                        }
-                    }
-                }
-                Err(_) => {
-                    tracing::debug!(model = %call.model.spec, "tokenizing took too long; calibrating");
-                }
-            }
-        }
+        let Tokenized {
+            counts: exact,
+            rendered_tools,
+            window,
+        } = self
+            .tokenize(call.client, call.model, &segments, request.tools)
+            .await;
         let mut totals = [0u64; Category::ALL.len()];
         match &exact {
             Some(counts) => {
@@ -483,6 +512,123 @@ impl TokenCounter {
             categories,
             prompt_tokens: reported.map(|usage| usage.prompt_tokens),
             cached_tokens: call.usage.map_or(0, |usage| usage.cached_tokens),
+        }
+    }
+
+    /// Counts `segments` with the client's tokenizer, if it has one, within the time budget:
+    /// each segment's count (when the tokenizer answered), the tool block as the template
+    /// renders it, and the server's context window.
+    async fn tokenize(
+        &self,
+        client: &dyn ChatClient,
+        model: &ResolvedModel,
+        segments: &[(Category, &str)],
+        tools: &[(Category, String)],
+    ) -> Tokenized {
+        let mut tokenized = Tokenized {
+            counts: None,
+            rendered_tools: None,
+            window: None,
+        };
+        // A client with a tokenizer (llama.cpp) has counts and properties to ask.
+        let Some(tokenizer) = client.tokenizer() else {
+            return tokenized;
+        };
+        let root = tokenizer.server().to_string();
+        let refused = lock(&self.no_tokenizer).contains(&root);
+        let work = async {
+            let counted = if refused {
+                None
+            } else {
+                Some(self.count_all(tokenizer, &model.spec, segments).await)
+            };
+            let rendered = match &counted {
+                Some(Ok(_)) => self.rendered_tools(tokenizer, &model.spec, tools).await,
+                _ => None,
+            };
+            (counted, rendered, self.window(tokenizer, &root).await)
+        };
+        match tokio::time::timeout(TOKENIZE_BUDGET, work).await {
+            Ok((counted, rendered, server_window)) => {
+                tokenized.window = server_window;
+                tokenized.rendered_tools = rendered;
+                match counted {
+                    None => {}
+                    Some(Ok(counts)) => tokenized.counts = Some(counts),
+                    Some(Err(error)) => {
+                        tracing::debug!(model = %model.spec, %error, "tokenizer unavailable; calibrating");
+                        if matches!(
+                            error,
+                            ModelError::Status {
+                                status: 400..=499,
+                                ..
+                            }
+                        ) {
+                            lock(&self.no_tokenizer).insert(root.clone());
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::debug!(model = %model.spec, "tokenizing took too long; calibrating");
+            }
+        }
+        tokenized
+    }
+
+    /// Measures `request` as `model` would read it, without sending it, to fit a conversation
+    /// to the model's context window. Counts are exact with the model's tokenizer (through
+    /// `client`) when it has one; otherwise they are the heuristic's, multiplied by `scale`
+    /// when one is known (calibrated against an earlier reported prompt size), else estimated.
+    /// The chat template's formatting is always estimated.
+    pub(crate) async fn measure(
+        &self,
+        client: &dyn ChatClient,
+        model: &ResolvedModel,
+        request: &Request<'_>,
+        scale: Option<f64>,
+    ) -> Measured {
+        let indexed = request.indexed_segments();
+        let segments: Vec<(Category, &str)> = indexed
+            .iter()
+            .map(|(_, category, text)| (*category, *text))
+            .collect();
+        let tokenized = self.tokenize(client, model, &segments, request.tools).await;
+        let (counts, method) = match tokenized.counts {
+            Some(counts) => (counts, TokenCountMethod::Exact),
+            None => {
+                let factor = scale.unwrap_or(1.0);
+                let counts = segments
+                    .iter()
+                    .map(|(_, text)| (estimate_tokens(text) as f64 * factor).ceil() as u64)
+                    .collect();
+                let method = if scale.is_some() {
+                    TokenCountMethod::Calibrated
+                } else {
+                    TokenCountMethod::Estimated
+                };
+                (counts, method)
+            }
+        };
+        let mut messages: Vec<u64> = request.messages.iter().map(message_formatting).collect();
+        let mut tools = [0u64; 2];
+        for ((index, category, _), count) in indexed.iter().zip(&counts) {
+            match index {
+                Some(index) => messages[*index] += count,
+                None if *category == Category::ToolsMcp => tools[1] += count,
+                None => tools[0] += count,
+            }
+        }
+        if method == TokenCountMethod::Exact
+            && let Some((builtin, mcp)) = tokenized.rendered_tools
+        {
+            tools = [builtin, mcp];
+        }
+        Measured {
+            messages,
+            fixed: tools[0] + tools[1] + request.fixed_formatting(),
+            method,
+            window: tokenized.window.or(model.context_window),
         }
     }
 
