@@ -14,6 +14,7 @@ base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 constant_time_eq = "0.6.1"
 getrandom = "0.4.3"
+imperium-api = { version = "0.1.0", path = "../imperium-api" }
 imperium-automation = { version = "0.1.0", path = "../imperium-automation" }
 imperium-config = { version = "0.1.0", path = "../imperium-config" }
 imperium-core = { version = "0.1.0", path = "../imperium-core" }

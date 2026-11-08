@@ -29,6 +29,7 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
 use crate::state::{CreateError, DaemonState};
+use imperium_protocol::methods::SessionSuggestionRespond;
 use imperium_protocol::methods::{
     ConfigDescribe, ConfigDescribeParams, ConfigSet, ConfigSetParams,
 };
@@ -355,6 +356,11 @@ impl Connection {
                         .send(params.text)
                         .map_err(stopped)?;
                     Ok(Accepted {})
+                })
+            }
+            SessionSuggestionRespond::NAME => {
+                call_later::<SessionSuggestionRespond, _>(request.params, &mut later, |params| {
+                    crate::suggestions::respond(Arc::clone(&self.state), params)
                 })
             }
             SessionRespond::NAME => {

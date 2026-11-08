@@ -972,6 +972,36 @@ pub struct PhoneRevokeResult {
     pub found: bool,
 }
 
+/// `session.suggestion_respond`: answers a `model_suggestion` event. `download` starts the
+/// download (as `models.download` would) and returns its job; `dismiss` says not now (the
+/// session does not suggest for that need again); `never` turns `models.suggest_downloads` off
+/// in the user config file. Each is followed by a `model_suggestion_update` event.
+#[derive(Debug)]
+pub struct SessionSuggestionRespond;
+
+impl Method for SessionSuggestionRespond {
+    const NAME: &'static str = "session.suggestion_respond";
+    type Params = SuggestionRespondParams;
+    type Result = SuggestionRespondResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SuggestionRespondParams {
+    pub session_id: String,
+    pub suggestion_id: String,
+    #[ts(type = "\"download\" | \"dismiss\" | \"never\"")]
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SuggestionRespondResult {
+    /// For `download`: the job, whose progress `models.download_progress` reports.
+    #[serde(default)]
+    pub job: Option<DownloadJob>,
+}
+
 /// Notification sent to every client when a session starts, whoever started it (a client, a
 /// schedule, a project agent, or auto-fix). The payload is a [`SessionSummary`].
 pub const SESSION_CREATED: &str = "session.created";
