@@ -10,7 +10,7 @@ use imperium_api::{
     truncate_chars as truncate,
 };
 use imperium_config::{Location, Tier};
-use imperium_models::{ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage, stream_chat};
+use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
 use imperium_protocol::session::{
     ContextItem, ContextPointer, PermissionDecision, Plan, PlanStep, SessionEvent, StepStatus,
     TokenUsage,
@@ -236,8 +236,8 @@ impl Agent {
         let tool_texts = tool_texts(&tools, mcp);
         let mut total = Usage::default();
         // A local model is held (and loaded if needed) for the whole turn.
-        let (endpoint, _lease) = match self.endpoint().await {
-            Ok(endpoint) => endpoint,
+        let (client, _lease) = match self.client().await {
+            Ok(client) => client,
             Err(message) => {
                 self.emit(SessionEvent::TurnFailed {
                     message: message.clone(),
@@ -260,7 +260,7 @@ impl Agent {
             let result = loop {
                 let emitter = &self.shared.emitter;
                 let id = &self.id;
-                let result = stream_chat(&self.shared.http, &endpoint, request, |text| {
+                let mut on_text = |text: &str| {
                     first_text.get_or_insert_with(Instant::now);
                     emitter.emit(
                         id,
@@ -268,8 +268,8 @@ impl Agent {
                             text: text.to_string(),
                         },
                     );
-                })
-                .await;
+                };
+                let result = client.stream(request, &mut on_text).await;
                 // Usage ran out: wait as the session's resume policy says, then try again.
                 let Err(error) = &result else { break result };
                 if !error.is_usage_limit() {
@@ -315,8 +315,7 @@ impl Agent {
                 .tokens
                 .breakdown(
                     Call {
-                        http: &self.shared.http,
-                        endpoint: &endpoint,
+                        client: client.as_ref(),
                         model: &self.model,
                         usage: completion.usage,
                     },
@@ -649,6 +648,18 @@ impl Agent {
         };
         self.after_tool(name, arguments, ok, &output).await;
         finish(ok, output)
+    }
+
+    /// The client for this turn's model calls, with the slot held on a local model.
+    async fn client(&self) -> Result<(Arc<dyn ChatClient>, Option<LocalLease>), String> {
+        let (endpoint, lease) = self.endpoint().await?;
+        let kind = &self.model.kind;
+        let client = self
+            .shared
+            .clients
+            .build(kind, &self.shared.http, endpoint)
+            .ok_or_else(|| format!("no model client for endpoint kind {kind:?}"))?;
+        Ok((client, lease))
     }
 
     /// Where to send this turn's model calls, with the slot held on a local model.

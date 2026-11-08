@@ -113,6 +113,7 @@ fn model(spec: &str, url: &str) -> ResolvedModel {
         pricing: None,
         local: false,
         context_window: None,
+        kind: "openai".into(),
     }
 }
 
@@ -163,6 +164,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
         workspace: Workspace::new(project.path()).unwrap(),
         model: model("cloud:root", &root_model().await),
         catalog,
+        clients: Default::default(),
         routing: RoutingSettings::default(),
         local: None,
         tools: Vec::new(),

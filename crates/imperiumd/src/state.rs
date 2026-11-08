@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use imperium_config::{KeychainSecrets, Paths, SecretStore, Settings};
 use imperium_core::{
-    CatalogModel, LocalModels, ModelError, Session, SessionConfig, SessionMemory, ToolProvider,
-    new_session_id, resolve_model,
+    CatalogModel, ChatClients, LocalModels, ModelError, Session, SessionConfig, SessionMemory,
+    ToolProvider, new_session_id, resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_mcp::McpTools;
@@ -603,6 +603,7 @@ impl DaemonState {
             workspace,
             model,
             catalog,
+            clients: ChatClients::default(),
             routing: self.settings.routing.clone(),
             local: self.local.get().map(|local| {
                 let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();

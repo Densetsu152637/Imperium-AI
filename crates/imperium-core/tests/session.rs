@@ -76,6 +76,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
             model: "model".into(),
             local: false,
             context_window: None,
+            kind: "openai".into(),
             pricing: Some(Pricing {
                 input_usd_per_mtok: 1.0,
                 output_usd_per_mtok: 2.0,
@@ -84,6 +85,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
+        clients: Default::default(),
         local: None,
         tools: Vec::new(),
         notices: Vec::new(),

@@ -102,9 +102,11 @@ async fn agents_call_mcp_tools_with_approval_rules() {
             pricing: None,
             local: false,
             context_window: None,
+            kind: "openai".into(),
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
+        clients: Default::default(),
         local: None,
         tools: vec![Arc::new(McpTools::new(vec![
             ServerSpec {

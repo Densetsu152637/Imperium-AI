@@ -17,6 +17,7 @@ pub use imperium_api::{
     AcquireFuture, Availability, LocalLease, LocalModels, ToolCheck, ToolContext, ToolEvent,
     ToolFuture, ToolGroup, ToolProvider,
 };
+pub use imperium_models::{ChatClient, ChatClients};
 pub use launcher::{LaunchFuture, SessionLauncher};
 pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
 pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};

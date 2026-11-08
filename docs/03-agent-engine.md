@@ -33,6 +33,15 @@ per second, cost) followed by that call's `context_breakdown` ([context
 management](#context-management)), and `turn_completed` (token usage, cost, model calls) or
 `turn_failed`.
 
+**Model clients (implemented):** the agent calls its model through a `ChatClient`
+(`imperium-models`), built for the turn from the session's `ChatClients` by the endpoint's `kind`
+([configuration](10-configuration.md)): it streams a completion with its usage and may offer the
+model's `Tokenizer` (token counts, chat-template rendering, and the context window), which
+[context breakdowns](#context-management) use. The built-in kinds are `openai` (any
+OpenAI-compatible endpoint; one on this machine may be llama.cpp, so its tokenizer is tried) and
+`llamacpp` (always asked for its tokenizer; local llama.cpp models use it). A client for another
+API is registered under a new kind without changing the agent.
+
 **Tool providers (implemented):** tools beyond the agent's own (files, commands, planning,
 delegation, memory, skills, workflow context) come from `ToolProvider`s (`imperium-api`) that the
 daemon gives each session: web and browser (`imperium-web`), media (`imperium-media`), and MCP
@@ -155,8 +164,9 @@ they are wrapped in.
 
 Empty categories are left out. Counting uses the best method available, named in `method`:
 
-- **`exact`**: for local llama.cpp models (and any server on this machine that answers
-  llama.cpp's `POST /tokenize`), each segment is counted with the model's own tokenizer, without
+- **`exact`**: when the model's client offers a tokenizer: local llama.cpp models, `llamacpp`
+  endpoints, and any `openai` endpoint on this machine that answers llama.cpp's
+  `POST /tokenize`. Each segment is counted with the model's own tokenizer, without
   BOS and with special tokens parsed as the chat template's output is. Counts are cached by
   content hash per model, so unchanged messages are not tokenized again on later calls. Tool
   definitions count as the chat template renders them, not as the JSON sent: templates add

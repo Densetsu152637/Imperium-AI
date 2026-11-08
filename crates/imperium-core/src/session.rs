@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 use imperium_config::{Enforce, MemorySettings, WritePolicy};
 use imperium_extensions::{Extensions, HookEvent, Verdict};
 use imperium_memory::{Scope, Store};
+use imperium_models::ChatClients;
 use imperium_workflow::ContextIndex;
 use serde_json::json;
 
@@ -37,6 +38,8 @@ pub struct SessionConfig {
     /// Models subagents may be routed to.
     pub catalog: Vec<CatalogModel>,
     pub routing: RoutingSettings,
+    /// Model clients by endpoint kind.
+    pub clients: ChatClients,
     /// The supervised local runtime, when one is configured.
     pub local: Option<Arc<dyn LocalModels>>,
     /// Tools beyond the agent's own (web, browser, media, MCP servers), in the order offered.
@@ -245,6 +248,7 @@ pub(crate) struct Shared {
     pub controls: Arc<Controls>,
     pub broker: PermissionBroker,
     pub http: reqwest::Client,
+    pub clients: ChatClients,
     pub workspace: Workspace,
     pub catalog: Vec<CatalogModel>,
     pub routing: RoutingSettings,
@@ -295,6 +299,7 @@ async fn run(
         emitter,
         broker: PermissionBroker::default(),
         http: reqwest::Client::new(),
+        clients: config.clients,
         workspace: config.workspace,
         catalog: config.catalog,
         routing: config.routing,

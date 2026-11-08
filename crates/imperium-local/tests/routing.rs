@@ -159,6 +159,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         }),
         local: false,
         context_window: None,
+        kind: "openai".into(),
     };
     let catalog = vec![
         CatalogModel {
@@ -173,6 +174,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
                 pricing: None,
                 local: true,
                 context_window: None,
+                kind: "openai".into(),
             },
             tier: Tier::Standard,
             location: Location::Local,
@@ -193,6 +195,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         workspace: Workspace::new(dir.path()).unwrap(),
         model: hosted("cloud:root"),
         catalog,
+        clients: Default::default(),
         routing: RoutingSettings {
             prefer: Preference::Local,
             ..RoutingSettings::default()
