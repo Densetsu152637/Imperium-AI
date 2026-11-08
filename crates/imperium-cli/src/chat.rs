@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
-    SessionCreate, SessionCreateParams, SessionRespond, SessionRespondParams, SessionSend,
-    SessionSendParams,
+    ContextFit, SessionControl, SessionControlParams, SessionCreate, SessionCreateParams,
+    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams,
 };
 use imperium_protocol::session::{
     AgentEvent, ContextCategory, PermissionDecision, ROOT_AGENT, SESSION_EVENT, SessionEvent,
@@ -42,7 +42,8 @@ pub fn run(
             project.display()
         );
         println!(
-            "Type a message. /context shows what the model is reading; an empty line or /exit quits."
+            "Type a message. /context shows what the model is reading, /model <id> switches \
+             models, /compact summarises older turns; an empty line or /exit quits."
         );
         let mut latest = None;
         loop {
@@ -55,6 +56,34 @@ pub fn run(
                 match &latest {
                     Some(breakdown) => print!("{}", render_breakdown(breakdown)),
                     None => println!("No model call yet; send a message first."),
+                }
+                continue;
+            }
+            if let Some(action) = control_command(text) {
+                let (action, model) = match action {
+                    Control::SetModel(model) => ("set_model", Some(model)),
+                    Control::Compact => ("compact", None),
+                };
+                let result = client
+                    .call::<SessionControl>(SessionControlParams {
+                        session_id: session.session_id.clone(),
+                        action: action.into(),
+                        resume_policy: None,
+                        repo: None,
+                        pull_request: None,
+                        model,
+                    })
+                    .await;
+                match result {
+                    Ok(result) => println!(
+                        "{}",
+                        describe_fit(
+                            action == "set_model",
+                            result.model.as_deref().unwrap_or_default(),
+                            result.context.as_ref()
+                        )
+                    ),
+                    Err(error) => println!("{error}"),
                 }
                 continue;
             }
@@ -71,6 +100,63 @@ pub fn run(
         }
         Ok(())
     })
+}
+
+/// A chat command that controls the session rather than messaging it.
+#[derive(Debug, PartialEq, Eq)]
+enum Control {
+    /// `/model <id>`: switch the session's model.
+    SetModel(String),
+    /// `/compact`: summarise older turns now.
+    Compact,
+}
+
+fn control_command(text: &str) -> Option<Control> {
+    if text == "/compact" {
+        return Some(Control::Compact);
+    }
+    let model = text.strip_prefix("/model ")?.trim();
+    (!model.is_empty()).then(|| Control::SetModel(model.to_string()))
+}
+
+/// One line on a model switch or compaction: `Switched to x:y; compacted 30.1k -> 9.2k tokens
+/// (12 messages summarised by x:z).`
+fn describe_fit(switched: bool, model: &str, fit: Option<&ContextFit>) -> String {
+    let head = if switched {
+        format!("Switched to {model}")
+    } else {
+        format!("Context of {model}")
+    };
+    let Some(fit) = fit else {
+        return format!("{head}.");
+    };
+    let tokens = |tokens: u64| short(i64::try_from(tokens).unwrap_or(i64::MAX));
+    match &fit.compaction {
+        Some(compaction) => format!(
+            "{head}; compacted {} -> {} tokens ({} messages summarised by {}).",
+            tokens(compaction.before_tokens),
+            tokens(compaction.after_tokens),
+            compaction.summarised_messages,
+            compaction.summary_model
+        ),
+        None => match fit.budget {
+            Some(budget) => format!(
+                "{head}; the conversation ({} tokens) fits its budget of {} tokens{}.",
+                tokens(fit.tokens),
+                tokens(budget),
+                if switched {
+                    ""
+                } else {
+                    "; nothing older to compact"
+                }
+            ),
+            None => format!(
+                "{head}; its context window is unknown, so the conversation ({} tokens) was \
+                 not checked.",
+                tokens(fit.tokens)
+            ),
+        },
+    }
 }
 
 /// The root agent's latest context breakdown: what its last model call read.
@@ -347,6 +433,8 @@ async fn follow_turn(
             SessionEvent::ContextLoaded { references } => {
                 println!("\n{tag}· loaded {}", references.join(", "));
             }
+            // This client prints the result of its own /model and /compact.
+            SessionEvent::ModelChanged { .. } | SessionEvent::ContextCompacted { .. } => {}
         }
     }
 }
@@ -394,6 +482,43 @@ mod tests {
             ],
             cached_tokens: 0,
         }
+    }
+
+    #[test]
+    fn model_and_compact_commands_are_recognised() {
+        assert_eq!(
+            control_command("/model hosted:big"),
+            Some(Control::SetModel("hosted:big".into()))
+        );
+        assert_eq!(control_command("/compact"), Some(Control::Compact));
+        assert_eq!(control_command("/model "), None);
+        assert_eq!(control_command("tell me about /model x"), None);
+    }
+
+    #[test]
+    fn switches_report_their_compaction() {
+        let fit = ContextFit {
+            tokens: 9_200,
+            context_window: Some(16_384),
+            budget: Some(13_926),
+            method: TokenCountMethod::Exact,
+            compaction: Some(imperium_protocol::methods::Compaction {
+                before_tokens: 30_100,
+                after_tokens: 9_200,
+                summarised_messages: 12,
+                summary_model: "hosted:big".into(),
+            }),
+        };
+        assert_eq!(
+            describe_fit(true, "local:small", Some(&fit)),
+            "Switched to local:small; compacted 30.1k -> 9.2k tokens (12 messages summarised by \
+             hosted:big)."
+        );
+        let unchanged = ContextFit {
+            compaction: None,
+            ..fit
+        };
+        assert!(describe_fit(true, "local:small", Some(&unchanged)).contains("fits its budget"));
     }
 
     #[test]

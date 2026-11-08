@@ -53,7 +53,10 @@
 - **Sessions (implemented):** `session.create` (the caller is subscribed), `session.list`,
   `session.subscribe` (returns the session's full event history so far, then streams new
   events with no gap or duplicate), `session.send`, and `session.respond`. Events arrive as
-  `session.event` notifications.
+  `session.event` notifications. `session.control` changes a running session between turns:
+  its usage-limit policy, what it watches, its model (compacting the conversation to fit,
+  [03](03-agent-engine.md#switching-models-and-compaction)), or compaction now; it is refused
+  with `-32006` while a turn runs and with `-32007` when the conversation cannot fit.
 - Schema defined in Rust (`imperium-protocol`) and exported to TypeScript with `ts-rs` into
   `packages/protocol/src/generated/` whenever `cargo test` runs. `scripts/check-rust.sh` (run
   by CI) fails if the checked-in files differ. The pnpm package `@imperium/protocol`

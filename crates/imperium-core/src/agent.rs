@@ -25,7 +25,10 @@ use imperium_config::{Enforce, WritePolicy};
 use imperium_extensions::{HookEvent, Verdict};
 use imperium_memory::{NewEntry, Scope};
 
-use crate::breakdown::{Call, Category, Request, Spans, join_parts, tool_texts};
+use imperium_protocol::methods::{Compaction, ContextFit};
+
+use crate::breakdown::{Call, Category, Measured, Request, Spans, join_parts, tool_texts};
+use crate::compact::{self, SwitchError};
 use crate::session::{SessionMemory, Shared, lock};
 use crate::{LocalLease, ResolvedModel, TaskRequest, route};
 
@@ -77,6 +80,9 @@ pub struct Agent {
     role: String,
     /// Required references from the latest manifest that are not loaded yet.
     unloaded: Mutex<Vec<String>>,
+    /// The latest model call that reported its prompt size: the messages it read, and that
+    /// size, so measurements without a tokenizer can be calibrated.
+    last_reported: Option<(usize, u64)>,
 }
 
 impl Agent {
@@ -140,7 +146,13 @@ impl Agent {
             tasks: HashMap::new(),
             role,
             unloaded: Mutex::new(Vec::new()),
+            last_reported: None,
         }
+    }
+
+    /// The model this agent calls.
+    pub fn model(&self) -> &ResolvedModel {
+        &self.model
     }
 
     /// The conversation so far.
@@ -157,6 +169,7 @@ impl Agent {
         self.messages.truncate(1);
         self.messages.extend(earlier);
         self.spans.retain(|index, _| *index == 0);
+        self.last_reported = None;
     }
 
     fn emit(&self, event: SessionEvent) {
@@ -327,6 +340,9 @@ impl Agent {
                 )
                 .await;
             self.emit(breakdown);
+            if let Some(usage) = completion.usage.filter(|usage| usage.prompt_tokens > 0) {
+                self.last_reported = Some((self.messages.len(), usage.prompt_tokens));
+            }
             if !completion.text.is_empty() {
                 reply = completion.text.clone();
             }
@@ -652,8 +668,16 @@ impl Agent {
 
     /// The client for this turn's model calls, with the slot held on a local model.
     async fn client(&self) -> Result<(Arc<dyn ChatClient>, Option<LocalLease>), String> {
-        let (endpoint, lease) = self.endpoint().await?;
-        let kind = &self.model.kind;
+        self.client_for(&self.model).await
+    }
+
+    /// A client for `model`'s calls, with the slot held on a local model.
+    async fn client_for(
+        &self,
+        model: &ResolvedModel,
+    ) -> Result<(Arc<dyn ChatClient>, Option<LocalLease>), String> {
+        let (endpoint, lease) = self.endpoint(model).await?;
+        let kind = &model.kind;
         let client = self
             .shared
             .clients
@@ -662,10 +686,13 @@ impl Agent {
         Ok((client, lease))
     }
 
-    /// Where to send this turn's model calls, with the slot held on a local model.
-    async fn endpoint(&self) -> Result<(Endpoint, Option<LocalLease>), String> {
-        if !self.model.local {
-            return Ok((self.model.endpoint.clone(), None));
+    /// Where to send `model`'s calls, with the slot held on a local model.
+    async fn endpoint(
+        &self,
+        model: &ResolvedModel,
+    ) -> Result<(Endpoint, Option<LocalLease>), String> {
+        if !model.local {
+            return Ok((model.endpoint.clone(), None));
         }
         let local = self
             .shared
@@ -673,9 +700,9 @@ impl Agent {
             .as_deref()
             .ok_or("local models are not available: no llama.cpp runtime is configured")?;
         let lease = local
-            .acquire(&self.model.model)
+            .acquire(&model.model)
             .await
-            .map_err(|error| format!("could not load local model {}: {error}", self.model.model))?;
+            .map_err(|error| format!("could not load local model {}: {error}", model.model))?;
         let endpoint = Endpoint {
             base_url: lease.base_url.clone(),
             api_key: None,
@@ -890,7 +917,8 @@ impl Agent {
         let model = route(
             &self.shared.catalog,
             &self.shared.routing,
-            &self.shared.fallback_model,
+            // Only the root delegates, so this is the session's current model.
+            &self.model,
             TaskRequest {
                 named: args.model.as_deref(),
                 tier,
@@ -987,6 +1015,255 @@ impl Agent {
 }
 
 /// Tool arguments as JSON for hooks, or the raw text when they do not parse.
+/// Switching models and compacting the conversation; see [`compact`](crate::compact).
+impl Agent {
+    /// Switches this agent to `target` from its next turn. When the conversation does not fit
+    /// the target's context window it is compacted first; when it cannot be made to fit, the
+    /// agent keeps its model and conversation.
+    pub async fn switch_model(&mut self, target: ResolvedModel) -> Result<ContextFit, SwitchError> {
+        let fit = self.fit_to(&target, false).await?;
+        let from = std::mem::replace(&mut self.model, target);
+        // The calibration related the heuristic to the old model's counts.
+        self.last_reported = None;
+        self.emit(SessionEvent::ModelChanged {
+            from: from.spec,
+            to: self.model.spec.clone(),
+            compacted: fit.compaction.is_some(),
+        });
+        Ok(fit)
+    }
+
+    /// Compacts the conversation now for this agent's own model, keeping the last
+    /// [`KEEP_TURNS`](compact::KEEP_TURNS) turns verbatim (fewer if they do not fit).
+    pub async fn compact_now(&mut self) -> Result<ContextFit, SwitchError> {
+        let model = self.model.clone();
+        self.fit_to(&model, true).await
+    }
+
+    /// Measures the conversation for `target` and, when it does not fit the target's budget
+    /// (or `force` is set), replaces older messages with a summary until it does.
+    async fn fit_to(
+        &mut self,
+        target: &ResolvedModel,
+        force: bool,
+    ) -> Result<ContextFit, SwitchError> {
+        let (specs, mcp) = self.tool_specs();
+        let tools = tool_texts(&specs, mcp);
+        let scale = self.calibration(&tools);
+        let before = self
+            .measure_for(target, &self.messages, &self.spans, &tools, scale)
+            .await?;
+        let before_tokens = before.total();
+        let Some(window) = before.window else {
+            if force {
+                return Err(SwitchError::UnknownWindow(target.spec.clone()));
+            }
+            return Ok(ContextFit {
+                tokens: before_tokens,
+                context_window: None,
+                budget: None,
+                method: before.method,
+                compaction: None,
+            });
+        };
+        let budget = compact::budget(window);
+        let unchanged = ContextFit {
+            tokens: before_tokens,
+            context_window: Some(window),
+            budget: Some(budget),
+            method: before.method,
+            compaction: None,
+        };
+        if before_tokens <= budget && !force {
+            return Ok(unchanged);
+        }
+        // The system prompt and the tools stay whatever happens, with at least a short summary.
+        let base = before.fixed + before.messages[0] + compact::MESSAGE_FORMATTING;
+        if base + compact::MIN_SUMMARY_TOKENS > budget {
+            return Err(SwitchError::TooLarge {
+                model: target.spec.clone(),
+                needed: before.fixed + before.messages[0],
+                budget,
+            });
+        }
+        let keep_from = if force {
+            match compact::recent_turns_start(&self.messages, compact::KEEP_TURNS) {
+                Some(start) => Some(start),
+                // Nothing is older than the turns a manual compaction keeps.
+                None => return Ok(unchanged),
+            }
+        } else {
+            None
+        };
+        // Aim well under the budget so the conversation can go on; a third of that room goes
+        // to the summary and the rest to the most recent messages.
+        let free = (budget * compact::TARGET_PERCENT / 100).saturating_sub(base);
+        let allowance = (free / 3).clamp(compact::MIN_SUMMARY_TOKENS, compact::MAX_SUMMARY_TOKENS);
+        let mut cut = compact::choose_cut(
+            &self.messages,
+            &before,
+            free.saturating_sub(allowance),
+            keep_from,
+        );
+        let (mut summary, mut summary_model) = self.summarise(target, cut, allowance).await?;
+        for _ in 0..compact::MAX_ATTEMPTS {
+            let block = compact::summary_block(&summary);
+            let (messages, spans) = compact::rebuild(&self.messages, &self.spans, cut, &block);
+            let after = self
+                .measure_for(target, &messages, &spans, &tools, scale)
+                .await?;
+            let after_tokens = after.total();
+            if after_tokens <= budget {
+                let summarised_messages = u32::try_from(cut - 1).unwrap_or(u32::MAX);
+                self.messages = messages;
+                self.spans = spans;
+                self.last_reported = None;
+                self.emit(SessionEvent::ContextCompacted {
+                    model: target.spec.clone(),
+                    before_tokens,
+                    after_tokens,
+                    summarised_messages,
+                    budget,
+                    context_window: Some(window),
+                    method: after.method,
+                    summary_model: summary_model.clone(),
+                });
+                return Ok(ContextFit {
+                    tokens: after_tokens,
+                    context_window: Some(window),
+                    budget: Some(budget),
+                    method: after.method,
+                    compaction: Some(Compaction {
+                        before_tokens,
+                        after_tokens,
+                        summarised_messages,
+                        summary_model,
+                    }),
+                });
+            }
+            // What the summary took: its message, less the kept message it went into.
+            let host = if compact::merges(&self.messages, cut) {
+                before.messages[cut]
+            } else {
+                compact::MESSAGE_FORMATTING
+            };
+            let summary_tokens = after.messages[1].saturating_sub(host);
+            let others = after_tokens.saturating_sub(summary_tokens);
+            if others + compact::MIN_SUMMARY_TOKENS <= budget {
+                // A shorter summary is enough.
+                summary = compact::shorten(&summary, budget - others, summary_tokens);
+                continue;
+            }
+            // Keep fewer recent messages, summarising the ones no longer kept.
+            let tail: u64 = before.messages[cut..].iter().sum();
+            let excess = others + compact::MIN_SUMMARY_TOKENS - budget;
+            let next = compact::choose_cut(
+                &self.messages,
+                &before,
+                tail.saturating_sub(excess),
+                keep_from,
+            );
+            let next = if next > cut {
+                next
+            } else {
+                match compact::next_cut(&self.messages, cut) {
+                    Some(next) => next,
+                    None => break,
+                }
+            };
+            cut = next;
+            (summary, summary_model) = self.summarise(target, cut, allowance).await?;
+        }
+        Err(SwitchError::NoFit {
+            model: target.spec.clone(),
+            budget,
+        })
+    }
+
+    /// Summarises the messages before `cut` (after the system prompt) in about `allowance`
+    /// tokens. The agent's current model writes it, as it has read the whole conversation; if
+    /// it cannot be reached, the target model does. Returns the summary and the model's spec.
+    async fn summarise(
+        &self,
+        target: &ResolvedModel,
+        cut: usize,
+        allowance: u64,
+    ) -> Result<(String, String), SwitchError> {
+        let request = compact::summary_request(&self.messages[1..cut], allowance * 3 / 4);
+        let mut candidates = vec![&self.model];
+        if target.spec != self.model.spec {
+            candidates.push(target);
+        }
+        let mut failures = Vec::new();
+        for model in candidates {
+            let (client, _lease) = match self.client_for(model).await {
+                Ok(client) => client,
+                Err(error) => {
+                    failures.push(format!("{}: {error}", model.spec));
+                    continue;
+                }
+            };
+            let mut ignore = |_: &str| {};
+            let completion = client
+                .stream(
+                    ChatRequest {
+                        model: &model.model,
+                        messages: &request,
+                        tools: &[],
+                    },
+                    &mut ignore,
+                )
+                .await;
+            match completion {
+                Ok(completion) if !completion.text.trim().is_empty() => {
+                    return Ok((completion.text.trim().to_string(), model.spec.clone()));
+                }
+                Ok(_) => failures.push(format!("{} wrote no summary", model.spec)),
+                Err(error) => failures.push(format!("{}: {error}", model.spec)),
+            }
+        }
+        Err(SwitchError::Summary(failures.join("; ")))
+    }
+
+    /// Measures `messages` as `model` would read them.
+    async fn measure_for(
+        &self,
+        model: &ResolvedModel,
+        messages: &[ChatMessage],
+        spans: &HashMap<usize, Spans>,
+        tools: &[(Category, String)],
+        scale: Option<f64>,
+    ) -> Result<Measured, SwitchError> {
+        let (client, _lease) = self
+            .client_for(model)
+            .await
+            .map_err(SwitchError::Unavailable)?;
+        let request = Request {
+            messages,
+            spans,
+            tools,
+        };
+        Ok(self
+            .shared
+            .tokens
+            .measure(client.as_ref(), model, &request, scale)
+            .await)
+    }
+
+    /// How far the heuristic was off on the latest call that reported its prompt size: the
+    /// reported size over the estimate, within reason.
+    fn calibration(&self, tools: &[(Category, String)]) -> Option<f64> {
+        let (count, prompt_tokens) = self.last_reported?;
+        let request = Request {
+            messages: self.messages.get(..count)?,
+            spans: &self.spans,
+            tools,
+        };
+        let estimate = request.estimate();
+        (estimate > 0).then(|| (prompt_tokens as f64 / estimate as f64).clamp(0.5, 3.0))
+    }
+}
+
 fn tool_input(arguments: &str) -> serde_json::Value {
     serde_json::from_str(arguments).unwrap_or_else(|_| arguments.into())
 }

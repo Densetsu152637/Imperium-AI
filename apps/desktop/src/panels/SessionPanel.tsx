@@ -1,14 +1,25 @@
-// The main session panel: a header with title and status, environment, usage-limit controls,
-// and the folded context and outputs sections; then the conversation and the composer.
+// The main session panel: a header with title and status, environment (with the model picker),
+// usage-limit controls, and the folded context and outputs sections; then the conversation and
+// the composer.
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { PermissionDecision, Plan, ResumePolicy } from "@imperium/protocol";
+import type { ModelRow, PermissionDecision, Plan, ResumePolicy, SessionControlResult } from "@imperium/protocol";
 
 import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
-import { ROOT, describeUse, formatCost, formatCount, sessionTitle, totals, type Entry, type SessionState } from "../sessions";
+import {
+  ROOT,
+  describeUse,
+  formatCost,
+  formatCount,
+  formatTokens,
+  sessionTitle,
+  totals,
+  type Entry,
+  type SessionState,
+} from "../sessions";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
@@ -21,9 +32,22 @@ type Props = {
   /** Resolves once the daemon accepted the policy. */
   onSetResumePolicy: (policy: ResumePolicy) => Promise<void>;
   onResumeNow: () => void;
+  /** The model table (`models.list`), offered in the model picker. */
+  models: ModelRow[];
+  /** Switches the session's model; resolves with the daemon's answer, or null when it failed. */
+  onSetModel: (model: string) => Promise<SessionControlResult | null>;
 };
 
-export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePolicy, onResumeNow }: Props) {
+export function SessionPanel({
+  session,
+  icons,
+  onSend,
+  onRespond,
+  onSetResumePolicy,
+  onResumeNow,
+  models,
+  onSetModel,
+}: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
   const [rendered, setRendered] = useState(settings.renderMarkdown);
@@ -72,7 +96,13 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
 
         <div className="session-env">
           <span title={session.summary.project_dir}>{projectName(session.summary.project_dir)}</span>
-          <span title="Model">{session.summary.model}</span>
+          <ModelPicker
+            key={session.summary.session_id}
+            current={session.summary.model}
+            models={models}
+            busy={session.busy}
+            onSwitch={onSetModel}
+          />
           <span title="Isolation tier">{session.summary.isolation}</span>
           <span title="Session cost">{formatCost(sum.costUsd)}</span>
           <label className="toggle">
@@ -245,6 +275,66 @@ function EntryView({
     case "notice":
       return <p className="notice">{entry.message}</p>;
   }
+}
+
+/**
+ * The session's model, switchable to any row of the model table between turns. A smaller
+ * context window makes the daemon summarise older turns first; the result is noted beside it.
+ */
+function ModelPicker({
+  current,
+  models,
+  busy,
+  onSwitch,
+}: {
+  current: string;
+  models: ModelRow[];
+  busy: boolean;
+  onSwitch: Props["onSetModel"];
+}) {
+  const [switching, setSwitching] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  if (models.length === 0) return <span title="Model">{current}</span>;
+  const listed = models.some((row) => row.spec === current);
+  const switchTo = (spec: string) => {
+    if (spec === current) return;
+    setSwitching(true);
+    setNote(null);
+    onSwitch(spec)
+      .then((result) => {
+        const compaction = result?.context?.compaction;
+        if (compaction) {
+          setNote(
+            `compacted ${formatTokens(compaction.before_tokens)} → ${formatTokens(compaction.after_tokens)} tokens`,
+          );
+        }
+      })
+      .finally(() => setSwitching(false));
+  };
+  return (
+    <span className="model-picker">
+      <select
+        aria-label="Model"
+        title={
+          busy
+            ? "Switch models when the turn finishes"
+            : "Switch the session's model; older turns are summarised if its context window is smaller"
+        }
+        value={current}
+        disabled={busy || switching}
+        onChange={(event) => switchTo(event.target.value)}
+      >
+        {!listed && <option value={current}>{current}</option>}
+        {models.map((row) => (
+          <option key={row.id} value={row.spec} disabled={!row.endpoint_configured}>
+            {row.id === row.spec ? row.spec : `${row.id} · ${row.spec}`}
+          </option>
+        ))}
+      </select>
+      {switching && <span className="muted">Switching…</span>}
+      {note && !switching && <span className="model-note">{note}</span>}
+    </span>
+  );
 }
 
 const RESUME_MODES: Record<ResumePolicy["mode"], string> = {

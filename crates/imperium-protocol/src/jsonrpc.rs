@@ -145,6 +145,10 @@ pub mod codes {
     pub const MODEL_UNAVAILABLE: i32 = -32004;
     /// The caller is not allowed to use this method (a paired phone outside its scopes).
     pub const FORBIDDEN: i32 = -32005;
+    /// The session cannot do this now: a turn is running.
+    pub const SESSION_BUSY: i32 = -32006;
+    /// The session's conversation cannot fit the requested model's context window.
+    pub const CONTEXT_TOO_LARGE: i32 = -32007;
 }
 
 #[cfg(test)]

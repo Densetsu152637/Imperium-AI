@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use imperium_config::{KeychainSecrets, Paths, SecretStore, Settings};
 use imperium_core::{
-    CatalogModel, ChatClients, LocalModels, ModelError, Session, SessionConfig, SessionMemory,
-    ToolProvider, new_session_id, resolve_model,
+    CatalogModel, ChatClients, LocalModels, ModelError, ResolvedModel, Session, SessionConfig,
+    SessionMemory, ToolProvider, new_session_id, resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_mcp::McpTools;
@@ -350,7 +350,9 @@ impl DaemonState {
                 continue;
             };
             let project = meta["project_dir"].as_str().unwrap_or_default();
-            let model = meta["model"].as_str();
+            // A model the session switched to is in its journal; else the one it started with.
+            let switched = imperium_core::journalled_model(&journal);
+            let model = switched.as_deref().or(meta["model"].as_str());
             let options = SessionOptions {
                 resume_id: Some(id.clone()),
                 ..SessionOptions::default()
@@ -716,6 +718,20 @@ impl DaemonState {
                 .collect(),
             server_timeout: Duration::from_secs(60),
         })
+    }
+
+    /// Resolves a model a client asked a session to switch to: a model table id or an
+    /// `<endpoint>:<model>` spec, or `None` for `models.default`.
+    pub fn resolve_model(&self, requested: Option<&str>) -> Result<ResolvedModel, ModelError> {
+        let spec = requested.map(|requested| {
+            self.settings
+                .models
+                .catalog
+                .iter()
+                .find(|entry| entry.id == requested)
+                .map_or(requested, |entry| entry.spec.as_str())
+        });
+        resolve_model(&self.settings, spec, |name| self.secrets.load(name))
     }
 
     /// Resolves `[[models.catalog]]` for routing subagents. Entries that cannot be used (an
