@@ -141,7 +141,8 @@ that reads `quiet`, `busy`, or `saturated`, and the work it starts on its own gi
   the CPU or memory crosses the `busy` thresholds. *Quiet*: none of that. The level rises at once
   and drops only after the machine has looked calmer for `load.settle_s` (60 s). CPU use is not
   counted while a background session is working, because the daemon cannot tell its own load from
-  yours. Your keyboard and mouse idle time is not used (it needs OS calls this codebase does not
+  yours (follow-up: subtract the CPU of the daemon's own child processes instead, so a heavy
+  build of yours is still noticed while background work runs). Your keyboard and mouse idle time is not used (it needs OS calls this codebase does not
   make); your sessions stand in for it, and GPU utilisation is not polled (`nvidia-smi` runs once,
   at start, for memory); the slot queue and swaps are the GPU signal.
 - **Background sessions.** A session started by a schedule's prompt or by a project agent's
@@ -153,12 +154,16 @@ that reads `quiet`, `busy`, or `saturated`, and the work it starts on its own gi
 - **Deferral.** A project agent's `start_session` creates the session at once, but with
   `prefer_quiet` (default `true` for `[[projects]]`) it gets its brief only when the view is
   `quiet`, or after `max_defer`. Until then it is listed as `paused` with a `deferred` hold.
-  Sessions waiting still count against `max_sessions`.
+  Sessions waiting still count against `max_sessions`. A session released by `max_defer` or by
+  *run now* (also a schedule prompt run that waited out its `max_defer`, or one a person started
+  with `schedules.run`) does not give way again for the rest of its life: "then run anyway"
+  means it runs to the end.
 - **Yielding mid-run.** A running background session checks the view before each model call. If
   it is `busy` or `saturated`, the call in flight has already finished, so it pauses there: no
   slot held, no tokens spent, like `await_tasks`. It resumes when the view is `quiet`. The pause
   reuses the usage-limit pause (a `paused` event with `cause = "load"` and `until_unix_ms = 0`,
-  then `resumed`). Subagents of a background session yield the same way.
+  then `resumed`). Subagents of a background session yield the same way, and a paused agent is
+  detached from its local model, so a model you ask for can swap it out without waiting for it.
 - **Visibility and run now.** Session summaries carry `background` and a `hold`
   (`cause` `deferred` or `load`, and the reason); the desktop shows `Paused · waiting for a quiet
   machine` or `giving way to you`, a `· background` suffix, and the existing **Resume now**

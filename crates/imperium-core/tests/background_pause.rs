@@ -10,8 +10,8 @@ use std::time::Duration;
 use axum::Router;
 use axum::routing::post;
 use imperium_core::{
-    AcquireFuture, Availability, Background, Load, LoadView, LocalLease, LocalModels, Priority,
-    ResolvedModel, Session, SessionConfig,
+    AcquireFuture, Availability, Background, Load, LoadView, LocalLease, LocalModels,
+    LocalPresence, Priority, ResolvedModel, Session, SessionConfig,
 };
 use imperium_models::Endpoint;
 use imperium_protocol::session::{AgentEvent, PauseCause, SessionEvent, SessionStatus};
@@ -36,6 +36,16 @@ struct OneSlot {
     permits: Arc<Semaphore>,
     held: Arc<AtomicUsize>,
     priorities: Mutex<Vec<Priority>>,
+    /// Agents attached to the model for a turn right now.
+    attached: Arc<AtomicUsize>,
+}
+
+struct Attached(Arc<AtomicUsize>);
+
+impl Drop for Attached {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 struct Held {
@@ -74,6 +84,11 @@ impl LocalModels for OneSlot {
 
     fn acquire<'a>(&'a self, _model: &'a str, _holder: &'a str) -> AcquireFuture<'a> {
         Box::pin(self.take())
+    }
+
+    fn attach(&self, _model: &str, _holder: &str) -> LocalPresence {
+        self.attached.fetch_add(1, Ordering::SeqCst);
+        LocalPresence::new(Attached(Arc::clone(&self.attached)))
     }
 
     fn acquire_as<'a>(
@@ -204,6 +219,7 @@ async fn background_pause_at_a_step_boundary_when_busy_and_resume_when_quiet() {
         permits: Arc::new(Semaphore::new(1)),
         held: Arc::clone(&held),
         priorities: Mutex::new(Vec::new()),
+        attached: Arc::new(AtomicUsize::new(0)),
     });
     let dir = tempfile::tempdir().unwrap();
     let session = start(local.clone(), load.clone(), dir.path());
@@ -233,6 +249,9 @@ async fn background_pause_at_a_step_boundary_when_busy_and_resume_when_quiet() {
         0,
         "a paused session holds no slot"
     );
+    // Nor does it keep its model claimed: a paused agent is detached from it, so a model
+    // another session asks for can swap it out without waiting for this one.
+    assert_eq!(local.attached.load(Ordering::SeqCst), 0);
     // Nothing else holds it up: another caller takes the one slot at once.
     drop(
         tokio::time::timeout(Duration::from_millis(500), local.acquire("q", "other"))
@@ -262,6 +281,8 @@ async fn background_pause_at_a_step_boundary_when_busy_and_resume_when_quiet() {
         matches!(event, SessionEvent::Resumed {})
     })
     .await;
+    // Attached to its model again for the rest of the turn.
+    assert_eq!(local.attached.load(Ordering::SeqCst), 1);
     until(&mut events, Duration::from_secs(10), |event| {
         matches!(event, SessionEvent::TurnCompleted { .. })
     })
@@ -284,6 +305,7 @@ async fn background_pause_ends_when_a_person_runs_it_now() {
         permits: Arc::new(Semaphore::new(1)),
         held: Arc::new(AtomicUsize::new(0)),
         priorities: Mutex::new(Vec::new()),
+        attached: Arc::new(AtomicUsize::new(0)),
     });
     let dir = tempfile::tempdir().unwrap();
     let session = start(local, load, dir.path());

@@ -27,7 +27,7 @@ use imperium_memory::{NewEntry, Scope};
 
 use crate::breakdown::{Call, Category, Request, Spans, join_parts, tool_texts};
 use crate::session::{SessionMemory, Shared, lock};
-use crate::{LocalLease, LocalModels, ResolvedModel, TaskRequest, route};
+use crate::{LocalLease, LocalModels, LocalPresence, ResolvedModel, TaskRequest, route};
 
 /// Longest tool output or report shown in events (the model receives the full text).
 const EVENT_OUTPUT_CHARS: usize = 2_000;
@@ -240,12 +240,12 @@ impl Agent {
         // Names this agent to a local model, which gives it back the slot it used last and
         // keeps the model loaded between its calls.
         let holder = self.holder();
-        let _attached = self
+        let mut attached = self
             .local_models()
             .map(|local| local.attach(&self.model.model, &holder));
         for step in 1..=max_steps {
             // A background session gives way here, between model calls, holding no slot.
-            self.yield_to_user().await;
+            self.yield_to_user(&mut attached, &holder).await;
             let mut waits = 0;
             let mut waited = std::time::Duration::ZERO;
             let (client, queue_wait, started, first_text, result) = loop {
@@ -668,8 +668,9 @@ impl Agent {
     /// For a background session: waits, before the next model call, while the machine is busy
     /// or saturated. The call in flight has finished and the next one has not asked for a
     /// slot, so the wait holds none and spends no tokens; it ends when the machine is quiet or
-    /// a person runs the session now.
-    async fn yield_to_user(&self) {
+    /// a person runs the session now. While it waits it is not attached to its model, so a
+    /// model the user asks for can swap that one out without waiting for this agent.
+    async fn yield_to_user(&self, attached: &mut Option<LocalPresence>, holder: &str) {
         let Some(background) = &self.shared.background else {
             return;
         };
@@ -685,7 +686,11 @@ impl Agent {
             ),
             cause: PauseCause::Load,
         });
+        *attached = None;
         crate::wait_for_quiet(&*background.load, run_now, None).await;
+        *attached = self
+            .local_models()
+            .map(|local| local.attach(&self.model.model, holder));
         self.emit(SessionEvent::Resumed {});
     }
 

@@ -1313,7 +1313,24 @@ impl Supervisor {
                     no_room()
                 ));
             }
-            Decision::Wait => return Ok(Plan::Wait { yielded: protected }),
+            Decision::Wait => {
+                // The wait is giving way to the user only if the model the user used lately is
+                // what holds this load up; any other wait keeps the `max_wait_s` cap.
+                let yielded = protected && {
+                    let (unprotected, _) = self.residents(&state, None);
+                    !matches!(
+                        arbiter::decide(
+                            self.placer(model, Arc::clone(&backend)),
+                            self.budget,
+                            &unprotected,
+                            ticket.since.elapsed(),
+                            policy,
+                        ),
+                        Decision::Wait
+                    )
+                };
+                return Ok(Plan::Wait { yielded });
+            }
             Decision::Load { evict, placement } => (evict, placement),
         };
         let cache_room = arbiter::cache_room(self.budget, &residents, &evict, &placement);

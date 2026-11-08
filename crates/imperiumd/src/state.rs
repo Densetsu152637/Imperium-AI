@@ -46,6 +46,9 @@ pub struct SessionOptions {
     pub instructions: Option<String>,
     /// Started by a schedule or a project agent: it gives way to the user's own sessions.
     pub background: bool,
+    /// A background session that must not give way to the load: a person ran it now, or it
+    /// waited out its `max_defer`.
+    pub run_now: bool,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -586,15 +589,9 @@ impl DaemonState {
         project_dir: &str,
         model: Option<&str>,
         prompt: String,
-        pre_approved: Vec<String>,
-        background: bool,
+        options: SessionOptions,
         timeout: std::time::Duration,
     ) -> (bool, String, Option<String>) {
-        let options = SessionOptions {
-            pre_approved,
-            background,
-            ..SessionOptions::default()
-        };
         let (session, events) = match self.create_session_with(project_dir, model, options) {
             Ok(created) => created,
             Err(error) => return (false, error.to_string(), None),
@@ -772,6 +769,9 @@ impl DaemonState {
             if let Err(error) = std::fs::write(&path, meta.to_string()) {
                 tracing::warn!(path = %path.display(), %error, "could not record the session");
             }
+        }
+        if options.run_now {
+            session.run_now().release();
         }
         let events = session.subscribe();
         if let Some(pets) = self.pets() {

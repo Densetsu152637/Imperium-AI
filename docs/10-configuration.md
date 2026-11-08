@@ -91,7 +91,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `projects` | none | `[[projects]]` with `path`, `agent` (run a project agent), `agent_model`, `max_sessions` (2), `max_sessions_per_day` (20), `prefer_quiet` (default `true`: the agent's sessions get their brief only when the machine is quiet, for at most `max_defer`, default `2h`) |
 | `load.sample_s`, `load.settle_s` | `5`, `60` | How often (seconds) the daemon looks at the machine for the [load view](14-projects-and-automation.md#quiet-periods), and how long it must look calmer before the level drops (so a pause between two of your messages is not quiet) |
 | `load.busy_cpu_pct`, `load.saturated_cpu_pct` | `70`, `95` | Overall CPU use (percent) at which the machine counts as busy, and as saturated; not counted while a background session is working |
-| `load.busy_free_ram_mb`, `load.saturated_free_ram_mb` | `2048`, `512` | Available memory (MiB) below which the machine counts as busy, and as saturated |
+| `load.busy_free_ram_mb`, `load.saturated_free_ram_mb` | `1024`, `512` | Available memory (MiB) below which the machine counts as busy, and as saturated; keep the busy value below `runtime.llamacpp.ram_headroom_mb` (2048), which model placement leaves free, or a machine with models loaded would never read quiet |
 | `load.saturated_swaps_per_min` | `3` | Local models swapped out in the last minute at which the machine counts as saturated; `0` ignores swaps |
 | `load.interactive_hold_min` | `5` | Minutes after one of your sessions last used a local model during which background work may not swap that model out |
 | `github.watch` | none | `[[github.watch]]` with `repo` (`owner/name`) and `project` (a local clone whose `origin` is that repository) |

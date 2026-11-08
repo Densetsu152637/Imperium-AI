@@ -111,6 +111,10 @@ fn settings() -> LlamaCppSettings {
 
 /// A 10 GiB GPU and no spare RAM: one of the 6 GiB models at a time, each with one slot.
 fn start() -> (Arc<Supervisor>, Arc<Log>) {
+    start_with(settings())
+}
+
+fn start_with(settings: LlamaCppSettings) -> (Arc<Supervisor>, Arc<Log>) {
     let log = Arc::new(Log::default());
     let hardware = Hardware {
         gpus: vec![Gpu {
@@ -128,7 +132,7 @@ fn start() -> (Arc<Supervisor>, Arc<Log>) {
     };
     let supervisor = Supervisor::start(
         vec![model("worker"), model("helper")],
-        settings(),
+        settings,
         Runtimes::default(),
         &hardware,
         Arc::new(FakeLauncher {
@@ -344,4 +348,56 @@ async fn background_priority_waits_while_the_machine_is_saturated() {
         .unwrap();
     assert_eq!(*lock(&order), ["background"]);
     assert_eq!(supervisor.activity().background_in_use, 0);
+}
+
+#[tokio::test]
+async fn background_priority_only_waiting_on_the_users_use_is_uncapped() {
+    // Waits for any other reason still fail at `max_wait_s`.
+    let capped = LlamaCppSettings {
+        max_wait_s: 1,
+        ..settings()
+    };
+    let (supervisor, _log) = start_with(capped.clone());
+    supervisor.set_background_policy(Arc::new(Manual::default()), Duration::from_millis(1500));
+    let in_use = supervisor
+        .acquire_as("worker", "background-0", Priority::Background)
+        .await
+        .unwrap();
+    let error = supervisor
+        .acquire_as("helper", "background-1", Priority::Background)
+        .await
+        .unwrap_err();
+    assert!(error.contains("waited 1 s"), "{error}");
+    drop(in_use);
+
+    // Waiting out the window after the user's own use is giving way, not a failure to get
+    // room: it outlasts `max_wait_s` and then succeeds.
+    let (supervisor, log) = start_with(capped);
+    supervisor.set_background_policy(Arc::new(Manual::default()), Duration::from_millis(2500));
+    drop(supervisor.acquire("worker", "user-0").await.unwrap());
+    let lease = supervisor
+        .acquire_as("helper", "background-1", Priority::Background)
+        .await
+        .expect("the wait for the user's window does not count against max_wait_s");
+    drop(lease);
+    assert_eq!(log.ops(), ["launch worker", "stop worker", "launch helper"]);
+}
+
+#[tokio::test]
+async fn background_priority_a_wait_the_users_use_does_not_explain_is_still_capped() {
+    // The swap limit is spent, so the call would wait even if the user had not used the model
+    // lately: that wait is not giving way to the user, and `max_wait_s` bounds it.
+    let (supervisor, _log) = start_with(LlamaCppSettings {
+        max_wait_s: 1,
+        max_swaps_per_min: 1,
+        ..settings()
+    });
+    supervisor.set_background_policy(Arc::new(Manual::default()), Duration::from_secs(30));
+    drop(supervisor.acquire("worker", "user-0").await.unwrap());
+    drop(supervisor.acquire("helper", "user-0").await.unwrap());
+    let error = supervisor
+        .acquire_as("worker", "background-1", Priority::Background)
+        .await
+        .unwrap_err();
+    assert!(error.contains("waited 1 s"), "{error}");
 }

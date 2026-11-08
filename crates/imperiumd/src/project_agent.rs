@@ -16,7 +16,7 @@ use std::time::Duration;
 use chrono::{Local, NaiveDate};
 use imperium_automation::parse_duration;
 use imperium_config::ProjectSettings;
-use imperium_core::{LaunchFuture, Load, Session, SessionLauncher, wait_for_quiet};
+use imperium_core::{LaunchFuture, Load, Session, SessionLauncher, Waited, wait_for_quiet};
 use imperium_protocol::session::SessionEvent;
 use tokio::sync::broadcast;
 
@@ -218,7 +218,13 @@ impl SessionLauncher for Launcher {
             let report_id = id.clone();
             tokio::spawn(async move {
                 if waiting {
-                    wait_for_quiet(&*view, session.run_now(), Some(max_defer)).await;
+                    // After `max_defer`, or when a person runs it now, it runs whatever the
+                    // load, and does not give way again.
+                    if wait_for_quiet(&*view, session.run_now(), Some(max_defer)).await
+                        != Waited::Quiet
+                    {
+                        session.run_now().release();
+                    }
                     session.undefer();
                 }
                 let result = if session.send(brief).is_ok() {

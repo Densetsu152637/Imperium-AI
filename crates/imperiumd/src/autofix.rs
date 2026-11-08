@@ -132,8 +132,10 @@ pub async fn fix_ci(
             &project,
             model.as_deref(),
             prompt,
-            tools,
-            false,
+            crate::SessionOptions {
+                pre_approved: tools,
+                ..crate::SessionOptions::default()
+            },
             FIX_TIMEOUT,
         )
         .await;

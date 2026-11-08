@@ -484,7 +484,9 @@ pub struct LoadSettings {
     pub busy_cpu_pct: f32,
     /// Overall CPU use (percent) at which it is saturated.
     pub saturated_cpu_pct: f32,
-    /// Available memory (MiB) below which the machine is busy.
+    /// Available memory (MiB) below which the machine is busy. Keep it below
+    /// `runtime.llamacpp.ram_headroom_mb`: placing models leaves that much free, so a machine
+    /// with models loaded to the budget sits near it all day and would never be quiet.
     pub busy_free_ram_mb: u64,
     /// Available memory (MiB) below which it is saturated.
     pub saturated_free_ram_mb: u64,
@@ -502,7 +504,7 @@ impl Default for LoadSettings {
             settle_s: 60,
             busy_cpu_pct: 70.0,
             saturated_cpu_pct: 95.0,
-            busy_free_ram_mb: 2048,
+            busy_free_ram_mb: 1024,
             saturated_free_ram_mb: 512,
             saturated_swaps_per_min: 3,
             interactive_hold_min: 5,

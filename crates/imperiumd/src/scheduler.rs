@@ -15,13 +15,13 @@ use std::time::Duration;
 use chrono::{DateTime, Local};
 use imperium_automation::{History, Missed, RunRecord, Trigger, next_run, parse_duration};
 use imperium_config::ScheduleSettings;
-use imperium_core::{Load, RunNow, wait_for_quiet};
+use imperium_core::{Load, RunNow, Waited, wait_for_quiet};
 use imperium_protocol::methods::{
     SCHEDULE_EVENT, ScheduleEventParams, ScheduleListResult, ScheduleRow,
 };
 use tokio::sync::Notify;
 
-use crate::DaemonState;
+use crate::{DaemonState, SessionOptions};
 
 /// Longest a run may take unless the schedule says otherwise.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3600);
@@ -193,16 +193,18 @@ impl Scheduler {
         Ok(self.spawn_run(daemon, entry, true))
     }
 
-    /// Waits for a quiet machine if the schedule asks for one.
-    async fn wait_for_quiet(&self, daemon: &Arc<DaemonState>, index: usize) {
+    /// Waits for a quiet machine if the schedule asks for one. True when the run should now
+    /// go ahead whatever the load, because `max_defer` passed or a person released it; the
+    /// session it starts then does not give way again.
+    async fn wait_for_quiet(&self, daemon: &Arc<DaemonState>, index: usize) -> bool {
         let entry = &self.entries[index];
         let Some(limit) = entry.quiet else {
-            return;
+            return false;
         };
         let view = daemon.load_view();
         let id = entry.settings.id.as_str();
         if view.level() == Load::Quiet {
-            return;
+            return false;
         }
         let run_now = Arc::new(RunNow::default());
         let reason = match limit {
@@ -227,6 +229,7 @@ impl Scheduler {
         let waited = wait_for_quiet(&*view, &run_now, limit).await;
         lock(&self.deferred).remove(id);
         tracing::info!(schedule = %id, ?waited, "run no longer deferred");
+        waited != Waited::Quiet
     }
 
     /// Runs the schedule at `index`. A `manual` run (a person asked for it) does not wait for a
@@ -241,12 +244,10 @@ impl Scheduler {
         let daemon = Arc::clone(daemon);
         tokio::spawn(async move {
             let settings = scheduler.entries[index].settings.clone();
-            if !manual {
-                scheduler.wait_for_quiet(&daemon, index).await;
-            }
+            let run_now = manual || scheduler.wait_for_quiet(&daemon, index).await;
             announce(&daemon, &settings.id, "started", None, String::new());
             let started = Local::now();
-            let (ok, summary, session_id) = run(&daemon, &settings).await;
+            let (ok, summary, session_id) = run(&daemon, &settings, run_now).await;
             let record = RunRecord {
                 at: started,
                 ok,
@@ -312,6 +313,7 @@ async fn run_loop(scheduler: Arc<Scheduler>, daemon: std::sync::Weak<DaemonState
 async fn run(
     daemon: &Arc<DaemonState>,
     settings: &ScheduleSettings,
+    run_now: bool,
 ) -> (bool, String, Option<String>) {
     let action = &settings.action;
     let timeout = action
@@ -344,8 +346,11 @@ async fn run(
             &project,
             action.model.as_deref(),
             prompt,
-            Vec::new(),
-            true,
+            SessionOptions {
+                background: true,
+                run_now,
+                ..SessionOptions::default()
+            },
             timeout,
         )
         .await;
