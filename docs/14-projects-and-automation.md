@@ -95,7 +95,7 @@ session it started, delivered as `Session <id> finished. Its report: ...` when t
 turn ends. It uses no tokens between events. `max_sessions` (default 2) caps sessions running
 at once and `max_sessions_per_day` (default 20) per day. Permission requests from the agent and
 its sessions, and from scheduled prompt runs, become approval requests (the Approvals panel,
-`imperium approvals`). `imperium daemon autostart enable|disable|status` starts `imperiumd` at
+`imperium approvals`). `imperium daemon autostart enable|disable|status` starts `imperium-core` at
 login (a per-user `Run` registry value on Windows, a LaunchAgent on macOS, an XDG autostart
 entry on Linux). Not yet: file, Git, and webhook wake-ups, cost budgets, a tray icon, and
 notes beyond the agent's memory tools.

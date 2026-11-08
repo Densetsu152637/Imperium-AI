@@ -64,7 +64,7 @@ support.
 checklist in the desktop app and the CLI. Not yet: the automatic plan phase, approval modes,
 progress checks, and re-planning described below.
 
-Planning is built into the runtime (`imperium-core`), not left to prompts, so every agent —
+Planning is built into the runtime (`imperium-engine`), not left to prompts, so every agent —
 whatever model it runs on — works toward an explicit, tracked goal.
 
 - **Plan object.** Each agent can hold a plan: a goal, acceptance criteria, and ordered steps

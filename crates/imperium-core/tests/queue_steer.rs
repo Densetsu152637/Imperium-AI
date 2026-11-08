@@ -1,115 +1,38 @@
-//! Queueing and steering: messages sent while a turn runs wait and run in order afterwards (and
-//! can be edited or removed first); a steering message joins the running turn before its next
-//! model call, after the tool round, without breaking tool-call pairs; the root agent steers
-//! and queues messages for its subagents with tools; and a resumed session restores its queue.
+//! `session.send` modes and `session.queue`: a message sent during a turn is queued with an
+//! id, a steering one joins the running turn, queued messages can be listed, edited, and
+//! removed, and bad targets or actions are refused.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use imperium_core::{QueueError, ResolvedModel, Session, SessionConfig};
-use imperium_models::Endpoint;
-use imperium_protocol::session::{AgentEvent, QueuedMessage, SendMode, SessionEvent};
-use imperium_tools::Workspace;
+use imperium_core::{Connection, DaemonState};
+use imperium_protocol::jsonrpc::{Outcome, Response, codes};
+use imperium_protocol::methods::{SessionQueueResult, SessionSendResult};
+use imperium_protocol::session::{AgentEvent, SessionEvent};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
-/// A fake OpenAI-compatible endpoint that records every request and answers by the last
-/// message. Root agent: `slow` sleeps then answers; `slow tool` sleeps then reads a.txt;
-/// `delegate` spawns a subagent, then steers it, queues a follow-up for it, and awaits it.
-/// Subagent: its brief sleeps then reads a.txt; a follow-up answers `follow-up done`. A
-/// steering message is answered `steered`; anything else `done`.
-#[derive(Default)]
-struct Fake {
-    requests: Mutex<Vec<Value>>,
-}
-
-impl Fake {
-    fn requests(&self) -> Vec<Value> {
-        self.requests.lock().unwrap().clone()
-    }
-}
-
-fn stream(chunk: Value) -> String {
-    format!("data: {chunk}\n\ndata: [DONE]\n\n")
-}
-
-fn text(content: &str) -> String {
-    stream(json!({"choices": [{"delta": {"content": content}}]}))
-}
-
-fn call(id: &str, name: &str, arguments: Value) -> String {
-    stream(
-        json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": id,
-        "function": {"name": name, "arguments": arguments.to_string()}}]}}]}),
-    )
-}
-
-fn is_subagent(body: &Value) -> bool {
-    body["messages"][0]["content"]
-        .as_str()
-        .is_some_and(|system| system.starts_with("You are an Imperium subagent"))
-}
-
-async fn answer(body: &Value) -> String {
-    let last = body["messages"]
-        .as_array()
-        .and_then(|messages| messages.last())
-        .cloned()
-        .unwrap_or_default();
-    let said = last["content"].as_str().unwrap_or_default();
-    let pause = || tokio::time::sleep(Duration::from_millis(700));
-    if last["role"] == "user" && said.contains("<steering>") {
-        return text("steered");
-    }
-    if is_subagent(body) {
-        return match (last["role"].as_str(), said) {
-            (Some("user"), "sub work") => {
-                pause().await;
-                call("sub-read", "read_file", json!({"path": "a.txt"}))
-            }
-            (Some("user"), "also check c") => text("follow-up done"),
-            _ => text("sub done"),
-        };
-    }
-    match (last["role"].as_str(), said) {
-        (Some("user"), "slow") => {
-            pause().await;
-            text("done slowly")
-        }
-        (Some("user"), "slow tool") => {
-            pause().await;
-            call("call-1", "read_file", json!({"path": "a.txt"}))
-        }
-        (Some("user"), "delegate") => call("spawn", "spawn_agent", json!({"brief": "sub work"})),
-        (Some("tool"), said) if said.starts_with("started t1") => call(
-            "steer",
-            "steer_agent",
-            json!({"agent_id": "t1", "text": "focus on b"}),
-        ),
-        (Some("tool"), said) if said.contains("reaches t1") => call(
-            "queue",
-            "queue_agent",
-            json!({"agent_id": "t1", "text": "also check c"}),
-        ),
-        (Some("tool"), said) if said.contains("is queued for t1") => {
-            call("await", "await_tasks", json!({}))
-        }
-        (Some("tool"), said) if said.contains("## t1") => text("all done"),
-        _ => text("done"),
-    }
-}
-
-async fn serve(fake: Arc<Fake>) -> String {
+/// Answers `slow` after a pause and anything else at once.
+async fn serve() -> String {
     let app = Router::new().route(
         "/v1/chat/completions",
-        post(move |axum::Json(body): axum::Json<Value>| {
-            let fake = Arc::clone(&fake);
-            async move {
-                fake.requests.lock().unwrap().push(body.clone());
-                ([("content-type", "text/event-stream")], answer(&body).await)
+        post(|axum::Json(body): axum::Json<Value>| async move {
+            let said = body["messages"]
+                .as_array()
+                .and_then(|messages| messages.last())
+                .and_then(|message| message["content"].as_str())
+                .unwrap_or_default()
+                .to_string();
+            if said == "slow" {
+                tokio::time::sleep(Duration::from_millis(1_000)).await;
             }
+            let chunk = json!({"choices": [{"delta": {"content": "ok"}}]});
+            (
+                [("content-type", "text/event-stream")],
+                format!("data: {chunk}\n\ndata: [DONE]\n\n"),
+            )
         }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -118,426 +41,239 @@ async fn serve(fake: Arc<Fake>) -> String {
     url
 }
 
-fn model(url: &str) -> ResolvedModel {
-    ResolvedModel {
-        spec: "fake:m".into(),
-        endpoint: Endpoint {
-            base_url: url.into(),
-            api_key: None,
-        },
-        model: "m".into(),
-        pricing: None,
-        local: false,
-        context_window: None,
-        kind: "openai".into(),
+fn daemon(home: &std::path::Path, url: &str) -> Arc<DaemonState> {
+    let config = format!(
+        "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"{url}\"\n\
+         [workflow]\nenabled = false"
+    );
+    let settings = imperium_config::Config::from_layers([
+        imperium_config::Layer::defaults(),
+        imperium_config::Layer::new(
+            imperium_config::Source::User("test".into()),
+            config.parse().unwrap(),
+        ),
+    ])
+    .settings()
+    .unwrap();
+    DaemonState::new(imperium_config::Paths::under(home), settings, None)
+}
+
+async fn call(connection: &mut Connection, id: i64, method: &str, params: Value) -> Response {
+    let frame = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    let handled = connection.handle_text(&frame.to_string());
+    match (handled.response, handled.deferred) {
+        (Some(response), _) => response,
+        (None, Some(deferred)) => tokio::time::timeout(Duration::from_secs(20), deferred)
+            .await
+            .expect("an answer within 20 s"),
+        (None, None) => panic!("no reply"),
     }
 }
 
-fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
-    Session::spawn(SessionConfig {
-        id: "s".into(),
-        workspace: Workspace::new(dir).unwrap(),
-        model: model(url),
-        catalog: Vec::new(),
-        routing: imperium_config::RoutingSettings::default(),
-        clients: Default::default(),
-        local: None,
-        tools: Vec::new(),
-        notices: Vec::new(),
-        extensions: Default::default(),
-        memory: None,
-        context: None,
-        enforce: imperium_config::Enforce::Warn,
-        pre_approved: Vec::new(),
-        launcher: None,
-        resume,
-        resume_policy: imperium_core::default_resume_policy(),
-        instructions: None,
-        max_steps: 8,
-        journal_path: dir.join(".sessions/s.jsonl"),
-    })
-    .unwrap()
+fn result<T: serde::de::DeserializeOwned>(response: Response) -> T {
+    match response.outcome {
+        Outcome::Result(value) => serde_json::from_value(value).unwrap(),
+        Outcome::Error(error) => panic!("{error:?}"),
+    }
 }
 
-/// Waits for an event from `agent` matching `wanted` and returns it with the events before it.
+fn error_code(response: Response) -> i32 {
+    match response.outcome {
+        Outcome::Error(error) => error.code,
+        Outcome::Result(value) => panic!("expected an error, got {value}"),
+    }
+}
+
 async fn until(
     events: &mut broadcast::Receiver<AgentEvent>,
-    agent: &str,
     wanted: impl Fn(&SessionEvent) -> bool,
-) -> Vec<AgentEvent> {
-    let mut seen = Vec::new();
+) {
     loop {
         let event = tokio::time::timeout(Duration::from_secs(15), events.recv())
             .await
             .expect("an event within 15 s")
             .unwrap();
-        let done = event.agent_id == agent && wanted(&event.event);
-        seen.push(event);
-        if done {
-            return seen;
+        if event.agent_id == "root" && wanted(&event.event) {
+            return;
         }
     }
 }
 
-fn root_turn_ended(event: &SessionEvent) -> bool {
-    matches!(
-        event,
-        SessionEvent::TurnCompleted { .. } | SessionEvent::TurnFailed { .. }
-    )
-}
-
-fn started_texts(events: &[AgentEvent]) -> Vec<String> {
-    events
-        .iter()
-        .filter(|event| event.agent_id == "root")
-        .filter_map(|event| match &event.event {
-            SessionEvent::TurnStarted { text } => Some(text.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The last user message of each request the root agent made.
-fn root_prompts(fake: &Fake) -> Vec<String> {
-    fake.requests()
-        .iter()
-        .filter(|body| !is_subagent(body))
-        .filter_map(|body| {
-            let last = body["messages"].as_array()?.last()?.clone();
-            (last["role"] == "user").then(|| last["content"].as_str().unwrap_or_default().into())
-        })
-        .collect()
-}
-
 #[tokio::test]
-async fn messages_sent_during_a_turn_wait_and_run_in_order() {
-    let fake = Arc::new(Fake::default());
-    let url = serve(Arc::clone(&fake)).await;
-    let dir = tempfile::tempdir().unwrap();
-    let session = start(&url, dir.path(), false);
+async fn send_modes_and_queue_actions() {
+    let url = serve().await;
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url);
+    let (session, _) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    let session_id = session.id().to_string();
     let mut events = session.subscribe();
 
-    session.send("slow".into()).unwrap();
-    until(&mut events, "root", |event| {
+    let mut connection = Connection::new(Arc::clone(&state));
+    let handshake = json!({"client": {"name": "test", "version": "0"},
+                           "protocol": {"major": 0, "minor": 2}});
+    let _: Value = result(call(&mut connection, 1, "system.handshake", handshake).await);
+
+    let send = |text: &str, mode: Option<&str>, agent: Option<&str>| {
+        let mut params = json!({"session_id": session_id, "text": text});
+        if let Some(mode) = mode {
+            params["mode"] = json!(mode);
+        }
+        if let Some(agent) = agent {
+            params["agent_id"] = json!(agent);
+        }
+        params
+    };
+    let queue = |action: &str, id: Option<&str>, text: Option<&str>| json!({"session_id": session_id, "action": action, "id": id, "text": text});
+
+    // An idle session starts the turn; a plain send has no mode (today's clients).
+    let started: SessionSendResult =
+        result(call(&mut connection, 2, "session.send", send("slow", None, None)).await);
+    assert_eq!(started.id, "q1");
+    until(&mut events, |event| {
         matches!(event, SessionEvent::TurnStarted { .. })
     })
     .await;
-    let first = session
-        .send_message("first".into(), SendMode::Queue, None)
-        .unwrap();
-    let second = session
-        .send_message("second".into(), SendMode::Queue, None)
-        .unwrap();
-    let third = session
-        .send_message("third".into(), SendMode::Queue, None)
-        .unwrap();
-    let queued = until(
+
+    // Busy: one queued message, one steering message, one to remove.
+    let queued: SessionSendResult = result(
+        call(
+            &mut connection,
+            3,
+            "session.send",
+            send("next", Some("queue"), None),
+        )
+        .await,
+    );
+    let steering: SessionSendResult = result(
+        call(
+            &mut connection,
+            4,
+            "session.send",
+            send("mind the tests", Some("steer"), Some("root")),
+        )
+        .await,
+    );
+    let doomed: SessionSendResult = result(
+        call(
+            &mut connection,
+            5,
+            "session.send",
+            send("never", None, None),
+        )
+        .await,
+    );
+    until(
         &mut events,
-        "root",
-        |event| matches!(event, SessionEvent::MessageQueued { id, .. } if *id == third),
+        |event| matches!(event, SessionEvent::MessageQueued { id, .. } if *id == doomed.id),
     )
     .await;
-    assert!(queued.iter().any(|event| event.event
-        == SessionEvent::MessageQueued {
-            id: first.clone(),
-            text: "first".into(),
-            steer: false,
-        }));
 
-    // Before delivery, a queued message can be edited or removed.
-    session
-        .edit_queued(None, &second, "second, edited".into())
-        .unwrap();
-    session.remove_queued(None, &third).unwrap();
-    assert_eq!(
-        session.remove_queued(None, "q99"),
-        Err(QueueError::UnknownMessage("q99".into()))
+    let listed: SessionQueueResult = result(
+        call(
+            &mut connection,
+            6,
+            "session.queue",
+            queue("list", None, None),
+        )
+        .await,
     );
+    let summary: Vec<(String, String, bool)> = listed
+        .messages
+        .into_iter()
+        .map(|message| (message.id, message.text, message.steer))
+        .collect();
     assert_eq!(
-        session.edit_queued(None, &first, " ".into()),
-        Err(QueueError::Empty)
-    );
-    assert_eq!(
-        session.queue(None).unwrap(),
-        vec![
-            QueuedMessage {
-                id: first.clone(),
-                text: "first".into(),
-                steer: false
-            },
-            QueuedMessage {
-                id: second.clone(),
-                text: "second, edited".into(),
-                steer: false
-            },
+        summary,
+        [
+            (queued.id.clone(), "next".into(), false),
+            (steering.id.clone(), "mind the tests".into(), true),
+            (doomed.id.clone(), "never".into(), false),
         ]
     );
-    assert_eq!(
-        session.send_message("x".into(), SendMode::Queue, Some("t7")),
-        Err(QueueError::UnknownAgent("t7".into()))
+    let edited: SessionQueueResult = result(
+        call(
+            &mut connection,
+            7,
+            "session.queue",
+            queue("edit", Some(&queued.id), Some("next, edited")),
+        )
+        .await,
     );
+    assert_eq!(edited.messages[0].text, "next, edited");
+    let removed: SessionQueueResult = result(
+        call(
+            &mut connection,
+            8,
+            "session.queue",
+            queue("remove", Some(&doomed.id), None),
+        )
+        .await,
+    );
+    assert_eq!(removed.messages.len(), 2);
 
-    // The running turn finishes, then the queue runs in order, one turn each.
-    let mut seen = Vec::new();
-    for _ in 0..3 {
-        seen.extend(until(&mut events, "root", root_turn_ended).await);
+    // Refusals: an unknown message, a missing id, an unknown action, an unknown agent, and
+    // an empty message.
+    for (id, method, params) in [
+        (9, "session.queue", queue("remove", Some("q99"), None)),
+        (10, "session.queue", queue("edit", None, Some("x"))),
+        (11, "session.queue", queue("shuffle", None, None)),
+        (12, "session.send", send("hi", Some("steer"), Some("t9"))),
+        (13, "session.send", send("  ", None, None)),
+    ] {
+        assert_eq!(
+            error_code(call(&mut connection, id, method, params).await),
+            codes::INVALID_PARAMS,
+            "{method} {id}"
+        );
     }
-    assert_eq!(started_texts(&seen), ["first", "second, edited"]);
-    assert!(session.queue(None).unwrap().is_empty());
-    assert_eq!(root_prompts(&fake), ["slow", "first", "second, edited"]);
-    // Delivered messages can no longer be changed.
-    assert_eq!(
-        session.remove_queued(None, &first),
-        Err(QueueError::UnknownMessage(first.clone()))
-    );
-    // The journal's latest queue_changed is the (now empty) queue.
-    let history = session.subscribe_with_history().0;
-    let last_queue = history
-        .iter()
-        .rev()
-        .find_map(|event| match &event.event {
-            SessionEvent::QueueChanged { messages } => Some(messages.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert!(last_queue.is_empty());
-}
+    // An unknown mode is invalid params too.
+    let bad_mode = call(
+        &mut connection,
+        14,
+        "session.send",
+        send("hi", Some("interrupt"), None),
+    )
+    .await;
+    assert_eq!(error_code(bad_mode), codes::INVALID_PARAMS);
 
-#[tokio::test]
-async fn steering_joins_the_running_turn_after_its_tool_round() {
-    let fake = Arc::new(Fake::default());
-    let url = serve(Arc::clone(&fake)).await;
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.txt"), "alpha").unwrap();
-    let session = start(&url, dir.path(), false);
-    let mut events = session.subscribe();
-
-    session.send("slow tool".into()).unwrap();
-    until(&mut events, "root", |event| {
-        matches!(event, SessionEvent::TurnStarted { .. })
+    // The steering message joined the running turn; the queued one ran after it.
+    until(&mut events, |event| {
+        matches!(event, SessionEvent::TurnCompleted { .. })
     })
     .await;
-    // Sent while the first model call is still answering.
-    let id = session
-        .send_message("use b.txt instead".into(), SendMode::Steer, None)
-        .unwrap();
-    let turn = until(&mut events, "root", root_turn_ended).await;
-    let kinds: Vec<&SessionEvent> = turn.iter().map(|event| &event.event).collect();
-    assert!(kinds.contains(&&SessionEvent::MessageQueued {
-        id: id.clone(),
-        text: "use b.txt instead".into(),
-        steer: true,
-    }));
-    let steered = kinds
-        .iter()
-        .position(|event| {
-            **event
-                == SessionEvent::Steered {
-                    id: id.clone(),
-                    text: "use b.txt instead".into(),
-                }
-        })
-        .expect("the steering message was delivered");
-    let tool_done = kinds
-        .iter()
-        .position(|event| matches!(event, SessionEvent::ToolFinished { .. }))
-        .unwrap();
-    assert!(tool_done < steered, "steering waits for the tool round");
-    assert!(
-        matches!(
-            turn.last().unwrap().event,
-            SessionEvent::TurnCompleted { steps: 2, .. }
-        ),
-        "one turn, two model calls: {:?}",
-        turn.last()
-    );
-    // No new turn started for it.
-    assert!(started_texts(&turn).is_empty());
-
-    // The second request of the same turn reads the steering message after the complete tool
-    // pair: assistant tool call, its result, then the marked user message.
-    let requests = fake.requests();
-    assert_eq!(requests.len(), 2);
-    let messages = requests[1]["messages"].as_array().unwrap();
-    let roles: Vec<&str> = messages
-        .iter()
-        .map(|message| message["role"].as_str().unwrap())
-        .collect();
-    assert_eq!(roles, ["system", "user", "assistant", "tool", "user"]);
-    assert_eq!(messages[2]["tool_calls"][0]["id"], "call-1");
-    assert_eq!(messages[3]["tool_call_id"], "call-1");
-    let steering = messages[4]["content"].as_str().unwrap();
-    assert!(steering.starts_with("<steering>"));
-    assert!(steering.contains("use b.txt instead"));
-    assert!(session.queue(None).unwrap().is_empty());
-
-    // Steering that arrives during a final answer keeps the turn going.
-    session.send("slow".into()).unwrap();
-    until(&mut events, "root", |event| {
-        matches!(event, SessionEvent::TurnStarted { .. })
+    until(&mut events, |event| {
+        matches!(event, SessionEvent::TurnCompleted { .. })
     })
     .await;
-    session
-        .send_message("one more thing".into(), SendMode::Steer, None)
-        .unwrap();
-    let turn = until(&mut events, "root", root_turn_ended).await;
-    assert!(matches!(
-        turn.last().unwrap().event,
-        SessionEvent::TurnCompleted { steps: 2, .. }
-    ));
-    let last = fake.requests().last().unwrap().clone();
-    let messages = last["messages"].as_array().unwrap();
-    assert_eq!(messages[messages.len() - 2]["content"], "done slowly");
-    assert!(
-        messages[messages.len() - 1]["content"]
-            .as_str()
-            .unwrap()
-            .contains("one more thing")
-    );
-
-    // With no turn running, steering is an ordinary message.
-    session
-        .send_message("hello".into(), SendMode::Steer, None)
-        .unwrap();
-    let turn = until(&mut events, "root", root_turn_ended).await;
-    assert_eq!(started_texts(&turn), ["hello"]);
-    assert!(
-        !turn
-            .iter()
-            .any(|event| matches!(event.event, SessionEvent::Steered { .. }))
-    );
-}
-
-#[tokio::test]
-async fn the_root_agent_steers_and_queues_for_its_subagent() {
-    let fake = Arc::new(Fake::default());
-    let url = serve(Arc::clone(&fake)).await;
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.txt"), "alpha").unwrap();
-    let session = start(&url, dir.path(), false);
-    let mut events = session.subscribe();
-
-    session.send("delegate".into()).unwrap();
-    let seen = until(&mut events, "root", root_turn_ended).await;
-    assert!(
-        matches!(
-            seen.last().unwrap().event,
-            SessionEvent::TurnCompleted { .. }
-        ),
-        "{:?}",
-        seen.last()
-    );
-    let sub: Vec<&SessionEvent> = seen
+    let (history, _) = session.subscribe_with_history();
+    let root: Vec<&SessionEvent> = history
         .iter()
-        .filter(|event| event.agent_id == "t1")
+        .filter(|event| event.agent_id == "root")
         .map(|event| &event.event)
         .collect();
-    assert!(sub.iter().any(|event| matches!(
-        event,
-        SessionEvent::MessageQueued { text, steer: true, .. } if text == "focus on b"
-    )));
-    assert!(sub.iter().any(|event| matches!(
-        event,
-        SessionEvent::Steered { text, .. } if text == "focus on b"
-    )));
-    // The follow-up ran as the subagent's second turn, and its report is the follow-up's.
-    let turns: Vec<&String> = sub
+    assert!(root.contains(&&SessionEvent::Steered {
+        id: steering.id.clone(),
+        text: "mind the tests".into(),
+    }));
+    let turns: Vec<&String> = root
         .iter()
         .filter_map(|event| match event {
             SessionEvent::TurnStarted { text } => Some(text),
             _ => None,
         })
         .collect();
-    assert_eq!(turns, ["sub work", "also check c"]);
-    assert!(sub.iter().any(|event| matches!(
-        event,
-        SessionEvent::TaskFinished { ok: true, report, .. } if report == "follow-up done"
-    )));
-
-    // The subagent's second request carried the steering after its complete tool pair.
-    let sub_requests: Vec<Value> = fake.requests().into_iter().filter(is_subagent).collect();
-    let messages = sub_requests[1]["messages"].as_array().unwrap();
-    let roles: Vec<&str> = messages
-        .iter()
-        .map(|message| message["role"].as_str().unwrap())
-        .collect();
-    assert_eq!(roles, ["system", "user", "assistant", "tool", "user"]);
-    assert_eq!(messages[3]["tool_call_id"], "sub-read");
-    assert!(
-        messages[4]["content"]
-            .as_str()
-            .unwrap()
-            .contains("focus on b")
+    assert_eq!(turns, ["slow", "next, edited"]);
+    let empty: SessionQueueResult = result(
+        call(
+            &mut connection,
+            15,
+            "session.queue",
+            queue("list", None, None),
+        )
+        .await,
     );
-    // The root collected the follow-up's report.
-    let last_root = fake
-        .requests()
-        .into_iter()
-        .rfind(|body| !is_subagent(body))
-        .unwrap();
-    let await_result = last_root["messages"].as_array().unwrap().last().unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert!(await_result.contains("follow-up done"), "{await_result}");
-
-    // The finished subagent takes no more messages.
-    assert_eq!(
-        session.send_message("late".into(), SendMode::Steer, Some("t1")),
-        Err(QueueError::UnknownAgent("t1".into()))
-    );
-}
-
-#[tokio::test]
-async fn a_resumed_session_restores_and_runs_its_queue() {
-    let fake = Arc::new(Fake::default());
-    let url = serve(Arc::clone(&fake)).await;
-    let dir = tempfile::tempdir().unwrap();
-    let session = start(&url, dir.path(), false);
-    let mut events = session.subscribe();
-    session.send("slow".into()).unwrap();
-    until(&mut events, "root", |event| {
-        matches!(event, SessionEvent::TurnStarted { .. })
-    })
-    .await;
-    session
-        .send_message("after one".into(), SendMode::Queue, None)
-        .unwrap();
-    let last = session
-        .send_message("after two".into(), SendMode::Queue, None)
-        .unwrap();
-    until(
-        &mut events,
-        "root",
-        |event| matches!(event, SessionEvent::MessageQueued { id, .. } if *id == last),
-    )
-    .await;
-    // The daemon stops: the session ends after its current turn, before the queue runs.
-    drop(session);
-    until(&mut events, "root", root_turn_ended).await;
-    drop(events);
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(root_prompts(&fake), ["slow"]);
-
-    let resumed = start(&url, dir.path(), true);
-    let queue = resumed.queue(None).unwrap();
-    assert_eq!(
-        queue
-            .iter()
-            .map(|message| message.text.as_str())
-            .collect::<Vec<_>>(),
-        ["after one", "after two"]
-    );
-    let mut events = resumed.subscribe();
-    let mut seen = Vec::new();
-    for _ in 0..2 {
-        seen.extend(until(&mut events, "root", root_turn_ended).await);
-    }
-    assert_eq!(started_texts(&seen), ["after one", "after two"]);
-    assert!(resumed.queue(None).unwrap().is_empty());
-    // Ids keep counting after the restored ones.
-    let next = resumed
-        .send_message("later".into(), SendMode::Queue, None)
-        .unwrap();
-    assert_eq!(next, "q4");
+    assert!(empty.messages.is_empty());
 }

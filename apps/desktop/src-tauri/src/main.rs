@@ -1,4 +1,4 @@
-//! Native shell: opens the window, connects the interface to `imperiumd` (starting the bundled
+//! Native shell: opens the window, connects the interface to `imperium-core` (starting the bundled
 //! daemon when none is running), and keeps the app up to date.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]

@@ -1,5 +1,5 @@
-//! The daemon behind the window. Installers ship `imperiumd` beside the app. The app connects to
-//! a running daemon or starts that one, and lets the user see, start, stop, and restart it, read
+//! The daemon behind the window. Installers ship `imperium-core` beside the app. The app connects
+//! to a running daemon or starts that one, and lets the user see, start, stop, and restart it, read
 //! its log, and choose whether it keeps running after the app closes. Before an update replaces
 //! the bundled daemon, the app stops it.
 
@@ -28,8 +28,12 @@ const POLL: Duration = Duration::from_millis(250);
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 /// The most of the log the interface is sent.
 const LOG_TAIL_BYTES: u64 = 64 * 1024;
+/// The daemon's executable name before it was renamed `imperium-core`. An app updated in place
+/// can still find that daemon running beside it, started by the previous version; it counts as
+/// the bundled daemon, so the app stops it and starts its own.
+const LEGACY_DAEMON: &str = "imperiumd";
 
-/// What the interface needs to open its WebSocket to `imperiumd`.
+/// What the interface needs to open its WebSocket to `imperium-core`.
 #[derive(Serialize)]
 pub struct DaemonConnection {
     url: String,
@@ -79,20 +83,25 @@ pub async fn daemon_endpoint<R: Runtime>(
     autostart: Option<bool>,
 ) -> Result<DaemonConnection, String> {
     let endpoint_file = endpoint_file()?;
+    let may_start = !control.stopped_by_user.load(Ordering::Relaxed) && autostart != Some(false);
     if let Some(endpoint) = live_endpoint(&endpoint_file) {
-        return Ok(connection(endpoint));
+        if !(may_start && bundled_daemon().is_some() && runs_legacy(endpoint.pid)) {
+            return Ok(connection(endpoint));
+        }
+        // The previous version's `imperiumd` is still running: replace it with this app's.
+        stop(app.package_info().version.to_string(), true).await?;
     }
     if control.stopped_by_user.load(Ordering::Relaxed) {
-        return Err("imperiumd is stopped.".into());
+        return Err("imperium-core is stopped.".into());
     }
     if autostart == Some(false) {
-        return Err("imperiumd is not running, and Imperium is set not to start it.".into());
+        return Err("imperium-core is not running, and Imperium is set not to start it.".into());
     }
     let Some(daemon) = bundled_daemon() else {
         // Development builds and archive installs run the daemon themselves.
         let error = read_endpoint(&endpoint_file).err();
         return Err(error.map_or_else(
-            || "imperiumd is not answering; start it with `imperiumd`.".to_string(),
+            || "imperium-core is not answering; start it with `imperium-core`.".to_string(),
             |error| error.to_string(),
         ));
     };
@@ -119,7 +128,7 @@ pub async fn daemon_start<R: Runtime>(
     let endpoint_file = endpoint_file()?;
     if live_endpoint(&endpoint_file).is_none() {
         let daemon = bundled_daemon()
-            .ok_or("This install has no imperiumd to start; run `imperiumd` yourself.")?;
+            .ok_or("This install has no imperium-core to start; run `imperium-core` yourself.")?;
         start_and_wait(&app, &daemon, &endpoint_file).await?;
     }
     status(&app, &control)
@@ -143,7 +152,7 @@ pub async fn daemon_restart<R: Runtime>(
     control: tauri::State<'_, DaemonControl>,
 ) -> Result<DaemonStatus, String> {
     let daemon = bundled_daemon()
-        .ok_or("This install has no imperiumd to start; restart it where you started it.")?;
+        .ok_or("This install has no imperium-core to start; restart it where you started it.")?;
     stop(app.package_info().version.to_string(), false).await?;
     control.stopped_by_user.store(false, Ordering::Relaxed);
     start_and_wait(&app, &daemon, &endpoint_file()?).await?;
@@ -218,8 +227,7 @@ fn status<R: Runtime>(app: &AppHandle<R>, control: &DaemonControl) -> Result<Dae
         pid: endpoint.as_ref().map(|endpoint| endpoint.pid),
         bundled: endpoint
             .as_ref()
-            .zip(bundled.as_deref())
-            .is_some_and(|(endpoint, daemon)| runs(endpoint.pid, daemon)),
+            .is_some_and(|endpoint| runs_bundled(endpoint.pid)),
         url: endpoint.map(|endpoint| endpoint.url),
         can_start: bundled.is_some(),
         stopped_by_user: control.stopped_by_user.load(Ordering::Relaxed),
@@ -234,7 +242,7 @@ async fn stop(version: String, only_bundled: bool) -> Result<(), String> {
     let Some(endpoint) = live_endpoint(&endpoint_file()?) else {
         return Ok(());
     };
-    if only_bundled && !bundled_daemon().is_some_and(|daemon| runs(endpoint.pid, &daemon)) {
+    if only_bundled && !runs_bundled(endpoint.pid) {
         return Ok(());
     }
     let peer = Peer {
@@ -284,10 +292,10 @@ fn live_endpoint(file: &Path) -> Option<DaemonEndpoint> {
     Some(endpoint)
 }
 
-/// `imperiumd` installed beside the app, if this is an installed build.
+/// `imperium-core` installed beside the app, if this is an installed build.
 fn bundled_daemon() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let daemon = exe.with_file_name(format!("imperiumd{}", std::env::consts::EXE_SUFFIX));
+    let daemon = exe.with_file_name(format!("imperium-core{}", std::env::consts::EXE_SUFFIX));
     daemon.is_file().then_some(daemon)
 }
 
@@ -311,15 +319,43 @@ fn runs(pid: u32, daemon: &Path) -> bool {
         .is_some_and(|exe| Some(exe) == same(daemon))
 }
 
-/// Ends a daemon that did not stop when asked. Only an `imperiumd` process is ended, in case
-/// the endpoint file's process id now belongs to something else.
+/// Whether process `pid` is the daemon installed beside the app: this install's `imperium-core`,
+/// or an `imperiumd` the previous version left running.
+fn runs_bundled(pid: u32) -> bool {
+    bundled_daemon().is_some_and(|daemon| runs(pid, &daemon)) || runs_legacy(pid)
+}
+
+/// Whether process `pid` is a pre-rename `imperiumd` in the app's folder. Compared by name and
+/// folder, since an update may already have removed the executable.
+fn runs_legacy(pid: u32) -> bool {
+    let mut system = sysinfo::System::new();
+    let Some(exe) = process(&mut system, pid).and_then(|process| process.exe()) else {
+        return false;
+    };
+    let folder = |path: &Path| {
+        path.parent()
+            .and_then(|dir| std::fs::canonicalize(dir).ok())
+    };
+    let named = exe
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with(LEGACY_DAEMON));
+    named
+        && std::env::current_exe()
+            .ok()
+            .and_then(|app| folder(&app))
+            .is_some_and(|app| folder(exe) == Some(app))
+}
+
+/// Ends a daemon that did not stop when asked. Only an `imperium-core` (or legacy `imperiumd`)
+/// process is ended, in case the endpoint file's process id now belongs to something else.
 fn end(pid: u32) -> Result<(), String> {
     let mut system = sysinfo::System::new();
     let Some(process) = process(&mut system, pid) else {
         return Ok(());
     };
-    if !process.name().to_string_lossy().starts_with("imperiumd") {
-        return Err(format!("process {pid} is not imperiumd; not ending it"));
+    let name = process.name().to_string_lossy();
+    if !name.starts_with("imperium-core") && !name.starts_with(LEGACY_DAEMON) {
+        return Err(format!("process {pid} is not imperium-core; not ending it"));
     }
     process.kill();
     process.wait();
@@ -330,7 +366,7 @@ fn log_file<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     app.path()
         .app_log_dir()
         .ok()
-        .map(|dir| dir.join("imperiumd.log"))
+        .map(|dir| dir.join("imperium-core.log"))
 }
 
 fn preferences_file<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
@@ -362,7 +398,7 @@ async fn start_and_wait<R: Runtime>(
         }
     }
     Err(format!(
-        "imperiumd did not start within {} seconds; see {}",
+        "imperium-core did not start within {} seconds; see {}",
         START_TIMEOUT.as_secs(),
         log_file(app).map_or_else(|| "its log".into(), |log| log.display().to_string()),
     ))

@@ -4,7 +4,7 @@
 
 | ID | Decision | Reason | Rejected alternatives | Revisit if |
 | -- | -------- | ------ | --------------------- | ---------- |
-| D1 | Rust daemon (`imperiumd`) holds all state; CLI, desktop, phone are clients | One implementation for local, remote (SSH), and mobile use | CLI-only core invoked per request; logic in the Tauri process | — |
+| D1 | Rust daemon (`imperium-core`) holds all state; CLI, desktop, phone are clients | One implementation for local, remote (SSH), and mobile use | CLI-only core invoked per request; logic in the Tauri process | — |
 | D2 | Tauri 2 desktop shell with React + TypeScript | Native Rust integration, smaller footprint, mobile targets | Electron (heavier, separate Node runtime) | WebView inconsistencies block key UI features |
 | D3 | OpenAI-compatible HTTP as the internal model interface | Every runtime and most hosts speak it | Per-vendor native clients only | A required capability can't be expressed |
 | D4 | Isolation tiers with an always-visible indicator | Path checks alone cannot contain executed code | Claiming folder sandboxing as security | — |
@@ -22,6 +22,7 @@
 | D16 | GitHub auto-fix responders run as ordinary sessions, push only to PR branches, and never merge, close, approve, or force-push | Keeps automation reviewable and reversible | Fully autonomous merging | Users ask for merge automation with required approvals |
 | D17 | Memory is one-fact-per-file Markdown in global, project (shared and private), and session scopes, with an index always in context, search on demand, and approval before writes by default | Editable, reviewable, Git-friendly, and compatible with Claude Code memory and policy-pack lessons; approval keeps wrong facts out | A vector database as the source of truth; automatic writes without review | Memory volume makes file-based storage slow |
 | D18 | Workflows follow a public, versioned contract; a built-in retriever serves a load manifest (deterministic triggers first, semantic suggestions second) and agents load the items themselves | Every kind of agent, model, and host loads the same instructions, visibly and auditably | Stuffing whole workflows into every prompt; letting each model decide what to read unaided | Manifests prove too coarse for small-context local models |
+| D19 | The daemon is `imperium-core` (formerly `imperiumd`) and the agent-engine library is `imperium-engine` (formerly `imperium-core`); the data, config, endpoint (`daemon.json`) and lock (`daemon.lock`) files keep their names | Names the core process plainly; upgrades keep sessions and settings, and the desktop app, Windows installer, and `imperium daemon autostart` still recognise and replace a running or registered `imperiumd` | Keeping `imperiumd`; moving data to new paths | — |
 
 ## Open questions
 

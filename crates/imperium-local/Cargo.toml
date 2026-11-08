@@ -26,7 +26,7 @@ workspace = true
 
 [dev-dependencies]
 axum = "0.8.9"
-imperium-core = { path = "../imperium-core" }
+imperium-engine = { path = "../imperium-engine" }
 imperium-models = { path = "../imperium-models" }
 imperium-protocol = { path = "../imperium-protocol" }
 imperium-tools = { path = "../imperium-tools" }
