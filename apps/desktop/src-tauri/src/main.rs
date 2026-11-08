@@ -2,6 +2,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod update;
+
 use imperium_config::Paths;
 use imperium_protocol::discovery::read_endpoint;
 use serde::Serialize;
@@ -28,7 +30,23 @@ fn daemon_endpoint() -> Result<DaemonConnection, String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![daemon_endpoint])
-        .run(tauri::generate_context!())
-        .expect("the Imperium window could not start");
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            update::setup(app.handle());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            daemon_endpoint,
+            update::update_status,
+            update::update_check,
+            update::update_set_channel,
+            update::update_restart,
+        ])
+        .build(tauri::generate_context!())
+        .expect("the Imperium window could not start")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                update::install_on_exit(app);
+            }
+        });
 }

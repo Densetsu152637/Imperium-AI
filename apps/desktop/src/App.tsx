@@ -39,6 +39,7 @@ import { normalizeProject, useProjectIcons } from "./projectIcons";
 import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
 import { applySettings, loadSettings, saveSettings, type DisplaySettings } from "./settings";
 import { SettingsMenu } from "./SettingsMenu";
+import { UpdateControl } from "./UpdateControl";
 
 type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
 
@@ -305,6 +306,7 @@ export function App() {
               : "Disconnected"}
         </span>
         <span className="spacer" />
+        <UpdateControl />
         <button className="ghost" onClick={() => setShowSettings((open) => !open)} aria-expanded={showSettings}>
           Display
         </button>

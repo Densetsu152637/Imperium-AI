@@ -28,7 +28,7 @@ project layout overrides, mods, and themes beyond light and dark.
 
 Tauri 2 with a React + TypeScript + Vite frontend. The Tauri Rust side is thin: it launches or
 attaches to `imperiumd`, handles native menus, notifications, file dialogs, deep links, and
-the updater. All application logic goes through the daemon protocol, so the web UI could also
+the updater ([desktop updates](11-ci-cd.md#desktop-updates)). All application logic goes through the daemon protocol, so the web UI could also
 be served to a browser for remote use.
 
 ## Panels

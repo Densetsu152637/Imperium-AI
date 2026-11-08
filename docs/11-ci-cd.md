@@ -8,10 +8,10 @@ updates.
 
 | Workflow            | Trigger                                              | Purpose                                       |
 | ------------------- | ---------------------------------------------------- | --------------------------------------------- |
-| `ci.yml`            | Pull requests, pushes to `main`, merge queue         | Required checks; single gate job `CI gate`    |
+| `ci.yml`            | Pull requests, pushes to `main` and `experimental`, merge queue | Required checks; single gate job `CI gate` |
 | `build.yml`         | Called by release workflows only                     | Builds desktop bundles and CLI archives       |
-| `release.yml`       | Tags `v*` (for example `v0.4.0`, `v0.5.0-beta.1`)    | Stable or pre-release GitHub Release          |
-| `experimental.yml`  | Nightly, pushes to `experimental`, manual            | Rolling `experimental` pre-release            |
+| `release.yml`       | Tags `v*` (for example `v0.4.0`, `v0.5.0-beta.1`)    | Main-channel GitHub Release                   |
+| `experimental.yml`  | Pushes to `experimental`, manual run on it           | Experimental-channel GitHub pre-release       |
 | `runtime-packs.yml` | Changes to `runtimes/`, manual                       | llama.cpp runtime packs per hardware backend  |
 
 ### Checks (`ci.yml`)
@@ -29,13 +29,34 @@ always-running `CI gate` job fails if any job failed, so it can be the single re
 
 ## Release channels
 
-| Channel      | Source                     | Version                                   | Release                     |
-| ------------ | -------------------------- | ----------------------------------------- | --------------------------- |
-| Stable       | Tag `vX.Y.Z`               | `X.Y.Z`                                   | GitHub Release, marked latest |
-| Pre-release  | Tag `vX.Y.Z-beta.N` etc.   | `X.Y.Z-beta.N`                            | GitHub pre-release          |
-| Experimental | `experimental` branch or nightly `main` | `X.Y.Z-experimental.<date>.<sha>` | Rolling `experimental` pre-release, replaced on each build |
+There are two channels, each with its own branch, workflow, and update feed.
 
-The desktop updater has a matching channel setting.
+| Channel      | Source                              | Version                      | Release                                                        |
+| ------------ | ----------------------------------- | ---------------------------- | -------------------------------------------------------------- |
+| Main         | Tag `vX.Y.Z` on `main`              | `X.Y.Z`                      | `vX.Y.Z (main)`, marked latest                                 |
+| Main (pre)   | Tag `vX.Y.Z-beta.N` etc.            | `X.Y.Z-beta.N`               | `vX.Y.Z-beta.N (main)` pre-release; not offered by the updater |
+| Experimental | Each push to the `experimental` branch | `X.Y.Z-experimental.<run>` | `vX.Y.Z-experimental.<run> (experimental)` pre-release         |
+
+`X.Y.Z` is the version in `apps/desktop/src-tauri/tauri.conf.json`; `<run>` is the
+experimental workflow's run number, so every experimental build is newer than the last.
+`release.yml` ignores `-experimental.` tags.
+
+### Desktop updates
+
+The desktop app updates itself. It checks at startup and every six hours, downloads a newer
+build in the background, and installs it when the app quits; the title bar offers
+**Restart to update** to install it at once. The version button in the title bar shows the
+channel and switches it. A build follows the channel it was released on until the user
+changes it; switching from experimental to main moves to the next main release newer than the
+installed build (the updater never downgrades).
+
+Each release carries `latest.json`, written by `scripts/ci/updater-manifest.sh` from the signed
+installers: the AppImage on Linux, the NSIS installer on Windows, and the `.app.tar.gz` on
+macOS (deb, rpm, and MSI installs do not self-update). The app finds its channel's newest
+release through the GitHub releases API and checks the installer's signature against the
+public key in `tauri.conf.json`. The matching private key is the `TAURI_SIGNING_PRIVATE_KEY`
+secret; a build without it publishes no `latest.json`, and installs simply see no update.
+Losing the key means installed apps can no longer update, so keep a copy outside GitHub.
 
 ## Platform bundles
 
@@ -85,7 +106,8 @@ Signing material is stored as repository secrets.
 
 ## Secrets
 
-Optional; builds succeed unsigned when they are absent.
+Optional; builds succeed unsigned when they are absent (without the updater key, releases have
+no update feed).
 
 | Secret                                                    | Used for                       |
 | --------------------------------------------------------- | ------------------------------ |
@@ -105,4 +127,5 @@ Optional; builds succeed unsigned when they are absent.
   pull requests. The maintainer's explicit go-ahead is the approval, and the maintainer merges
   or authorises the merge.
 
-Still to do: create the `experimental` branch when experimental work begins.
+The `experimental` branch exists (created 2026-11-08) and is not protected; every push to it
+publishes an experimental release.

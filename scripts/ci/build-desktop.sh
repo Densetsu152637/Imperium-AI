@@ -24,3 +24,12 @@ mkdir -p dist
 find "target/$target/release/bundle" -type f \( -name '*.AppImage' -o -name '*.deb' \
   -o -name '*.rpm' -o -name '*.msi' -o -name '*-setup.exe' -o -name '*.dmg' \
   -o -name '*.sig' -o -name '*.app.tar.gz' \) -exec cp {} dist/ \;
+
+# The macOS update archive is named after the product only; give it the version and target.
+for archive in dist/*.app.tar.gz; do
+  [ -e "$archive" ] || continue
+  arch="${target%%-apple-darwin}"
+  renamed="dist/Imperium_${version}_${arch}.app.tar.gz"
+  mv "$archive" "$renamed"
+  if [ -e "$archive.sig" ]; then mv "$archive.sig" "$renamed.sig"; fi
+done
