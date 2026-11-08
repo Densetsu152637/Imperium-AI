@@ -213,7 +213,7 @@ model as `session.create` does, so an unknown endpoint or a missing key is refus
 - **When it applies:** between turns only. The switch is handled by the session's task when no
   turn is running and takes effect from the next turn; while a turn runs (including one paused
   for a usage limit or waiting on a permission) it is refused with `-32006` ("a turn is
-  running"), never applied mid-stream. Messages sent meanwhile queue as usual. Running
+  running"), never applied mid-stream. Messages sent meanwhile [queue](#queueing-and-steering) as usual. Running
   subagents keep their own models; subagents spawned later fall back to the new model.
 - **Measuring:** the conversation the target would read (system prompt, every message, and
   the tool definitions) is counted with the target's client, by the [context
@@ -260,6 +260,50 @@ model as `session.create` does, so an unknown endpoint or a missing key is refus
 `imperium chat` switches with `/model <id>` and compacts with `/compact`, printing what
 happened (`Switched to x; compacted 30.1k -> 9.2k tokens (12 messages summarised by y).`). The
 desktop has a model picker in the session header ([07](07-desktop-ui.md#projects-and-sessions-implemented)).
+
+## Queueing and steering
+
+**Implemented:** messages sent while an agent is busy are never rejected or interleaved; they
+wait, or join the running turn when the user asks.
+
+- **Busy:** the root agent is busy from `turn_started` until `turn_completed` or `turn_failed`,
+  including while it is paused for a usage limit or waiting for a permission answer. A
+  subagent is busy until it reports.
+- **Queue (the default):** `session.send` to an idle root starts a turn at once, as before.
+  While it is busy the message is queued: `message_queued` (`id`, `text`, `steer`) and then
+  `queue_changed` (the whole queue) are emitted, and when the turn ends the queue is delivered
+  in order, one new turn per message (a failed turn does not drop it). Every message gets an
+  id (`q1`, `q2`, ... unique in the session) that `session.send` returns.
+- **Steer:** `session.send` with `mode: "steer"` puts the message into the **running** turn.
+  The agent takes it at the next safe point: after the current model response and all of its
+  tool calls have their results, before the next model call. It is added as a user message
+  wrapped in `<steering>` (with a line saying it arrived while the agent was working and
+  nothing was cancelled), the agent emits `steered` (`id`, `text`), and the turn goes on. A
+  steering message that arrives while the model writes its final answer keeps the turn going
+  for one more call instead of letting it end. Steering never lands between a tool call and
+  its result. With no turn running, steering is an ordinary send.
+- **Editing the queue:** `session.queue` (a method of its own, since it answers with the
+  queue) with `action` `list`, `edit` (`id`, `text`), or `remove` (`id`), returning the queue
+  after the action. A message already delivered (or a steering message already taken) can no
+  longer be changed (`-32602`). Steering messages wait in the same queue until taken, so they
+  can be edited or removed too; one still waiting when the turn ends runs as the next turn.
+- **Subagents:** `session.send` and `session.queue` take an optional `agent_id` (a task id
+  such as `t1`) to reach a running subagent; its events carry that agent id. A queued message
+  runs as a further turn of the subagent before it reports, and its report (what
+  `await_tasks` returns) is the last turn's reply with every turn's usage. A subagent that
+  has reported takes no more messages (`-32602`).
+- **Root over subagents:** the root agent has `steer_agent` and `queue_agent`
+  (`agent_id`, `text`) beside `spawn_agent` and `await_tasks`, for subagents it started and
+  has not collected. Like the other delegation tools they run without a permission prompt and
+  show as tool calls in the transcript.
+- **Persistence:** queue events are journalled. A resumed session restores the root agent's
+  queue from the latest `queue_changed` and delivers it (after reporting a turn the restart cut
+  off as failed); ids continue from the highest journalled one. Subagents are not resumed, so
+  neither are their queues.
+
+`imperium chat` reads input while a turn runs: a line typed then is queued, `/steer <text>`
+steers, and `/queue` lists the queue. The desktop composer stays enabled while the agent works
+([07](07-desktop-ui.md#projects-and-sessions-implemented)).
 
 ## Persistence
 
