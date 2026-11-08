@@ -107,7 +107,7 @@ mid-turn.
 
 ## Development
 
-```
+```sh
 pnpm install
 pnpm --filter @imperium/nursery run typecheck
 pnpm --filter @imperium/nursery run test
