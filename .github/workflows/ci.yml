@@ -38,11 +38,9 @@ jobs:
       - uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
         with:
           globs: "**/*.md"
+      # Offline, with nothing to download: GitHub's release downloads were failing on runners.
       - name: Check relative links
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
-        with:
-          args: --offline --no-progress --include-fragments --exclude-path policy "./**/*.md"
-          fail: true
+        run: python3 scripts/ci/check-links.py .
 
   workflows:
     runs-on: ubuntu-latest
