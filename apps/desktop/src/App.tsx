@@ -678,6 +678,7 @@ export function App() {
                       onResumeNow={resumeNow}
                       models={modelTable?.models ?? []}
                       onSetModel={setModel}
+                      client={client}
                     />
                   ),
                 },

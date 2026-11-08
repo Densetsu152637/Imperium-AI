@@ -31,6 +31,7 @@ use tokio::sync::broadcast;
 use crate::environments::EnvironmentError;
 use crate::state::{CreateError, DaemonState, SessionOptions};
 use imperium_core::ModelError;
+use imperium_protocol::methods::SessionSuggestionRespond;
 use imperium_protocol::methods::{
     ConfigDescribe, ConfigDescribeParams, ConfigSet, ConfigSetParams,
 };
@@ -378,6 +379,11 @@ impl Connection {
             SessionQueue::NAME => {
                 call::<SessionQueue>(request.params, |params: SessionQueueParams| {
                     self.queue(params)
+                })
+            }
+            SessionSuggestionRespond::NAME => {
+                call_later::<SessionSuggestionRespond, _>(request.params, &mut later, |params| {
+                    crate::suggestions::respond(Arc::clone(&self.state), params)
                 })
             }
             SessionRespond::NAME => {

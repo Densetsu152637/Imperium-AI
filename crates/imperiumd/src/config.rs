@@ -40,6 +40,11 @@ pub fn set(state: &DaemonState, params: ConfigSetParams) -> Result<ConfigSetResu
         ErrorObject::new(code, error.to_string())
     })?;
     tracing::info!(key = %params.key, "a client changed a setting in the user config");
+    if params.key == crate::suggestions::SETTING {
+        state
+            .suggestions()
+            .set_enabled(updated.value.as_bool().unwrap_or(true));
+    }
     Ok(ConfigSetResult {
         restart: updated.def.restart,
         overridden: updated.overridden(),

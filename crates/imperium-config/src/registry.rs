@@ -60,7 +60,8 @@ pub struct SettingDef {
     /// Allowed values of an [`SettingKind::Enum`].
     pub options: &'static [&'static str],
     /// Whether the daemon must restart before a change applies. The daemon reads its
-    /// configuration once at start, so this is true for every setting today.
+    /// configuration once at start, so this is true for nearly every setting; the few it
+    /// applies at once are marked with `live`.
     pub restart: bool,
 }
 
@@ -103,6 +104,14 @@ const fn choice(
     }
 }
 
+/// A setting the running daemon applies at once, without a restart.
+const fn live(def: SettingDef) -> SettingDef {
+    SettingDef {
+        restart: false,
+        ..def
+    }
+}
+
 use SettingKind::{Bool, Integer, Number, Path as PathKind, PathList, SecretRef, StringList};
 const STRING: SettingKind = SettingKind::String;
 const WRITE_POLICY: &[&str] = &["auto", "ask", "off"];
@@ -116,6 +125,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("models.default", "Default model", STRING, "Model for new sessions, as <endpoint>:<model>."),
     def("models.folders", "Model folders", PathList, "Folders scanned for GGUF models and Hugging Face model folders."),
     def("models.download_dir", "Download folder", PathKind, "Where Hugging Face downloads go (absolute). Defaults to the first model folder, else <data>/models."),
+    live(def("models.suggest_downloads", "Suggest model downloads", Bool, "Sessions offer to download a suitable local model from Hugging Face when the best one available is poor for the task. Nothing downloads without your consent.")),
     choice("routing.prefer", "Routing preference", &["cheapest", "local", "cloud"], "Tie-breaker among suitable models for subagents."),
     choice("runtime.llamacpp.backend", "llama.cpp backend", &["auto", "cpu", "vulkan", "cuda12", "cuda13", "rocm", "metal"], "Runtime pack used to run local GGUF models."),
     def("runtime.llamacpp.custom_path", "Custom llama-server", PathKind, "Your own llama-server executable, used instead of a runtime pack."),

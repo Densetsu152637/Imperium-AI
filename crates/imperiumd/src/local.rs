@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use imperium_config::{Paths, Settings};
 use imperium_local::hardware::{Hardware, probe};
 use imperium_local::hf::Weights;
-use imperium_local::planner::{Budget, Footprint, Placement, place, place_on_gpu};
+use imperium_local::planner::{Budget, Placement};
 use imperium_local::process::ProcessLauncher;
 use imperium_local::runtime::{llama_cpp_ref, server_path};
 use imperium_local::scan::{Format, Skipped, scan};
@@ -190,18 +190,7 @@ fn placement_name(placement: Option<&Placement>, hardware: &Hardware) -> &'stati
 /// How a model of `size_bytes` not on disk yet would load within `budget`, for download
 /// choices: `gpu`, `partial`, `cpu`, or `none`. vLLM needs the GPU and Linux.
 pub fn fit(size_bytes: u64, weights: Weights, budget: Budget) -> &'static str {
-    let footprint = Footprint::estimate(size_bytes);
-    let placement = match weights {
-        Weights::Gguf => place(footprint, budget),
-        Weights::Safetensors if cfg!(target_os = "linux") => place_on_gpu(footprint, budget),
-        Weights::Safetensors => None,
-    };
-    match placement {
-        None => "none",
-        Some(p) if p.all_layers_on_gpu => "gpu",
-        Some(p) if p.gpu_layers > 0 => "partial",
-        Some(_) => "cpu",
-    }
+    imperium_local::suggest::fit(size_bytes, weights, budget).as_str()
 }
 
 /// The memory budget when no local runtime is running, from a fresh hardware probe.
