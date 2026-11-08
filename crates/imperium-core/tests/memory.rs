@@ -70,11 +70,13 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
             pricing: None,
             local: false,
             context_window: None,
+            kind: "openai".into(),
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
+        clients: Default::default(),
         local: None,
-        mcp: Vec::new(),
+        tools: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
         memory: Some(SessionMemory {
@@ -94,8 +96,6 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         resume: false,
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
-        media: None,
-        web: None,
         max_steps: 5,
         journal_path: data.join(format!("{id}.jsonl")),
     })

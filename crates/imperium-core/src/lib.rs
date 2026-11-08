@@ -13,12 +13,14 @@ mod model;
 mod session;
 mod status;
 
-pub use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels};
+pub use imperium_api::{
+    AcquireFuture, Availability, LocalLease, LocalModels, ToolCheck, ToolContext, ToolEvent,
+    ToolFuture, ToolGroup, ToolProvider,
+};
+pub use imperium_models::{ChatClient, ChatClients};
 pub use launcher::{LaunchFuture, SessionLauncher};
 pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
-pub use session::{
-    BrowserSetup, Session, SessionClosed, SessionConfig, SessionMemory, WebTools, new_session_id,
-};
+pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};
 pub use status::next_attempt;
 
 /// The resume policy used when nothing is configured: wait for the provider's reset, retrying

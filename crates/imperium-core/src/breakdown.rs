@@ -5,7 +5,8 @@
 //! prompt's parts, a user message's preamble), so the request divides into labelled segments
 //! without guessing. Segments are then counted, best method first:
 //!
-//! - **exact**: each segment with the model's own tokenizer (llama.cpp's `/tokenize`), cached by
+//! - **exact**: each segment with the model's own tokenizer (when the model's client offers
+//!   one, such as llama.cpp's `/tokenize`), cached by
 //!   content so unchanged messages are counted once; the chat template's overhead is the
 //!   provider's reported prompt size minus the segments. Tool definitions count as the
 //!   chat template renders them (`/apply-template`), since templates add their own tool
@@ -20,7 +21,7 @@ use std::ops::Range;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use imperium_models::{ChatMessage, Endpoint, ModelError, ToolSpec, Usage, llamacpp};
+use imperium_models::{ChatClient, ChatMessage, ModelError, Tokenizer, ToolSpec, Usage};
 use imperium_protocol::session::{ContextCategory, SessionEvent, TokenCountMethod};
 
 use crate::ResolvedModel;
@@ -339,24 +340,10 @@ pub(crate) fn calibrate(estimates: &[u64], total: u64) -> Vec<u64> {
     scaled
 }
 
-/// Whether `base_url` points at this machine, where a llama.cpp server may answer `/tokenize`.
-fn is_loopback(base_url: &str) -> bool {
-    let after_scheme = base_url
-        .split_once("://")
-        .map_or(base_url, |(_, rest)| rest);
-    let authority = after_scheme.split('/').next().unwrap_or_default();
-    let host = match authority.strip_prefix('[') {
-        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
-        None => authority.split(':').next().unwrap_or_default(),
-    };
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
-}
-
 /// What a breakdown knows about the call it describes.
 pub(crate) struct Call<'a> {
-    pub http: &'a reqwest::Client,
-    /// Where the request went (for a local model, its server).
-    pub endpoint: &'a Endpoint,
+    /// The client that made the call; its tokenizer, if any, counts exactly.
+    pub client: &'a dyn ChatClient,
     pub model: &'a ResolvedModel,
     pub usage: Option<Usage>,
 }
@@ -385,25 +372,27 @@ impl TokenCounter {
     pub(crate) async fn breakdown(&self, call: Call<'_>, request: &Request<'_>) -> SessionEvent {
         let segments = request.segments();
         let reported = call.usage.filter(|usage| usage.prompt_tokens > 0);
-        let root = llamacpp::server_root(&call.endpoint.base_url).to_string();
-        // A server on this machine may be llama.cpp, with a tokenizer and properties to ask.
-        let on_machine = call.model.local || is_loopback(&call.endpoint.base_url);
-        let tokenizer = on_machine && !lock(&self.no_tokenizer).contains(&root);
         let mut exact = None;
         let mut window = None;
         let mut rendered_tools = None;
-        if on_machine {
+        // A client with a tokenizer (llama.cpp) has counts and properties to ask.
+        if let Some(tokenizer) = call.client.tokenizer() {
+            let root = tokenizer.server().to_string();
+            let refused = lock(&self.no_tokenizer).contains(&root);
             let work = async {
-                let counted = if tokenizer {
-                    Some(self.count_all(&call, &call.model.spec, &segments).await)
-                } else {
+                let counted = if refused {
                     None
+                } else {
+                    Some(self.count_all(tokenizer, &call.model.spec, &segments).await)
                 };
                 let rendered = match &counted {
-                    Some(Ok(_)) => self.rendered_tools(&call, request.tools).await,
+                    Some(Ok(_)) => {
+                        self.rendered_tools(tokenizer, &call.model.spec, request.tools)
+                            .await
+                    }
                     _ => None,
                 };
-                (counted, rendered, self.window(&call, &root).await)
+                (counted, rendered, self.window(tokenizer, &root).await)
             };
             match tokio::time::timeout(TOKENIZE_BUDGET, work).await {
                 Ok((counted, rendered, server_window)) => {
@@ -501,18 +490,18 @@ impl TokenCounter {
     /// counted before.
     async fn count_all(
         &self,
-        call: &Call<'_>,
-        tokenizer: &str,
+        tokenizer: &dyn Tokenizer,
+        model: &str,
         segments: &[(Category, &str)],
     ) -> Result<Vec<u64>, ModelError> {
         let mut counts = Vec::with_capacity(segments.len());
         for (_, text) in segments {
-            let key = (tokenizer.to_string(), content_hash(text), text.len());
+            let key = (model.to_string(), content_hash(text), text.len());
             let cached = lock(&self.counts).get(&key).copied();
             let count = match cached {
                 Some(count) => count,
                 None => {
-                    let count = llamacpp::count_tokens(call.http, call.endpoint, text).await?;
+                    let count = tokenizer.count_tokens(text).await?;
                     let mut cache = lock(&self.counts);
                     if cache.len() >= CACHE_LIMIT {
                         cache.clear();
@@ -532,14 +521,15 @@ impl TokenCounter {
     /// has no `/apply-template`, leaving the JSON as sent.
     async fn rendered_tools(
         &self,
-        call: &Call<'_>,
+        tokenizer: &dyn Tokenizer,
+        model: &str,
         tools: &[(Category, String)],
     ) -> Option<(u64, u64)> {
         if tools.is_empty() {
             return None;
         }
         let joined: String = tools.iter().map(|(_, text)| text.as_str()).collect();
-        let key = (call.model.spec.clone(), content_hash(&joined));
+        let key = (model.to_string(), content_hash(&joined));
         if let Some(known) = lock(&self.rendered_tools).get(&key) {
             return *known;
         }
@@ -561,11 +551,10 @@ impl TokenCounter {
             {"role": "system", "content": "x"},
             {"role": "user", "content": "x"},
         ]);
-        let (http, endpoint) = (call.http, call.endpoint);
         let measured = async {
-            let bare = llamacpp::template_tokens(http, endpoint, &probe, &[]).await?;
-            let with_builtin = llamacpp::template_tokens(http, endpoint, &probe, &builtin).await?;
-            let with_all = llamacpp::template_tokens(http, endpoint, &probe, &all).await?;
+            let bare = tokenizer.template_tokens(&probe, &[]).await?;
+            let with_builtin = tokenizer.template_tokens(&probe, &builtin).await?;
+            let with_all = tokenizer.template_tokens(&probe, &all).await?;
             Ok::<_, ModelError>((
                 with_builtin.saturating_sub(bare),
                 with_all.saturating_sub(with_builtin),
@@ -578,7 +567,7 @@ impl TokenCounter {
             // connection is asked again next time.
             Err(ModelError::Status { .. } | ModelError::Decode(_)) => None,
             Err(error) => {
-                tracing::debug!(model = %call.model.spec, %error, "could not render the tool block");
+                tracing::debug!(%model, %error, "could not render the tool block");
                 return None;
             }
         };
@@ -588,11 +577,11 @@ impl TokenCounter {
 
     /// The server's context window, asked once per server. A failed connection is asked again
     /// next time; a server that answers without one is not.
-    async fn window(&self, call: &Call<'_>, root: &str) -> Option<u64> {
+    async fn window(&self, tokenizer: &dyn Tokenizer, root: &str) -> Option<u64> {
         if let Some(window) = lock(&self.windows).get(root) {
             return *window;
         }
-        let window = match llamacpp::context_window(call.http, call.endpoint).await {
+        let window = match tokenizer.context_window().await {
             Ok(window) => window,
             Err(ModelError::Status { .. } | ModelError::Decode(_)) => None,
             Err(_) => return None,
@@ -744,14 +733,5 @@ mod tests {
         assert_eq!(estimate_tokens(r#"{"a":1}"#), 5);
         assert_eq!(estimate_tokens("a\n\n    b"), 4);
         assert_eq!(estimate_tokens("日本"), 2);
-    }
-
-    #[test]
-    fn only_this_machine_counts_as_loopback() {
-        assert!(is_loopback("http://127.0.0.1:8080/v1"));
-        assert!(is_loopback("http://localhost:1234/v1"));
-        assert!(is_loopback("http://[::1]:8080/v1"));
-        assert!(!is_loopback("https://openrouter.ai/api/v1"));
-        assert!(!is_loopback("http://192.168.1.4:8080/v1"));
     }
 }

@@ -5,11 +5,12 @@ use std::time::{Duration, Instant};
 
 use imperium_config::{KeychainSecrets, Paths, SecretStore, Settings};
 use imperium_core::{
-    BrowserSetup, CatalogModel, LocalModels, ModelError, Session, SessionConfig, SessionMemory,
-    WebTools, new_session_id, resolve_model,
+    CatalogModel, ChatClients, LocalModels, ModelError, Session, SessionConfig, SessionMemory,
+    ToolProvider, new_session_id, resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
-use imperium_media::{ImageConfig, ImageGenerators, Media, Service};
+use imperium_mcp::McpTools;
+use imperium_media::{ImageConfig, ImageGenerators, Media, MediaTools, Service};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
@@ -19,7 +20,7 @@ use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
 };
 use imperium_tools::{Sandbox, Workspace};
-use imperium_web::{SearchConfig, SearchProviders, Web};
+use imperium_web::{BrowserSetup, SearchConfig, SearchProviders, Web, WebTools};
 use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
 
@@ -580,6 +581,17 @@ impl DaemonState {
             None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
         };
         let remember = options.launcher.is_none();
+        // Tool providers in the order their tools are offered (MCP tools always come first).
+        let mut tools: Vec<Arc<dyn ToolProvider>> = Vec::new();
+        if !mcp.is_empty() {
+            tools.push(Arc::new(McpTools::new(mcp)));
+        }
+        if let Some(media) = self.media() {
+            tools.push(Arc::new(MediaTools::new(media)));
+        }
+        if let Some(web) = self.web_tools() {
+            tools.push(Arc::new(web));
+        }
         let model_spec = model.spec.clone();
         let session = Session::spawn(SessionConfig {
             journal_path: self
@@ -591,12 +603,13 @@ impl DaemonState {
             workspace,
             model,
             catalog,
+            clients: ChatClients::default(),
             routing: self.settings.routing.clone(),
             local: self.local.get().map(|local| {
                 let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
                 supervisor
             }),
-            mcp,
+            tools,
             notices,
             extensions,
             context,
@@ -606,8 +619,6 @@ impl DaemonState {
             resume_policy: self.resume_policy(),
             launcher: options.launcher,
             instructions: options.instructions,
-            web: self.web_tools(),
-            media: self.media(),
             memory: self.settings.memory.enabled.then(|| SessionMemory {
                 store: Store::new(self.paths.data_dir(), Some(Path::new(project_dir))),
                 settings: self.settings.memory.clone(),

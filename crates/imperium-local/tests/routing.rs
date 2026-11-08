@@ -159,6 +159,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         }),
         local: false,
         context_window: None,
+        kind: "openai".into(),
     };
     let catalog = vec![
         CatalogModel {
@@ -173,6 +174,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
                 pricing: None,
                 local: true,
                 context_window: None,
+                kind: "openai".into(),
             },
             tier: Tier::Standard,
             location: Location::Local,
@@ -193,12 +195,13 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         workspace: Workspace::new(dir.path()).unwrap(),
         model: hosted("cloud:root"),
         catalog,
+        clients: Default::default(),
         routing: RoutingSettings {
             prefer: Preference::Local,
             ..RoutingSettings::default()
         },
         local: Some(local),
-        mcp: Vec::new(),
+        tools: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
@@ -209,8 +212,6 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         resume: false,
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
-        media: None,
-        web: None,
         max_steps: 10,
         journal_path: dir.path().join("journal.jsonl"),
     })

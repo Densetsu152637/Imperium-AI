@@ -19,6 +19,9 @@ pub struct ResolvedModel {
     /// Tokens the model reads per request, from the model table's `context_window`. A local
     /// model's server reports its own, which takes precedence.
     pub context_window: Option<u64>,
+    /// The endpoint's `kind`, naming the client that calls it (see
+    /// [`ChatClients`](imperium_models::ChatClients)).
+    pub kind: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +70,13 @@ pub fn resolve_model(
             pricing: None,
             local: true,
             context_window,
+            // llama.cpp offers its tokenizer; vLLM is reached as any OpenAI-compatible server.
+            kind: if endpoint_id == LLAMACPP_ENDPOINT {
+                "llamacpp"
+            } else {
+                imperium_models::DEFAULT_KIND
+            }
+            .into(),
         });
     }
     let endpoint = settings
@@ -89,6 +99,7 @@ pub fn resolve_model(
         pricing: endpoint.pricing.get(model).copied(),
         local: false,
         context_window,
+        kind: endpoint.kind.clone(),
     })
 }
 
@@ -270,6 +281,7 @@ mod tests {
                     }),
                     local: false,
                     context_window: None,
+                    kind: "openai".into(),
                 },
                 tier,
                 location,
@@ -295,6 +307,7 @@ mod tests {
             pricing: None,
             local: false,
             context_window: None,
+            kind: "openai".into(),
         }
     }
 

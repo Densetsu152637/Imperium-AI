@@ -44,6 +44,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `endpoints.<id>.base_url` | — | OpenAI-compatible base URL, ending before `/chat/completions` |
 | `endpoints.<id>.api_key` | none | `{ secret = "<name>" }`, read from the keychain when a session starts |
 | `endpoints.<id>.pricing."<model>"` | none | `{ input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok? }`; models without prices report no cost |
+| `endpoints.<id>.kind` | `openai` | The API the endpoint speaks, choosing its model client: `openai` (OpenAI-compatible Chat Completions; an endpoint on this machine is also tried for llama.cpp's tokenizer) or `llamacpp` (the same, always using llama.cpp's tokenizer for [context breakdowns](03-agent-engine.md#context-management)) |
 | `models.folders` | none | Folders scanned for GGUF models (`llamacpp:<id>`) and Hugging Face folders (`vllm:<id>`); the `llamacpp` and `vllm` endpoint ids are reserved |
 | `models.download_dir` | first of `models.folders`, else `<data>/models` | Where [Hugging Face downloads](04-models-and-routing.md#downloading-from-hugging-face) go, as `<owner>/<repo>/` below it; must be absolute; scanned with `models.folders` |
 | `runtime.llamacpp.backend` | `auto` | Runtime pack: `auto`, `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` |

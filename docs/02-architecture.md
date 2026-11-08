@@ -69,10 +69,10 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 
 | Crate                 | Responsibility                                                         |
 | --------------------- | ---------------------------------------------------------------------- |
-| `imperium-api`        | Shared types and traits: chat messages, tool specs, usage and pricing, the local-model interface, Markdown front matter (implemented) |
+| `imperium-api`        | Shared types and traits: chat messages, tool specs, usage and pricing, the local-model and tool-provider interfaces, Markdown front matter (implemented) |
 | `imperium-protocol`   | Wire types, method/event definitions, TS export                        |
 | `imperium-core`       | Sessions, agent loop, delegation, task graph, event bus                |
-| `imperium-models`     | Endpoint clients, model registry, router, cost accounting              |
+| `imperium-models`     | Endpoint clients behind `ChatClient`, model registry, router, cost accounting |
 | `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, runtime supervision (llama.cpp, vLLM) |
 | `imperium-tools`      | Built-in tools: files, commands, isolation tiers (implemented)         |
 | `imperium-web`        | Web search providers, page fetching, and a CDP browser (implemented)   |
@@ -97,6 +97,9 @@ depend on it rather than on each other: `imperium-tools`, `imperium-mcp`, `imper
 `imperium-media` take `ToolSpec` from it instead of `imperium-models`; `imperium-config` takes
 `Pricing`; `imperium-memory` takes the front-matter parser instead of `imperium-extensions`;
 and `imperium-local` implements its `LocalModels` trait without depending on `imperium-core`.
+Likewise `imperium-web`, `imperium-media`, and `imperium-mcp` implement its `ToolProvider` trait,
+so `imperium-core` does not depend on them (it reaches `imperium-mcp` only through
+`imperium-extensions`, for plugins' server definitions); the daemon builds the providers.
 `imperium-models`, `imperium-core`, and `imperium-extensions` re-export the moved items at their
 old paths.
 
@@ -119,6 +122,8 @@ one is added without editing its callers:
 | Image generation | `ImageGenerator` (`imperium-media`) | `OpenAiImages`, `ComfyUi` | `media.image.backend` through `ImageGenerators::register` / `build` |
 | Local model leasing | `LocalModels` (`imperium-api`) | The `imperium-local` supervisor | The daemon at start |
 | GitHub | `GitHub` (`imperium-github`) | REST client | The daemon at start |
+| Model clients | `ChatClient` (`imperium-models`), with an optional `Tokenizer` | `OpenAiCompatible`, `LlamaCpp` | `endpoints.<id>.kind` (default `openai`) through `ChatClients::register` / `build`, given to each session as `SessionConfig::clients` |
+| Agent tools beyond the agent's own | `ToolProvider` (`imperium-api`) | `WebTools` (`imperium-web`, with the browser), `MediaTools` (`imperium-media`), `McpTools` (`imperium-mcp`) | The daemon for each session, as `SessionConfig::tools` |
 
 Key dependencies (to confirm during phase 0): `tokio`, `axum` / `tokio-tungstenite`,
 `serde`, `reqwest`, `rmcp` (official Rust MCP SDK), `chromiumoxide`, `keyring`, `sysinfo`,

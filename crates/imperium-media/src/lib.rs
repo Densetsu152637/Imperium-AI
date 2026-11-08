@@ -4,6 +4,7 @@
 //! Results are files in the project's `media/` folder with a provenance file beside each.
 
 pub mod image;
+mod tools;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,6 +17,7 @@ pub use image::{
     ComfyUi, ImageConfig, ImageFuture, ImageGenerator, ImageGeneratorBuilder, ImageGenerators,
     OpenAiImages,
 };
+pub use tools::MediaTools;
 
 const TIMEOUT: Duration = Duration::from_secs(600);
 const COMFY_POLL: Duration = Duration::from_millis(500);

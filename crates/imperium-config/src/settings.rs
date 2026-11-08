@@ -843,6 +843,14 @@ pub struct EndpointSettings {
     /// Prices per model id, for cost accounting. Models without prices report no cost.
     #[serde(default)]
     pub pricing: BTreeMap<String, Pricing>,
+    /// The API the endpoint speaks, naming its model client: `openai` (OpenAI-compatible Chat
+    /// Completions, the default) or `llamacpp` (the same, with llama.cpp's tokenizer).
+    #[serde(default = "default_endpoint_kind")]
+    pub kind: String,
+}
+
+fn default_endpoint_kind() -> String {
+    "openai".into()
 }
 
 /// A reference to a keychain secret by name.

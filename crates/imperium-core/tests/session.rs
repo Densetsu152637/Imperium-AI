@@ -76,6 +76,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
             model: "model".into(),
             local: false,
             context_window: None,
+            kind: "openai".into(),
             pricing: Some(Pricing {
                 input_usd_per_mtok: 1.0,
                 output_usd_per_mtok: 2.0,
@@ -84,8 +85,9 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
+        clients: Default::default(),
         local: None,
-        mcp: Vec::new(),
+        tools: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
@@ -96,8 +98,6 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         resume: false,
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
-        media: None,
-        web: None,
         max_steps: 5,
         journal_path: dir.join(".journal/test.jsonl"),
     })

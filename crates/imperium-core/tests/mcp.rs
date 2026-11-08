@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::routing::post;
 use imperium_core::{ResolvedModel, Session, SessionConfig};
-use imperium_mcp::{Launch, ServerSpec};
+use imperium_mcp::{Launch, McpTools, ServerSpec};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
@@ -102,11 +102,13 @@ async fn agents_call_mcp_tools_with_approval_rules() {
             pricing: None,
             local: false,
             context_window: None,
+            kind: "openai".into(),
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
+        clients: Default::default(),
         local: None,
-        mcp: vec![
+        tools: vec![Arc::new(McpTools::new(vec![
             ServerSpec {
                 name: "words".into(),
                 launch: Launch::Http {
@@ -127,7 +129,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
                 allow: Vec::new(),
                 timeout: Duration::from_secs(5),
             },
-        ],
+        ]))],
         notices: vec!["hello from the daemon".into()],
         extensions: Default::default(),
         memory: None,
@@ -138,8 +140,6 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         resume: false,
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
-        media: None,
-        web: None,
         max_steps: 5,
         journal_path: dir.path().join("journal.jsonl"),
     })

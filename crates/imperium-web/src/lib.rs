@@ -5,6 +5,7 @@
 pub mod browser;
 pub mod html;
 pub mod search;
+mod tools;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,6 +17,7 @@ pub use search::{
     Brave, SearchConfig, SearchFuture, SearchProvider, SearchProviderBuilder, SearchProviders,
     Searxng, Tavily,
 };
+pub use tools::{BrowserSetup, WebTools};
 
 /// Longest page text kept from one fetch.
 const MAX_PAGE_CHARS: usize = 200_000;

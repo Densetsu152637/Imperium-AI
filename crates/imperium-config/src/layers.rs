@@ -357,6 +357,7 @@ mod tests {
             endpoint.pricing["qwen/qwen3-coder"].output_usd_per_mtok,
             0.8
         );
+        assert_eq!(endpoint.kind, "openai");
         assert_eq!(settings.agents.max_steps, 50);
 
         let bad_secret = Config::from_layers([
