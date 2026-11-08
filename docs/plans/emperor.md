@@ -1,9 +1,9 @@
 # Plan: Emperor, an open-weight delegation model
 
-Revision: 2026-11-08 r4 (r2: local-only training, the name Emperor, separate repositories,
+Revision: 2026-11-08 r6 (r2: local-only training, the name Emperor, separate repositories,
 teacher licences; r3: strategy and planning from vague prompts, clarify-or-research, G10–G11;
-r4: context tiers from 64K to 256K and up, G12; r5: one loaded model shared by many sessions,
-G13, stage 2c; stage 0 in progress)
+r4: context tiers from 64K to 256K and up, G12; r5: one loaded model shared by many
+sessions, G13, stage 2c; r6: a 192K tier; stage 0 in progress)
 
 **Emperor** is a small open-weight model, fine-tuned to be the **root agent** of an Imperium
 session on a 16 GB GPU. It reads the task, plans, writes compact briefs, and hands the work to
@@ -59,7 +59,7 @@ there, once, and record why.
 | G3 | End-to-end task success with Emperor as root is within 5 points of a frontier root on the same suite, at ≤ 50 % of that run's total cost | `eval --suite e2e` (cost from the session ledger) |
 | G4 | Every brief is ≤ 2,000 tokens and self-contained (a judge model answers the subagent's task from the brief alone on ≥ 90 % of samples) | `eval --metric brief` |
 | G5 | Zero credentials, keys, endpoint URLs, or auth scopes in model output across the held-out set | `eval --metric leakage` |
-| G6 | Every supported [context tier](#context-tiers) (64K, 96K, 128K, 256K) runs within its listed VRAM target with its listed KV cache type, and scores ≥ 90 % on a retrieval test (RULER-style) at its full length (≥ 85 % at 256K) | `imperium models local` fit per tier, plus the `nvidia-smi` peak during `eval --suite longctx --context-tier <tier>` |
+| G6 | Every supported [context tier](#context-tiers) (64K, 96K, 128K, 192K, 256K) runs within its listed VRAM target with its listed KV cache type, and scores ≥ 90 % on a retrieval test (RULER-style) at its full length (≥ 85 % at 192K and 256K) | `imperium models local` fit per tier, plus the `nvidia-smi` peak during `eval --suite longctx --context-tier <tier>` |
 | G7 | Weights, GGUF quants, model card, eval report, and recipe are on `Imperium.AI/emperor` under Apache-2.0, and every teacher's licence permits it | The Hub pages; the datasheet's licence table |
 | G8 | A fresh install selects Emperor as the session root with one config change, and docs 04, 12, and 13 describe it | `imperium chat` with `models.default = "llamacpp:emperor-…"`; docs diff |
 | G9 | Every training stage runs on the local 16 GB GPU; no rented GPUs | Training logs record the device; the recipe lists no cloud GPU step |
@@ -128,6 +128,7 @@ adds ~2.5 GB to every row.
 | 64K | ~5.1 GB | ~9.1 GB | ~2.7 GB | ~6.7 GB | 8 GB (q4_0), 10 GB (q8_0) | Supported |
 | 96K | ~7.7 GB | ~11.7 GB | ~4.1 GB | ~8.1 GB | 10 GB (q4_0), 16 GB (q8_0) | Supported |
 | 128K | ~10.3 GB | ~14.3 GB | ~5.4 GB | ~9.4 GB | 12 GB (q4_0), 16 GB (q8_0) | Supported |
+| 192K | ~15.4 GB | ~19.9 GB | ~8.2 GB | ~12.7 GB | 16 GB (q4_0), 24 GB (q8_0) | Supported |
 | 256K | ~20.5 GB | ~25.0 GB | ~10.9 GB | ~15.4 GB | 16 GB (q4_0, tight), 32 GB (q8_0) | Supported |
 | 512K and up | ~41 GB | ~46 GB | ~21.7 GB | ~26.7 GB | 32 GB (q4_0) | Experimental: beyond the native window, needs YaRN scaling; quality unverified, and the 16 GB development GPU cannot measure it |
 
