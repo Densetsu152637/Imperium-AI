@@ -5,9 +5,10 @@ set -euo pipefail
 
 target="$1" bundles="$2" version="$3"
 
-# MSI accepts only numeric versions, so pre-release builds ship NSIS only.
+# MSI and RPM reject the hyphen in pre-release versions, so those builds ship NSIS, AppImage,
+# and deb only.
 if [[ "$version" == *-* ]]; then
-  bundles="$(tr ',' '\n' <<< "$bundles" | grep -vx msi | paste -sd, -)"
+  bundles="$(tr ',' '\n' <<< "$bundles" | grep -vxE 'msi|rpm' | paste -sd, -)"
 fi
 
 # Tauri treats an empty signing variable as configured; drop unset secrets.
@@ -20,8 +21,12 @@ done
 # The protocol package's index is generated, not committed; the interface imports it.
 pnpm --filter @imperium/protocol run generate
 
-pnpm --filter @imperium/desktop exec tauri build \
-  --target "$target" --bundles "$bundles" --config "{\"version\":\"$version\"}"
+# Updater artifacts (signed installers and the macOS .app.tar.gz) need the signing key.
+updater=false
+if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then updater=true; fi
+
+pnpm --filter @imperium/desktop exec tauri build --target "$target" --bundles "$bundles" \
+  --config "{\"version\":\"$version\",\"bundle\":{\"createUpdaterArtifacts\":$updater}}"
 
 mkdir -p dist
 find "target/$target/release/bundle" -type f \( -name '*.AppImage' -o -name '*.deb' \
