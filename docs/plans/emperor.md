@@ -1,0 +1,348 @@
+# Plan: Emperor, an open-weight delegation model
+
+Revision: 2026-11-08 r2 (your answers folded in: local-only training, the name Emperor, separate
+repositories, and the teacher licence research; no stage started)
+
+**Emperor** is a small open-weight model, fine-tuned to be the **root agent** of an Imperium
+session on a 16 GB GPU. It reads the task, plans, writes compact briefs, and hands the work to
+hosted (and local) subagents through the existing `spawn_agent` / `await_tasks` tools instead
+of doing the work itself. The daemon keeps doing what it already does well (routing, keys,
+budgets, waiting at zero token cost), so the model only has to learn the decisions.
+
+## Repositories
+
+Work is split across three places, so no one basket holds all the eggs:
+
+| Where | Holds | Status |
+| ----- | ----- | ------ |
+| This repository (Imperium-AI) | Engine features Emperor needs (stages 1, 2a, 7), integration, docs, and this plan of record | exists |
+| `Densetsu152637/emperor` (GitHub, new) | Training code: dataset builders, training recipes, eval harness, export scripts (Python, `uv`) | to create in stage 0 |
+| `Imperium.AI/emperor` (Hugging Face, placeholder org) | Released weights, model card, eval report; GGUF quants in `Imperium.AI/emperor-GGUF`; private datasets in `Imperium.AI/emperor-traces` | to create in stage 8 |
+
+When the `emperor` repository exists, stages 2b to 6 move into its own `docs/plans/` and this
+plan links to them; until then this file is the single plan of record.
+
+## Goals
+
+The eval harness (stage 2b) checks each goal against the frozen held-out set, unless stated
+otherwise. Numeric targets are provisional until stage 3 measures the baselines; revise them
+there, once, and record why.
+
+| ID | Goal | Verified by |
+| -- | ---- | ----------- |
+| G1 | ≥ 98 % of the model's tool calls parse and validate against the protocol schemas | `eval --metric tool_validity` |
+| G2 | Delegation decisions (delegate or answer, how many subagents, tier and tags) match the reference on ≥ 85 % of held-out tasks, and beat the untuned base by ≥ 15 points | `eval --metric routing` |
+| G3 | End-to-end task success with Emperor as root is within 5 points of a frontier root on the same suite, at ≤ 50 % of that run's total cost | `eval --suite e2e` (cost from the session ledger) |
+| G4 | Every brief is ≤ 2,000 tokens and self-contained (a judge model answers the subagent's task from the brief alone on ≥ 90 % of samples) | `eval --metric brief` |
+| G5 | Zero credentials, keys, endpoint URLs, or auth scopes in model output across the held-out set | `eval --metric leakage` |
+| G6 | The Q4_K_M GGUF serves 64K tokens per slot on the 16 GB GPU with peak VRAM ≤ 15.0 GB, and scores ≥ 90 % on a 64K retrieval test (RULER-style) | `imperium models local` fit, plus the `nvidia-smi` peak during `eval --suite longctx` |
+| G7 | Weights, GGUF quants, model card, eval report, and recipe are on `Imperium.AI/emperor` under Apache-2.0, and every teacher's licence permits it | The Hub pages; the datasheet's licence table |
+| G8 | A fresh install selects Emperor as the session root with one config change, and docs 04, 12, and 13 describe it | `imperium chat` with `models.default = "llamacpp:emperor-…"`; docs diff |
+| G9 | Every training stage runs on the local 16 GB GPU; no rented GPUs | Training logs record the device; the recipe lists no cloud GPU step |
+
+## Scope and non-goals
+
+- **In scope:** a fine-tuned 4–8B model, the dataset and eval harness that make it, the small
+  engine features it needs (chunked delegation of large inputs, structured briefs), packaging
+  for llama.cpp (all platforms) and vLLM (Linux/WSL2), and publication.
+- **Not in scope:** pre-training or architecture changes (see [NCM](#next-concept-modeling-ncm)),
+  a new runtime, new special tokens or a new wire protocol, letting the model handle secrets, or
+  making it a strong coder or writer itself (that is what the subagents are for).
+
+## Decisions so far
+
+1. **Fine-tune or framework?** Both, but the framework already exists: Imperium is the
+   orchestration layer. Emperor is trained on *Imperium's own tool schemas*, so no
+   LangChain, AutoGen, or CrewAI layer is needed.
+2. **Language.** The orchestration stays in Rust (`imperium-core`, `imperium-models`); training
+   and evaluation are Python (Unsloth and TRL, `uv`-managed) in the `emperor` repository.
+3. **Local-only training (G9).** No cloud GPU budget, so nothing may need one. That rules out a
+   long-context training stage and makes the base model's *native* context decisive.
+4. **Base model: Qwen3-4B-Instruct-2507 is the lead candidate.** Apache-2.0, native
+   262,144-token context (`max_position_embeddings`, no RoPE scaling needed), and small enough
+   to QLoRA-train with long sequences on 16 GB. Qwen3-8B (Apache-2.0, 32K native, 131K with YaRN)
+   is the fallback if the 4B is more than 3 points worse in stage 3. Newer bases are welcome if
+   they beat both on the stage-3 harness and are Apache-2.0 or MIT.
+5. **Teachers** come only from the [allowed list](#teacher-licences).
+
+## Corrections to the optimisation guide
+
+The guide's direction is sound (small model, smart token management, delegate the bulk), but
+several specifics are wrong for this project or this hardware. This plan wins over the guide.
+
+| Guide says | Problem | This plan |
+| ---------- | ------- | --------- |
+| FlashAttention-3 | Hopper-only (H100/H200); it does not run on 16 GB consumer cards | llama.cpp `--flash-attn` (all backends); vLLM picks its own backend |
+| vLLM with an INT4 KV cache | vLLM offers an FP8 KV cache, not INT4; and vLLM is Linux/WSL2-only here ([D5](../13-decisions.md)) | llama.cpp is the primary runtime: `--cache-type-k q8_0 --cache-type-v q8_0`; vLLM with AWQ and `--kv-cache-dtype fp8` on Linux |
+| Raise the RoPE base to 1M–5M | Changing θ needs long-context continued pre-training; the lead base already ships θ = 5M with a 262K window | Keep the base's θ; no context-extension training |
+| 4-bit GaLore *or* QLoRA in 16 GB | True for short sequences only | QLoRA (Unsloth) on the 4B base; sequence length set by measured VRAM in stage 5 |
+| Payload carries the endpoint and authorization scopes | Model output must never hold credentials; keys live in the keychain ([D7](../13-decisions.md)) | The model emits `tier`, `tags`, `location`, and `requirements`; the router resolves the endpoint and key |
+| The model compresses a 100K log into a 2K "State Packet" | To compress 100K tokens the model must first hold them, which is the cost being avoided | The daemon stores large inputs as artefacts; the model delegates chunks (map), then merges the reports (reduce); briefs are the state packet (G4) |
+| A `<WAIT_FOR_AGENT_ID>` token | Already solved: `await_tasks` suspends the loop at zero tokens and resumes on completion events | Train on `spawn_agent` / `await_tasks`; no new tokens |
+| 64K–128K context "natively" | Memory capacity is not quality; small models degrade well before their window | Target 64K per slot and prove it (G6); beyond that, delegate |
+
+## VRAM budget (16 GB, llama.cpp)
+
+Qwen3-4B-Instruct-2507 and Qwen3-8B have the same attention shape (36 layers × 8 KV heads ×
+128 head dim), so their KV cache per token is identical: 73,728 elements, about 144 KiB at f16,
+77 KiB at q8_0, and 41 KiB at q4_0. The 4B saves weights, not KV. These figures are estimates
+until stage 6 measures them.
+
+| Component | 4B, 64K, q8_0 KV | 4B, 128K, q8_0 KV | 8B, 64K, q8_0 KV |
+| --------- | ---------------- | ----------------- | ---------------- |
+| Weights (Q4_K_M) | ~2.5 GB | ~2.5 GB | ~5.0 GB |
+| KV cache | ~5.0 GB | ~10.1 GB | ~5.0 GB |
+| Compute buffers and CUDA context | ~1.5 GB | ~2.0 GB | ~1.5 GB |
+| Total | ~9.0 GB | ~14.6 GB | ~11.5 GB |
+
+With the 4B, 64K leaves room for a second slot or a small local subagent, and 128K fits on its
+own; G6 stays at 64K until stage 6 measures quality at 128K.
+
+## Teacher licences
+
+Training traces come from teacher models playing root in real Imperium sessions. Researched
+2026-11-08 from the licence files on Hugging Face and the providers' terms. This is not legal
+advice; re-check a teacher's licence before using it.
+
+| Teacher | Licence | Allowed? | Why |
+| ------- | ------- | -------- | --- |
+| Qwen3 family (e.g. Qwen3-235B-A22B-Instruct-2507) | Apache-2.0 | Yes | No restriction on outputs |
+| DeepSeek-V3.2 | MIT | Yes | No restriction on outputs |
+| GLM-4.6 | MIT | Yes | No restriction on outputs |
+| gpt-oss-120b / gpt-oss-20b | Apache-2.0 plus a usage policy (comply with the law) | Yes | gpt-oss-20b also fits 16 GB, so it is a free *local* teacher |
+| Mistral Small 3.2 and other Apache-2.0 Mistral models | Apache-2.0 | Yes | No restriction on outputs |
+| Kimi K2 | Modified MIT | Yes | Only adds UI attribution above 100M monthly users or $20M monthly revenue |
+| Llama 3.x | Llama Community Licence | **No** | A model trained on Llama outputs must have a name starting with "Llama", which conflicts with "Emperor" |
+| Gemma (≤ 3) | Gemma Terms of Use | **No** | Distilling from Gemma outputs makes the result a "Model Derivative" bound by Gemma's terms, not Apache-2.0 (Gemma 4 has its own licence; unchecked) |
+| OpenAI, Anthropic, Google Gemini, and xAI APIs | Provider terms | **No** | Their terms forbid using outputs to develop competing models |
+
+Two caveats:
+
+- **The host's terms apply too.** Running an open model through a hosted API (OpenRouter,
+  DeepInfra, Together, ...) adds that provider's terms on top of the model licence. Before
+  stage 4, check each provider used for teacher traces. A teacher run locally (gpt-oss-20b)
+  avoids this.
+- **API spend is not GPU spend.** No cloud GPUs are rented, but hosted teachers and the G3
+  end-to-end suite cost API tokens. Keep a ceiling (default $50 for the whole project, recorded
+  in the datasheet) and prefer the local teacher where its quality is enough.
+
+## Next-Concept Modeling (NCM)
+
+Asked 2026-11-08: could Emperor use the NCM architecture instead? **Not for this version.** NCM
+remains a research track (stage R), with Emperor kept ready to switch.
+
+- **What it is.** [Next-Concept Modeling](https://arxiv.org/abs/2610.14162) (Khare et al.,
+  Stanford and Together AI, October 2026) works in two stages. A multiscale residual VQ-VAE
+  encodes text into K levels of discrete codes, from short coarse levels to a full-length fine
+  one. A transformer then generates one level at a time, all codes within a level in parallel,
+  and the VQ-VAE decoder turns the result back into tokens. At about 100M parameters it is 10–31×
+  faster than diffusion language models of matched size, at equal or better quality, and needs
+  4–5× fewer training tokens than they do.
+- **Why it cannot be done now.**
+  - **It is a different architecture, not a fine-tune.** It needs its own tokenizer (the
+    VQ-VAE) and a generator trained from scratch; neither can be grafted onto a Qwen checkpoint
+    with LoRA. The 16 GB, local-only budget (G9) cannot pre-train a usable base.
+  - **No usable base exists.** The paper trains a separate ~100M tokenizer and generator per
+    dataset (LM1B, OpenWebText, XSum, WMT14, Sudoku). These are research checkpoints, not
+    instruction-tuned, tool-calling, long-context bases, and the paper compares against
+    diffusion models, not against autoregressive models at scale.
+  - **No runtime support.** Neither llama.cpp nor vLLM runs it, so Imperium could not serve it
+    without a new runtime backend.
+  - **Unproven for this job.** The output length is fixed per generation (the finest level has
+    L codes), while tool calls vary in length. Every token passes through a lossy VQ
+    reconstruction, and the paper itself notes that one wrong token can break code, which is just
+    as true of JSON. Prompt conditioning with long (64K) contexts is untested.
+  - **The speedup matters least here.** Emperor writes short outputs: tool calls and briefs of
+    at most 2K tokens. Its cost is reading context (prefill), which NCM does not speed up.
+- **How Emperor stays future-proof.** Everything that carries the value is independent of the
+  architecture: the dispatch contract (stage 1), the dataset (stage 4), and the eval harness
+  (stage 2b). When an open-weight NCM (or diffusion) base with tool calling and runtime support
+  appears, it gets the same SFT data and is scored on the same harness against Emperor. Imperium
+  only needs a new `RuntimeBackend` ([04](../04-models-and-routing.md#runtimes)) to serve it.
+
+## Assumptions
+
+- One 16 GB NVIDIA GPU on Windows, so llama.cpp is the runtime; the training stack runs under
+  WSL2 or native Windows, whichever Unsloth supports better at stage 5.
+- `Imperium.AI` is a placeholder Hugging Face organisation: confirm the name is valid and free
+  when creating it (Hub names may not accept the dot), and rename before release if needed.
+
+## Relevant paths
+
+- `crates/imperium-core`: agent loop, `spawn_agent` / `await_tasks`, artefacts, compaction
+- `crates/imperium-models`: router, model table, pricing
+- `crates/imperium-local`: llama.cpp / vLLM supervision, memory planner, KV estimates
+- `crates/imperium-protocol`: tool and event schemas (the source of the training schemas)
+- `policy/agent-custom-workflow`: delegation policy the model is trained to follow
+- `emperor` repository (new): `data/`, `train/`, `eval/`, `export/`, `schemas/` (vendored from
+  this repository)
+
+## Related docs
+
+[03 Agent engine](../03-agent-engine.md) (reactive delegation, task contract, context
+management), [04 Models and routing](../04-models-and-routing.md), [08 Agent
+policy](../08-agent-policy.md), [18 Workflow contract](../18-workflow-contract.md). Those docs
+win on current behaviour; this plan wins on what Emperor adds. Stage 8 folds the result into
+them.
+
+## Stage 0: Create the repositories
+
+- Objective: create the GitHub repository `Densetsu152637/emperor` (Apache-2.0, `uv` project,
+  CI running lint and the eval harness's dry run); reserve the Hugging Face organisation.
+- Depends on: none
+- Owned paths: the new repository
+- Acceptance checks: `gh repo view Densetsu152637/emperor` succeeds; `uv run eval --help` runs in
+  CI.
+- Status: pending
+- Outcome:
+- Handoff notes: creating public repositories needs the user's go-ahead.
+
+## Stage 1: Dispatch contract
+
+- Objective: freeze what the model emits and sees, so data, training, and the engine agree.
+  Export JSON Schemas for `spawn_agent` (brief, `requirements`, `budget`, `result`),
+  `await_tasks`, and the new `delegate_chunks` (stage 2a) from `imperium-protocol`; define the
+  brief template (goal, context, constraints, acceptance, output format, ≤ 2K tokens) and the
+  root system prompt Emperor is trained with. The `emperor` repository vendors the schemas at a
+  pinned Imperium version.
+- Depends on: none
+- Owned paths: `crates/imperium-protocol`, `docs/03-agent-engine.md` (task contract section)
+- Acceptance checks: schemas generated by `cargo test -p imperium-protocol` match the checked-in
+  copies (drift check in `scripts/check-rust.sh`); the brief template is documented in 03.
+- Status: pending
+- Outcome:
+- Handoff notes: no credential or endpoint fields in any model-facing schema (G5).
+
+## Stage 2a: Engine support for large inputs (Imperium)
+
+- Objective: `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` in `imperium-core`
+  splits a stored artefact on structure boundaries and spawns one subagent per chunk, within
+  the session's concurrency and budget, plus an optional reduce subagent; the root sees only
+  the reports. Inputs over a threshold (default 75 % of the root's window) arrive as an artefact
+  handle with an outline, never inline.
+- Depends on: stage 1
+- Owned paths: `crates/imperium-core`, `crates/imperium-tools`
+- Acceptance checks: `cargo test -p imperium-core delegate_chunks` passes against a fake model
+  server, and a 300K-token input never enters the root's context.
+- Status: pending
+- Outcome:
+- Handoff notes:
+
+## Stage 2b: Eval harness (emperor repository)
+
+- Objective: replay held-out tasks through `imperiumd` with recorded subagent replies
+  (deterministic and free) and, for `--suite e2e`, real hosted subagents; score G1–G6 into a
+  JSON report.
+- Depends on: stages 0, 1 (2a for the long-input cases)
+- Owned paths: `emperor/eval/`
+- Acceptance checks: `uv run eval --model <any> --dry-run` produces a report with every metric.
+- Status: pending
+- Outcome:
+- Handoff notes: only `e2e` spends money; cap it with the API ceiling.
+
+## Stage 3: Baselines and base-model choice
+
+- Objective: run the harness on Qwen3-4B-Instruct-2507, Qwen3-8B, and up to three newer
+  Apache-2.0/MIT candidates, zero-shot with the stage-1 prompt, and on a frontier root for the
+  G3 reference; pick the base; set the final numeric targets for G1–G4.
+- Depends on: stage 2b
+- Owned paths: `emperor/eval/results/`, this plan (goal revision)
+- Acceptance checks: a results table of every candidate × metric is committed; the choice and
+  any goal revision are recorded here with reasons.
+- Status: pending
+- Outcome:
+- Handoff notes: a frontier root may be *evaluated* through its API (that is not training on
+  its outputs), but its traces must never enter the dataset.
+
+## Stage 4: Dataset
+
+- Objective: 20,000–50,000 training trajectories, disjoint from the held-out set by task family.
+  Sources: (1) teacher traces, where an [allowed teacher](#teacher-licences) plays root in real
+  Imperium sessions on generated tasks (code, research, data, docs, ops), with journals exported
+  and kept only when the task succeeded under budget; (2) synthetic routing cases mapping a task
+  to the reference decision from the router rules and policy, including "answer directly" and
+  "never send `exec` off-machine"; (3) long-input cases built on `delegate_chunks`; (4) negative
+  examples (leaked secrets, over-delegation, briefs missing context) rewritten into correct
+  turns.
+- Depends on: stages 1, 3
+- Owned paths: `emperor/data/`; the dataset itself goes to `Imperium.AI/emperor-traces` (private)
+- Acceptance checks: `uv run data validate` reports 100 % of samples parsing against the stage-1
+  schemas, 0 secret-pattern hits, and passing dedup and held-out overlap checks; the datasheet
+  lists every source with its licence and provider terms.
+- Status: pending
+- Outcome:
+- Handoff notes: record the teacher and host for every sample, so a licence problem can be
+  removed later.
+
+## Stage 5: Supervised fine-tuning (local)
+
+- Objective: QLoRA SFT of the chosen base with Unsloth on the 16 GB GPU, with loss on assistant
+  turns only, gradient checkpointing, and a checkpoint sweep on the dev split. Measure the
+  longest sequence that fits first and bucket the data to it.
+- Depends on: stage 4
+- Owned paths: `emperor/train/`
+- Acceptance checks: the best checkpoint meets G1 and G2 on the held-out set; no regression over
+  2 points on a small general instruction-following set; G9 holds.
+- Status: pending
+- Outcome:
+- Handoff notes: log runs with Trackio; record exact library versions in the recipe.
+
+## Stage 6: Preference tuning, packaging, and measurement (local)
+
+- Objective: DPO with pairs ranked by verifiable signals (schema validity, routing match, brief
+  judge, plan cost from the router's prices, leakage); GRPO only if DPO falls short and a local
+  run fits. Merge the adapter, export GGUF (Q4_K_M, Q5_K_M, Q8_0) and AWQ, and measure memory and
+  long-context quality.
+- Depends on: stage 5
+- Owned paths: `emperor/train/`, `emperor/export/`
+- Acceptance checks: G1, G2, G4, G5, and G6 met; G3 measured on the `e2e` suite.
+- Status: pending
+- Outcome:
+- Handoff notes: skip the preference step if stage 5 already meets G1–G5. If the memory planner
+  still assumes an f16 KV cache, teach it q8_0/q4_0 (a `crates/imperium-local` change).
+
+## Stage 7: Imperium integration
+
+- Objective: a bundled model-table seed entry and an "Emperor root" preset (session model =
+  Emperor, `routing.prefer = "cheapest"`, cloud rows for `strong` and `frontier`);
+  `imperium models pull Imperium.AI/emperor-GGUF` works; the desktop Models panel shows it.
+- Depends on: stage 6
+- Owned paths: `crates/imperium-config`, `crates/imperium-models`, `apps/desktop` (preset UI)
+- Acceptance checks: G8: with a fresh `IMPERIUM_HOME` and one config line, `imperium chat`
+  completes a delegation task; `bash scripts/check-rust.sh` and `scripts/check-web.sh` pass.
+- Status: pending
+- Outcome:
+- Handoff notes:
+
+## Stage 8: Release and documentation
+
+- Objective: publish the weights, quants, model card (intended use, limits, eval table, VRAM
+  table, data sources and licences), and recipe; fold this plan into docs 03, 04, 12 (roadmap
+  row), and 13 (decision record, including the NCM decision); delete this plan.
+- Depends on: stage 7
+- Owned paths: `docs/`, the Hugging Face repositories
+- Acceptance checks: G7 and G8; `markdownlint-cli2` is clean.
+- Status: pending
+- Outcome:
+- Handoff notes: publishing needs the user's go-ahead.
+
+## Stage R: Next-Concept Modeling watch (research, not blocking)
+
+- Objective: each quarter, check for an open-weight NCM or diffusion base with tool calling,
+  ≥ 32K context, and a runnable inference stack. When one appears, run stage 3's harness on it
+  zero-shot, then SFT it on the stage-4 data if it is competitive.
+- Depends on: stages 2b and 4
+- Owned paths: `emperor/eval/results/`
+- Acceptance checks: a dated note per check in the `emperor` repository; a candidate that beats
+  Emperor on G1–G4 at equal or lower VRAM triggers a plan revision.
+- Status: pending
+- Outcome:
+- Handoff notes: serving it in Imperium needs a new `RuntimeBackend`.
+
+## Open questions
+
+| Question | Owner | Needed by |
+| -------- | ----- | --------- |
+| Which hosted providers serve the teachers, and do their terms allow training on outputs? | Maintainers | Stage 4 |
+| API spend ceiling for teacher traces and the e2e suite (default $50) | User | Stage 2b |
+| Final Hugging Face organisation name (placeholder `Imperium.AI`) | User | Stage 8 |
