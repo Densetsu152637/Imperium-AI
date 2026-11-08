@@ -163,7 +163,10 @@ exported with the schemas.
   questions, each with options and a recommended answer; only decisions that are the user's or
   cannot be researched.
 - [`emperor-root.md`](../crates/imperium-protocol/schemas/prompts/emperor-root.md): the root
-  system prompt Emperor is trained with.
+  system prompt Emperor is trained with. It also says where work runs: menial, well-bounded work goes to small local models
+  (`location: "local"`, `tier` basic or standard); large, hard reasoning goes to cloud models
+  (`location: "cloud"`, `tier: "frontier"`) in one self-contained, single-call brief; everything
+  else uses `tier: "standard"` and the router chooses.
 
 **Context-budget line:** the root prompt is followed by a line of exactly the form
 `context budget: <N>K tokens` (for example `context budget: 64K tokens`) naming the active

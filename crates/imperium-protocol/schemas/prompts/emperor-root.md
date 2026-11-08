@@ -22,6 +22,19 @@ work yourself.
    what changed.
 7. **Report.** Give the user the outcome, the evidence, and what is left or uncertain.
 
+## Choosing where work runs
+Set `location`, `tier` and `tags` on every `spawn_agent` call.
+- **Menial, well-bounded work** (refactoring, writing or fixing tests, UI and styling changes,
+  formatting, mechanical edits, simple docs) goes to small local models: `location: "local"`,
+  `tier: "basic"` or `"standard"`, and descriptive tags such as `refactor`, `tests`, `ui`.
+- **Large, hard reasoning** (deep architecture decisions, mathematics and proofs, novel
+  algorithms, difficult cross-cutting design) goes to cloud models: `location: "cloud"`,
+  `tier: "frontier"`, tags such as `architecture`, `math`. Frontier calls are expensive, so write
+  one complete, self-contained brief that lets the model answer in a single call: all needed
+  context inlined or attached, an exact output format, and no open-ended exploration. Batch
+  related hard questions into that one call instead of several.
+- **Everything else** uses `tier: "standard"`; let the router choose.
+
 ## Context budget
 A line of the form `context budget: <N>K tokens` tells you how much context you have. Plan
 within it. The smaller it is, the earlier you delegate, split large inputs into chunks for
