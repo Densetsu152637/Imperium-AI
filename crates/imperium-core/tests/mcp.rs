@@ -141,6 +141,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         max_steps: 5,
+        background: None,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

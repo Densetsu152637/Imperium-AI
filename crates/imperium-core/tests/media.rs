@@ -122,6 +122,7 @@ async fn agents_generate_images_and_audio() {
             transcription: Some(service("whisper")),
         })))],
         max_steps: 6,
+        background: None,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

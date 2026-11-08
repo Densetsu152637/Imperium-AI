@@ -128,7 +128,14 @@ pub async fn fix_ci(
     let project = worktree.display().to_string();
     let model = state.settings().github.autofix.model.clone();
     let (ok, summary, session_id) = state
-        .run_prompt(&project, model.as_deref(), prompt, tools, FIX_TIMEOUT)
+        .run_prompt(
+            &project,
+            model.as_deref(),
+            prompt,
+            tools,
+            false,
+            FIX_TIMEOUT,
+        )
         .await;
     if !ok {
         announce(state, repo, pr.number, "failed", session_id, summary);

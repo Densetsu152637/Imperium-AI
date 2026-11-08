@@ -143,6 +143,19 @@ pub struct SessionSummary {
     /// What it watches, when watching or merged.
     pub status_detail: Option<String>,
     pub resume_policy: crate::session::ResumePolicy,
+    /// Started by a schedule or a project agent: it gives way to the user's own sessions.
+    pub background: bool,
+    /// Why background work is waiting (deferred before it started, or paused at a step
+    /// boundary), until the machine is quiet or the user runs it now.
+    pub hold: Option<SessionHold>,
+}
+
+/// A background session that is waiting for a quiet machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionHold {
+    pub cause: crate::session::PauseCause,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -638,6 +651,9 @@ pub struct ScheduleRow {
     pub last_run: Option<String>,
     pub last_ok: Option<bool>,
     pub running: bool,
+    /// Set while a run waits for a quiet machine (`prefer_quiet`, `when_quiet`): why. Run it
+    /// now with `schedules.run`.
+    pub deferred: Option<String>,
     /// Why the schedule cannot run, if it cannot.
     pub problem: Option<String>,
 }
@@ -672,7 +688,7 @@ pub const SCHEDULE_EVENT: &str = "schedule.event";
 #[ts(export)]
 pub struct ScheduleEventParams {
     pub schedule_id: String,
-    #[ts(type = "\"started\" | \"completed\" | \"failed\"")]
+    #[ts(type = "\"deferred\" | \"started\" | \"completed\" | \"failed\"")]
     pub status: String,
     /// The session a prompt run created.
     pub session_id: Option<String>,

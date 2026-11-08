@@ -17,12 +17,12 @@ pub use secrets::{
     load_secret, store_secret,
 };
 pub use settings::{
-    ActionSettings, AgentSettings, AutofixSettings, CatalogEntry, DaemonSettings, EndpointSettings,
-    Enforce, ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HookSettings,
-    ImageSettings, IsolationSettings, LLAMACPP_ENDPOINT, LlamaCppSettings, Location,
-    McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings, MemorySettings,
-    MemoryWrite, ModelPlacement, ModelSettings, PetSettings, PhoneSettings, Preference,
-    ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings, RuntimeSettings,
-    ScheduleSettings, SecretRef, Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings,
-    WebSettings, WorkflowSettings, WritePolicy,
+    ActionSettings, AgentSettings, AutofixSettings, CatalogEntry, ConditionSettings,
+    DaemonSettings, EndpointSettings, Enforce, ExtensionSettings, GithubSettings, GithubWatch,
+    HardwareSettings, HookSettings, ImageSettings, IsolationSettings, LLAMACPP_ENDPOINT,
+    LlamaCppSettings, LoadSettings, Location, McpServerSettings, McpSettings, MediaServiceSettings,
+    MediaSettings, MemorySettings, MemoryWrite, ModelPlacement, ModelSettings, PetSettings,
+    PhoneSettings, Preference, ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings,
+    RuntimeSettings, ScheduleSettings, SecretRef, Settings, Tier, TriggerSettings, VLLM_ENDPOINT,
+    VllmSettings, WebSettings, WorkflowSettings, WritePolicy,
 };

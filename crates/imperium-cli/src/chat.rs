@@ -10,8 +10,8 @@ use imperium_protocol::methods::{
     SessionSendParams,
 };
 use imperium_protocol::session::{
-    AgentEvent, ContextCategory, PermissionDecision, ROOT_AGENT, SESSION_EVENT, SessionEvent,
-    SessionEventParams, StepStatus, TokenCountMethod,
+    AgentEvent, ContextCategory, PauseCause, PermissionDecision, ROOT_AGENT, SESSION_EVENT,
+    SessionEvent, SessionEventParams, StepStatus, TokenCountMethod,
 };
 
 use crate::{block_on, connect};
@@ -322,8 +322,17 @@ async fn follow_turn(
                 );
             }
             SessionEvent::Paused {
+                reason,
+                cause: PauseCause::Load | PauseCause::Deferred,
+                ..
+            } => println!(
+                "
+{tag}· background work waiting: {reason}"
+            ),
+            SessionEvent::Paused {
                 until_unix_ms,
                 reason,
+                ..
             } => {
                 let until = chrono::DateTime::from_timestamp_millis(
                     i64::try_from(until_unix_ms).unwrap_or(0),

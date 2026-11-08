@@ -215,6 +215,7 @@ fn start(dir: &std::path::Path, base_url: String, local: bool) -> Session {
         resume_policy: imperium_core::default_resume_policy(),
         instructions: Some(INSTRUCTIONS.into()),
         max_steps: 5,
+        background: None,
         journal_path: dir.join(".journal/context.jsonl"),
     })
     .unwrap()

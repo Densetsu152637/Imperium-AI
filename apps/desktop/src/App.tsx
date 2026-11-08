@@ -235,6 +235,8 @@ export function App() {
         status: "idle",
         status_detail: null,
         resume_policy: DEFAULT_RESUME_POLICY,
+        background: false,
+        hold: null,
       };
       setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
       setSelected(created.session_id);

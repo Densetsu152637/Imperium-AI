@@ -35,7 +35,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence};
+use imperium_api::{
+    AcquireFuture, Availability, Load as MachineLoad, LoadView, LocalLease, LocalModels,
+    LocalPresence, Priority,
+};
 use imperium_config::{LlamaCppSettings, VllmSettings};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, broadcast};
 
@@ -52,6 +55,9 @@ const IDLE_CHECK: Duration = Duration::from_secs(15);
 /// How often a call waiting for room looks again when nothing has changed, for waits that end
 /// with time: another model's residency, the swap limit's window.
 const RECHECK: Duration = Duration::from_millis(250);
+/// How long after an interactive call last used a model background work may not swap it out,
+/// unless [`Supervisor::set_background_policy`] says otherwise.
+const DEFAULT_INTERACTIVE_HOLD: Duration = Duration::from_secs(5 * 60);
 /// The window `max_swaps_per_min` counts over.
 const SWAP_WINDOW: Duration = Duration::from_secs(60);
 /// Load speed assumed for a model that has not been loaded yet, to estimate a swap.
@@ -349,6 +355,12 @@ struct SlotPool {
     table: Mutex<SlotTable>,
     /// Calls waiting for a permit.
     waiting: AtomicU32,
+    /// Of those, the user's own (background calls wait outside the queue, behind them).
+    waiting_interactive: AtomicU32,
+    /// Slots held by the user's own calls.
+    held_interactive: AtomicU32,
+    /// When a slot held by one of the user's calls was last taken or released.
+    last_interactive: Mutex<Option<Instant>>,
     /// Whether leases carry a slot index the runtime accepts in requests.
     pins_slots: bool,
     last_used: Mutex<Instant>,
@@ -364,6 +376,9 @@ impl SlotPool {
             permits: Arc::new(Semaphore::new(slots as usize)),
             table: Mutex::new(SlotTable::new(slots)),
             waiting: AtomicU32::new(0),
+            waiting_interactive: AtomicU32::new(0),
+            held_interactive: AtomicU32::new(0),
+            last_interactive: Mutex::new(None),
             pins_slots,
             last_used: Mutex::new(Instant::now()),
             changed,
@@ -379,10 +394,16 @@ impl SlotPool {
         self: &Arc<Self>,
         permit: OwnedSemaphorePermit,
         holder: &str,
+        priority: Priority,
     ) -> Result<LocalLease, String> {
         let index = lock(&self.table)
             .take(holder)
             .ok_or("a slot permit was granted with no free slot")?;
+        let interactive = priority == Priority::Interactive;
+        if interactive {
+            self.held_interactive.fetch_add(1, Ordering::SeqCst);
+            *lock(&self.last_interactive) = Some(Instant::now());
+        }
         Ok(LocalLease::new(
             self.base_url.clone(),
             self.pins_slots.then_some(index),
@@ -390,9 +411,16 @@ impl SlotPool {
                 pool: Arc::clone(self),
                 index,
                 holder: holder.to_string(),
+                interactive,
                 _permit: permit,
             },
         ))
+    }
+
+    /// Whether one of the user's own calls held a slot within `within`, or holds one now.
+    fn used_interactively(&self, within: Duration) -> bool {
+        self.held_interactive.load(Ordering::SeqCst) > 0
+            || lock(&self.last_interactive).is_some_and(|at| at.elapsed() < within)
     }
 }
 
@@ -401,8 +429,10 @@ impl SlotPool {
 struct Queued(Arc<SlotPool>);
 
 impl Queued {
+    /// Only the user's own calls wait in the queue; background calls wait for the queue to empty.
     fn new(pool: Arc<SlotPool>) -> Self {
         pool.waiting.fetch_add(1, Ordering::SeqCst);
+        pool.waiting_interactive.fetch_add(1, Ordering::SeqCst);
         Queued(pool)
     }
 }
@@ -410,6 +440,7 @@ impl Queued {
 impl Drop for Queued {
     fn drop(&mut self) {
         self.0.waiting.fetch_sub(1, Ordering::SeqCst);
+        self.0.waiting_interactive.fetch_sub(1, Ordering::SeqCst);
         self.0.changed.notify_waiters();
     }
 }
@@ -461,8 +492,12 @@ struct Restore {
 struct Call {
     seq: u64,
     model: String,
-    /// It reached the model's slots (it holds one or is queued for one).
+    priority: Priority,
+    /// It reached the model's slots (it holds one or is queued for one, or it is a background
+    /// call waiting its turn for one).
     admitted: bool,
+    /// A background call waiting, in order, for a slot on its loaded model.
+    slot_wait: bool,
 }
 
 #[derive(Default)]
@@ -499,16 +534,48 @@ impl Throughput {
 
 impl State {
     /// Whether a call for another model that has not reached its slots arrived before `seq`.
-    fn behind_another_model(&self, seq: u64, model: &str) -> bool {
+    /// The user's calls do not wait behind background ones.
+    fn behind_another_model(&self, seq: u64, model: &str, priority: Priority) -> bool {
+        self.calls.iter().any(|call| {
+            call.seq < seq
+                && !call.admitted
+                && call.model != model
+                && (priority == Priority::Background || call.priority == Priority::Interactive)
+        })
+    }
+
+    /// Whether a call of the user's own is waiting to load a model.
+    fn interactive_load_pending(&self) -> bool {
         self.calls
             .iter()
-            .any(|call| call.seq < seq && !call.admitted && call.model != model)
+            .any(|call| call.priority == Priority::Interactive && !call.admitted)
     }
 
     fn set_admitted(&mut self, seq: u64, admitted: bool) {
         if let Some(call) = self.calls.iter_mut().find(|call| call.seq == seq) {
             call.admitted = admitted;
+            if !admitted {
+                call.slot_wait = false;
+            }
         }
+    }
+
+    /// Marks a background call as waiting in line for a slot on its loaded model.
+    fn set_slot_wait(&mut self, seq: u64) {
+        if let Some(call) = self.calls.iter_mut().find(|call| call.seq == seq) {
+            call.admitted = true;
+            call.slot_wait = true;
+        }
+    }
+
+    /// Whether a background call for `model` that arrived before `seq` waits for a slot.
+    fn earlier_slot_waiter(&self, seq: u64, model: &str) -> bool {
+        self.calls.iter().any(|call| {
+            call.seq < seq
+                && call.slot_wait
+                && call.model == model
+                && call.priority == Priority::Background
+        })
     }
 
     /// Whether another swap fits within `max_per_min`.
@@ -641,13 +708,20 @@ enum Step {
     Load,
     /// It waits its turn.
     Wait,
+    /// A background call gives way to the user's calls, or to a saturated machine; waiting
+    /// this way does not count against `max_wait_s`.
+    Yield,
 }
 
 /// What the call that may load a model found once loads were its own.
 enum Plan {
     /// The model was loaded meanwhile, or the call is no longer first in line.
     Retry,
-    Wait,
+    /// Wait for room; `yielded` when a background call waits on the user's calls (it does not
+    /// count against `max_wait_s`).
+    Wait {
+        yielded: bool,
+    },
     Load(Load),
 }
 
@@ -660,6 +734,7 @@ struct Load {
     victims: Vec<(String, Loaded)>,
     /// The call that loads it, admitted once the model is in the loaded set.
     call: u64,
+    priority: Priority,
     /// The context per slot and the slots it is started with.
     context: u32,
     slots: u32,
@@ -689,6 +764,28 @@ pub struct Supervisor {
     /// Models pinned to the CPU lane, with their slots.
     cpu_pinned: Mutex<HashMap<String, CpuLane>>,
     events: broadcast::Sender<SwapEvent>,
+    /// How background calls give way to the user's.
+    background: Mutex<BackgroundPolicy>,
+}
+
+/// How calls of [`Priority::Background`] give way (see [`Supervisor::set_background_policy`]).
+#[derive(Clone)]
+struct BackgroundPolicy {
+    /// The daemon's load view; background calls wait while it reports `Saturated`.
+    view: Option<Arc<dyn LoadView>>,
+    /// How long after the user's own call last used a model background work may not swap it out.
+    hold: Duration,
+}
+
+/// What the supervisor's slots are doing, by whose calls they are.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Activity {
+    /// Slots held by the user's own calls.
+    pub interactive_in_use: u32,
+    /// The user's own calls waiting for a slot.
+    pub interactive_queued: u32,
+    /// Slots held by background calls.
+    pub background_in_use: u32,
 }
 
 impl fmt::Debug for Supervisor {
@@ -757,6 +854,10 @@ impl Supervisor {
             slot_files,
             cpu_pinned: Mutex::default(),
             events: broadcast::channel(64).0,
+            background: Mutex::new(BackgroundPolicy {
+                view: None,
+                hold: DEFAULT_INTERACTIVE_HOLD,
+            }),
         });
         let weak = Arc::downgrade(&supervisor);
         tokio::spawn(unload_idle(weak));
@@ -784,6 +885,46 @@ impl Supervisor {
     /// Models swapped out and in, as they happen.
     pub fn swap_events(&self) -> broadcast::Receiver<SwapEvent> {
         self.events.subscribe()
+    }
+
+    /// Sets how background calls give way to the user's: they wait while `view` reports
+    /// `Saturated`, and may not swap out a model the user's own calls used within
+    /// `interactive_hold`.
+    pub fn set_background_policy(&self, view: Arc<dyn LoadView>, interactive_hold: Duration) {
+        *lock(&self.background) = BackgroundPolicy {
+            view: Some(view),
+            hold: interactive_hold,
+        };
+        self.changed.notify_waiters();
+    }
+
+    /// Slots in use and calls queued, by whose they are.
+    pub fn activity(&self) -> Activity {
+        let state = lock(&self.state);
+        let mut activity = Activity::default();
+        for loaded in state.loaded.values() {
+            let interactive = loaded.pool.held_interactive.load(Ordering::SeqCst);
+            activity.interactive_in_use += interactive;
+            activity.background_in_use += loaded.in_use().saturating_sub(interactive);
+            activity.interactive_queued += loaded.pool.waiting_interactive.load(Ordering::SeqCst);
+        }
+        activity
+    }
+
+    /// Models swapped out to make room in the last minute.
+    pub fn recent_swaps(&self) -> u32 {
+        let mut state = lock(&self.state);
+        // Counts over the window `max_swaps_per_min` counts over.
+        state.swaps(u32::MAX);
+        u32::try_from(state.swaps.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Whether the machine is saturated, so background calls wait.
+    fn saturated(&self) -> bool {
+        lock(&self.background)
+            .view
+            .as_ref()
+            .is_some_and(|view| view.level() == MachineLoad::Saturated)
     }
 
     /// Pins the models named in `pins` (model id to how it is served) to the CPU lane,
@@ -891,10 +1032,13 @@ impl Supervisor {
             .cloned()
     }
 
-    /// The loaded models as the arbiter sees them.
-    fn residents(&self, state: &State) -> Vec<Resident> {
+    /// The loaded models as the arbiter sees them. With `protect`, a model the user's own calls
+    /// used within that long counts as in use, so it is not swapped out (and whether any model
+    /// was protected is returned).
+    fn residents(&self, state: &State, protect: Option<Duration>) -> (Vec<Resident>, bool) {
         let users = lock(&self.presence.users);
-        state
+        let mut protected = false;
+        let residents = state
             .loaded
             .iter()
             .map(|(id, loaded)| Resident {
@@ -905,6 +1049,9 @@ impl Supervisor {
                 cpu_pinned: loaded.cpu_pinned,
                 use_: if loaded.busy() {
                     Use::Busy
+                } else if protect.is_some_and(|within| loaded.pool.used_interactively(within)) {
+                    protected = true;
+                    Use::Busy
                 } else if Presence::claims(&users, id, &loaded.batch) {
                     Use::Claimed
                 } else {
@@ -913,7 +1060,8 @@ impl Supervisor {
                 resident_for: loaded.loaded_at.elapsed(),
                 idle_for: lock(&loaded.pool.last_used).elapsed(),
             })
-            .collect()
+            .collect();
+        (residents, protected)
     }
 
     fn policy(&self, state: &mut State) -> Policy {
@@ -934,14 +1082,16 @@ impl Supervisor {
         seconds.ceil().clamp(1.0, f64::from(u32::MAX)) as u32
     }
 
-    fn ticket(&self, id: &str) -> Ticket<'_> {
+    fn ticket(&self, id: &str, priority: Priority) -> Ticket<'_> {
         let mut state = lock(&self.state);
         let seq = state.next_call;
         state.next_call += 1;
         state.calls.push(Call {
             seq,
             model: id.to_string(),
+            priority,
             admitted: false,
+            slot_wait: false,
         });
         Ticket {
             supervisor: self,
@@ -950,11 +1100,16 @@ impl Supervisor {
         }
     }
 
-    async fn acquire_slot(&self, id: &str, holder: &str) -> Result<LocalLease, String> {
+    async fn acquire_slot(
+        &self,
+        id: &str,
+        holder: &str,
+        priority: Priority,
+    ) -> Result<LocalLease, String> {
         let model = self
             .model(id)
             .ok_or_else(|| format!("no local model {id:?} in models.folders"))?;
-        let ticket = self.ticket(id);
+        let ticket = self.ticket(id, priority);
         let lane = self.cpu_lane(id);
         let max_wait = Duration::from_secs(match lane {
             Some(lane) => lane
@@ -962,7 +1117,7 @@ impl Supervisor {
                 .unwrap_or(CPU_LANE_MAX_WAIT_S.max(self.settings.max_wait_s)),
             None => self.settings.max_wait_s,
         });
-        let deadline = tokio::time::Instant::now() + max_wait;
+        let mut deadline = tokio::time::Instant::now() + max_wait;
         let setting = if lane.is_some() {
             "max_wait_s of its model-table row, or runtime.llamacpp.max_wait_s"
         } else {
@@ -979,7 +1134,13 @@ impl Supervisor {
             let changed = self.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            match self.step(id, holder, &ticket)? {
+            // A background call does nothing while the machine is saturated.
+            let step = if priority == Priority::Background && self.saturated() {
+                Step::Yield
+            } else {
+                self.step(id, holder, priority, &ticket)?
+            };
+            match step {
                 Step::Leased(lease, restore) => {
                     return Ok(self.restore(holder, lease, restore).await);
                 }
@@ -994,7 +1155,7 @@ impl Supervisor {
                     .map_err(|_| "the model was unloaded".to_string())?;
                     drop(queued);
                     if let Some((lease, restore)) =
-                        self.lease_if_current(id, &pool, permit, holder, ticket.seq)?
+                        self.lease_if_current(id, &pool, permit, holder, priority, ticket.seq)?
                     {
                         return Ok(self.restore(holder, lease, restore).await);
                     }
@@ -1005,15 +1166,22 @@ impl Supervisor {
                     let swapping = tokio::time::timeout_at(deadline, self.swapping.lock())
                         .await
                         .map_err(|_| too_long())?;
-                    match self.plan(&model, &ticket)? {
+                    match self.plan(&model, priority, &ticket)? {
                         Plan::Retry => continue,
                         Plan::Load(load) => {
                             return self.swap_in(&model, holder, load, swapping).await;
                         }
-                        Plan::Wait => drop(swapping),
+                        Plan::Wait { yielded } => {
+                            drop(swapping);
+                            if yielded {
+                                deadline = tokio::time::Instant::now() + max_wait;
+                            }
+                        }
                     }
                 }
                 Step::Wait => {}
+                // Giving way to the user is not a failure to get room: the wait starts over.
+                Step::Yield => deadline = tokio::time::Instant::now() + max_wait,
             }
             let now = tokio::time::Instant::now();
             if now >= deadline {
@@ -1025,25 +1193,51 @@ impl Supervisor {
 
     /// Takes a slot on `id` if it is loaded and takes this call, queues for one, or says
     /// whether the call may load the model or must wait its turn.
-    fn step(&self, id: &str, holder: &str, ticket: &Ticket<'_>) -> Result<Step, String> {
+    fn step(
+        &self,
+        id: &str,
+        holder: &str,
+        priority: Priority,
+        ticket: &Ticket<'_>,
+    ) -> Result<Step, String> {
         let mut state = lock(&self.state);
-        let behind = state.behind_another_model(ticket.seq, id);
-        let Some(entry) = state.loaded.get_mut(id) else {
+        let behind = state.behind_another_model(ticket.seq, id, priority);
+        if !state.loaded.contains_key(id) {
+            state.set_admitted(ticket.seq, false);
             return Ok(if behind { Step::Wait } else { Step::Load });
+        }
+        let Some(entry) = state.loaded.get_mut(id) else {
+            return Ok(Step::Wait);
         };
         // An agent already in the model's batch carries on; a newcomer joins only while no
         // earlier call for another model is waiting for the room.
         if behind && !entry.batch.contains(holder) {
             return Ok(Step::Wait);
         }
-        entry.batch.insert(holder.to_string());
         let pool = Arc::clone(&entry.pool);
+        // A background call takes a slot only when none of the user's calls is queued for one
+        // and no earlier background call is waiting; otherwise it waits outside the queue.
+        if priority == Priority::Background
+            && (pool.waiting_interactive.load(Ordering::SeqCst) > 0
+                || state.earlier_slot_waiter(ticket.seq, id))
+        {
+            state.set_slot_wait(ticket.seq);
+            return Ok(Step::Yield);
+        }
+        let Some(entry) = state.loaded.get_mut(id) else {
+            return Ok(Step::Wait);
+        };
+        entry.batch.insert(holder.to_string());
         let restore = entry.restore_handle();
         // The permit is taken (or the call queued) under the lock, so the model cannot be
         // swapped out between finding it and using it.
         let step = match Arc::clone(&pool.permits).try_acquire_owned() {
-            Ok(permit) => Step::Leased(pool.lease(permit, holder)?, restore),
-            Err(_) => Step::Queued(Queued::new(pool)),
+            Ok(permit) => Step::Leased(pool.lease(permit, holder, priority)?, restore),
+            Err(_) if priority == Priority::Interactive => Step::Queued(Queued::new(pool)),
+            Err(_) => {
+                state.set_slot_wait(ticket.seq);
+                return Ok(Step::Yield);
+            }
         };
         state.set_admitted(ticket.seq, true);
         Ok(step)
@@ -1056,6 +1250,7 @@ impl Supervisor {
         pool: &Arc<SlotPool>,
         permit: OwnedSemaphorePermit,
         holder: &str,
+        priority: Priority,
         seq: u64,
     ) -> Result<Option<(LocalLease, Restore)>, String> {
         let mut state = lock(&self.state);
@@ -1068,12 +1263,17 @@ impl Supervisor {
             state.set_admitted(seq, false);
             return Ok(None);
         };
-        Ok(Some((pool.lease(permit, holder)?, restore)))
+        Ok(Some((pool.lease(permit, holder, priority)?, restore)))
     }
 
     /// Decides, with loads held for this call, whether to load `model` now and what to swap
     /// out for it.
-    fn plan(&self, model: &LocalModel, ticket: &Ticket<'_>) -> Result<Plan, String> {
+    fn plan(
+        &self,
+        model: &LocalModel,
+        priority: Priority,
+        ticket: &Ticket<'_>,
+    ) -> Result<Plan, String> {
         let footprint = self.footprint(model);
         let no_room = || {
             format!(
@@ -1084,11 +1284,18 @@ impl Supervisor {
         };
         let backend = Arc::clone(self.backend(model.format).ok_or_else(no_room)?);
         let mut state = lock(&self.state);
-        if state.loaded.contains_key(&model.id) || state.behind_another_model(ticket.seq, &model.id)
+        if state.loaded.contains_key(&model.id)
+            || state.behind_another_model(ticket.seq, &model.id, priority)
         {
             return Ok(Plan::Retry);
         }
-        let residents = self.residents(&state);
+        // A background call lets the user's calls load their models first, and does not
+        // swap out a model the user used lately.
+        let protect = (priority == Priority::Background).then(|| lock(&self.background).hold);
+        if protect.is_some() && state.interactive_load_pending() {
+            return Ok(Plan::Wait { yielded: true });
+        }
+        let (residents, protected) = self.residents(&state, protect);
         let policy = self.policy(&mut state);
         let decision = arbiter::decide(
             self.placer(model, Arc::clone(&backend)),
@@ -1106,7 +1313,7 @@ impl Supervisor {
                     no_room()
                 ));
             }
-            Decision::Wait => return Ok(Plan::Wait),
+            Decision::Wait => return Ok(Plan::Wait { yielded: protected }),
             Decision::Load { evict, placement } => (evict, placement),
         };
         let cache_room = arbiter::cache_room(self.budget, &residents, &evict, &placement);
@@ -1124,6 +1331,7 @@ impl Supervisor {
             cache_room,
             victims,
             call: ticket.seq,
+            priority,
             context: self.shape(&model.id).0,
             slots: self.shape(&model.id).1.max(1),
             cpu_pinned: self.cpu_lane(&model.id).is_some(),
@@ -1144,6 +1352,7 @@ impl Supervisor {
             cache_room,
             victims,
             call,
+            priority,
             context,
             slots,
             cpu_pinned,
@@ -1207,7 +1416,7 @@ impl Supervisor {
         let permit = Arc::clone(&pool.permits)
             .try_acquire_owned()
             .map_err(|_| "a new server has no free slot".to_string())?;
-        let lease = pool.lease(permit, holder)?;
+        let lease = pool.lease(permit, holder, priority)?;
         {
             let mut state = lock(&self.state);
             state.load_seconds.insert(model.id.clone(), seconds);
@@ -1377,6 +1586,8 @@ struct Slot {
     pool: Arc<SlotPool>,
     index: u32,
     holder: String,
+    /// Held by one of the user's own calls.
+    interactive: bool,
     /// Released after `drop` has put the slot back, so a waiter that wakes finds it free.
     _permit: OwnedSemaphorePermit,
 }
@@ -1385,6 +1596,10 @@ impl Drop for Slot {
     fn drop(&mut self) {
         lock(&self.pool.table).give_back(self.index, &self.holder);
         *lock(&self.pool.last_used) = Instant::now();
+        if self.interactive {
+            *lock(&self.pool.last_interactive) = Some(Instant::now());
+            self.pool.held_interactive.fetch_sub(1, Ordering::SeqCst);
+        }
         self.pool.changed.notify_waiters();
     }
 }
@@ -1419,7 +1634,7 @@ impl LocalModels for Supervisor {
                 Availability::Fits
             };
         }
-        let residents = self.residents(&state);
+        let (residents, _) = self.residents(&state, None);
         let policy = self.policy(&mut state);
         let outlook = arbiter::outlook(place, self.budget, &residents, policy);
         match outlook {
@@ -1432,7 +1647,16 @@ impl LocalModels for Supervisor {
     }
 
     fn acquire<'a>(&'a self, id: &'a str, holder: &'a str) -> AcquireFuture<'a> {
-        Box::pin(self.acquire_slot(id, holder))
+        Box::pin(self.acquire_slot(id, holder, Priority::Interactive))
+    }
+
+    fn acquire_as<'a>(
+        &'a self,
+        id: &'a str,
+        holder: &'a str,
+        priority: Priority,
+    ) -> AcquireFuture<'a> {
+        Box::pin(self.acquire_slot(id, holder, priority))
     }
 
     fn attach(&self, model: &str, holder: &str) -> LocalPresence {

@@ -80,6 +80,17 @@ impl fmt::Debug for LocalPresence {
     }
 }
 
+/// Whose work a model call is. Interactive calls are admitted before queued background calls,
+/// and background work never evicts a model an interactive session used recently.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Priority {
+    /// A session the user is driving.
+    #[default]
+    Interactive,
+    /// A session a schedule or a project agent started.
+    Background,
+}
+
 pub type AcquireFuture<'a> = Pin<Box<dyn Future<Output = Result<LocalLease, String>> + Send + 'a>>;
 
 /// Local models the router may place work on.
@@ -92,6 +103,16 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     /// slot it used last, whose cached prompt is still there unless another agent has
     /// overwritten it (or restored from disk if the model was swapped out meanwhile).
     fn acquire<'a>(&'a self, model: &'a str, holder: &'a str) -> AcquireFuture<'a>;
+    /// Like [`LocalModels::acquire`], for a call of the given priority. A runtime that does not
+    /// rank calls serves them all alike.
+    fn acquire_as<'a>(
+        &'a self,
+        model: &'a str,
+        holder: &'a str,
+        _priority: Priority,
+    ) -> AcquireFuture<'a> {
+        self.acquire(model, holder)
+    }
     /// Says that `holder` is working on `model` for one turn, so between its calls the model is
     /// not swapped out for another unless the other has waited long. Held for the turn.
     fn attach(&self, _model: &str, _holder: &str) -> LocalPresence {

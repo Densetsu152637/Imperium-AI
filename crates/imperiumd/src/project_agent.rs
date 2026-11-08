@@ -2,6 +2,10 @@
 //! events (schedules, finished sessions, messages from the user) and dispatching work into new
 //! sessions with `start_session`. Between events it is idle and uses no tokens. It runs only
 //! while the daemon runs.
+//!
+//! The sessions an agent starts are background sessions: they rank below the user's sessions
+//! and pause while the machine is busy. With `prefer_quiet` (the default) a session is created
+//! at once but gets its brief only when the machine is quiet, or after `max_defer`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,11 +14,13 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
 use chrono::{Local, NaiveDate};
+use imperium_automation::parse_duration;
 use imperium_config::ProjectSettings;
-use imperium_core::{LaunchFuture, Session, SessionLauncher};
+use imperium_core::{LaunchFuture, Load, Session, SessionLauncher, wait_for_quiet};
 use imperium_protocol::session::SessionEvent;
 use tokio::sync::broadcast;
 
+use crate::scheduler::DEFAULT_MAX_DEFER;
 use crate::{DaemonState, SessionOptions};
 
 /// Longest a dispatched session may run before its report is given up on.
@@ -74,7 +80,17 @@ pub fn start(daemon: &Arc<DaemonState>) {
 
 fn start_one(daemon: &Arc<DaemonState>, project: &ProjectSettings) -> Result<(), String> {
     let path = project.path.display().to_string();
+    let max_defer = match project.max_defer.as_deref().map(parse_duration) {
+        Some(Ok(length)) => length,
+        Some(Err(error)) => {
+            tracing::warn!(project = %path, %error, "max_defer is not a length of time; using 2 h");
+            DEFAULT_MAX_DEFER
+        }
+        None => DEFAULT_MAX_DEFER,
+    };
     let launcher = Arc::new(Launcher {
+        prefer_quiet: project.prefer_quiet,
+        max_defer,
         daemon: Arc::downgrade(daemon),
         project: path.clone(),
         agent: OnceLock::new(),
@@ -141,6 +157,9 @@ struct Launcher {
     today: Mutex<(NaiveDate, u32)>,
     max_sessions: usize,
     max_per_day: u32,
+    /// Hold a session back until the machine is quiet, for at most `max_defer`.
+    prefer_quiet: bool,
+    max_defer: Duration,
 }
 
 impl Launcher {
@@ -174,20 +193,41 @@ impl SessionLauncher for Launcher {
             let daemon = self.daemon.upgrade().ok_or("the daemon is stopping")?;
             self.reserve()?;
             let release = Release(Arc::clone(&self.active));
+            let options = SessionOptions {
+                background: true,
+                ..SessionOptions::default()
+            };
             let (session, events) = daemon
-                .create_session_with(&self.project, model, SessionOptions::default())
+                .create_session_with(&self.project, model, options)
                 .map_err(|error| error.to_string())?;
             let id = session.id().to_string();
-            session
-                .send(brief.to_string())
-                .map_err(|_| "the session closed before it started".to_string())?;
+            // The session exists at once, but while the machine is busy it waits to start.
+            let view = daemon.load_view();
+            let waiting = self.prefer_quiet && view.level() != Load::Quiet;
+            let max_defer = self.max_defer;
+            if waiting {
+                session.defer(format!(
+                    "waiting for a quiet machine (it is {}; starts anyway after {} min)",
+                    view.level().label(),
+                    max_defer.as_secs().div_ceil(60)
+                ));
+            }
+            let brief = brief.to_string();
             // The agent is not waiting: the report arrives as a message when the session ends.
             let agent = self.agent.get().cloned();
             let report_id = id.clone();
             tokio::spawn(async move {
-                let result = daemon
-                    .wait_for_turn(&session, events, SESSION_TIMEOUT)
-                    .await;
+                if waiting {
+                    wait_for_quiet(&*view, session.run_now(), Some(max_defer)).await;
+                    session.undefer();
+                }
+                let result = if session.send(brief).is_ok() {
+                    daemon
+                        .wait_for_turn(&session, events, SESSION_TIMEOUT)
+                        .await
+                } else {
+                    Err("the session closed before it started".to_string())
+                };
                 drop(release);
                 let message = match result {
                     Ok(report) => format!(

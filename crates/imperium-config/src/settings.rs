@@ -91,6 +91,9 @@ pub struct Settings {
     pub phone: PhoneSettings,
     #[serde(default)]
     pub resume: ResumeSettings,
+    /// How busy the machine must be before autonomous work yields (see docs/14).
+    #[serde(default)]
+    pub load: LoadSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -467,6 +470,46 @@ impl Default for IsolationSettings {
     }
 }
 
+/// When the machine counts as `quiet`, `busy`, or `saturated` for autonomous work: sessions a
+/// schedule or a project agent started defer to the user's own sessions (see docs/14).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct LoadSettings {
+    /// How often (seconds) the daemon looks at the machine.
+    pub sample_s: u64,
+    /// How long (seconds) the machine must look calmer before the level drops, so a pause
+    /// between two of the user's messages does not count as quiet.
+    pub settle_s: u64,
+    /// Overall CPU use (percent) at which the machine is busy.
+    pub busy_cpu_pct: f32,
+    /// Overall CPU use (percent) at which it is saturated.
+    pub saturated_cpu_pct: f32,
+    /// Available memory (MiB) below which the machine is busy.
+    pub busy_free_ram_mb: u64,
+    /// Available memory (MiB) below which it is saturated.
+    pub saturated_free_ram_mb: u64,
+    /// Local models swapped out in the last minute at which the machine is saturated.
+    pub saturated_swaps_per_min: u32,
+    /// Minutes after an interactive session last used a local model during which background
+    /// work may not swap that model out.
+    pub interactive_hold_min: u64,
+}
+
+impl Default for LoadSettings {
+    fn default() -> Self {
+        LoadSettings {
+            sample_s: 5,
+            settle_s: 60,
+            busy_cpu_pct: 70.0,
+            saturated_cpu_pct: 95.0,
+            busy_free_ram_mb: 2048,
+            saturated_free_ram_mb: 512,
+            saturated_swaps_per_min: 3,
+            interactive_hold_min: 5,
+        }
+    }
+}
+
 /// One `[[projects]]` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ProjectSettings {
@@ -483,6 +526,14 @@ pub struct ProjectSettings {
     /// Sessions the agent may start per day.
     #[serde(default = "default_max_sessions_per_day")]
     pub max_sessions_per_day: u32,
+    /// Hold the agent's sessions back until the machine is quiet (default on), for at most
+    /// `max_defer`.
+    #[serde(default = "enabled")]
+    pub prefer_quiet: bool,
+    /// Longest the agent's sessions wait for a quiet machine, such as `90m` or `2h` (default
+    /// 2 h); after that they run anyway.
+    #[serde(default)]
+    pub max_defer: Option<String>,
 }
 
 fn default_max_sessions() -> usize {
@@ -510,6 +561,25 @@ pub struct ScheduleSettings {
     /// `os` shows a system notification when a run finishes.
     #[serde(default)]
     pub notify: Vec<String>,
+    /// Hold a run back until the machine is quiet, for at most `max_defer`, then run anyway.
+    #[serde(default)]
+    pub prefer_quiet: bool,
+    /// Longest a `prefer_quiet` run waits for a quiet machine, such as `90m` or `2h` (default
+    /// 2 h).
+    #[serde(default)]
+    pub max_defer: Option<String>,
+    /// Conditions that must hold for a run to start.
+    #[serde(default)]
+    pub conditions: ConditionSettings,
+}
+
+/// What must be true for a scheduled run to start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct ConditionSettings {
+    /// Wait for a quiet machine however long it takes (unlike `prefer_quiet`, which gives up
+    /// after `max_defer`). A person can still start the run from a client.
+    #[serde(default)]
+    pub when_quiet: bool,
 }
 
 /// Exactly one of `cron` (five fields, local time), `every` (`30m`), or `at` (a local time).

@@ -68,6 +68,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         max_steps: 3,
+        background: None,
         journal_path: dir.join(".sessions/s.jsonl"),
     })
     .unwrap()

@@ -6,14 +6,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use imperium_api::{
-    ToolContext, ToolEvent, ToolGroup, ToolProvider, parse_arguments as parse,
+    Load, Priority, ToolContext, ToolEvent, ToolGroup, ToolProvider, parse_arguments as parse,
     truncate_chars as truncate,
 };
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
 use imperium_protocol::session::{
-    ContextItem, ContextPointer, PermissionDecision, Plan, PlanStep, SessionEvent, StepStatus,
-    TokenUsage,
+    ContextItem, ContextPointer, PauseCause, PermissionDecision, Plan, PlanStep, SessionEvent,
+    StepStatus, TokenUsage,
 };
 use imperium_tools::{Access, Invocation, specs};
 use imperium_workflow::LoadManifest;
@@ -244,6 +244,8 @@ impl Agent {
             .local_models()
             .map(|local| local.attach(&self.model.model, &holder));
         for step in 1..=max_steps {
+            // A background session gives way here, between model calls, holding no slot.
+            self.yield_to_user().await;
             let mut waits = 0;
             let mut waited = std::time::Duration::ZERO;
             let (client, queue_wait, started, first_text, result) = loop {
@@ -299,6 +301,7 @@ impl Agent {
                 self.emit(SessionEvent::Paused {
                     until_unix_ms: u64::try_from(until.timestamp_millis()).unwrap_or(0),
                     reason: error.to_string(),
+                    cause: PauseCause::UsageLimit,
                 });
                 let pause = Instant::now();
                 self.shared.controls.pause_until(until).await;
@@ -662,6 +665,30 @@ impl Agent {
         finish(ok, output)
     }
 
+    /// For a background session: waits, before the next model call, while the machine is busy
+    /// or saturated. The call in flight has finished and the next one has not asked for a
+    /// slot, so the wait holds none and spends no tokens; it ends when the machine is quiet or
+    /// a person runs the session now.
+    async fn yield_to_user(&self) {
+        let Some(background) = &self.shared.background else {
+            return;
+        };
+        let run_now = self.shared.controls.run_now();
+        if run_now.released() || background.load.level() == Load::Quiet {
+            return;
+        }
+        self.emit(SessionEvent::Paused {
+            until_unix_ms: 0,
+            reason: format!(
+                "the machine is {}; waiting for it to be quiet",
+                background.load.level().label()
+            ),
+            cause: PauseCause::Load,
+        });
+        crate::wait_for_quiet(&*background.load, run_now, None).await;
+        self.emit(SessionEvent::Resumed {});
+    }
+
     /// This agent's name to a local model.
     fn holder(&self) -> String {
         format!("{}/{}", self.shared.session_id, self.id)
@@ -698,8 +725,13 @@ impl Agent {
             .local
             .as_deref()
             .ok_or("local models are not available: no llama.cpp runtime is configured")?;
+        let priority = if self.shared.background.is_some() {
+            Priority::Background
+        } else {
+            Priority::Interactive
+        };
         let lease = local
-            .acquire(&self.model.model, holder)
+            .acquire_as(&self.model.model, holder, priority)
             .await
             .map_err(|error| format!("could not load local model {}: {error}", self.model.model))?;
         let endpoint = Endpoint {

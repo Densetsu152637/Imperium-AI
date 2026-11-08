@@ -77,6 +77,7 @@ fn start(url: &str, dir: &std::path::Path, policy: ResumePolicy) -> Session {
         resume_policy: policy,
         instructions: None,
         max_steps: 3,
+        background: None,
         journal_path: dir.join("u.jsonl"),
     })
     .unwrap()
@@ -104,6 +105,7 @@ async fn a_usage_limit_pauses_until_reset_and_resumes_early_on_request() {
         if let SessionEvent::Paused {
             until_unix_ms,
             reason,
+            ..
         } = next(&mut events).await
         {
             assert!(reason.contains("429"), "{reason}");

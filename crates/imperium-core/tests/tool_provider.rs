@@ -143,6 +143,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         max_steps: 5,
+        background: None,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

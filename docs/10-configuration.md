@@ -76,7 +76,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `workflow.default_pack` | `true` | With no `packs`, use the bundled Agent-Custom-Workflow snapshot |
 | `workflow.enforce` | `warn` | `required-before-action` refuses writes and commands until required context is loaded; `warn` and `off` do not |
 | `<config>/mods/<id>/` | none | UI mods (folders with `mod.json`), shown as panels; see [UI mods](06-extensibility.md#ui-mods) |
-| `schedules` | none | `[[schedules]]` with `id`, `trigger` (`cron`, `every`, or `at`), `action` (`project` and one of `prompt`, `command`, or `agent` (a message for the project agent), optional `model`, `timeout_s`), `missed`, `overlap`, `notify`, `enabled`; see [schedules](14-projects-and-automation.md#schedules) |
+| `schedules` | none | `[[schedules]]` with `id`, `trigger` (`cron`, `every`, or `at`), `action` (`project` and one of `prompt`, `command`, or `agent` (a message for the project agent), optional `model`, `timeout_s`), `missed`, `overlap`, `notify`, `enabled`, `prefer_quiet` (default `false`: hold a due run until the machine is quiet, for at most `max_defer`, default `2h`, then run anyway) and `conditions = { when_quiet = true }` (wait for a quiet machine however long it takes); see [schedules](14-projects-and-automation.md#schedules) |
 | `web.enabled` | `true` | Offer `web_fetch` (and `web_search` with a provider) to agents |
 | `web.search` | `none` | `searxng` (with `web.searxng_url`), `brave`, or `tavily` (with `web.api_key = { secret = "<name>" }`) |
 | `web.allow_domains` | none | Domains `web_fetch` reads without asking (subdomains included) |
@@ -88,7 +88,12 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `pets.folders`, `sleep_after_minutes`, `fidget` | none, `5`, `true` | More folders of Pixel Pets v3 packages; when it sleeps; idle fidgets |
 | `isolation.tier` | `policy` | Where agents' commands run: `policy` (tier 0), `os` (bubblewrap or Seatbelt), or `container` ([tiers](05-tools-and-isolation.md#isolation-tiers)) |
 | `isolation.container_runtime`, `container_image`, `network` | `docker`, `ubuntu:24.04`, `true` | Container tier settings; `network = false` cuts sandboxed and container commands off the network |
-| `projects` | none | `[[projects]]` with `path`, `agent` (run a project agent), `agent_model`, `max_sessions` (2), `max_sessions_per_day` (20) |
+| `projects` | none | `[[projects]]` with `path`, `agent` (run a project agent), `agent_model`, `max_sessions` (2), `max_sessions_per_day` (20), `prefer_quiet` (default `true`: the agent's sessions get their brief only when the machine is quiet, for at most `max_defer`, default `2h`) |
+| `load.sample_s`, `load.settle_s` | `5`, `60` | How often (seconds) the daemon looks at the machine for the [load view](14-projects-and-automation.md#quiet-periods), and how long it must look calmer before the level drops (so a pause between two of your messages is not quiet) |
+| `load.busy_cpu_pct`, `load.saturated_cpu_pct` | `70`, `95` | Overall CPU use (percent) at which the machine counts as busy, and as saturated; not counted while a background session is working |
+| `load.busy_free_ram_mb`, `load.saturated_free_ram_mb` | `2048`, `512` | Available memory (MiB) below which the machine counts as busy, and as saturated |
+| `load.saturated_swaps_per_min` | `3` | Local models swapped out in the last minute at which the machine counts as saturated; `0` ignores swaps |
+| `load.interactive_hold_min` | `5` | Minutes after one of your sessions last used a local model during which background work may not swap that model out |
 | `github.watch` | none | `[[github.watch]]` with `repo` (`owner/name`) and `project` (a local clone whose `origin` is that repository) |
 | `github.autofix.enabled` | `false` | Fix the user's pull requests whose checks fail ([auto-fix](14-projects-and-automation.md#github-auto-fix)) |
 | `github.autofix.push` | `ask` | `ask` queues an approval before each push; `auto` pushes without asking |

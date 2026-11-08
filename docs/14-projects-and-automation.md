@@ -66,8 +66,10 @@ at once and `max_sessions_per_day` (default 20) per day. Permission requests fro
 its sessions, and from scheduled prompt runs, become approval requests (the Approvals panel,
 `imperium approvals`). `imperium daemon autostart enable|disable|status` starts `imperiumd` at
 login (a per-user `Run` registry value on Windows, a LaunchAgent on macOS, an XDG autostart
-entry on Linux). Not yet: file, Git, and webhook wake-ups, cost budgets, a tray icon, and
-notes beyond the agent's memory tools.
+entry on Linux). The sessions an agent starts are [background sessions](#quiet-periods): they
+rank below yours, wait for a quiet machine before starting (`prefer_quiet`, default on), and
+pause while the machine is busy. Not yet: file, Git, and webhook wake-ups, cost budgets, a tray
+icon, and notes beyond the agent's memory tools.
 
 - **Toggle per project** (off by default). When off, nothing runs in the background.
 - **Runs only while the daemon runs**, i.e. while the computer is on and the user is logged in.
@@ -103,8 +105,67 @@ with the session id and a summary), and `notify = ["os"]` also shows a system no
 `schedules.run` protocol methods. A prompt run whose session asks for permission waits for an
 answer from a client until it times out; approval queues arrive with the project agent. Not
 yet: time zones other than local, jitter, file, Git, webhook, and event triggers, the project
-agent and hook actions, conditions, project-level schedules, `schedule.*` hook events, and the
+agent and hook actions, conditions other than `when_quiet`, project-level schedules, `schedule.*` hook events, and the
 desktop Schedules pane.
+
+**Implemented (stage 2g): quiet periods.** A schedule's `prefer_quiet = true` (default `false`)
+holds a due run until the machine is quiet, for at most `max_defer` (default `2h`; `90m`, `1d`
+also work), then runs it anyway so nothing is postponed forever. The condition
+`conditions = { when_quiet = true }` waits for a quiet machine however long it takes. A waiting
+run shows as `deferred` in `imperium schedule list` and the `schedules.list` row, clients get a
+`schedule.event` with status `deferred`, and `imperium schedule run <id>` (`schedules.run`)
+starts it at once; a person's run never waits. The other conditions listed under
+[Behaviour](#behaviour) (AC power, GPU idle, time window, previous run succeeded) are not
+implemented yet.
+
+```toml
+[[schedules]]
+id = "nightly-audit"
+trigger = { cron = "0 2 * * *" }
+action = { project = "D:/Git Repositories/Imperium-AI", prompt = "Audit new dependencies." }
+prefer_quiet = true
+max_defer = "3h"
+```
+
+### Quiet periods
+
+Background work should not slow the sessions you are driving. The daemon keeps a **load view**
+that reads `quiet`, `busy`, or `saturated`, and the work it starts on its own gives way to you:
+
+- **The load view** samples every `load.sample_s` (5 s): your sessions with a turn running, slots
+  in use and calls queued on local models (yours and background calls counted apart), models
+  swapped out in the last minute, overall CPU use, and available memory. *Saturated*: a call of
+  yours is queued for a local slot, `load.saturated_swaps_per_min` models were swapped out in a
+  minute, memory is below `load.saturated_free_ram_mb`, or the CPU is at
+  `load.saturated_cpu_pct`. *Busy*: a session of yours has a turn running or a call in flight, or
+  the CPU or memory crosses the `busy` thresholds. *Quiet*: none of that. The level rises at once
+  and drops only after the machine has looked calmer for `load.settle_s` (60 s). CPU use is not
+  counted while a background session is working, because the daemon cannot tell its own load from
+  yours. Your keyboard and mouse idle time is not used (it needs OS calls this codebase does not
+  make); your sessions stand in for it, and GPU utilisation is not polled (`nvidia-smi` runs once,
+  at start, for memory); the slot queue and swaps are the GPU signal.
+- **Background sessions.** A session started by a schedule's prompt or by a project agent's
+  `start_session` is marked `background` (kept with the session, so it survives a restart). In the
+  local runtime its calls rank below yours and never swap out a model you used in the last
+  `load.interactive_hold_min` minutes, and they wait while the view is `saturated`
+  ([04](04-models-and-routing.md#runtimes)). Sessions from auto-fix and ones you start are not
+  background.
+- **Deferral.** A project agent's `start_session` creates the session at once, but with
+  `prefer_quiet` (default `true` for `[[projects]]`) it gets its brief only when the view is
+  `quiet`, or after `max_defer`. Until then it is listed as `paused` with a `deferred` hold.
+  Sessions waiting still count against `max_sessions`.
+- **Yielding mid-run.** A running background session checks the view before each model call. If
+  it is `busy` or `saturated`, the call in flight has already finished, so it pauses there: no
+  slot held, no tokens spent, like `await_tasks`. It resumes when the view is `quiet`. The pause
+  reuses the usage-limit pause (a `paused` event with `cause = "load"` and `until_unix_ms = 0`,
+  then `resumed`). Subagents of a background session yield the same way.
+- **Visibility and run now.** Session summaries carry `background` and a `hold`
+  (`cause` `deferred` or `load`, and the reason); the desktop shows `Paused · waiting for a quiet
+  machine` or `giving way to you`, a `· background` suffix, and the existing **Resume now**
+  button; `sessions.control` with `resume_now` does the same. Running now ends the wait and stops
+  that session giving way for the rest of its life. The CLI shows deferred schedules and prints a
+  line when a session it watches waits. The desktop has no Projects pane or Schedules pane yet,
+  so deferred scheduled runs are visible through `imperium schedule list` only.
 
 ### Triggers
 
@@ -133,7 +194,8 @@ desktop Schedules pane.
   or `run_all` (capped).
 - **Overlap**: `skip`, `queue`, or `allow` when the previous run is still going.
 - **Conditions**: only on AC power, only when a given GPU is idle, only within a time window,
-  only if the previous run succeeded.
+  only if the previous run succeeded, only when the machine is quiet (`when_quiet`, implemented;
+  see [quiet periods](#quiet-periods)).
 - **Outputs**: each run is a normal session (reviewable later), plus optional notifications to
   the desktop, the phone app, or a webhook.
 - Defined in project config (shareable) or user config, editable in a Schedules pane and via

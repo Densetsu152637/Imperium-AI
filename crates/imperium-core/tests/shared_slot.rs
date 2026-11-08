@@ -168,6 +168,7 @@ fn start(index: usize, local: Arc<dyn LocalModels>, dir: &std::path::Path) -> Se
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         max_steps: 6,
+        background: None,
         journal_path: dir.join(".journal.jsonl"),
     })
     .unwrap()

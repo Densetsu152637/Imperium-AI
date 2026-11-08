@@ -2,6 +2,7 @@
 import type { ContextCategory } from "./ContextCategory";
 import type { ContextItem } from "./ContextItem";
 import type { ContextPointer } from "./ContextPointer";
+import type { PauseCause } from "./PauseCause";
 import type { Plan } from "./Plan";
 import type { SessionStatus } from "./SessionStatus";
 import type { TokenCountMethod } from "./TokenCountMethod";
@@ -53,4 +54,8 @@ cost_usd: number | null,
 /**
  * Model calls made in this turn.
  */
-steps: number, } | { "type": "turn_failed", message: string, } | { "type": "notice", message: string, } | { "type": "memory_used", names: Array<string>, } | { "type": "memory_saved", name: string, scope: string, } | { "type": "context_manifest", role: string, items: Array<ContextItem>, documentation: Array<ContextPointer>, } | { "type": "context_loaded", references: Array<string>, } | { "type": "browser_view", url: string, title: string, screenshot: string, } | { "type": "paused", until_unix_ms: number, reason: string, } | { "type": "resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, };
+steps: number, } | { "type": "turn_failed", message: string, } | { "type": "notice", message: string, } | { "type": "memory_used", names: Array<string>, } | { "type": "memory_saved", name: string, scope: string, } | { "type": "context_manifest", role: string, items: Array<ContextItem>, documentation: Array<ContextPointer>, } | { "type": "context_loaded", references: Array<string>, } | { "type": "browser_view", url: string, title: string, screenshot: string, } | { "type": "paused", until_unix_ms: number, reason: string, 
+/**
+ * Why it waits; older journals have no cause and mean a usage limit.
+ */
+cause: PauseCause, } | { "type": "resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, };

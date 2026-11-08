@@ -97,6 +97,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         max_steps: 5,
+        background: None,
         journal_path: data.join(format!("{id}.jsonl")),
     })
     .unwrap()

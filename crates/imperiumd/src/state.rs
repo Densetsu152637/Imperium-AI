@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use imperium_config::{KeychainSecrets, ModelPlacement, Paths, SecretStore, Settings};
 use imperium_core::{
-    CatalogModel, ChatClients, LocalModels, ModelError, Session, SessionConfig, SessionMemory,
-    ToolProvider, new_session_id, resolve_model,
+    Background, CatalogModel, ChatClients, LoadView, LocalModels, ModelError, Session,
+    SessionConfig, SessionMemory, ToolProvider, new_session_id, resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_local::supervisor::SwapDirection;
@@ -28,6 +28,7 @@ use tokio::sync::broadcast;
 
 use crate::approvals::Approvals;
 use crate::downloads::Downloads;
+use crate::load::{self, LoadMonitor};
 use crate::local::LocalRuntime;
 use crate::pets::PetEngine;
 use crate::phone::Devices;
@@ -43,6 +44,8 @@ pub struct SessionOptions {
     pub pre_approved: Vec<String>,
     pub launcher: Option<Arc<dyn imperium_core::SessionLauncher>>,
     pub instructions: Option<String>,
+    /// Started by a schedule or a project agent: it gives way to the user's own sessions.
+    pub background: bool,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -69,6 +72,10 @@ pub struct DaemonState {
     phone_address: OnceLock<std::net::SocketAddr>,
     /// Pull requests sessions watch: session id to (repo, number).
     watches: Mutex<HashMap<String, (String, u64)>>,
+    /// Turns what the daemon sees into quiet, busy, or saturated ([`start_sampling`]).
+    monitor: Arc<LoadMonitor>,
+    /// A load view to use instead of the monitor (for tests).
+    load_override: OnceLock<Arc<dyn LoadView>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,6 +103,7 @@ impl DaemonState {
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
         let devices = Devices::load(paths.data_dir().join("devices.json"));
+        let monitor = Arc::new(LoadMonitor::new(settings.load.clone()));
         let state = Arc::new(DaemonState {
             started: Instant::now(),
             paths,
@@ -113,13 +121,84 @@ impl DaemonState {
             devices,
             phone_address: OnceLock::new(),
             watches: Mutex::new(HashMap::new()),
+            monitor,
+            load_override: OnceLock::new(),
         });
+        state.apply_load_view();
         if let Some(local) = state.local.get()
             && tokio::runtime::Handle::try_current().is_ok()
         {
             state.announce_swaps(local);
         }
         state
+    }
+
+    /// Starts reading the machine so the load view follows it (until then it reads quiet).
+    pub fn start_load_monitor(self: &Arc<Self>) {
+        load::start_sampling(self);
+    }
+
+    pub(crate) fn load_monitor(&self) -> Arc<LoadMonitor> {
+        Arc::clone(&self.monitor)
+    }
+
+    /// Whether the machine is quiet, busy, or saturated, for work that gives way to the user.
+    pub fn load_view(&self) -> Arc<dyn LoadView> {
+        self.load_override.get().cloned().unwrap_or_else(|| {
+            let monitor: Arc<dyn LoadView> = self.monitor.clone();
+            monitor
+        })
+    }
+
+    /// Uses `view` instead of the monitor, such as a fixed one in tests. Call once, before
+    /// sessions start.
+    pub fn use_load_view(&self, view: Arc<dyn LoadView>) {
+        if self.load_override.set(view).is_ok() {
+            self.apply_load_view();
+        }
+    }
+
+    /// Tells the local models how background calls give way.
+    fn apply_load_view(&self) {
+        if let Some(local) = self.local.get() {
+            local.supervisor.set_background_policy(
+                self.load_view(),
+                Duration::from_secs(self.settings.load.interactive_hold_min * 60),
+            );
+        }
+    }
+
+    /// Sessions with a turn running: the user's, and background ones.
+    pub(crate) fn working_sessions(&self) -> (u32, u32) {
+        let sessions = self
+            .sessions
+            .lock()
+            .expect("session map lock is never poisoned by a panic while held");
+        let mut counts = (0, 0);
+        for session in sessions.values() {
+            if session.status().0 == SessionStatus::Working {
+                if session.is_background() {
+                    counts.1 += 1;
+                } else {
+                    counts.0 += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    /// Slots in use and calls queued on the local models.
+    pub(crate) fn local_activity(&self) -> imperium_local::supervisor::Activity {
+        self.local
+            .get()
+            .map(|local| local.supervisor.activity())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn recent_swaps(&self) -> u32 {
+        self.local
+            .get()
+            .map_or(0, |local| local.supervisor.recent_swaps())
     }
 
     /// Tells every client when a local model is swapped out or in (`model.swapped_out`,
@@ -387,6 +466,7 @@ impl DaemonState {
             let model = meta["model"].as_str();
             let options = SessionOptions {
                 resume_id: Some(id.clone()),
+                background: meta["background"].as_bool().unwrap_or(false),
                 ..SessionOptions::default()
             };
             match self.create_session_with(project, model, options) {
@@ -507,10 +587,12 @@ impl DaemonState {
         model: Option<&str>,
         prompt: String,
         pre_approved: Vec<String>,
+        background: bool,
         timeout: std::time::Duration,
     ) -> (bool, String, Option<String>) {
         let options = SessionOptions {
             pre_approved,
+            background,
             ..SessionOptions::default()
         };
         let (session, events) = match self.create_session_with(project_dir, model, options) {
@@ -664,6 +746,9 @@ impl DaemonState {
             resume_policy: self.resume_policy(),
             launcher: options.launcher,
             instructions: options.instructions,
+            background: options.background.then(|| Background {
+                load: self.load_view(),
+            }),
             memory: self.settings.memory.enabled.then(|| SessionMemory {
                 store: Store::new(self.paths.data_dir(), Some(Path::new(project_dir))),
                 settings: self.settings.memory.clone(),
@@ -677,6 +762,7 @@ impl DaemonState {
             let meta = serde_json::json!({
                 "project_dir": project_dir,
                 "model": model_spec,
+                "background": options.background,
             });
             let path = self
                 .paths
@@ -878,6 +964,8 @@ pub fn summary(session: &Session) -> SessionSummary {
         status,
         status_detail,
         resume_policy: session.resume_policy(),
+        background: session.is_background(),
+        hold: session.hold(),
     }
 }
 

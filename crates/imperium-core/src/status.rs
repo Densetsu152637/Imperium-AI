@@ -7,9 +7,13 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, Local, NaiveTime, TimeZone};
-use imperium_protocol::session::{AgentEvent, ResumePolicy, SessionEvent, SessionStatus};
+use imperium_protocol::methods::SessionHold;
+use imperium_protocol::session::{
+    AgentEvent, PauseCause, ResumePolicy, SessionEvent, SessionStatus,
+};
 use tokio::sync::Notify;
 
+use crate::quiet::RunNow;
 use crate::session::lock;
 
 /// What a session is doing, as clients show it.
@@ -20,6 +24,8 @@ struct Tracker {
     /// Agents waiting for a permission answer.
     asking: HashMap<String, usize>,
     paused: bool,
+    /// Background work waiting for a quiet machine: before it started or between steps.
+    hold: Option<SessionHold>,
     /// Set by the daemon: the session is watching a pull request, or it merged.
     overlay: Option<(SessionStatus, String)>,
     shown: Option<(SessionStatus, Option<String>)>,
@@ -48,6 +54,8 @@ pub struct Controls {
     default_policy: ResumePolicy,
     policy: Mutex<Option<ResumePolicy>>,
     wake: Notify,
+    /// Released by "run now" while the session waits for a quiet machine.
+    run_now: RunNow,
 }
 
 impl Controls {
@@ -57,7 +65,24 @@ impl Controls {
             default_policy,
             policy: Mutex::new(None),
             wake: Notify::new(),
+            run_now: RunNow::default(),
         }
+    }
+
+    /// Why background work is waiting for a quiet machine, if it is.
+    pub fn hold(&self) -> Option<SessionHold> {
+        lock(&self.tracker).hold.clone()
+    }
+
+    pub(crate) fn run_now(&self) -> &RunNow {
+        &self.run_now
+    }
+
+    /// Forgets a wait for a quiet machine that a restart ended.
+    pub(crate) fn clear_hold(&self) {
+        let mut tracker = lock(&self.tracker);
+        tracker.hold = None;
+        tracker.paused = false;
     }
 
     pub fn status(&self) -> (SessionStatus, Option<String>) {
@@ -78,6 +103,7 @@ impl Controls {
                 tracker.base = Some(SessionStatus::NeedsAttention);
                 tracker.asking.clear();
                 tracker.paused = false;
+                tracker.hold = None;
             }
             SessionEvent::PermissionRequested { .. } => {
                 *tracker.asking.entry(event.agent_id.clone()).or_default() += 1;
@@ -86,8 +112,19 @@ impl Controls {
             SessionEvent::ToolStarted { .. } | SessionEvent::ToolFinished { .. } => {
                 tracker.asking.remove(&event.agent_id);
             }
-            SessionEvent::Paused { .. } => tracker.paused = true,
-            SessionEvent::Resumed {} => tracker.paused = false,
+            SessionEvent::Paused { reason, cause, .. } => {
+                tracker.paused = true;
+                if *cause != PauseCause::UsageLimit {
+                    tracker.hold = Some(SessionHold {
+                        cause: *cause,
+                        reason: reason.clone(),
+                    });
+                }
+            }
+            SessionEvent::Resumed {} => {
+                tracker.paused = false;
+                tracker.hold = None;
+            }
             _ => {}
         }
         Self::changed(&mut tracker)
@@ -126,8 +163,12 @@ impl Controls {
         *lock(&self.policy) = policy;
     }
 
-    /// Ends a usage-limit wait now.
+    /// Ends a usage-limit wait now, or a background session's wait for a quiet machine, which
+    /// then stops giving way to the load.
     pub fn resume_now(&self) {
+        if lock(&self.tracker).hold.is_some() {
+            self.run_now.release();
+        }
         self.wake.notify_waiters();
     }
 
@@ -274,6 +315,7 @@ mod tests {
         controls.observe(&root(SessionEvent::Paused {
             until_unix_ms: 0,
             reason: "limit".into(),
+            cause: PauseCause::UsageLimit,
         }));
         assert_eq!(controls.status().0, SessionStatus::Paused);
         controls.observe(&root(SessionEvent::Resumed {}));

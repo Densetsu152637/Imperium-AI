@@ -79,6 +79,7 @@ async fn run() -> anyhow::Result<()> {
     {
         tracing::info!(%address, "phones can connect");
     }
+    daemon.start_load_monitor();
     daemon.start_project_agents();
     daemon.start_scheduler();
     daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));

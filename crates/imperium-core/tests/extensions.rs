@@ -117,6 +117,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         max_steps: 5,
+        background: None,
         journal_path: project.path().join(".journal.jsonl"),
     })
     .unwrap();

@@ -10,16 +10,18 @@ mod breakdown;
 mod journal;
 mod launcher;
 mod model;
+mod quiet;
 mod session;
 mod status;
 
 pub use imperium_api::{
-    AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence, ToolCheck, ToolContext,
-    ToolEvent, ToolFuture, ToolGroup, ToolProvider,
+    AcquireFuture, Availability, Load, LoadView, LocalLease, LocalModels, LocalPresence, Priority,
+    ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,
 };
 pub use imperium_models::{ChatClient, ChatClients};
 pub use launcher::{LaunchFuture, SessionLauncher};
 pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
+pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
 pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};
 pub use status::next_attempt;
 

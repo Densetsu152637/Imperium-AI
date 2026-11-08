@@ -217,6 +217,17 @@ memory arbiter for every session (`crates/imperium-local/src/arbiter.rs` holds t
   counts the memory taken and the time to start, and `slots` is how many saved slots wait for
   their agents.
 
+- **Background work ranks below yours (stage 2g).** Sessions a schedule or a project agent started
+  ([14](14-projects-and-automation.md#quiet-periods)) make their local calls as `background`; yours
+  are `interactive`. A background call never takes a place in a model's slot queue ahead of yours:
+  it waits outside the queue until no call of yours is queued for that model, and background calls
+  among themselves keep arrival order. Your call for a model that is not loaded loads it before a
+  background call that arrived earlier, whatever the model. A background call never swaps out a
+  model one of your calls used within `load.interactive_hold_min` (default 5 minutes) or holds now,
+  and it makes no progress at all while the daemon's load view reads `saturated`. Waiting for these
+  reasons does not count against `max_wait_s`, which keeps bounding every other wait. A model only
+  background calls used is evicted like any other.
+
 Not done in stage 2d: per-session ceilings on slots and on `--cache-ram` (llama.cpp manages its
 prompt cache itself); shrinking the `--cache-ram` of a model that is in use or claimed, which
 needs a restart of its server (only free models give their cache up, by being swapped out); the

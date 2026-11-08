@@ -222,6 +222,11 @@ and be resumed early, with `session.control` (`set_resume_policy`, `resume_now`)
 desktop's session header has these as *Usage limits* and *Resume now*. A session's override is
 not yet kept across daemon restarts.
 
+**Background sessions (implemented, stage 2g):** a session started by a schedule or a project
+agent pauses the same way, before a model call, while the machine is busy (`paused` with
+`cause = "load"`, `until_unix_ms = 0`), holding no slot and spending no tokens; *Resume now* ends
+the wait ([14](14-projects-and-automation.md#quiet-periods)).
+
 Every event is appended to the session journal, `<data>/sessions/<session-id>.jsonl` (one JSON
 object per line with an `at_ms` timestamp; implemented). A running session also keeps its events in memory
 so clients that attach later replay them. Sessions continue after a daemon restart

@@ -139,12 +139,17 @@ pub enum SessionEvent {
         title: String,
         screenshot: String,
     },
-    /// A model call hit a usage or rate limit; the turn waits until `until_unix_ms` (or until
-    /// resumed early), following the session's resume policy.
+    /// The session waits: a model call hit a usage or rate limit (the turn waits until
+    /// `until_unix_ms`, or until resumed early, following the session's resume policy), or
+    /// background work is giving way to the user (`until_unix_ms` is 0; it resumes when the
+    /// machine is quiet or when the user says to run it now).
     Paused {
         #[ts(type = "number")]
         until_unix_ms: u64,
         reason: String,
+        /// Why it waits; older journals have no cause and mean a usage limit.
+        #[serde(default)]
+        cause: PauseCause,
     },
     /// The wait ended and the turn continues.
     Resumed {},
@@ -303,6 +308,20 @@ mod tests {
     }
 }
 
+/// Why a session is [`SessionEvent::Paused`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PauseCause {
+    /// A provider's usage limit.
+    #[default]
+    UsageLimit,
+    /// Background work paused at a step boundary because the machine got busy.
+    Load,
+    /// Background work that has not started, waiting for a quiet machine.
+    Deferred,
+}
+
 /// What a session is doing, as clients show it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -314,7 +333,7 @@ pub enum SessionStatus {
     Working,
     /// Waiting on the user: a permission request, or a turn that failed.
     NeedsAttention,
-    /// Waiting for a usage limit to reset.
+    /// Waiting for a usage limit to reset, or (background work) for a quiet machine.
     Paused,
     /// Idle, watching a pull request's checks so failures are fixed reactively.
     Watching,
