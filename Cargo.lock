@@ -2464,6 +2464,7 @@ dependencies = [
  "constant_time_eq",
  "futures-util",
  "getrandom 0.4.3",
+ "imperium-api",
  "imperium-automation",
  "imperium-config",
  "imperium-core",

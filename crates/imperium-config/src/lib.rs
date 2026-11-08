@@ -35,3 +35,4 @@ pub use settings::{
     Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings,
     WritePolicy,
 };
+pub use settings::{SuggestionCandidate, default_suggestions};

@@ -17,6 +17,7 @@ mod rpc;
 mod scheduler;
 mod server;
 mod state;
+mod suggestions;
 mod token;
 
 pub use approvals::Approvals;
