@@ -21,11 +21,22 @@ const TIMEOUT: Duration = Duration::from_secs(600);
 const COMFY_POLL: Duration = Duration::from_millis(500);
 
 /// An OpenAI-compatible service: base URL (ending before the API path) and optional key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Service {
     pub base_url: String,
     pub api_key: Option<String>,
     pub model: String,
+}
+
+// The key stays out of logs and error messages.
+impl std::fmt::Debug for Service {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Service")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Default)]

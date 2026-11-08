@@ -90,14 +90,32 @@ pub struct Searxng {
     pub url: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Brave {
     pub api_key: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// The key stays out of logs and error messages.
+impl fmt::Debug for Brave {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Brave")
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct Tavily {
     pub api_key: String,
+}
+
+// The key stays out of logs and error messages.
+impl fmt::Debug for Tavily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Tavily")
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
 }
 
 fn http_error(error: reqwest::Error) -> WebError {
