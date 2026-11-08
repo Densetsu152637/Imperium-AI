@@ -3,7 +3,7 @@
 //! user asks to restart.
 //!
 //! Each channel's feed is the `latest.json` asset of its newest GitHub Release: main follows
-//! stable releases (`vX.Y.Z`), experimental follows `vX.Y.Z-experimental.N` pre-releases. The
+//! stable releases (`vX.Y.Z`), experimental follows `vX.Y.N-experimental` pre-releases. The
 //! signature in the feed is checked against the public key in `tauri.conf.json`.
 
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 /// The event that carries every status change to the interface.
 const STATUS_EVENT: &str = "update://status";
 /// Marks experimental versions and the tags of experimental releases.
-const EXPERIMENTAL_MARK: &str = "-experimental.";
+const EXPERIMENTAL_MARK: &str = "-experimental";
 
 /// The release line an install follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(Channel::of_version("0.1.0"), Channel::Main);
         assert_eq!(Channel::of_version("0.2.0-beta.1"), Channel::Main);
         assert_eq!(
-            Channel::of_version("0.1.0-experimental.4"),
+            Channel::of_version("0.1.4-experimental"),
             Channel::Experimental
         );
     }
@@ -412,7 +412,7 @@ mod tests {
     fn each_channel_follows_its_own_releases() {
         let stable = release("v0.1.0", false);
         let beta = release("v0.2.0-beta.1", true);
-        let experimental = release("v0.1.0-experimental.4", true);
+        let experimental = release("v0.1.4-experimental", true);
         assert!(Channel::Main.follows(&stable));
         assert!(!Channel::Main.follows(&beta));
         assert!(!Channel::Main.follows(&experimental));

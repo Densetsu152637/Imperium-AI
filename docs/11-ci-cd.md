@@ -35,7 +35,7 @@ There are two channels, each with its own branch, workflow, and update feed.
 | ------------ | ----------------------------------- | ---------------------------- | -------------------------------------------------------------- |
 | Main         | Tag `vX.Y.Z` on `main`              | `X.Y.Z`                      | `vX.Y.Z (main)`, marked latest                                 |
 | Main (pre)   | Tag `vX.Y.Z-beta.N` etc.            | `X.Y.Z-beta.N`               | `vX.Y.Z-beta.N (main)` pre-release; not offered by the updater |
-| Experimental | Each push to the `experimental` branch | `X.Y.Z-experimental.<run>` | `vX.Y.Z-experimental.<run> (experimental)` pre-release         |
+| Experimental | Each push to the `experimental` branch | `X.Y.<run>-experimental` | `vX.Y.<run>-experimental` pre-release (for example `v0.1.9-experimental`) |
 
 Each channel keeps one release. After a new release is published,
 `scripts/ci/prune-releases.sh` deletes the channel's older releases and their tags: a new
@@ -44,9 +44,9 @@ release, and a main pre-release replaces only the last pre-release (so the stabl
 main update feed points at stays). Deleting after publishing means the feed never points at
 nothing. Runtime-pack releases are never touched.
 
-`X.Y.Z` is the version in `apps/desktop/src-tauri/tauri.conf.json`; `<run>` is the
-experimental workflow's run number, so every experimental build is newer than the last.
-`release.yml` ignores `-experimental.` tags.
+`X.Y.Z` is the version in `apps/desktop/src-tauri/tauri.conf.json`. Experimental builds keep its
+`X.Y` and use the experimental workflow's run number as the patch, so every experimental build
+is newer than the last. `release.yml` ignores `-experimental` tags.
 
 ### Desktop updates
 
