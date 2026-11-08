@@ -522,8 +522,19 @@ live entirely in RAM and run on the CPU, beside Emperor on the GPU, at no API co
 - Acceptance checks: G16; `cargo test -p imperium-local cpu_lane` (a CPU-pinned row is started
   with no GPU layers, is excluded from VRAM accounting and GPU swaps, and is refused when RAM
   is short); `bash scripts/check-rust.sh` passes.
-- Status: pending
-- Outcome:
+- Status: done (2026-11-09; branch `feat/cpu-lane`, stacked on `feat/model-swapping`, pushed,
+  not yet merged)
+- Outcome: commits 317ab00, a151e31. `placement = "cpu"` rows (local llama.cpp only, validated)
+  launch with `--n-gpu-layers 0 --device none`, plan zero VRAM, count weights, KV and
+  `--cache-ram` in the one RAM budget, are sorted last as swap victims, and take per-row
+  `parallel` (default 1), `context`, and `max_wait_s` (default 3600 s); measured tokens/s per
+  model in `models.local`, the CLI, and the desktop panel. CPU-lane rows are left out of generic
+  tier ranking and chosen only by name or a rule's `use`. `check-rust.sh` exit 0 (367 passed),
+  `check-web.sh` exit 0. Gate review converged after one fix round. Not done: built-in critique
+  routing (belongs with stage 2e's list on merge), deadline-aware routing (no `max_wall_s` in the
+  task contract yet; `tokens_per_s` is the hook), G16's measured run. Follow-ups: a shorter cap
+  for a lane call waiting to load than for its slot queue; validate `context` against the
+  model's trained context; the critique fallback (G17) engine work.
 - Handoff notes: the existing planner already offloads layers to RAM when a model does not fit
   the GPU ("partial"); a pinned CPU row is different: it is placed on the CPU on purpose even
   when VRAM is free. Training (stage 4) labels critique and review tasks for this lane.
