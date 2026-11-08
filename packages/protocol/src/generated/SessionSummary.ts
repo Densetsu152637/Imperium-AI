@@ -2,7 +2,20 @@
 import type { ResumePolicy } from "./ResumePolicy";
 import type { SessionStatus } from "./SessionStatus";
 
-export type SessionSummary = { session_id: string, project_dir: string, model: string, 
+export type SessionSummary = { session_id: string, 
+/**
+ * The session's working directory: its environment's first folder.
+ */
+project_dir: string, 
+/**
+ * The environment the session works in, when it has one (sessions a schedule, a project
+ * agent, or auto-fix start work in a bare folder).
+ */
+environment_id: string | null, 
+/**
+ * Every folder the session's tools may use, the working directory first.
+ */
+folders: Array<string>, model: string, 
 /**
  * Where the session's commands run, such as `tier 0 · folder policy`.
  */

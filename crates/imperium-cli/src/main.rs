@@ -1,6 +1,7 @@
 mod approvals;
 mod autostart;
 mod chat;
+mod env;
 mod local;
 mod memory;
 mod phone;
@@ -40,12 +41,16 @@ static REMOTE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 enum Command {
     /// Check that imperiumd is running and measure a round trip.
     Ping,
-    /// Chat with an agent in a project folder.
+    /// Chat with an agent in an environment or a project folder.
     Chat {
-        /// Project folder the agent works in; defaults to the current directory.
+        /// Environment (name or id) the agent works in: all its folders are open to it.
+        #[arg(long, conflicts_with = "project")]
+        env: Option<String>,
+        /// Project folder the agent works in (its environment, made if needed); defaults to the
+        /// current directory.
         #[arg(long)]
         project: Option<PathBuf>,
-        /// Model as `<endpoint>:<model>`; defaults to `models.default`.
+        /// Model as `<endpoint>:<model>` or a model table id; defaults to `models.default`.
         #[arg(long)]
         model: Option<String>,
         /// After each turn, print one line on how full the model's context is (type /context
@@ -90,6 +95,11 @@ enum Command {
     Daemon {
         #[command(subcommand)]
         command: DaemonCommand,
+    },
+    /// Environments: named sets of folders sessions work in.
+    Env {
+        #[command(subcommand)]
+        command: EnvCommand,
     },
     /// Project agents.
     Project {
@@ -213,6 +223,37 @@ enum RemoteCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum EnvCommand {
+    /// List environments and their folders.
+    List,
+    /// Create an environment, optionally with folders (the first is the working directory).
+    Create { name: String, folders: Vec<PathBuf> },
+    /// Add a folder to an environment.
+    AddFolder {
+        /// Environment name or id.
+        env: String,
+        folder: PathBuf,
+    },
+    /// Remove a folder from an environment (the folder itself is untouched).
+    RemoveFolder {
+        /// Environment name or id.
+        env: String,
+        folder: PathBuf,
+    },
+    /// Rename an environment.
+    Rename {
+        /// Environment name or id.
+        env: String,
+        name: String,
+    },
+    /// Delete an environment (its folders are untouched).
+    Delete {
+        /// Environment name or id.
+        env: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ProjectCommand {
     /// List projects with a running agent.
     List,
@@ -307,10 +348,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Ping => ping(),
         Command::Chat {
+            env,
             project,
             model,
             context,
-        } => chat::run(project, model, context),
+        } => chat::run(env, project, model, context),
+        Command::Env { command } => match command {
+            EnvCommand::List => env::list(),
+            EnvCommand::Create { name, folders } => env::create(name, folders),
+            EnvCommand::AddFolder { env: id, folder } => env::add_folder(id, folder),
+            EnvCommand::RemoveFolder { env: id, folder } => env::remove_folder(id, folder),
+            EnvCommand::Rename { env: id, name } => env::rename(id, name),
+            EnvCommand::Delete { env: id } => env::delete(id),
+        },
         Command::Config {
             command: ConfigCommand::Explain { key, project },
         } => explain(&key, project),

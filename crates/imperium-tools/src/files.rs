@@ -138,6 +138,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tools_use_every_folder_of_the_environment_and_nothing_else() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(second.path().join("notes.txt"), "from the second folder\n").unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "no").unwrap();
+        let workspace = Workspace::new(first.path())
+            .unwrap()
+            .with_folders([second.path()])
+            .unwrap();
+
+        let notes = second
+            .path()
+            .join("notes.txt")
+            .to_string_lossy()
+            .to_string();
+        let read = read_file(&workspace, &notes, None, None).await.unwrap();
+        assert!(read.contains("from the second folder"), "{read}");
+        let written = second.path().join("out.txt").to_string_lossy().to_string();
+        write_file(&workspace, &written, "made").await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(second.path().join("out.txt")).unwrap(),
+            "made"
+        );
+
+        let secret = outside
+            .path()
+            .join("secret.txt")
+            .to_string_lossy()
+            .to_string();
+        assert!(matches!(
+            read_file(&workspace, &secret, None, None).await,
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        let planted = outside.path().join("new.txt").to_string_lossy().to_string();
+        assert!(matches!(
+            write_file(&workspace, &planted, "x").await,
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        assert!(!outside.path().join("new.txt").exists());
+    }
+
+    #[tokio::test]
     async fn edits_must_match_exactly_once() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = Workspace::new(dir.path()).unwrap();

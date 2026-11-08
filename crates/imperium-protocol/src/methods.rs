@@ -171,7 +171,15 @@ pub struct SessionListResult {
 #[ts(export)]
 pub struct SessionSummary {
     pub session_id: String,
+    /// The session's working directory: its environment's first folder.
     pub project_dir: String,
+    /// The environment the session works in, when it has one (sessions a schedule, a project
+    /// agent, or auto-fix start work in a bare folder).
+    #[serde(default)]
+    pub environment_id: Option<String>,
+    /// Every folder the session's tools may use, the working directory first.
+    #[serde(default)]
+    pub folders: Vec<String>,
     pub model: String,
     /// Where the session's commands run, such as `tier 0 · folder policy`.
     pub isolation: String,
@@ -199,9 +207,18 @@ pub struct SessionSubscribeResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionCreateParams {
-    /// Absolute path of the project folder the session works in.
-    pub project_dir: String,
-    /// `<endpoint>:<model>`; defaults to `models.default` from the configuration.
+    /// The environment the session works in: its folders are the sandbox, the first is the
+    /// working directory. Give this or `project_dir`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub environment_id: Option<String>,
+    /// Absolute path of a folder to work in, for clients that predate environments. It maps to
+    /// the environment whose first folder it is, created (named after the folder) if needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub project_dir: Option<String>,
+    /// A model table id or `<endpoint>:<model>`; defaults to `models.default` from the
+    /// configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
@@ -213,7 +230,152 @@ pub struct SessionCreateResult {
     pub session_id: String,
     pub model: String,
     pub isolation: String,
+    /// The environment the session works in.
+    #[serde(default)]
+    pub environment_id: Option<String>,
+    /// The session's folders, the working directory first.
+    #[serde(default)]
+    pub folders: Vec<String>,
 }
+
+/// An environment: a named set of folders sessions work in. The folders are the sandbox the
+/// agent's tools may use; the first is the working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentInfo {
+    pub id: String,
+    pub name: String,
+    /// A glyph name for the interface's icon, such as `code`; the interface picks one if unset.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// The icon's tile colour, such as `#2f6fdb`.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Absolute folder paths, the working directory first.
+    pub folders: Vec<String>,
+}
+
+/// `environments.list`: every environment, in the order they were created.
+#[derive(Debug)]
+pub struct EnvironmentList;
+
+impl Method for EnvironmentList {
+    const NAME: &'static str = "environments.list";
+    type Params = EnvironmentListParams;
+    type Result = EnvironmentListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentListResult {
+    pub environments: Vec<EnvironmentInfo>,
+}
+
+/// `environments.create`: a new environment, optionally with its first folders.
+#[derive(Debug)]
+pub struct EnvironmentCreate;
+
+impl Method for EnvironmentCreate {
+    const NAME: &'static str = "environments.create";
+    type Params = EnvironmentCreateParams;
+    type Result = EnvironmentInfo;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentCreateParams {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub color: Option<String>,
+    /// Existing folders to start with (may be empty).
+    #[serde(default)]
+    pub folders: Vec<String>,
+}
+
+/// `environments.update`: rename an environment or change its icon. Fields left out keep
+/// their value; an empty `icon` or `color` clears it.
+#[derive(Debug)]
+pub struct EnvironmentUpdate;
+
+impl Method for EnvironmentUpdate {
+    const NAME: &'static str = "environments.update";
+    type Params = EnvironmentUpdateParams;
+    type Result = EnvironmentInfo;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentUpdateParams {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub color: Option<String>,
+}
+
+/// `environments.delete`: forget an environment. Its folders and running sessions are left
+/// alone.
+#[derive(Debug)]
+pub struct EnvironmentDelete;
+
+impl Method for EnvironmentDelete {
+    const NAME: &'static str = "environments.delete";
+    type Params = EnvironmentRef;
+    type Result = Accepted;
+}
+
+/// Names one environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentRef {
+    pub id: String,
+}
+
+/// `environments.add_folder`: add an existing folder to an environment. Sessions started from
+/// then on may use it.
+#[derive(Debug)]
+pub struct EnvironmentAddFolder;
+
+impl Method for EnvironmentAddFolder {
+    const NAME: &'static str = "environments.add_folder";
+    type Params = EnvironmentFolderParams;
+    type Result = EnvironmentInfo;
+}
+
+/// `environments.remove_folder`: remove a folder from an environment.
+#[derive(Debug)]
+pub struct EnvironmentRemoveFolder;
+
+impl Method for EnvironmentRemoveFolder {
+    const NAME: &'static str = "environments.remove_folder";
+    type Params = EnvironmentFolderParams;
+    type Result = EnvironmentInfo;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentFolderParams {
+    pub id: String,
+    /// An absolute folder path.
+    pub folder: String,
+}
+
+/// Notification sent to every client when environments change; the payload is an
+/// [`EnvironmentListResult`].
+pub const ENVIRONMENTS_CHANGED: &str = "environments.changed";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

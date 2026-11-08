@@ -194,7 +194,7 @@ never delay streaming, and they never fail a turn.
 `imperium chat` prints the root agent's latest breakdown with `/context` (a used/free bar and a
 table with each category's share of the window); `--context` adds a one-line summary after each
 turn. The desktop shows it in the session's *Context and outputs* section
-([07](07-desktop-ui.md#projects-and-sessions-implemented)).
+([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
 - Planned: per-agent context windows track usage and, near the limit during a turn, the engine
   compacts automatically with the [same compaction](#switching-models-and-compaction) a model
@@ -259,7 +259,7 @@ model as `session.create` does, so an unknown endpoint or a missing key is refus
 
 `imperium chat` switches with `/model <id>` and compacts with `/compact`, printing what
 happened (`Switched to x; compacted 30.1k -> 9.2k tokens (12 messages summarised by y).`). The
-desktop has a model picker in the session header ([07](07-desktop-ui.md#projects-and-sessions-implemented)).
+desktop has a model picker in the session header ([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
 ## Queueing and steering
 
@@ -303,7 +303,7 @@ wait, or join the running turn when the user asks.
 
 `imperium chat` reads input while a turn runs: a line typed then is queued, `/steer <text>`
 steers, and `/queue` lists the queue. The desktop composer stays enabled while the agent works
-([07](07-desktop-ui.md#projects-and-sessions-implemented)).
+([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
 ## Persistence
 

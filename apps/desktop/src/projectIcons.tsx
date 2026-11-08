@@ -117,6 +117,26 @@ export function useProjectIcons(): ProjectIcons {
  * slashes and no trailing separator. */
 export const normalizeProject = (path: string): string => path.replaceAll("\\", "/").replace(/\/+$/, "");
 
+/** Whether two folder paths name the same folder (drive letters and Windows paths ignore case). */
+export function sameFolder(a: string, b: string): boolean {
+  const left = normalizeProject(a);
+  const right = normalizeProject(b);
+  if (left === right) return true;
+  const windows = /^[a-z]:\//i.test(left) || left.startsWith("//");
+  return windows && left.toLowerCase() === right.toLowerCase();
+}
+
+export const isGlyph = (name: string | null | undefined): name is Glyph => !!name && name in GLYPHS;
+
+/** An environment's icon: its own choice when set, else a default derived from its id. */
+export function environmentIcon(env: { id: string; icon: string | null; color: string | null }): ProjectIconChoice {
+  const fallback = defaultIcon(env.id);
+  return {
+    icon: isGlyph(env.icon) ? env.icon : fallback.icon,
+    color: env.color && /^#[0-9a-f]{6}$/i.test(env.color) ? env.color : fallback.color,
+  };
+}
+
 export const projectName = (path: string): string => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 
 export function GlyphSvg({ glyph }: { glyph: Glyph }) {

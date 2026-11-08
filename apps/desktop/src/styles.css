@@ -2236,7 +2236,88 @@ button.sort:hover:not(:disabled) {
   border-color: var(--border-strong);
 }
 
-/* Sessions list: global, or one project's with a way back */
+/* Environments: the selected one opens to show its folders and what can be done with it. */
+.list .environment-detail {
+  margin: calc(var(--space) * 0.25) 0 calc(var(--space) * 0.75) calc(var(--space) * 2.5);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 0.5);
+}
+
+.list .folders {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.75rem;
+}
+
+.list .folder {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--space) * 0.5);
+  min-width: 0;
+}
+
+.list .folder-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.list .folder button,
+.list .environment-actions button,
+.name-form button {
+  width: auto;
+  flex-direction: row;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.75rem;
+}
+
+.list .environment-actions button:not(.danger) {
+  border-color: var(--border);
+}
+
+.environment-actions,
+.name-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--space) * 0.5);
+  align-items: center;
+}
+
+.name-form {
+  margin: 0 calc(var(--space) * 0.5) var(--space);
+}
+
+.name-form input {
+  flex: 1;
+  min-width: 8rem;
+}
+
+.new-session {
+  display: inline-flex;
+  gap: calc(var(--space) * 0.5);
+  align-items: center;
+}
+
+.new-session select,
+.panel-header .new-session button.select {
+  min-width: 0;
+  max-width: 10rem;
+  font-size: 0.75rem;
+  border-color: var(--border);
+}
+
+.session-error {
+  margin: 0 calc(var(--space) * 0.5) var(--space);
+}
+
+/* Sessions list: global, or one environment's with a way back */
 .sessions-scope {
   display: flex;
   flex-wrap: wrap;
