@@ -1,12 +1,13 @@
 # Plan: Emperor, an open-weight delegation model
 
-Revision: 2026-11-08 r8 (r2: local-only training, the name Emperor, separate repositories,
+Revision: 2026-11-08 r9 (r2: local-only training, the name Emperor, separate repositories,
 teacher licences; r3: strategy and planning from vague prompts, clarify-or-research, G10–G11;
 r4: context tiers from 64K to 256K and up, G12; r5: one loaded model shared by many
 sessions, G13, stage 2c; r6: a 192K tier; r7: subagent-first model swapping, G14, stage 2d;
 task-class routing and single-call cloud tasks, G15, stage 2e; Marcus Aurelius as the default
 personality; a CPU lane for slow, accurate work in system RAM, G16, stage 2f; r8: Consul as the default
-critic and a separate-context self-critique fallback, G17; stage 0 and stage 1 in progress)
+critic and a separate-context self-critique fallback, G17; r9: background work prefers quiet
+periods, stage 2g; stage 0 and stage 1 in progress)
 
 **Emperor** is a small open-weight model, fine-tuned to be the **root agent** of an Imperium
 session on a 16 GB GPU. It reads the task, plans, writes compact briefs, and hands the work to
@@ -503,6 +504,46 @@ live entirely in RAM and run on the CPU, beside Emperor on the GPU, at no API co
 
 Stage 4 trains Emperor to dispatch this critique and to triage the findings; stage 2c's slot
 sharing lets the critic subagent and the waiting Emperor share one loaded model.
+
+## Stage 2g: Autonomous work prefers quiet periods (Imperium)
+
+General Imperium work, not specific to Emperor. Project agents and schedules
+([14](../14-projects-and-automation.md)) run in the background; when the user is running several
+interactive sessions, background work competes for the same GPU slots, RAM caches, swaps, and
+CPU. It should yield to the user and catch up when the machine is quiet.
+
+- Objective:
+  1. **Resource signal.** The daemon keeps a load view from what it already measures: active
+     interactive sessions and their model calls, slot queue lengths and swap activity (stages
+     2c, 2d), GPU and CPU utilisation, free RAM, and user input idle time where the OS exposes it.
+     It reports `quiet`, `busy`, or `saturated`.
+  2. **Background priority.** Sessions started by a project agent or a schedule are marked
+     `background`. In the slot queue and the memory arbiter they rank below interactive
+     sessions: they never trigger a swap that evicts a model an interactive session used in the
+     last few minutes, and they wait while the load view is `saturated`.
+  3. **Prefer quiet periods.** A project agent or schedule may set `prefer_quiet = true`
+     (default for project agents): its work is deferred until the load view is `quiet`, up to a
+     `max_defer` (default 2 hours) after which it runs anyway, so nothing is postponed forever.
+     A new schedule condition `when_quiet` joins the existing ones (AC power, GPU idle, time
+     window).
+  4. **Yield mid-run.** A background session that is running when the machine turns `busy`
+     finishes its current model call and pauses at the next step boundary (zero tokens while
+     paused, like `await_tasks`), resuming when quiet again; it never holds a slot while paused.
+  5. **Visibility.** The session list and the Projects pane show deferred and paused
+     background work with the reason, and the user can run it now.
+- Depends on: stage 2c (per-call leasing); stage 2d (arbiter priorities) for item 2's swap rule
+- Owned paths: `crates/imperiumd/src/scheduler.rs`, `crates/imperium-automation`,
+  `crates/imperium-local` (priority in queue and arbiter), `crates/imperium-core` (pause at step
+  boundaries), `docs/14-projects-and-automation.md`, `docs/10-configuration.md`
+- Acceptance checks: `cargo test -p imperiumd quiet_deferral` (a `prefer_quiet` schedule
+  waits while a fake load view is `busy` and runs when it turns `quiet` or `max_defer` passes);
+  `cargo test -p imperium-local background_priority` (an interactive request is served before
+  queued background requests; background work never evicts a recently used interactive
+  model); `bash scripts/check-rust.sh` passes.
+- Status: pending
+- Outcome:
+- Handoff notes: keep thresholds configurable and conservative; user input idle time is not
+  available on every platform (fall back to resource signals only).
 
 ## Stage 2b: Eval harness (emperor repository)
 
