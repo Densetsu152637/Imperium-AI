@@ -20,21 +20,34 @@ use tokio::sync::mpsc;
 use crate::{block_on, connect};
 
 pub fn run(
+    env: Option<String>,
     project: Option<PathBuf>,
     model: Option<String>,
     context_summary: bool,
 ) -> anyhow::Result<()> {
-    let project = match project {
-        Some(project) => project,
-        None => std::env::current_dir().context("could not read the current directory")?,
+    let project = match (&env, project) {
+        (Some(_), _) => None,
+        (None, Some(project)) => Some(project),
+        (None, None) => {
+            Some(std::env::current_dir().context("could not read the current directory")?)
+        }
     };
-    let project = std::path::absolute(&project)
-        .with_context(|| format!("project folder {}", project.display()))?;
+    let project = project
+        .map(|project| {
+            std::path::absolute(&project)
+                .with_context(|| format!("project folder {}", project.display()))
+        })
+        .transpose()?;
     block_on(async {
         let (mut client, _) = connect().await?;
+        let environment_id = match &env {
+            Some(env) => Some(crate::env::resolve(&mut client, env).await?.id),
+            None => None,
+        };
         let session = client
             .call::<SessionCreate>(SessionCreateParams {
-                project_dir: project.to_string_lossy().into_owned(),
+                environment_id,
+                project_dir: project.map(|project| project.to_string_lossy().into_owned()),
                 model,
             })
             .await?;
@@ -43,7 +56,7 @@ pub fn run(
             "Session {} with {} in {}",
             session.session_id,
             session.model,
-            project.display()
+            session.folders.join(", ")
         );
         println!(
             "Type a message. While the agent works, messages queue and run in order; /steer \

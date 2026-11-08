@@ -1,5 +1,5 @@
-// The workspace as the user left it: panel sizes, which panels are closed, the selected project
-// and session, and the folders they opened. Kept in the local `layout` document (store.ts), so
+// The workspace as the user left it: panel sizes, which panels are closed, and the selected
+// environment and session. Kept in the local `layout` document (store.ts), so
 // the window reopens the same way after a restart, an update, or a reinstall.
 
 import { getDoc, setDoc } from "../store";
@@ -9,14 +9,29 @@ export type Layout = {
   sizes: Record<string, number[]>;
   /** Panels the user closed. */
   hidden: string[];
-  project: string | null;
+  /** The selected environment's id: new sessions start there. */
+  environment: string | null;
   session: string | null;
+  /** Whether the Sessions list shows only the selected environment's sessions. */
   projectView: boolean;
-  /** Project folders opened here that have no sessions yet. */
+  /** Before environments: the selected project folder, read once to pick its environment. */
+  project: string | null;
+  /** Before environments: folders opened here, each moved into an environment of its own. */
   folders: string[];
+  /** Set once the folders above have become environments. */
+  environmentsMigrated: boolean;
 };
 
-const EMPTY: Layout = { sizes: {}, hidden: [], project: null, session: null, projectView: false, folders: [] };
+const EMPTY: Layout = {
+  sizes: {},
+  hidden: [],
+  environment: null,
+  session: null,
+  projectView: false,
+  project: null,
+  folders: [],
+  environmentsMigrated: false,
+};
 const LEGACY_PREFIX = "imperium.layout.";
 
 let layout: Layout | null = null;

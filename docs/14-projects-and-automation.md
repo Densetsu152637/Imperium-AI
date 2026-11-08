@@ -1,22 +1,53 @@
 # 14 — Projects and automation
 
-## Projects
+## Environments (implemented)
 
-A **project** is the unit users work in, and it *is* the environment: there is no separate
-environment object.
+An **environment** is the unit users work in: a name, an optional icon and colour, and one or
+more folders. The folders are the sandbox the agent works in: its file tools accept any path
+inside any of them, and `run_command` runs in the first folder (the working directory) under the
+session's isolation tier, which can write to every folder
+([isolation](05-tools-and-isolation.md#isolation-tiers)). A session belongs to one environment
+and records it (`environment_id` and `folders` in `session.list`); folders added later apply to
+sessions started from then on.
 
-A project defines:
+The daemon keeps environments in `environments.json` in its data folder and serves them over
+RPC:
 
-- **Where it runs:** a local folder, a container image with mounted folders, or a path on an
+| Method | Params | Result |
+| --- | --- | --- |
+| `environments.list` | `{}` | `{ environments: EnvironmentInfo[] }` |
+| `environments.create` | `{ name, icon?, color?, folders }` | `EnvironmentInfo` |
+| `environments.update` | `{ id, name?, icon?, color? }` (empty icon/colour clears it) | `EnvironmentInfo` |
+| `environments.delete` | `{ id }` | `{}` (folders and running sessions are left alone) |
+| `environments.add_folder` | `{ id, folder }` (an existing absolute folder) | `EnvironmentInfo` |
+| `environments.remove_folder` | `{ id, folder }` | `EnvironmentInfo` |
+
+`EnvironmentInfo` is `{ id, name, icon, color, folders }`, folders first-to-last with the
+working directory first. Every change is announced to all clients as `environments.changed`
+(the full list). `session.create` takes `environment_id`; `project_dir` still works and maps to
+the environment whose first folder it is, created (named after the folder) when there is none.
+Sessions from before environments are moved the same way when the daemon resumes them, and the
+desktop app turns each folder it had opened into an environment the first time it connects.
+
+From the command line: `imperium env list`, `imperium env create <name> [folder...]`,
+`imperium env add-folder <env> <folder>`, `imperium env remove-folder <env> <folder>`,
+`imperium env rename <env> <name>`, `imperium env delete <env>` (an environment by name or id),
+and `imperium chat --env <name|id>`.
+
+Sessions that a schedule, a project agent, or auto-fix start still work in a single folder and
+carry no environment.
+
+### Planned
+
+An environment will also define:
+
+- **Where it runs:** local folders, a container image with mounted folders, or a path on an
   SSH host (see [isolation](05-tools-and-isolation.md#isolation-tiers)).
 - **Its configuration layer** (`.imperium/config.toml`), instructions, policy overrides,
-  plugins, MCP servers, routing rules, and budgets.
-- **Its sessions:** any number of sessions, each a conversation with a root agent. Sessions
-  inherit the project's environment and may narrow it (a subfolder, a read-only mount).
-- **Optionally, a project agent** and **schedules** (below).
-
-Projects are listed in the sidebar; opening a folder that has `.imperium/` (or any folder)
-creates or reopens its project.
+  plugins, MCP servers, routing rules, and budgets. Today these come from the working directory
+  (the first folder).
+- **Narrowed sessions:** a session limited to a subfolder or a read-only mount.
+- **A project agent** and **schedules** (below), which are still configured per folder.
 
 ## Worktrees
 
