@@ -10,7 +10,10 @@ import type {
   ApprovalListResult,
   PermissionDecision,
   ResumePolicy,
+  SendMode,
   SessionControlParams,
+  SessionQueueParams,
+  SessionSendParams,
   SessionControlResult,
   SessionCreateResult,
   SessionEventParams,
@@ -287,8 +290,21 @@ export function App() {
     }
   };
 
-  const send = (text: string) => {
-    if (client && selected) client.call("session.send", { session_id: selected, text }).catch(report);
+  /** Sends a message: it starts a turn, waits in the queue while one runs, or (steer) joins it. */
+  const send = (text: string, mode: SendMode) => {
+    if (!client || !selected) return;
+    const params: SessionSendParams = { session_id: selected, text, mode };
+    client.call("session.send", params).catch(report);
+  };
+
+  /** Edits (with text) or removes a queued message; the queue updates from `queue_changed`. */
+  const changeQueued = (id: string, text: string | null) => {
+    if (!client || !selected) return;
+    const params: SessionQueueParams =
+      text === null
+        ? { session_id: selected, action: "remove", id }
+        : { session_id: selected, action: "edit", id, text };
+    client.call("session.queue", params).catch(report);
   };
 
   const respond = (requestId: number, decision: PermissionDecision) => {
@@ -498,6 +514,7 @@ export function App() {
                       session={session}
                       icons={icons}
                       onSend={send}
+                      onChangeQueued={changeQueued}
                       onRespond={respond}
                       onSetResumePolicy={setResumePolicy}
                       onResumeNow={resumeNow}

@@ -6,7 +6,15 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { ModelRow, PermissionDecision, Plan, ResumePolicy, SessionControlResult } from "@imperium/protocol";
+import type {
+  ModelRow,
+  PermissionDecision,
+  Plan,
+  QueuedMessage,
+  ResumePolicy,
+  SendMode,
+  SessionControlResult,
+} from "@imperium/protocol";
 
 import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
 import {
@@ -27,7 +35,10 @@ import { useSettings } from "../settings";
 type Props = {
   session: SessionState | null;
   icons: ProjectIcons;
-  onSend: (text: string) => void;
+  /** Sends a message: `queue` starts a turn, or waits while one runs; `steer` joins the running turn. */
+  onSend: (text: string, mode: SendMode) => void;
+  /** Edits a queued message, or removes it when `text` is null. */
+  onChangeQueued: (id: string, text: string | null) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
   /** Resolves once the daemon accepted the policy. */
   onSetResumePolicy: (policy: ResumePolicy) => Promise<void>;
@@ -42,6 +53,7 @@ export function SessionPanel({
   session,
   icons,
   onSend,
+  onChangeQueued,
   onRespond,
   onSetResumePolicy,
   onResumeNow,
@@ -71,10 +83,12 @@ export function SessionPanel({
   const sum = totals(session.calls);
   const rootContext = session.breakdowns[ROOT];
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
-  const send = () => {
+  // While the agent works the composer stays open: Enter queues the message for after the turn,
+  // and Steer (Ctrl+Shift+Enter) adds it to the running turn.
+  const send = (mode: SendMode = "queue") => {
     const text = draft.trim();
     if (!text) return;
-    onSend(text);
+    onSend(text, mode);
     setDraft("");
   };
 
@@ -173,6 +187,8 @@ export function SessionPanel({
         <div ref={end} />
       </div>
 
+      {session.queue.length > 0 && <QueueView queue={session.queue} onChange={onChangeQueued} />}
+
       <form
         className="composer"
         onSubmit={(event) => {
@@ -182,23 +198,42 @@ export function SessionPanel({
       >
         <textarea
           value={draft}
-          placeholder={
-            settings.sendKey === "enter"
-              ? "Message the agent (Enter to send, Shift+Enter for a new line)"
-              : "Message the agent (Ctrl+Enter to send, Enter for a new line)"
-          }
+          placeholder={composerHint(settings.sendKey === "enter", session.busy)}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
             const modified = event.ctrlKey || event.metaKey;
+            if (modified && event.shiftKey) {
+              event.preventDefault();
+              send("steer");
+              return;
+            }
             const sends = settings.sendKey === "enter" ? !event.shiftKey && !modified : modified;
-            if (event.key === "Enter" && sends) {
+            if (sends) {
               event.preventDefault();
               send();
             }
           }}
           rows={1}
         />
-        <button type="submit" className="send" disabled={!draft.trim()} aria-label="Send" title="Send (Enter)">
+        {session.busy && (
+          <button
+            type="button"
+            className="steer"
+            disabled={!draft.trim()}
+            onClick={() => send("steer")}
+            title="Add this message to the running turn; the agent reads it after its current step (Ctrl+Shift+Enter)"
+          >
+            Steer
+          </button>
+        )}
+        <button
+          type="submit"
+          className="send"
+          disabled={!draft.trim()}
+          aria-label={session.busy ? "Queue" : "Send"}
+          title={session.busy ? "Queue for after this turn (Enter)" : "Send (Enter)"}
+        >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 19V5M5 12l7-7 7 7" />
           </svg>
@@ -220,6 +255,13 @@ function EntryView({
   switch (entry.kind) {
     case "user":
       return <div className="message user prose">{entry.text}</div>;
+    case "steer":
+      return (
+        <div className="message user steer prose" title="Steering: joined the running turn">
+          <span className="steer-label">Steering</span>
+          {entry.text}
+        </div>
+      );
     case "assistant":
       return (
         <div className="message assistant prose">
@@ -275,6 +317,60 @@ function EntryView({
     case "notice":
       return <p className="notice">{entry.message}</p>;
   }
+}
+
+/** The composer's placeholder: what Enter does now, and how to steer while a turn runs. */
+function composerHint(enterSends: boolean, busy: boolean): string {
+  const key = enterSends ? "Enter" : "Ctrl+Enter";
+  const newline = enterSends ? "Shift+Enter" : "Enter";
+  return busy
+    ? `${key} queues for after this turn · Ctrl+Shift+Enter steers the running turn`
+    : `Message the agent (${key} to send, ${newline} for a new line)`;
+}
+
+/** Messages waiting for the agent, above the composer; each can be edited or removed until delivered. */
+function QueueView({ queue, onChange }: { queue: QueuedMessage[]; onChange: Props["onChangeQueued"] }) {
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  const save = () => {
+    if (!editing) return;
+    const text = editing.text.trim();
+    if (text) onChange(editing.id, text);
+    setEditing(null);
+  };
+  return (
+    <ol className="queue" aria-label="Queued messages">
+      {queue.map((message) => (
+        <li key={message.id} className={message.steer ? "steer" : undefined}>
+          <span className="queue-kind">{message.steer ? "Steering" : "Queued"}</span>
+          {editing?.id === message.id ? (
+            <input
+              aria-label="Edit queued message"
+              autoFocus
+              value={editing.text}
+              onChange={(event) => setEditing({ id: message.id, text: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") save();
+                if (event.key === "Escape") setEditing(null);
+              }}
+              onBlur={save}
+            />
+          ) : (
+            <span className="queue-text" title={message.text}>
+              {message.text}
+            </span>
+          )}
+          <span className="buttons">
+            {editing?.id !== message.id && (
+              <button onClick={() => setEditing({ id: message.id, text: message.text })}>Edit</button>
+            )}
+            <button className="danger" onClick={() => onChange(message.id, null)} aria-label="Remove queued message">
+              Remove
+            </button>
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 /**
