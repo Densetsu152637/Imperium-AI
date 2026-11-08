@@ -17,6 +17,9 @@ for var in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
   if [ -z "${!var:-}" ]; then unset "$var"; fi
 done
 
+# The protocol package's index is generated, not committed; the interface imports it.
+pnpm --filter @imperium/protocol run generate
+
 pnpm --filter @imperium/desktop exec tauri build \
   --target "$target" --bundles "$bundles" --config "{\"version\":\"$version\"}"
 
