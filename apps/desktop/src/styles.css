@@ -1373,10 +1373,31 @@ button.danger:hover:not(:disabled) {
   letter-spacing: 0.04em;
 }
 
-.update-menu .row {
+.settings-heading {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.update-settings {
+  padding-top: calc(var(--space) * 1.5);
+  border-top: 1px solid var(--border);
+}
+
+.update-settings legend {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.update-channels {
   display: flex;
-  justify-content: space-between;
-  gap: var(--space);
+  gap: calc(var(--space) * 2);
 }
 
 .update-state {

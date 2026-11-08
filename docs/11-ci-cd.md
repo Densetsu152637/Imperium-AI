@@ -45,9 +45,11 @@ experimental workflow's run number, so every experimental build is newer than th
 
 The desktop app updates itself. It checks at startup and every six hours, downloads a newer
 build in the background, and installs it when the app quits; the title bar offers
-**Restart to update** to install it at once. The version button in the title bar shows the
-channel and switches it. A build follows the channel it was released on until the user
-changes it; switching from experimental to main moves to the next main release newer than the
+**Restart to update** to install it at once. **Settings → Updates** (also opened by the version
+button in the title bar) shows the installed version, chooses the channel (main or
+experimental), and has **Check and install updates**, which checks now and, when a newer build
+exists, downloads it, installs it, and restarts. A build follows the channel it was released on
+until the user changes it; switching from experimental to main moves to the next main release newer than the
 installed build (the updater never downgrades).
 
 Each release carries `latest.json`, written by `scripts/ci/updater-manifest.sh` from the signed

@@ -39,7 +39,7 @@ import { normalizeProject, useProjectIcons } from "./projectIcons";
 import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
 import { applySettings, loadSettings, saveSettings, type DisplaySettings } from "./settings";
 import { SettingsMenu } from "./SettingsMenu";
-import { UpdateControl } from "./UpdateControl";
+import { UpdateControl, useUpdates } from "./UpdateControl";
 
 type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
 
@@ -53,6 +53,7 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [settings, setSettings] = useState<DisplaySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
+  const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
   const [mods, setMods] = useState<ModListResult | null>(null);
@@ -306,12 +307,14 @@ export function App() {
               : "Disconnected"}
         </span>
         <span className="spacer" />
-        <UpdateControl />
+        <UpdateControl updates={updates} onOpen={() => setShowSettings(true)} />
         <button className="ghost" onClick={() => setShowSettings((open) => !open)} aria-expanded={showSettings}>
-          Display
+          Settings
         </button>
       </header>
-      {showSettings && <SettingsMenu settings={settings} onChange={updateSettings} onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsMenu settings={settings} onChange={updateSettings} updates={updates} onClose={() => setShowSettings(false)} />
+      )}
       {status.kind === "failed" ? (
         <ConnectScreen message={status.message} onConnect={connect} />
       ) : (
