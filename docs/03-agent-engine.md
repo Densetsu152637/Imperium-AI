@@ -147,7 +147,11 @@ Empty categories are left out. Counting uses the best method available, named in
 - **`exact`**: for local llama.cpp models (and any server on this machine that answers
   llama.cpp's `POST /tokenize`), each segment is counted with the model's own tokenizer, without
   BOS and with special tokens parsed as the chat template's output is. Counts are cached by
-  content hash per model, so unchanged messages are not tokenized again on later calls. The
+  content hash per model, so unchanged messages are not tokenized again on later calls. Tool
+  definitions count as the chat template renders them, not as the JSON sent: templates add
+  their own tool instructions and re-serialise the JSON (Qwen3's spends about 2.6 times the
+  sent JSON's tokens on one tool). Each tool set is measured once with `POST /apply-template`,
+  as the difference it makes to a minimal conversation. The
   overhead is the provider's reported `prompt_tokens` minus the segments; it absorbs token
   merges across part boundaries, and is negative when the template drops text the request
   carried (such as earlier reasoning). The context window is the server's per-request context

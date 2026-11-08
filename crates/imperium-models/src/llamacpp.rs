@@ -40,6 +40,33 @@ pub async fn count_tokens(
     Ok(tokens.tokens.len() as u64)
 }
 
+/// The number of tokens the server's chat template renders for `messages` and `tools` (in the
+/// OpenAI wire shapes), from `POST /apply-template` and the tokenizer. Templates rewrite tool
+/// definitions (their own instructions, differently spaced JSON), so this is what the model
+/// reads for them rather than the JSON sent.
+pub async fn template_tokens(
+    http: &reqwest::Client,
+    endpoint: &Endpoint,
+    messages: &Value,
+    tools: &[Value],
+) -> Result<u64, ModelError> {
+    #[derive(Deserialize)]
+    struct Rendered {
+        prompt: String,
+    }
+    let url = format!("{}/apply-template", server_root(&endpoint.base_url));
+    let mut body = json!({ "messages": messages });
+    if !tools.is_empty() {
+        body["tools"] = Value::from(tools.to_vec());
+    }
+    let response = send(authorize(http.post(url).json(&body), endpoint)).await?;
+    let rendered: Rendered = response
+        .json()
+        .await
+        .map_err(|error| ModelError::Decode(format!("apply-template response: {error}")))?;
+    count_tokens(http, endpoint, &rendered.prompt).await
+}
+
 /// The context window one request gets (the per-slot context), if the server reports it.
 /// Versions of llama.cpp report it as `default_generation_settings.n_ctx`, as a top-level
 /// `n_ctx`, or under `default_generation_settings.params`.

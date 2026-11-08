@@ -24,9 +24,27 @@ fn words(text: &str) -> u64 {
     text.split_whitespace().count() as u64
 }
 
+/// Words a template that rewrites tool definitions adds before them.
+const TOOL_INTRO: u64 = 9;
+
+/// The tool block as the fake template renders it: as sent, or (`rewrites`) introduced and
+/// spaced out to twice the words, as real templates re-serialise tool JSON.
+fn tool_words(tools: &Value, rewrites: bool) -> u64 {
+    let sent = words(&tools.to_string());
+    match tools.as_array() {
+        Some(list) if !list.is_empty() && rewrites => TOOL_INTRO + 2 * sent,
+        Some(list) if !list.is_empty() => sent,
+        _ => 0,
+    }
+}
+
 /// The prompt size the fake server reports: every word the request carries, as its tokenizer
 /// counts them, plus what its "template" adds.
 fn prompt_tokens(body: &Value) -> u64 {
+    rendered_tokens(body, false)
+}
+
+fn rendered_tokens(body: &Value, rewrites: bool) -> u64 {
     let messages = body["messages"].as_array().cloned().unwrap_or_default();
     let mut total = PER_REQUEST + PER_MESSAGE * messages.len() as u64;
     for message in &messages {
@@ -36,7 +54,7 @@ fn prompt_tokens(body: &Value) -> u64 {
             total += words(call["function"]["arguments"].as_str().unwrap_or_default());
         }
     }
-    total + words(&body["tools"].to_string())
+    total + tool_words(&body["tools"], rewrites)
 }
 
 fn stream(chunk: Value, usage: Option<Value>) -> String {
@@ -48,9 +66,9 @@ fn stream(chunk: Value, usage: Option<Value>) -> String {
 
 /// Answers the first call with a `read_file` call and the second with text. The first always
 /// reports usage; the second only `with_usage`, with some of the prompt cached.
-fn reply(index: usize, body: &Value, with_usage: bool) -> String {
+fn reply(index: usize, body: &Value, with_usage: bool, rewrites: bool) -> String {
     let usage = |cached: u64| {
-        json!({"prompt_tokens": prompt_tokens(body), "completion_tokens": 3,
+        json!({"prompt_tokens": rendered_tokens(body, rewrites), "completion_tokens": 3,
                "prompt_tokens_details": {"cached_tokens": cached}})
     };
     if index == 0 {
@@ -80,6 +98,9 @@ enum Tokenizer {
     Broken,
     /// No `/tokenize` route at all (a hosted-style or non-llama.cpp server).
     Missing,
+    /// Splits on whitespace, and renders templates (`/apply-template`) with a tool block that
+    /// is not the JSON sent.
+    Template,
 }
 
 async fn serve(server: Arc<Server>, tokenizer: Tokenizer, with_usage: bool) -> String {
@@ -93,16 +114,17 @@ async fn serve(server: Arc<Server>, tokenizer: Tokenizer, with_usage: bool) -> S
                     requests.push(body.clone());
                     requests.len() - 1
                 };
+                let rewrites = matches!(tokenizer, Tokenizer::Template);
                 (
                     [("content-type", "text/event-stream")],
-                    reply(index, &body, with_usage),
+                    reply(index, &body, with_usage, rewrites),
                 )
             }
         })
     };
     let mut app = Router::new().route("/v1/chat/completions", chat);
     match tokenizer {
-        Tokenizer::Words | Tokenizer::Broken => {
+        Tokenizer::Words | Tokenizer::Broken | Tokenizer::Template => {
             let tokenize = {
                 let server = Arc::clone(&server);
                 post(move |Json(body): Json<Value>| {
@@ -129,6 +151,13 @@ async fn serve(server: Arc<Server>, tokenizer: Tokenizer, with_usage: bool) -> S
                 })
             };
             app = app.route("/tokenize", tokenize).route("/props", props);
+            if matches!(tokenizer, Tokenizer::Template) {
+                let render = post(|Json(body): Json<Value>| async move {
+                    let prompt = vec!["w"; rendered_tokens(&body, true) as usize].join(" ");
+                    Json(json!({ "prompt": prompt }))
+                });
+                app = app.route("/apply-template", render);
+            }
         }
         Tokenizer::Missing => {}
     }
@@ -302,6 +331,33 @@ async fn a_llamacpp_model_is_counted_exactly_with_its_tokenizer() {
     // user), then only the tool call's name and arguments and the result. Props once.
     assert_eq!(server.tokenize_calls.load(Ordering::SeqCst), 7);
     assert_eq!(server.props_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn tools_count_as_the_template_renders_them() {
+    let server = Arc::new(Server::default());
+    let base_url = serve(Arc::clone(&server), Tokenizer::Template, true).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha beta gamma
+").unwrap();
+    let session = start(dir.path(), base_url, true);
+
+    let breakdowns = run_turn(&session, "please read a.txt").await;
+    let requests = server.requests.lock().unwrap().clone();
+    for (breakdown, request) in breakdowns.iter().zip(&requests) {
+        assert_eq!(breakdown.method, TokenCountMethod::Exact);
+        assert_eq!(breakdown.sum(), rendered_tokens(request, true) as i64);
+        // The template's tool instructions and spacing are tools, not formatting.
+        assert_eq!(
+            breakdown.tokens("tools_builtin"),
+            tool_words(&request["tools"], true) as i64
+        );
+        let messages = request["messages"].as_array().unwrap().len() as u64;
+        assert_eq!(
+            breakdown.tokens("overhead"),
+            (PER_REQUEST + PER_MESSAGE * messages) as i64
+        );
+    }
 }
 
 #[tokio::test]

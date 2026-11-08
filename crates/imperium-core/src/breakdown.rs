@@ -7,7 +7,9 @@
 //!
 //! - **exact**: each segment with the model's own tokenizer (llama.cpp's `/tokenize`), cached by
 //!   content so unchanged messages are counted once; the chat template's overhead is the
-//!   provider's reported prompt size minus the segments.
+//!   provider's reported prompt size minus the segments. Tool definitions count as the
+//!   chat template renders them (`/apply-template`), since templates add their own tool
+//!   instructions and re-serialise the JSON.
 //! - **calibrated**: each segment estimated, then scaled so the categories add up to the
 //!   reported prompt size.
 //! - **estimated**: no usage was reported, so nothing anchors the total.
@@ -368,6 +370,9 @@ pub(crate) struct TokenCounter {
     windows: Mutex<HashMap<String, Option<u64>>>,
     /// Servers that refused a tokenize request (not llama.cpp), so they are not asked again.
     no_tokenizer: Mutex<HashSet<String>>,
+    /// The tool block as each model's template renders it, by tokenizer and tool set:
+    /// (built-in, MCP) tokens, or `None` when the server cannot render templates.
+    rendered_tools: Mutex<HashMap<(String, u64), Option<(u64, u64)>>>,
 }
 
 impl TokenCounter {
@@ -382,6 +387,7 @@ impl TokenCounter {
         let tokenizer = on_machine && !lock(&self.no_tokenizer).contains(&root);
         let mut exact = None;
         let mut window = None;
+        let mut rendered_tools = None;
         if on_machine {
             let work = async {
                 let counted = if tokenizer {
@@ -389,11 +395,16 @@ impl TokenCounter {
                 } else {
                     None
                 };
-                (counted, self.window(&call, &root).await)
+                let rendered = match &counted {
+                    Some(Ok(_)) => self.rendered_tools(&call, request.tools).await,
+                    _ => None,
+                };
+                (counted, rendered, self.window(&call, &root).await)
             };
             match tokio::time::timeout(TOKENIZE_BUDGET, work).await {
-                Ok((counted, server_window)) => {
+                Ok((counted, rendered, server_window)) => {
                     window = server_window;
+                    rendered_tools = rendered;
                     match counted {
                         None => {}
                         Some(Ok(counts)) => exact = Some(counts),
@@ -421,6 +432,11 @@ impl TokenCounter {
             Some(counts) => {
                 for ((category, _), count) in segments.iter().zip(counts) {
                     totals[category.index()] += count;
+                }
+                // The tools as the template renders them, not as the JSON sent.
+                if let Some((builtin, mcp)) = rendered_tools {
+                    totals[Category::ToolsBuiltin.index()] = builtin;
+                    totals[Category::ToolsMcp.index()] = mcp;
                 }
             }
             None => {
@@ -504,6 +520,67 @@ impl TokenCounter {
             counts.push(count);
         }
         Ok(counts)
+    }
+
+    /// The tokens the model's chat template spends on `tools` (built-in, MCP): the difference
+    /// it makes to rendering a minimal conversation, so the template's tool instructions and
+    /// its own JSON spacing count as tools. Measured once per tool set; `None` when the server
+    /// has no `/apply-template`, leaving the JSON as sent.
+    async fn rendered_tools(
+        &self,
+        call: &Call<'_>,
+        tools: &[(Category, String)],
+    ) -> Option<(u64, u64)> {
+        if tools.is_empty() {
+            return None;
+        }
+        let joined: String = tools.iter().map(|(_, text)| text.as_str()).collect();
+        let key = (call.model.spec.clone(), content_hash(&joined));
+        if let Some(known) = lock(&self.rendered_tools).get(&key) {
+            return *known;
+        }
+        let array = |category: Category| -> Vec<serde_json::Value> {
+            tools
+                .iter()
+                .filter(|(c, _)| *c == category)
+                .filter_map(|(_, text)| serde_json::from_str::<Vec<serde_json::Value>>(text).ok())
+                .flatten()
+                .collect()
+        };
+        let builtin = array(Category::ToolsBuiltin);
+        let all: Vec<_> = builtin
+            .iter()
+            .cloned()
+            .chain(array(Category::ToolsMcp))
+            .collect();
+        let probe = serde_json::json!([
+            {"role": "system", "content": "x"},
+            {"role": "user", "content": "x"},
+        ]);
+        let (http, endpoint) = (call.http, call.endpoint);
+        let measured = async {
+            let bare = llamacpp::template_tokens(http, endpoint, &probe, &[]).await?;
+            let with_builtin =
+                llamacpp::template_tokens(http, endpoint, &probe, &builtin).await?;
+            let with_all = llamacpp::template_tokens(http, endpoint, &probe, &all).await?;
+            Ok::<_, ModelError>((
+                with_builtin.saturating_sub(bare),
+                with_all.saturating_sub(with_builtin),
+            ))
+        }
+        .await;
+        let rendered = match measured {
+            Ok(counts) => Some(counts),
+            // A server without template rendering keeps the JSON as sent; a dropped
+            // connection is asked again next time.
+            Err(ModelError::Status { .. } | ModelError::Decode(_)) => None,
+            Err(error) => {
+                tracing::debug!(model = %call.model.spec, %error, "could not render the tool block");
+                return None;
+            }
+        };
+        lock(&self.rendered_tools).insert(key, rendered);
+        rendered
     }
 
     /// The server's context window, asked once per server. A failed connection is asked again
