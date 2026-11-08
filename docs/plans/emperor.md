@@ -1,12 +1,12 @@
 # Plan: Emperor, an open-weight delegation model
 
-Revision: 2026-11-08 r7 (r2: local-only training, the name Emperor, separate repositories,
+Revision: 2026-11-08 r8 (r2: local-only training, the name Emperor, separate repositories,
 teacher licences; r3: strategy and planning from vague prompts, clarify-or-research, G10–G11;
 r4: context tiers from 64K to 256K and up, G12; r5: one loaded model shared by many
 sessions, G13, stage 2c; r6: a 192K tier; r7: subagent-first model swapping, G14, stage 2d;
 task-class routing and single-call cloud tasks, G15, stage 2e; Marcus Aurelius as the default
-personality; a CPU lane for slow, accurate work in system RAM, G16, stage 2f; stage 0 and
-stage 1 in progress)
+personality; a CPU lane for slow, accurate work in system RAM, G16, stage 2f; r8: Consul as the default
+critic and a separate-context self-critique fallback, G17; stage 0 and stage 1 in progress)
 
 **Emperor** is a small open-weight model, fine-tuned to be the **root agent** of an Imperium
 session on a 16 GB GPU. It reads the task, plans, writes compact briefs, and hands the work to
@@ -78,6 +78,7 @@ there, once, and record why.
 | G13 | One loaded Emperor serves many sessions: with a single slot, three sessions whose roots are waiting on subagents all make progress, because no agent holds a slot while it waits; a root resuming on a different slot re-reads ≤ 10 % of its context when the host prompt cache is on | `cargo test -p imperium-core shared_slot`; llama.cpp `timings.prompt_n` vs the context length on resume |
 | G14 | On a GPU too small for Emperor and a local subagent model together, a delegated local task runs on the GPU: the idle orchestrator is swapped out (its KV saved), the subagent finishes, and the orchestrator is reloaded with its context restored (re-reading ≤ 10 % of it); a running subagent is never evicted for the orchestrator | `cargo test -p imperium-local swap` (fake launcher, budget fits one model); a measured run on the 16 GB GPU logs the swap times and `timings.prompt_n` on resume |
 | G15 | Delegations follow task class: on a labelled set, ≥ 90 % of menial tasks (refactoring, tests, UI) go to local small models and ≥ 90 % of hard tasks (deep architecture, maths) go to a cloud frontier model; ≥ 80 % of frontier tasks complete in one model call | `eval --metric routing` per class; call counts per task from the session ledger |
+| G17 | Every large plan passes an independent critique before execution: by Consul on the CPU lane when it fits, otherwise by a fresh-context subagent of Emperor's own model that sees only the plan and its goals; the session journal shows which, and never a same-context self-review unless no subagent can run (then disclosed) | `cargo test -p imperium-core plan_critique_fallback`; journal inspection |
 | G16 | A CPU lane serves slow, high-accuracy work: with a ~32 GB model resident in system RAM (64 GB machine), plan critiques and reviews run on it while the GPU keeps serving Emperor and other subagents, VRAM use is unchanged, and total RAM use stays under the planner's budget | `cargo test -p imperium-local cpu_lane`; a measured run logs both servers' memory and the critique's tokens/s |
 
 ## Scope and non-goals
@@ -484,6 +485,23 @@ live entirely in RAM and run on the CPU, beside Emperor on the GPU, at no API co
 - Handoff notes: the existing planner already offloads layers to RAM when a model does not fit
   the GPU ("partial"); a pinned CPU row is different: it is placed on the CPU on purpose even
   when VRAM is free. Training (stage 4) labels critique and review tasks for this lane.
+  The default model for the lane is **Consul**, a separate critic model planned in its own
+  repository (`Densetsu152637/consul`, `docs/plans/consul.md`; training is future work) with
+  the Niccolò Machiavelli personality, trained on the Agent-Custom-Workflow critic loop.
+
+**Critique fallback (G17).** Before executing a large plan, Emperor sends it for critique:
+
+1. To Consul on the CPU lane when Consul (or another model tagged `critique`) is installed and
+   fits in RAM within the task's deadline.
+2. Otherwise to a **subagent of Emperor's own model** in a fresh context, given the critic
+   profile, the plan, and its goals only, never Emperor's transcript or reasoning. Separate
+   contexts make it challenge the plan from outside instead of re-reading its own
+   justifications. Its findings go through the workflow's triage and delta-review loop like
+   any critic's.
+3. Only when no subagent can run at all, the workflow's disclosed self-check.
+
+Stage 4 trains Emperor to dispatch this critique and to triage the findings; stage 2c's slot
+sharing lets the critic subagent and the waiting Emperor share one loaded model.
 
 ## Stage 2b: Eval harness (emperor repository)
 
