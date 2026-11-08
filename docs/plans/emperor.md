@@ -430,8 +430,20 @@ its whole context.
   each an orchestrator delegating two local tasks to the same subagent model, all finish, the
   run makes at most 2 swaps out and 2 back (batched), no model in use is evicted, and no
   request waits longer than one batch plus one swap; `bash scripts/check-rust.sh` passes.
-- Status: pending
-- Outcome:
+- Status: done (2026-11-09; branch `feat/model-swapping`, stacked on `feat/shared-local-slots`,
+  pushed, not yet merged)
+- Outcome: commits 9f26e96, b57f9fc, 8399fc8. Arbiter policy in
+  `crates/imperium-local/src/arbiter.rs` (Busy never evicted, Free evicted LRU when needed or
+  for `swap_gain`, Claimed waits `min_residency_s`); `LocalPresence` attach/waiting guards in
+  `agent.rs`; slot save/restore (`--slot-save-path`, `/slots/{id}?action=save|restore`) only for
+  agents that can return, files in `slot_files.rs` trimmed absent-holders-first within
+  `swap_cache_mb`; batching by model across sessions; `max_swaps_per_min` (spent waits, 0 refuses),
+  `max_wait_s` bounds every wait; stop awaits process exit, quick launch failures retried once;
+  `model.swapped_out|in` events; carry-overs from 2c fixed. `check-rust.sh` exit 0 (349 passed),
+  10 swap tests incl. `swap_parallel`. Gate review converged after two fix rounds. Not done:
+  per-session cache ceilings, per-session longest-wait reporting, swap events in the desktop
+  panel, shrinking `--cache-ram` of busy models, and G14's measured run on the 16 GB GPU (use
+  `swap_gain = 1.0`). Note: `max_swaps_per_min = 0` also disables idle eviction for room.
 - Handoff notes: from the stage 2c review: the `--cache-ram` reservation is counted as RAM
   per loaded model and can crowd out a second model on RAM-tight machines, so let the arbiter
   shrink or release it when another model needs room; and a model idle between one agent's
