@@ -86,7 +86,8 @@ async fn a_chat_turn_streams_events_to_the_client() {
 
     let session = client
         .call::<SessionCreate>(SessionCreateParams {
-            project_dir: project.path().to_string_lossy().into_owned(),
+            environment_id: None,
+            project_dir: Some(project.path().to_string_lossy().into_owned()),
             model: None,
         })
         .await

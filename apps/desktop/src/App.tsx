@@ -1,4 +1,4 @@
-// Connects to the daemon and arranges the default view: Projects and Sessions stacked on the
+// Connects to the daemon and arranges the default view: Environments and Sessions stacked on the
 // left, the session spanning the middle, agents, models, and telemetry stacked on the right.
 // The workspace is always shown: while the daemon is away, a banner offers to start or reach it
 // and the lists show what was last known, and the layout reopens as the user left it.
@@ -6,6 +6,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
+  EnvironmentInfo,
+  EnvironmentListResult,
   ApprovalInfo,
   ApprovalListResult,
   PermissionDecision,
@@ -32,7 +34,7 @@ import { findDaemon, insideTauri, pickFolder, rememberDevConnection } from "./da
 import { Columns, type PanelSpec } from "./layout/Columns";
 import { getLayout, resetLayout, updateLayout } from "./layout/state";
 import { notify } from "./notify";
-import { ProjectsPanel, SessionsPanel } from "./panels/NavigationPanels";
+import { EnvironmentsPanel, SessionsPanel, environmentOf, type EnvironmentActions } from "./panels/NavigationPanels";
 import { SessionPanel } from "./panels/SessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { ModBus, ModFrame } from "./mods/ModFrame";
@@ -42,7 +44,7 @@ import { PetPanel } from "./panels/PetPanel";
 import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
-import { normalizeProject, useProjectIcons } from "./projectIcons";
+import { environmentIcon, projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./projectIcons";
 import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
 import { applySettings, loadSettings, saveSettings, SettingsContext, type AppSettings } from "./settings";
 import { SettingsWindow } from "./SettingsWindow";
@@ -52,8 +54,8 @@ import { UpdateControl, useUpdates } from "./UpdateControl";
 
 type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
 
-/** Sessions as last seen, shown until the daemon answers. */
-type Cache = { sessions: SessionSummary[]; savedAt: number };
+/** Sessions and environments as last seen, shown until the daemon answers. */
+type Cache = { sessions: SessionSummary[]; environments?: EnvironmentInfo[]; savedAt: number };
 
 function cachedSessions(): Record<string, SessionState> {
   const cache = getDoc<Cache>("cache");
@@ -62,16 +64,59 @@ function cachedSessions(): Record<string, SessionState> {
   );
 }
 
+const cachedEnvironments = (): EnvironmentInfo[] => getDoc<Cache>("cache")?.environments ?? [];
+
+let migrating: Promise<EnvironmentInfo[]> | null = null;
+
+/** Lists the environments. The first time, each project folder known from before environments
+ * (opened here, or used by a session) becomes an environment of its own, keeping its icon. */
+function migrateProjects(client: DaemonClient, sessionFolders: string[], icons: ProjectIcons): Promise<EnvironmentInfo[]> {
+  const list = async () => (await client.call<EnvironmentListResult>("environments.list")).environments;
+  if (getLayout().environmentsMigrated) return list();
+  // React's development double-mount connects twice; migrate once.
+  migrating ??= (async () => {
+    const envs = await list();
+    const layout = getLayout();
+    const folders = [...layout.folders, ...(layout.project ? [layout.project] : []), ...sessionFolders];
+    for (const folder of folders) {
+      if (envs.some((env) => env.folders[0] && sameFolder(env.folders[0], folder))) continue;
+      const choice = icons.iconFor(folder);
+      try {
+        envs.push(
+          await client.call<EnvironmentInfo>("environments.create", {
+            name: projectName(folder),
+            icon: choice.icon,
+            color: choice.color,
+            folders: [folder],
+          }),
+        );
+      } catch (error) {
+        // A folder that no longer exists is left behind.
+        console.warn(`could not make ${folder} an environment`, error);
+      }
+    }
+    updateLayout({ environmentsMigrated: true });
+    return envs;
+  })().finally(() => {
+    migrating = null;
+  });
+  return migrating;
+}
+
 export function App() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const saved = useMemo(() => getLayout(), []);
   const restore = settings.restoreSession;
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
   const [sessions, setSessions] = useState<Record<string, SessionState>>(cachedSessions);
-  const [extraProjects, setExtraProjects] = useState<string[]>(saved.folders);
-  // The project new sessions start in, and whether the Sessions list shows only its sessions.
-  const [project, setProject] = useState<string | null>(restore ? saved.project : null);
-  const [projectView, setProjectView] = useState(restore && saved.projectView);
+  const [environments, setEnvironments] = useState<EnvironmentInfo[]>(cachedEnvironments);
+  // The environment new sessions start in, and whether the Sessions list shows only its sessions.
+  const [envId, setEnvId] = useState<string | null>(restore ? saved.environment : null);
+  const [envView, setEnvView] = useState(restore && saved.projectView);
+  const [creatingEnv, setCreatingEnv] = useState(false);
+  /** The model "New session" asks for; empty for the configured default. */
+  const [newModel, setNewModel] = useState("");
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
   const [hidden, setHidden] = useState<string[]>(saved.hidden);
   const [showSettings, setShowSettings] = useState(false);
@@ -83,7 +128,10 @@ export function App() {
   const [pets, setPets] = useState<PetListResult | null>(null);
   const [petState, setPetState] = useState<PetStateInfo | null>(null);
   const modBus = useMemo(() => new ModBus(), []);
-  const icons = useProjectIcons();
+  // Icons chosen per folder before environments, carried over when folders become environments.
+  const folderIcons = useProjectIcons();
+  const folderIconsRef = useRef(folderIcons);
+  folderIconsRef.current = folderIcons;
 
   useEffect(() => applySettings(settings), [settings]);
 
@@ -129,6 +177,10 @@ export function App() {
         if (notification.method === "approval.requested") {
           const approval = notification.params as ApprovalInfo;
           setApprovals((all) => [...all.filter((a) => a.id !== approval.id), approval]);
+          return;
+        }
+        if (notification.method === "environments.changed") {
+          setEnvironments((notification.params as EnvironmentListResult).environments);
           return;
         }
         if (notification.method === "session.created") {
@@ -185,9 +237,27 @@ export function App() {
       const queued = pending;
       pending = null;
       queued.forEach(apply);
-      setProject((selected) => {
-        const first = restored[0]?.[1].summary.project_dir;
-        return selected ?? (first ? normalizeProject(first) : null);
+      const envs = await migrateProjects(
+        client,
+        restored.map(([, s]) => s.summary.project_dir),
+        folderIconsRef.current,
+      );
+      if (attempt !== generation.current) return;
+      setEnvironments(envs);
+      // Keep the selected environment if it still exists; else the one the saved project folder
+      // became, the first restored session's, or the first there is.
+      setEnvId((selected) => {
+        if (selected && envs.some((env) => env.id === selected)) return selected;
+        const layout = getLayout();
+        const byFolder = (folder: string | null | undefined) =>
+          folder ? envs.find((env) => env.folders[0] && sameFolder(env.folders[0], folder))?.id : undefined;
+        const firstSession = restored[0]?.[1];
+        return (
+          (loadSettings().restoreSession ? byFolder(layout.project) : undefined) ??
+          (firstSession ? environmentOf(firstSession, envs)?.id : undefined) ??
+          envs[0]?.id ??
+          null
+        );
       });
       setStatus({ kind: "connected", client });
     } catch (error) {
@@ -198,17 +268,17 @@ export function App() {
   }, [modBus]);
   const daemon = useDaemon(() => void connect(), status.kind === "connected");
 
-  // Remember the selection, opened folders, and closed panels.
+  // Remember the selection and closed panels.
   useEffect(() => {
-    updateLayout({ project, session: selected, projectView, folders: extraProjects, hidden });
-  }, [project, selected, projectView, extraProjects, hidden]);
+    updateLayout({ environment: envId, session: selected, projectView: envView, hidden });
+  }, [envId, selected, envView, hidden]);
 
   // Remember the sessions as last seen, for the next time the daemon is away.
   useEffect(() => {
     if (status.kind !== "connected") return;
     const summaries = Object.values(sessions).map((s) => s.summary);
-    setDoc<Cache>("cache", { sessions: summaries, savedAt: Date.now() });
-  }, [sessions, status.kind]);
+    setDoc<Cache>("cache", { sessions: summaries, environments, savedAt: Date.now() });
+  }, [sessions, environments, status.kind]);
 
   // Ctrl+, (Cmd+, on macOS) opens Settings, as in most desktop apps.
   useEffect(() => {
@@ -231,19 +301,24 @@ export function App() {
     };
   }, [connect]);
 
-  const projects = useMemo(
-    () =>
-      [
-        ...new Set([...Object.values(sessions).map((s) => s.summary.project_dir), ...extraProjects].map(normalizeProject)),
-      ].sort(),
-    [sessions, extraProjects],
-  );
   const allSessions = useMemo(() => Object.values(sessions), [sessions]);
   const session = selected ? (sessions[selected] ?? null) : null;
   const client = status.kind === "connected" ? status.client : null;
+  const environment = environments.find((env) => env.id === envId) ?? null;
+  // The session header shows a session's icon by its folder: that of its environment.
+  const icons = useMemo<ProjectIcons>(
+    () => ({
+      iconFor: (path) => {
+        const env = environments.find((e) => e.folders[0] && sameFolder(e.folders[0], path));
+        return env ? environmentIcon(env) : environmentIcon({ id: path, icon: null, color: null });
+      },
+      setIcon: () => {},
+    }),
+    [environments],
+  );
 
-  const report = (error: unknown) =>
-    window.alert(error instanceof Error ? error.message : String(error));
+  const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  const report = (error: unknown) => window.alert(message(error));
 
   const respondToApproval = (id: number, approve: boolean) => {
     client
@@ -255,27 +330,77 @@ export function App() {
     client?.call<LocalModelListResult>("models.local").then(setLocalModels, report);
   };
 
-  const openFolder = async () => {
-    const folder = await pickFolder();
-    if (!folder) return;
-    setExtraProjects((all) => [...all, normalizeProject(folder)]);
-    showProject(normalizeProject(folder));
+  /** Puts a changed environment in the list (the daemon's notice may arrive later). */
+  const replaceEnvironment = (env: EnvironmentInfo) =>
+    setEnvironments((all) => (all.some((e) => e.id === env.id) ? all.map((e) => (e.id === env.id ? env : e)) : [...all, env]));
+
+  const envActions: EnvironmentActions = {
+    onCreate: async (name) => {
+      if (!client) return false;
+      try {
+        const env = await client.call<EnvironmentInfo>("environments.create", { name, folders: [] });
+        replaceEnvironment(env);
+        setCreatingEnv(false);
+        showEnvironment(env.id);
+        // An environment is only useful with a folder; ask for the first one straight away.
+        await addFolder(env.id);
+        return true;
+      } catch (error) {
+        report(error);
+        return false;
+      }
+    },
+    onRename: (id, name) => {
+      client?.call<EnvironmentInfo>("environments.update", { id, name }).then(replaceEnvironment, report);
+    },
+    onDelete: (id) => {
+      client?.call("environments.delete", { id }).then(() => {
+        setEnvironments((all) => all.filter((env) => env.id !== id));
+        setEnvId((current) => (current === id ? null : current));
+      }, report);
+    },
+    onAddFolder: (id) => void addFolder(id),
+    onRemoveFolder: (id, folder) => {
+      client?.call<EnvironmentInfo>("environments.remove_folder", { id, folder }).then(replaceEnvironment, report);
+    },
+    onSetIcon: (id, choice) => {
+      client
+        ?.call<EnvironmentInfo>("environments.update", { id, icon: choice?.icon ?? "", color: choice?.color ?? "" })
+        .then(replaceEnvironment, report);
+    },
   };
 
-  const showProject = (next: string) => {
-    setProject(normalizeProject(next));
-    setProjectView(true);
+  const addFolder = async (id: string) => {
+    if (!client) return;
+    const folder = await pickFolder("Add folder to environment");
+    if (!folder) return;
+    try {
+      replaceEnvironment(await client.call<EnvironmentInfo>("environments.add_folder", { id, folder }));
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  const showEnvironment = (id: string) => {
+    setEnvId(id);
+    setEnvView(true);
   };
 
   const startSession = async () => {
-    if (!client || !project) return;
+    if (!client || !environment) return;
+    setSessionError(null);
     try {
-      const created = await client.call<SessionCreateResult>("session.create", { project_dir: project });
+      const created = await client.call<SessionCreateResult>("session.create", {
+        environment_id: environment.id,
+        ...(newModel ? { model: newModel } : {}),
+      });
       known.current.add(created.session_id);
       // The rest of the summary arrives with the daemon's session.created notice.
       const summary: SessionSummary = {
         session_id: created.session_id,
-        project_dir: project,
+        project_dir: created.folders[0] ?? environment.folders[0],
+        environment_id: created.environment_id,
+        folders: created.folders,
         model: created.model,
         isolation: created.isolation,
         title: "",
@@ -286,9 +411,18 @@ export function App() {
       setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
       setSelected(created.session_id);
     } catch (error) {
-      report(error);
+      // Shown beside the button rather than in a dialog, which some webviews do not show.
+      setSessionError(message(error));
     }
   };
+
+  const newSessionBlocker = !client
+    ? "Not connected to imperiumd"
+    : !environment
+      ? "Select or create an environment first"
+      : environment.folders.length === 0
+        ? `Add a folder to ${environment.name} first`
+        : null;
 
   /** Sends a message: it starts a turn, waits in the queue while one runs, or (steer) joins it. */
   const send = (text: string, mode: SendMode) => {
@@ -361,9 +495,10 @@ export function App() {
 
   const selectSession = (sessionId: string) => {
     setSelected(sessionId);
-    // New sessions start in the project the user is working in.
-    const dir = sessions[sessionId]?.summary.project_dir;
-    if (dir) setProject(normalizeProject(dir));
+    // New sessions start in the environment the user is working in.
+    const picked = sessions[sessionId];
+    const env = picked ? environmentOf(picked, environments) : null;
+    if (env) setEnvId(env.id);
   };
 
   const updateSettings = (next: AppSettings) => {
@@ -443,17 +578,24 @@ export function App() {
                 panels: visible([
                   {
                     id: "projects",
-                    title: "Projects",
-                    actions: <button onClick={openFolder}>Open folder</button>,
+                    title: "Environments",
+                    actions: (
+                      <button onClick={() => setCreatingEnv((open) => !open)} disabled={!client} aria-expanded={creatingEnv}>
+                        New environment
+                      </button>
+                    ),
                     body: (
-                      <ProjectsPanel
-                        projects={projects}
-                        selected={project}
-                        icons={icons}
+                      <EnvironmentsPanel
+                        environments={environments}
+                        selected={envId}
+                        creating={creatingEnv}
+                        connected={!!client}
                         onSelect={(next) => {
-                          showProject(next);
+                          showEnvironment(next);
                           setSelected(null);
                         }}
+                        onCancelCreate={() => setCreatingEnv(false)}
+                        actions={envActions}
                       />
                     ),
                   },
@@ -461,23 +603,39 @@ export function App() {
                     id: "sessions",
                     title: "Sessions",
                     actions: (
-                      <button
-                        onClick={startSession}
-                        disabled={!project || !client}
-                        title={project ? `New session in ${project}` : "Select a project first"}
-                      >
-                        New session
-                      </button>
+                      <span className="new-session">
+                        <select
+                          aria-label="Model for new sessions"
+                          title="Model for new sessions"
+                          value={newModel}
+                          onChange={(event) => setNewModel(event.target.value)}
+                        >
+                          <option value="">Default model</option>
+                          {(modelTable?.models ?? []).map((row) => (
+                            <option key={row.id} value={row.id} disabled={!row.endpoint_configured}>
+                              {row.id}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={startSession}
+                          disabled={newSessionBlocker !== null}
+                          title={newSessionBlocker ?? `New session in ${environment?.name}`}
+                        >
+                          New session
+                        </button>
+                      </span>
                     ),
                     body: (
                       <SessionsPanel
                         sessions={allSessions}
-                        project={projectView ? project : null}
+                        environments={environments}
+                        scope={envView ? environment : null}
                         selected={selected}
-                        icons={icons}
+                        error={sessionError}
                         onSelect={selectSession}
-                        onShowProject={showProject}
-                        onShowAll={() => setProjectView(false)}
+                        onShowEnvironment={showEnvironment}
+                        onShowAll={() => setEnvView(false)}
                       />
                     ),
                   },
@@ -558,7 +716,7 @@ export function App() {
 
 /** Panels the user can close and reopen from Settings → Panels. */
 const PANELS: { id: string; title: string }[] = [
-  { id: "projects", title: "Projects" },
+  { id: "projects", title: "Environments" },
   { id: "sessions", title: "Sessions" },
   { id: "pet", title: "Pet" },
   { id: "approvals", title: "Approvals" },

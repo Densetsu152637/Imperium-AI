@@ -43,36 +43,48 @@ impl Sandbox {
         }
     }
 
-    /// The process that runs `command` in `root` under this tier.
-    pub fn command(&self, root: &Path, command: &str) -> Result<Command, ToolError> {
+    /// The process that runs `command` under this tier, in the first of `roots` (the workspace's
+    /// folders). The OS sandbox lets it write in every folder; the container mounts them all.
+    pub fn command(&self, roots: &[&Path], command: &str) -> Result<Command, ToolError> {
+        let Some(root) = roots.first() else {
+            return Err(ToolError::Io("the workspace has no folder".into()));
+        };
         match self {
             Sandbox::Policy => {
                 let mut process = shell(command);
                 process.current_dir(root);
                 Ok(process)
             }
-            Sandbox::Os { network } => os_command(root, command, *network),
+            Sandbox::Os { network } => os_command(roots, command, *network),
             Sandbox::Container {
                 runtime,
                 image,
                 network,
             } => {
                 let mut process = Command::new(runtime);
-                process.args(container_args(root, image, *network, command));
+                process.args(container_args(roots, image, *network, command));
                 Ok(process)
             }
         }
     }
 }
 
-fn container_args(root: &Path, image: &str, network: bool, command: &str) -> Vec<String> {
+/// The first folder is mounted at `/workspace` (the working directory) and the others at
+/// `/folders/2`, `/folders/3`, … in order.
+fn container_args(roots: &[&Path], image: &str, network: bool, command: &str) -> Vec<String> {
     let mut args = vec!["run".into(), "--rm".into(), "-i".into()];
     if !network {
         args.extend(["--network".into(), "none".into()]);
     }
+    for (index, root) in roots.iter().enumerate() {
+        let target = if index == 0 {
+            "/workspace".to_string()
+        } else {
+            format!("/folders/{}", index + 1)
+        };
+        args.extend(["-v".into(), format!("{}:{target}", root.display())]);
+    }
     args.extend([
-        "-v".into(),
-        format!("{}:/workspace", root.display()),
         "-w".into(),
         "/workspace".into(),
         image.into(),
@@ -83,42 +95,41 @@ fn container_args(root: &Path, image: &str, network: bool, command: &str) -> Vec
     args
 }
 
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+fn displayed(roots: &[&Path]) -> Vec<String> {
+    roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect()
+}
+
 #[cfg(target_os = "linux")]
-fn os_command(root: &Path, command: &str, network: bool) -> Result<Command, ToolError> {
-    let root = root.display().to_string();
+fn os_command(roots: &[&Path], command: &str, network: bool) -> Result<Command, ToolError> {
+    let roots = displayed(roots);
     let mut process = Command::new("bwrap");
     process
-        .args(bwrap_args(&root, network))
+        .args(bwrap_args(&roots, network))
         .args(["sh", "-c", command]);
-    process.current_dir(&root);
+    process.current_dir(&roots[0]);
     Ok(process)
 }
 
-/// bubblewrap: the whole filesystem read-only, the workspace and a private /tmp writable, its
-/// own process namespace, and optionally no network.
+/// bubblewrap: the whole filesystem read-only, the workspace's folders and a private /tmp
+/// writable, its own process namespace, and optionally no network. Runs in the first folder.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn bwrap_args(root: &str, network: bool) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "--ro-bind",
-        "/",
-        "/",
-        "--dev",
-        "/dev",
-        "--proc",
-        "/proc",
-        "--tmpfs",
-        "/tmp",
-        "--bind",
-        root,
-        root,
-        "--chdir",
-        root,
-        "--unshare-pid",
-        "--die-with-parent",
-    ]
-    .iter()
-    .map(|arg| arg.to_string())
-    .collect();
+fn bwrap_args(roots: &[String], network: bool) -> Vec<String> {
+    let mut args: Vec<String> = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+        .iter()
+        .chain(&["--tmpfs", "/tmp"])
+        .map(|arg| arg.to_string())
+        .collect();
+    for root in roots {
+        args.extend(["--bind".into(), root.clone(), root.clone()]);
+    }
+    if let Some(first) = roots.first() {
+        args.extend(["--chdir".into(), first.clone()]);
+    }
+    args.extend(["--unshare-pid".into(), "--die-with-parent".into()]);
     if !network {
         args.push("--unshare-net".into());
     }
@@ -126,26 +137,29 @@ fn bwrap_args(root: &str, network: bool) -> Vec<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn os_command(root: &Path, command: &str, network: bool) -> Result<Command, ToolError> {
+fn os_command(roots: &[&Path], command: &str, network: bool) -> Result<Command, ToolError> {
     let mut process = Command::new("sandbox-exec");
     process
-        .args([
-            "-p",
-            &seatbelt_profile(&root.display().to_string(), network),
-        ])
+        .args(["-p", &seatbelt_profile(&displayed(roots), network)])
         .args(["sh", "-c", command]);
-    process.current_dir(root);
+    process.current_dir(roots[0]);
     Ok(process)
 }
 
-/// A Seatbelt profile allowing everything but writes outside the workspace and temporary
-/// folders, and optionally network access.
+/// A Seatbelt profile allowing everything but writes outside the workspace's folders and
+/// temporary folders, and optionally network access.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn seatbelt_profile(root: &str, network: bool) -> String {
-    let quoted = root.replace('\\', "\\\\").replace('"', "\\\"");
+fn seatbelt_profile(roots: &[String], network: bool) -> String {
+    let folders: String = roots
+        .iter()
+        .map(|root| {
+            let quoted = root.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("(subpath \"{quoted}\") ")
+        })
+        .collect();
     let mut profile = format!(
         "(version 1)(allow default)(deny file-write*)\
-         (allow file-write* (subpath \"{quoted}\") (subpath \"/private/tmp\") \
+         (allow file-write* {folders}(subpath \"/private/tmp\") \
          (subpath \"/private/var/folders\") (literal \"/dev/null\") (literal \"/dev/tty\"))"
     );
     if !network {
@@ -155,7 +169,7 @@ fn seatbelt_profile(root: &str, network: bool) -> String {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn os_command(_root: &Path, _command: &str, _network: bool) -> Result<Command, ToolError> {
+fn os_command(_roots: &[&Path], _command: &str, _network: bool) -> Result<Command, ToolError> {
     Err(ToolError::Io(
         "the OS sandbox tier is not available on this platform yet; set isolation.tier = \
          \"container\" or \"policy\""
@@ -170,7 +184,7 @@ mod tests {
     #[test]
     fn container_commands_mount_only_the_workspace() {
         let args = container_args(
-            Path::new("/home/me/project"),
+            &[Path::new("/home/me/project")],
             "ubuntu:24.04",
             false,
             "make test",
@@ -179,24 +193,35 @@ mod tests {
             args.join(" "),
             "run --rm -i --network none -v /home/me/project:/workspace -w /workspace ubuntu:24.04 sh -c make test"
         );
-        let networked = container_args(Path::new("/p"), "img", true, "x");
+        let networked = container_args(&[Path::new("/p")], "img", true, "x");
         assert!(!networked.contains(&"--network".to_string()));
+        let both = container_args(&[Path::new("/p"), Path::new("/q")], "img", true, "x").join(" ");
+        assert!(
+            both.contains("-v /p:/workspace -v /q:/folders/2 -w /workspace"),
+            "{both}"
+        );
     }
 
     #[test]
     fn os_sandboxes_write_only_inside_the_workspace() {
-        let args = bwrap_args("/home/me/project", false).join(" ");
+        let roots = ["/home/me/project".to_string(), "/home/me/docs".to_string()];
+        let args = bwrap_args(&roots, false).join(" ");
         assert!(args.starts_with("--ro-bind / /"), "{args}");
         assert!(
             args.contains("--bind /home/me/project /home/me/project"),
             "{args}"
         );
+        assert!(
+            args.contains("--bind /home/me/docs /home/me/docs --chdir /home/me/project"),
+            "{args}"
+        );
         assert!(args.ends_with("--unshare-net"), "{args}");
-        let profile = seatbelt_profile("/Users/me/project", true);
+        let profile = seatbelt_profile(&roots, true);
         assert!(profile.contains("(deny file-write*)"));
-        assert!(profile.contains("(subpath \"/Users/me/project\")"));
+        assert!(profile.contains("(subpath \"/home/me/project\")"));
+        assert!(profile.contains("(subpath \"/home/me/docs\")"));
         assert!(!profile.contains("deny network"));
-        assert!(seatbelt_profile("/p", false).ends_with("(deny network*)"));
+        assert!(seatbelt_profile(&["/p".into()], false).ends_with("(deny network*)"));
     }
 
     #[test]
@@ -228,7 +253,10 @@ mod tests {
             network: false,
         };
         let output = sandbox
-            .command(dir.path(), "cat inside.txt && echo made > out.txt && pwd")
+            .command(
+                &[dir.path()],
+                "cat inside.txt && echo made > out.txt && pwd",
+            )
             .unwrap()
             .output()
             .await

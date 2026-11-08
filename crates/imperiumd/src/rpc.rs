@@ -28,10 +28,17 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
-use crate::state::{CreateError, DaemonState};
+use crate::environments::EnvironmentError;
+use crate::state::{CreateError, DaemonState, SessionOptions};
+use imperium_core::ModelError;
 use imperium_protocol::methods::SessionSuggestionRespond;
 use imperium_protocol::methods::{
     ConfigDescribe, ConfigDescribeParams, ConfigSet, ConfigSetParams,
+};
+use imperium_protocol::methods::{
+    EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
+    EnvironmentFolderParams, EnvironmentList, EnvironmentListParams, EnvironmentListResult,
+    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentUpdate, EnvironmentUpdateParams,
 };
 use imperium_protocol::methods::{
     HfFiles, ModelDownload, ModelDownloadCancel, ModelDownloadCancelParams,
@@ -194,6 +201,9 @@ impl Connection {
                 });
                 Ok(result)
             }),
+            method if method.starts_with("environments.") => {
+                self.environment_call(method, request.params)
+            }
             ModelList::NAME => call::<ModelList>(request.params, |_: ModelListParams| {
                 Ok(self.state.model_table())
             }),
@@ -338,7 +348,7 @@ impl Connection {
                         .state
                         .sessions()
                         .iter()
-                        .map(|session| crate::state::summary(session))
+                        .map(|session| self.state.summary(session))
                         .collect(),
                 })
             }),
@@ -431,25 +441,111 @@ impl Connection {
         &self,
         params: SessionCreateParams,
     ) -> Result<(SessionCreateResult, broadcast::Receiver<AgentEvent>), ErrorObject> {
-        let (session, events) = self
-            .state
-            .create_session(&params.project_dir, params.model.as_deref())
-            .map_err(|error| {
-                let code = match error {
-                    CreateError::Project(..) => codes::INVALID_PARAMS,
-                    CreateError::Model(_) => codes::MODEL_UNAVAILABLE,
-                    CreateError::Start(_) => codes::INTERNAL_ERROR,
-                };
-                ErrorObject::new(code, error.to_string())
-            })?;
+        let model = params.model.as_deref();
+        let created = match (&params.environment_id, &params.project_dir) {
+            (Some(env), _) => {
+                self.state
+                    .create_in_environment(env, model, SessionOptions::default())
+            }
+            // A bare folder: the environment it is the working directory of, made if needed.
+            (None, Some(dir)) => match self.state.environments().for_folder(dir) {
+                Ok(env) => {
+                    let created =
+                        self.state
+                            .create_in_environment(&env.id, model, SessionOptions::default());
+                    self.state.announce_environments();
+                    created
+                }
+                Err(error) => Err(error.into()),
+            },
+            (None, None) => {
+                return Err(ErrorObject::new(
+                    codes::INVALID_PARAMS,
+                    "give environment_id (or project_dir) for the session",
+                ));
+            }
+        };
+        let (session, events) = created.map_err(|error| {
+            let code = match &error {
+                CreateError::Project(..) | CreateError::Environment(_) => codes::INVALID_PARAMS,
+                CreateError::Model(ModelError::NoDefault) => {
+                    return ErrorObject::new(
+                        codes::MODEL_UNAVAILABLE,
+                        "No model chosen and no default model is configured. Pick a model for \
+                         the session, or set models.default in Settings → Models.",
+                    );
+                }
+                CreateError::Model(_) => codes::MODEL_UNAVAILABLE,
+                CreateError::Start(_) => codes::INTERNAL_ERROR,
+            };
+            ErrorObject::new(code, error.to_string())
+        })?;
+        let summary = self.state.summary(&session);
         Ok((
             SessionCreateResult {
                 session_id: session.id().to_string(),
                 model: session.model().to_string(),
                 isolation: session.isolation().to_string(),
+                environment_id: summary.environment_id,
+                folders: summary.folders,
             },
             events,
         ))
+    }
+
+    /// The `environments.*` methods; every change is announced to all clients.
+    fn environment_call(&self, method: &str, params: Option<Value>) -> Result<Value, ErrorObject> {
+        let envs = self.state.environments();
+        let failed = |error: EnvironmentError| {
+            let code = match error {
+                EnvironmentError::Save(_) => codes::INTERNAL_ERROR,
+                _ => codes::INVALID_PARAMS,
+            };
+            ErrorObject::new(code, error.to_string())
+        };
+        let result = match method {
+            EnvironmentList::NAME => {
+                return call::<EnvironmentList>(params, |_: EnvironmentListParams| {
+                    Ok(EnvironmentListResult {
+                        environments: envs.list(),
+                    })
+                });
+            }
+            EnvironmentCreate::NAME => {
+                call::<EnvironmentCreate>(params, |p: EnvironmentCreateParams| {
+                    envs.create(&p.name, p.icon, p.color, &p.folders)
+                        .map_err(failed)
+                })
+            }
+            EnvironmentUpdate::NAME => {
+                call::<EnvironmentUpdate>(params, |p: EnvironmentUpdateParams| {
+                    envs.update(&p.id, p.name.as_deref(), p.icon, p.color)
+                        .map_err(failed)
+                })
+            }
+            EnvironmentDelete::NAME => call::<EnvironmentDelete>(params, |p: EnvironmentRef| {
+                envs.delete(&p.id).map_err(failed)?;
+                Ok(Accepted {})
+            }),
+            EnvironmentAddFolder::NAME => {
+                call::<EnvironmentAddFolder>(params, |p: EnvironmentFolderParams| {
+                    envs.add_folder(&p.id, &p.folder).map_err(failed)
+                })
+            }
+            EnvironmentRemoveFolder::NAME => {
+                call::<EnvironmentRemoveFolder>(params, |p: EnvironmentFolderParams| {
+                    envs.remove_folder(&p.id, &p.folder).map_err(failed)
+                })
+            }
+            other => Err(ErrorObject::new(
+                codes::METHOD_NOT_FOUND,
+                format!("unknown method {other:?}"),
+            )),
+        };
+        if result.is_ok() {
+            self.state.announce_environments();
+        }
+        result
     }
 
     /// `session.control`. Most actions apply at once; switching models and compacting wait for
@@ -645,11 +741,21 @@ mod tests {
 
     fn connection() -> Connection {
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
-        Connection::new(DaemonState::new(
-            Paths::under(std::path::Path::new("unused")),
-            settings,
-            None,
-        ))
+        // Environments are saved in the data folder, so each connection gets its own.
+        let home: &'static tempfile::TempDir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        Connection::new(DaemonState::new(Paths::under(home.path()), settings, None))
+    }
+
+    fn result_of(handled: &Handled) -> Value {
+        match &handled
+            .response
+            .as_ref()
+            .expect("an immediate reply")
+            .outcome
+        {
+            Outcome::Result(result) => result.clone(),
+            Outcome::Error(error) => panic!("expected a result, got {error:?}"),
+        }
     }
 
     fn request(id: i64, method: &str, params: Value) -> String {
@@ -885,5 +991,76 @@ mod tests {
         ));
         assert_eq!(error_code(&no_model), Some(codes::MODEL_UNAVAILABLE));
         assert!(no_model.subscription.is_none());
+        // Without models.default the reply says how to go on, rather than only what failed.
+        let Some(Outcome::Error(error)) = no_model.response.as_ref().map(|r| &r.outcome) else {
+            panic!("expected an error");
+        };
+        assert!(error.message.contains("Pick a model"), "{}", error.message);
+
+        let neither = connection.handle_text(&request(4, SessionCreate::NAME, json!({})));
+        assert_eq!(error_code(&neither), Some(codes::INVALID_PARAMS));
+    }
+
+    #[test]
+    fn environments_are_managed_over_rpc() {
+        let mut connection = handshaken();
+        let one = tempfile::tempdir().unwrap();
+        let two = tempfile::tempdir().unwrap();
+        let created = result_of(&connection.handle_text(&request(
+            2,
+            "environments.create",
+            json!({"name": "Work", "folders": [one.path()]}),
+        )));
+        let id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(created["folders"].as_array().unwrap().len(), 1);
+        // A second environment is just as easy (one per folder, or several folders each).
+        result_of(&connection.handle_text(&request(
+            3,
+            "environments.create",
+            json!({"name": "Other", "folders": [two.path()]}),
+        )));
+        let added = result_of(&connection.handle_text(&request(
+            4,
+            "environments.add_folder",
+            json!({"id": id, "folder": two.path()}),
+        )));
+        assert_eq!(added["folders"].as_array().unwrap().len(), 2);
+        let renamed = result_of(&connection.handle_text(&request(
+            5,
+            "environments.update",
+            json!({"id": id, "name": "Day job", "icon": "code"}),
+        )));
+        assert_eq!(renamed["name"], "Day job");
+        assert_eq!(renamed["icon"], "code");
+        let removed = result_of(&connection.handle_text(&request(
+            6,
+            "environments.remove_folder",
+            json!({"id": id, "folder": two.path()}),
+        )));
+        assert_eq!(removed["folders"].as_array().unwrap().len(), 1);
+        let listed =
+            result_of(&connection.handle_text(&request(7, "environments.list", json!({}))));
+        assert_eq!(listed["environments"].as_array().unwrap().len(), 2);
+
+        let missing = connection.handle_text(&request(
+            8,
+            "environments.add_folder",
+            json!({"id": id, "folder": one.path().join("missing")}),
+        ));
+        assert_eq!(error_code(&missing), Some(codes::INVALID_PARAMS));
+        let unknown = connection.handle_text(&request(
+            9,
+            SessionCreate::NAME,
+            json!({"environment_id": "nope"}),
+        ));
+        assert_eq!(error_code(&unknown), Some(codes::INVALID_PARAMS));
+        let deleted =
+            connection.handle_text(&request(10, "environments.delete", json!({"id": id})));
+        assert_eq!(error_code(&deleted), None);
+        let listed =
+            result_of(&connection.handle_text(&request(11, "environments.list", json!({}))));
+        assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
+        let bogus = connection.handle_text(&request(12, "environments.nothing", json!({})));
+        assert_eq!(error_code(&bogus), Some(codes::METHOD_NOT_FOUND));
     }
 }

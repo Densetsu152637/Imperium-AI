@@ -26,6 +26,7 @@ use tokio::sync::broadcast;
 
 use crate::approvals::Approvals;
 use crate::downloads::Downloads;
+use crate::environments::{EnvironmentError, Environments};
 use crate::local::LocalRuntime;
 use crate::pets::PetEngine;
 use crate::phone::Devices;
@@ -42,6 +43,17 @@ pub struct SessionOptions {
     pub pre_approved: Vec<String>,
     pub launcher: Option<Arc<dyn imperium_core::SessionLauncher>>,
     pub instructions: Option<String>,
+    /// The environment the session works in, recorded with it.
+    pub environment_id: Option<String>,
+    /// Folders the session may use besides its working directory.
+    pub folders: Vec<String>,
+}
+
+/// Where a session works: its environment and every folder, the working directory first.
+#[derive(Debug, Clone, Default)]
+struct Placement {
+    environment_id: Option<String>,
+    folders: Vec<String>,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -55,6 +67,9 @@ pub struct DaemonState {
     /// Where API keys and tokens are read from: the OS keychain unless the caller chose another.
     secrets: Arc<dyn SecretStore>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// Each session's environment and folders, by session id.
+    placements: Mutex<HashMap<String, Placement>>,
+    environments: Environments,
     /// Set at start when there are model folders, or after the first download.
     local: OnceLock<LocalRuntime>,
     downloads: Downloads,
@@ -81,6 +96,8 @@ pub enum CreateError {
     #[error("project folder {0}: {1}")]
     Project(String, std::io::Error),
     #[error(transparent)]
+    Environment(#[from] EnvironmentError),
+    #[error(transparent)]
     Model(#[from] ModelError),
     #[error("could not start the session: {0}")]
     Start(String),
@@ -101,6 +118,7 @@ impl DaemonState {
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
         let devices = Devices::load(paths.data_dir().join("devices.json"));
+        let environments = Environments::load(paths.data_dir().join("environments.json"));
         let suggest = settings.models.suggest_downloads;
         Arc::new_cyclic(|me| DaemonState {
             me: me.clone(),
@@ -109,6 +127,8 @@ impl DaemonState {
             settings,
             secrets,
             sessions: Mutex::new(HashMap::new()),
+            placements: Mutex::new(HashMap::new()),
+            environments,
             local: local.map(OnceLock::from).unwrap_or_default(),
             downloads: Downloads::default(),
             hub: OnceLock::new(),
@@ -405,7 +425,35 @@ impl DaemonState {
                 resume_id: Some(id.clone()),
                 ..SessionOptions::default()
             };
-            match self.create_session_with(project, model, options) {
+            let resumed_session = match meta["environment_id"].as_str() {
+                // Its environment as it is now, if it still exists.
+                Some(env) if self.environments.get(env).is_some() => {
+                    self.create_in_environment(env, model, options)
+                }
+                Some(_) => {
+                    let recorded: Vec<String> = meta["folders"]
+                        .as_array()
+                        .map(|folders| {
+                            folders
+                                .iter()
+                                .filter_map(|folder| folder.as_str().map(str::to_string))
+                                .skip(1)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let options = SessionOptions {
+                        folders: recorded,
+                        ..options
+                    };
+                    self.create_session_with(project, model, options)
+                }
+                // Sessions from before environments: their folder becomes one.
+                None => match self.environments.for_folder(project) {
+                    Ok(env) => self.create_in_environment(&env.id, model, options),
+                    Err(_) => self.create_session_with(project, model, options),
+                },
+            };
+            match resumed_session {
                 Ok(_) => resumed += 1,
                 Err(error) => tracing::warn!(session = %id, %error, "could not resume the session"),
             }
@@ -631,8 +679,15 @@ impl DaemonState {
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
         let workspace = Workspace::new(Path::new(project_dir))
             .map_err(|error| CreateError::Project(project_dir.to_string(), error))?
+            .with_folders(&options.folders)
+            .map_err(|error| CreateError::Project(options.folders.join(", "), error))?
             .with_sandbox(self.sandbox());
-        let model = resolve_model(&self.settings, model, |name| self.secrets.load(name))?;
+        let placement = Placement {
+            environment_id: options.environment_id.clone(),
+            folders: workspace.folders_display(),
+        };
+        // A model table id or a spec, as the model pickers offer them.
+        let model = self.resolve_model(model)?;
         let catalog = self.catalog();
         let (mut mcp, mut notices) =
             crate::mcp::session_servers(&self.settings, Path::new(project_dir), |name| {
@@ -705,6 +760,8 @@ impl DaemonState {
             let meta = serde_json::json!({
                 "project_dir": project_dir,
                 "model": model_spec,
+                "environment_id": placement.environment_id,
+                "folders": placement.folders,
             });
             let path = self
                 .paths
@@ -723,12 +780,73 @@ impl DaemonState {
             crate::suggestions::watch(&me, id.clone(), session.subscribe());
         }
         let session = Arc::new(session);
+        self.placements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.clone(), placement);
         self.sessions
             .lock()
             .expect("session map lock is never poisoned by a panic while held")
             .insert(id, Arc::clone(&session));
-        self.announce(SESSION_CREATED, summary(&session));
+        self.announce(SESSION_CREATED, self.summary(&session));
         Ok((session, events))
+    }
+
+    /// Starts a session in an environment: its first folder is the working directory and every
+    /// folder is open to the session's tools.
+    pub fn create_in_environment(
+        &self,
+        environment_id: &str,
+        model: Option<&str>,
+        options: SessionOptions,
+    ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
+        let env = self
+            .environments
+            .get(environment_id)
+            .ok_or_else(|| EnvironmentError::NotFound(environment_id.to_string()))?;
+        let Some((first, rest)) = env.folders.split_first() else {
+            return Err(EnvironmentError::Invalid(format!(
+                "the environment {} has no folders yet; add one first",
+                env.name
+            ))
+            .into());
+        };
+        let options = SessionOptions {
+            environment_id: Some(env.id.clone()),
+            folders: rest.to_vec(),
+            ..options
+        };
+        self.create_session_with(first, model, options)
+    }
+
+    pub fn environments(&self) -> &Environments {
+        &self.environments
+    }
+
+    /// Tells every client the environments changed.
+    pub fn announce_environments(&self) {
+        self.announce(
+            imperium_protocol::methods::ENVIRONMENTS_CHANGED,
+            imperium_protocol::methods::EnvironmentListResult {
+                environments: self.environments.list(),
+            },
+        );
+    }
+
+    /// A session as lists show it, with its environment and folders.
+    pub fn summary(&self, session: &Session) -> SessionSummary {
+        let placement = self
+            .placements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session.id())
+            .cloned()
+            .unwrap_or_default();
+        SessionSummary {
+            environment_id: placement.environment_id,
+            folders: placement.folders,
+            ..summary(session)
+        }
     }
 
     /// Workflow packs and the project's instructions and documentation, unless the workflow is
@@ -910,12 +1028,14 @@ fn lock_watches(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// A session as lists show it.
-pub fn summary(session: &Session) -> SessionSummary {
+/// A session as lists show it, without its environment ([`DaemonState::summary`] adds it).
+fn summary(session: &Session) -> SessionSummary {
     let (status, status_detail) = session.status();
     SessionSummary {
         session_id: session.id().to_string(),
         project_dir: session.project_dir().to_string(),
+        environment_id: None,
+        folders: vec![session.project_dir().to_string()],
         model: session.model().to_string(),
         isolation: session.isolation().to_string(),
         title: session.title(),

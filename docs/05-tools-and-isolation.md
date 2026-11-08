@@ -100,6 +100,15 @@ Decisions are logged in the session journal.
 
 The UI always shows the active tier for each session and agent.
 
+**Multi-folder sandbox (implemented):** a session's workspace is its
+[environment's](14-projects-and-automation.md#environments-implemented) folders, not one
+project folder. The first folder is the working directory: relative paths resolve there and
+`run_command` starts there. The file tools accept an absolute path inside any of the folders and
+refuse anything outside all of them (after resolving `..` and symbolic links), and the agent's
+system prompt lists the further folders. The OS tier makes every folder writable (one
+`--bind` per folder for bubblewrap, one `subpath` per folder for Seatbelt); the container tier
+mounts the first folder at `/workspace` and the others at `/folders/2`, `/folders/3`, … in order.
+
 **Implemented (phase 7):** `isolation.tier` chooses where `run_command` (and auto-fix and
 scheduled sessions' commands) run, and each session reports its tier (`session.list`,
 `session.create`, and the session header). `policy` is tier 0. `os` runs commands under
