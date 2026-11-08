@@ -1,4 +1,4 @@
-//! Remote projects over SSH: `imperium remote connect <host>` finds (or starts) `imperiumd` on
+//! Remote projects over SSH: `imperium remote connect <host>` finds (or starts) `imperium-core` on
 //! the host, forwards its loopback port through SSH, and records the forwarded endpoint so
 //! `imperium --remote <name> ...` talks to the remote daemon, which owns the host's files,
 //! processes, models, and GPUs. Keys stay in the user's SSH agent; nothing is stored but the
@@ -121,7 +121,7 @@ pub fn connect(
         .spawn()
         .context("could not start the SSH forward")?;
     println!(
-        "connected to imperiumd on {destination} (protocol {}); use `imperium --remote {name} ...`. \
+        "connected to imperium-core on {destination} (protocol {}); use `imperium --remote {name} ...`. \
          Press Ctrl+C to disconnect.",
         forwarded.protocol
     );
@@ -143,16 +143,16 @@ pub fn print_endpoint() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `imperium daemon start`: starts `imperiumd` in the background and waits for it to listen.
+/// `imperium daemon start`: starts `imperium-core` in the background and waits for it to listen.
 pub fn start_daemon() -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let endpoint_file = paths.daemon_endpoint_file();
     if endpoint_file.is_file() {
-        println!("imperiumd is already running");
+        println!("imperium-core is already running");
         return Ok(());
     }
     let exe = std::env::current_exe()?;
-    let daemon = exe.with_file_name(format!("imperiumd{}", std::env::consts::EXE_SUFFIX));
+    let daemon = exe.with_file_name(format!("imperium-core{}", std::env::consts::EXE_SUFFIX));
     Command::new(&daemon)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -162,12 +162,12 @@ pub fn start_daemon() -> anyhow::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         if endpoint_file.is_file() {
-            println!("imperiumd started");
+            println!("imperium-core started");
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    bail!("imperiumd did not start within 15 s")
+    bail!("imperium-core did not start within 15 s")
 }
 
 #[cfg(test)]

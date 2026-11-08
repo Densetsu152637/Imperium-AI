@@ -9,7 +9,7 @@ local models.
 
 | Phase | Theme | Scope | Exit criteria |
 | ----- | ----- | ----- | ------------- |
-| 0 | Foundations (done) | Workspace scaffold, protocol crate + TS export, config and keychain, CI green on all OSes | `imperiumd` starts, `imperium ping` round-trips; generated TS types checked in CI |
+| 0 | Foundations (done) | Workspace scaffold, protocol crate + TS export, config and keychain, CI green on all OSes | `imperium-core` starts, `imperium ping` round-trips; generated TS types checked in CI |
 | 1 | Core agent (merged) | Agent loop, OpenAI-compatible endpoints, file and exec tools, permission prompts, session journal, CLI chat | A CLI session edits files in a project folder using a hosted model, with cost recorded |
 | 2 | Desktop shell (merged) | Tauri app, tiling layout, scaling controls, conversation, telemetry pane | Ultrawide and 4K layouts verified; live tokens/sec and cost per call |
 | 3 | Planning and delegation (merged) | Plan phase and plan tools, plan UI, `spawn_agent`/`await_tasks`, task tree UI, budgets, router v1 (rules + cost scoring) | Root plans, delegates steps to 3 subagents on different endpoints, and uses no tokens while waiting |

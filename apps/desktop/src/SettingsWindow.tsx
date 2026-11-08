@@ -93,7 +93,7 @@ const FIELDS: Field[] = [
   {
     key: "autoStartDaemon",
     section: "general",
-    label: "Start imperiumd with Imperium",
+    label: "Start imperium-core with Imperium",
     description: "Start the bundled daemon when the app opens and none is running.",
     control: { type: "toggle" },
   },
@@ -365,7 +365,7 @@ export function SettingsWindow(props: Props) {
     }
     if (section.startsWith("config:")) {
       const id = section.slice("config:".length);
-      if (!client) return <p className="muted">Connect to imperiumd to change these settings.</p>;
+      if (!client) return <p className="muted">Connect to imperium-core to change these settings.</p>;
       if (!config) return <p className="muted">Loading…</p>;
       return configRows(config.entries.filter((entry) => entry.section === id));
     }
@@ -515,7 +515,7 @@ export function SettingsWindow(props: Props) {
           </header>
           {needsRestart && (
             <div className="settings-notice">
-              Restart imperiumd to apply daemon settings.
+              Restart imperium-core to apply daemon settings.
               {props.daemon?.status.can_start && (
                 <button
                   className="primary"
@@ -774,7 +774,7 @@ function DataSection({
         <code className="path">{folder ?? "…"}</code>
       </Row>
       <Row label="Daemon settings" description="Imperium's config file; every setting under Agent and daemon is saved here.">
-        <code className="path">{userFile ?? "connect to imperiumd to see it"}</code>
+        <code className="path">{userFile ?? "connect to imperium-core to see it"}</code>
       </Row>
       <Row label="Reset app settings" description={`Return the ${changed.length} changed app settings to their defaults. Daemon settings are not affected.`}>
         <button onClick={() => onChange(DEFAULT_SETTINGS)} disabled={changed.length === 0}>
@@ -795,7 +795,7 @@ function AboutSection({ updates, client }: { updates: Updates | null; client: Da
       <Row label="Imperium" description="The desktop app.">
         <span>{updates ? `v${updates.status.current_version} · ${updates.status.channel}` : "browser preview"}</span>
       </Row>
-      <Row label="imperiumd" description="The daemon this window is connected to.">
+      <Row label="imperium-core" description="The daemon this window is connected to.">
         <span>{daemon ? `${daemon.daemon.version} · protocol ${daemon.protocol.major}.${daemon.protocol.minor}` : "not connected"}</span>
       </Row>
       <Row label="Source" description="Code, releases, and issues.">

@@ -46,7 +46,7 @@ impl std::fmt::Display for EndpointError {
         match self {
             EndpointError::NotRunning(path) => write!(
                 f,
-                "imperiumd is not running (no endpoint file at {})",
+                "imperium-core is not running (no endpoint file at {})",
                 path.display()
             ),
             EndpointError::Unreadable { path, reason } => write!(

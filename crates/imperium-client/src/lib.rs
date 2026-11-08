@@ -20,9 +20,9 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 pub enum ClientError {
     #[error(transparent)]
     Endpoint(#[from] EndpointError),
-    #[error("could not connect to imperiumd: {0}")]
+    #[error("could not connect to imperium-core: {0}")]
     Connect(Box<tungstenite::Error>),
-    #[error("imperiumd returned error {}: {}", .0.code, .0.message)]
+    #[error("imperium-core returned error {}: {}", .0.code, .0.message)]
     Rpc(ErrorObject),
     #[error("protocol error: {0}")]
     Protocol(String),
@@ -138,7 +138,7 @@ impl Client {
                 .socket
                 .next()
                 .await
-                .ok_or_else(|| ClientError::Protocol("imperiumd closed the connection".into()))?
+                .ok_or_else(|| ClientError::Protocol("imperium-core closed the connection".into()))?
                 .map_err(|error| ClientError::Connect(Box::new(error)))?;
             match message {
                 Message::Text(text) => {
@@ -157,7 +157,7 @@ impl Client {
                 }
                 Message::Close(_) => {
                     return Err(ClientError::Protocol(
-                        "imperiumd closed the connection".into(),
+                        "imperium-core closed the connection".into(),
                     ));
                 }
                 Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}

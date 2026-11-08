@@ -77,7 +77,7 @@ Losing the key means installed apps can no longer update, so keep a copy outside
 | Windows arm64     | `windows-11-arm`   | NSIS                           | `imperium-windows-arm64.tar.gz`        |
 | macOS universal   | `macos-latest`     | `.app`, DMG                    | `imperium-macos-universal.tar.gz`      |
 
-- Each desktop bundle is a complete install: `build-desktop.sh` builds `imperiumd` and the
+- Each desktop bundle is a complete install: `build-desktop.sh` builds `imperium-core` and the
   `imperium` CLI for the target and ships them beside the app (Tauri `externalBin`; the app's
   own executable is `imperium-desktop` so the CLI's name stays free), with the bundled
   `policy/` workflow pack and `pets/` as resources. When no daemon answers, the app starts the

@@ -10,7 +10,7 @@
         │  JSON-RPC 2.0 over WebSocket (local) or SSH-forwarded socket
         └──────────────────┼────────────────────┘
                     ┌──────┴───────┐
-                    │  imperiumd   │  sessions · agent engine · scheduler · telemetry
+                    │ imperium-core│  sessions · agent engine · scheduler · telemetry
                     └──┬───┬───┬───┘
         ┌──────────────┘   │   └───────────────┐
  ┌──────┴──────┐  ┌────────┴───────┐  ┌────────┴────────┐
@@ -21,11 +21,11 @@
  └─────────────┘
 ```
 
-- **`imperiumd`** is the only process that holds state. It owns sessions, the agent engine,
+- **`imperium-core`** is the only process that holds state. It owns sessions, the agent engine,
   the model scheduler, tool execution, policy resolution, configuration, and telemetry.
 - **Clients** are stateless views. The desktop app embeds or launches a local daemon; the CLI
   connects to a running daemon or starts an ephemeral one (`imperium run --ephemeral`).
-- **Remote hosts** run their own `imperiumd`. The desktop connects through an SSH tunnel to the
+- **Remote hosts** run their own `imperium-core`. The desktop connects through an SSH tunnel to the
   remote daemon's Unix socket, so remote sessions use the remote machine's files, models, and
   GPUs with no special-case code paths (see [isolation](05-tools-and-isolation.md#ssh-hosts)).
 - **Model runtimes and sidecars** are child processes supervised by the daemon (restart policy,
@@ -77,7 +77,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | --------------------- | ---------------------------------------------------------------------- |
 | `imperium-api`        | Shared types and traits: chat messages, tool specs, usage and pricing, the local-model and tool-provider interfaces, Markdown front matter (implemented) |
 | `imperium-protocol`   | Wire types, method/event definitions, TS export                        |
-| `imperium-core`       | Sessions, agent loop, delegation, task graph, event bus                |
+| `imperium-engine`     | Agent engine library: sessions, agent loop, delegation, task graph, event bus |
 | `imperium-models`     | Endpoint clients behind `ChatClient`, model registry, router, cost accounting |
 | `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, runtime supervision (llama.cpp, vLLM) |
 | `imperium-tools`      | Built-in tools: files, commands, isolation tiers (implemented)         |
@@ -95,18 +95,18 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-remote`     | Device pairing, encrypted remote transport, relay client               |
 | `imperium-media`      | Image (OpenAI-compatible, ComfyUI), speech, and transcription tools (implemented) |
 | `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours (planned) |
-| `imperiumd`           | Daemon binary                                                          |
+| `imperium-core`       | The daemon (`imperium-core` binary, formerly `imperiumd`), also a library for tests |
 | `imperium-cli`        | `imperium` binary: CLI and TUI client                                  |
 
 `imperium-api` depends on no other Imperium crate, and crates that only share vocabulary
 depend on it rather than on each other: `imperium-tools`, `imperium-mcp`, `imperium-web`, and
 `imperium-media` take `ToolSpec` from it instead of `imperium-models`; `imperium-config` takes
 `Pricing`; `imperium-memory` takes the front-matter parser instead of `imperium-extensions`;
-and `imperium-local` implements its `LocalModels` trait without depending on `imperium-core`.
+and `imperium-local` implements its `LocalModels` trait without depending on `imperium-engine`.
 Likewise `imperium-web`, `imperium-media`, and `imperium-mcp` implement its `ToolProvider` trait,
-so `imperium-core` does not depend on them (it reaches `imperium-mcp` only through
+so `imperium-engine` does not depend on them (it reaches `imperium-mcp` only through
 `imperium-extensions`, for plugins' server definitions); the daemon builds the providers.
-`imperium-models`, `imperium-core`, and `imperium-extensions` re-export the moved items at their
+`imperium-models`, `imperium-engine`, and `imperium-extensions` re-export the moved items at their
 old paths.
 
 Secrets go through the `SecretStore` trait in `imperium-config` (`load`, `store`, `delete`):
@@ -173,7 +173,7 @@ Setting `IMPERIUM_HOME` puts all three under one root as `config/`, `data/`, and
 
 ## Concurrency and failure
 
-- **One process.** `imperiumd` hosts everything; model runtimes and sidecars are the only
+- **One process.** `imperium-core` hosts everything; model runtimes and sidecars are the only
   child processes.
 - **Task per agent (implemented).** The daemon runs one multi-threaded Tokio runtime with a
   worker per core. Every agent (a session's root and each subagent) is its own task on it, so

@@ -46,7 +46,7 @@ overrides, mods, and themes beyond light and dark.
 ## Shell
 
 Tauri 2 with a React + TypeScript + Vite frontend. The Tauri Rust side is thin: it attaches to a
-running `imperiumd` or starts the one installed beside the app (see
+running `imperium-core` or starts the one installed beside the app (see
 [platform bundles](11-ci-cd.md#platform-bundles)), handles native menus, notifications, file dialogs, deep links, and
 the updater ([desktop updates](11-ci-cd.md#desktop-updates)). All application logic goes through the daemon protocol, so the web UI could also
 be served to a browser for remote use.
@@ -228,7 +228,7 @@ methods and the directory comes from the daemon; see
 **Settings** (title bar, or Ctrl+,) opens a window with sections on the left and search across
 every setting:
 
-- **Imperium:** General (reopen where you left off, start imperiumd with the app), Appearance
+- **Imperium:** General (reopen where you left off, start imperium-core with the app), Appearance
   (accent colour, interface, message, and code scale, line length, density, message font,
   reduce motion), Chat (send key, Markdown, code wrapping, following new output),
   Notifications (sounds for approvals and finished sessions, a title badge), Panels (show or

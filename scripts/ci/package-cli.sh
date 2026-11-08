@@ -10,12 +10,12 @@ stage="dist/stage/$name"
 mkdir -p "$stage"
 
 for t in "${targets[@]}"; do
-  cargo build --release --locked -p imperium-cli -p imperiumd --target "$t"
+  cargo build --release --locked -p imperium-cli -p imperium-core --target "$t"
 done
 
 ext=""
 if [[ "${targets[0]}" == *windows* ]]; then ext=".exe"; fi
-for bin in imperium imperiumd; do
+for bin in imperium imperium-core; do
   if [ "${#targets[@]}" -gt 1 ]; then
     inputs=()
     for t in "${targets[@]}"; do inputs+=("target/$t/release/$bin"); done

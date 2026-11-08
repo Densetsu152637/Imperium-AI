@@ -243,7 +243,7 @@ export function App() {
         else apply(params);
       });
       client.onClose(() => {
-        if (attempt === generation.current) setStatus({ kind: "failed", message: "Lost the connection to imperiumd." });
+        if (attempt === generation.current) setStatus({ kind: "failed", message: "Lost the connection to imperium-core." });
       });
       const { sessions: running } = await client.call<SessionListResult>("session.list");
       const restored = await Promise.all(
@@ -454,7 +454,7 @@ export function App() {
   };
 
   const newSessionBlocker = !client
-    ? "Not connected to imperiumd"
+    ? "Not connected to imperium-core"
     : !environment
       ? "Select or create an environment first"
       : environment.folders.length === 0
@@ -485,7 +485,7 @@ export function App() {
   };
 
   const control = (sessionId: string, params: Partial<Omit<SessionControlParams, "session_id">>) => {
-    if (!client) return Promise.reject(new Error("Not connected to imperiumd."));
+    if (!client) return Promise.reject(new Error("Not connected to imperium-core."));
     const full: SessionControlParams = {
       session_id: sessionId,
       action: "set_resume_policy",
@@ -849,7 +849,7 @@ function ConnectionBanner({
   if (status.kind === "connecting") {
     return (
       <div className="connection-banner" data-state="connecting" role="status">
-        <span className="daemon-dot" aria-hidden="true" /> Connecting to imperiumd…
+        <span className="daemon-dot" aria-hidden="true" /> Connecting to imperium-core…
       </div>
     );
   }
@@ -857,13 +857,13 @@ function ConnectionBanner({
     <div className="connection-banner" data-state="offline" role="status">
       <span className="daemon-dot" aria-hidden="true" />
       <span className="connection-message">
-        <strong>imperiumd is not connected.</strong> {status.kind === "failed" ? status.message : ""} Showing what was
+        <strong>imperium-core is not connected.</strong> {status.kind === "failed" ? status.message : ""} Showing what was
         last known.
       </span>
       {daemon?.error && <span className="error">{daemon.error}</span>}
       {daemon?.status.can_start && !daemon.status.running && (
         <button className="primary" onClick={() => daemon.run("start")} disabled={daemon.busy !== null}>
-          {daemon.busy ? "Starting…" : "Start imperiumd"}
+          {daemon.busy ? "Starting…" : "Start imperium-core"}
         </button>
       )}
       {insideTauri() ? (

@@ -1,4 +1,4 @@
-// Daemon controls for the desktop app: see whether imperiumd is running, start, stop, or restart
+// Daemon controls for the desktop app: see whether imperium-core is running, start, stop, or restart
 // it, read its log, and choose whether it keeps running after the app closes. The native side
 // does the work; absent outside Tauri.
 
@@ -131,7 +131,7 @@ export function DaemonSettings({ daemon }: { daemon: Daemon }) {
         Keep running after Imperium closes
       </label>
       {!status.can_start && (
-        <p className="muted">This build has no bundled imperiumd; start and stop it where you run it.</p>
+        <p className="muted">This build has no bundled imperium-core; start and stop it where you run it.</p>
       )}
       {log !== null && (
         <div className="daemon-log">
