@@ -1,4 +1,5 @@
-//! Runs `llama-server` as a child process and waits until it is ready.
+//! Runs a runtime's server (`llama-server`, `vllm serve`, ...) as a child process and waits until
+//! it is ready.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -6,47 +7,53 @@ use std::time::Duration;
 
 use tokio::process::{Child, Command};
 
-use crate::scan::Format;
+use crate::backend::{LLAMA_CPP, VLLM};
 use crate::supervisor::{LaunchFuture, LaunchSpec, Launcher, Server};
 
 /// How long a model may take to load before the launch is abandoned.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_millis(250);
 
-/// Starts `llama-server` from a runtime pack or a custom path.
+/// Starts each runtime's executable, found by the runtime's id: `llama-server` from a runtime
+/// pack or a custom path, and `vllm`.
 #[derive(Debug)]
 pub struct ProcessLauncher {
-    server: PathBuf,
-    /// The `vllm` executable, for Hugging Face models.
-    vllm: PathBuf,
+    /// Runtime id and its executable.
+    programs: Vec<(String, PathBuf)>,
     logs: PathBuf,
     http: reqwest::Client,
 }
 
 impl ProcessLauncher {
-    /// `server` is the `llama-server` executable; each model's output goes to
-    /// `<logs>/llama-<model>.log`.
+    /// `server` is the `llama-server` executable and `vllm` the `vllm` one, for Hugging Face
+    /// models; each model's output goes to `<logs>/llama-<model>.log`.
     pub fn new(server: PathBuf, vllm: PathBuf, logs: PathBuf) -> Self {
         ProcessLauncher {
-            server,
-            vllm,
+            programs: vec![(LLAMA_CPP.into(), server), (VLLM.into(), vllm)],
             logs,
             http: reqwest::Client::new(),
         }
     }
 
+    /// Runs `program` for the runtime with id `runtime`, replacing any executable set for it.
+    pub fn with_program(mut self, runtime: impl Into<String>, program: PathBuf) -> Self {
+        let runtime = runtime.into();
+        self.programs.retain(|(id, _)| *id != runtime);
+        self.programs.push((runtime, program));
+        self
+    }
+
+    fn program(&self, runtime: &str) -> Result<&Path, String> {
+        self.programs
+            .iter()
+            .find(|(id, _)| id == runtime)
+            .map(|(_, program)| program.as_path())
+            .ok_or_else(|| format!("no executable is set for the {runtime} runtime"))
+    }
+
     async fn start(&self, spec: &LaunchSpec) -> Result<Box<dyn Server>, String> {
-        let program = match spec.format {
-            Format::Gguf => &self.server,
-            Format::Safetensors => &self.vllm,
-        };
-        if spec.format == Format::Gguf && !self.server.is_file() {
-            return Err(format!(
-                "llama-server not found at {}; run `imperium runtime install` or set \
-                 runtime.llamacpp.custom_path",
-                self.server.display()
-            ));
-        }
+        let program = self.program(spec.backend.id())?;
+        spec.backend.check_program(program)?;
         let port = free_port()?;
         std::fs::create_dir_all(&self.logs).map_err(|error| error.to_string())?;
         let log_path = self.logs.join(format!("llama-{}.log", spec.model_id));
@@ -100,7 +107,7 @@ impl Launcher for ProcessLauncher {
     }
 }
 
-/// A running `llama-server`; dropping it kills the process.
+/// A running server process; dropping it kills the process.
 struct ProcessServer {
     _child: Child,
     base_url: String,
@@ -151,6 +158,9 @@ fn library_path(command: &mut Command, server: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::LlamaCpp;
+    use crate::scan::Format;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn a_missing_server_is_explained() {
@@ -160,6 +170,7 @@ mod tests {
             PathBuf::from("."),
         );
         let spec = LaunchSpec {
+            backend: Arc::new(LlamaCpp::default()),
             format: Format::Gguf,
             gpu_memory_utilization: 0.9,
             model_id: "m".into(),
