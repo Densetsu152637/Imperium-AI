@@ -1,8 +1,16 @@
-// Display settings: UI scale, prose and code font scale, density, and line length.
+// Settings: display (UI scale, prose and code font scale, density, line length) and, in the
+// desktop app, updates.
 
 import type { Density, DisplaySettings } from "./settings";
+import { UpdateSettings, type Updates } from "./UpdateControl";
 
-type Props = { settings: DisplaySettings; onChange: (settings: DisplaySettings) => void; onClose: () => void };
+type Props = {
+  settings: DisplaySettings;
+  onChange: (settings: DisplaySettings) => void;
+  /** The updater, in the desktop app only. */
+  updates: Updates | null;
+  onClose: () => void;
+};
 
 function Slider({
   label,
@@ -33,10 +41,11 @@ function Slider({
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 
-export function SettingsMenu({ settings, onChange, onClose }: Props) {
+export function SettingsMenu({ settings, onChange, updates, onClose }: Props) {
   const set = (patch: Partial<DisplaySettings>) => onChange({ ...settings, ...patch });
   return (
-    <div className="settings-menu" role="dialog" aria-label="Display settings">
+    <div className="settings-menu" role="dialog" aria-label="Settings">
+      <h3 className="settings-heading">Display</h3>
       <Slider label="UI scale" value={settings.uiScale} min={0.5} max={3} step={0.05} format={percent} onChange={(uiScale) => set({ uiScale })} />
       <Slider
         label="Prose text"
@@ -66,6 +75,7 @@ export function SettingsMenu({ settings, onChange, onClose }: Props) {
           </label>
         ))}
       </fieldset>
+      {updates && <UpdateSettings updates={updates} />}
       <button className="primary" onClick={onClose}>
         Done
       </button>

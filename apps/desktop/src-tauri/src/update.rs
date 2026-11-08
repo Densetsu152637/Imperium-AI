@@ -91,6 +91,8 @@ struct Preferences {
 pub struct Updater {
     inner: Mutex<Inner>,
     check_requested: Notify,
+    /// Held for a whole check, so a check the user asks for never overlaps a scheduled one.
+    checking: tokio::sync::Mutex<()>,
 }
 
 struct Inner {
@@ -142,6 +144,7 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) {
             ready: None,
         }),
         check_requested: Notify::new(),
+        checking: tokio::sync::Mutex::new(()),
     });
 
     let app = app.clone();
@@ -179,6 +182,7 @@ pub fn install_on_exit<R: Runtime>(app: &AppHandle<R>) {
 
 async fn check<R: Runtime>(app: &AppHandle<R>) {
     let updater = app.state::<Updater>();
+    let _checking = updater.checking.lock().await;
     let (channel, downloaded) = {
         let inner = updater.inner.lock().expect("updater state");
         let downloaded = inner
@@ -329,6 +333,24 @@ pub fn update_restart<R: Runtime>(
     app: AppHandle<R>,
     updater: tauri::State<'_, Updater>,
 ) -> Result<(), String> {
+    install_and_restart(&app, &updater)
+}
+
+/// Checks the channel now and, when it offers a newer build, downloads and installs it and
+/// starts the new version. Returns the status when there is nothing to install.
+#[tauri::command]
+pub async fn update_install_now<R: Runtime>(app: AppHandle<R>) -> Result<UpdateStatus, String> {
+    check(&app).await;
+    let updater = app.state::<Updater>();
+    let status = updater.status(&app);
+    match status.state {
+        UpdateState::Ready { .. } => install_and_restart(&app, &updater).map(|()| status),
+        UpdateState::Failed { message } => Err(message),
+        _ => Ok(status),
+    }
+}
+
+fn install_and_restart<R: Runtime>(app: &AppHandle<R>, updater: &Updater) -> Result<(), String> {
     let ready = updater.inner.lock().expect("updater state").ready.take();
     let Some((update, bytes)) = ready else {
         return Err("No update has been downloaded.".into());

@@ -41,6 +41,7 @@ fn main() {
             update::update_check,
             update::update_set_channel,
             update::update_restart,
+            update::update_install_now,
         ])
         .build(tauri::generate_context!())
         .expect("the Imperium window could not start")

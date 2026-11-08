@@ -1,6 +1,5 @@
-// Self-update controls in the title bar: the installed version and channel, a restart button
-// once a newer build has downloaded, and a menu to switch channel or check now. The native
-// side checks and downloads on its own; this only shows its status. Absent outside Tauri.
+// Self-update: the native side checks the chosen channel on its own and downloads newer builds;
+// this module shows its status, switches channel, and installs on request. Absent outside Tauri.
 
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -8,9 +7,9 @@ import { listen } from "@tauri-apps/api/event";
 
 import { insideTauri } from "./daemon/connection";
 
-type Channel = "main" | "experimental";
+export type Channel = "main" | "experimental";
 
-type UpdateStatus = {
+export type UpdateStatus = {
   current_version: string;
   channel: Channel;
   automatic: boolean;
@@ -21,6 +20,18 @@ type UpdateStatus = {
   | { state: "failed"; message: string }
 );
 
+export type Updates = {
+  status: UpdateStatus;
+  /** Set while a check-and-install the user asked for is running. */
+  installing: boolean;
+  error: string | null;
+  setChannel: (channel: Channel) => void;
+  /** Checks now and installs and restarts if a newer build is found. */
+  installNow: () => void;
+  /** Installs an already downloaded build and restarts. */
+  restart: () => void;
+};
+
 const CHANNELS: { id: Channel; label: string; hint: string }[] = [
   { id: "main", label: "Main", hint: "Stable releases" },
   { id: "experimental", label: "Experimental", hint: "Every build of the experimental branch; may be unstable" },
@@ -29,7 +40,7 @@ const CHANNELS: { id: Channel; label: string; hint: string }[] = [
 function describe(status: UpdateStatus): string {
   switch (status.state) {
     case "idle":
-      return status.automatic ? "Checks automatically" : "Development build: checks only when asked";
+      return status.automatic ? "Checks automatically every few hours" : "Development build: checks only when asked";
     case "checking":
       return "Checking…";
     case "up_to_date":
@@ -43,9 +54,10 @@ function describe(status: UpdateStatus): string {
   }
 }
 
-export function UpdateControl() {
+/** The updater's status and actions, or null outside the desktop app. */
+export function useUpdates(): Updates | null {
   const [status, setStatus] = useState<UpdateStatus | null>(null);
-  const [open, setOpen] = useState(false);
+  const [installing, setInstalling] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -65,60 +77,72 @@ export function UpdateControl() {
 
   const run = (action: Promise<unknown>) => {
     setError(null);
-    action.catch((reason: unknown) => setError(String(reason)));
+    return action.catch((reason: unknown) => setError(String(reason)));
   };
-  const setChannel = (channel: Channel) =>
-    run(invoke<UpdateStatus>("update_set_channel", { channel }).then(setStatus));
+  return {
+    status,
+    installing,
+    error,
+    setChannel: (channel) => void run(invoke<UpdateStatus>("update_set_channel", { channel }).then(setStatus)),
+    installNow: () => {
+      setInstalling(true);
+      // On success the app restarts; otherwise the status says why nothing was installed.
+      void run(invoke<UpdateStatus>("update_install_now").then(setStatus)).finally(() => setInstalling(false));
+    },
+    restart: () => void run(invoke("update_restart")),
+  };
+}
 
+/** Title-bar items: a restart button once a build has downloaded, and the version and channel. */
+export function UpdateControl({ updates, onOpen }: { updates: Updates | null; onOpen: () => void }) {
+  if (!updates) return null;
+  const { status } = updates;
   return (
     <>
       {status.state === "ready" && (
-        <button className="primary update-ready" onClick={() => run(invoke("update_restart"))}>
+        <button className="primary update-ready" onClick={updates.restart}>
           Restart to update
         </button>
       )}
-      <button
-        className="ghost update-version"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        title="Updates"
-      >
+      <button className="ghost update-version" onClick={onOpen} title="Updates">
         v{status.current_version}
         {status.channel === "experimental" && <span className="channel-tag">experimental</span>}
       </button>
-      {open && (
-        <div className="settings-menu update-menu" role="dialog" aria-label="Updates">
-          <fieldset className="setting">
-            <legend>Update channel</legend>
-            {CHANNELS.map((channel) => (
-              <label key={channel.id} className="radio" title={channel.hint}>
-                <input
-                  type="radio"
-                  name="update-channel"
-                  checked={status.channel === channel.id}
-                  onChange={() => setChannel(channel.id)}
-                />
-                {channel.label}
-              </label>
-            ))}
-          </fieldset>
-          <p className="muted update-state" data-state={status.state}>
-            {describe(status)}
-          </p>
-          {error && <p className="error">{error}</p>}
-          <div className="row">
-            <button
-              onClick={() => run(invoke("update_check"))}
-              disabled={status.state === "checking" || status.state === "downloading"}
-            >
-              Check now
-            </button>
-            <button className="primary" onClick={() => setOpen(false)}>
-              Done
-            </button>
-          </div>
-        </div>
-      )}
     </>
+  );
+}
+
+/** The Updates section of the settings menu: channel choice, status, and check-and-install. */
+export function UpdateSettings({ updates }: { updates: Updates }) {
+  const { status, installing } = updates;
+  const busy = installing || status.state === "checking" || status.state === "downloading";
+  return (
+    <fieldset className="setting update-settings">
+      <legend>Updates</legend>
+      <span>
+        Installed <output>v{status.current_version}</output>
+      </span>
+      <div className="update-channels" role="radiogroup" aria-label="Update channel">
+        {CHANNELS.map((channel) => (
+          <label key={channel.id} className="radio" title={channel.hint}>
+            <input
+              type="radio"
+              name="update-channel"
+              checked={status.channel === channel.id}
+              onChange={() => updates.setChannel(channel.id)}
+              disabled={busy}
+            />
+            {channel.label}
+          </label>
+        ))}
+      </div>
+      <p className="muted update-state" data-state={status.state}>
+        {installing && status.state !== "downloading" && status.state !== "checking" ? "Installing…" : describe(status)}
+      </p>
+      {updates.error && <p className="error">{updates.error}</p>}
+      <button className="primary" onClick={updates.installNow} disabled={busy}>
+        {busy ? "Updating…" : "Check and install updates"}
+      </button>
+    </fieldset>
   );
 }
