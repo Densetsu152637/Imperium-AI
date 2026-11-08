@@ -1,9 +1,10 @@
 # Plan: Emperor, an open-weight delegation model
 
-Revision: 2026-11-08 r6 (r2: local-only training, the name Emperor, separate repositories,
+Revision: 2026-11-08 r7 (r2: local-only training, the name Emperor, separate repositories,
 teacher licences; r3: strategy and planning from vague prompts, clarify-or-research, G10–G11;
 r4: context tiers from 64K to 256K and up, G12; r5: one loaded model shared by many
-sessions, G13, stage 2c; r6: a 192K tier; stage 0 in progress)
+sessions, G13, stage 2c; r6: a 192K tier; r7: subagent-first model swapping, G14, stage 2d;
+task-class routing and single-call cloud tasks, G15, stage 2e; stage 0 and stage 1 in progress)
 
 **Emperor** is a small open-weight model, fine-tuned to be the **root agent** of an Imperium
 session on a 16 GB GPU. It reads the task, plans, writes compact briefs, and hands the work to
@@ -67,6 +68,8 @@ there, once, and record why.
 | G11 | On prompts with labelled gaps, Emperor asks the user about ≥ 90 % of the gaps labelled "user's decision", and about ≤ 10 % of those labelled "researchable" or "safe default", which it resolves itself and records as assumptions; it never asks more than one batch before starting independent work | `eval --metric clarify` |
 | G12 | Emperor adapts to its tier: on the held-out suite, task success at the 64K tier is within 5 points of the 256K tier (it delegates and chunks earlier instead of failing), and no tier ever overflows its window | `eval --suite heldout --context-tier 64k` vs `--context-tier 256k`; overflow count in the report |
 | G13 | One loaded Emperor serves many sessions: with a single slot, three sessions whose roots are waiting on subagents all make progress, because no agent holds a slot while it waits; a root resuming on a different slot re-reads ≤ 10 % of its context when the host prompt cache is on | `cargo test -p imperium-core shared_slot`; llama.cpp `timings.prompt_n` vs the context length on resume |
+| G14 | On a GPU too small for Emperor and a local subagent model together, a delegated local task runs on the GPU: the idle orchestrator is swapped out (its KV saved), the subagent finishes, and the orchestrator is reloaded with its context restored (re-reading ≤ 10 % of it); a running subagent is never evicted for the orchestrator | `cargo test -p imperium-local swap` (fake launcher, budget fits one model); a measured run on the 16 GB GPU logs the swap times and `timings.prompt_n` on resume |
+| G15 | Delegations follow task class: on a labelled set, ≥ 90 % of menial tasks (refactoring, tests, UI) go to local small models and ≥ 90 % of hard tasks (deep architecture, maths) go to a cloud frontier model; ≥ 80 % of frontier tasks complete in one model call | `eval --metric routing` per class; call counts per task from the session ledger |
 
 ## Scope and non-goals
 
@@ -337,6 +340,79 @@ cache to llama.cpp, so a root that lands on another slot would re-read its whole
   `tools/server/README.md`): `--cache-ram` exists and defaults to 8192 MiB, `--slot-save-path` with
   `POST /slots/{id}?action=save|restore`, `id_slot` (-1 = any idle slot), and `cache_prompt`
   (default true) are all available.
+
+## Stage 2d: Subagent-first model swapping (Imperium)
+
+On a machine that cannot hold the orchestrator and a local subagent model at once, the work
+should still run locally: the subagent has priority while it works, and the orchestrator,
+which is asleep in `await_tasks` anyway, steps aside.
+
+**Today (checked 2026-11-08).** The supervisor already unloads *idle* models to make room and
+never evicts one in use (`crates/imperium-local/src/supervisor.rs`), and the router skips a
+local row that cannot fit. Two things block swapping: an awaiting orchestrator still holds its
+slot (fixed by stage 2c), and unloading throws its KV cache away, so reloading it would re-read
+its whole context.
+
+- Objective:
+  1. **Priority.** A model with a slot in use (a running subagent) is never evicted. A loaded
+     model with no slot in use and an agent waiting on it in `await_tasks` (the sleeping
+     orchestrator) is evictable when a subagent's model needs the room; the router counts that
+     memory as available for local subagent rows.
+  2. **Swap out with state.** Before unloading, save each occupied slot's KV with `POST
+     /slots/{id}?action=save` (`--slot-save-path` under the daemon's data folder) and record
+     which agent owned it.
+  3. **Swap back.** When the orchestrator's `await_tasks` resolves, the subagent's model, now
+     idle, is unloaded (or kept if both fit), the orchestrator is reloaded, and its slot is
+     restored with `action=restore` into the affinity slot before its next call. Model weights
+     are memory-mapped, so a recent model reloads from the OS page cache, not from disk.
+  4. **Cache, don't discard.** Saved slot files and recently used subagent models are kept in an
+     LRU cache bounded by disk and RAM settings (`runtime.llamacpp.swap_cache_mb`), so a second
+     subagent task of the same kind reloads warm.
+  5. **Cost awareness.** The router compares the swap cost (measured reload seconds, kept per
+     model) with the hosted alternative's price for that task's class (stage 2e); menial tasks
+     prefer swapping, and a task whose deadline cannot absorb the swap goes to the cloud.
+  6. **Visibility.** Swap events (`model.swapped_out`, `model.swapped_in`, with seconds and
+     bytes) reach telemetry and the Models panel.
+- Depends on: stage 2c (slots must be free while waiting)
+- Owned paths: `crates/imperium-local` (`supervisor.rs`, `backend.rs`, `planner.rs`),
+  `crates/imperium-core` (resume hook after `await_tasks`), `crates/imperium-models` (router
+  cost), `crates/imperium-protocol` (events), `docs/04-models-and-routing.md`
+- Acceptance checks: G14; `cargo test -p imperium-local swap` with a fake launcher and a budget
+  that fits one model at a time; `bash scripts/check-rust.sh` passes.
+- Status: pending
+- Outcome:
+- Handoff notes: concurrent sessions complicate "the orchestrator is asleep": evict only when
+  every agent using that model is waiting. A slot file can be stale if the model or its
+  settings changed; key files by model id, file hash, and context size.
+
+## Stage 2e: Task-class routing and single-call cloud tasks (Imperium)
+
+Emperor should send menial work to small local models and keep cloud frontier models for the
+hard parts, briefed so one call settles them.
+
+- Objective:
+  1. **Default rules.** Ship default `[[routing.rules]]` for the Emperor preset: tags
+     `refactor`, `tests`, `ui`, `format`, `docs` → `location = "local"`, tier `basic` or
+     `standard`; tags `architecture`, `math`, `proof`, `algorithm`, `design` →
+     `location = "cloud"`, tier `frontier`. Users can override them.
+  2. **Single-call tasks.** Add an optional `single_call: true` to `spawn_agent` (in the stage-1
+     tool contract): the subagent gets the brief and no tools, answers in one model call, and
+     the result returns as the report. Emperor sets it for frontier tasks (its root prompt
+     already says to brief them for one call).
+  3. **Training and evaluation.** Stage 4's synthetic routing cases label task class; the eval
+     scores G15 per class.
+- Depends on: stage 1 (tool contract); independent of 2c and 2d
+- Owned paths: `crates/imperium-protocol` (the `spawn_agent` definition and exported schema),
+  `crates/imperium-core` (the single-call path), `crates/imperium-config` (default rules),
+  `docs/04-models-and-routing.md`, `docs/03-agent-engine.md`
+- Acceptance checks: G15 (after training); now: `cargo test -p imperium-core single_call` shows
+  one model call and no tool offers; the default rules route a `tests` task local and a `math`
+  task to a cloud frontier row in `cargo test -p imperium-models`; the exported `spawn_agent`
+  schema includes `single_call`; `bash scripts/check-rust.sh` passes.
+- Status: pending
+- Outcome:
+- Handoff notes: the emperor-root prompt's "Choosing where work runs" section was added during
+  stage 1.
 
 ## Stage 2b: Eval harness (emperor repository)
 
