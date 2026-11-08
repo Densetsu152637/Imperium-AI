@@ -156,6 +156,10 @@ impl DaemonState {
         self.pets.get().and_then(Option::as_ref)
     }
 
+    pub fn paths(&self) -> &Paths {
+        &self.paths
+    }
+
     pub fn config_dir(&self) -> &Path {
         self.paths.config_dir()
     }
