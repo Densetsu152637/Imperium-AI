@@ -103,14 +103,28 @@ impl Method for SessionCreate {
     type Result = SessionCreateResult;
 }
 
-/// `session.send`: sends a user message. Messages sent during a turn run after it finishes.
+/// `session.send`: sends a user message to the root agent or one of its running subagents.
+/// While the agent is busy (a turn running, paused on a usage limit, or waiting for a
+/// permission answer) the message is queued and runs as a new turn after the current one; with
+/// `mode: "steer"` it joins the running turn instead. See `message_queued` and `steered`.
 #[derive(Debug)]
 pub struct SessionSend;
 
 impl Method for SessionSend {
     const NAME: &'static str = "session.send";
     type Params = SessionSendParams;
-    type Result = Accepted;
+    type Result = SessionSendResult;
+}
+
+/// `session.queue`: list, edit, or remove an agent's queued messages before they are
+/// delivered.
+#[derive(Debug)]
+pub struct SessionQueue;
+
+impl Method for SessionQueue {
+    const NAME: &'static str = "session.queue";
+    type Params = SessionQueueParams;
+    type Result = SessionQueueResult;
 }
 
 /// `session.respond`: answers a `permission_requested` event.
@@ -206,6 +220,48 @@ pub struct SessionCreateResult {
 pub struct SessionSendParams {
     pub session_id: String,
     pub text: String,
+    /// `queue` (the default) or `steer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mode: Option<crate::session::SendMode>,
+    /// A running subagent's task id (`t1`, ...); the root agent when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSendResult {
+    /// The message's id; when it waits, `message_queued` carries the same id.
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionQueueParams {
+    pub session_id: String,
+    /// `list`, `edit` (with `id` and `text`), or `remove` (with `id`). Editing or removing a
+    /// message that was already delivered fails.
+    #[ts(type = "\"list\" | \"edit\" | \"remove\"")]
+    pub action: String,
+    /// A running subagent's task id; the root agent when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub text: Option<String>,
+}
+
+/// The agent's queue after the action, in delivery order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionQueueResult {
+    pub messages: Vec<crate::session::QueuedMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

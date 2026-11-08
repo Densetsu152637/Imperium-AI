@@ -11,6 +11,7 @@ mod compact;
 mod journal;
 mod launcher;
 mod model;
+mod queue;
 mod session;
 mod status;
 
@@ -23,6 +24,7 @@ pub use imperium_models::{ChatClient, ChatClients};
 pub use journal::journalled_model;
 pub use launcher::{LaunchFuture, SessionLauncher};
 pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
+pub use queue::QueueError;
 pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};
 pub use status::next_attempt;
 

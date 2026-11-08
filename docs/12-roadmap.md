@@ -29,4 +29,9 @@ later with that context instead of starting fresh, for example handing a follow-
 subagent that already explored a module. Agent state is cached next to the session's files in
 the daemon's data folder, so it survives daemon restarts and moves with the session.
 
+Planned: **resource monitor.** A live view of what the machine and the sessions are using:
+CPU, GPU, RAM, and VRAM usage, plus every active external endpoint and every local model in
+use, including models still loaded or cached for active sessions (and which sessions hold
+them).
+
 Later candidates: fine-tuning plugin (Unsloth), shared team projects, a plugin registry.

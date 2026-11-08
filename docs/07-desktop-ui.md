@@ -251,6 +251,16 @@ target, the token counts, how many messages were summarised, and by which model,
 and leaves the model as it was. Breakdowns of a compacted conversation list the summary as its
 own category, *Conversation summary*.
 
+**Composer, queue, and steering (implemented):** the composer stays enabled while the agent
+works. Its send key (Enter, or Ctrl+Enter, as set in Settings) queues the message for after the
+running turn (the send button reads *Queue* then), and a *Steer* button beside it, or
+Ctrl+Shift+Enter, adds the message to the running turn instead
+([03](03-agent-engine.md#queueing-and-steering)). Waiting messages are listed just above the
+composer, marked *Queued* or *Steering*, each with *Edit* (inline; Enter saves, Escape
+cancels) and *Remove*; the list follows `queue_changed`, so it empties as messages are
+delivered. In the transcript a steering message is a user bubble with an accent edge and a
+*Steering* label, at the point in the turn where the agent read it.
+
 **Context breakdown (implemented):** the header's *Context and outputs* summary shows how full
 the root agent's context was on its latest model call, such as `12.3k / 32.8k tokens` (or just
 the tokens when the window is unknown). Opened, its *Context window* section shows, for the
