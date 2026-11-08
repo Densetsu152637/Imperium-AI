@@ -373,12 +373,35 @@ its whole context.
      prefer swapping, and a task whose deadline cannot absorb the swap goes to the cloud.
   6. **Visibility.** Swap events (`model.swapped_out`, `model.swapped_in`, with seconds and
      bytes) reach telemetry and the Models panel.
+  7. **Parallel sessions share one memory arbiter.** Every session's requests for local models
+     go through the daemon's single supervisor, which owns VRAM, RAM, the slot-file cache, and
+     the host prompt cache for all of them:
+     - **Eviction needs every user idle.** A model is swapped out only when no agent in any
+       session holds one of its slots; one session's sleeping orchestrator cannot be evicted
+       from under another session that is mid-call on the same model.
+     - **Batch by model.** Pending requests are grouped by model across sessions: while a
+       subagent model is loaded, every queued task for it (from any session) runs before the
+       swap back, so three sessions' test-writing tasks cost one swap, not three.
+     - **No thrashing.** A swapped-in model stays at least `runtime.llamacpp.min_residency_s`
+       (default 30 s) unless nothing is waiting for it, and the arbiter counts swaps per minute;
+       above a limit it stops swapping and routes the excess to the cloud or queues it.
+     - **No starvation.** Queue priority ages with waiting time, so a resuming orchestrator is
+       served after the current batch even under a steady stream of subagent work; the longest
+       wait is reported per session.
+     - **Fair shares.** Slots, slot-file cache, and `--cache-ram` are shared with a per-session
+       ceiling (default an equal share of what is free), so one busy session cannot push every
+       other session's saved context out of the cache.
+     - **One swap at a time.** Loads and unloads are serialised (they contend for the PCIe bus
+       and disk); a request that arrives mid-swap joins the queue rather than starting another.
 - Depends on: stage 2c (slots must be free while waiting)
 - Owned paths: `crates/imperium-local` (`supervisor.rs`, `backend.rs`, `planner.rs`),
   `crates/imperium-core` (resume hook after `await_tasks`), `crates/imperium-models` (router
   cost), `crates/imperium-protocol` (events), `docs/04-models-and-routing.md`
 - Acceptance checks: G14; `cargo test -p imperium-local swap` with a fake launcher and a budget
-  that fits one model at a time; `bash scripts/check-rust.sh` passes.
+  that fits one model at a time; `cargo test -p imperium-local swap_parallel`: three sessions,
+  each an orchestrator delegating two local tasks to the same subagent model, all finish, the
+  run makes at most 2 swaps out and 2 back (batched), no model in use is evicted, and no
+  request waits longer than one batch plus one swap; `bash scripts/check-rust.sh` passes.
 - Status: pending
 - Outcome:
 - Handoff notes: concurrent sessions complicate "the orchestrator is asleep": evict only when
