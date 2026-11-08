@@ -32,6 +32,14 @@ React interface that users can restyle, extend, or replace.
 - **Built for ultrawide.** Independent font and density scaling, tiling panes, readable line lengths.
 - **Linux, Windows, and macOS** from the first release.
 
+## Install
+
+Download the installer for your platform from the
+[releases page](https://github.com/Densetsu152637/Imperium-AI/releases): `…_x64-setup.exe` on
+Windows, the `.dmg` on macOS, or the `.AppImage` or `.deb` on Linux. It installs the desktop app
+together with the `imperiumd` daemon and the `imperium` CLI; the app starts the daemon when it
+opens and keeps itself up to date (Settings → Updates chooses the main or experimental channel).
+
 ## Development
 
 Phase 0 provides the Rust core (daemon, CLI, protocol, configuration) and the TypeScript

@@ -70,6 +70,15 @@ Losing the key means installed apps can no longer update, so keep a copy outside
 | Windows arm64     | `windows-11-arm`   | NSIS                           | `imperium-windows-arm64.tar.gz`        |
 | macOS universal   | `macos-latest`     | `.app`, DMG                    | `imperium-macos-universal.tar.gz`      |
 
+- Each desktop bundle is a complete install: `build-desktop.sh` builds `imperiumd` and the
+  `imperium` CLI for the target and ships them beside the app (Tauri `externalBin`; the app's
+  own executable is `imperium-desktop` so the CLI's name stays free), with the bundled
+  `policy/` workflow pack and `pets/` as resources. When no daemon answers, the app starts the
+  bundled one in the background with `IMPERIUM_RESOURCE_DIR` pointing at those resources and
+  its log in the app's log folder; it keeps running after the window closes. Before an update
+  installs, the app stops that daemon (only if it is the bundled one), and the Windows
+  installer's hooks (`src-tauri/windows/hooks.nsh`) stop it before replacing or removing files.
+  On Windows the CLI is in the install folder; on Linux the deb puts it on `PATH`.
 - Linux builds use Ubuntu 22.04 for an older glibc baseline.
 - MSI and RPM reject the hyphen in pre-release versions, so pre-release and experimental builds
   ship NSIS on Windows and AppImage and deb on Linux.
