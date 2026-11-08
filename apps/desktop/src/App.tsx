@@ -6,6 +6,7 @@
 // `?panel=<id>`: it connects to the daemon itself but shows only that panel. The main window
 // owns the layout and the list of detached panels; see panelWindows.ts.
 
+import { Plug, Plus, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
@@ -53,6 +54,8 @@ import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, snapshotSe
 import { applySettings, loadSettings, modEnabled, saveSettings, SettingsContext, type AppSettings } from "./settings";
 import { SettingsWindow } from "./SettingsWindow";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
+import { ConnectorsWindow } from "./ConnectorsWindow";
+import { Select } from "./components/Select";
 import { getDoc, setDoc, subscribeDoc } from "./store";
 import { type Daemon, useDaemon } from "./DaemonControl";
 import { UpdateControl, useUpdates } from "./UpdateControl";
@@ -132,6 +135,7 @@ export function App() {
   // Panels whose windows this session has opened, so each opens once.
   const opened = useRef(new Set<string>());
   const [showSettings, setShowSettings] = useState(false);
+  const [showConnectors, setShowConnectors] = useState(false);
   const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
@@ -564,7 +568,7 @@ export function App() {
       title: "Environments",
       actions: (
         <button onClick={() => setCreatingEnv((open) => !open)} disabled={!client} aria-expanded={creatingEnv}>
-          New environment
+          <Plus aria-hidden="true" /> New environment
         </button>
       ),
       body: (
@@ -587,25 +591,26 @@ export function App() {
       title: "Sessions",
       actions: (
         <span className="new-session">
-          <select
+          <Select
             aria-label="Model for new sessions"
-            title="Model for new sessions"
             value={newModel}
-            onChange={(event) => setNewModel(event.target.value)}
-          >
-            <option value="">Default model</option>
-            {(modelTable?.models ?? []).map((row) => (
-              <option key={row.id} value={row.id} disabled={!row.endpoint_configured}>
-                {row.id}
-              </option>
-            ))}
-          </select>
+            onChange={setNewModel}
+            options={[
+              { value: "", label: "Default model" },
+              ...(modelTable?.models ?? []).map((row) => ({
+                value: row.id,
+                label: row.id,
+                disabled: !row.endpoint_configured,
+                description: row.endpoint_configured ? undefined : "Endpoint not configured",
+              })),
+            ]}
+          />
           <button
             onClick={startSession}
             disabled={newSessionBlocker !== null}
             title={newSessionBlocker ?? `New session in ${environment?.name}`}
           >
-            New session
+            <Plus aria-hidden="true" /> New session
           </button>
         </span>
       ),
@@ -763,10 +768,24 @@ export function App() {
         </span>
         <span className="spacer" />
         <UpdateControl updates={updates} onOpen={() => setShowSettings(true)} />
-        <button className="ghost" onClick={() => setShowSettings((open) => !open)} aria-expanded={showSettings}>
-          Settings
+        <button
+          className="ghost titlebar-button"
+          onClick={() => setShowConnectors((open) => !open)}
+          aria-expanded={showConnectors}
+          title="MCP servers, plugins, and skills"
+        >
+          <Plug aria-hidden="true" /> Connectors
+        </button>
+        <button
+          className="ghost titlebar-button"
+          onClick={() => setShowSettings((open) => !open)}
+          aria-expanded={showSettings}
+          title="Settings (Ctrl+,)"
+        >
+          <Settings aria-hidden="true" /> Settings
         </button>
       </header>
+      {showConnectors && <ConnectorsWindow client={client} onClose={() => setShowConnectors(false)} />}
       {showSettings && (
         <SettingsWindow
           settings={settings}
@@ -780,6 +799,10 @@ export function App() {
           detached={Object.keys(detached)}
           onTogglePanel={togglePanel}
           onDock={dock}
+          onOpenConnectors={() => {
+            setShowSettings(false);
+            setShowConnectors(true);
+          }}
           onResetLayout={() => {
             resetLayout();
             window.location.reload();

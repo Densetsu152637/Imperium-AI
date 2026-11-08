@@ -6,12 +6,16 @@
 //! Every value remembers which layer set it, for `imperium config explain`.
 
 mod layers;
+mod mcp_servers;
 mod paths;
 mod registry;
 mod secrets;
 mod settings;
 
 pub use layers::{Config, ConfigError, Explained, Layer, Source, load};
+pub use mcp_servers::{
+    MAX_SERVER_NAME, remove_mcp_server, save_mcp_server, set_mcp_server_enabled, valid_server_name,
+};
 pub use paths::{Paths, PathsError};
 pub use registry::{
     SETTINGS, SetError, SettingDef, SettingKind, SettingState, describe, describe_key,

@@ -176,10 +176,52 @@ Design tokens (colour, type, spacing, radius, motion) are CSS custom properties.
 token sets; light, dark, and high-contrast ship by default. Fonts are user-selectable,
 including ligatures for code.
 
+**Icons (implemented):** every icon is a [Lucide](https://lucide.dev) line icon from
+`lucide-react` (pinned in `apps/desktop/package.json`), the same thin, rounded style as
+ChatGPT's and Claude's apps. One stroke width is set for all of them in `main.tsx`
+(`LucideProvider`), and their size follows the text around them (`.lucide` in `styles.css`),
+so they scale with the interface. Icons beside a label are hidden from screen readers; a
+button with only an icon (`.icon-only`, such as a panel's close button) carries an
+`aria-label` and a tooltip. Project glyphs, the send button, tool-call states (spinner, check,
+cross), panel and title-bar actions, Settings sections, and daemon and update controls all use
+them; there are no text symbols or hand-drawn SVGs left for controls.
+
+**Selects (implemented):** `components/Select.tsx` replaces native `<select>` elements, which
+cannot be themed: a raised button showing the choice and a floating list (rendered above
+dialogs so nothing clips it) with a check by the selected option and optional descriptions.
+It follows the WAI-ARIA select-only combobox pattern: arrow keys, Home/End, and Page Up/Down
+move; typing jumps to a matching option (also on the closed control, like a native select);
+Enter or Space chooses; Escape or a click outside closes without closing the dialog around
+it. Settings, the context breakdown's agent picker, and the Hugging Face quantisation picker
+use it.
+
 ## Accessibility
 
 Full keyboard navigation, visible focus, screen-reader labels, reduced-motion support, and
 WCAG AA contrast for shipped themes.
+
+## Connectors (implemented)
+
+**Connectors** in the title bar (or Settings → Connectors) opens a window like Claude's and
+ChatGPT's connector directories, with a search box and two tabs:
+
+- **Installed:** MCP servers, each with its icon, command or URL, and status (*Not tested*,
+  *Connected · N tools* with the tool names, *Error* with the reason, or *Off*), and buttons
+  to test the connection, configure, remove (optionally deleting its saved secrets), and a
+  switch to turn it off. Missing keychain secrets are flagged. Below them, plugins (skills,
+  commands, hooks, and servers they bring, with an on/off switch) and skills.
+- **Browse:** a card grid of the connector directory, filtered by category chips and search,
+  each card with an icon, publisher, description, category, local or remote, and *Add* (or
+  *Added*). *Add* opens a form for the connector's settings: a name, then its fields (folders,
+  paths, URLs, tokens). Secret fields are password inputs saved to the system keychain and
+  never shown again. A *Custom connector* card adds any server by command (arguments,
+  environment, secret variables) or URL (bearer token, headers), with the tools that run
+  without asking and a timeout; *Configure* opens the same form for an installed server, where
+  saved secrets are kept unless replaced.
+
+Adding or saving a connector tests it straight away. The window talks to the daemon's `mcp.*`
+methods and the directory comes from the daemon; see
+[managing MCP servers from the app](05-tools-and-isolation.md#connectors-managing-mcp-servers-from-the-app-implemented).
 
 ## Settings and persistence (implemented)
 
@@ -191,7 +233,8 @@ every setting:
   reduce motion), Chat (send key, Markdown, code wrapping, following new output),
   Notifications (sounds for approvals and finished sessions, a title badge), Panels (show or
   hide each panel, reset the layout), Keyboard, Daemon (start, stop, restart, log, keep
-  running), and Updates (channel, check and install).
+  running), Updates (channel, check and install), and Connectors (opens the Connectors
+  window, with the MCP and plugin settings).
 - **Agent and daemon:** every setting the daemon exposes through `config.describe`, grouped by
   section (models, local runtime, memory, workflow, web, media, isolation, GitHub, pets, phone,
   resuming, network). Changes go to the user config file through `config.set` and apply when

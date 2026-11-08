@@ -1,6 +1,7 @@
 // The Environments and Sessions panels on the left. An environment is a named set of folders;
 // its sessions' tools may use every folder, and the first is the working directory.
 
+import { ArrowLeft, FolderPlus, Pencil, Trash, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import type { EnvironmentInfo } from "@imperium/protocol";
@@ -125,13 +126,13 @@ export function EnvironmentsPanel({
                             {index === 0 && env.folders.length > 1 && <span className="muted"> · working directory</span>}
                           </span>
                           <button
-                            className="ghost"
+                            className="ghost icon-only"
                             aria-label={`Remove ${folder} from ${env.name}`}
                             title="Remove folder (the folder itself is untouched)"
                             disabled={!connected}
                             onClick={() => actions.onRemoveFolder(env.id, folder)}
                           >
-                            ×
+                            <X />
                           </button>
                         </li>
                       ))}
@@ -139,10 +140,10 @@ export function EnvironmentsPanel({
                     </ul>
                     <div className="environment-actions">
                       <button onClick={() => actions.onAddFolder(env.id)} disabled={!connected}>
-                        Add folder
+                        <FolderPlus aria-hidden="true" /> Add folder
                       </button>
                       <button onClick={() => setRenaming(env.id)} disabled={!connected}>
-                        Rename
+                        <Pencil aria-hidden="true" /> Rename
                       </button>
                       {deleting === env.id ? (
                         <>
@@ -159,7 +160,7 @@ export function EnvironmentsPanel({
                         </>
                       ) : (
                         <button onClick={() => setDeleting(env.id)} disabled={!connected}>
-                          Delete
+                          <Trash aria-hidden="true" /> Delete
                         </button>
                       )}
                     </div>
@@ -268,7 +269,7 @@ export function SessionsPanel({
       {scope && (
         <div className="sessions-scope">
           <button className="back" onClick={onShowAll}>
-            <span aria-hidden="true">←</span> All sessions
+            <ArrowLeft aria-hidden="true" /> All sessions
           </button>
           <span className="scope-name" title={scope.folders.join("\n")}>
             <ProjectIcon choice={environmentIcon(scope)} size="small" />

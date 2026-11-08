@@ -76,6 +76,51 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "D:/Notes"]
 trusted_projects = ["D:/Git Repositories/Imperium-AI"]
 ```
 
+A stdio server's tokens go in `secret_env`, environment variables read from the keychain when
+the server starts, so the config file never holds them:
+`secret_env = { SLACK_BOT_TOKEN = { secret = "mcp.slack.bot-token" } }`. A server may also
+record `catalog = "<id>"`, the connector it was added from, and `enabled = false` keeps it
+configured without starting it. Plugins found in the plugin folders can be turned off by name
+with `extensions.disabled_plugins`.
+
+### Connectors: managing MCP servers from the app (implemented)
+
+The desktop app's **Connectors** window (title bar, or Settings → Connectors) lists installed
+MCP servers, plugins, and skills, and offers a directory of popular servers to add. It works
+through these daemon methods, which write `[mcp.servers.<name>]` in the user config with
+`toml_edit` the way `config.set` does: comments, formatting, and unknown keys are kept, the
+whole configuration is validated after the edit, and a change that would make it invalid is
+undone. Server names are 1–40 lowercase letters, digits, `_` or `-`.
+
+| Method | Does |
+|---|---|
+| `mcp.list` | The servers in the user config with their last known status (`untested`, `connected` with the tool names, `error` with the reason, or `disabled`) and any secrets missing from the keychain; the plugins in `<config>/plugins` and `extensions.plugin_dirs` (with skill, command, hook, and server counts and whether each is enabled); and the user's and plugins' skills. |
+| `mcp.catalog` | The connector directory. |
+| `mcp.install` | Adds a directory entry under a name, filling its settings from the form's values. |
+| `mcp.save` | Adds or replaces a server from its full settings (custom servers and *Configure*). |
+| `mcp.set_enabled` | Turns a server on or off (`enabled = false`). |
+| `mcp.remove` | Removes a server; optionally deletes the secrets it referred to. |
+| `mcp.test` | Starts the server as a session would, lists its tools, and stops it; the result is what `mcp.list` shows until the next test. |
+
+Secret values (tokens, keys, connection strings with passwords) are sent once with
+`mcp.install` or `mcp.save`, stored in the keychain (named `mcp.<server>.<field>`), and written
+to the config only as `{ secret = "<name>" }`; no method returns them. New sessions start the
+servers as saved, without restarting the daemon; running sessions keep the servers they
+started with. Turning a plugin on or off goes through `config.set` and applies after a restart.
+
+The directory is data, not code: `crates/imperiumd/catalog/connectors.json` is built in, and
+`<config>/connectors.json` (same shape, `{ "entries": [...] }`) adds entries or replaces
+built-in ones with the same `id`. An entry has a name, description, category, publisher,
+homepage, a [Lucide](https://lucide.dev) icon name, and either a `command` with `args` and
+`env` or a `url` with `headers` and `bearer`, plus the `fields` the user fills in (`text`,
+`path`, `path_list`, `url`, or `secret`, each optionally required, with a placeholder and a
+default). `{{field}}` in an argument, an `env` or header value, or the URL is replaced by the
+field's value; an argument that is exactly `{{field}}` of a `path_list` becomes one argument
+per line, and an optional field left empty drops its argument or variable. A `secret` field
+may only fill a whole `env` value (it becomes `secret_env`) or `bearer`. The built-in
+directory has Filesystem, Git, GitHub (hosted), Fetch, Memory, PostgreSQL, SQLite, Slack,
+Brave Search, Playwright, Notion, Context7, Sequential Thinking, and Time.
+
 Planned:
 
 - Client support for stdio and streamable-HTTP MCP servers, including tools, resources,

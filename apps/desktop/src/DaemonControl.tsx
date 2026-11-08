@@ -2,6 +2,7 @@
 // it, read its log, and choose whether it keeps running after the app closes. The native side
 // does the work; absent outside Tauri.
 
+import { Play, RefreshCw, RotateCw, ScrollText, Square } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -106,19 +107,19 @@ export function DaemonSettings({ daemon }: { daemon: Daemon }) {
         {status.running ? (
           <>
             <button onClick={() => daemon.run("stop")} disabled={busy !== null}>
-              Stop
+              <Square aria-hidden="true" /> Stop
             </button>
             <button onClick={() => daemon.run("restart")} disabled={busy !== null || !status.can_start}>
-              Restart
+              <RotateCw aria-hidden="true" /> Restart
             </button>
           </>
         ) : (
           <button className="primary" onClick={() => daemon.run("start")} disabled={busy !== null || !status.can_start}>
-            Start
+            <Play aria-hidden="true" /> Start
           </button>
         )}
-        <button className="ghost" onClick={() => (log === null ? void loadLog() : setLog(null))}>
-          {log === null ? "Show log" : "Hide log"}
+        <button className="ghost" onClick={() => (log === null ? void loadLog() : setLog(null))} aria-expanded={log !== null}>
+          <ScrollText aria-hidden="true" /> {log === null ? "Show log" : "Hide log"}
         </button>
       </div>
       <label className="checkbox">
@@ -137,7 +138,7 @@ export function DaemonSettings({ daemon }: { daemon: Daemon }) {
           <div className="daemon-log-bar">
             <span className="muted">{status.log_path}</span>
             <button className="ghost" onClick={() => void loadLog()}>
-              Refresh
+              <RefreshCw aria-hidden="true" /> Refresh
             </button>
           </div>
           <pre>{log}</pre>

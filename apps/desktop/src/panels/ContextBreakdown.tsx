@@ -5,6 +5,8 @@ import { useState } from "react";
 
 import type { TokenCountMethod } from "@imperium/protocol";
 
+import { Select } from "../components/Select";
+
 import {
   ROOT,
   breakdownUsed,
@@ -47,13 +49,12 @@ export function ContextBreakdownView({ session }: { session: SessionState }) {
       {agents.length > 1 && (
         <label className="context-agent">
           Agent
-          <select value={agentId} onChange={(event) => setChosen(event.target.value)}>
-            {agents.map((id) => (
-              <option key={id} value={id}>
-                {agentLabel(session, id)}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={agentId}
+            onChange={setChosen}
+            aria-label="Agent"
+            options={agents.map((id) => ({ value: id, label: agentLabel(session, id) }))}
+          />
         </label>
       )}
       <BreakdownDetail breakdown={breakdown} />

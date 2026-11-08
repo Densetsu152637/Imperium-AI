@@ -44,6 +44,10 @@ use imperium_protocol::methods::{
     HfFiles, ModelDownload, ModelDownloadCancel, ModelDownloadCancelParams,
     ModelDownloadCancelResult, ModelDownloads, ModelDownloadsParams, ModelDownloadsResult,
 };
+use imperium_protocol::methods::{
+    McpCatalog, McpCatalogParams, McpInstall, McpList, McpListParams, McpRemove, McpSave,
+    McpSetEnabled, McpTest,
+};
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 use imperium_protocol::methods::{
     SessionQueue, SessionQueueParams, SessionQueueResult, SessionSendResult,
@@ -187,6 +191,27 @@ impl Connection {
             }
             ConfigSet::NAME => call::<ConfigSet>(request.params, |params: ConfigSetParams| {
                 crate::config::set(&self.state, params)
+            }),
+            McpList::NAME => call::<McpList>(request.params, |_: McpListParams| {
+                Ok(crate::connectors::list(&self.state))
+            }),
+            McpCatalog::NAME => call::<McpCatalog>(request.params, |_: McpCatalogParams| {
+                Ok(crate::connectors::catalog(&self.state))
+            }),
+            McpSave::NAME => call::<McpSave>(request.params, |params| {
+                crate::connectors::save(&self.state, params)
+            }),
+            McpInstall::NAME => call::<McpInstall>(request.params, |params| {
+                crate::connectors::install(&self.state, params)
+            }),
+            McpSetEnabled::NAME => call::<McpSetEnabled>(request.params, |params| {
+                crate::connectors::set_enabled(&self.state, params)
+            }),
+            McpRemove::NAME => call::<McpRemove>(request.params, |params| {
+                crate::connectors::remove(&self.state, params)
+            }),
+            McpTest::NAME => call_later::<McpTest, _>(request.params, &mut later, |params| {
+                crate::connectors::test(Arc::clone(&self.state), params)
             }),
             Ping::NAME => call::<Ping>(request.params, |_: PingParams| {
                 Ok(PingResult {
@@ -1048,6 +1073,170 @@ mod tests {
             let refused = connection.handle_text(&request(4, PetStrip::NAME, params));
             assert_eq!(error_code(&refused), Some(codes::INVALID_PARAMS));
         }
+    }
+
+    fn connectors_connection() -> (
+        tempfile::TempDir,
+        Paths,
+        Arc<imperium_config::MemorySecrets>,
+        Connection,
+    ) {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let secrets = Arc::new(imperium_config::MemorySecrets::new());
+        let mut connection = Connection::new(DaemonState::with_secrets(
+            paths.clone(),
+            settings,
+            None,
+            secrets.clone(),
+        ));
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        (home, paths, secrets, connection)
+    }
+
+    #[test]
+    fn connectors_are_installed_from_the_catalogue_with_secrets_kept_out_of_the_config() {
+        use imperium_config::SecretStore;
+        let (_home, paths, secrets, mut connection) = connectors_connection();
+        std::fs::create_dir_all(paths.config_dir()).unwrap();
+        std::fs::write(paths.user_config_file(), "# mine\n[daemon]\nport = 7000\n").unwrap();
+
+        let catalog = result(connection.handle_text(&request(2, McpCatalog::NAME, json!({}))));
+        let slack = catalog["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "slack")
+            .unwrap();
+        assert_eq!(slack["fields"][0]["kind"], "secret");
+
+        let installed = result(connection.handle_text(&request(
+            3,
+            McpInstall::NAME,
+            json!({"catalog_id": "slack", "values": {"bot_token": "xoxb-secret", "team_id": "T1"}}),
+        )));
+        let server = &installed["server"];
+        assert_eq!(server["name"], "slack");
+        assert_eq!(server["config"]["catalog"], "slack");
+        assert_eq!(
+            server["config"]["secret_env"]["SLACK_BOT_TOKEN"],
+            "mcp.slack.bot-token"
+        );
+        assert_eq!(server["status"]["state"], "untested");
+        assert_eq!(server["status"]["missing_secrets"], json!([]));
+        let text = std::fs::read_to_string(paths.user_config_file()).unwrap();
+        assert!(
+            text.starts_with("# mine\n[daemon]\nport = 7000\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("SLACK_BOT_TOKEN = { secret = \"mcp.slack.bot-token\" }"),
+            "{text}"
+        );
+        assert!(!text.contains("xoxb-secret"), "{text}");
+        let name: imperium_config::SecretName = "mcp.slack.bot-token".parse().unwrap();
+        assert_eq!(secrets.load(&name).unwrap().as_deref(), Some("xoxb-secret"));
+
+        // A second install under the same name is refused; a missing field too.
+        let again = connection.handle_text(&request(
+            4,
+            McpInstall::NAME,
+            json!({"catalog_id": "slack", "values": {"bot_token": "x", "team_id": "T"}}),
+        ));
+        assert_eq!(error_code(&again), Some(codes::INVALID_PARAMS));
+        let missing = connection.handle_text(&request(
+            5,
+            McpInstall::NAME,
+            json!({"catalog_id": "slack", "name": "slack2", "values": {}}),
+        ));
+        assert_eq!(error_code(&missing), Some(codes::INVALID_PARAMS));
+
+        // A custom server, then edits: disable, update, and the list reflects each.
+        let saved = result(connection.handle_text(&request(
+            6,
+            McpSave::NAME,
+            json!({
+                "name": "remote",
+                "create": true,
+                "config": {"url": "https://example.com/mcp", "bearer_secret": "mcp.remote.token"},
+                "secrets": {"mcp.remote.token": "tok"}
+            }),
+        )));
+        assert_eq!(
+            saved["server"]["config"]["bearer_secret"],
+            "mcp.remote.token"
+        );
+        let disabled = result(connection.handle_text(&request(
+            7,
+            McpSetEnabled::NAME,
+            json!({"name": "remote", "enabled": false}),
+        )));
+        assert_eq!(disabled["server"]["status"]["state"], "disabled");
+        let listed = result(connection.handle_text(&request(8, McpList::NAME, json!({}))));
+        let names: Vec<&str> = listed["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|server| server["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["remote", "slack"]);
+        assert_eq!(listed["servers"][0]["config"]["enabled"], false);
+        let text = std::fs::read_to_string(paths.user_config_file()).unwrap();
+        assert!(text.contains("enabled = false"), "{text}");
+        assert!(!text.contains("tok\""), "{text}");
+
+        // Removing forgets the server and, when asked, its secrets.
+        let removed = result(connection.handle_text(&request(
+            9,
+            McpRemove::NAME,
+            json!({"name": "slack", "forget_secrets": true}),
+        )));
+        assert_eq!(removed["removed"], true);
+        assert_eq!(secrets.load(&name).unwrap(), None);
+        let text = std::fs::read_to_string(paths.user_config_file()).unwrap();
+        assert!(!text.contains("slack"), "{text}");
+        assert!(text.starts_with("# mine\n"), "{text}");
+        let again =
+            result(connection.handle_text(&request(10, McpRemove::NAME, json!({"name": "slack"}))));
+        assert_eq!(again["removed"], false);
+    }
+
+    #[tokio::test]
+    async fn testing_a_connector_records_its_status() {
+        let (_home, _paths, _secrets, mut connection) = connectors_connection();
+        result(connection.handle_text(&request(
+            2,
+            McpSave::NAME,
+            json!({"name": "broken", "config": {"command": "definitely-not-an-mcp-server-xyz"}}),
+        )));
+        let handled = connection.handle_text(&request(3, McpTest::NAME, json!({"name": "broken"})));
+        let response = handled.deferred.expect("a deferred reply").await;
+        let Outcome::Result(status) = response.outcome else {
+            panic!("mcp.test failed: {response:?}");
+        };
+        assert_eq!(status["state"], "error");
+        assert!(
+            status["error"]
+                .as_str()
+                .unwrap()
+                .contains("could not start"),
+            "{status}"
+        );
+        assert!(status["checked_at"].is_number());
+
+        let listed = result(connection.handle_text(&request(4, McpList::NAME, json!({}))));
+        assert_eq!(listed["servers"][0]["status"]["state"], "error");
+
+        let unknown = connection.handle_text(&request(5, McpTest::NAME, json!({"name": "nope"})));
+        let response = unknown.deferred.expect("a deferred reply").await;
+        assert!(
+            matches!(response.outcome, Outcome::Error(ref error) if error.code == codes::INVALID_PARAMS)
+        );
     }
 
     #[test]

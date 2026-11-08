@@ -4,6 +4,7 @@
 mod approvals;
 mod autofix;
 mod config;
+mod connectors;
 mod downloads;
 mod endpoint;
 mod environments;
