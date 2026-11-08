@@ -9,7 +9,7 @@ use axum::Router;
 use axum::routing::post;
 use base64::Engine;
 use imperium_core::{ResolvedModel, Session, SessionConfig};
-use imperium_media::{Media, OpenAiImages, Service};
+use imperium_media::{Media, MediaTools, OpenAiImages, Service};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
@@ -102,7 +102,6 @@ async fn agents_generate_images_and_audio() {
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         local: None,
-        mcp: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
@@ -113,14 +112,13 @@ async fn agents_generate_images_and_audio() {
         resume: false,
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
-        media: Some(Arc::new(Media {
+        tools: vec![Arc::new(MediaTools::new(Arc::new(Media {
             image: Some(Arc::new(OpenAiImages {
                 service: service("sdxl"),
             })),
             speech: Some((service("tts"), "alloy".into())),
             transcription: Some(service("whisper")),
-        })),
-        web: None,
+        })))],
         max_steps: 6,
         journal_path: dir.path().join("journal.jsonl"),
     })

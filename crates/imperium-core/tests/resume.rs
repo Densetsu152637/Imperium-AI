@@ -54,7 +54,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         local: None,
-        mcp: Vec::new(),
+        tools: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
@@ -65,8 +65,6 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         resume,
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
-        media: None,
-        web: None,
         max_steps: 3,
         journal_path: dir.join(".sessions/s.jsonl"),
     })

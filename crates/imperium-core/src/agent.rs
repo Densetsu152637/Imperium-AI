@@ -5,6 +5,10 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use imperium_api::{
+    ToolContext, ToolEvent, ToolGroup, ToolProvider, parse_arguments as parse,
+    truncate_chars as truncate,
+};
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage, stream_chat};
 use imperium_protocol::session::{
@@ -116,11 +120,11 @@ impl Agent {
                 memory_instructions(memory, can_delegate),
             ));
         }
-        if shared.web.is_some() {
-            parts.push((
-                Category::SystemCitations,
-                imperium_web::CITATION_INSTRUCTIONS.to_string(),
-            ));
+        // Tool providers' rules for their tools (the web tools' citation rules).
+        for provider in &shared.tools {
+            if let Some(instructions) = provider.instructions() {
+                parts.push((Category::SystemCitations, instructions.to_string()));
+            }
         }
         if can_delegate && let Some(instructions) = &shared.instructions {
             parts.push((Category::SystemProject, instructions.clone()));
@@ -159,11 +163,30 @@ impl Agent {
         self.shared.emitter.emit(&self.id, event);
     }
 
+    /// The tool providers in `group`, in the order they were given.
+    fn providers(&self, group: ToolGroup) -> impl Iterator<Item = &Arc<dyn ToolProvider>> {
+        self.shared
+            .tools
+            .iter()
+            .filter(move |provider| provider.group() == group)
+    }
+
+    /// The provider that runs the tool called `name`: outside servers' tools first, as they
+    /// are offered first.
+    fn provider_for(&self, name: &str) -> Option<Arc<dyn ToolProvider>> {
+        self.providers(ToolGroup::External)
+            .chain(self.providers(ToolGroup::Builtin))
+            .find(|provider| provider.handles(name))
+            .cloned()
+    }
+
     /// The tools offered to the model, and where the MCP tools sit among them.
     fn tool_specs(&self) -> (Vec<ToolSpec>, Range<usize>) {
         let mut tools = specs();
         let mcp_start = tools.len();
-        tools.extend(self.shared.mcp.tool_specs());
+        for provider in self.providers(ToolGroup::External) {
+            tools.extend(provider.specs());
+        }
         let mcp = mcp_start..tools.len();
         tools.push(update_plan_spec());
         if !self.shared.extensions.skills.is_empty() {
@@ -175,14 +198,8 @@ impl Agent {
         if self.can_delegate && self.shared.launcher.is_some() {
             tools.push(start_session_spec());
         }
-        if let Some(media) = &self.shared.media {
-            tools.extend(media.tool_specs());
-        }
-        if let Some(web) = &self.shared.web {
-            tools.extend(web.web.tool_specs());
-            if web.browser.is_some() {
-                tools.extend(browser_specs());
-            }
+        for provider in self.providers(ToolGroup::Builtin) {
+            tools.extend(provider.specs());
         }
         if self.shared.memory.is_some() {
             tools.extend([memory_search_spec(), memory_read_spec()]);
@@ -563,272 +580,6 @@ impl Agent {
         imperium_extensions::skills::load(skill, args.file.as_deref())
     }
 
-    /// Runs `web_search` (through the configured provider) or `web_fetch` (asking first unless
-    /// the domain is allowed or the user allowed fetching for the session).
-    async fn run_web(&self, call: &ToolCall) -> String {
-        #[derive(Deserialize)]
-        struct Args {
-            #[serde(default)]
-            url: String,
-            #[serde(default)]
-            query: String,
-            #[serde(default)]
-            offset: usize,
-            #[serde(default)]
-            limit: usize,
-            #[serde(default)]
-            count: Option<usize>,
-        }
-        let name = call.function.name.as_str();
-        let finish = |ok: bool, output: String| {
-            self.emit(SessionEvent::ToolFinished {
-                call_id: call.id.clone(),
-                ok,
-                output: truncate(&output, EVENT_OUTPUT_CHARS),
-            });
-            output
-        };
-        let Some(tools) = &self.shared.web else {
-            return finish(false, "error: web tools are off".into());
-        };
-        let args: Args = match parse(&call.function.arguments) {
-            Ok(args) => args,
-            Err(error) => return finish(false, format!("error: {error}")),
-        };
-        let summary = if name == "web_fetch" {
-            format!("fetch {}", args.url)
-        } else {
-            format!("search the web for {:?}", args.query)
-        };
-        if let Some(blocked) = self.before_tool(name, &call.function.arguments).await {
-            return finish(false, blocked);
-        }
-        let needs_approval = name == "web_fetch" && !tools.allows(&args.url);
-        if needs_approval && !self.approve(name, &summary).await {
-            return finish(false, "The user denied this action.".into());
-        }
-        self.emit(SessionEvent::ToolStarted {
-            call_id: call.id.clone(),
-            tool: name.to_string(),
-            summary,
-        });
-        let result = if name == "web_fetch" {
-            tools.web.fetch(&args.url, args.offset, args.limit).await
-        } else {
-            tools
-                .web
-                .search(&args.query, args.count.unwrap_or(8))
-                .await
-                .map(|hits| imperium_web::render_hits(&hits))
-        };
-        let (ok, output) = match result {
-            Ok(output) => (true, output),
-            Err(error) => (false, format!("error: {error}")),
-        };
-        self.after_tool(name, &call.function.arguments, ok, &output)
-            .await;
-        finish(ok, output)
-    }
-
-    /// Generates images or speech into the project's media folder, or transcribes audio. Each
-    /// call asks first (it may cost money or send data to a service) unless allowed for the
-    /// session.
-    async fn run_media(&self, call: &ToolCall) -> String {
-        #[derive(Deserialize)]
-        struct Args {
-            #[serde(default)]
-            prompt: String,
-            #[serde(default)]
-            text: String,
-            #[serde(default)]
-            voice: Option<String>,
-            #[serde(default)]
-            name: Option<String>,
-            #[serde(default)]
-            path: String,
-            #[serde(default)]
-            width: Option<u32>,
-            #[serde(default)]
-            height: Option<u32>,
-        }
-        let name = call.function.name.as_str();
-        let finish = |ok: bool, output: String| {
-            self.emit(SessionEvent::ToolFinished {
-                call_id: call.id.clone(),
-                ok,
-                output: truncate(&output, EVENT_OUTPUT_CHARS),
-            });
-            output
-        };
-        let Some(media) = &self.shared.media else {
-            return finish(false, "error: media tools are off".into());
-        };
-        let args: Args = match parse(&call.function.arguments) {
-            Ok(args) => args,
-            Err(error) => return finish(false, format!("error: {error}")),
-        };
-        let summary = match name {
-            "media_image" => format!("generate an image: {}", truncate(&args.prompt, 200)),
-            "media_speak" => format!("speak: {}", truncate(&args.text, 200)),
-            _ => format!("transcribe {}", args.path),
-        };
-        if let Some(blocked) = self.before_tool(name, &call.function.arguments).await {
-            return finish(false, blocked);
-        }
-        if !self.approve(name, &summary).await {
-            return finish(false, "The user denied this action.".into());
-        }
-        self.emit(SessionEvent::ToolStarted {
-            call_id: call.id.clone(),
-            tool: name.to_string(),
-            summary,
-        });
-        let root = self.shared.workspace.root();
-        let http = &self.shared.http;
-        let result = match name {
-            "media_image" => {
-                let size = (args.width.unwrap_or(1024), args.height.unwrap_or(1024));
-                media
-                    .image(http, root, &args.prompt, size, args.name.as_deref())
-                    .await
-                    .map(|path| {
-                        self.emit(SessionEvent::MediaCreated {
-                            path: path.clone(),
-                            kind: "image".into(),
-                            prompt: args.prompt.clone(),
-                        });
-                        format!("saved {path}")
-                    })
-            }
-            "media_speak" => media
-                .speak(
-                    http,
-                    root,
-                    &args.text,
-                    args.voice.as_deref(),
-                    args.name.as_deref(),
-                )
-                .await
-                .map(|path| {
-                    self.emit(SessionEvent::MediaCreated {
-                        path: path.clone(),
-                        kind: "speech".into(),
-                        prompt: args.text.clone(),
-                    });
-                    format!("saved {path}")
-                }),
-            _ => media.transcribe(http, root, &args.path).await,
-        };
-        let (ok, output) = match result {
-            Ok(output) => (true, output),
-            Err(error) => (false, format!("error: {error}")),
-        };
-        self.after_tool(name, &call.function.arguments, ok, &output)
-            .await;
-        finish(ok, output)
-    }
-
-    /// Drives the session's browser. Opening a page follows the web_fetch domain rule; clicking
-    /// and typing always ask unless allowed for the session. Each action is mirrored to
-    /// clients as a `browser_view` event.
-    async fn run_browser(&self, call: &ToolCall) -> String {
-        #[derive(Deserialize)]
-        struct Args {
-            #[serde(default)]
-            url: String,
-            #[serde(default)]
-            selector: String,
-            #[serde(default)]
-            text: String,
-            #[serde(default)]
-            submit: bool,
-        }
-        let name = call.function.name.as_str();
-        let finish = |ok: bool, output: String| {
-            self.emit(SessionEvent::ToolFinished {
-                call_id: call.id.clone(),
-                ok,
-                output: truncate(&output, EVENT_OUTPUT_CHARS),
-            });
-            output
-        };
-        let Some((tools, setup)) = self
-            .shared
-            .web
-            .as_ref()
-            .and_then(|tools| Some((tools, tools.browser.as_ref()?)))
-        else {
-            return finish(false, "error: browser tools are off".into());
-        };
-        let args: Args = match parse(&call.function.arguments) {
-            Ok(args) => args,
-            Err(error) => return finish(false, format!("error: {error}")),
-        };
-        let summary = match name {
-            "browser_open" => format!("open {} in the browser", args.url),
-            "browser_click" => format!("click {} in the browser", args.selector),
-            "browser_type" => format!("type into {} in the browser", args.selector),
-            _ => "read the browser page".into(),
-        };
-        if let Some(blocked) = self.before_tool(name, &call.function.arguments).await {
-            return finish(false, blocked);
-        }
-        let needs_approval = match name {
-            "browser_open" => !tools.allows(&args.url),
-            "browser_click" | "browser_type" => true,
-            _ => false,
-        };
-        if needs_approval && !self.approve(name, &summary).await {
-            return finish(false, "The user denied this action.".into());
-        }
-        self.emit(SessionEvent::ToolStarted {
-            call_id: call.id.clone(),
-            tool: name.to_string(),
-            summary,
-        });
-        let mut guard = setup.instance.lock().await;
-        if guard.is_none() {
-            match imperium_web::browser::Browser::launch(
-                &setup.program,
-                &setup.profile_dir,
-                setup.headless,
-            )
-            .await
-            {
-                Ok(browser) => *guard = Some(browser),
-                Err(error) => return finish(false, format!("error: {error}")),
-            }
-        }
-        let Some(browser) = guard.as_mut() else {
-            return finish(false, "error: the browser is not running".into());
-        };
-        let result = match name {
-            "browser_open" => browser.open(&args.url).await,
-            "browser_click" => browser.click(&args.selector).await,
-            "browser_type" => {
-                browser
-                    .type_text(&args.selector, &args.text, args.submit)
-                    .await
-            }
-            _ => browser.read().await,
-        };
-        if let Ok(view) = browser.view().await {
-            self.emit(SessionEvent::BrowserView {
-                url: view.url,
-                title: view.title,
-                screenshot: view.screenshot,
-            });
-        }
-        drop(guard);
-        let (ok, output) = match result {
-            Ok(output) => (true, output),
-            Err(error) => (false, format!("error: {error}")),
-        };
-        self.after_tool(name, &call.function.arguments, ok, &output)
-            .await;
-        finish(ok, output)
-    }
-
     /// Asks the user to approve a call to `tool`, unless they allowed it for the session.
     async fn approve(&self, tool: &str, summary: &str) -> bool {
         if lock(&self.shared.allowed_tools).contains(tool) {
@@ -850,8 +601,9 @@ impl Agent {
         }
     }
 
-    /// Calls an MCP tool, asking first unless the server's `allow` list covers it.
-    async fn run_mcp(&self, call: &ToolCall) -> String {
+    /// Runs a provider's tool: its check, then `tool.before` hooks, the required-context rule,
+    /// and approval, exactly as for the built-in tools.
+    async fn run_provider(&self, provider: &dyn ToolProvider, call: &ToolCall) -> String {
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
         let finish = |ok: bool, output: String| {
@@ -862,30 +614,36 @@ impl Agent {
             });
             output
         };
-        let Some(tool) = self.shared.mcp.find(name) else {
-            return finish(false, format!("error: unknown tool {name}"));
+        let check = match provider.check(name, arguments) {
+            Ok(check) => check,
+            Err(error) => return finish(false, format!("error: {error}")),
         };
-        let summary = format!(
-            "{} on MCP server {}: {}",
-            tool.name,
-            tool.server,
-            truncate(arguments, 200)
-        );
         if let Some(blocked) = self.before_tool(name, arguments).await {
             return finish(false, blocked);
         }
-        if let Some(missing) = self.missing_context() {
+        if check.needs_context
+            && let Some(missing) = self.missing_context()
+        {
             return finish(false, missing);
         }
-        if !tool.allowed && !self.approve(name, &summary).await {
+        if check.ask && !self.approve(name, &check.summary).await {
             return finish(false, "The user denied this action.".into());
         }
         self.emit(SessionEvent::ToolStarted {
             call_id: call.id.clone(),
             tool: name.to_string(),
-            summary,
+            summary: check.summary,
         });
-        let (ok, output) = match self.shared.mcp.call(name, arguments).await {
+        let emit = |event: ToolEvent| {
+            if let Some(event) = tool_event(event) {
+                self.emit(event);
+            }
+        };
+        let context = ToolContext {
+            root: self.shared.workspace.root(),
+            emit: &emit,
+        };
+        let (ok, output) = match provider.call(&context, name, arguments).await {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
@@ -970,23 +728,12 @@ impl Agent {
             "memory_remember" if self.shared.memory.is_some() && self.can_delegate => {
                 AgentTool::MemoryRemember
             }
-            _ if self.shared.mcp.find(name).is_some() => return self.run_mcp(call).await,
-            "media_image" | "media_speak" | "media_transcribe" if self.shared.media.is_some() => {
-                return self.run_media(call).await;
+            _ => {
+                return match self.provider_for(name) {
+                    Some(provider) => self.run_provider(provider.as_ref(), call).await,
+                    None => self.run_builtin(call).await,
+                };
             }
-            "web_fetch" | "web_search" if self.shared.web.is_some() => {
-                return self.run_web(call).await;
-            }
-            "browser_open" | "browser_read" | "browser_click" | "browser_type"
-                if self
-                    .shared
-                    .web
-                    .as_ref()
-                    .is_some_and(|web| web.browser.is_some()) =>
-            {
-                return self.run_browser(call).await;
-            }
-            _ => return self.run_builtin(call).await,
         };
         let summary = match tool {
             AgentTool::UpdatePlan => "update the plan",
@@ -1228,15 +975,6 @@ impl Agent {
     }
 }
 
-fn parse<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T, String> {
-    let arguments = if arguments.trim().is_empty() {
-        "{}"
-    } else {
-        arguments
-    };
-    serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))
-}
-
 /// Tool arguments as JSON for hooks, or the raw text when they do not parse.
 fn tool_input(arguments: &str) -> serde_json::Value {
     serde_json::from_str(arguments).unwrap_or_else(|_| arguments.into())
@@ -1292,38 +1030,6 @@ fn manifest_event(manifest: &LoadManifest) -> SessionEvent {
             })
             .collect(),
     }
-}
-
-fn browser_specs() -> Vec<ToolSpec> {
-    let spec = |name: &str, description: &str, parameters: serde_json::Value| ToolSpec {
-        name: name.into(),
-        description: description.into(),
-        parameters,
-    };
-    vec![
-        spec(
-            "browser_open",
-            "Open a page in the browser and return its text. Use for pages that need JavaScript or interaction; web_fetch is cheaper for plain pages.",
-            json!({"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}),
-        ),
-        spec(
-            "browser_read",
-            "Return the current browser page's title, URL, and text.",
-            json!({"type": "object", "properties": {}}),
-        ),
-        spec(
-            "browser_click",
-            "Click the first element matching a CSS selector.",
-            json!({"type": "object", "properties": {"selector": {"type": "string"}}, "required": ["selector"]}),
-        ),
-        spec(
-            "browser_type",
-            "Type text into the first element matching a CSS selector; submit its form if asked.",
-            json!({"type": "object", "properties": {
-                "selector": {"type": "string"}, "text": {"type": "string"}, "submit": {"type": "boolean"}
-            }, "required": ["selector", "text"]}),
-        ),
-    ]
 }
 
 fn start_session_spec() -> ToolSpec {
@@ -1440,10 +1146,21 @@ fn millis(duration: std::time::Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-fn truncate(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        return text.to_string();
-    }
-    let kept: String = text.chars().take(limit).collect();
-    format!("{kept}…")
+/// A provider's event as the session reports it; `None` for kinds it does not report.
+fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
+    Some(match event {
+        ToolEvent::MediaCreated { path, kind, prompt } => {
+            SessionEvent::MediaCreated { path, kind, prompt }
+        }
+        ToolEvent::BrowserView {
+            url,
+            title,
+            screenshot,
+        } => SessionEvent::BrowserView {
+            url,
+            title,
+            screenshot,
+        },
+        _ => return None,
+    })
 }

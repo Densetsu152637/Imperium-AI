@@ -33,6 +33,17 @@ per second, cost) followed by that call's `context_breakdown` ([context
 management](#context-management)), and `turn_completed` (token usage, cost, model calls) or
 `turn_failed`.
 
+**Tool providers (implemented):** tools beyond the agent's own (files, commands, planning,
+delegation, memory, skills, workflow context) come from `ToolProvider`s (`imperium-api`) that the
+daemon gives each session: web and browser (`imperium-web`), media (`imperium-media`), and MCP
+servers (`imperium-mcp`). A provider lists its tools, may add system-prompt instructions (the web
+citation rules) and start-up work (MCP servers connect before the first turn, failures becoming
+notices), says how each call is checked (its summary, whether to ask, whether it waits for
+required context), and runs it. The agent runs `tool.before` hooks, the required-context rule,
+the approval, and `tool.after` hooks around every call, as for its own tools. MCP providers'
+tools are offered right after the file and command tools and the others' after the agent's
+planning, skill, context, and session tools, so the order the model sees is the same as before.
+
 Tool calling works with native function-calling models and, as a fallback, a constrained
 JSON/grammar format (llama.cpp grammars, vLLM guided decoding) for models without native
 support.

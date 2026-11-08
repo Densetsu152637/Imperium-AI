@@ -7,11 +7,11 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::{get, post};
-use imperium_core::{ResolvedModel, Session, SessionConfig, WebTools};
+use imperium_core::{ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
-use imperium_web::{Searxng, Web};
+use imperium_web::{BrowserSetup, Searxng, Web, WebTools};
 use serde_json::{Value, json};
 
 async fn serve(app: Router) -> String {
@@ -119,7 +119,6 @@ async fn agents_research_and_cite_sources() {
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         local: None,
-        mcp: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
@@ -130,12 +129,11 @@ async fn agents_research_and_cite_sources() {
         resume: false,
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
-        media: None,
-        web: Some(WebTools {
+        tools: vec![Arc::new(WebTools {
             web: Web::new(Some(Arc::new(Searxng { url: searxng }))),
             allow_domains: vec!["127.0.0.1".into()],
             browser: None,
-        }),
+        })],
         max_steps: 8,
         journal_path: dir.path().join("journal.jsonl"),
     })
@@ -248,7 +246,6 @@ async fn browser_actions_are_mirrored_as_screenshots() {
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         local: None,
-        mcp: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
@@ -259,17 +256,16 @@ async fn browser_actions_are_mirrored_as_screenshots() {
         resume: false,
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
-        media: None,
-        web: Some(WebTools {
+        tools: vec![Arc::new(WebTools {
             web: Web::new(None),
             allow_domains: vec!["127.0.0.1".into()],
-            browser: Some(imperium_core::BrowserSetup {
+            browser: Some(BrowserSetup {
                 program,
                 profile_dir: dir.path().join("profile"),
                 headless: true,
                 instance: Arc::default(),
             }),
-        }),
+        })],
         max_steps: 8,
         journal_path: dir.path().join("journal.jsonl"),
     })

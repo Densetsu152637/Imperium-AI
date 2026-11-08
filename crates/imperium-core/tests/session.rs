@@ -85,7 +85,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         local: None,
-        mcp: Vec::new(),
+        tools: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
@@ -96,8 +96,6 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         resume: false,
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
-        media: None,
-        web: None,
         max_steps: 5,
         journal_path: dir.join(".journal/test.jsonl"),
     })

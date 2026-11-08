@@ -198,7 +198,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
             ..RoutingSettings::default()
         },
         local: Some(local),
-        mcp: Vec::new(),
+        tools: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
@@ -209,8 +209,6 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         resume: false,
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
-        media: None,
-        web: None,
         max_steps: 10,
         journal_path: dir.path().join("journal.jsonl"),
     })
