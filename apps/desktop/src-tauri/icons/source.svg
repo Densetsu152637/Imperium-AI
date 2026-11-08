@@ -1,5 +1,60 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <rect width="1024" height="1024" rx="224" fill="#14161c"/>
-  <path d="M512 188 772 338v348L512 836 252 686V338Z" fill="none" stroke="#c9a24b" stroke-width="56" stroke-linejoin="round"/>
-  <path d="M512 338v348M392 410h240M392 614h240" stroke="#e8e6e1" stroke-width="56" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Imperium app icon: "I." in chrome on a metallic black tile. Regenerate the platform
+       icons by running `pnpm exec tauri icon src-tauri/icons/source.svg` in apps/desktop. -->
+  <defs>
+    <!-- Metallic black body: lighter graphite at the top, near-black at the bottom. -->
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34373d"/>
+      <stop offset="0.45" stop-color="#17191d"/>
+      <stop offset="1" stop-color="#07080a"/>
+    </linearGradient>
+    <!-- A soft sheen across the upper left, like light on polished paint. -->
+    <radialGradient id="sheen" cx="0.28" cy="0.12" r="0.75">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="0.6" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Chrome trim around the edge. -->
+    <linearGradient id="trim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e9e5dc"/>
+      <stop offset="0.35" stop-color="#6f6b64"/>
+      <stop offset="0.65" stop-color="#c9c3b6"/>
+      <stop offset="1" stop-color="#3a3834"/>
+    </linearGradient>
+    <!-- Chrome letter: bright top, a dark band through the middle, warm silver below. -->
+    <linearGradient id="chrome" gradientUnits="userSpaceOnUse" x1="0" y1="252" x2="0" y2="772">
+      <stop offset="0" stop-color="#fbfaf7"/>
+      <stop offset="0.42" stop-color="#d9d4ca"/>
+      <stop offset="0.5" stop-color="#7d7870"/>
+      <stop offset="0.58" stop-color="#b9b3a7"/>
+      <stop offset="1" stop-color="#efebe3"/>
+    </linearGradient>
+    <!-- The accent dot, lit from above. -->
+    <radialGradient id="dot" cx="0.38" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#9be8f2"/>
+      <stop offset="0.45" stop-color="#1fb2c8"/>
+      <stop offset="1" stop-color="#0b6f7e"/>
+    </radialGradient>
+    <filter id="glow" x="-1" y="-1" width="3" height="3">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+    <filter id="shadow" x="-0.3" y="-0.3" width="1.6" height="1.6">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+
+  <!-- Tile with chrome trim. -->
+  <rect x="40" y="40" width="944" height="944" rx="212" fill="url(#trim)"/>
+  <rect x="52" y="52" width="920" height="920" rx="200" fill="url(#body)"/>
+  <rect x="52" y="52" width="920" height="920" rx="200" fill="url(#sheen)"/>
+
+  <!-- "I": a serif capital built from rectangles so it renders the same everywhere. -->
+  <g filter="url(#shadow)" fill="url(#chrome)">
+    <rect x="292" y="252" width="300" height="68" rx="10"/>
+    <rect x="382" y="300" width="120" height="424" />
+    <rect x="292" y="704" width="300" height="68" rx="10"/>
+  </g>
+
+  <!-- ".": the accent dot on the baseline. -->
+  <circle cx="694" cy="707" r="65" fill="#1fb2c8" opacity="0.55" filter="url(#glow)"/>
+  <circle cx="694" cy="707" r="65" fill="url(#dot)"/>
 </svg>
