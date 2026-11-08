@@ -37,6 +37,13 @@ There are two channels, each with its own branch, workflow, and update feed.
 | Main (pre)   | Tag `vX.Y.Z-beta.N` etc.            | `X.Y.Z-beta.N`               | `vX.Y.Z-beta.N (main)` pre-release; not offered by the updater |
 | Experimental | Each push to the `experimental` branch | `X.Y.Z-experimental.<run>` | `vX.Y.Z-experimental.<run> (experimental)` pre-release         |
 
+Each channel keeps one release. After a new release is published,
+`scripts/ci/prune-releases.sh` deletes the channel's older releases and their tags: a new
+experimental build replaces the last one, a stable main release replaces every other main
+release, and a main pre-release replaces only the last pre-release (so the stable release the
+main update feed points at stays). Deleting after publishing means the feed never points at
+nothing. Runtime-pack releases are never touched.
+
 `X.Y.Z` is the version in `apps/desktop/src-tauri/tauri.conf.json`; `<run>` is the
 experimental workflow's run number, so every experimental build is newer than the last.
 `release.yml` ignores `-experimental.` tags.
