@@ -20,7 +20,9 @@ import {
   type Entry,
   type SessionState,
 } from "../sessions";
+import type { DaemonClient } from "../daemon/client";
 import { ContextBreakdownView } from "./ContextBreakdown";
+import { ModelSuggestionCard } from "./ModelSuggestionCard";
 import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
 
@@ -36,6 +38,8 @@ type Props = {
   models: ModelRow[];
   /** Switches the session's model; resolves with the daemon's answer, or null when it failed. */
   onSetModel: (model: string) => Promise<SessionControlResult | null>;
+  /** For answering model download suggestions and following their downloads. */
+  client?: DaemonClient | null;
 };
 
 export function SessionPanel({
@@ -47,6 +51,7 @@ export function SessionPanel({
   onResumeNow,
   models,
   onSetModel,
+  client = null,
 }: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
@@ -167,7 +172,17 @@ export function SessionPanel({
 
       <div className="conversation" aria-live="polite">
         {session.entries.map((entry, index) => (
-          <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} />
+          entry.kind === "suggestion" ? (
+            <ModelSuggestionCard
+              key={index}
+              entry={entry}
+              sessionId={session.summary.session_id}
+              client={client}
+              onSetModel={onSetModel}
+            />
+          ) : (
+            <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} />
+          )
         ))}
         {session.busy && <p className="working">Working…</p>}
         <div ref={end} />
@@ -274,6 +289,8 @@ function EntryView({
       return <p className="error">Turn failed: {entry.message}</p>;
     case "notice":
       return <p className="notice">{entry.message}</p>;
+    case "suggestion":
+      return null;
   }
 }
 

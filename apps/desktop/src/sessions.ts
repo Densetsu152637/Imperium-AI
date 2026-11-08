@@ -22,7 +22,26 @@ export type Entry =
   | { kind: "task"; taskId: string; brief: string; model: string }
   | { kind: "turn"; usage: TokenUsage; costUsd: number | null; steps: number }
   | { kind: "error"; message: string }
-  | { kind: "notice"; message: string };
+  | { kind: "notice"; message: string }
+  | SuggestionEntry;
+
+/** A model download suggestion and what became of it (see docs/07-desktop-ui.md). */
+export type SuggestionEntry = {
+  kind: "suggestion";
+  id: string;
+  need: string;
+  repo: string;
+  quant: string;
+  /** What to switch to once it is downloaded. */
+  model: string;
+  sizeBytes: number;
+  fit: string;
+  reason: string;
+  /** `pending` until answered; then as `model_suggestion_update` reports. */
+  state: "pending" | "downloading" | "ready" | "failed" | "cancelled" | "dismissed" | "disabled";
+  jobId: string | null;
+  message: string | null;
+};
 
 export type TaskState = {
   taskId: string;
@@ -200,6 +219,36 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
           `summarised by ${event.summary_model}`,
       });
       break;
+    case "model_suggestion":
+      next.push({
+        kind: "suggestion",
+        id: event.id,
+        need: event.need,
+        repo: event.repo,
+        quant: event.quant,
+        model: event.model,
+        sizeBytes: event.size_bytes,
+        fit: event.fit,
+        reason: event.reason,
+        state: "pending",
+        jobId: null,
+        message: null,
+      });
+      break;
+    case "model_suggestion_update": {
+      const index = next.findLastIndex((entry) => entry.kind === "suggestion" && entry.id === event.id);
+      if (index >= 0) {
+        const suggestion = next[index] as SuggestionEntry;
+        next[index] = {
+          ...suggestion,
+          state: event.state,
+          jobId: event.job_id ?? suggestion.jobId,
+          model: event.model ?? suggestion.model,
+          message: event.message,
+        };
+      }
+      break;
+    }
     case "model_changed":
       next.push({ kind: "notice", message: `Switched model from ${event.from} to ${event.to}` });
       break;

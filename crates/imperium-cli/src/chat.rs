@@ -7,7 +7,8 @@ use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
     ContextFit, SessionControl, SessionControlParams, SessionCreate, SessionCreateParams,
-    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams,
+    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSuggestionRespond,
+    SuggestionRespondParams,
 };
 use imperium_protocol::session::{
     AgentEvent, ContextCategory, PermissionDecision, ROOT_AGENT, SESSION_EVENT, SessionEvent,
@@ -46,6 +47,8 @@ pub fn run(
              models, /compact summarises older turns; an empty line or /exit quits."
         );
         let mut latest = None;
+        // A model download suggestion waiting for /download, /dismiss, or /never.
+        let mut suggestion: Option<String> = None;
         loop {
             let Some(text) = prompt("\n> ")? else { break };
             let text = text.trim();
@@ -56,6 +59,38 @@ pub fn run(
                 match &latest {
                     Some(breakdown) => print!("{}", render_breakdown(breakdown)),
                     None => println!("No model call yet; send a message first."),
+                }
+                continue;
+            }
+            if let Some(action) = suggestion_command(text) {
+                let Some(id) = suggestion.take() else {
+                    println!("No model suggestion is waiting.");
+                    continue;
+                };
+                let result = client
+                    .call::<SessionSuggestionRespond>(SuggestionRespondParams {
+                        session_id: session.session_id.clone(),
+                        suggestion_id: id.clone(),
+                        action: action.into(),
+                    })
+                    .await;
+                match result {
+                    Ok(result) => match result.job {
+                        Some(job) => println!(
+                            "Downloading {} {} ({}); you will be told when it is ready.",
+                            job.repo, job.variant, job.job_id
+                        ),
+                        None if action == "never" => {
+                            println!(
+                                "Model download suggestions are off (models.suggest_downloads)."
+                            )
+                        }
+                        None => println!("Not now."),
+                    },
+                    Err(error) => {
+                        println!("{error}");
+                        suggestion = Some(id);
+                    }
                 }
                 continue;
             }
@@ -93,13 +128,30 @@ pub fn run(
                     text: text.to_string(),
                 })
                 .await?;
-            follow_turn(&mut client, &session.session_id, &mut latest).await?;
+            follow_turn(
+                &mut client,
+                &session.session_id,
+                &mut latest,
+                &mut suggestion,
+            )
+            .await?;
             if context_summary && let Some(breakdown) = &latest {
                 println!("{}", summary_line(breakdown));
             }
         }
         Ok(())
     })
+}
+
+/// `/download`, `/dismiss`, or `/never`: the answer to a model download suggestion, as
+/// `session.suggestion_respond` names it.
+fn suggestion_command(text: &str) -> Option<&'static str> {
+    match text {
+        "/download" => Some("download"),
+        "/dismiss" => Some("dismiss"),
+        "/never" => Some("never"),
+        _ => None,
+    }
 }
 
 /// A chat command that controls the session rather than messaging it.
@@ -277,6 +329,7 @@ async fn follow_turn(
     client: &mut Client,
     session_id: &str,
     latest: &mut Option<Breakdown>,
+    suggestion: &mut Option<String>,
 ) -> anyhow::Result<()> {
     loop {
         let notification = client.next_notification().await?;
@@ -433,6 +486,41 @@ async fn follow_turn(
             SessionEvent::ContextLoaded { references } => {
                 println!("\n{tag}· loaded {}", references.join(", "));
             }
+            SessionEvent::ModelSuggestion {
+                id,
+                repo,
+                quant,
+                size_bytes,
+                fit,
+                reason,
+                ..
+            } => {
+                println!(
+                    "
+{tag}· suggestion: download {repo} ({quant}, {:.1} GB, fits: {fit}) because                      {reason}.
+  /download to get it, /dismiss for not now, /never to stop                      suggesting downloads.",
+                    size_bytes as f64 / 1e9
+                );
+                *suggestion = Some(id);
+            }
+            SessionEvent::ModelSuggestionUpdate {
+                state,
+                model,
+                message,
+                ..
+            } => match state.as_str() {
+                "ready" => println!(
+                    "
+{tag}· the suggested model is ready: /model {} switches to it",
+                    model.unwrap_or_default()
+                ),
+                "failed" | "cancelled" => println!(
+                    "
+{tag}· the suggested download {state}: {}",
+                    message.unwrap_or_default()
+                ),
+                _ => {}
+            },
             // This client prints the result of its own /model and /compact.
             SessionEvent::ModelChanged { .. } | SessionEvent::ContextCompacted { .. } => {}
         }
@@ -482,6 +570,13 @@ mod tests {
             ],
             cached_tokens: 0,
         }
+    }
+
+    #[test]
+    fn suggestion_answers_are_read() {
+        assert_eq!(suggestion_command("/download"), Some("download"));
+        assert_eq!(suggestion_command("/never"), Some("never"));
+        assert_eq!(suggestion_command("/model x"), None);
     }
 
     #[test]
