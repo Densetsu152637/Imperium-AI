@@ -305,6 +305,7 @@ export function App() {
       resume_policy: null,
       repo: null,
       pull_request: null,
+      model: null,
       ...params,
     };
     return client.call<SessionControlResult>("session.control", full);
@@ -325,6 +326,21 @@ export function App() {
 
   const resumeNow = () => {
     if (selected) control(selected, { action: "resume_now" }).catch(report);
+  };
+
+  /** Switches the selected session's model; the daemon compacts the conversation if needed. */
+  const setModel = async (model: string): Promise<SessionControlResult | null> => {
+    if (!selected) return null;
+    const id = selected;
+    try {
+      const result = await control(id, { action: "set_model", model });
+      const now = result.model ?? model;
+      setSessions((all) => (all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, model: now } } } : all));
+      return result;
+    } catch (error) {
+      report(error);
+      return null;
+    }
   };
 
   const selectSession = (sessionId: string) => {
@@ -485,6 +501,8 @@ export function App() {
                       onRespond={respond}
                       onSetResumePolicy={setResumePolicy}
                       onResumeNow={resumeNow}
+                      models={modelTable?.models ?? []}
+                      onSetModel={setModel}
                     />
                   ),
                 },

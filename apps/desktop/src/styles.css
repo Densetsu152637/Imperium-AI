@@ -59,6 +59,7 @@
   --ctx-system-5: #2b5689;
   --ctx-tools: #a77fd8;
   --ctx-tools-2: #cbaaf0;
+  --ctx-summary: #5cc1b4;
   --ctx-manifest: #e6b45c;
   --ctx-memories: #c98d3f;
   --ctx-user: var(--accent);
@@ -129,6 +130,7 @@
     --ctx-system-5: #143a66;
     --ctx-tools: #7a4fb3;
     --ctx-tools-2: #a888d6;
+    --ctx-summary: #1f7a6e;
     --ctx-manifest: #b07f1f;
     --ctx-memories: #8a5a14;
     --ctx-overhead: #8a909a;
@@ -691,6 +693,53 @@ pre {
   white-space: nowrap;
 }
 
+/* The model picker sits among the environment pills, as one of them. */
+.session-env > .model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.3rem 0 0.15rem;
+}
+
+.model-picker select {
+  max-width: 22rem;
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+}
+
+.model-picker select:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.model-picker select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.model-picker select:disabled {
+  cursor: default;
+  color: var(--muted);
+}
+
+.model-picker option {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.model-note {
+  color: var(--warn);
+}
+
 .toggle {
   display: inline-flex;
   align-items: center;
@@ -1231,6 +1280,9 @@ button.danger:hover:not(:disabled) {
 }
 .ctx-tools_mcp {
   --ctx-color: var(--ctx-tools-2);
+}
+.ctx-summary {
+  --ctx-color: var(--ctx-summary);
 }
 .ctx-manifest {
   --ctx-color: var(--ctx-manifest);

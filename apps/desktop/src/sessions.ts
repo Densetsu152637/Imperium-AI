@@ -191,6 +191,18 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
     case "resumed":
       next.push({ kind: "notice", message: "Resumed" });
       break;
+    case "context_compacted":
+      next.push({
+        kind: "notice",
+        message:
+          `Context compacted to fit ${event.model}: ${formatTokens(event.before_tokens)} → ` +
+          `${formatTokens(event.after_tokens)} tokens; ${event.summarised_messages} earlier messages ` +
+          `summarised by ${event.summary_model}`,
+      });
+      break;
+    case "model_changed":
+      next.push({ kind: "notice", message: `Switched model from ${event.from} to ${event.to}` });
+      break;
     default:
       break;
   }
@@ -215,7 +227,8 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
     ];
   }
 
-  let { tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause } = state;
+  let { summary, tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause } = state;
+  if (event.type === "model_changed" && agentId === ROOT) summary = { ...summary, model: event.to };
   if (event.type === "status_changed") {
     status = event.status;
     statusDetail = event.detail;
@@ -283,7 +296,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
         : { ...task, entries: applyToEntries(task.entries, agentEvent) };
     tasks = { ...tasks, [agentId]: updated };
   }
-  return { ...state, entries, tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause };
+  return { ...state, summary, entries, tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause };
 }
 
 /** Tokens a breakdown's request held: the categories, which add up to the reported size. */

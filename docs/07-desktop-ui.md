@@ -196,6 +196,18 @@ session's icon opens that project's view, which lists only its sessions, with *A
 to return; clicking the row opens the session. The session header shows the status and the
 *Usage limits* controls (how to wait when usage runs out, and *Resume now* while paused).
 
+**Model picker (implemented):** among the header's environment pills, the session's model is a
+picker listing the model table (`models.list`; rows whose endpoint is not configured are shown
+but cannot be chosen, and a model outside the table is listed as is). Choosing one switches the
+session with `session.control` `set_model`; it is disabled while a turn runs, since switches
+apply between turns ([03](03-agent-engine.md#switching-models-and-compaction)). When the new
+model's context window is smaller than the conversation needs, the daemon compacts it first:
+the picker notes `compacted 30.1k → 9.2k tokens`, and the transcript gets a notice naming the
+target, the token counts, how many messages were summarised, and by which model, followed by
+*Switched model from x to y*. A refused switch (nothing fits, a missing key) shows its error
+and leaves the model as it was. Breakdowns of a compacted conversation list the summary as its
+own category, *Conversation summary*.
+
 **Context breakdown (implemented):** the header's *Context and outputs* summary shows how full
 the root agent's context was on its latest model call, such as `12.3k / 32.8k tokens` (or just
 the tokens when the window is unknown). Opened, its *Context window* section shows, for the
