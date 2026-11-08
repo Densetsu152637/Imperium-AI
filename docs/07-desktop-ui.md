@@ -21,6 +21,15 @@
   columns are brushed-metal rails; the conversation is a centred column with the user's turns
   as pills on the right.
 
+**Model download suggestions (implemented):** a `model_suggestion` event shows as a card in the
+conversation, styled like a permission prompt: the repository, quantisation, size, how it fits
+this machine (on the GPU, split with system memory, or on the CPU), and why it is suggested,
+with **Download**, **Not now**, and **Don't ask again** (which turns off *Suggest model
+downloads* in Settings). Downloading shows a progress bar from `models.download_progress`;
+when it is done the card offers **Switch to it** (`session.control` `set_model`). Nothing is
+downloaded until Download is clicked. The answers go through `session.suggestion_respond`
+([04](04-models-and-routing.md#model-download-suggestions)).
+
 Not yet: dragging panels and modules between columns, the edit-layout mode, detachable windows,
 project layout overrides, mods, and themes beyond light and dark.
 
