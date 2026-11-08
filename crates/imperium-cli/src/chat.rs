@@ -9,7 +9,7 @@ use imperium_cli::client::Client;
 use imperium_protocol::methods::{
     ContextFit, SessionControl, SessionControlParams, SessionCreate, SessionCreateParams,
     SessionQueue, SessionQueueParams, SessionRespond, SessionRespondParams, SessionSend,
-    SessionSendParams,
+    SessionSendParams, SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
     AgentEvent, ContextCategory, PermissionDecision, QueuedMessage, ROOT_AGENT, SESSION_EVENT,
@@ -49,7 +49,8 @@ pub fn run(
             "Type a message. While the agent works, messages queue and run in order; /steer \
              <text> adds a message to the running turn, /queue lists what waits. /context shows \
              what the model is reading, /model <id> switches models, /compact summarises older \
-             turns; an empty line (when idle) or /exit quits."
+             turns; /download, /dismiss, or /never answer a model download suggestion; an \
+             empty line (when idle) or /exit quits."
         );
         let mut lines = read_lines();
         let mut chat = Chat {
@@ -114,6 +115,8 @@ struct Chat {
     /// The user just sent a message to an idle agent, so its `turn_started` needs no echo.
     sent_while_idle: bool,
     latest: Option<Breakdown>,
+    /// A model download suggestion waiting for /download, /dismiss, or /never.
+    suggestion: Option<String>,
 }
 
 impl Chat {
@@ -195,6 +198,9 @@ impl Chat {
                 }
             }
             Some(Command::Steer(text)) => self.send(client, session_id, text, true).await?,
+            Some(Command::Suggestion(action)) => {
+                self.answer_suggestion(client, session_id, action).await?
+            }
             None => {
                 self.send(client, session_id, text.to_string(), false)
                     .await?
@@ -202,6 +208,43 @@ impl Chat {
         }
         self.prompt();
         Ok(Flow::Continue)
+    }
+
+    /// Answers the waiting model download suggestion (`session.suggestion_respond`).
+    async fn answer_suggestion(
+        &mut self,
+        client: &mut Client,
+        session_id: &str,
+        action: &'static str,
+    ) -> anyhow::Result<()> {
+        let Some(id) = self.suggestion.take() else {
+            println!("No model suggestion is waiting.");
+            return Ok(());
+        };
+        let result = client
+            .call::<SessionSuggestionRespond>(SuggestionRespondParams {
+                session_id: session_id.to_string(),
+                suggestion_id: id.clone(),
+                action: action.into(),
+            })
+            .await;
+        match result {
+            Ok(result) => match result.job {
+                Some(job) => println!(
+                    "Downloading {} {} ({}); you will be told when it is ready.",
+                    job.repo, job.variant, job.job_id
+                ),
+                None if action == "never" => {
+                    println!("Model download suggestions are off (models.suggest_downloads).")
+                }
+                None => println!("Not now."),
+            },
+            Err(error) => {
+                println!("{error}");
+                self.suggestion = Some(id);
+            }
+        }
+        Ok(())
     }
 
     /// Sends a message: it starts a turn when the agent is idle and otherwise queues (or,
@@ -391,6 +434,39 @@ impl Chat {
                 }
             }
             SessionEvent::Steered { id, .. } => println!("\n{tag}· steering {id} delivered"),
+            SessionEvent::ModelSuggestion {
+                id,
+                repo,
+                quant,
+                size_bytes,
+                fit,
+                reason,
+                ..
+            } => {
+                println!(
+                    "\n{tag}· suggestion: download {repo} ({quant}, {:.1} GB, fits: {fit}) because \
+                     {reason}.\n  /download to get it, /dismiss for not now, /never to stop \
+                     suggesting downloads.",
+                    size_bytes as f64 / 1e9
+                );
+                self.suggestion = Some(id);
+            }
+            SessionEvent::ModelSuggestionUpdate {
+                state,
+                model,
+                message,
+                ..
+            } => match state.as_str() {
+                "ready" => println!(
+                    "\n{tag}· the suggested model is ready: /model {} switches to it",
+                    model.unwrap_or_default()
+                ),
+                "failed" | "cancelled" => println!(
+                    "\n{tag}· the suggested download {state}: {}",
+                    message.unwrap_or_default()
+                ),
+                _ => {}
+            },
             // This client prints the result of its own /model and /compact, and lists the
             // queue on /queue.
             SessionEvent::ModelChanged { .. }
@@ -416,6 +492,9 @@ enum Command {
     Queue,
     /// `/steer <text>`: a message for the running turn.
     Steer(String),
+    /// `/download`, `/dismiss`, or `/never`: the answer to a model download suggestion, as
+    /// `session.suggestion_respond` names it.
+    Suggestion(&'static str),
     Control(Control),
 }
 
@@ -423,6 +502,9 @@ fn command(text: &str) -> Option<Command> {
     match text {
         "/context" => return Some(Command::Context),
         "/queue" => return Some(Command::Queue),
+        "/download" => return Some(Command::Suggestion("download")),
+        "/dismiss" => return Some(Command::Suggestion("dismiss")),
+        "/never" => return Some(Command::Suggestion("never")),
         _ => {}
     }
     if let Some(steer) = text.strip_prefix("/steer ") {
@@ -647,6 +729,13 @@ mod tests {
             ],
             cached_tokens: 0,
         }
+    }
+
+    #[test]
+    fn suggestion_answers_are_commands() {
+        assert_eq!(command("/download"), Some(Command::Suggestion("download")));
+        assert_eq!(command("/never"), Some(Command::Suggestion("never")));
+        assert_ne!(command("/dismiss"), None);
     }
 
     #[test]

@@ -974,6 +974,17 @@ pre {
   box-shadow: var(--highlight), 0 0 0 3px var(--accent-soft);
 }
 
+.suggestion-body {
+  display: flex;
+  flex: 1 1 18rem;
+  flex-direction: column;
+  gap: calc(var(--space) * 0.5);
+}
+
+.suggestion-body progress {
+  width: 100%;
+}
+
 .permission .buttons {
   display: flex;
   flex-wrap: wrap;

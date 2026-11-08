@@ -618,7 +618,7 @@ pub struct AgentSettings {
     pub resume_days: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ModelSettings {
     /// Model for new sessions, as `<endpoint>:<model>`, for example `openrouter:qwen/qwen3-coder`.
     #[serde(default)]
@@ -632,6 +632,109 @@ pub struct ModelSettings {
     /// Where models downloaded from Hugging Face go; see [`ModelSettings::download_dir`].
     #[serde(default)]
     pub download_dir: Option<PathBuf>,
+    /// Sessions may offer to download a suitable local model from Hugging Face when the best
+    /// model available is poor for the task (see docs/04-models-and-routing.md). Nothing is
+    /// downloaded without the user's consent.
+    #[serde(default = "enabled")]
+    pub suggest_downloads: bool,
+    /// `[[models.suggestions]]`: the repositories suggestions choose from. Setting it replaces
+    /// the built-in list ([`default_suggestions`]).
+    #[serde(default = "default_suggestions")]
+    pub suggestions: Vec<SuggestionCandidate>,
+}
+
+impl Default for ModelSettings {
+    fn default() -> Self {
+        ModelSettings {
+            default: None,
+            catalog: Vec::new(),
+            folders: Vec::new(),
+            download_dir: None,
+            suggest_downloads: true,
+            suggestions: default_suggestions(),
+        }
+    }
+}
+
+/// A Hugging Face GGUF repository that model suggestions may offer, written as
+/// `[[models.suggestions]]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SuggestionCandidate {
+    /// `owner/name` of a GGUF repository.
+    pub repo: String,
+    /// What it is good for: `chat`, `code`, `tools` (reliable tool calling), `vision` (needs
+    /// `mmproj`).
+    pub capabilities: Vec<String>,
+    /// `small`, `medium`, or `large`: among choices that fit equally well, larger is preferred.
+    #[serde(default = "default_size_class")]
+    pub size: String,
+    /// The context length the model supports, in tokens.
+    pub context: u32,
+    /// Download the multimodal projector too (vision models).
+    #[serde(default)]
+    pub mmproj: bool,
+}
+
+fn default_size_class() -> String {
+    "small".into()
+}
+
+/// The built-in suggestion list: well-known GGUF repositories for general chat (small and
+/// medium), code, and vision.
+pub fn default_suggestions() -> Vec<SuggestionCandidate> {
+    let row = |repo: &str, capabilities: &[&str], size: &str, context: u32, mmproj: bool| {
+        SuggestionCandidate {
+            repo: repo.into(),
+            capabilities: capabilities.iter().map(|c| c.to_string()).collect(),
+            size: size.into(),
+            context,
+            mmproj,
+        }
+    };
+    vec![
+        row(
+            "Qwen/Qwen3-4B-GGUF",
+            &["chat", "tools"],
+            "small",
+            32_768,
+            false,
+        ),
+        row(
+            "Qwen/Qwen3-14B-GGUF",
+            &["chat", "tools"],
+            "medium",
+            32_768,
+            false,
+        ),
+        row(
+            "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+            &["code", "chat", "tools"],
+            "small",
+            32_768,
+            false,
+        ),
+        row(
+            "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+            &["code", "chat", "tools"],
+            "medium",
+            262_144,
+            false,
+        ),
+        row(
+            "unsloth/gemma-3-4b-it-GGUF",
+            &["vision", "chat"],
+            "small",
+            131_072,
+            true,
+        ),
+        row(
+            "unsloth/gemma-3-12b-it-GGUF",
+            &["vision", "chat"],
+            "medium",
+            131_072,
+            true,
+        ),
+    ]
 }
 
 impl ModelSettings {

@@ -260,6 +260,12 @@ impl Session {
         }
     }
 
+    /// Records and broadcasts an event from outside the agent loop, attributed to the root
+    /// agent, such as the daemon's model download suggestions.
+    pub fn notify(&self, event: SessionEvent) {
+        self.emitter.emit_raw(ROOT_AGENT, event);
+    }
+
     /// Receives events from now on.
     pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.events.subscribe()

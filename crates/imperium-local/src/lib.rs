@@ -9,4 +9,5 @@ pub mod planner;
 pub mod process;
 pub mod runtime;
 pub mod scan;
+pub mod suggest;
 pub mod supervisor;
