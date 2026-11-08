@@ -730,11 +730,13 @@ impl Agent {
             .local
             .as_deref()
             .ok_or("local models are not available: no llama.cpp runtime is configured")?;
-        let priority = if self.shared.background.is_some() {
-            Priority::Background
-        } else {
-            Priority::Interactive
-        };
+        // A session a person ran now, or that waited out its deferral, ranks as the user's.
+        let priority =
+            if self.shared.background.is_some() && !self.shared.controls.run_now().released() {
+                Priority::Background
+            } else {
+                Priority::Interactive
+            };
         let lease = local
             .acquire_as(&self.model.model, holder, priority)
             .await

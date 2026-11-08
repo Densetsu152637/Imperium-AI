@@ -163,7 +163,8 @@ that reads `quiet`, `busy`, or `saturated`, and the work it starts on its own gi
   slot held, no tokens spent, like `await_tasks`. It resumes when the view is `quiet`. The pause
   reuses the usage-limit pause (a `paused` event with `cause = "load"` and `until_unix_ms = 0`,
   then `resumed`). Subagents of a background session yield the same way, and a paused agent is
-  detached from its local model, so a model you ask for can swap it out without waiting for it.
+  detached from its local model, so a model you ask for can swap it out without waiting for it; if the model is swapped out
+  meanwhile, its slot is not saved and it re-reads its context on resume.
 - **Visibility and run now.** Session summaries carry `background` and a `hold`
   (`cause` `deferred` or `load`, and the reason); the desktop shows `Paused · waiting for a quiet
   machine` or `giving way to you`, a `· background` suffix, and the existing **Resume now**

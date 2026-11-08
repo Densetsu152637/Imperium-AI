@@ -308,7 +308,7 @@ async fn background_pause_ends_when_a_person_runs_it_now() {
         attached: Arc::new(AtomicUsize::new(0)),
     });
     let dir = tempfile::tempdir().unwrap();
-    let session = start(local, load, dir.path());
+    let session = start(local.clone(), load, dir.path());
     let mut events = session.subscribe();
     session.send("work on it".into()).unwrap();
 
@@ -323,4 +323,8 @@ async fn background_pause_ends_when_a_person_runs_it_now() {
     // Both calls ran though the machine stayed saturated: run now stops it giving way.
     assert_eq!(requests.load(Ordering::SeqCst), 2);
     assert!(session.hold().is_none());
+    // Its local calls rank as the user's, so a saturated machine does not hold them back
+    // in the runtime either.
+    let priorities = local.priorities.lock().unwrap().clone();
+    assert_eq!(priorities, [Priority::Interactive; 2]);
 }
