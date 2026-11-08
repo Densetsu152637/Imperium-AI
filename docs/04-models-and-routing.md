@@ -210,16 +210,39 @@ A subagent's model is chosen as follows:
 1. A model the agent named (`spawn_agent`'s `model`, by id or spec), if it is in the table.
 2. The first rule whose `when_tier` (exact) and `when_tag` match the task: its `use` ids are
    tried in order (tier is not checked for an explicit choice; the location restriction is),
-   then its `location` restricts the remaining choice.
+   then its `location` restricts the remaining choice, and its optional `tier` raises the
+   task's minimum tier to at least that one. If none of your rules matched, the
+   [built-in task-class rules](#task-classes) are checked the same way.
 3. The suitable rows (at or above the requested tier, default `standard`, and in the requested
    or rule location) ranked by `prefer`, then by input plus output price, with unpriced rows
    counted as free.
 4. The session's own model.
 
-Agents pass `tier`, `location`, `tags`, and `model` to `spawn_agent`. Ids must be unique and
+Agents pass `tier`, `location`, `tags`, `model`, and `single_call` to `spawn_agent`. Ids must be unique and
 rules may only name ids in the table; the daemon refuses to start otherwise. Rows whose
 endpoint is unknown or whose key is missing are skipped with a warning. `models.list` returns
 the table, and the desktop app shows it in a searchable, sortable Models panel.
+
+### Task classes
+
+**Implemented (stage 2e):** menial work defaults to small local models and hard work to cloud
+frontier models, from the tags an agent puts on `spawn_agent`. These built-in rules come after
+your `[[routing.rules]]` and apply only when none of yours matched, so a rule of yours for the
+same tag (or a catch-all) replaces them:
+
+| Tags | Location | Minimum tier |
+| --- | --- | --- |
+| `refactor`, `tests`, `ui`, `format`, `docs` | `local` | `standard` |
+| `architecture`, `math`, `proof`, `algorithm`, `design` | `cloud` | `frontier` |
+
+A built-in rule's location is a preference, not a restriction: when no local `standard` row
+fits (none in the table, or memory is short) or no cloud `frontier` row exists, the router
+ranks the rows of every location by the usual steps. An explicit `location` on the call is
+still a restriction. Set `routing.builtin_rules = false` to turn the built-ins off.
+
+A task for a frontier model can be sent with `single_call: true`: the subagent gets the brief
+and no tools, makes exactly one model call, and its reply is the report. The brief must carry
+everything needed (see the [dispatch contract](03-agent-engine.md#dispatch-contract)).
 
 **Implemented (phase 4):** rows with spec `llamacpp:<id>` (location must be `local`) are
 placed by the memory planner. A local row is considered only while it can run: loaded, or

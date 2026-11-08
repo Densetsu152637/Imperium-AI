@@ -320,3 +320,77 @@ async fn the_root_delegates_waits_without_model_calls_and_collects_reports() {
     assert_eq!(root_calls.load(Ordering::SeqCst), 3);
     assert_eq!(sub_calls.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn a_single_call_subagent_makes_one_model_call_with_no_tools_and_its_reply_is_the_report() {
+    let tools_offered = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
+    let sub_calls = Arc::new(AtomicUsize::new(0));
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let tools_offered = Arc::clone(&tools_offered);
+            let sub_calls = Arc::clone(&sub_calls);
+            let root_calls = Arc::clone(&root_calls);
+            move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let tools_offered = Arc::clone(&tools_offered);
+                let sub_calls = Arc::clone(&sub_calls);
+                let root_calls = Arc::clone(&root_calls);
+                async move {
+                    let system = body["messages"][0]["content"].as_str().unwrap_or_default();
+                    let reply = if system.contains("subagent") {
+                        sub_calls.fetch_add(1, Ordering::SeqCst);
+                        let tools = body["tools"].as_array().map_or(0, Vec::len);
+                        tools_offered.lock().unwrap().push(tools);
+                        text_body("the proof is: x = 2")
+                    } else {
+                        match root_calls.fetch_add(1, Ordering::SeqCst) {
+                            0 => tool_call_body(
+                                "spawn_agent",
+                                r#"{"brief":"solve it","single_call":true}"#,
+                            ),
+                            1 => tool_call_body("await_tasks", "{}"),
+                            _ => text_body("done"),
+                        }
+                    };
+                    ([("content-type", "text/event-stream")], reply)
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(
+        Endpoint {
+            base_url,
+            api_key: None,
+        },
+        dir.path(),
+    );
+    let mut events = session.subscribe();
+    session.send("solve it".into()).unwrap();
+
+    let mut report = None;
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap();
+        match event.event {
+            SessionEvent::TaskFinished {
+                ok, report: text, ..
+            } => {
+                assert!(ok);
+                report = Some(text);
+            }
+            SessionEvent::TurnCompleted { .. } if event.agent_id == "root" => break,
+            SessionEvent::TurnFailed { message } => panic!("turn failed: {message}"),
+            _ => {}
+        }
+    }
+    assert_eq!(report.as_deref(), Some("the proof is: x = 2"));
+    assert_eq!(sub_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(*tools_offered.lock().unwrap(), vec![0]);
+}

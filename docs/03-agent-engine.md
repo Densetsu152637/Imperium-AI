@@ -144,14 +144,21 @@ generated TypeScript. The Emperor training repository vendors that folder at a p
 commit. A test rejects credential-like property names (key, secret, token, password, bearer,
 auth, scope, header, base URL, endpoint; `url` and `chunk_tokens` are allowed), so no schema
 has such a field. Descriptions are not checked. `spawn_agent` keeps its current `brief`,
-`tier`, `location`, `tags` and `model` parameters; `requirements`, `budget` and `result` are
-not there yet.
+`tier`, `location`, `tags` and `model` parameters and adds the optional `single_call` (below);
+`requirements`, `budget` and `result` are not there yet.
 
 | Tool | Status |
 | --- | --- |
 | `spawn_agent`, `await_tasks`, `update_plan`, `web_search`, `web_fetch` | implemented |
 | `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | planned: definition only, not offered to models |
 | `ask_user(questions[])`: each question has text, optional options, and a recommended answer | planned: definition only, not offered to models |
+
+**Single-call tasks (implemented):** `spawn_agent` with `single_call: true` (default false) starts
+a subagent that is given the brief and no tools (no files, commands, web, memory or workflow
+context), makes exactly one model call, and returns that reply as its report. It is meant for
+hard, self-contained questions routed to a cloud frontier model
+([task classes](04-models-and-routing.md#task-classes)); an empty reply fails the task. Emperor's
+root prompt tells it to set `single_call: true` for frontier work.
 
 **Templates and root prompt (implemented):** hand-written files checked in under
 [`crates/imperium-protocol/schemas/prompts/`](../crates/imperium-protocol/schemas/prompts/) and

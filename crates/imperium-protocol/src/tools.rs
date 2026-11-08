@@ -67,7 +67,8 @@ pub fn spawn_agent() -> ToolDefinition {
             "tier": {"type": "string", "enum": ["basic", "standard", "strong", "frontier"], "description": "Minimum model capability; the cheapest suitable model is chosen. Default standard."},
             "model": {"type": "string", "description": "A model table id (or <endpoint>:<model>) to use"},
             "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},
-            "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match"}
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match. Task classes route by default: refactor, tests, ui, format, docs prefer small local models; architecture, math, proof, algorithm, design prefer cloud frontier models."},
+            "single_call": {"type": "boolean", "description": "The subagent gets the brief and no tools, answers in exactly one model call, and its reply is the report. Use for hard, self-contained questions; put everything it needs in the brief. Default false."}
         }, "required": ["brief"]}),
         status: ToolStatus::Available,
     }

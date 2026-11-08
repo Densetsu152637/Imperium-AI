@@ -78,6 +78,8 @@ pub struct Agent {
     role: String,
     /// Required references from the latest manifest that are not loaded yet.
     unloaded: Mutex<Vec<String>>,
+    /// A single-call task: no tools, no recalled context, and exactly one model call.
+    single_call: bool,
 }
 
 impl Agent {
@@ -141,7 +143,22 @@ impl Agent {
             tasks: HashMap::new(),
             role,
             unloaded: Mutex::new(Vec::new()),
+            single_call: false,
         }
+    }
+
+    /// Makes this a single-call agent: it is given the brief and no tools, makes exactly one
+    /// model call, and that reply is its report.
+    pub fn single_call(mut self) -> Self {
+        let root = self.shared.workspace.root_display();
+        let system = format!(
+            "You are an Imperium subagent for the project at {root}. You have no tools and              cannot look anything up: the brief contains everything you need. Answer it              completely in one reply. Your reply is returned unchanged as your report to the              agent that delegated to you, so give the finished answer, not a plan or questions."
+        );
+        let (system, spans) = join_parts(vec![(Category::SystemBase, system)]);
+        self.messages = vec![ChatMessage::System { content: system }];
+        self.spans = HashMap::from([(0, spans)]);
+        self.single_call = true;
+        self
     }
 
     /// The conversation so far.
@@ -183,6 +200,9 @@ impl Agent {
 
     /// The tools offered to the model, and where the MCP tools sit among them.
     fn tool_specs(&self) -> (Vec<ToolSpec>, Range<usize>) {
+        if self.single_call {
+            return (Vec::new(), 0..0);
+        }
         let mut tools = specs();
         let mcp_start = tools.len();
         for provider in self.providers(ToolGroup::External) {
@@ -220,7 +240,9 @@ impl Agent {
     pub async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
         self.emit(SessionEvent::TurnStarted { text: text.clone() });
         let mut parts = Vec::new();
-        if let Some(index) = &self.shared.context {
+        if !self.single_call
+            && let Some(index) = &self.shared.context
+        {
             let manifest = index.resolve(&self.role, &text);
             if !manifest.is_empty() {
                 *lock(&self.unloaded) = manifest.required().map(str::to_string).collect();
@@ -335,7 +357,14 @@ impl Agent {
                 content: Some(completion.text).filter(|text| !text.is_empty()),
                 tool_calls: completion.tool_calls.clone(),
             });
-            if completion.tool_calls.is_empty() {
+            if self.single_call && reply.is_empty() {
+                let message = "the model returned no reply to a single-call task".to_string();
+                self.emit(SessionEvent::TurnFailed {
+                    message: message.clone(),
+                });
+                return self.outcome(message, false, total);
+            }
+            if completion.tool_calls.is_empty() || self.single_call {
                 self.emit(SessionEvent::TurnCompleted {
                     usage: token_usage(&total),
                     cost_usd: self.cost(&total),
@@ -874,6 +903,8 @@ impl Agent {
             tags: Vec<String>,
             #[serde(default)]
             role: Option<String>,
+            #[serde(default)]
+            single_call: bool,
         }
         let args: Args = parse(arguments)?;
         if args.brief.trim().is_empty() {
@@ -909,6 +940,7 @@ impl Agent {
         let shared = Arc::clone(&self.shared);
         let id = task_id.clone();
         let spec = model.spec.clone();
+        let single_call = args.single_call;
         // Each subagent is its own task, so subagents run in parallel across the runtime's threads.
         let handle = tokio::spawn(async move {
             shared
@@ -920,6 +952,9 @@ impl Agent {
                 .await;
             let role = args.role.unwrap_or_else(|| "leaf".into());
             let mut agent = Agent::new(id.clone(), Arc::clone(&shared), model, false, role);
+            if single_call {
+                agent = agent.single_call();
+            }
             let outcome = agent.run_turn(args.brief, None).await;
             shared
                 .hook(

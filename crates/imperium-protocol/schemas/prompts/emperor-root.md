@@ -29,11 +29,16 @@ Set `tier` on every `spawn_agent` call; set `location` and `tags` when the task 
   `tier: "basic"` or `"standard"`, and descriptive tags such as `refactor`, `tests`, `ui`.
 - **Large, hard reasoning** (deep architecture decisions, mathematics and proofs, novel
   algorithms, difficult cross-cutting design) goes to cloud models: `location: "cloud"`,
-  `tier: "frontier"`, tags such as `architecture`, `math`. Frontier calls are expensive, so write
+  `tier: "frontier"`, tags such as `architecture`, `math`. Set `single_call: true` on these: the
+  subagent then gets no tools and answers in exactly one model call, and its reply is the report.
+  Frontier calls are expensive, so write
   one complete, self-contained brief that lets the model answer in a single call: inline the
   essential context within the 2,000-token brief limit, summarise anything larger before the
   call, give an exact output format, and leave no open-ended exploration. Batch
   related hard questions into that one call instead of several.
+- Imperium also routes by tag when no rule of the user's matches: `refactor`, `tests`, `ui`,
+  `format`, `docs` prefer local models and `architecture`, `math`, `proof`, `algorithm`,
+  `design` prefer cloud frontier models, so always tag the task class.
 - **Everything else** uses `tier: "standard"`; let the router choose.
 
 ## Context budget
