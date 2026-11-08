@@ -11,7 +11,7 @@ use imperium_local::planner::{Budget, Footprint, Placement, place, place_on_gpu}
 use imperium_local::process::ProcessLauncher;
 use imperium_local::runtime::{llama_cpp_ref, server_path};
 use imperium_local::scan::{Format, Skipped, scan};
-use imperium_local::supervisor::{CPU_LANE_SLOTS, Runtimes, Supervisor};
+use imperium_local::supervisor::{CPU_LANE_SLOTS, CpuLane, Runtimes, Supervisor};
 use imperium_protocol::methods::{
     GpuInfo, HardwareInfo, LocalModelListResult, LocalModelRow, RuntimeInfo, SkippedModel,
 };
@@ -38,8 +38,8 @@ pub fn scan_folders(paths: &Paths, settings: &Settings) -> Vec<PathBuf> {
 }
 
 /// The local models pinned to the CPU lane by `placement = "cpu"` rows of the model table, with
-/// their slots.
-pub fn cpu_pins(settings: &Settings) -> HashMap<String, u32> {
+/// how each is served.
+pub fn cpu_pins(settings: &Settings) -> HashMap<String, CpuLane> {
     settings
         .models
         .catalog
@@ -48,7 +48,11 @@ pub fn cpu_pins(settings: &Settings) -> HashMap<String, u32> {
         .filter_map(|entry| {
             Some((
                 entry.llamacpp_model()?.to_string(),
-                entry.parallel.unwrap_or(CPU_LANE_SLOTS),
+                CpuLane {
+                    slots: entry.parallel.unwrap_or(CPU_LANE_SLOTS),
+                    context: entry.context,
+                    max_wait_s: entry.max_wait_s,
+                },
             ))
         })
         .collect()
@@ -336,6 +340,8 @@ mod tests {
             tier = "strong"
             placement = "cpu"
             parallel = 2
+            context = 32768
+            max_wait_s = 7200
 
             [[models.catalog]]
             id = "lane"
@@ -354,8 +360,15 @@ mod tests {
         assert_eq!(
             cpu_pins(&settings),
             HashMap::from([
-                ("qwen3-30b".to_string(), 2),
-                ("consul".to_string(), CPU_LANE_SLOTS),
+                (
+                    "qwen3-30b".to_string(),
+                    CpuLane {
+                        slots: 2,
+                        context: Some(32768),
+                        max_wait_s: Some(7200),
+                    }
+                ),
+                ("consul".to_string(), CpuLane::default()),
             ])
         );
     }
@@ -384,7 +397,7 @@ mod tests {
             &hardware,
             Arc::new(FakeLauncher),
         );
-        supervisor.set_cpu_pinned(HashMap::from([("critic".to_string(), 1)]));
+        supervisor.set_cpu_pinned(HashMap::from([("critic".to_string(), CpuLane::default())]));
         let runtime = LocalRuntime {
             supervisor: Arc::clone(&supervisor),
             scanned: Mutex::new((Vec::new(), Vec::new())),

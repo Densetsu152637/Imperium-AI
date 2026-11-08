@@ -59,6 +59,31 @@ const ASSUMED_LOAD_BYTES_PER_S: u64 = 2 * 1024 * MIB;
 /// Slots of a model pinned to the CPU lane unless its row sets `parallel`: the cores are slow
 /// and shared, so calls take turns.
 pub const CPU_LANE_SLOTS: u32 = 1;
+/// Longest a call waits for a slot on a CPU-lane model unless its row sets `max_wait_s` (or the
+/// global `max_wait_s` is longer): calls queue behind tasks that take minutes.
+pub const CPU_LANE_MAX_WAIT_S: u64 = 3600;
+
+/// How a model pinned to the CPU lane is served (from its model-table row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuLane {
+    /// Slots (`--parallel`).
+    pub slots: u32,
+    /// Context per slot; `None` takes `runtime.llamacpp.context`.
+    pub context: Option<u32>,
+    /// Longest a call waits for a slot or for room; `None` takes the longer of
+    /// [`CPU_LANE_MAX_WAIT_S`] and `runtime.llamacpp.max_wait_s`.
+    pub max_wait_s: Option<u64>,
+}
+
+impl Default for CpuLane {
+    fn default() -> Self {
+        CpuLane {
+            slots: CPU_LANE_SLOTS,
+            context: None,
+            max_wait_s: None,
+        }
+    }
+}
 /// How much of the earlier calls' tokens and time a new call's measurement keeps: the speed
 /// follows the model's recent calls, and long generations weigh more than short ones.
 const THROUGHPUT_KEEP: f64 = 0.8;
@@ -76,6 +101,9 @@ pub struct LaunchSpec {
     pub context: u32,
     pub slots: u32,
     pub gpu_layers: u32,
+    /// The model is served on the CPU alone: no GPU device is used at all, not even for
+    /// compute buffers or offloaded operations (llama.cpp's `--device none`).
+    pub cpu_only: bool,
     pub cache_type: String,
     /// MiB of host memory for llama.cpp's prompt cache (`--cache-ram`), which keeps the prompts
     /// of slots that were reused by another agent so they need not be read again; 0 disables it.
@@ -106,6 +134,7 @@ impl PartialEq for LaunchSpec {
             && self.context == other.context
             && self.slots == other.slots
             && self.gpu_layers == other.gpu_layers
+            && self.cpu_only == other.cpu_only
             && self.cache_type == other.cache_type
             && self.cache_ram_mb == other.cache_ram_mb
             && self.slot_save_path == other.slot_save_path
@@ -631,7 +660,8 @@ struct Load {
     victims: Vec<(String, Loaded)>,
     /// The call that loads it, admitted once the model is in the loaded set.
     call: u64,
-    /// The slots it is started with.
+    /// The context per slot and the slots it is started with.
+    context: u32,
     slots: u32,
     /// It is pinned to the CPU lane.
     cpu_pinned: bool,
@@ -657,7 +687,7 @@ pub struct Supervisor {
     /// Saved slots; `None` when slots are not saved.
     slot_files: Option<Mutex<SlotFiles>>,
     /// Models pinned to the CPU lane, with their slots.
-    cpu_pinned: Mutex<HashMap<String, u32>>,
+    cpu_pinned: Mutex<HashMap<String, CpuLane>>,
     events: broadcast::Sender<SwapEvent>,
 }
 
@@ -756,27 +786,42 @@ impl Supervisor {
         self.events.subscribe()
     }
 
-    /// Pins the models named in `pins` (model id to slots) to the CPU lane, replacing the
-    /// earlier pins. Models already loaded keep the placement they were started with.
-    pub fn set_cpu_pinned(&self, pins: HashMap<String, u32>) {
+    /// Pins the models named in `pins` (model id to how it is served) to the CPU lane,
+    /// replacing the earlier pins. Models already loaded keep the placement they were started
+    /// with.
+    pub fn set_cpu_pinned(&self, pins: HashMap<String, CpuLane>) {
         *lock(&self.cpu_pinned) = pins;
         self.changed.notify_waiters();
     }
 
-    /// The slots of `id` if it is pinned to the CPU lane.
-    pub fn cpu_slots(&self, id: &str) -> Option<u32> {
-        lock(&self.cpu_pinned).get(id).map(|&slots| slots.max(1))
+    /// How `id` is served if it is pinned to the CPU lane.
+    pub fn cpu_lane(&self, id: &str) -> Option<CpuLane> {
+        lock(&self.cpu_pinned).get(id).copied().map(|lane| CpuLane {
+            slots: lane.slots.max(1),
+            ..lane
+        })
     }
 
-    /// What loading `model` needs at the configured context and slots (a CPU-lane model's own
-    /// slots).
-    pub fn footprint(&self, model: &LocalModel) -> Footprint {
-        Footprint::of(
-            model,
-            self.settings.context,
-            self.cpu_slots(&model.id).unwrap_or(self.settings.parallel),
-            &self.settings.cache_type,
+    /// The slots of `id` if it is pinned to the CPU lane.
+    pub fn cpu_slots(&self, id: &str) -> Option<u32> {
+        self.cpu_lane(id).map(|lane| lane.slots)
+    }
+
+    /// The context per slot and the slots `id` is started with: a CPU-lane model's own, else the
+    /// settings'.
+    fn shape(&self, id: &str) -> (u32, u32) {
+        let lane = self.cpu_lane(id);
+        (
+            lane.and_then(|lane| lane.context)
+                .unwrap_or(self.settings.context),
+            lane.map_or(self.settings.parallel, |lane| lane.slots),
         )
+    }
+
+    /// What loading `model` needs at the context and slots it is started with.
+    pub fn footprint(&self, model: &LocalModel) -> Footprint {
+        let (context, slots) = self.shape(&model.id);
+        Footprint::of(model, context, slots, &self.settings.cache_type)
     }
 
     /// Where `model` goes within a budget when served by `backend`: on the CPU lane if it is
@@ -910,12 +955,22 @@ impl Supervisor {
             .model(id)
             .ok_or_else(|| format!("no local model {id:?} in models.folders"))?;
         let ticket = self.ticket(id);
-        let max_wait = Duration::from_secs(self.settings.max_wait_s);
+        let lane = self.cpu_lane(id);
+        let max_wait = Duration::from_secs(match lane {
+            Some(lane) => lane
+                .max_wait_s
+                .unwrap_or(CPU_LANE_MAX_WAIT_S.max(self.settings.max_wait_s)),
+            None => self.settings.max_wait_s,
+        });
         let deadline = tokio::time::Instant::now() + max_wait;
+        let setting = if lane.is_some() {
+            "max_wait_s of its model-table row, or runtime.llamacpp.max_wait_s"
+        } else {
+            "runtime.llamacpp.max_wait_s"
+        };
         let too_long = || {
             format!(
-                "waited {} s for a slot on local model {id} or for room to load it \
-                 (runtime.llamacpp.max_wait_s)",
+                "waited {} s for a slot on local model {id} or for room to load it ({setting})",
                 max_wait.as_secs()
             )
         };
@@ -1069,11 +1124,9 @@ impl Supervisor {
             cache_room,
             victims,
             call: ticket.seq,
-            slots: self
-                .cpu_slots(&model.id)
-                .unwrap_or(self.settings.parallel)
-                .max(1),
-            cpu_pinned: self.cpu_slots(&model.id).is_some(),
+            context: self.shape(&model.id).0,
+            slots: self.shape(&model.id).1.max(1),
+            cpu_pinned: self.cpu_lane(&model.id).is_some(),
         }))
     }
 
@@ -1091,6 +1144,7 @@ impl Supervisor {
             cache_room,
             victims,
             call,
+            context,
             slots,
             cpu_pinned,
         } = load;
@@ -1106,9 +1160,7 @@ impl Supervisor {
         let cache_bytes = cache_ram_mb * MIB;
         placement.ram_bytes += cache_bytes;
         let files = self.slot_files.as_ref().filter(|_| backend.slot_aware());
-        let key = files.map(|_| {
-            slot_files::model_key(model, self.settings.context, &self.settings.cache_type)
-        });
+        let key = files.map(|_| slot_files::model_key(model, context, &self.settings.cache_type));
         let spec = LaunchSpec {
             backend: Arc::clone(&backend),
             format: model.format,
@@ -1116,9 +1168,10 @@ impl Supervisor {
             model_id: model.id.clone(),
             model_path: model.path.clone(),
             mmproj: model.mmproj.clone(),
-            context: self.settings.context * slots,
+            context: context * slots,
             slots,
             gpu_layers: placement.gpu_layers,
+            cpu_only: cpu_pinned,
             cache_type: self.settings.cache_type.clone(),
             cache_ram_mb,
             slot_save_path: files.map(|files| lock(files).dir().to_path_buf()),
@@ -1596,6 +1649,7 @@ mod tests {
             context: 16384,
             slots: 2,
             gpu_layers: u32::MAX,
+            cpu_only: false,
             cache_type: "q8_0".into(),
             cache_ram_mb: 2048,
             slot_save_path: Some(PathBuf::from("slots")),
@@ -1606,6 +1660,15 @@ mod tests {
             args.contains("--ctx-size 16384 --parallel 2 --n-gpu-layers 999"),
             "{args}"
         );
+        assert!(!args.contains("--device"), "{args}");
+        let lane = LaunchSpec {
+            gpu_layers: 0,
+            cpu_only: true,
+            ..spec.clone()
+        };
+        let lane_args = lane.args().join(" ");
+        assert!(lane_args.contains("--n-gpu-layers 0"), "{lane_args}");
+        assert!(lane_args.contains("--device none"), "{lane_args}");
         assert!(args.contains("--cache-type-k q8_0"), "{args}");
         assert!(args.contains("--cache-ram 2048"), "{args}");
         assert!(args.contains("--slot-save-path slots"), "{args}");

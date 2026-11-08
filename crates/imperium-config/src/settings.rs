@@ -148,17 +148,23 @@ impl Settings {
                         entry.id, entry.spec
                     ));
                 }
-            } else if entry.parallel.is_some() {
+            } else if let Some(key) = entry.lane_key_set() {
                 return Err(format!(
-                    "models.catalog: {:?} sets parallel, which only applies to placement = \"cpu\"",
+                    "models.catalog: {:?} sets {key}, which only applies to placement = \"cpu\"",
                     entry.id
                 ));
             }
-            if entry.parallel == Some(0) {
-                return Err(format!(
-                    "models.catalog: {:?} needs parallel of at least 1",
-                    entry.id
-                ));
+            for (key, value) in [
+                ("parallel", entry.parallel.map(u64::from)),
+                ("context", entry.context.map(u64::from)),
+                ("max_wait_s", entry.max_wait_s),
+            ] {
+                if value == Some(0) {
+                    return Err(format!(
+                        "models.catalog: {:?} needs {key} of at least 1",
+                        entry.id
+                    ));
+                }
             }
         }
         for pinned in self
@@ -174,6 +180,17 @@ impl Settings {
             {
                 return Err(format!(
                     "models.catalog: {:?} and {:?} name the same model {:?}, so both must use placement = \"cpu\" or neither",
+                    pinned.id, other.id, pinned.spec
+                ));
+            }
+            // The model is served once, so rows naming it cannot ask for different shapes.
+            if let Some(other) = self.models.catalog.iter().find(|entry| {
+                entry.spec == pinned.spec
+                    && (entry.parallel, entry.context, entry.max_wait_s)
+                        != (pinned.parallel, pinned.context, pinned.max_wait_s)
+            }) {
+                return Err(format!(
+                    "models.catalog: {:?} and {:?} name the same model {:?} with different parallel, context, or max_wait_s; a model is served once, so set them the same",
                     pinned.id, other.id, pinned.spec
                 ));
             }
@@ -803,9 +820,31 @@ pub struct CatalogEntry {
     /// `placement = "cpu"`.
     #[serde(default)]
     pub parallel: Option<u32>,
+    /// Context (tokens) per slot of a CPU-pinned row; default `runtime.llamacpp.context`. Only
+    /// valid with `placement = "cpu"`.
+    #[serde(default)]
+    pub context: Option<u32>,
+    /// Longest (seconds) a call waits for a slot on, or room to load, a CPU-pinned row; the
+    /// default is an hour or `runtime.llamacpp.max_wait_s` if longer, since calls queue behind
+    /// tasks that take minutes. Only valid with `placement = "cpu"`.
+    #[serde(default)]
+    pub max_wait_s: Option<u64>,
 }
 
 impl CatalogEntry {
+    /// The name of a CPU-lane-only key this row sets, if any.
+    fn lane_key_set(&self) -> Option<&'static str> {
+        if self.parallel.is_some() {
+            Some("parallel")
+        } else if self.context.is_some() {
+            Some("context")
+        } else if self.max_wait_s.is_some() {
+            Some("max_wait_s")
+        } else {
+            None
+        }
+    }
+
     /// The id of the local llama.cpp model a `llamacpp:<id>` spec names.
     pub fn llamacpp_model(&self) -> Option<&str> {
         self.spec

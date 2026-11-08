@@ -14,7 +14,7 @@ use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
 use imperium_local::scan::{Format, LocalModel};
 use imperium_local::supervisor::{
-    LaunchFuture, LaunchSpec, Launcher, Runtimes, Server, StopFuture, Supervisor,
+    CpuLane, LaunchFuture, LaunchSpec, Launcher, Runtimes, Server, StopFuture, Supervisor,
 };
 
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -155,7 +155,7 @@ fn start(hardware: &Hardware, cache_ram_mb: u64) -> (Arc<Supervisor>, Arc<Log>) 
         hardware,
         Arc::new(FakeLauncher(Arc::clone(&log))),
     );
-    supervisor.set_cpu_pinned(HashMap::from([("critic".to_string(), 1)]));
+    supervisor.set_cpu_pinned(HashMap::from([("critic".to_string(), CpuLane::default())]));
     (supervisor, log)
 }
 
@@ -166,6 +166,8 @@ async fn cpu_lane_row_is_started_with_no_gpu_layers_and_one_slot() {
     assert_eq!(lease.base_url, "http://fake/critic/v1");
     let args = log.args("critic");
     assert!(args.contains("--n-gpu-layers 0"), "{args}");
+    // `-ngl 0` alone still initialises the GPU backend; the lane uses no device at all.
+    assert!(args.contains("--device none"), "{args}");
     assert!(args.contains("--parallel 1"), "{args}");
     // The per-slot context times the slots.
     assert!(args.contains("--ctx-size 4096"), "{args}");
@@ -185,6 +187,7 @@ async fn cpu_lane_row_is_started_with_no_gpu_layers_and_one_slot() {
     drop(supervisor.acquire("emperor", "agent").await.unwrap());
     let args = log.args("emperor");
     assert!(args.contains("--n-gpu-layers 999"), "{args}");
+    assert!(!args.contains("--device"), "{args}");
     assert!(args.contains("--parallel 2"), "{args}");
     assert!(
         !supervisor
@@ -197,12 +200,65 @@ async fn cpu_lane_row_is_started_with_no_gpu_layers_and_one_slot() {
 #[tokio::test]
 async fn cpu_lane_slots_follow_the_row() {
     let (supervisor, log) = start(&hardware(24, 64), 0);
-    supervisor.set_cpu_pinned(HashMap::from([("critic".to_string(), 3)]));
+    let lane = CpuLane {
+        slots: 3,
+        ..CpuLane::default()
+    };
+    supervisor.set_cpu_pinned(HashMap::from([("critic".to_string(), lane)]));
     drop(supervisor.acquire("critic", "reviewer").await.unwrap());
     let args = log.args("critic");
     assert!(args.contains("--parallel 3"), "{args}");
     assert!(args.contains("--ctx-size 12288"), "{args}");
     assert_eq!(supervisor.loaded()[0].slots, 3);
+}
+
+#[tokio::test]
+async fn cpu_lane_context_follows_the_row_and_is_what_the_planner_counts() {
+    let (supervisor, log) = start(&hardware(24, 64), 0);
+    let critic = supervisor
+        .models()
+        .into_iter()
+        .find(|m| m.id == "critic")
+        .unwrap();
+    let default_kv = supervisor.footprint(&critic).kv_bytes;
+    let lane = CpuLane {
+        context: Some(16384),
+        ..CpuLane::default()
+    };
+    supervisor.set_cpu_pinned(HashMap::from([("critic".to_string(), lane)]));
+    // Four times the settings' 4096 tokens, one slot.
+    assert_eq!(supervisor.footprint(&critic).kv_bytes, default_kv * 4);
+    drop(supervisor.acquire("critic", "reviewer").await.unwrap());
+    let args = log.args("critic");
+    assert!(args.contains("--ctx-size 16384"), "{args}");
+    assert!(args.contains("--parallel 1"), "{args}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn cpu_lane_waits_longer_than_the_global_cap_for_a_slot() {
+    let (supervisor, _) = start(&hardware(24, 64), 0);
+    // The global cap is 600 s. A call queued behind a long CPU task outlasts it...
+    let held = supervisor.acquire("critic", "first").await.unwrap();
+    let waiting = {
+        let supervisor = Arc::clone(&supervisor);
+        tokio::spawn(async move { supervisor.acquire("critic", "second").await })
+    };
+    tokio::time::sleep(Duration::from_secs(1200)).await;
+    assert!(!waiting.is_finished(), "still queued past the global cap");
+    drop(held);
+    assert!(waiting.await.unwrap().is_ok());
+
+    // ...unless the row caps it lower.
+    let lane = CpuLane {
+        max_wait_s: Some(30),
+        ..CpuLane::default()
+    };
+    supervisor.set_cpu_pinned(HashMap::from([("critic".to_string(), lane)]));
+    let held = supervisor.acquire("critic", "first").await.unwrap();
+    let error = supervisor.acquire("critic", "third").await.unwrap_err();
+    assert!(error.contains("waited 30 s"), "{error}");
+    assert!(error.contains("row"), "{error}");
+    drop(held);
 }
 
 #[tokio::test]

@@ -739,8 +739,10 @@ impl Agent {
         let tokens_per_sec = (usage.completion_tokens > 0 && !generating.is_zero())
             .then(|| usage.completion_tokens as f64 / generating.as_secs_f64());
         // The local runtime keeps the measured speed per model, which routing and the model
-        // listing report.
+        // listing report. A reply that streamed no text (a tool call alone) has no generation
+        // window to measure: its time is mostly reading the prompt.
         if tokens_per_sec.is_some()
+            && first_text.is_some()
             && let Some(local) = self.local_models()
         {
             local.record_throughput(&self.model.model, usage.completion_tokens, generating);

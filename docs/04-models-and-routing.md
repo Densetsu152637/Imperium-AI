@@ -232,8 +232,8 @@ the Emperor plan.
 
 **Implemented (stage 2f): the CPU lane.** Some work needs accuracy, not speed: critiquing a plan,
 reviewing a design, checking a proof. On a machine with plenty of system RAM, a larger model can
-live entirely in RAM and run on the CPU beside the GPU models, at no API cost and without
-touching VRAM. A model-table row opts in with `placement = "cpu"`:
+live entirely in RAM and run on the CPU beside the GPU models, at no API cost and with no
+VRAM planned for it. A model-table row opts in with `placement = "cpu"`:
 
 ```toml
 [[models.catalog]]
@@ -244,17 +244,26 @@ tier = "strong"
 tags = ["critique", "review"]
 placement = "cpu"                         # auto (default) | cpu
 # parallel = 1                            # slots; default 1 for a CPU-pinned row
+# context = 32768                         # tokens per slot; default runtime.llamacpp.context
+# max_wait_s = 3600                       # longest a call waits for a slot or for room; default
+#                                         # 3600, or runtime.llamacpp.max_wait_s if longer
 ```
 
 - **Pinned, not planned.** A pinned model is served by its own `llama-server` started with
-  `--n-gpu-layers 0` (`-ngl 0`), even when VRAM is free. The planner places it with
+  `--n-gpu-layers 0 --device none`, even when VRAM is free. `-ngl 0` alone would still
+  initialise the GPU backend (compute buffers in VRAM) and run large batched operations there;
+  `--device none` (llama.cpp b12180, `common/arg.cpp`) gives the server no GPU device at all.
+  What is guaranteed is exactly that: Imperium plans zero VRAM for the model, passes those two
+  flags, and never counts it against the VRAM budget. The planner places it with
   `place_on_cpu`: weights, KV cache for `context x parallel`, and the runtime overhead all count
-  against RAM, nothing against VRAM, so loading it leaves the GPU models' placements exactly as
-  they were. The existing "partial" placement is different: it splits a model that does not fit
-  the GPU, and still prefers the GPU. `placement = "cpu"` is validated at startup: it needs
+  against RAM, so loading it leaves the GPU models' placements as they were. Nothing here has
+  been measured on hardware (a driver may still hold a little memory for the process). The
+  existing "partial" placement is different: it splits a model that does not fit the GPU, and
+  still prefers the GPU. `placement = "cpu"` is validated at startup: it needs
   `location = "local"` and a `llamacpp:<id>` spec (a cloud row, another endpoint, or a vLLM
-  folder is refused with the row's id), `parallel` is only valid with it, and two rows naming
-  the same model must agree.
+  folder is refused with the row's id); `parallel`, `context`, and `max_wait_s` are only valid
+  with it and must be at least 1; and rows naming the same model must agree on `placement` and
+  on those three, because the model is served once.
 - **One RAM budget.** Everything that lives in RAM is counted together against free RAM less
   `runtime.llamacpp.ram_headroom_mb`: the CPU lane's weights and KV, every server's
   `--cache-ram` (the lane's included, sized from what is left after its weights as for any
@@ -267,10 +276,14 @@ placement = "cpu"                         # auto (default) | cpu
   as the victim of a swap made for GPU memory, however long it has been idle. The arbiter puts
   it last among candidates: it is evicted only when a newcomer cannot be placed unless the RAM
   it holds is freed, and then by the usual rules (nothing in use is evicted; one an agent is
-  mid-turn on is waited for). It unloads after `idle_unload_s` like any model.
+  mid-turn on is waited for). It unloads after `idle_unload_s` like any model. Known cost: a
+  newcomer that needs only RAM (a CPU-lane model, or a GPU model's RAM share) evicts idle GPU
+  models before the lane, even when freeing the lane alone would have been enough; the order is
+  kept simple on purpose, and the evicted models come back by the usual swap.
 - **Measured speed.** After each model call the agent loop reports the tokens generated and how
   long generating them took (after the first token, or the whole call for a buffered
-  response); the supervisor keeps a running tokens-per-second per model, weighted by tokens so a
+  response; a reply that streamed no text, such as a tool call alone, is not counted, since
+  its time is mostly reading the prompt); the supervisor keeps a running tokens-per-second per model, weighted by tokens so a
   short reply does not outweigh a long one, and `models.local` lists it as `tokens_per_s`
   (`imperium models local` and the desktop panel show it). It is kept after the model unloads
   and reset when the daemon restarts. `llama-server`'s own `timings` object is not read; the
@@ -308,7 +321,9 @@ four rules above are the user's to write. Likewise not done here: giving CPU tas
 `max_wall_s` and never sending a task with a short deadline to the lane. There is no task
 deadline in the task contract on this branch; `LocalModels::tokens_per_s` is the measurement
 that scheduling will use. The lane serves one call at a time unless `parallel` is raised, so
-CPU tasks queue behind each other, and `max_wait_s` applies to the queue.
+CPU tasks queue behind each other; the row's `max_wait_s` (default an hour, or the global
+`runtime.llamacpp.max_wait_s` if longer) bounds that wait, so a call queued behind a
+multi-minute task does not fail at the global 600 s.
 
 *Choosing a model for the lane.* Prefer a mixture-of-experts model with few active parameters
 over a dense one of the same quality: it reads only the active experts per token, which is what

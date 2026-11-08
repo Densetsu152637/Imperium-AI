@@ -147,6 +147,12 @@ impl RuntimeBackend for LlamaCpp {
             spec.cache_ram_mb.to_string(),
             "--jinja".into(),
         ];
+        if spec.cpu_only {
+            // `--n-gpu-layers 0` alone still initialises the GPU backend (compute buffers in
+            // VRAM) and runs large batched operations there; `none` uses no GPU device at all
+            // (llama.cpp b12180, `--device`).
+            args.extend(["--device".into(), "none".into()]);
+        }
         if let Some(dir) = &spec.slot_save_path {
             // Where slots are saved before the model is swapped out, and restored from.
             args.extend(["--slot-save-path".into(), dir.display().to_string()]);

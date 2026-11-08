@@ -266,6 +266,7 @@ mod tests {
             context: 4096,
             slots: 1,
             gpu_layers: 0,
+            cpu_only: false,
             cache_type: "f16".into(),
             cache_ram_mb: 0,
             slot_save_path: None,

@@ -484,8 +484,23 @@ parallel = 2",
             vllm.to_string().contains("needs a llama.cpp model"),
             "{vllm}"
         );
-        let stray = load(&row("llamacpp:q", "local", "parallel = 2")).unwrap_err();
-        assert!(stray.to_string().contains("only applies"), "{stray}");
+        for key in ["parallel = 2", "context = 4096", "max_wait_s = 60"] {
+            let stray = load(&row("llamacpp:q", "local", key)).unwrap_err();
+            assert!(stray.to_string().contains("only applies"), "{key}: {stray}");
+        }
+        for key in ["context", "max_wait_s"] {
+            let extra = format!("placement = \"cpu\"\n{key} = 0");
+            let zero = load(&row("llamacpp:q", "local", &extra)).unwrap_err();
+            assert!(zero.to_string().contains("at least 1"), "{key}: {zero}");
+        }
+        let lane = load(&row(
+            "llamacpp:q",
+            "local",
+            "placement = \"cpu\"\ncontext = 32768\nmax_wait_s = 7200",
+        ))
+        .unwrap();
+        let entry = &lane.models.catalog[0];
+        assert_eq!((entry.context, entry.max_wait_s), (Some(32768), Some(7200)));
         let zero = load(&row(
             "llamacpp:q",
             "local",
@@ -510,6 +525,40 @@ tier = \"basic\"",
         );
         let error = load(&split).unwrap_err();
         assert!(error.to_string().contains("same model"), "{error}");
+        // Two lane rows for one model serve it once, so they must agree on how.
+        let twin = |extra: &str| {
+            format!(
+                "{}
+[[models.catalog]]
+id = \"twin\"
+spec = \"llamacpp:q\"
+location = \"local\"
+tier = \"basic\"
+placement = \"cpu\"
+{extra}",
+                row(
+                    "llamacpp:q",
+                    "local",
+                    "placement = \"cpu\"
+parallel = 2"
+                )
+            )
+        };
+        for extra in [
+            "parallel = 3",
+            "",
+            "parallel = 2
+context = 4096",
+            "parallel = 2
+max_wait_s = 9",
+        ] {
+            let error = load(&twin(extra)).unwrap_err();
+            assert!(
+                error.to_string().contains("different parallel"),
+                "{extra}: {error}"
+            );
+        }
+        assert!(load(&twin("parallel = 2")).is_ok());
     }
 
     #[test]
