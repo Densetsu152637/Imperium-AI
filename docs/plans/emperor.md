@@ -4,7 +4,8 @@ Revision: 2026-11-08 r7 (r2: local-only training, the name Emperor, separate rep
 teacher licences; r3: strategy and planning from vague prompts, clarify-or-research, G10–G11;
 r4: context tiers from 64K to 256K and up, G12; r5: one loaded model shared by many
 sessions, G13, stage 2c; r6: a 192K tier; r7: subagent-first model swapping, G14, stage 2d;
-task-class routing and single-call cloud tasks, G15, stage 2e; stage 0 and stage 1 in progress)
+task-class routing and single-call cloud tasks, G15, stage 2e; Marcus Aurelius as the default
+personality; stage 0 and stage 1 in progress)
 
 **Emperor** is a small open-weight model, fine-tuned to be the **root agent** of an Imperium
 session on a 16 GB GPU. It reads the task, plans, writes compact briefs, and hands the work to
@@ -31,6 +32,12 @@ executable plan, then running it through others.
   working on what does not depend on the answers.
 - **Re-plan on evidence.** When a subagent's report contradicts an assumption, it revises the
   plan and says what changed.
+- **Speaks as Marcus Aurelius by default.** In the Emperor preset, Emperor's user-facing
+  conversation uses the [Marcus Aurelius](https://github.com/Densetsu152637/Agent-Custom-Workflow/blob/main/personalities/marcus_aurelius.md)
+  personality from the bundled Agent-Custom-Workflow pack (stoic philosopher-emperor). As the
+  workflow requires, the personality is root-only and shapes tone only: plans, briefs to
+  subagents, tool calls, code, and commits stay neutral, and subagents never receive it. Users
+  can pick another personality or none. The persona lives in the system prompt, not the weights.
 
 G10 and G11 measure this; stage 4 builds the data for it.
 
@@ -480,7 +487,9 @@ hard parts, briefed so one call settles them.
   recommendations) and resolves the others with search or defaults recorded as assumptions.
   Every trajectory carries a context budget drawn from the [tiers](#context-tiers), and
   trajectories that would overflow a small budget are re-run (or rewritten) with earlier
-  delegation and chunking, so each behaviour is seen at every tier.
+  delegation and chunking, so each behaviour is seen at every tier. System prompts vary the
+  personality (Marcus Aurelius most often, others, and none), so Emperor follows whichever is
+  selected and keeps briefs, plans, and tool calls neutral under all of them.
 - Depends on: stages 1, 3
 - Owned paths: `emperor/data/`; the dataset itself goes to `Imperium.AI/emperor-traces` (private)
 - Acceptance checks: `uv run data validate` reports 100 % of samples parsing against the stage-1
@@ -526,6 +535,11 @@ hard parts, briefed so one call settles them.
 - Objective: a bundled model-table seed entry and an "Emperor root" preset (session model =
   Emperor, `routing.prefer = "cheapest"`, cloud rows for `strong` and `frontier`);
   `imperium models pull Imperium.AI/emperor-GGUF` works; the desktop Models panel shows it.
+  The preset selects the `marcus_aurelius` personality for the root by default; this needs
+  Imperium's personality selection ([08](../08-agent-policy.md#personalities), not yet
+  implemented), which this stage implements if it has not landed by then. The bundled pack in
+  `policy/agent-custom-workflow` is pinned at `e3c00fa`, which predates `marcus_aurelius.md`, so
+  this stage also bumps the pin.
   The memory planner learns context tiers: it picks the largest tier and KV type that fit (see
   [Context tiers](#context-tiers)), a config setting pins one, and the chosen tier reaches
   Emperor's system prompt as its context budget.
