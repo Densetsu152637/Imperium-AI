@@ -4,33 +4,24 @@
 
 pub mod browser;
 pub mod html;
+pub mod search;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use imperium_api::ToolSpec;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
+
+pub use search::{
+    Brave, SearchConfig, SearchFuture, SearchProvider, SearchProviderBuilder, SearchProviders,
+    Searxng, Tavily,
+};
 
 /// Longest page text kept from one fetch.
 const MAX_PAGE_CHARS: usize = 200_000;
 /// Text returned per `web_fetch` call unless the agent asks for less.
 const DEFAULT_CHUNK: usize = 20_000;
 const TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Where `web_search` sends queries.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SearchProvider {
-    /// A SearXNG instance with the JSON format enabled.
-    Searxng {
-        url: String,
-    },
-    Brave {
-        api_key: String,
-    },
-    Tavily {
-        api_key: String,
-    },
-}
 
 /// One search result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +34,7 @@ pub struct Hit {
 #[derive(Debug, Clone)]
 pub struct Web {
     http: reqwest::Client,
-    search: Option<SearchProvider>,
+    search: Option<Arc<dyn SearchProvider>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -59,7 +50,7 @@ pub enum WebError {
 }
 
 impl Web {
-    pub fn new(search: Option<SearchProvider>) -> Self {
+    pub fn new(search: Option<Arc<dyn SearchProvider>>) -> Self {
         Web {
             http: reqwest::Client::builder()
                 .timeout(TIMEOUT)
@@ -158,78 +149,10 @@ impl Web {
     pub async fn search(&self, query: &str, count: usize) -> Result<Vec<Hit>, WebError> {
         let count = count.clamp(1, 20);
         let provider = self.search.as_ref().ok_or(WebError::NoProvider)?;
-        let http = |error: reqwest::Error| WebError::Http(error.to_string());
-        let body: Value = match provider {
-            SearchProvider::Searxng { url } => self
-                .http
-                .get(format!("{}/search", url.trim_end_matches('/')))
-                .query(&[("q", query), ("format", "json")])
-                .send()
-                .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(http)?
-                .json()
-                .await
-                .map_err(http)?,
-            SearchProvider::Brave { api_key } => self
-                .http
-                .get("https://api.search.brave.com/res/v1/web/search")
-                .query(&[("q", query), ("count", &count.to_string())])
-                .header("X-Subscription-Token", api_key)
-                .header("Accept", "application/json")
-                .send()
-                .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(http)?
-                .json()
-                .await
-                .map_err(http)?,
-            SearchProvider::Tavily { api_key } => self
-                .http
-                .post("https://api.tavily.com/search")
-                .bearer_auth(api_key)
-                .json(&json!({"query": query, "max_results": count}))
-                .send()
-                .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(http)?
-                .json()
-                .await
-                .map_err(http)?,
-        };
-        Ok(parse_hits(provider, &body)
-            .into_iter()
-            .take(count)
-            .collect())
+        let mut hits = provider.search(&self.http, query, count).await?;
+        hits.truncate(count);
+        Ok(hits)
     }
-}
-
-/// Results from each provider's JSON.
-fn parse_hits(provider: &SearchProvider, body: &Value) -> Vec<Hit> {
-    #[derive(Deserialize)]
-    struct Raw {
-        #[serde(default)]
-        title: String,
-        #[serde(default)]
-        url: String,
-        #[serde(default, alias = "content", alias = "description")]
-        snippet: String,
-    }
-    let list = match provider {
-        SearchProvider::Searxng { .. } | SearchProvider::Tavily { .. } => body.get("results"),
-        SearchProvider::Brave { .. } => body.pointer("/web/results"),
-    };
-    list.and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|item| serde_json::from_value::<Raw>(item.clone()).ok())
-        .filter(|raw| !raw.url.is_empty())
-        .map(|raw| Hit {
-            title: html::to_text(&raw.title),
-            url: raw.url,
-            snippet: html::to_text(&raw.snippet),
-        })
-        .collect()
 }
 
 /// Search results as the model sees them, numbered for citation.
@@ -321,7 +244,7 @@ mod tests {
             }),
         ))
         .await;
-        let web = Web::new(Some(SearchProvider::Searxng { url: base }));
+        let web = Web::new(Some(Arc::new(Searxng { url: base })));
         let hits = web.search("tokio tasks", 5).await.unwrap();
         assert_eq!(hits.len(), 2);
         let rendered = render_hits(&hits);
@@ -341,23 +264,93 @@ mod tests {
     #[test]
     fn provider_shapes_parse() {
         let brave = json!({"web": {"results": [{"title": "T", "url": "https://a", "description": "<strong>D</strong>"}]}});
-        let hits = parse_hits(
-            &SearchProvider::Brave {
-                api_key: String::new(),
-            },
-            &brave,
-        );
+        let hits = search::parse_hits(brave.pointer("/web/results"));
         assert_eq!(hits[0].snippet, "D");
         let tavily = json!({"results": [{"title": "T", "url": "https://b", "content": "C"}]});
         assert_eq!(
-            parse_hits(
-                &SearchProvider::Tavily {
-                    api_key: String::new()
-                },
-                &tavily
-            )[0]
-            .url,
+            search::parse_hits(tavily.get("results"))[0].url,
             "https://b"
         );
+    }
+
+    /// Answers every query with one hit naming the query, the count asked for, and the label.
+    #[derive(Debug)]
+    struct Canned {
+        label: String,
+    }
+
+    impl SearchProvider for Canned {
+        fn search<'a>(
+            &'a self,
+            _http: &'a reqwest::Client,
+            query: &'a str,
+            count: usize,
+        ) -> SearchFuture<'a> {
+            Box::pin(async move {
+                Ok((0..30)
+                    .map(|index| Hit {
+                        title: format!("{query} {count} {}", self.label),
+                        url: format!("https://example.com/{index}"),
+                        snippet: String::new(),
+                    })
+                    .collect())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_providers_plug_into_the_registry_and_web() {
+        let mut providers = SearchProviders::default();
+        providers.register("canned", |config| {
+            Some(Arc::new(Canned {
+                label: (config.api_key)().unwrap_or_default(),
+            }) as Arc<dyn SearchProvider>)
+        });
+        let config = SearchConfig {
+            searxng_url: "",
+            api_key: &|| Some("key".to_string()),
+        };
+        let web = Web::new(providers.build("canned", &config));
+        assert!(
+            web.tool_specs()
+                .iter()
+                .any(|spec| spec.name == "web_search")
+        );
+        let hits = web.search("rust", 50).await.unwrap();
+        assert_eq!(hits.len(), 20, "counts are clamped and extra hits dropped");
+        assert_eq!(hits[0].title, "rust 20 key");
+        assert!(matches!(
+            Web::new(None).search("rust", 5).await,
+            Err(WebError::NoProvider)
+        ));
+    }
+
+    #[test]
+    fn built_in_providers_need_their_settings() {
+        let providers = SearchProviders::default();
+        let loaded = std::sync::atomic::AtomicUsize::new(0);
+        let no_key = || {
+            loaded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        };
+        let empty = SearchConfig {
+            searxng_url: "",
+            api_key: &no_key,
+        };
+        for name in ["searxng", "brave", "tavily", "none", "kagi"] {
+            assert!(providers.build(name, &empty).is_none(), "{name}");
+        }
+        assert_eq!(
+            loaded.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "only brave and tavily load the key"
+        );
+        let configured = SearchConfig {
+            searxng_url: "http://127.0.0.1:8080",
+            api_key: &|| Some("key".to_string()),
+        };
+        for name in ["searxng", "brave", "tavily"] {
+            assert!(providers.build(name, &configured).is_some(), "{name}");
+        }
     }
 }

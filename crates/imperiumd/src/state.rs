@@ -9,7 +9,7 @@ use imperium_core::{
     WebTools, new_session_id, resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
-use imperium_media::{ImageBackend, Media, Service};
+use imperium_media::{ImageConfig, ImageGenerators, Media, Service};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
@@ -19,7 +19,7 @@ use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
 };
 use imperium_tools::{Sandbox, Workspace};
-use imperium_web::{SearchProvider, Web};
+use imperium_web::{SearchConfig, SearchProviders, Web};
 use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
 
@@ -227,24 +227,14 @@ impl DaemonState {
                 model: model.to_string(),
             })
         };
-        let image = settings
-            .image
-            .as_ref()
-            .and_then(|image| match image.backend.as_str() {
-                "comfyui" => {
-                    let workflow = std::fs::read_to_string(image.workflow.as_ref()?).ok()?;
-                    Some(ImageBackend::ComfyUi {
-                        url: image
-                            .comfyui_url
-                            .clone()
-                            .unwrap_or_else(|| "http://127.0.0.1:8188".into())
-                            .trim_end_matches('/')
-                            .to_string(),
-                        workflow,
-                    })
-                }
-                _ => service(image.endpoint.as_deref()?, &image.model).map(ImageBackend::OpenAi),
-            });
+        let image = settings.image.as_ref().and_then(|image| {
+            let config = ImageConfig {
+                comfyui_url: image.comfyui_url.as_deref(),
+                workflow: image.workflow.as_deref(),
+                service: &|| service(image.endpoint.as_deref()?, &image.model),
+            };
+            ImageGenerators::default().build(&image.backend, &config)
+        });
         let speech = settings.speech.as_ref().and_then(|speech| {
             Some((
                 service(&speech.endpoint, &speech.model)?,
@@ -273,14 +263,11 @@ impl DaemonState {
             let name = &web.api_key.as_ref()?.secret;
             self.secrets.load(name).ok().flatten()
         };
-        let provider = match web.search.as_str() {
-            "searxng" if !web.searxng_url.is_empty() => Some(SearchProvider::Searxng {
-                url: web.searxng_url.clone(),
-            }),
-            "brave" => key().map(|api_key| SearchProvider::Brave { api_key }),
-            "tavily" => key().map(|api_key| SearchProvider::Tavily { api_key }),
-            _ => None,
+        let config = SearchConfig {
+            searxng_url: &web.searxng_url,
+            api_key: &key,
         };
+        let provider = SearchProviders::default().build(&web.search, &config);
         if web.search != "none" && provider.is_none() {
             tracing::warn!(provider = %web.search, "web search is not configured completely (URL or key missing)");
         }

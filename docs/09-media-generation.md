@@ -8,10 +8,12 @@ sidecar** or through **ComfyUI**.
 `media_image` generates through an OpenAI-compatible images API (an `[endpoints]` entry and a
 model; base64 or URL responses) or through ComfyUI (`comfyui_url` and an API-format workflow
 file whose text contains `{{prompt}}`, and optionally `{{seed}}`, `{{width}}`, `{{height}}`;
-queued with `/prompt`, polled through `/history`, downloaded from `/view`). `media_speak` uses
-an OpenAI-compatible speech API and `media_transcribe` an OpenAI-compatible transcription API
-(LocalAI, whisper.cpp front-ends, or hosted services); transcription reads only files inside
-the project. Generated files are written to the project's `media/` folder with a `.json`
+queued with `/prompt`, polled through `/history`, downloaded from `/view`). Both implement the
+`ImageGenerator` trait and are built from `backend` by `ImageGenerators`, so adding a backend is
+an implementation and a `register` call; an unknown `backend` uses the images API.
+`media_speak` uses an OpenAI-compatible speech API and `media_transcribe` an OpenAI-compatible
+transcription API (LocalAI, whisper.cpp front-ends, or hosted services); transcription reads
+only files inside the project. Generated files are written to the project's `media/` folder with a `.json`
 provenance file beside each (prompt or text, model, size, time), and the session reports a
 `media_created` event. Every media call asks first unless allowed for the session, since it can
 cost money or send data to a service. Not yet: the managed Python sidecar, video, editing,

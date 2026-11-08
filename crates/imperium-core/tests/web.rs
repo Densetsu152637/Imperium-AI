@@ -11,7 +11,7 @@ use imperium_core::{ResolvedModel, Session, SessionConfig, WebTools};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
-use imperium_web::{SearchProvider, Web};
+use imperium_web::{Searxng, Web};
 use serde_json::{Value, json};
 
 async fn serve(app: Router) -> String {
@@ -132,7 +132,7 @@ async fn agents_research_and_cite_sources() {
         instructions: None,
         media: None,
         web: Some(WebTools {
-            web: Web::new(Some(SearchProvider::Searxng { url: searxng })),
+            web: Web::new(Some(Arc::new(Searxng { url: searxng }))),
             allow_domains: vec!["127.0.0.1".into()],
             browser: None,
         }),
