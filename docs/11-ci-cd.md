@@ -69,7 +69,8 @@ Losing the key means installed apps can no longer update, so keep a copy outside
 | macOS universal   | `macos-latest`     | `.app`, DMG                    | `imperium-macos-universal.tar.gz`      |
 
 - Linux builds use Ubuntu 22.04 for an older glibc baseline.
-- MSI requires numeric versions, so pre-release and experimental Windows builds ship NSIS only.
+- MSI and RPM reject the hyphen in pre-release versions, so pre-release and experimental builds
+  ship NSIS on Windows and AppImage and deb on Linux.
 - Every release includes `SHA256SUMS`.
 
 ## Runtime packs
