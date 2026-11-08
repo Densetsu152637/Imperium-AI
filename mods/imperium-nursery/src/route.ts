@@ -1,5 +1,5 @@
 // Routing, pure: which pet gets which arbiter events. The mapping from agent activity to pet
-// behaviour mirrors the daemon's `pet_events` (crates/imperiumd/src/pets.rs, docs/16-pets.md).
+// behaviour mirrors the daemon's `pet_events` (crates/imperium-core/src/pets.rs, docs/16-pets.md).
 //
 //  - Session nursery: one pet per agent; each pet hears only its own agent's events, as its
 //    `main` source. A subagent's pet is made by `task_spawned` and removed a while after it ends.
