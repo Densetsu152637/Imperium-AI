@@ -349,8 +349,18 @@ cache to llama.cpp, so a root that lands on another slot would re-read its whole
   slot, three sessions whose roots await subagents, all finish); `cargo test -p imperium-local`
   covers affinity and queue order; `bash scripts/check-rust.sh` passes; doc 04 no longer says a
   slot is held for the whole turn.
-- Status: pending
-- Outcome:
+- Status: done (2026-11-09; branch `feat/shared-local-slots`, pushed, not yet merged)
+- Outcome: commits bc8addd, cab6b92. Slot leased per model call (none held in `await_tasks`,
+  tools, usage-limit pauses or after errors); FIFO waiters with per-agent slot affinity
+  (`id_slot`) and `cache_prompt`; `--cache-ram` sized from `runtime.llamacpp.cache_ram_mb` and
+  the RAM left after models that stay loaded; `queued` in `models.local`, the CLI and the
+  desktop panel; `queue_wait_ms` on `ModelCallCompleted`. Tests: `shared_slot` (three sessions,
+  one slot) plus pause and stream-error release tests; `check-rust.sh` exit 0 (321 passed),
+  `check-web.sh` exit 0. Gate review converged after one fix round (F1, F3 fixed; F2 withdrawn
+  after checking llama.cpp b12180 `get_available_slot`). Not done: slots × tier sizing (needs
+  the tier table), router queue-awareness, a per-session view in the desktop, and G13's
+  real-server re-read measurement. Follow-up: `load()` places a model against the budget with
+  idle models counted as free even when they stay loaded.
 - Handoff notes: per-call leasing adds a queue wait before each call, so emit the wait in
   telemetry. With the host prompt cache, context switching costs RAM, not re-computation: at
   q8_0 a 64K root's cache is ~5 GB, so the planner caps `--cache-ram` and evicts the oldest
