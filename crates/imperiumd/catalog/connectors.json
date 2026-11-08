@@ -1,0 +1,262 @@
+{
+  "$comment": "The built-in connector catalogue shown under Connectors > Browse. Each entry becomes an [mcp.servers.<name>] table when added. Extend or override entries (by id) in <config>/connectors.json with the same shape: { \"entries\": [ ... ] }. See docs/05-tools-and-isolation.md#connectors.",
+  "entries": [
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "description": "Read, write, search, and move files in the folders you allow.",
+      "category": "Files",
+      "icon": "folder-open",
+      "publisher": "Model Context Protocol",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "{{folders}}"],
+      "fields": [
+        {
+          "id": "folders",
+          "label": "Allowed folders",
+          "description": "One folder per line. The server cannot reach anything outside them.",
+          "kind": "path_list",
+          "required": true,
+          "placeholder": "C:/Users/me/Documents"
+        }
+      ]
+    },
+    {
+      "id": "git",
+      "name": "Git",
+      "description": "Read history, diffs, branches, and status of a local Git repository.",
+      "category": "Developer tools",
+      "icon": "git-branch",
+      "publisher": "Model Context Protocol",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "{{repository}}"],
+      "fields": [
+        {
+          "id": "repository",
+          "label": "Repository",
+          "description": "A local clone. Needs uv (uvx) installed.",
+          "kind": "path",
+          "required": true,
+          "placeholder": "D:/code/my-project"
+        }
+      ]
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "description": "Issues, pull requests, code search, and repository files through GitHub's hosted MCP server.",
+      "category": "Developer tools",
+      "icon": "git-pull-request",
+      "publisher": "GitHub",
+      "homepage": "https://github.com/github/github-mcp-server",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "bearer": "{{token}}",
+      "fields": [
+        {
+          "id": "token",
+          "label": "Personal access token",
+          "description": "A fine-grained token with the repository permissions you want agents to have.",
+          "kind": "secret",
+          "required": true,
+          "placeholder": "github_pat_…"
+        }
+      ]
+    },
+    {
+      "id": "fetch",
+      "name": "Fetch",
+      "description": "Fetch web pages and convert them to Markdown for agents to read.",
+      "category": "Web",
+      "icon": "globe",
+      "publisher": "Model Context Protocol",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "fields": []
+    },
+    {
+      "id": "memory",
+      "name": "Memory",
+      "description": "A knowledge graph agents can store and recall entities and relations in.",
+      "category": "Knowledge",
+      "icon": "brain",
+      "publisher": "Model Context Protocol",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "env": { "MEMORY_FILE_PATH": "{{file}}" },
+      "fields": [
+        {
+          "id": "file",
+          "label": "Memory file",
+          "description": "Where the graph is kept. Leave empty for the server's default.",
+          "kind": "path",
+          "placeholder": "C:/Users/me/memory.jsonl"
+        }
+      ]
+    },
+    {
+      "id": "postgres",
+      "name": "PostgreSQL",
+      "description": "Inspect schemas and run read-only SQL against a Postgres database.",
+      "category": "Data",
+      "icon": "database",
+      "publisher": "Crystal DBA",
+      "homepage": "https://github.com/crystaldba/postgres-mcp",
+      "command": "uvx",
+      "args": ["postgres-mcp", "--access-mode=restricted"],
+      "env": { "DATABASE_URI": "{{uri}}" },
+      "fields": [
+        {
+          "id": "uri",
+          "label": "Connection string",
+          "description": "Kept in the secret store, as it usually holds a password.",
+          "kind": "secret",
+          "required": true,
+          "placeholder": "postgresql://user:password@localhost:5432/db"
+        }
+      ]
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite",
+      "description": "Query and inspect a local SQLite database file.",
+      "category": "Data",
+      "icon": "hard-drive",
+      "publisher": "Model Context Protocol",
+      "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/sqlite",
+      "command": "uvx",
+      "args": ["mcp-server-sqlite", "--db-path", "{{database}}"],
+      "fields": [
+        {
+          "id": "database",
+          "label": "Database file",
+          "kind": "path",
+          "required": true,
+          "placeholder": "D:/data/app.db"
+        }
+      ]
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "description": "Read channels and threads, and post messages, in a Slack workspace.",
+      "category": "Communication",
+      "icon": "message-square",
+      "publisher": "Model Context Protocol",
+      "homepage": "https://github.com/modelcontextprotocol/servers-archived/tree/main/src/slack",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "env": { "SLACK_BOT_TOKEN": "{{bot_token}}", "SLACK_TEAM_ID": "{{team_id}}" },
+      "fields": [
+        {
+          "id": "bot_token",
+          "label": "Bot token",
+          "description": "A Slack app's bot token (xoxb-…).",
+          "kind": "secret",
+          "required": true,
+          "placeholder": "xoxb-…"
+        },
+        {
+          "id": "team_id",
+          "label": "Workspace ID",
+          "kind": "text",
+          "required": true,
+          "placeholder": "T01234567"
+        }
+      ]
+    },
+    {
+      "id": "brave-search",
+      "name": "Brave Search",
+      "description": "Web, news, and image search through the Brave Search API.",
+      "category": "Web",
+      "icon": "search",
+      "publisher": "Brave",
+      "homepage": "https://github.com/brave/brave-search-mcp-server",
+      "command": "npx",
+      "args": ["-y", "@brave/brave-search-mcp-server"],
+      "env": { "BRAVE_API_KEY": "{{api_key}}" },
+      "fields": [
+        {
+          "id": "api_key",
+          "label": "API key",
+          "description": "From the Brave Search API dashboard.",
+          "kind": "secret",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "playwright",
+      "name": "Playwright",
+      "description": "Drive a real browser: navigate, click, fill forms, and read pages.",
+      "category": "Web",
+      "icon": "monitor",
+      "publisher": "Microsoft",
+      "homepage": "https://github.com/microsoft/playwright-mcp",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp"],
+      "fields": []
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "description": "Search, read, and edit pages and databases in a Notion workspace.",
+      "category": "Knowledge",
+      "icon": "notebook-text",
+      "publisher": "Notion",
+      "homepage": "https://github.com/makenotion/notion-mcp-server",
+      "command": "npx",
+      "args": ["-y", "@notionhq/notion-mcp-server"],
+      "env": { "NOTION_TOKEN": "{{token}}" },
+      "fields": [
+        {
+          "id": "token",
+          "label": "Integration token",
+          "description": "An internal integration's secret, shared with the pages it may use.",
+          "kind": "secret",
+          "required": true,
+          "placeholder": "ntn_…"
+        }
+      ]
+    },
+    {
+      "id": "context7",
+      "name": "Context7",
+      "description": "Current, version-specific library documentation for coding agents.",
+      "category": "Developer tools",
+      "icon": "book-open",
+      "publisher": "Upstash",
+      "homepage": "https://github.com/upstash/context7",
+      "url": "https://mcp.context7.com/mcp",
+      "fields": []
+    },
+    {
+      "id": "sequential-thinking",
+      "name": "Sequential Thinking",
+      "description": "A scratchpad tool for step-by-step reasoning that can branch and revise.",
+      "category": "Knowledge",
+      "icon": "list-checks",
+      "publisher": "Model Context Protocol",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "fields": []
+    },
+    {
+      "id": "time",
+      "name": "Time",
+      "description": "Current time and conversions between time zones.",
+      "category": "Utilities",
+      "icon": "clock",
+      "publisher": "Model Context Protocol",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/time",
+      "command": "uvx",
+      "args": ["mcp-server-time"],
+      "fields": []
+    }
+  ]
+}

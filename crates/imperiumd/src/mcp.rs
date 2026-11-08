@@ -63,22 +63,37 @@ pub fn session_servers(
     (specs, notices)
 }
 
-fn configured(
+/// How to start one `[mcp.servers.<name>]` entry, with its secrets read; the reason when it
+/// cannot be started.
+pub(crate) fn configured(
     name: &str,
     server: &McpServerSettings,
     load_secret: &impl Fn(&SecretName) -> Result<Option<String>, SecretError>,
 ) -> Result<ServerSpec, String> {
+    let secret = |name: &SecretName| {
+        load_secret(name)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                format!("secret {name} is not in the keychain; run: imperium secret set {name}")
+            })
+    };
     let launch = match (&server.command, &server.url) {
-        (Some(command), _) => Launch::Stdio {
-            command: command.clone(),
-            args: server.args.clone(),
-            env: server
+        (Some(command), _) => {
+            let mut env: Vec<(String, String)> = server
                 .env
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-            cwd: None,
-        },
+                .collect();
+            for (key, reference) in &server.secret_env {
+                env.push((key.clone(), secret(&reference.secret)?));
+            }
+            Launch::Stdio {
+                command: command.clone(),
+                args: server.args.clone(),
+                env,
+                cwd: None,
+            }
+        }
         (None, Some(url)) => {
             let mut headers: Vec<(String, String)> = server
                 .headers
@@ -86,14 +101,7 @@ fn configured(
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
             if let Some(reference) = &server.bearer_token {
-                let token = load_secret(&reference.secret)
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| {
-                        format!(
-                            "secret {} is not in the keychain; run: imperium secret set {}",
-                            reference.secret, reference.secret
-                        )
-                    })?;
+                let token = secret(&reference.secret)?;
                 headers.push(("Authorization".into(), format!("Bearer {token}")));
             }
             Launch::Http {
@@ -147,6 +155,7 @@ mod tests {
             command = "files-server"
             args = ["--root", "."]
             allow = ["read"]
+            secret_env = { FILES_TOKEN = { secret = "files" } }
             [mcp.servers.remote]
             url = "https://example.com/mcp"
             bearer_token = { secret = "remote" }
@@ -158,6 +167,8 @@ mod tests {
             session_servers(&settings(config), project.path(), |_| Ok(Some("t".into())));
         let names: Vec<_> = specs.iter().map(|spec| spec.name.as_str()).collect();
         assert_eq!(names, ["files", "remote"]);
+        assert!(matches!(&specs[0].launch, Launch::Stdio { env, .. }
+            if env.contains(&("FILES_TOKEN".into(), "t".into()))));
         assert!(matches!(&specs[1].launch, Launch::Http { headers, .. }
             if headers.contains(&("Authorization".into(), "Bearer t".into()))));
         assert_eq!(notices.len(), 1);

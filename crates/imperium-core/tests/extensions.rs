@@ -75,6 +75,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         config_dir: config.path().to_path_buf(),
         project_dir: project.path().to_path_buf(),
         plugin_dirs: Vec::new(),
+        disabled_plugins: Vec::new(),
         hooks: vec![ConfiguredHook {
             event: "PreToolUse".into(),
             matcher: "Bash".into(),

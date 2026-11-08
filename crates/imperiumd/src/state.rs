@@ -69,6 +69,8 @@ pub struct DaemonState {
     watches: Mutex<HashMap<String, (String, u64)>>,
     /// Signalled when a client asks the daemon to stop.
     shutdown: tokio::sync::Notify,
+    /// What `mcp.test` last learned about each connector.
+    connectors: crate::connectors::StatusCache,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -114,7 +116,13 @@ impl DaemonState {
             phone_address: OnceLock::new(),
             watches: Mutex::new(HashMap::new()),
             shutdown: tokio::sync::Notify::new(),
+            connectors: crate::connectors::StatusCache::default(),
         })
+    }
+
+    /// What connector tests last learned about each MCP server.
+    pub fn connector_status(&self) -> &crate::connectors::StatusCache {
+        &self.connectors
     }
 
     /// Starts running `[[schedules]]`. Call once, inside the Tokio runtime.
@@ -586,10 +594,13 @@ impl DaemonState {
             .with_sandbox(self.sandbox());
         let model = resolve_model(&self.settings, model, |name| self.secrets.load(name))?;
         let catalog = self.catalog();
-        let (mut mcp, mut notices) =
-            crate::mcp::session_servers(&self.settings, Path::new(project_dir), |name| {
-                self.secrets.load(name)
-            });
+        // Connectors added or changed in the app since the daemon started apply to new sessions.
+        let fresh = crate::connectors::saved_settings(&self.paths);
+        let (mut mcp, mut notices) = crate::mcp::session_servers(
+            fresh.as_ref().unwrap_or(&self.settings),
+            Path::new(project_dir),
+            |name| self.secrets.load(name),
+        );
         let mut extensions = self.extensions(Path::new(project_dir));
         let context = self.context(Path::new(project_dir), &mut notices);
         mcp.append(&mut extensions.servers);
@@ -705,6 +716,7 @@ impl DaemonState {
             config_dir: self.paths.config_dir().to_path_buf(),
             project_dir: project_dir.to_path_buf(),
             plugin_dirs: self.settings.extensions.plugin_dirs.clone(),
+            disabled_plugins: self.settings.extensions.disabled_plugins.clone(),
             hooks: self
                 .settings
                 .hooks

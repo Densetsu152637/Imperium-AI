@@ -552,6 +552,9 @@ pub struct ExtensionSettings {
     /// Plugin folders, or folders of plugins, in the Claude Code layout.
     #[serde(default)]
     pub plugin_dirs: Vec<PathBuf>,
+    /// Plugins, by name, that are found but not loaded.
+    #[serde(default)]
+    pub disabled_plugins: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -587,6 +590,10 @@ pub struct McpServerSettings {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Environment variables read from the keychain, such as API tokens:
+    /// `secret_env = { GITHUB_TOKEN = { secret = "github" } }`.
+    #[serde(default)]
+    pub secret_env: BTreeMap<String, SecretRef>,
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
@@ -601,6 +608,27 @@ pub struct McpServerSettings {
     pub enabled: bool,
     #[serde(default)]
     pub timeout_s: Option<u64>,
+    /// The connector catalogue entry it was added from, if any.
+    #[serde(default)]
+    pub catalog: Option<String>,
+}
+
+impl Default for McpServerSettings {
+    fn default() -> Self {
+        McpServerSettings {
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            secret_env: BTreeMap::new(),
+            url: None,
+            headers: BTreeMap::new(),
+            bearer_token: None,
+            allow: Vec::new(),
+            enabled: true,
+            timeout_s: None,
+            catalog: None,
+        }
+    }
 }
 
 fn enabled() -> bool {
