@@ -229,17 +229,40 @@ async fn check<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// A newer build on `channel`, if its feed offers one.
+///
+/// The feed and the installer are fetched through the GitHub API's asset URLs rather than the
+/// `github.com/.../releases/download` links in `latest.json`: the API serves the same files with
+/// `Accept: application/octet-stream`, and keeps working when the download links do not (they
+/// have returned 504 for hours at a time).
 async fn find<R: Runtime>(app: &AppHandle<R>, channel: Channel) -> Result<Option<Update>, String> {
-    let Some(feed) = feed_url(channel).await? else {
+    let Some(release) = newest_release(channel).await? else {
         return Ok(None);
     };
-    app.updater_builder()
-        .endpoints(vec![feed])
+    let Some(feed) = release.asset("latest.json") else {
+        return Ok(None);
+    };
+    let update = app
+        .updater_builder()
+        .endpoints(vec![feed.url.clone()])
+        .and_then(|builder| builder.header("Accept", "application/octet-stream"))
+        .and_then(|builder| builder.header("User-Agent", "imperium-desktop"))
         .and_then(|builder| builder.build())
         .map_err(|error| error.to_string())?
         .check()
         .await
-        .map_err(|error| format!("Checking for updates failed: {error}"))
+        .map_err(|error| format!("Checking for updates failed: {error}"))?;
+    Ok(update.map(|mut update| {
+        // The installer the feed names, by file name, from the same release.
+        let file = update
+            .download_url
+            .path_segments()
+            .and_then(|mut segments| segments.next_back())
+            .map(str::to_owned);
+        if let Some(asset) = file.and_then(|file| release.asset(&file)) {
+            update.download_url = asset.url.clone();
+        }
+        update
+    }))
 }
 
 #[derive(Deserialize)]
@@ -250,15 +273,21 @@ struct Release {
     assets: Vec<Asset>,
 }
 
+impl Release {
+    fn asset(&self, name: &str) -> Option<&Asset> {
+        self.assets.iter().find(|asset| asset.name == name)
+    }
+}
+
 #[derive(Deserialize)]
 struct Asset {
     name: String,
-    browser_download_url: tauri::Url,
+    /// The API URL, which serves the file's bytes to `Accept: application/octet-stream`.
+    url: tauri::Url,
 }
 
-/// The `latest.json` of the channel's newest release, or `None` when the channel has no signed
-/// release yet.
-async fn feed_url(channel: Channel) -> Result<Option<tauri::Url>, String> {
+/// The channel's newest release, or `None` when the channel has none yet.
+async fn newest_release(channel: Channel) -> Result<Option<Release>, String> {
     let url = format!("https://api.github.com/repos/{REPOSITORY}/releases?per_page=30");
     let response = reqwest::Client::new()
         .get(url)
@@ -279,14 +308,7 @@ async fn feed_url(channel: Channel) -> Result<Option<tauri::Url>, String> {
     // Releases are listed newest first.
     Ok(releases
         .into_iter()
-        .find(|release| !release.draft && channel.follows(release))
-        .and_then(|release| {
-            release
-                .assets
-                .into_iter()
-                .find(|asset| asset.name == "latest.json")
-        })
-        .map(|asset| asset.browser_download_url))
+        .find(|release| !release.draft && channel.follows(release)))
 }
 
 #[tauri::command]
