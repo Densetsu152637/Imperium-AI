@@ -437,6 +437,82 @@ api_key = { secret = 'Bad Name' }",
     }
 
     #[test]
+    fn cpu_lane_placement_needs_a_local_llama_cpp_row() {
+        let load = |table: &str| {
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), table)])
+                .settings()
+        };
+        let row = |spec: &str, location: &str, extra: &str| {
+            format!(
+                "[[models.catalog]]
+id = \"critic\"
+spec = \"{spec}\"
+location = \"{location}\"
+                 tier = \"strong\"
+{extra}"
+            )
+        };
+        let settings = load(&row(
+            "llamacpp:qwen3-30b",
+            "local",
+            "placement = \"cpu\"
+parallel = 2",
+        ))
+        .unwrap();
+        let entry = &settings.models.catalog[0];
+        assert_eq!(entry.placement, crate::ModelPlacement::Cpu);
+        assert_eq!(
+            (entry.parallel, entry.llamacpp_model()),
+            (Some(2), Some("qwen3-30b"))
+        );
+        // Rows without a placement are planned by the memory planner.
+        let plain = load(&row("llamacpp:qwen3-30b", "local", "")).unwrap();
+        assert_eq!(
+            plain.models.catalog[0].placement,
+            crate::ModelPlacement::Auto
+        );
+
+        let cloud = load(&row("openrouter:big", "cloud", "placement = \"cpu\"")).unwrap_err();
+        assert!(cloud.to_string().contains("needs location"), "{cloud}");
+        let hosted_local = load(&row("llama:qwen", "local", "placement = \"cpu\"")).unwrap_err();
+        assert!(
+            hosted_local.to_string().contains("needs a llama.cpp model"),
+            "{hosted_local}"
+        );
+        let vllm = load(&row("vllm:Qwen3-8B", "local", "placement = \"cpu\"")).unwrap_err();
+        assert!(
+            vllm.to_string().contains("needs a llama.cpp model"),
+            "{vllm}"
+        );
+        let stray = load(&row("llamacpp:q", "local", "parallel = 2")).unwrap_err();
+        assert!(stray.to_string().contains("only applies"), "{stray}");
+        let zero = load(&row(
+            "llamacpp:q",
+            "local",
+            "placement = \"cpu\"
+parallel = 0",
+        ))
+        .unwrap_err();
+        assert!(zero.to_string().contains("at least 1"), "{zero}");
+        let unknown = load(&row("llamacpp:q", "local", "placement = \"gpu\"")).unwrap_err();
+        assert!(
+            unknown.to_string().contains("placement") || unknown.to_string().contains("variant"),
+            "{unknown}"
+        );
+        let split = format!(
+            "{}
+[[models.catalog]]
+id = \"other\"
+spec = \"llamacpp:q\"
+location = \"local\"
+tier = \"basic\"",
+            row("llamacpp:q", "local", "placement = \"cpu\"")
+        );
+        let error = load(&split).unwrap_err();
+        assert!(error.to_string().contains("same model"), "{error}");
+    }
+
+    #[test]
     fn local_model_settings_have_defaults() {
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
         let llamacpp = &settings.runtime.llamacpp;

@@ -135,6 +135,48 @@ impl Settings {
                     entry.id
                 ));
             }
+            if entry.placement == ModelPlacement::Cpu {
+                if entry.location != Location::Local {
+                    return Err(format!(
+                        "models.catalog: {:?} has placement = \"cpu\", which needs location = \"local\"",
+                        entry.id
+                    ));
+                }
+                if entry.llamacpp_model().is_none() {
+                    return Err(format!(
+                        "models.catalog: {:?} has placement = \"cpu\", which needs a llama.cpp model (spec = \"{LLAMACPP_ENDPOINT}:<id>\"), not {:?}",
+                        entry.id, entry.spec
+                    ));
+                }
+            } else if entry.parallel.is_some() {
+                return Err(format!(
+                    "models.catalog: {:?} sets parallel, which only applies to placement = \"cpu\"",
+                    entry.id
+                ));
+            }
+            if entry.parallel == Some(0) {
+                return Err(format!(
+                    "models.catalog: {:?} needs parallel of at least 1",
+                    entry.id
+                ));
+            }
+        }
+        for pinned in self
+            .models
+            .catalog
+            .iter()
+            .filter(|entry| entry.placement == ModelPlacement::Cpu)
+        {
+            if let Some(other) =
+                self.models.catalog.iter().find(|entry| {
+                    entry.spec == pinned.spec && entry.placement != ModelPlacement::Cpu
+                })
+            {
+                return Err(format!(
+                    "models.catalog: {:?} and {:?} name the same model {:?}, so both must use placement = \"cpu\" or neither",
+                    pinned.id, other.id, pinned.spec
+                ));
+            }
         }
         for (index, rule) in self.routing.rules.iter().enumerate() {
             if let Some(unknown) = rule
@@ -752,6 +794,45 @@ pub struct CatalogEntry {
     /// their own; for other models the window is unknown unless given here.
     #[serde(default)]
     pub context_window: Option<u32>,
+    /// `cpu` pins a llama.cpp model to the CPU lane: its own server with no GPU layers, its
+    /// weights and KV cache in system RAM, never taking VRAM or part in GPU swaps.
+    #[serde(default)]
+    pub placement: ModelPlacement,
+    /// Slots of a CPU-pinned model (model calls served at once). A CPU lane is slow, so it
+    /// serves one call at a time unless the cores allow more; only valid with
+    /// `placement = "cpu"`.
+    #[serde(default)]
+    pub parallel: Option<u32>,
+}
+
+impl CatalogEntry {
+    /// The id of the local llama.cpp model a `llamacpp:<id>` spec names.
+    pub fn llamacpp_model(&self) -> Option<&str> {
+        self.spec
+            .strip_prefix(LLAMACPP_ENDPOINT)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .filter(|id| !id.is_empty())
+    }
+}
+
+/// Where a local model is placed in memory.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelPlacement {
+    /// The memory planner decides: the GPU when it fits, otherwise split with system memory.
+    #[default]
+    Auto,
+    /// The CPU lane: entirely in system RAM, served on the CPU.
+    Cpu,
+}
+
+impl ModelPlacement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelPlacement::Auto => "auto",
+            ModelPlacement::Cpu => "cpu",
+        }
+    }
 }
 
 /// Where a model runs.

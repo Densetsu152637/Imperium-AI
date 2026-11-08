@@ -738,6 +738,13 @@ impl Agent {
             .unwrap_or(duration);
         let tokens_per_sec = (usage.completion_tokens > 0 && !generating.is_zero())
             .then(|| usage.completion_tokens as f64 / generating.as_secs_f64());
+        // The local runtime keeps the measured speed per model, which routing and the model
+        // listing report.
+        if tokens_per_sec.is_some()
+            && let Some(local) = self.local_models()
+        {
+            local.record_throughput(&self.model.model, usage.completion_tokens, generating);
+        }
         SessionEvent::ModelCallCompleted {
             model: self.model.spec.clone(),
             usage: token_usage(usage),

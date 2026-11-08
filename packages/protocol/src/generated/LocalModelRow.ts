@@ -23,4 +23,14 @@ placement: "gpu" | "partial" | "cpu" | "none", gpu_layers: number | null, loaded
 /**
  * Calls waiting for a slot on this model.
  */
-queued: number, };
+queued: number, 
+/**
+ * Pinned to the CPU lane by `placement = "cpu"` in the model table: served with no GPU
+ * layers, in system RAM only.
+ */
+cpu_lane: boolean, 
+/**
+ * How fast the model has generated in its recent calls, in tokens per second; absent
+ * before a call finished since the daemon started.
+ */
+tokens_per_s: number | null, };

@@ -19,6 +19,12 @@
 //! waits longer than the batch ahead of it. Loads and unloads run one at a time, swaps are
 //! limited per minute (past the limit a call that needs one waits for the minute), no call waits
 //! longer than `max_wait_s`, and idle models are unloaded after `idle_unload_s`.
+//!
+//! A model can be pinned to the CPU lane ([`Supervisor::set_cpu_pinned`]): it is served with no
+//! GPU layers, its weights, KV cache and prompt cache count against the RAM budget alone, and it
+//! is never a victim of a swap made for VRAM (see [`crate::arbiter`]); it serves one call at a
+//! time unless configured otherwise. The speed each model has been measured generating at is
+//! kept for the listing and for routing ([`LocalModels::tokens_per_s`]).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -50,6 +56,12 @@ const RECHECK: Duration = Duration::from_millis(250);
 const SWAP_WINDOW: Duration = Duration::from_secs(60);
 /// Load speed assumed for a model that has not been loaded yet, to estimate a swap.
 const ASSUMED_LOAD_BYTES_PER_S: u64 = 2 * 1024 * MIB;
+/// Slots of a model pinned to the CPU lane unless its row sets `parallel`: the cores are slow
+/// and shared, so calls take turns.
+pub const CPU_LANE_SLOTS: u32 = 1;
+/// How much of the earlier calls' tokens and time a new call's measurement keeps: the speed
+/// follows the model's recent calls, and long generations weigh more than short ones.
+const THROUGHPUT_KEEP: f64 = 0.8;
 
 /// What a server is started with.
 #[derive(Debug, Clone)]
@@ -212,6 +224,8 @@ pub struct LoadedStatus {
     pub gpu_layers: u32,
     pub vram_bytes: u64,
     pub ram_bytes: u64,
+    /// Pinned to the CPU lane.
+    pub cpu_pinned: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -379,6 +393,8 @@ struct Loaded {
     placement: Placement,
     /// The part of `placement.ram_bytes` that is the prompt cache.
     cache_bytes: u64,
+    /// Pinned to the CPU lane: it holds RAM only.
+    cpu_pinned: bool,
     /// Saved slots fit this server only when saved under the same key; `None` when its slots
     /// are not saved.
     key: Option<u64>,
@@ -430,6 +446,26 @@ struct State {
     swaps: VecDeque<tokio::time::Instant>,
     /// Seconds each model last took to load, to estimate a swap.
     load_seconds: HashMap<String, f64>,
+    /// How fast each model has generated, kept after it is unloaded.
+    throughput: HashMap<String, Throughput>,
+}
+
+/// Tokens generated over the seconds spent generating them, over a model's recent calls.
+#[derive(Debug, Clone, Copy, Default)]
+struct Throughput {
+    tokens: f64,
+    seconds: f64,
+}
+
+impl Throughput {
+    fn add(&mut self, tokens: f64, seconds: f64) {
+        self.tokens = self.tokens * THROUGHPUT_KEEP + tokens;
+        self.seconds = self.seconds * THROUGHPUT_KEEP + seconds;
+    }
+
+    fn per_second(&self) -> Option<f64> {
+        (self.seconds > 0.0 && self.tokens > 0.0).then(|| self.tokens / self.seconds)
+    }
 }
 
 impl State {
@@ -595,6 +631,10 @@ struct Load {
     victims: Vec<(String, Loaded)>,
     /// The call that loads it, admitted once the model is in the loaded set.
     call: u64,
+    /// The slots it is started with.
+    slots: u32,
+    /// It is pinned to the CPU lane.
+    cpu_pinned: bool,
 }
 
 /// Supervises local model servers. Cheap to share: hand out `Arc<Supervisor>`.
@@ -616,6 +656,8 @@ pub struct Supervisor {
     swapping: tokio::sync::Mutex<()>,
     /// Saved slots; `None` when slots are not saved.
     slot_files: Option<Mutex<SlotFiles>>,
+    /// Models pinned to the CPU lane, with their slots.
+    cpu_pinned: Mutex<HashMap<String, u32>>,
     events: broadcast::Sender<SwapEvent>,
 }
 
@@ -683,6 +725,7 @@ impl Supervisor {
             changed: Arc::new(Notify::new()),
             swapping: tokio::sync::Mutex::new(()),
             slot_files,
+            cpu_pinned: Mutex::default(),
             events: broadcast::channel(64).0,
         });
         let weak = Arc::downgrade(&supervisor);
@@ -713,20 +756,60 @@ impl Supervisor {
         self.events.subscribe()
     }
 
-    /// What loading `model` needs at the configured context and slots.
+    /// Pins the models named in `pins` (model id to slots) to the CPU lane, replacing the
+    /// earlier pins. Models already loaded keep the placement they were started with.
+    pub fn set_cpu_pinned(&self, pins: HashMap<String, u32>) {
+        *lock(&self.cpu_pinned) = pins;
+        self.changed.notify_waiters();
+    }
+
+    /// The slots of `id` if it is pinned to the CPU lane.
+    pub fn cpu_slots(&self, id: &str) -> Option<u32> {
+        lock(&self.cpu_pinned).get(id).map(|&slots| slots.max(1))
+    }
+
+    /// What loading `model` needs at the configured context and slots (a CPU-lane model's own
+    /// slots).
     pub fn footprint(&self, model: &LocalModel) -> Footprint {
         Footprint::of(
             model,
             self.settings.context,
-            self.settings.parallel,
+            self.cpu_slots(&model.id).unwrap_or(self.settings.parallel),
             &self.settings.cache_type,
         )
     }
 
+    /// Where `model` goes within a budget when served by `backend`: on the CPU lane if it is
+    /// pinned there, else wherever the runtime places it.
+    fn placer(
+        &self,
+        model: &LocalModel,
+        backend: Arc<dyn RuntimeBackend>,
+    ) -> impl Fn(Budget) -> Option<Placement> {
+        let footprint = self.footprint(model);
+        let cpu = self.cpu_slots(&model.id).is_some();
+        move |budget| {
+            if cpu {
+                backend.place_on_cpu(footprint, budget)
+            } else {
+                backend.place(footprint, budget)
+            }
+        }
+    }
+
     /// Where `model` would go on an empty machine, for listings.
     pub fn placement_when_idle(&self, model: &LocalModel) -> Option<Placement> {
-        self.backend(model.format)?
-            .place(self.footprint(model), self.budget)
+        let backend = Arc::clone(self.backend(model.format)?);
+        self.placer(model, backend)(self.budget)
+    }
+
+    /// How fast `id` has generated in its recent calls, in tokens per second; `None` before a
+    /// call finished.
+    pub fn tokens_per_s(&self, id: &str) -> Option<f64> {
+        lock(&self.state)
+            .throughput
+            .get(id)
+            .and_then(Throughput::per_second)
     }
 
     /// The runtime that serves `format`: the first available one accepting it.
@@ -749,6 +832,7 @@ impl Supervisor {
                 gpu_layers: loaded.placement.gpu_layers,
                 vram_bytes: loaded.placement.vram_bytes,
                 ram_bytes: loaded.placement.ram_bytes,
+                cpu_pinned: loaded.cpu_pinned,
             })
             .collect();
         loaded.sort_by(|a, b| a.model_id.cmp(&b.model_id));
@@ -773,6 +857,7 @@ impl Supervisor {
                 vram_bytes: loaded.placement.vram_bytes,
                 ram_bytes: loaded.placement.ram_bytes,
                 cache_bytes: loaded.cache_bytes,
+                cpu_pinned: loaded.cpu_pinned,
                 use_: if loaded.busy() {
                     Use::Busy
                 } else if Presence::claims(&users, id, &loaded.batch) {
@@ -951,7 +1036,7 @@ impl Supervisor {
         let residents = self.residents(&state);
         let policy = self.policy(&mut state);
         let decision = arbiter::decide(
-            |budget| backend.place(footprint, budget),
+            self.placer(model, Arc::clone(&backend)),
             self.budget,
             &residents,
             ticket.since.elapsed(),
@@ -984,6 +1069,11 @@ impl Supervisor {
             cache_room,
             victims,
             call: ticket.seq,
+            slots: self
+                .cpu_slots(&model.id)
+                .unwrap_or(self.settings.parallel)
+                .max(1),
+            cpu_pinned: self.cpu_slots(&model.id).is_some(),
         }))
     }
 
@@ -1001,6 +1091,8 @@ impl Supervisor {
             cache_room,
             victims,
             call,
+            slots,
+            cpu_pinned,
         } = load;
         let replaced = !victims.is_empty();
         self.swap_out(victims, "room").await;
@@ -1017,7 +1109,6 @@ impl Supervisor {
         let key = files.map(|_| {
             slot_files::model_key(model, self.settings.context, &self.settings.cache_type)
         });
-        let slots = self.settings.parallel.max(1);
         let spec = LaunchSpec {
             backend: Arc::clone(&backend),
             format: model.format,
@@ -1033,7 +1124,7 @@ impl Supervisor {
             slot_save_path: files.map(|files| lock(files).dir().to_path_buf()),
             extra_args: backend.extra_args(),
         };
-        tracing::info!(model = %model.id, gpu_layers = placement.gpu_layers, cache_ram_mb, "loading local model");
+        tracing::info!(model = %model.id, gpu_layers = placement.gpu_layers, cpu_pinned, slots, cache_ram_mb, "loading local model");
         let started = Instant::now();
         // A quick failure, such as the process exiting while it starts, is tried once more; one
         // that ran out the launcher's time is not.
@@ -1075,6 +1166,7 @@ impl Supervisor {
                     pool,
                     placement,
                     cache_bytes,
+                    cpu_pinned,
                     key,
                     loaded_at: Instant::now(),
                     batch: HashSet::from([holder.to_string()]),
@@ -1264,7 +1356,7 @@ impl LocalModels for Supervisor {
         let Some(backend) = self.backend(model.format) else {
             return Availability::Unavailable;
         };
-        let footprint = self.footprint(&model);
+        let place = self.placer(&model, Arc::clone(backend));
         let mut state = lock(&self.state);
         if let Some(entry) = state.loaded.get(id) {
             return if entry.pool.permits.available_permits() > 0 {
@@ -1276,12 +1368,7 @@ impl LocalModels for Supervisor {
         }
         let residents = self.residents(&state);
         let policy = self.policy(&mut state);
-        let outlook = arbiter::outlook(
-            |budget| backend.place(footprint, budget),
-            self.budget,
-            &residents,
-            policy,
-        );
+        let outlook = arbiter::outlook(place, self.budget, &residents, policy);
         match outlook {
             Outlook::Fits => Availability::Fits,
             Outlook::Swap => Availability::Swap {
@@ -1303,6 +1390,21 @@ impl LocalModels for Supervisor {
     fn waiting(&self, model: &str, holder: &str) -> LocalPresence {
         self.presence
             .enter(&self.changed, model, holder, Mark::Waiting)
+    }
+
+    fn record_throughput(&self, model: &str, completion_tokens: u64, generating: Duration) {
+        if completion_tokens == 0 || generating.is_zero() {
+            return;
+        }
+        lock(&self.state)
+            .throughput
+            .entry(model.to_string())
+            .or_default()
+            .add(completion_tokens as f64, generating.as_secs_f64());
+    }
+
+    fn tokens_per_s(&self, model: &str) -> Option<f64> {
+        Supervisor::tokens_per_s(self, model)
     }
 }
 

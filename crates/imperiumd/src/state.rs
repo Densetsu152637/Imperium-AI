@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use imperium_config::{KeychainSecrets, Paths, SecretStore, Settings};
+use imperium_config::{KeychainSecrets, ModelPlacement, Paths, SecretStore, Settings};
 use imperium_core::{
     CatalogModel, ChatClients, LocalModels, ModelError, Session, SessionConfig, SessionMemory,
     ToolProvider, new_session_id, resolve_model,
@@ -763,6 +763,7 @@ impl DaemonState {
                         tier: entry.tier,
                         location: entry.location,
                         tags: entry.tags.clone(),
+                        cpu_lane: entry.placement == ModelPlacement::Cpu,
                     }),
                     Err(error) => {
                         tracing::warn!(model = %entry.spec, %error, "skipping catalog model");

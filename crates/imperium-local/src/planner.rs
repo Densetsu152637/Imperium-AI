@@ -127,6 +127,20 @@ pub fn place_on_gpu(footprint: Footprint, budget: Budget) -> Option<Placement> {
     })
 }
 
+/// Places a model on the CPU lane (`placement = "cpu"`): no GPU layers, and its weights, KV
+/// cache and runtime state all in system RAM, even when VRAM is free. `None` when the RAM left
+/// in `budget` cannot hold it.
+pub fn place_on_cpu(footprint: Footprint, budget: Budget) -> Option<Placement> {
+    let required = footprint.required_bytes();
+    (required <= budget.ram_bytes).then_some(Placement {
+        gpu_layers: 0,
+        all_layers_on_gpu: false,
+        vram_bytes: 0,
+        ram_bytes: required,
+        required_bytes: required,
+    })
+}
+
 /// Places a model: entirely on the GPU if it fits, otherwise as many layers as fit with the rest
 /// in system memory, otherwise `None`.
 pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
@@ -237,6 +251,34 @@ mod tests {
             ..cpu_only
         };
         assert!(place(footprint(), unified).unwrap().all_layers_on_gpu);
+    }
+
+    #[test]
+    fn cpu_lane_placement_takes_only_ram_even_when_vram_is_free() {
+        let budget = Budget {
+            vram_bytes: 24 * GIB,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        let placement = place_on_cpu(footprint(), budget).unwrap();
+        assert_eq!(placement.gpu_layers, 0);
+        assert!(!placement.all_layers_on_gpu);
+        assert_eq!(placement.vram_bytes, 0);
+        assert_eq!(placement.ram_bytes, 5 * GIB + RUNTIME_OVERHEAD_BYTES);
+        // The ordinary planner would have put the same model on the GPU.
+        assert!(place(footprint(), budget).unwrap().all_layers_on_gpu);
+        // It does not spill to VRAM: with the RAM short it is not placed at all.
+        let short = Budget {
+            ram_bytes: 5 * GIB,
+            ..budget
+        };
+        assert_eq!(place_on_cpu(footprint(), short), None);
+        // Unified memory is one pool of RAM, and the model is still served on the CPU.
+        let unified = Budget {
+            unified: true,
+            ..budget
+        };
+        assert_eq!(place_on_cpu(footprint(), unified).unwrap().gpu_layers, 0);
     }
 
     #[test]

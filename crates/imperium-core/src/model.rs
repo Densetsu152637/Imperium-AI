@@ -111,6 +111,9 @@ pub struct CatalogModel {
     pub tier: Tier,
     pub location: Location,
     pub tags: Vec<String>,
+    /// The row is pinned to the CPU lane (`placement = "cpu"`): slow and for work that can
+    /// wait, so only a rule or a name sends work to it, never the ranking by tier.
+    pub cpu_lane: bool,
 }
 
 /// What a delegating agent asked for.
@@ -133,7 +136,9 @@ pub struct TaskRequest<'a> {
 ///    list is tried in order (an explicit choice, so tier is not checked; location is), then
 ///    its location restriction applies to the rest;
 /// 3. otherwise the suitable models (at or above the tier, in the requested location) are
-///    ranked by `routing.prefer`, then by price, with unpriced models counted as free;
+///    ranked by `routing.prefer`, then by price, with unpriced models counted as free; rows
+///    pinned to the CPU lane are left out, since only work that can wait belongs there and a
+///    rule or a name sends it;
 /// 4. otherwise `fallback`, the session's model.
 pub fn route(
     catalog: &[CatalogModel],
@@ -191,7 +196,7 @@ pub fn route(
     catalog
         .iter()
         .filter(usable)
-        .filter(|c| c.tier >= request.tier && in_location(c))
+        .filter(|c| !c.cpu_lane && c.tier >= request.tier && in_location(c))
         .min_by(|a, b| {
             let (a_rank, b_rank) = (rank(a), rank(b));
             a_rank
@@ -287,6 +292,7 @@ mod tests {
                 tier,
                 location,
                 tags: tags.iter().map(|tag| tag.to_string()).collect(),
+                cpu_lane: false,
             }
         };
         vec![
@@ -469,6 +475,58 @@ mod tests {
         assert_eq!(
             route(&local_catalog(), &routing, &fallback(), named, None).model,
             "mid"
+        );
+    }
+
+    #[test]
+    fn cpu_lane_rows_are_chosen_by_rule_or_name_not_by_ranking() {
+        let mut rows = local_catalog();
+        let lane = rows.iter_mut().find(|c| c.id == "large").unwrap();
+        lane.cpu_lane = true;
+        lane.tier = Tier::Strong;
+        lane.tags = vec!["critique".into()];
+        let local = FakeLocal(vec![
+            ("small", Availability::Fits),
+            ("large", Availability::Fits),
+        ]);
+        let routing = RoutingSettings {
+            prefer: Preference::Local,
+            rules: vec![RoutingRule {
+                when_tag: Some("critique".into()),
+                use_models: vec!["large".into()],
+                ..RoutingRule::default()
+            }],
+        };
+        let pick = |routing: &RoutingSettings, request: TaskRequest<'_>| {
+            route(&rows, routing, &fallback(), request, Some(&local)).model
+        };
+        // A strong task with no rule: the slow lane is not in the ranking, so it falls back to
+        // the session's model (nothing else is strong).
+        let strong = TaskRequest {
+            tier: Tier::Strong,
+            ..TaskRequest::default()
+        };
+        assert_eq!(pick(&routing, strong), "session");
+        // A rule names it, or the agent does.
+        let tags = ["critique".to_string()];
+        let critique = TaskRequest {
+            tags: &tags,
+            ..TaskRequest::default()
+        };
+        assert_eq!(pick(&routing, critique), "large");
+        let named = TaskRequest {
+            named: Some("large"),
+            ..TaskRequest::default()
+        };
+        assert_eq!(pick(&RoutingSettings::default(), named), "large");
+        // When the lane cannot take the work (RAM short), the rule falls through to the ranking.
+        let short = FakeLocal(vec![
+            ("small", Availability::Fits),
+            ("large", Availability::Unavailable),
+        ]);
+        assert_eq!(
+            route(&rows, &routing, &fallback(), critique, Some(&short)).model,
+            "small"
         );
     }
 

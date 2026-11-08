@@ -16,10 +16,17 @@ const GIB = 1024 ** 3;
 const gib = (bytes: number): string => `${(bytes / GIB).toFixed(1)} GiB`;
 
 function fit(row: LocalModelRow): string {
+  const speed = row.tokens_per_s != null ? ` · ${row.tokens_per_s.toFixed(1)} tok/s` : "";
+  return `${placement(row)}${speed}`;
+}
+
+function placement(row: LocalModelRow): string {
   if (row.loaded) {
     const queue = row.queued > 0 ? ` · ${row.queued} waiting` : "";
-    return `loaded · ${row.slots_in_use}/${row.slots} busy${queue}`;
+    const lane = row.cpu_lane ? "CPU lane · " : "";
+    return `${lane}loaded · ${row.slots_in_use}/${row.slots} busy${queue}`;
   }
+  if (row.cpu_lane && row.placement === "cpu") return "CPU lane (RAM only)";
   switch (row.placement) {
     case "gpu":
       return "fits on GPU";

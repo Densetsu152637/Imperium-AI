@@ -185,6 +185,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
             tier: Tier::Standard,
             location: Location::Local,
             tags: Vec::new(),
+            cpu_lane: false,
         },
         CatalogModel {
             id: "big".into(),
@@ -192,6 +193,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
             tier: Tier::Strong,
             location: Location::Cloud,
             tags: Vec::new(),
+            cpu_lane: false,
         },
     ];
     let dir = tempfile::tempdir().unwrap();
@@ -257,4 +259,16 @@ async fn delegation_falls_back_to_hosted_when_memory_is_short() {
     let models = delegate(supervisor(Arc::clone(&launcher), 1)).await;
     assert_eq!(models, ["cloud:big", "cloud:big"]);
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn cpu_lane_speed_of_delegated_local_calls_is_measured() {
+    let launcher = Arc::new(FakeLlama::default());
+    let local = supervisor(Arc::clone(&launcher), 8);
+    assert_eq!(local.tokens_per_s("small"), None);
+    delegate(Arc::clone(&local)).await;
+    // Each subagent call generated 5 tokens; the agent loop reported them with how long it
+    // took, so the supervisor knows the model's speed (what `models.local` lists).
+    let rate = local.tokens_per_s("small").expect("a measured speed");
+    assert!(rate > 0.0 && rate.is_finite(), "{rate}");
 }

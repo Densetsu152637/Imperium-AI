@@ -230,6 +230,97 @@ setting yet that picks the largest window that still allows N slots for a given 
 memory, or that prefers more slots over a bigger window; that belongs with the context tiers of
 the Emperor plan.
 
+**Implemented (stage 2f): the CPU lane.** Some work needs accuracy, not speed: critiquing a plan,
+reviewing a design, checking a proof. On a machine with plenty of system RAM, a larger model can
+live entirely in RAM and run on the CPU beside the GPU models, at no API cost and without
+touching VRAM. A model-table row opts in with `placement = "cpu"`:
+
+```toml
+[[models.catalog]]
+id = "critic"
+spec = "llamacpp:Qwen3-30B-A3B-Q4_K_M"   # a llama.cpp model; other specs are refused
+location = "local"                        # required for placement = "cpu"
+tier = "strong"
+tags = ["critique", "review"]
+placement = "cpu"                         # auto (default) | cpu
+# parallel = 1                            # slots; default 1 for a CPU-pinned row
+```
+
+- **Pinned, not planned.** A pinned model is served by its own `llama-server` started with
+  `--n-gpu-layers 0` (`-ngl 0`), even when VRAM is free. The planner places it with
+  `place_on_cpu`: weights, KV cache for `context x parallel`, and the runtime overhead all count
+  against RAM, nothing against VRAM, so loading it leaves the GPU models' placements exactly as
+  they were. The existing "partial" placement is different: it splits a model that does not fit
+  the GPU, and still prefers the GPU. `placement = "cpu"` is validated at startup: it needs
+  `location = "local"` and a `llamacpp:<id>` spec (a cloud row, another endpoint, or a vLLM
+  folder is refused with the row's id), `parallel` is only valid with it, and two rows naming
+  the same model must agree.
+- **One RAM budget.** Everything that lives in RAM is counted together against free RAM less
+  `runtime.llamacpp.ram_headroom_mb`: the CPU lane's weights and KV, every server's
+  `--cache-ram` (the lane's included, sized from what is left after its weights as for any
+  model), and any GPU model's layers that spill into RAM. Saved slots (stage 2d) live on disk
+  and are not RAM. A pinned row that does not fit the RAM budget is refused at load with the
+  usual "not enough memory" error and reported unavailable to routing, which falls to the next
+  choice; it never spills onto the GPU. `models.local` lists it with `placement` `cpu`,
+  `cpu_lane: true`, and its own slot count.
+- **Outside GPU swaps.** Evicting a pinned model frees RAM and no VRAM, so it is never chosen
+  as the victim of a swap made for GPU memory, however long it has been idle. The arbiter puts
+  it last among candidates: it is evicted only when a newcomer cannot be placed unless the RAM
+  it holds is freed, and then by the usual rules (nothing in use is evicted; one an agent is
+  mid-turn on is waited for). It unloads after `idle_unload_s` like any model.
+- **Measured speed.** After each model call the agent loop reports the tokens generated and how
+  long generating them took (after the first token, or the whole call for a buffered
+  response); the supervisor keeps a running tokens-per-second per model, weighted by tokens so a
+  short reply does not outweigh a long one, and `models.local` lists it as `tokens_per_s`
+  (`imperium models local` and the desktop panel show it). It is kept after the model unloads
+  and reset when the daemon restarts. `llama-server`'s own `timings` object is not read; the
+  call's measured time is used.
+- **Not in the ranking.** A CPU-pinned row is left out of the ranking by tier, so a task asking
+  for `strong` work never lands on the slow lane by accident. It is chosen when an agent names
+  it, or when a routing rule lists it in `use`. A rule matches one tag, so send each tag of
+  the work you want on the lane to the row:
+
+  ```toml
+  [[routing.rules]]
+  when_tag = "critique"
+  use = ["critic"]
+
+  [[routing.rules]]
+  when_tag = "review"
+  use = ["critic"]
+
+  [[routing.rules]]
+  when_tag = "verify"
+  use = ["critic"]
+
+  [[routing.rules]]
+  when_tag = "proof-check"
+  use = ["critic"]
+  ```
+
+  If the lane is unavailable (RAM short), the rule falls through to the ranking and, failing
+  that, the session's model.
+
+TODO (merge with stage 2e): the plan's built-in rules sending `critique`, `review`, `verify`,
+and `proof-check` to the CPU lane (tier `strong`, location `local`) belong with stage 2e's
+built-in task-class rules (`feat/task-class-routing`), not here; until the branches merge the
+four rules above are the user's to write. Likewise not done here: giving CPU tasks a longer
+`max_wall_s` and never sending a task with a short deadline to the lane. There is no task
+deadline in the task contract on this branch; `LocalModels::tokens_per_s` is the measurement
+that scheduling will use. The lane serves one call at a time unless `parallel` is raised, so
+CPU tasks queue behind each other, and `max_wait_s` applies to the queue.
+
+*Choosing a model for the lane.* Prefer a mixture-of-experts model with few active parameters
+over a dense one of the same quality: it reads only the active experts per token, which is what
+limits generation on a CPU. A Qwen3-30B-A3B-class model (Apache-2.0; about 3B active
+parameters of 30B) at `Q4_K_M` is the suggestion. These are estimates, to be replaced by a
+measurement on the development machine before this becomes a default: about 18 GB of weights
+plus a few GB of KV cache at 8-32K context, so a 64 GB machine holds it beside a 16 GB GPU's
+models with room for the OS; tens of tokens per second on a desktop CPU, against about 4 for a
+dense 32B model. A prompt of tens of thousands of tokens still takes minutes to read on the
+CPU, which suits critiques that can wait. Use only models whose licence you have checked
+(Apache-2.0 and MIT are the ones Imperium will suggest).
+
 **Implemented (phase 7):** Hugging Face model folders (a `config.json` with safetensors files)
 in `models.folders` are discovered as `vllm:<folder name>`, their shape read from `config.json`
 (including `text_config` for multimodal models). They are planned GPU-only (vLLM does not
@@ -328,7 +419,8 @@ A subagent's model is chosen as follows:
    then its `location` restricts the remaining choice.
 3. The suitable rows (at or above the requested tier, default `standard`, and in the requested
    or rule location) ranked by `prefer`, then by input plus output price, with unpriced rows
-   counted as free.
+   counted as free. Rows pinned to the [CPU lane](#runtimes) (`placement = "cpu"`) are left
+   out: they are for work that can wait, chosen by name or by a rule.
 4. The session's own model.
 
 Agents pass `tier`, `location`, `tags`, and `model` to `spawn_agent`. Ids must be unique and

@@ -259,7 +259,7 @@ impl Method for LocalModelList {
 #[ts(export)]
 pub struct LocalModelListParams {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LocalModelListResult {
     /// False when no `models.folders` are configured.
@@ -273,7 +273,7 @@ pub struct LocalModelListResult {
 }
 
 /// A GGUF model found in a model folder.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LocalModelRow {
     /// Use as `<runtime>:<id>` (`llamacpp:` or `vllm:`) in `[[models.catalog]]`.
@@ -301,6 +301,14 @@ pub struct LocalModelRow {
     pub slots_in_use: u32,
     /// Calls waiting for a slot on this model.
     pub queued: u32,
+    /// Pinned to the CPU lane by `placement = "cpu"` in the model table: served with no GPU
+    /// layers, in system RAM only.
+    #[serde(default)]
+    pub cpu_lane: bool,
+    /// How fast the model has generated in its recent calls, in tokens per second; absent
+    /// before a call finished since the daemon started.
+    #[serde(default)]
+    pub tokens_per_s: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

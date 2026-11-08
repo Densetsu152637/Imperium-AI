@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use imperium_config::{LlamaCppSettings, VllmSettings};
 
-use crate::planner::{Budget, Footprint, Placement, place, place_on_gpu};
+use crate::planner::{Budget, Footprint, Placement, place, place_on_cpu, place_on_gpu};
 use crate::scan::Format;
 use crate::supervisor::{LaunchSpec, Runtimes};
 
@@ -36,6 +36,12 @@ pub trait RuntimeBackend: Send + Sync + fmt::Debug {
 
     /// Where a model needing `footprint` goes within `budget`; `None` when it does not fit.
     fn place(&self, footprint: Footprint, budget: Budget) -> Option<Placement>;
+
+    /// Where a model pinned to the CPU lane goes within `budget`: no GPU layers, everything in
+    /// RAM. `None` when it does not fit, and for runtimes that cannot serve on the CPU.
+    fn place_on_cpu(&self, _footprint: Footprint, _budget: Budget) -> Option<Placement> {
+        None
+    }
 
     /// The share of GPU memory a server with `placement` may take
     /// ([`LaunchSpec::gpu_memory_utilization`]); runtimes that size their own memory ignore it.
@@ -96,6 +102,10 @@ impl RuntimeBackend for LlamaCpp {
 
     fn place(&self, footprint: Footprint, budget: Budget) -> Option<Placement> {
         place(footprint, budget)
+    }
+
+    fn place_on_cpu(&self, footprint: Footprint, budget: Budget) -> Option<Placement> {
+        place_on_cpu(footprint, budget)
     }
 
     /// Unused: llama.cpp is sized by its layers on the GPU.

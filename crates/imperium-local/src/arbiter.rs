@@ -10,6 +10,10 @@
 //!   waits for that agent to finish or start waiting, up to `min_residency`. After that it loads
 //!   beside the model if it can, and swaps it out only when nothing else fits and the model has
 //!   been loaded at least `min_residency`.
+//! - A model pinned to the CPU lane holds RAM only, so evicting it never gives a newcomer more
+//!   of the GPU: it is not a GPU swap victim. It is a candidate last, only when a newcomer
+//!   cannot be placed unless the RAM it holds is freed, and then under the same rules as any
+//!   model ([`Resident::cpu_pinned`]).
 //! - When the swaps allowed per minute are used up, a newcomer that does not fit beside the
 //!   loaded models waits for the window to move on; when swapping is off, it is refused.
 
@@ -38,6 +42,8 @@ pub(crate) struct Resident {
     /// The part of `ram_bytes` that is its prompt cache.
     pub cache_bytes: u64,
     pub use_: Use,
+    /// Pinned to the CPU lane: it holds RAM only, and is evicted after every other candidate.
+    pub cpu_pinned: bool,
     /// Time since it was loaded.
     pub resident_for: Duration,
     /// Time since a slot on it was last released.
@@ -199,8 +205,15 @@ pub(crate) fn cache_room(
 /// Residents matching `keep`, the longest idle first.
 fn candidates(residents: &[Resident], keep: impl Fn(&Resident) -> bool) -> Vec<&Resident> {
     let mut chosen: Vec<&Resident> = residents.iter().filter(|r| keep(r)).collect();
-    // Free models before claimed ones, then the least recently used first.
-    chosen.sort_by_key(|r| (r.use_ != Use::Free, std::cmp::Reverse(r.idle_for)));
+    // CPU-lane models last, since they free no GPU memory; then free models before claimed
+    // ones, then the least recently used first.
+    chosen.sort_by_key(|r| {
+        (
+            r.cpu_pinned,
+            r.use_ != Use::Free,
+            std::cmp::Reverse(r.idle_for),
+        )
+    });
     chosen
 }
 
@@ -292,6 +305,7 @@ mod tests {
             ram_bytes: 0,
             cache_bytes: 0,
             use_,
+            cpu_pinned: false,
             resident_for: Duration::from_secs(60),
             idle_for: Duration::from_secs(5),
         }
@@ -453,6 +467,114 @@ mod tests {
         assert_eq!(
             outlook(six_gib, no_ram, &residents, paused),
             Outlook::Unavailable
+        );
+    }
+
+    /// A CPU-lane model holding `ram_gib` of RAM and no VRAM.
+    fn lane(use_: Use, ram_gib: u64) -> Resident {
+        Resident {
+            id: "lane".into(),
+            ram_bytes: ram_gib * GIB,
+            cpu_pinned: true,
+            ..resident("lane", use_, 0)
+        }
+    }
+
+    #[test]
+    fn cpu_lane_models_are_not_gpu_swap_victims() {
+        // 10 GiB of VRAM and 20 GiB of RAM; the lane holds 12 GiB of RAM and an idle GPU model
+        // holds 8 GiB of VRAM. The newcomer gets the whole GPU once the GPU model is gone, which
+        // the lane's RAM has no part in, so only the GPU model is swapped out, though the lane
+        // was idle longer.
+        let roomy = Budget {
+            ram_bytes: 20 * GIB,
+            ..budget()
+        };
+        let mut idle_lane = lane(Use::Free, 12);
+        idle_lane.idle_for = Duration::from_secs(3600);
+        let residents = [idle_lane, resident("gpu", Use::Free, 8)];
+        let decision = decide(six_gib, roomy, &residents, Duration::ZERO, policy());
+        assert_eq!(evicted(&decision), Some(vec!["gpu".into()]));
+        let Decision::Load { placement, .. } = decision else {
+            unreachable!()
+        };
+        assert!(placement.all_layers_on_gpu);
+        assert_eq!(outlook(six_gib, roomy, &residents, policy()), Outlook::Swap);
+        // Beside the lane alone, the newcomer fits the GPU: nothing is swapped.
+        let alone = [lane(Use::Free, 12)];
+        assert_eq!(
+            evicted(&decide(six_gib, roomy, &alone, Duration::ZERO, policy())),
+            Some(Vec::new())
+        );
+        assert_eq!(outlook(six_gib, roomy, &alone, policy()), Outlook::Fits);
+    }
+
+    #[test]
+    fn cpu_lane_ram_is_given_up_only_when_the_newcomer_cannot_be_placed_without_it() {
+        // 2 GiB of VRAM is free beside a busy GPU model, and the lane holds 14 of the 16 GiB of
+        // RAM: the newcomer's CPU share does not fit until the idle lane gives its RAM up.
+        let residents = [resident("busy", Use::Busy, 8), lane(Use::Free, 14)];
+        let decision = decide(six_gib, budget(), &residents, Duration::ZERO, policy());
+        assert_eq!(evicted(&decision), Some(vec!["lane".into()]));
+        assert_eq!(
+            outlook(six_gib, budget(), &residents, policy()),
+            Outlook::Swap
+        );
+        // A lane in use is held like any model in use.
+        let working = [resident("busy", Use::Busy, 8), lane(Use::Busy, 14)];
+        assert_eq!(
+            decide(
+                six_gib,
+                budget(),
+                &working,
+                Duration::from_secs(3600),
+                policy()
+            ),
+            Decision::Wait
+        );
+        assert_eq!(
+            outlook(six_gib, budget(), &working, policy()),
+            Outlook::Unavailable
+        );
+    }
+
+    #[test]
+    fn cpu_lane_newcomers_need_ram_only_and_leave_gpu_models_alone() {
+        use crate::planner::place_on_cpu;
+        let cpu = |budget| {
+            place_on_cpu(
+                Footprint {
+                    weights_bytes: 10 * GIB,
+                    kv_bytes: GIB,
+                    layers: Some(48),
+                },
+                budget,
+            )
+        };
+        let ram = Budget {
+            ram_bytes: 32 * GIB,
+            ..budget()
+        };
+        // Idle GPU models hold VRAM and no RAM: the lane loads beside them, evicting nothing.
+        let residents = [
+            resident("gpu", Use::Free, 8),
+            resident("gpu2", Use::Free, 2),
+        ];
+        let decision = decide(cpu, ram, &residents, Duration::ZERO, policy());
+        let Decision::Load { evict, placement } = decision else {
+            panic!("{decision:?}")
+        };
+        assert!(evict.is_empty());
+        assert_eq!((placement.gpu_layers, placement.vram_bytes), (0, 0));
+        assert_eq!(outlook(cpu, ram, &residents, policy()), Outlook::Fits);
+        // A lane bigger than the RAM is refused outright.
+        let tiny = Budget {
+            ram_bytes: 8 * GIB,
+            ..budget()
+        };
+        assert_eq!(
+            decide(cpu, tiny, &[], Duration::ZERO, policy()),
+            Decision::TooBig
         );
     }
 

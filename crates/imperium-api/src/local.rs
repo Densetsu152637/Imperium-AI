@@ -5,6 +5,7 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 /// Whether a local model can take work right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -100,5 +101,14 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     /// for theirs. Held while it waits.
     fn waiting(&self, _model: &str, _holder: &str) -> LocalPresence {
         LocalPresence::untracked()
+    }
+    /// Reports one finished call to `model`: how many tokens it generated and how long
+    /// generating them took (after the first token, or the whole call for a buffered response).
+    /// The runtime keeps the measured speed ([`LocalModels::tokens_per_s`]).
+    fn record_throughput(&self, _model: &str, _completion_tokens: u64, _generating: Duration) {}
+    /// The generation speed measured for `model` so far, in tokens per second; `None` before
+    /// any call finished. Slow models, such as one pinned to the CPU, are judged by it.
+    fn tokens_per_s(&self, _model: &str) -> Option<f64> {
+        None
     }
 }
