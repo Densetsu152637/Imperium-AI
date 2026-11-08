@@ -2,7 +2,7 @@
 
 pub mod commands;
 pub mod hooks;
-pub mod markdown;
+pub use imperium_api::markdown;
 pub mod plugins;
 pub mod skills;
 

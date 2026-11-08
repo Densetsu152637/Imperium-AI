@@ -9,7 +9,7 @@ description = "Web search and fetch tools for Imperium agents"
 
 [dependencies]
 futures-util = "0.3.34"
-imperium-models = { version = "0.1.0", path = "../imperium-models" }
+imperium-api = { version = "0.1.0", path = "../imperium-api" }
 reqwest = { version = "0.13.5", features = ["json", "query"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

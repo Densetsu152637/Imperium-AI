@@ -69,10 +69,11 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 
 | Crate                 | Responsibility                                                         |
 | --------------------- | ---------------------------------------------------------------------- |
+| `imperium-api`        | Shared types and traits: chat messages, tool specs, usage and pricing, the local-model interface, Markdown front matter (implemented) |
 | `imperium-protocol`   | Wire types, method/event definitions, TS export                        |
 | `imperium-core`       | Sessions, agent loop, delegation, task graph, event bus                |
 | `imperium-models`     | Endpoint clients, model registry, router, cost accounting              |
-| `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, llama.cpp supervision (vLLM later) |
+| `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, runtime supervision (llama.cpp, vLLM) |
 | `imperium-tools`      | Built-in tools: files, commands, isolation tiers (implemented)         |
 | `imperium-web`        | Web search providers, page fetching, and a CDP browser (implemented)   |
 | `imperium-mcp`        | MCP client (stdio, streamable HTTP; implemented) and server bridge (planned) |
@@ -81,7 +82,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-workflow`   | Workflow packs, context retrieval, load manifests, documentation pointers (implemented) |
 | `imperium-policy`     | Policy pack layering and prompt assembly (planned)                      |
 | `imperium-memory`     | Global and project memory: entries, index, search, redaction (implemented) |
-| `imperium-config`     | Layered config, schema validation, keychain access                     |
+| `imperium-config`     | Layered config, schema validation, secret store (keychain, in-memory)  |
 | `imperium-telemetry`  | Metrics, traces, cost ledger, OpenTelemetry export                     |
 | `imperium-automation` | Schedule triggers (cron, interval, one-shot), missed runs, run history (implemented); project agents (planned) |
 | `imperium-github`     | Failing pull request checks through `gh`, auto-fix worktrees, commit and push (implemented) |
@@ -90,6 +91,34 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours (planned) |
 | `imperiumd`           | Daemon binary                                                          |
 | `imperium-cli`        | `imperium` binary: CLI and TUI client                                  |
+
+`imperium-api` depends on no other Imperium crate, and crates that only share vocabulary
+depend on it rather than on each other: `imperium-tools`, `imperium-mcp`, `imperium-web`, and
+`imperium-media` take `ToolSpec` from it instead of `imperium-models`; `imperium-config` takes
+`Pricing`; `imperium-memory` takes the front-matter parser instead of `imperium-extensions`;
+and `imperium-local` implements its `LocalModels` trait without depending on `imperium-core`.
+`imperium-models`, `imperium-core`, and `imperium-extensions` re-export the moved items at their
+old paths.
+
+Secrets go through the `SecretStore` trait in `imperium-config` (`load`, `store`, `delete`):
+`KeychainSecrets` uses the OS keychain and `MemorySecrets` keeps them in memory for tests and
+headless runs. The daemon builds one `Arc<dyn SecretStore>` at start and every key lookup
+(endpoint and media keys, web search keys, MCP tokens, the Hugging Face token) reads through it;
+environment variables such as `HF_TOKEN` still take precedence where they did before.
+
+### Swappable implementations
+
+Each replaceable subsystem is a trait with built-in implementations chosen by name, so a new
+one is added without editing its callers:
+
+| Seam | Trait | Built-ins | Chosen by |
+| ---- | ----- | --------- | --------- |
+| Secrets | `SecretStore` (`imperium-config`) | `KeychainSecrets`, `MemorySecrets` | The daemon at start |
+| Local runtimes | `RuntimeBackend` (`imperium-local`) | `LlamaCpp`, `Vllm` | First backend that accepts the model format and is available; `Supervisor::with_backends` sets the list |
+| Web search | `SearchProvider` (`imperium-web`) | `Searxng`, `Brave`, `Tavily` | `web.search` through `SearchProviders::register` / `build` |
+| Image generation | `ImageGenerator` (`imperium-media`) | `OpenAiImages`, `ComfyUi` | `media.image.backend` through `ImageGenerators::register` / `build` |
+| Local model leasing | `LocalModels` (`imperium-api`) | The `imperium-local` supervisor | The daemon at start |
+| GitHub | `GitHub` (`imperium-github`) | REST client | The daemon at start |
 
 Key dependencies (to confirm during phase 0): `tokio`, `axum` / `tokio-tungstenite`,
 `serde`, `reqwest`, `rmcp` (official Rust MCP SDK), `chromiumoxide`, `keyring`, `sysinfo`,

@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use imperium_config::{Paths, Settings};
+use imperium_config::{KeychainSecrets, Paths, SecretStore, Settings};
 use imperium_core::{
     BrowserSetup, CatalogModel, LocalModels, ModelError, Session, SessionConfig, SessionMemory,
     WebTools, new_session_id, resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
-use imperium_media::{ImageBackend, Media, Service};
+use imperium_media::{ImageConfig, ImageGenerators, Media, Service};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
@@ -19,7 +19,7 @@ use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
 };
 use imperium_tools::{Sandbox, Workspace};
-use imperium_web::{SearchProvider, Web};
+use imperium_web::{SearchConfig, SearchProviders, Web};
 use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
 
@@ -48,6 +48,8 @@ pub struct DaemonState {
     started: Instant,
     paths: Paths,
     settings: Settings,
+    /// Where API keys and tokens are read from: the OS keychain unless the caller chose another.
+    secrets: Arc<dyn SecretStore>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     /// Set at start when there are model folders, or after the first download.
     local: OnceLock<LocalRuntime>,
@@ -78,13 +80,24 @@ pub enum CreateError {
 
 impl DaemonState {
     /// `local` is the local model runtime, when `models.folders` are configured
-    /// ([`LocalRuntime::start`]).
+    /// ([`LocalRuntime::start`]). Secrets come from the OS keychain.
     pub fn new(paths: Paths, settings: Settings, local: Option<LocalRuntime>) -> Arc<Self> {
+        DaemonState::with_secrets(paths, settings, local, Arc::new(KeychainSecrets))
+    }
+
+    /// Like [`DaemonState::new`], reading every secret from `secrets`.
+    pub fn with_secrets(
+        paths: Paths,
+        settings: Settings,
+        local: Option<LocalRuntime>,
+        secrets: Arc<dyn SecretStore>,
+    ) -> Arc<Self> {
         let devices = Devices::load(paths.data_dir().join("devices.json"));
         Arc::new(DaemonState {
             started: Instant::now(),
             paths,
             settings,
+            secrets,
             sessions: Mutex::new(HashMap::new()),
             local: local.map(OnceLock::from).unwrap_or_default(),
             downloads: Downloads::default(),
@@ -179,6 +192,11 @@ impl DaemonState {
         &self.settings
     }
 
+    /// The store every secret is read from.
+    pub fn secrets(&self) -> &Arc<dyn SecretStore> {
+        &self.secrets
+    }
+
     pub fn data_dir(&self) -> &Path {
         self.paths.data_dir()
     }
@@ -199,35 +217,24 @@ impl DaemonState {
         let settings = &self.settings.media;
         let service = |endpoint: &str, model: &str| -> Option<Service> {
             let endpoint_settings = self.settings.endpoints.get(endpoint)?;
-            let api_key = endpoint_settings.api_key.as_ref().and_then(|reference| {
-                imperium_config::load_secret(&reference.secret)
-                    .ok()
-                    .flatten()
-            });
+            let api_key = endpoint_settings
+                .api_key
+                .as_ref()
+                .and_then(|reference| self.secrets.load(&reference.secret).ok().flatten());
             Some(Service {
                 base_url: endpoint_settings.base_url.trim_end_matches('/').to_string(),
                 api_key,
                 model: model.to_string(),
             })
         };
-        let image = settings
-            .image
-            .as_ref()
-            .and_then(|image| match image.backend.as_str() {
-                "comfyui" => {
-                    let workflow = std::fs::read_to_string(image.workflow.as_ref()?).ok()?;
-                    Some(ImageBackend::ComfyUi {
-                        url: image
-                            .comfyui_url
-                            .clone()
-                            .unwrap_or_else(|| "http://127.0.0.1:8188".into())
-                            .trim_end_matches('/')
-                            .to_string(),
-                        workflow,
-                    })
-                }
-                _ => service(image.endpoint.as_deref()?, &image.model).map(ImageBackend::OpenAi),
-            });
+        let image = settings.image.as_ref().and_then(|image| {
+            let config = ImageConfig {
+                comfyui_url: image.comfyui_url.as_deref(),
+                workflow: image.workflow.as_deref(),
+                service: &|| service(image.endpoint.as_deref()?, &image.model),
+            };
+            ImageGenerators::default().build(&image.backend, &config)
+        });
         let speech = settings.speech.as_ref().and_then(|speech| {
             Some((
                 service(&speech.endpoint, &speech.model)?,
@@ -254,16 +261,13 @@ impl DaemonState {
         }
         let key = || {
             let name = &web.api_key.as_ref()?.secret;
-            imperium_config::load_secret(name).ok().flatten()
+            self.secrets.load(name).ok().flatten()
         };
-        let provider = match web.search.as_str() {
-            "searxng" if !web.searxng_url.is_empty() => Some(SearchProvider::Searxng {
-                url: web.searxng_url.clone(),
-            }),
-            "brave" => key().map(|api_key| SearchProvider::Brave { api_key }),
-            "tavily" => key().map(|api_key| SearchProvider::Tavily { api_key }),
-            _ => None,
+        let config = SearchConfig {
+            searxng_url: &web.searxng_url,
+            api_key: &key,
         };
+        let provider = SearchProviders::default().build(&web.search, &config);
         if web.search != "none" && provider.is_none() {
             tracing::warn!(provider = %web.search, "web search is not configured completely (URL or key missing)");
         }
@@ -422,13 +426,13 @@ impl DaemonState {
         &self.downloads
     }
 
-    /// The Hugging Face Hub: `HF_ENDPOINT` and a token from `HF_TOKEN` or the keychain, read
-    /// on each use so a newly stored token is picked up.
+    /// The Hugging Face Hub: `HF_ENDPOINT` and a token from `HF_TOKEN` or the secret store,
+    /// read on each use so a newly stored token is picked up.
     pub fn hub(&self) -> imperium_local::hf::Hub {
         self.hub
             .get()
             .cloned()
-            .unwrap_or_else(imperium_local::hf::Hub::from_env)
+            .unwrap_or_else(|| imperium_local::hf::Hub::from_env(self.secrets.as_ref()))
     }
 
     /// Uses `hub` instead of the environment's, such as a local fake in tests. Call once.
@@ -560,13 +564,12 @@ impl DaemonState {
         let workspace = Workspace::new(Path::new(project_dir))
             .map_err(|error| CreateError::Project(project_dir.to_string(), error))?
             .with_sandbox(self.sandbox());
-        let model = resolve_model(&self.settings, model, imperium_config::load_secret)?;
+        let model = resolve_model(&self.settings, model, |name| self.secrets.load(name))?;
         let catalog = self.catalog();
-        let (mut mcp, mut notices) = crate::mcp::session_servers(
-            &self.settings,
-            Path::new(project_dir),
-            imperium_config::load_secret,
-        );
+        let (mut mcp, mut notices) =
+            crate::mcp::session_servers(&self.settings, Path::new(project_dir), |name| {
+                self.secrets.load(name)
+            });
         let mut extensions = self.extensions(Path::new(project_dir));
         let context = self.context(Path::new(project_dir), &mut notices);
         mcp.append(&mut extensions.servers);
@@ -695,11 +698,9 @@ impl DaemonState {
             .catalog
             .iter()
             .filter_map(|entry| {
-                match resolve_model(
-                    &self.settings,
-                    Some(&entry.spec),
-                    imperium_config::load_secret,
-                ) {
+                match resolve_model(&self.settings, Some(&entry.spec), |name| {
+                    self.secrets.load(name)
+                }) {
                     Ok(model) => Some(CatalogModel {
                         id: entry.id.clone(),
                         model,

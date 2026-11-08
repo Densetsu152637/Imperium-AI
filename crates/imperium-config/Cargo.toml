@@ -9,7 +9,7 @@ description = "Layered configuration, data paths, and keychain secrets for Imper
 
 [dependencies]
 directories = "6.0.0"
-imperium-models = { version = "0.1.0", path = "../imperium-models" }
+imperium-api = { version = "0.1.0", path = "../imperium-api" }
 keyring = "3.6.3"
 serde = { version = "1.0.229", features = ["derive"] }
 thiserror = "2.0.21"

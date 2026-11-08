@@ -1,5 +1,7 @@
-//! Loads local models into supervised `llama-server` processes and hands out slots on them.
+//! Loads local models into supervised runtime servers and hands out slots on them.
 //!
+//! Each model is served by the first available [`RuntimeBackend`] that accepts its format
+//! (`llama-server` for GGUF, `vllm serve` for Hugging Face folders by default).
 //! Each loaded model is one server started with `--parallel <slots>`; an agent holds a slot
 //! (a semaphore permit) for its turn. Memory is reserved per loaded model against the budget
 //! measured when the supervisor started. A model that does not fit may replace models nobody is
@@ -13,20 +15,23 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
+use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels};
 use imperium_config::{LlamaCppSettings, VllmSettings};
-use imperium_core::{AcquireFuture, Availability, LocalLease, LocalModels};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::backend::{self, RuntimeBackend};
 use crate::hardware::Hardware;
-use crate::planner::{Budget, Footprint, Placement, place, place_on_gpu};
+use crate::planner::{Budget, Footprint, Placement};
 use crate::scan::{Format, LocalModel};
 
 /// How often idle models are checked for unloading.
 const IDLE_CHECK: Duration = Duration::from_secs(15);
 
 /// What a server is started with.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct LaunchSpec {
+    /// The runtime that serves the model.
+    pub backend: Arc<dyn RuntimeBackend>,
     pub format: Format,
     pub model_id: String,
     pub model_path: PathBuf,
@@ -44,57 +49,24 @@ pub struct LaunchSpec {
 impl LaunchSpec {
     /// The runtime's arguments, without the port.
     pub fn args(&self) -> Vec<String> {
-        match self.format {
-            Format::Gguf => self.llama_args(),
-            Format::Safetensors => self.vllm_args(),
-        }
+        self.backend.launch_args(self)
     }
+}
 
-    /// `vllm serve` arguments; the model is served under its id.
-    fn vllm_args(&self) -> Vec<String> {
-        let mut args = vec![
-            "serve".into(),
-            self.model_path.display().to_string(),
-            "--host".into(),
-            "127.0.0.1".into(),
-            "--served-model-name".into(),
-            self.model_id.clone(),
-            "--max-model-len".into(),
-            (self.context / self.slots.max(1)).to_string(),
-            "--max-num-seqs".into(),
-            self.slots.to_string(),
-            "--gpu-memory-utilization".into(),
-            format!("{:.2}", self.gpu_memory_utilization),
-        ];
-        args.extend(self.extra_args.iter().cloned());
-        args
-    }
-
-    /// `llama-server` arguments.
-    fn llama_args(&self) -> Vec<String> {
-        let mut args = vec![
-            "--model".into(),
-            self.model_path.display().to_string(),
-            "--host".into(),
-            "127.0.0.1".into(),
-            "--ctx-size".into(),
-            self.context.to_string(),
-            "--parallel".into(),
-            self.slots.to_string(),
-            "--n-gpu-layers".into(),
-            // llama.cpp clamps a large count to the model's layers.
-            self.gpu_layers.min(999).to_string(),
-            "--cache-type-k".into(),
-            self.cache_type.clone(),
-            "--cache-type-v".into(),
-            self.cache_type.clone(),
-            "--jinja".into(),
-        ];
-        if let Some(mmproj) = &self.mmproj {
-            args.extend(["--mmproj".into(), mmproj.display().to_string()]);
-        }
-        args.extend(self.extra_args.iter().cloned());
-        args
+/// Specs are equal when every field is and they name the same runtime.
+impl PartialEq for LaunchSpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.backend.id() == other.backend.id()
+            && self.format == other.format
+            && self.model_id == other.model_id
+            && self.model_path == other.model_path
+            && self.mmproj == other.mmproj
+            && self.context == other.context
+            && self.slots == other.slots
+            && self.gpu_layers == other.gpu_layers
+            && self.cache_type == other.cache_type
+            && self.gpu_memory_utilization == other.gpu_memory_utilization
+            && self.extra_args == other.extra_args
     }
 }
 
@@ -107,13 +79,16 @@ pub trait Server: Send + Sync {
 pub type LaunchFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Box<dyn Server>, String>> + Send + 'a>>;
 
-/// Starts servers; [`ProcessLauncher`] runs `llama-server`, tests use in-process fakes.
+/// Starts servers; [`ProcessLauncher`] runs the spec's runtime as a process, tests use
+/// in-process fakes.
+///
+/// [`ProcessLauncher`]: crate::process::ProcessLauncher
 pub trait Launcher: Send + Sync + fmt::Debug {
     /// Starts a server and returns once it is ready to serve requests.
     fn launch<'a>(&'a self, spec: &'a LaunchSpec) -> LaunchFuture<'a>;
 }
 
-/// Runtimes other than llama.cpp.
+/// Settings for the built-in runtimes other than llama.cpp ([`crate::backend::builtin`]).
 #[derive(Debug, Clone, Default)]
 pub struct Runtimes {
     pub vllm: VllmSettings,
@@ -155,9 +130,8 @@ pub struct Supervisor {
     /// Replaced when the folders are scanned again, such as after a download.
     models: Mutex<Vec<LocalModel>>,
     settings: LlamaCppSettings,
-    vllm: VllmSettings,
-    /// Whether vLLM can run here; Hugging Face models are unavailable otherwise.
-    vllm_available: bool,
+    /// In order of preference; a model is served by the first available one accepting it.
+    backends: Vec<Arc<dyn RuntimeBackend>>,
     launcher: Arc<dyn Launcher>,
     /// Memory free when the supervisor started, less the RAM headroom.
     budget: Budget,
@@ -171,6 +145,7 @@ impl fmt::Debug for Supervisor {
         f.debug_struct("Supervisor")
             .field("models", &lock(&self.models).len())
             .field("budget", &self.budget)
+            .field("backends", &self.backends)
             .field("launcher", &self.launcher)
             .finish_non_exhaustive()
     }
@@ -182,7 +157,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Supervisor {
-    /// Creates a supervisor and starts its idle-unload task on the current Tokio runtime.
+    /// Creates a supervisor with the built-in runtimes ([`backend::builtin`]) and starts its
+    /// idle-unload task on the current Tokio runtime.
     pub fn start(
         models: Vec<LocalModel>,
         settings: LlamaCppSettings,
@@ -190,13 +166,24 @@ impl Supervisor {
         hardware: &Hardware,
         launcher: Arc<dyn Launcher>,
     ) -> Arc<Self> {
+        let backends = backend::builtin(&settings, runtimes);
+        Self::with_backends(models, settings, backends, hardware, launcher)
+    }
+
+    /// Creates a supervisor serving models with `backends`, in order of preference, and starts
+    /// its idle-unload task on the current Tokio runtime.
+    pub fn with_backends(
+        models: Vec<LocalModel>,
+        settings: LlamaCppSettings,
+        backends: Vec<Arc<dyn RuntimeBackend>>,
+        hardware: &Hardware,
+        launcher: Arc<dyn Launcher>,
+    ) -> Arc<Self> {
         let budget = Budget::of(hardware, settings.ram_headroom_mb * 1024 * 1024);
-        let vllm_available = runtimes.vllm_available;
         let supervisor = Arc::new(Supervisor {
             models: Mutex::new(models),
             settings,
-            vllm: runtimes.vllm,
-            vllm_available,
+            backends,
             launcher,
             budget,
             loaded: Mutex::new(HashMap::new()),
@@ -247,15 +234,18 @@ impl Supervisor {
         self.place(model, self.budget)
     }
 
-    /// llama.cpp can split a model between GPU and RAM; vLLM needs it all on the GPU, and
-    /// cannot run where vLLM is unavailable.
+    /// The runtime that serves `format`: the first available one accepting it.
+    fn backend(&self, format: Format) -> Option<&Arc<dyn RuntimeBackend>> {
+        self.backends
+            .iter()
+            .find(|backend| backend.accepts(format) && backend.available())
+    }
+
+    /// Where the model's runtime would put it; `None` when it does not fit or no runtime here
+    /// serves it.
     fn place(&self, model: &LocalModel, budget: Budget) -> Option<Placement> {
-        let footprint = self.footprint(model);
-        match model.format {
-            Format::Gguf => place(footprint, budget),
-            Format::Safetensors if self.vllm_available => place_on_gpu(footprint, budget),
-            Format::Safetensors => None,
-        }
+        self.backend(model.format)?
+            .place(self.footprint(model), budget)
     }
 
     pub fn loaded(&self) -> Vec<LoadedStatus> {
@@ -331,20 +321,22 @@ impl Supervisor {
         let model = self
             .model(id)
             .ok_or_else(|| format!("no local model {id:?} in models.folders"))?;
+        let footprint = self.footprint(&model);
+        let no_room = || {
+            format!(
+                "not enough free memory for {id} (needs {} MiB)",
+                footprint.required_bytes() / (1024 * 1024)
+            )
+        };
+        let backend = self.backend(model.format).ok_or_else(no_room)?;
         let placement = {
             let mut loaded = lock(&self.loaded);
-            let footprint = self.footprint(&model);
-            let placement = self
-                .place(&model, self.free_budget(&loaded, true))
-                .ok_or_else(|| {
-                    format!(
-                        "not enough free memory for {id} (needs {} MiB)",
-                        footprint.required_bytes() / (1024 * 1024)
-                    )
-                })?;
+            let placement = backend
+                .place(footprint, self.free_budget(&loaded, true))
+                .ok_or_else(no_room)?;
             // Make room by unloading idle models only when the model does not fit beside them.
-            if self
-                .place(&model, self.free_budget(&loaded, false))
+            if backend
+                .place(footprint, self.free_budget(&loaded, false))
                 .is_none()
             {
                 loaded.retain(|other, entry| {
@@ -357,15 +349,10 @@ impl Supervisor {
             }
             placement
         };
-        let vllm = &self.vllm;
         let spec = LaunchSpec {
+            backend: Arc::clone(backend),
             format: model.format,
-            gpu_memory_utilization: if self.budget.vram_bytes == 0 {
-                vllm.max_gpu_memory_utilization
-            } else {
-                (placement.vram_bytes as f64 / self.budget.vram_bytes as f64 + 0.05)
-                    .min(vllm.max_gpu_memory_utilization)
-            },
+            gpu_memory_utilization: backend.gpu_memory_utilization(&placement, self.budget),
             model_id: id.to_string(),
             model_path: model.path.clone(),
             mmproj: model.mmproj.clone(),
@@ -373,10 +360,7 @@ impl Supervisor {
             slots: self.settings.parallel.max(1),
             gpu_layers: placement.gpu_layers,
             cache_type: self.settings.cache_type.clone(),
-            extra_args: match model.format {
-                Format::Gguf => self.settings.extra_args.clone(),
-                Format::Safetensors => vllm.extra_args.clone(),
-            },
+            extra_args: backend.extra_args(),
         };
         tracing::info!(model = %id, gpu_layers = placement.gpu_layers, "loading local model");
         let server = self.launcher.launch(&spec).await?;
@@ -473,6 +457,7 @@ impl LocalModels for Supervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{LlamaCpp, Vllm};
     use crate::gguf::GgufInfo;
     use crate::hardware::Gpu;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -483,6 +468,8 @@ mod tests {
     struct FakeLauncher {
         launches: AtomicUsize,
         running: Arc<AtomicUsize>,
+        /// The runtime id and arguments of each launch.
+        launched: Mutex<Vec<(String, Vec<String>)>>,
     }
 
     struct FakeServer {
@@ -506,6 +493,7 @@ mod tests {
         fn launch<'a>(&'a self, spec: &'a LaunchSpec) -> LaunchFuture<'a> {
             Box::pin(async move {
                 self.launches.fetch_add(1, Ordering::SeqCst);
+                lock(&self.launched).push((spec.backend.id().to_string(), spec.args()));
                 self.running.fetch_add(1, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 Ok(Box::new(FakeServer {
@@ -548,9 +536,9 @@ mod tests {
         }
     }
 
-    /// 10 GiB of VRAM, no spare system memory: room for one 6 GiB model at a time.
-    fn supervisor(launcher: Arc<FakeLauncher>) -> Arc<Supervisor> {
-        let hardware = Hardware {
+    /// 10 GiB of VRAM, no spare system memory.
+    fn hardware() -> Hardware {
+        Hardware {
             gpus: vec![Gpu {
                 name: "test".into(),
                 vendor: "nvidia".into(),
@@ -563,12 +551,16 @@ mod tests {
             cpu_cores: 8,
             unified_memory: false,
             overridden: true,
-        };
+        }
+    }
+
+    /// Room for one 6 GiB model at a time.
+    fn supervisor(launcher: Arc<FakeLauncher>) -> Arc<Supervisor> {
         Supervisor::start(
             vec![model("a", 6), model("b", 6), model("huge", 40)],
             settings(),
             Runtimes::default(),
-            &hardware,
+            &hardware(),
             launcher,
         )
     }
@@ -621,6 +613,7 @@ mod tests {
     #[test]
     fn launch_arguments_carry_the_plan() {
         let spec = LaunchSpec {
+            backend: Arc::new(LlamaCpp::default()),
             format: Format::Gguf,
             gpu_memory_utilization: 0.9,
             model_id: "m".into(),
@@ -643,6 +636,7 @@ mod tests {
             "{args}"
         );
         let vllm = LaunchSpec {
+            backend: Arc::new(Vllm::default()),
             format: Format::Safetensors,
             model_path: PathBuf::from("/models/Qwen3-8B"),
             model_id: "Qwen3-8B".into(),
@@ -662,20 +656,7 @@ mod tests {
         let launcher = Arc::new(FakeLauncher::default());
         let mut hf = model("hf", 2);
         hf.format = Format::Safetensors;
-        let hardware = Hardware {
-            gpus: vec![Gpu {
-                name: "test".into(),
-                vendor: "nvidia".into(),
-                vram_total_bytes: 10 * GIB,
-                vram_free_bytes: 10 * GIB,
-                driver: None,
-            }],
-            ram_total_bytes: 0,
-            ram_available_bytes: 0,
-            cpu_cores: 8,
-            unified_memory: false,
-            overridden: true,
-        };
+        let hardware = hardware();
         let without = Supervisor::start(
             vec![hf.clone()],
             settings(),
@@ -692,10 +673,78 @@ mod tests {
                 ..Runtimes::default()
             },
             &hardware,
-            launcher,
+            launcher.clone(),
         );
         assert_eq!(with.availability("hf"), Availability::Fits);
         let lease = with.acquire("hf").await.unwrap();
         assert_eq!(lease.base_url, "http://fake/hf/v1");
+        let launched = lock(&launcher.launched);
+        assert_eq!(launched[0].0, "vllm");
+        assert_eq!(launched[0].1[0], "serve");
+    }
+
+    /// A runtime that serves Hugging Face folders anywhere, splitting them like llama.cpp.
+    #[derive(Debug)]
+    struct Custom;
+
+    impl RuntimeBackend for Custom {
+        fn id(&self) -> &str {
+            "custom"
+        }
+
+        fn accepts(&self, format: Format) -> bool {
+            format == Format::Safetensors
+        }
+
+        fn available(&self) -> bool {
+            true
+        }
+
+        fn place(&self, footprint: Footprint, budget: Budget) -> Option<Placement> {
+            crate::planner::place(footprint, budget)
+        }
+
+        fn gpu_memory_utilization(&self, _placement: &Placement, _budget: Budget) -> f64 {
+            0.0
+        }
+
+        fn extra_args(&self) -> Vec<String> {
+            vec!["--custom".into()]
+        }
+
+        fn launch_args(&self, spec: &LaunchSpec) -> Vec<String> {
+            let mut args = vec!["run".into(), spec.model_id.clone()];
+            args.extend(spec.extra_args.iter().cloned());
+            args
+        }
+    }
+
+    #[tokio::test]
+    async fn a_registered_backend_serves_the_formats_it_accepts() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let mut hf = model("hf", 2);
+        hf.format = Format::Safetensors;
+        // Ahead of the built-ins, where vLLM is unavailable.
+        let mut backends: Vec<Arc<dyn RuntimeBackend>> = vec![Arc::new(Custom)];
+        backends.extend(backend::builtin(&settings(), Runtimes::default()));
+        let supervisor = Supervisor::with_backends(
+            vec![hf, model("gguf", 2)],
+            settings(),
+            backends,
+            &hardware(),
+            launcher.clone(),
+        );
+        assert_eq!(supervisor.availability("hf"), Availability::Fits);
+        drop(supervisor.acquire("hf").await.unwrap());
+        drop(supervisor.acquire("gguf").await.unwrap());
+        let launched = lock(&launcher.launched);
+        assert_eq!(
+            launched[0],
+            (
+                "custom".into(),
+                vec!["run".into(), "hf".into(), "--custom".into()]
+            )
+        );
+        assert_eq!(launched[1].0, "llamacpp");
     }
 }

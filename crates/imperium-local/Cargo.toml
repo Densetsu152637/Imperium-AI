@@ -10,8 +10,8 @@ description = "Local models for Imperium: GGUF discovery, hardware probe, memory
 [dependencies]
 flate2 = "1.1.11"
 futures-util = "0.3.34"
+imperium-api = { version = "0.1.0", path = "../imperium-api" }
 imperium-config = { version = "0.1.0", path = "../imperium-config" }
-imperium-core = { version = "0.1.0", path = "../imperium-core" }
 reqwest = { version = "0.13.5", features = ["stream"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
@@ -26,6 +26,7 @@ workspace = true
 
 [dev-dependencies]
 axum = "0.8.9"
+imperium-core = { path = "../imperium-core" }
 imperium-models = { path = "../imperium-models" }
 imperium-protocol = { path = "../imperium-protocol" }
 imperium-tools = { path = "../imperium-tools" }

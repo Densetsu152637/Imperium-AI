@@ -3,11 +3,7 @@
 
 mod chat;
 pub mod llamacpp;
-mod pricing;
 mod sse;
 
-pub use chat::{
-    ChatMessage, ChatRequest, Completion, Endpoint, FunctionCall, ModelError, ToolCall, ToolSpec,
-    Usage, stream_chat,
-};
-pub use pricing::Pricing;
+pub use chat::{ChatRequest, Completion, Endpoint, ModelError, stream_chat};
+pub use imperium_api::{ChatMessage, FunctionCall, Pricing, ToolCall, ToolSpec, Usage};

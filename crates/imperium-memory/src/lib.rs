@@ -7,7 +7,7 @@ mod search;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use imperium_extensions::markdown::front_matter;
+use imperium_api::markdown::front_matter;
 
 pub use search::score;
 

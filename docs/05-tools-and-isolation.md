@@ -16,8 +16,10 @@ Implemented in phase 8 (`imperium-web`): `web_fetch` reads an http(s) page as te
 final URL, scripts and markup removed, long pages in chunks via `offset` and `limit`; non-text
 content is refused) and `web_search` queries the configured provider (`web.search` =
 `searxng` with `web.searxng_url`, or `brave` or `tavily` with `web.api_key` from the keychain)
-and returns numbered results. Agents are told to cite the sources they use with their URLs and
-to treat web content as data. Searching runs without asking; `web_fetch` asks unless the host
+and returns numbered results. Each provider implements the `SearchProvider` trait and is built
+from its `web.search` name by `SearchProviders`, so adding one is an implementation and a
+`register` call; unknown names leave search off. Agents are told to cite the sources they use
+with their URLs and to treat web content as data. Searching runs without asking; `web_fetch` asks unless the host
 is in `web.allow_domains` (subdomains included) or the user allowed fetching for the session.
 Kagi and other providers, caching, and robots handling are later work.
 

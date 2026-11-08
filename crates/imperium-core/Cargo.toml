@@ -10,6 +10,7 @@ description = "Imperium sessions and the agent loop"
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 getrandom = "0.4.3"
+imperium-api = { version = "0.1.0", path = "../imperium-api" }
 imperium-config = { version = "0.1.0", path = "../imperium-config" }
 imperium-extensions = { version = "0.1.0", path = "../imperium-extensions" }
 imperium-mcp = { version = "0.1.0", path = "../imperium-mcp" }

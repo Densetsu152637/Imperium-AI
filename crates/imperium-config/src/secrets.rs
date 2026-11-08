@@ -1,8 +1,11 @@
 //! Secrets live in the OS keychain (Windows Credential Manager, macOS Keychain, or the Linux
-//! Secret Service). Configuration refers to them by name only.
+//! Secret Service). Configuration refers to them by name only. Code that needs a secret goes
+//! through a [`SecretStore`] so the keychain can be replaced, such as by [`MemorySecrets`].
 
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Mutex;
 
 const KEYCHAIN_SERVICE: &str = "imperium";
 const MAX_NAME_LEN: usize = 64;
@@ -88,6 +91,83 @@ pub fn delete_secret(name: &SecretName) -> Result<bool, SecretError> {
     }
 }
 
+/// Where secrets are kept. The daemon holds one `Arc<dyn SecretStore>` and hands it to every
+/// part that needs a key, so the backing store can be swapped (the OS keychain normally, memory
+/// in tests or headless runs).
+pub trait SecretStore: Send + Sync + fmt::Debug {
+    /// Reads a secret. Returns `None` when no secret has that name.
+    fn load(&self, name: &SecretName) -> Result<Option<String>, SecretError>;
+    /// Stores or replaces a secret; an empty value is refused.
+    fn store(&self, name: &SecretName, value: &str) -> Result<(), SecretError>;
+    /// Removes a secret. Returns whether one existed.
+    fn delete(&self, name: &SecretName) -> Result<bool, SecretError>;
+}
+
+/// Secrets in the OS keychain: [`load_secret`], [`store_secret`], and [`delete_secret`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KeychainSecrets;
+
+impl SecretStore for KeychainSecrets {
+    fn load(&self, name: &SecretName) -> Result<Option<String>, SecretError> {
+        load_secret(name)
+    }
+
+    fn store(&self, name: &SecretName, value: &str) -> Result<(), SecretError> {
+        store_secret(name, value)
+    }
+
+    fn delete(&self, name: &SecretName) -> Result<bool, SecretError> {
+        delete_secret(name)
+    }
+}
+
+/// Secrets held in memory for the life of the process, for tests and headless runs.
+#[derive(Default)]
+pub struct MemorySecrets {
+    values: Mutex<HashMap<SecretName, String>>,
+}
+
+impl MemorySecrets {
+    pub fn new() -> Self {
+        MemorySecrets::default()
+    }
+
+    fn values(&self) -> std::sync::MutexGuard<'_, HashMap<SecretName, String>> {
+        // The map is only read or replaced whole-entry, so a poisoned lock holds valid data.
+        self.values
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl fmt::Debug for MemorySecrets {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut names: Vec<String> = self.values().keys().map(ToString::to_string).collect();
+        names.sort();
+        f.debug_struct("MemorySecrets")
+            .field("names", &names)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SecretStore for MemorySecrets {
+    fn load(&self, name: &SecretName) -> Result<Option<String>, SecretError> {
+        Ok(self.values().get(name).cloned())
+    }
+
+    fn store(&self, name: &SecretName, value: &str) -> Result<(), SecretError> {
+        if value.is_empty() {
+            return Err(SecretError::EmptyValue);
+        }
+        self.values().insert(name.clone(), value.to_string());
+        Ok(())
+    }
+
+    fn delete(&self, name: &SecretName) -> Result<bool, SecretError> {
+        Ok(self.values().remove(name).is_some())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +204,31 @@ mod tests {
             store_secret(&name, ""),
             Err(SecretError::EmptyValue)
         ));
+        assert!(matches!(
+            KeychainSecrets.store(&name, ""),
+            Err(SecretError::EmptyValue)
+        ));
+    }
+
+    #[test]
+    fn memory_secrets_store_load_and_delete() {
+        let store = MemorySecrets::new();
+        let name: SecretName = "openrouter".parse().unwrap();
+        assert_eq!(store.load(&name).unwrap(), None);
+        assert!(matches!(
+            store.store(&name, ""),
+            Err(SecretError::EmptyValue)
+        ));
+        store.store(&name, "sk-1").unwrap();
+        store.store(&name, "sk-2").unwrap();
+        assert_eq!(store.load(&name).unwrap().as_deref(), Some("sk-2"));
+        let debug = format!("{store:?}");
+        assert!(
+            debug.contains("openrouter") && !debug.contains("sk-2"),
+            "{debug}"
+        );
+        assert!(store.delete(&name).unwrap());
+        assert!(!store.delete(&name).unwrap());
+        assert_eq!(store.load(&name).unwrap(), None);
     }
 }

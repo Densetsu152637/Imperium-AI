@@ -127,6 +127,13 @@ elsewhere such models are listed but unavailable, so routing falls back. Managed
 environments and the Docker image are later work; on another platform, run Imperium on a
 Linux host and use it through [SSH](05-tools-and-isolation.md#ssh-hosts).
 
+The supervisor does not know either runtime by name: it holds an ordered list of runtime
+backends (`RuntimeBackend` in `imperium-local`), llama.cpp then vLLM by default, and serves a
+model with the first available one that accepts its format. A backend decides where a model
+fits (GPU and RAM, or GPU only), the server's arguments, and checks its executable, which the
+process launcher looks up by the backend's id. Adding a runtime means implementing the trait
+and passing it to `Supervisor::with_backends`.
+
 - **llama.cpp:** runtime packs per backend (CPU, CUDA, Vulkan, ROCm, Metal) are built by CI
   ([11](11-ci-cd.md#runtime-packs)) and downloaded on demand, verified by SHA-256. Users can
   point at their own `llama-server` build instead.

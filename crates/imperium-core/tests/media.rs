@@ -9,7 +9,7 @@ use axum::Router;
 use axum::routing::post;
 use base64::Engine;
 use imperium_core::{ResolvedModel, Session, SessionConfig};
-use imperium_media::{ImageBackend, Media, Service};
+use imperium_media::{Media, OpenAiImages, Service};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
@@ -114,7 +114,9 @@ async fn agents_generate_images_and_audio() {
         resume_policy: imperium_core::default_resume_policy(),
         instructions: None,
         media: Some(Arc::new(Media {
-            image: Some(ImageBackend::OpenAi(service("sdxl"))),
+            image: Some(Arc::new(OpenAiImages {
+                service: service("sdxl"),
+            })),
             speech: Some((service("tts"), "alloy".into())),
             transcription: Some(service("whisper")),
         })),

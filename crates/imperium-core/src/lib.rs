@@ -9,13 +9,12 @@ mod agent;
 mod breakdown;
 mod journal;
 mod launcher;
-mod local;
 mod model;
 mod session;
 mod status;
 
+pub use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels};
 pub use launcher::{LaunchFuture, SessionLauncher};
-pub use local::{AcquireFuture, Availability, LocalLease, LocalModels};
 pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
 pub use session::{
     BrowserSetup, Session, SessionClosed, SessionConfig, SessionMemory, WebTools, new_session_id,

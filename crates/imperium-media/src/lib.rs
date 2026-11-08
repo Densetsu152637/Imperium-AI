@@ -3,39 +3,45 @@
 //! OpenAI-compatible transcription API (LocalAI, whisper.cpp front-ends, or hosted services).
 //! Results are files in the project's `media/` folder with a provenance file beside each.
 
+pub mod image;
+
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::Engine;
-use imperium_models::ToolSpec;
+use imperium_api::ToolSpec;
 use serde_json::{Value, json};
+
+pub use image::{
+    ComfyUi, ImageConfig, ImageFuture, ImageGenerator, ImageGeneratorBuilder, ImageGenerators,
+    OpenAiImages,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(600);
 const COMFY_POLL: Duration = Duration::from_millis(500);
 
 /// An OpenAI-compatible service: base URL (ending before the API path) and optional key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Service {
     pub base_url: String,
     pub api_key: Option<String>,
     pub model: String,
 }
 
-/// How images are made.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ImageBackend {
-    OpenAi(Service),
-    /// A ComfyUI server and an API-format workflow whose text contains `{{prompt}}` (and
-    /// optionally `{{seed}}`, `{{width}}`, `{{height}}`).
-    ComfyUi {
-        url: String,
-        workflow: String,
-    },
+// The key stays out of logs and error messages.
+impl std::fmt::Debug for Service {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Service")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Media {
-    pub image: Option<ImageBackend>,
+    pub image: Option<Arc<dyn ImageGenerator>>,
     pub speech: Option<(Service, String)>,
     pub transcription: Option<Service>,
 }
@@ -103,20 +109,12 @@ impl Media {
         size: (u32, u32),
         name: Option<&str>,
     ) -> Result<String, MediaError> {
-        let backend = self
+        let generator = self
             .image
             .as_ref()
             .ok_or(MediaError::NotConfigured("image generation"))?;
-        let (bytes, model) = match backend {
-            ImageBackend::OpenAi(service) => (
-                openai_image(http, service, prompt, size).await?,
-                service.model.clone(),
-            ),
-            ImageBackend::ComfyUi { url, workflow } => (
-                comfyui_image(http, url, workflow, prompt, size).await?,
-                "comfyui workflow".to_string(),
-            ),
-        };
+        let bytes = generator.generate(http, prompt, size).await?;
+        let model = generator.model();
         save(
             root,
             name.unwrap_or(prompt),
@@ -217,126 +215,6 @@ fn authorized(request: reqwest::RequestBuilder, service: &Service) -> reqwest::R
     }
 }
 
-async fn openai_image(
-    http: &reqwest::Client,
-    service: &Service,
-    prompt: &str,
-    (width, height): (u32, u32),
-) -> Result<Vec<u8>, MediaError> {
-    let body: Value = authorized(
-        http.post(format!("{}/images/generations", service.base_url)),
-        service,
-    )
-    .json(&json!({
-        "model": service.model, "prompt": prompt, "n": 1,
-        "size": format!("{width}x{height}"), "response_format": "b64_json",
-    }))
-    .timeout(TIMEOUT)
-    .send()
-    .await
-    .and_then(reqwest::Response::error_for_status)
-    .map_err(service_error)?
-    .json()
-    .await
-    .map_err(service_error)?;
-    let image = &body["data"][0];
-    if let Some(encoded) = image["b64_json"].as_str() {
-        return base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|error| {
-                MediaError::Service(format!("the image was not valid base64: {error}"))
-            });
-    }
-    let url = image["url"]
-        .as_str()
-        .ok_or_else(|| MediaError::Service("the response had no image".into()))?;
-    Ok(http
-        .get(url)
-        .send()
-        .await
-        .map_err(service_error)?
-        .bytes()
-        .await
-        .map_err(service_error)?
-        .to_vec())
-}
-
-/// Queues the workflow with the prompt filled in, waits for it, and downloads the first image.
-async fn comfyui_image(
-    http: &reqwest::Client,
-    url: &str,
-    workflow: &str,
-    prompt: &str,
-    (width, height): (u32, u32),
-) -> Result<Vec<u8>, MediaError> {
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs() % 1_000_000_007);
-    let quoted =
-        serde_json::to_string(prompt).map_err(|error| MediaError::Service(error.to_string()))?;
-    let filled = workflow
-        .replace("\"{{prompt}}\"", &quoted)
-        .replace("{{prompt}}", quoted.trim_matches('"'))
-        .replace("\"{{seed}}\"", &seed.to_string())
-        .replace("\"{{width}}\"", &width.to_string())
-        .replace("\"{{height}}\"", &height.to_string());
-    let graph: Value = serde_json::from_str(&filled).map_err(|error| {
-        MediaError::Service(format!("the ComfyUI workflow is not valid JSON: {error}"))
-    })?;
-    let queued: Value = http
-        .post(format!("{url}/prompt"))
-        .json(&json!({"prompt": graph, "client_id": "imperium"}))
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(service_error)?
-        .json()
-        .await
-        .map_err(service_error)?;
-    let id = queued["prompt_id"]
-        .as_str()
-        .ok_or_else(|| MediaError::Service("ComfyUI did not queue the workflow".into()))?;
-    let started = std::time::Instant::now();
-    let image = loop {
-        let history: Value = http
-            .get(format!("{url}/history/{id}"))
-            .send()
-            .await
-            .map_err(service_error)?
-            .json()
-            .await
-            .map_err(service_error)?;
-        let outputs = history[id]["outputs"].as_object();
-        if let Some(image) = outputs
-            .into_iter()
-            .flat_map(|outputs| outputs.values())
-            .find_map(|node| node["images"].get(0).cloned())
-        {
-            break image;
-        }
-        if started.elapsed() > TIMEOUT {
-            return Err(MediaError::Service("ComfyUI did not finish in time".into()));
-        }
-        tokio::time::sleep(COMFY_POLL).await;
-    };
-    let query = [
-        ("filename", image["filename"].as_str().unwrap_or_default()),
-        ("subfolder", image["subfolder"].as_str().unwrap_or_default()),
-        ("type", image["type"].as_str().unwrap_or("output")),
-    ];
-    let bytes = http
-        .get(format!("{url}/view"))
-        .query(&query)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(service_error)?
-        .bytes()
-        .await
-        .map_err(service_error)?;
-    Ok(bytes.to_vec())
-}
-
 /// Writes `bytes` to `<root>/media/<slug>-<time>.<ext>` with `<file>.json` provenance.
 fn save(
     root: &Path,
@@ -390,6 +268,7 @@ mod tests {
     use super::*;
     use axum::Router;
     use axum::routing::{get, post};
+    use base64::Engine;
 
     async fn serve(app: Router) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -416,7 +295,9 @@ mod tests {
             model: model.into(),
         };
         let media = Media {
-            image: Some(ImageBackend::OpenAi(service("sdxl"))),
+            image: Some(Arc::new(OpenAiImages {
+                service: service("sdxl"),
+            })),
             speech: Some((service("tts-1"), "alloy".into())),
             transcription: Some(service("whisper-1")),
         };
@@ -437,6 +318,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(provenance["prompt"], "A red fox, at dawn!");
+        assert_eq!(provenance["model"], "sdxl");
         let audio = media
             .speak(&http, root.path(), "Hello", None, Some("greeting"))
             .await
@@ -468,10 +350,10 @@ mod tests {
         let workflow = r#"{"5": {"inputs": {"width": "{{width}}", "height": "{{height}}"}},
                           "6": {"inputs": {"text": "{{prompt}}", "seed": "{{seed}}"}}}"#;
         let media = Media {
-            image: Some(ImageBackend::ComfyUi {
+            image: Some(Arc::new(ComfyUi {
                 url: base,
                 workflow: workflow.into(),
-            }),
+            })),
             ..Media::default()
         };
         let root = tempfile::tempdir().unwrap();
@@ -485,6 +367,111 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(std::fs::read(root.path().join(path)).unwrap(), PNG);
+        assert_eq!(std::fs::read(root.path().join(&path)).unwrap(), PNG);
+        let provenance: Value = serde_json::from_str(
+            &std::fs::read_to_string(root.path().join(format!("{path}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance["model"], "comfyui workflow");
+    }
+
+    /// Returns the prompt's bytes as the "image".
+    #[derive(Debug)]
+    struct Echo;
+
+    impl ImageGenerator for Echo {
+        fn model(&self) -> &str {
+            "echo"
+        }
+
+        fn generate<'a>(
+            &'a self,
+            _http: &'a reqwest::Client,
+            prompt: &'a str,
+            size: (u32, u32),
+        ) -> ImageFuture<'a> {
+            Box::pin(async move { Ok(format!("{prompt} {}x{}", size.0, size.1).into_bytes()) })
+        }
+    }
+
+    fn no_service() -> Option<Service> {
+        None
+    }
+
+    #[tokio::test]
+    async fn custom_generators_plug_into_the_registry_and_media() {
+        let mut generators = ImageGenerators::default();
+        generators.register("echo", |_| Some(Arc::new(Echo) as Arc<dyn ImageGenerator>));
+        let config = ImageConfig {
+            comfyui_url: None,
+            workflow: None,
+            service: &no_service,
+        };
+        let media = Media {
+            image: generators.build("echo", &config),
+            ..Media::default()
+        };
+        assert_eq!(media.tool_specs()[0].name, "media_image");
+        let root = tempfile::tempdir().unwrap();
+        let path = media
+            .image(&reqwest::Client::new(), root.path(), "a fox", (8, 4), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join(&path)).unwrap(),
+            b"a fox 8x4"
+        );
+        let provenance: Value = serde_json::from_str(
+            &std::fs::read_to_string(root.path().join(format!("{path}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(provenance["model"], "echo");
+    }
+
+    #[test]
+    fn built_in_generators_need_their_settings_and_unknown_names_use_openai() {
+        let generators = ImageGenerators::default();
+        let resolved = std::sync::atomic::AtomicUsize::new(0);
+        let missing = || {
+            resolved.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            None
+        };
+        let empty = ImageConfig {
+            comfyui_url: None,
+            workflow: None,
+            service: &missing,
+        };
+        for name in ["comfyui", "openai", "anything"] {
+            assert!(generators.build(name, &empty).is_none(), "{name}");
+        }
+        assert_eq!(
+            resolved.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "comfyui does not resolve the endpoint"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let workflow = dir.path().join("workflow.json");
+        std::fs::write(&workflow, r#"{"6": {"inputs": {"text": "{{prompt}}"}}}"#).unwrap();
+        let service = || {
+            Some(Service {
+                base_url: "http://127.0.0.1:8080/v1".into(),
+                api_key: None,
+                model: "sdxl".into(),
+            })
+        };
+        let configured = ImageConfig {
+            comfyui_url: Some("http://127.0.0.1:9000/"),
+            workflow: Some(&workflow),
+            service: &service,
+        };
+        assert_eq!(
+            generators.build("comfyui", &configured).unwrap().model(),
+            "comfyui workflow"
+        );
+        assert_eq!(
+            generators.build("anything", &configured).unwrap().model(),
+            "sdxl"
+        );
     }
 }

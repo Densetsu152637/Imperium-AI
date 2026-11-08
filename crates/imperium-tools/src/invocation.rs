@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use imperium_models::ToolSpec;
+use imperium_api::ToolSpec;
 use serde::Deserialize;
 use serde_json::json;
 
