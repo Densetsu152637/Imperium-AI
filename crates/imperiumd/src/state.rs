@@ -781,18 +781,35 @@ impl DaemonState {
     }
 }
 
-/// The bundled default workflow pack: `policy/agent-custom-workflow` beside the daemon (or one
-/// level up, as installers lay it out), or in the source tree for development builds.
+/// The bundled default workflow pack: `policy/agent-custom-workflow` in the app's resource
+/// folder, beside the daemon (or one level up, as archives lay it out), or in the source tree for
+/// development builds.
 fn bundled_pack() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let beside = exe.parent()?;
-    [
-        beside.join("policy/agent-custom-workflow"),
-        beside.join("../policy/agent-custom-workflow"),
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../policy/agent-custom-workflow"),
-    ]
-    .into_iter()
-    .find(|candidate| candidate.join("AGENTS.md").is_file())
+    let mut candidates = bundled_dirs("policy/agent-custom-workflow");
+    candidates
+        .push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../policy/agent-custom-workflow"));
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.join("AGENTS.md").is_file())
+}
+
+/// Where files shipped with Imperium may be, most specific first: the folder named by
+/// `IMPERIUM_RESOURCE_DIR` (the desktop app sets it to its resource folder when it starts the
+/// daemon, since installers keep resources apart from binaries), then beside the daemon and one
+/// level up.
+pub(crate) fn bundled_dirs(relative: &str) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(resources) = std::env::var_os("IMPERIUM_RESOURCE_DIR") {
+        dirs.push(PathBuf::from(resources).join(relative));
+    }
+    if let Some(beside) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        dirs.push(beside.join(relative));
+        dirs.push(beside.join("..").join(relative));
+    }
+    dirs
 }
 
 fn lock_watches(

@@ -3,3 +3,4 @@ node_modules/
 packages/protocol/src/index.ts
 apps/desktop/dist/
 apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/

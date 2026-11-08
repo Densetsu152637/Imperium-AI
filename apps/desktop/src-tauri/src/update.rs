@@ -176,6 +176,7 @@ pub fn install_on_exit<R: Runtime>(app: &AppHandle<R>) {
     };
     let ready = updater.inner.lock().expect("updater state").ready.take();
     if let Some((update, bytes)) = ready {
+        crate::daemon::stop_bundled();
         let _ = update.restart_after_install(false).install(bytes);
     }
 }
@@ -355,7 +356,9 @@ fn install_and_restart<R: Runtime>(app: &AppHandle<R>, updater: &Updater) -> Res
     let Some((update, bytes)) = ready else {
         return Err("No update has been downloaded.".into());
     };
-    // On Windows the installer takes over here and starts the new version itself.
+    // The new version starts its own daemon. On Windows the installer takes over here and
+    // starts the new version itself.
+    crate::daemon::stop_bundled();
     update.install(bytes).map_err(|error| error.to_string())?;
     app.restart()
 }

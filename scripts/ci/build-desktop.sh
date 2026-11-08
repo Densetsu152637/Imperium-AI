@@ -21,12 +21,38 @@ done
 # The protocol package's index is generated, not committed; the interface imports it.
 pnpm --filter @imperium/protocol run generate
 
+# The installer carries the daemon and CLI beside the app, which starts the daemon itself.
+# Tauri expects them as binaries/<name>-<target>[.exe]; the universal macOS build merges both
+# architectures.
+ext=""
+if [[ "$target" == *windows* ]]; then ext=".exe"; fi
+rust_targets=("$target")
+if [ "$target" = universal-apple-darwin ]; then
+  rust_targets=(aarch64-apple-darwin x86_64-apple-darwin)
+fi
+for t in "${rust_targets[@]}"; do
+  cargo build --release --locked -p imperium-cli -p imperiumd --target "$t"
+done
+sidecars=apps/desktop/src-tauri/binaries
+mkdir -p "$sidecars"
+for bin in imperium imperiumd; do
+  out="$sidecars/$bin-$target$ext"
+  if [ "${#rust_targets[@]}" -gt 1 ]; then
+    inputs=()
+    for t in "${rust_targets[@]}"; do inputs+=("target/$t/release/$bin"); done
+    lipo -create -output "$out" "${inputs[@]}"
+  else
+    cp "target/$target/release/$bin$ext" "$out"
+  fi
+done
+
 # Updater artifacts (signed installers and the macOS .app.tar.gz) need the signing key.
 updater=false
 if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then updater=true; fi
 
+bundle="{\"createUpdaterArtifacts\":$updater,\"externalBin\":[\"binaries/imperiumd\",\"binaries/imperium\"]}"
 pnpm --filter @imperium/desktop exec tauri build --target "$target" --bundles "$bundles" \
-  --config "{\"version\":\"$version\",\"bundle\":{\"createUpdaterArtifacts\":$updater}}"
+  --config "{\"version\":\"$version\",\"bundle\":$bundle}"
 
 mkdir -p dist
 find "target/$target/release/bundle" -type f \( -name '*.AppImage' -o -name '*.deb' \

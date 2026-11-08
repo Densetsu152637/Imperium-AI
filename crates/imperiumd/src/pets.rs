@@ -37,9 +37,9 @@ impl PetEngine {
         if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
             folders.push(PathBuf::from(home).join(".claude").join("pets"));
         }
-        if let Some(bundled) = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|dir| dir.join("pets")))
+        if let Some(bundled) = crate::state::bundled_dirs("pets")
+            .into_iter()
+            .find(|dir| dir.is_dir())
         {
             folders.push(bundled);
         }
