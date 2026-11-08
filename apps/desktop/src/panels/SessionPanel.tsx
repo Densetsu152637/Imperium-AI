@@ -11,6 +11,7 @@ import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
 import { ROOT, describeUse, formatCost, formatCount, sessionTitle, totals, type Entry, type SessionState } from "../sessions";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { StatusBadge } from "./StatusBadge";
+import { useSettings } from "../settings";
 
 type Props = {
   session: SessionState | null;
@@ -23,16 +24,18 @@ type Props = {
 };
 
 export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePolicy, onResumeNow }: Props) {
+  const settings = useSettings();
   const [draft, setDraft] = useState("");
-  const [rendered, setRendered] = useState(true);
+  const [rendered, setRendered] = useState(settings.renderMarkdown);
+  useEffect(() => setRendered(settings.renderMarkdown), [settings.renderMarkdown]);
   const end = useRef<HTMLDivElement>(null);
   const entryCount = session?.entries.length ?? 0;
   const lastLength = session?.entries.at(-1) && "text" in session.entries.at(-1)! ? (session.entries.at(-1) as { text: string }).text.length : 0;
 
   // Block body: newer browsers return a promise from scrollIntoView, which an effect must not return.
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end" });
-  }, [entryCount, lastLength]);
+    if (settings.autoScroll) end.current?.scrollIntoView({ block: "end" });
+  }, [entryCount, lastLength, settings.autoScroll]);
 
   if (!session) {
     return (
@@ -149,10 +152,16 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
       >
         <textarea
           value={draft}
-          placeholder="Message the agent (Enter to send, Shift+Enter for a new line)"
+          placeholder={
+            settings.sendKey === "enter"
+              ? "Message the agent (Enter to send, Shift+Enter for a new line)"
+              : "Message the agent (Ctrl+Enter to send, Enter for a new line)"
+          }
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            const modified = event.ctrlKey || event.metaKey;
+            const sends = settings.sendKey === "enter" ? !event.shiftKey && !modified : modified;
+            if (event.key === "Enter" && sends) {
               event.preventDefault();
               send();
             }

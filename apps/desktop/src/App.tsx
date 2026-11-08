@@ -1,5 +1,7 @@
 // Connects to the daemon and arranges the default view: Projects and Sessions stacked on the
 // left, the session spanning the middle, agents, models, and telemetry stacked on the right.
+// The workspace is always shown: while the daemon is away, a banner offers to start or reach it
+// and the lists show what was last known, and the layout reopens as the user left it.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -24,7 +26,9 @@ import type {
 
 import { DaemonClient, type DaemonConnection } from "./daemon/client";
 import { findDaemon, insideTauri, pickFolder, rememberDevConnection } from "./daemon/connection";
-import { Columns } from "./layout/Columns";
+import { Columns, type PanelSpec } from "./layout/Columns";
+import { getLayout, resetLayout, updateLayout } from "./layout/state";
+import { notify } from "./notify";
 import { ProjectsPanel, SessionsPanel } from "./panels/NavigationPanels";
 import { SessionPanel } from "./panels/SessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
@@ -37,22 +41,36 @@ import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { normalizeProject, useProjectIcons } from "./projectIcons";
 import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
-import { applySettings, loadSettings, saveSettings, type DisplaySettings } from "./settings";
-import { SettingsMenu } from "./SettingsMenu";
+import { applySettings, loadSettings, saveSettings, SettingsContext, type AppSettings } from "./settings";
+import { SettingsWindow } from "./SettingsWindow";
+import { getDoc, setDoc } from "./store";
 import { type Daemon, useDaemon } from "./DaemonControl";
 import { UpdateControl, useUpdates } from "./UpdateControl";
 
 type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
 
+/** Sessions as last seen, shown until the daemon answers. */
+type Cache = { sessions: SessionSummary[]; savedAt: number };
+
+function cachedSessions(): Record<string, SessionState> {
+  const cache = getDoc<Cache>("cache");
+  return Object.fromEntries(
+    (cache?.sessions ?? []).map((summary, index) => [summary.session_id, newSession(summary, index)] as const),
+  );
+}
+
 export function App() {
+  const [settings, setSettings] = useState<AppSettings>(loadSettings);
+  const saved = useMemo(() => getLayout(), []);
+  const restore = settings.restoreSession;
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
-  const [sessions, setSessions] = useState<Record<string, SessionState>>({});
-  const [extraProjects, setExtraProjects] = useState<string[]>([]);
+  const [sessions, setSessions] = useState<Record<string, SessionState>>(cachedSessions);
+  const [extraProjects, setExtraProjects] = useState<string[]>(saved.folders);
   // The project new sessions start in, and whether the Sessions list shows only its sessions.
-  const [project, setProject] = useState<string | null>(null);
-  const [projectView, setProjectView] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [settings, setSettings] = useState<DisplaySettings>(loadSettings);
+  const [project, setProject] = useState<string | null>(restore ? saved.project : null);
+  const [projectView, setProjectView] = useState(restore && saved.projectView);
+  const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
+  const [hidden, setHidden] = useState<string[]>(saved.hidden);
   const [showSettings, setShowSettings] = useState(false);
   const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
@@ -80,7 +98,7 @@ export function App() {
     current.current = null;
     setStatus({ kind: "connecting" });
     try {
-      const target = connection ?? (await findDaemon());
+      const target = connection ?? (await findDaemon(loadSettings().autoStartDaemon));
       if (!target) {
         setStatus({ kind: "failed", message: "Enter the daemon's URL and token to connect." });
         return;
@@ -176,6 +194,30 @@ export function App() {
     }
   }, [modBus]);
   const daemon = useDaemon(() => void connect(), status.kind === "connected");
+
+  // Remember the selection, opened folders, and closed panels.
+  useEffect(() => {
+    updateLayout({ project, session: selected, projectView, folders: extraProjects, hidden });
+  }, [project, selected, projectView, extraProjects, hidden]);
+
+  // Remember the sessions as last seen, for the next time the daemon is away.
+  useEffect(() => {
+    if (status.kind !== "connected") return;
+    const summaries = Object.values(sessions).map((s) => s.summary);
+    setDoc<Cache>("cache", { sessions: summaries, savedAt: Date.now() });
+  }, [sessions, status.kind]);
+
+  // Ctrl+, (Cmd+, on macOS) opens Settings, as in most desktop apps.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "," && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        setShowSettings((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     void connect();
@@ -292,12 +334,38 @@ export function App() {
     if (dir) setProject(normalizeProject(dir));
   };
 
-  const updateSettings = (next: DisplaySettings) => {
+  const updateSettings = (next: AppSettings) => {
     setSettings(next);
     saveSettings(next);
   };
 
+  // Sound and a title badge when an agent needs approval or a session finishes.
+  const approvalCount = useRef(0);
+  useEffect(() => {
+    if (approvals.length > approvalCount.current) notify("approval", settings);
+    approvalCount.current = approvals.length;
+  }, [approvals.length, settings]);
+  const running = useRef(new Set<string>());
+  useEffect(() => {
+    for (const s of Object.values(sessions)) {
+      const busy = s.summary.status === "working";
+      if (!busy && running.current.has(s.summary.session_id)) notify("finished", settings);
+      if (busy) running.current.add(s.summary.session_id);
+      else running.current.delete(s.summary.session_id);
+    }
+  }, [sessions, settings]);
+
+  const closePanel = (id: string) => setHidden((all) => (all.includes(id) ? all : [...all, id]));
+  const togglePanel = (id: string, open: boolean) =>
+    setHidden((all) => (open ? all.filter((panel) => panel !== id) : all.includes(id) ? all : [...all, id]));
+  /** Leaves out closed panels and lets the rest be closed. */
+  const visible = (panels: PanelSpec[]) =>
+    panels
+      .filter((panel) => !hidden.includes(panel.id))
+      .map((panel) => ({ ...panel, onClose: () => closePanel(panel.id) }));
+
   return (
+    <SettingsContext.Provider value={settings}>
     <div className="app">
       <header className="titlebar">
         <strong className="brand">Imperium</strong>
@@ -315,17 +383,24 @@ export function App() {
         </button>
       </header>
       {showSettings && (
-        <SettingsMenu
+        <SettingsWindow
           settings={settings}
           onChange={updateSettings}
           updates={updates}
           daemon={daemon}
+          client={client}
+          panels={PANELS}
+          hidden={hidden}
+          onTogglePanel={togglePanel}
+          onResetLayout={() => {
+            resetLayout();
+            window.location.reload();
+          }}
           onClose={() => setShowSettings(false)}
         />
       )}
-      {status.kind === "failed" ? (
-        <ConnectScreen message={status.message} onConnect={connect} daemon={daemon} />
-      ) : (
+      {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={daemon} />}
+      {(
         <main className="workspace">
           <Columns
             initial={[0.2, 0.55, 0.25]}
@@ -333,7 +408,7 @@ export function App() {
               {
                 id: "left",
                 mode: "stack",
-                panels: [
+                panels: visible([
                   {
                     id: "projects",
                     title: "Projects",
@@ -394,7 +469,7 @@ export function App() {
                         },
                       ]
                     : []),
-                ],
+                ]),
               },
               {
                 id: "main",
@@ -417,7 +492,7 @@ export function App() {
               {
                 id: "right",
                 mode: "stack",
-                panels: [
+                panels: visible([
                   { id: "agents", title: "Agents", body: <AgentsPanel session={session} /> },
                   { id: "models", title: "Models", body: <ModelsPanel table={modelTable} /> },
                   {
@@ -434,76 +509,79 @@ export function App() {
                       body: <ModFrame mod={mod} panelId={panel.id} bus={modBus} />,
                     })),
                   ),
-                ],
+                ]),
               },
             ]}
           />
         </main>
       )}
     </div>
+    </SettingsContext.Provider>
   );
 }
 
-function ConnectScreen({
-  message,
+/** Panels the user can close and reopen from Settings → Panels. */
+const PANELS: { id: string; title: string }[] = [
+  { id: "projects", title: "Projects" },
+  { id: "sessions", title: "Sessions" },
+  { id: "pet", title: "Pet" },
+  { id: "approvals", title: "Approvals" },
+  { id: "agents", title: "Agents" },
+  { id: "models", title: "Models" },
+  { id: "local-models", title: "Local models" },
+  { id: "telemetry", title: "Telemetry" },
+  { id: "browser", title: "Browser" },
+];
+
+/** A slim bar above the workspace while the daemon is away: why, and how to reach it. */
+function ConnectionBanner({
+  status,
   onConnect,
   daemon,
 }: {
-  message: string;
+  status: Status;
   onConnect: (connection?: DaemonConnection) => void;
   daemon: Daemon | null;
 }) {
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
-  return (
-    <div className="connect">
-      <div className="connect-card">
-        <h1>Not connected to imperiumd</h1>
-        <p>{message}</p>
-        {daemon?.status.can_start ? (
-          <>
-            {daemon.error && <p className="error">{daemon.error}</p>}
-            <button className="primary" onClick={() => daemon.run("start")} disabled={daemon.busy !== null}>
-              {daemon.busy ? "Starting…" : "Start imperiumd"}
-            </button>
-          </>
-        ) : (
-          <p className="muted">
-            Start the daemon with <code>imperiumd</code>
-            {insideTauri() ? ", then retry." : ". In a browser, paste the url and token from its daemon.json."}
-          </p>
-        )}
-        {!insideTauri() && (
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              onConnect({ url: url.trim(), token: token.trim() });
-            }}
-          >
-            <input
-              aria-label="Daemon URL"
-              placeholder="ws://127.0.0.1:port/rpc"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-            <input
-              aria-label="Token"
-              placeholder="token"
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-            />
-            <button type="submit" className="primary">
-              Connect
-            </button>
-          </form>
-        )}
-        {insideTauri() && (
-          <button className="primary" onClick={() => onConnect()}>
-            Retry
-          </button>
-        )}
+  if (status.kind === "connecting") {
+    return (
+      <div className="connection-banner" data-state="connecting" role="status">
+        <span className="daemon-dot" aria-hidden="true" /> Connecting to imperiumd…
       </div>
+    );
+  }
+  return (
+    <div className="connection-banner" data-state="offline" role="status">
+      <span className="daemon-dot" aria-hidden="true" />
+      <span className="connection-message">
+        <strong>imperiumd is not connected.</strong> {status.kind === "failed" ? status.message : ""} Showing what was
+        last known.
+      </span>
+      {daemon?.error && <span className="error">{daemon.error}</span>}
+      {daemon?.status.can_start && !daemon.status.running && (
+        <button className="primary" onClick={() => daemon.run("start")} disabled={daemon.busy !== null}>
+          {daemon.busy ? "Starting…" : "Start imperiumd"}
+        </button>
+      )}
+      {insideTauri() ? (
+        <button onClick={() => onConnect()}>Retry</button>
+      ) : (
+        <form
+          className="connection-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onConnect({ url: url.trim(), token: token.trim() });
+          }}
+        >
+          <input aria-label="Daemon URL" placeholder="ws://127.0.0.1:port/rpc" value={url} onChange={(e) => setUrl(e.target.value)} />
+          <input aria-label="Token" placeholder="token" type="password" value={token} onChange={(e) => setToken(e.target.value)} />
+          <button type="submit" className="primary">
+            Connect
+          </button>
+        </form>
+      )}
     </div>
   );
 }

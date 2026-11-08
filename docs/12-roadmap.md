@@ -23,4 +23,10 @@ local models.
 | 11 | Mobile (first stage merged: pairing, scoped phone access, phone web app; native app, relay, and push later) | Phone app, pairing, relay, notifications | Paired phone approves a queued action away from the LAN |
 | 1.0 | Release (in progress: sessions survive restarts; clients follow sessions started anywhere; desktop self-update on main and experimental channels) | Hardening, docs, signed installers, updater | [Success criteria](01-vision.md#success-criteria-for-10) met |
 
+Planned next: **agent state management.** Agents and subagents from a session keep their state
+(conversation context, plan, tool results, model and lease) so they can be resumed and reused
+later with that context instead of starting fresh, for example handing a follow-up to the
+subagent that already explored a module. Agent state is cached next to the session's files in
+the daemon's data folder, so it survives daemon restarts and moves with the session.
+
 Later candidates: fine-tuning plugin (Unsloth), shared team projects, a plugin registry.

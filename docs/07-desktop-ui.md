@@ -162,6 +162,29 @@ including ligatures for code.
 Full keyboard navigation, visible focus, screen-reader labels, reduced-motion support, and
 WCAG AA contrast for shipped themes.
 
+## Settings and persistence (implemented)
+
+**Settings** (title bar, or Ctrl+,) opens a window with sections on the left and search across
+every setting:
+
+- **Imperium:** General (reopen where you left off, start imperiumd with the app), Appearance
+  (accent colour, interface, message, and code scale, line length, density, message font,
+  reduce motion), Chat (send key, Markdown, code wrapping, following new output),
+  Notifications (sounds for approvals and finished sessions, a title badge), Panels (show or
+  hide each panel, reset the layout), Keyboard, Daemon (start, stop, restart, log, keep
+  running), and Updates (channel, check and install).
+- **Agent and daemon:** every setting the daemon exposes through `config.describe`, grouped by
+  section (models, local runtime, memory, workflow, web, media, isolation, GitHub, pets, phone,
+  resuming, network). Changes go to the user config file through `config.set` and apply when
+  the daemon restarts; the window offers the restart.
+- **Data and storage** shows where everything is kept and resets app settings or the layout.
+
+App settings, the layout (panel sizes, closed panels, the selected project and session, opened
+folders), and the last-known sessions are files in `desktop/` inside Imperium's config folder,
+beside the daemon's `config.toml`, so they persist across updates and reinstalls. The workspace
+is always shown: while the daemon is away, a bar above it offers to start or reach it and the
+lists show the sessions as last seen.
+
 ## Projects and sessions (implemented)
 
 Each project has an icon: a glyph on a coloured tile, chosen from the path by default and

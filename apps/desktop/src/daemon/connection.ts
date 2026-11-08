@@ -9,8 +9,9 @@ const STORAGE_KEY = "imperium.devConnection";
 
 export const insideTauri = (): boolean => isTauri();
 
-export async function findDaemon(): Promise<DaemonConnection | null> {
-  if (insideTauri()) return invoke<DaemonConnection>("daemon_endpoint");
+/** The daemon to connect to. In the desktop app, `autostart` lets it start the bundled daemon. */
+export async function findDaemon(autostart = true): Promise<DaemonConnection | null> {
+  if (insideTauri()) return invoke<DaemonConnection>("daemon_endpoint", { autostart });
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     return saved ? (JSON.parse(saved) as DaemonConnection) : null;
