@@ -2,7 +2,8 @@
 
 Revision: 2026-11-08 r4 (r2: local-only training, the name Emperor, separate repositories,
 teacher licences; r3: strategy and planning from vague prompts, clarify-or-research, G10–G11;
-r4: context tiers from 64K to 256K and up, G12; stage 0 in progress)
+r4: context tiers from 64K to 256K and up, G12; r5: one loaded model shared by many sessions,
+G13, stage 2c; stage 0 in progress)
 
 **Emperor** is a small open-weight model, fine-tuned to be the **root agent** of an Imperium
 session on a 16 GB GPU. It reads the task, plans, writes compact briefs, and hands the work to
@@ -65,6 +66,7 @@ there, once, and record why.
 | G10 | From vague one-line prompts, Emperor's plans score ≥ 4.0 of 5 on a rubric (measurable goals, complete decomposition, correct dependencies, stated assumptions, executable steps) judged blind against a frontier root's plans, and score no worse than them on ≥ 70 % of prompts | `eval --metric plan` |
 | G11 | On prompts with labelled gaps, Emperor asks the user about ≥ 90 % of the gaps labelled "user's decision", and about ≤ 10 % of those labelled "researchable" or "safe default", which it resolves itself and records as assumptions; it never asks more than one batch before starting independent work | `eval --metric clarify` |
 | G12 | Emperor adapts to its tier: on the held-out suite, task success at the 64K tier is within 5 points of the 256K tier (it delegates and chunks earlier instead of failing), and no tier ever overflows its window | `eval --suite heldout --context-tier 64k` vs `--context-tier 256k`; overflow count in the report |
+| G13 | One loaded Emperor serves many sessions: with a single slot, three sessions whose roots are waiting on subagents all make progress, because no agent holds a slot while it waits; a root resuming on a different slot re-reads ≤ 10 % of its context when the host prompt cache is on | `cargo test -p imperium-core shared_slot`; llama.cpp `timings.prompt_n` vs the context length on resume |
 
 ## Scope and non-goals
 
@@ -281,6 +283,56 @@ them.
 - Status: pending
 - Outcome:
 - Handoff notes:
+
+## Stage 2c: One loaded model, many sessions (Imperium)
+
+This is general Imperium work, useful for any local model; Emperor depends on it most, because
+a root is busy only at the start of a prompt cycle (planning, delegating) and at the end
+(merging reports, verifying), and sleeps in between.
+
+**Today (checked 2026-11-08).** Discovery already works: the daemon has one `Supervisor`
+(`crates/imperiumd/src/local.rs`), loaded models are keyed by id, and every session that asks
+for `llamacpp:<id>` reuses the same `llama-server`; `models.local` reports `slots` and
+`slots_in_use`. The problem is **slot holding**: `crates/imperium-core/src/agent.rs` takes the
+slot lease once per *turn* ("held for the whole turn"), so a root sleeping in `await_tasks`, in
+`ask_user`, or in a usage-limit pause keeps its slot, and with `--parallel N` just N sleeping
+roots block every other session. Nothing passes `id_slot`, `cache_prompt`, or a host prompt
+cache to llama.cpp, so a root that lands on another slot would re-read its whole context.
+
+- Objective:
+  1. **Lease per model call, not per turn.** Acquire the slot before each streamed request and
+     release it when the request completes; tools, `await_tasks`, `ask_user`, and pauses run
+     without a slot. A loaded model stays loaded while any session uses it or within
+     `idle_unload_s`.
+  2. **Slot affinity.** Remember each agent's last slot and request it with llama.cpp's
+     `id_slot` when it is free, so a waking root usually finds its KV cache intact; otherwise
+     take any free slot (the semaphore queues waiters first-come, first-served).
+  3. **KV continuity when the slot changed.** Send `cache_prompt: true` and start
+     `llama-server` with a host-memory prompt cache (`--cache-ram`, sized by the memory planner
+     from free RAM), so a root's prefix is restored from RAM rather than re-computed. For long
+     waits, evaluate saving a slot to disk (`--slot-save-path`, `POST /slots/{id}?action=save`
+     and `restore`). Verify each flag against the pinned runtime pack before relying on it.
+  4. **Visibility.** `models.local` and the desktop Models panel show, per loaded model, slots in
+     use, the queue length, and which sessions are using it; the router treats a long queue
+     like a busy model and sends subagents elsewhere (the root keeps its model).
+  5. **Slots × tier.** The memory planner sizes `--parallel` and the [context
+     tier](#context-tiers) together (`--ctx-size` = tier × slots); for Emperor the default is
+     the largest tier that still allows 2 slots, with a setting to prefer more slots or a
+     bigger window.
+- Depends on: none (independent of stages 1 and 2a; may land first)
+- Owned paths: `crates/imperium-core/src/agent.rs`, `crates/imperium-local`
+  (`supervisor.rs`, `backend.rs`, `planner.rs`), `crates/imperiumd/src/local.rs`,
+  `crates/imperium-protocol` (status fields), `docs/04-models-and-routing.md` (runtimes section)
+- Acceptance checks: G13; `cargo test -p imperium-core shared_slot` (fake model server, one
+  slot, three sessions whose roots await subagents, all finish); `cargo test -p imperium-local`
+  covers affinity and queue order; `bash scripts/check-rust.sh` passes; doc 04 no longer says a
+  slot is held for the whole turn.
+- Status: pending
+- Outcome:
+- Handoff notes: per-call leasing adds a queue wait before each call, so emit the wait in
+  telemetry. With the host prompt cache, context switching costs RAM, not re-computation: at
+  q8_0 a 64K root's cache is ~5 GB, so the planner caps `--cache-ram` and evicts the oldest
+  idle sessions first.
 
 ## Stage 2b: Eval harness (emperor repository)
 
