@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use imperium_config::{KeychainSecrets, Paths, SecretStore, Settings};
 use imperium_core::{
     CatalogModel, ChatClients, LocalModels, ModelError, ResolvedModel, Session, SessionConfig,
-    SessionMemory, ToolProvider, new_session_id, resolve_model,
+    SessionMemory, TaskRequest, ToolProvider, new_session_id, resolve_model, route,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
 use imperium_mcp::McpTools;
@@ -31,6 +31,7 @@ use crate::pets::PetEngine;
 use crate::phone::Devices;
 use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
+use crate::suggestions::{SuggestTool, Suggestions};
 
 /// Options for [`DaemonState::create_session_with`].
 #[derive(Debug, Default)]
@@ -46,6 +47,8 @@ pub struct SessionOptions {
 /// State shared by every connection: configuration and the running sessions.
 #[derive(Debug)]
 pub struct DaemonState {
+    /// This state itself, for tasks and tools started where only `&self` is at hand.
+    me: Weak<DaemonState>,
     started: Instant,
     paths: Paths,
     settings: Settings,
@@ -69,6 +72,8 @@ pub struct DaemonState {
     watches: Mutex<HashMap<String, (String, u64)>>,
     /// Signalled when a client asks the daemon to stop.
     shutdown: tokio::sync::Notify,
+    /// Model download suggestions offered to sessions.
+    suggestions: Suggestions,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -96,7 +101,9 @@ impl DaemonState {
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
         let devices = Devices::load(paths.data_dir().join("devices.json"));
-        Arc::new(DaemonState {
+        let suggest = settings.models.suggest_downloads;
+        Arc::new_cyclic(|me| DaemonState {
+            me: me.clone(),
             started: Instant::now(),
             paths,
             settings,
@@ -114,7 +121,48 @@ impl DaemonState {
             phone_address: OnceLock::new(),
             watches: Mutex::new(HashMap::new()),
             shutdown: tokio::sync::Notify::new(),
+            suggestions: Suggestions::new(suggest),
         })
+    }
+
+    /// Model download suggestions and the live `models.suggest_downloads` switch.
+    pub fn suggestions(&self) -> &Suggestions {
+        &self.suggestions
+    }
+
+    /// For suggestions: whether `routing.prefer` is `local`, and what each local model can do.
+    pub fn suggestion_inputs(&self) -> (bool, Vec<imperium_local::suggest::LocalCapability>) {
+        let prefer_local = self.settings.routing.prefer == imperium_config::Preference::Local;
+        let local = self.local.get().map_or_else(Vec::new, |local| {
+            local
+                .supervisor
+                .models()
+                .iter()
+                .map(|model| imperium_local::suggest::LocalCapability {
+                    context: model.info.context_length,
+                    vision: model.mmproj.is_some(),
+                })
+                .collect()
+        });
+        (prefer_local, local)
+    }
+
+    /// Whether routing an ordinary task (default tier, no tags) for a session on `model` picks
+    /// a local model; `None` when the session's model cannot be resolved.
+    pub fn routes_locally(&self, model: &str) -> Option<bool> {
+        let fallback = self.resolve_model(Some(model)).ok()?;
+        let local = self.local.get().map(|local| {
+            let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
+            supervisor
+        });
+        let routed = route(
+            &self.catalog(),
+            &self.settings.routing,
+            &fallback,
+            TaskRequest::default(),
+            local.as_deref(),
+        );
+        Some(routed.local)
     }
 
     /// Starts running `[[schedules]]`. Call once, inside the Tokio runtime.
@@ -611,6 +659,12 @@ impl DaemonState {
         if let Some(web) = self.web_tools() {
             tools.push(Arc::new(web));
         }
+        if self.suggestions.enabled() {
+            tools.push(Arc::new(SuggestTool {
+                daemon: self.me.clone(),
+                session_id: id.clone(),
+            }));
+        }
         let model_spec = model.spec.clone();
         let session = Session::spawn(SessionConfig {
             journal_path: self
@@ -664,6 +718,9 @@ impl DaemonState {
         let events = session.subscribe();
         if let Some(pets) = self.pets() {
             pets.watch(id.clone(), session.subscribe());
+        }
+        if let Some(me) = self.me.upgrade() {
+            crate::suggestions::watch(&me, id.clone(), session.subscribe());
         }
         let session = Arc::new(session);
         self.sessions

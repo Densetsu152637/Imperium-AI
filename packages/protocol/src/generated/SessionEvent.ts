@@ -65,4 +65,47 @@ summarised_messages: number,
 /**
  * The tokens the conversation may use: the window less room for the reply.
  */
-budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, };
+budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, } | { "type": "model_suggestion", 
+/**
+ * Names the suggestion in `session.suggestion_respond` and `model_suggestion_update`.
+ */
+id: string, 
+/**
+ * `local` (a general local model), `vision`, `tools`, `code`, or `context`.
+ */
+need: string, 
+/**
+ * The Hugging Face repository, `owner/name`.
+ */
+repo: string, 
+/**
+ * The GGUF quantisation chosen to fit this machine.
+ */
+quant: string, 
+/**
+ * What the session can switch to once it is downloaded, such as `llamacpp:Qwen3-4B-Q4_K_M`.
+ */
+model: string, 
+/**
+ * The download's size, a vision projector included.
+ */
+size_bytes: number, 
+/**
+ * How it would load here: `gpu`, `partial` (split with system memory), or `cpu`.
+ */
+fit: "gpu" | "partial" | "cpu", 
+/**
+ * Why it is suggested, in words for the user.
+ */
+reason: string, 
+/**
+ * The multimodal projector is downloaded too.
+ */
+mmproj: boolean, } | { "type": "model_suggestion_update", id: string, 
+/**
+ * `downloading` (with `job_id`; follow `models.download_progress`), `ready` (with
+ * `model`; switch with `session.control` `set_model`), `failed` or `cancelled` (with
+ * `message`), `dismissed` (not now), or `disabled` (don't ask again: suggestions are
+ * off).
+ */
+state: "downloading" | "ready" | "failed" | "cancelled" | "dismissed" | "disabled", job_id: string | null, model: string | null, message: string | null, };

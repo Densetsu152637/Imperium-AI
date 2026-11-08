@@ -41,8 +41,9 @@ The desktop app's Settings page reads and changes settings through the daemon:
   change is undone and reported as an error. Project files are never written. When an
   environment variable sets the key, the file is still written but the result says
   `overridden: true`, since the variable keeps winning.
-- The daemon reads its configuration once at start, so `restart: true` (every setting today)
-  means the change applies after a daemon restart, which the app offers.
+- The daemon reads its configuration once at start, so `restart: true` (nearly every setting)
+  means the change applies after a daemon restart, which the app offers. Settings with
+  `restart: false` (`models.suggest_downloads`) apply at once.
 
 Structured lists and maps (`endpoints`, `models.catalog`, `routing.rules`, `mcp.servers`,
 `projects`, `schedules`, `hooks`, `github.watch`, `media.speech`, `media.transcription`) are not
@@ -66,6 +67,8 @@ listed; edit them in the file.
 | `endpoints.<id>.pricing."<model>"` | none | `{ input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok? }`; models without prices report no cost |
 | `endpoints.<id>.kind` | `openai` | The API the endpoint speaks, choosing its model client: `openai` (OpenAI-compatible Chat Completions; an endpoint on this machine is also tried for llama.cpp's tokenizer) or `llamacpp` (the same, always using llama.cpp's tokenizer for [context breakdowns](03-agent-engine.md#context-management)) |
 | `models.folders` | none | Folders scanned for GGUF models (`llamacpp:<id>`) and Hugging Face folders (`vllm:<id>`); the `llamacpp` and `vllm` endpoint ids are reserved |
+| `models.suggest_downloads` | `true` | Sessions may offer to download a suitable local model from Hugging Face when the best available one is poor for the task ([model download suggestions](04-models-and-routing.md#model-download-suggestions)); applies without a restart, and a suggestion's "Don't ask again" sets it to `false` in the user file |
+| `models.suggestions` | six well-known GGUF repositories (Qwen3 4B and 14B, Qwen2.5-Coder 7B, Qwen3-Coder 30B-A3B, Gemma 3 4B and 12B) | `[[models.suggestions]]` rows suggestions choose from: `repo`, `capabilities` (`chat`, `code`, `tools`, `vision`), `size` (`small`, `medium`, `large`; default `small`), `context` (tokens), and `mmproj` (download the vision projector too); setting any row replaces the built-in list |
 | `models.download_dir` | first of `models.folders`, else `<data>/models` | Where [Hugging Face downloads](04-models-and-routing.md#downloading-from-hugging-face) go, as `<owner>/<repo>/` below it; must be absolute; scanned with `models.folders` |
 | `runtime.llamacpp.backend` | `auto` | Runtime pack: `auto`, `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` |
 | `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of a pack |

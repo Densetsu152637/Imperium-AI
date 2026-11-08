@@ -198,6 +198,45 @@ pub enum SessionEvent {
     /// A steering message joined the running turn: the model reads it, as a user message
     /// marked as steering, on its next call. The turn goes on; nothing was cancelled.
     Steered { id: String, text: String },
+    /// The daemon offers to download a local model better suited to what the session needs.
+    /// Nothing is downloaded unless the user accepts with `session.suggestion_respond`.
+    ModelSuggestion {
+        /// Names the suggestion in `session.suggestion_respond` and `model_suggestion_update`.
+        id: String,
+        /// `local` (a general local model), `vision`, `tools`, `code`, or `context`.
+        need: String,
+        /// The Hugging Face repository, `owner/name`.
+        repo: String,
+        /// The GGUF quantisation chosen to fit this machine.
+        quant: String,
+        /// What the session can switch to once it is downloaded, such as `llamacpp:Qwen3-4B-Q4_K_M`.
+        model: String,
+        /// The download's size, a vision projector included.
+        #[ts(type = "number")]
+        size_bytes: u64,
+        /// How it would load here: `gpu`, `partial` (split with system memory), or `cpu`.
+        #[ts(type = "\"gpu\" | \"partial\" | \"cpu\"")]
+        fit: String,
+        /// Why it is suggested, in words for the user.
+        reason: String,
+        /// The multimodal projector is downloaded too.
+        mmproj: bool,
+    },
+    /// What became of a model suggestion.
+    ModelSuggestionUpdate {
+        id: String,
+        /// `downloading` (with `job_id`; follow `models.download_progress`), `ready` (with
+        /// `model`; switch with `session.control` `set_model`), `failed` or `cancelled` (with
+        /// `message`), `dismissed` (not now), or `disabled` (don't ask again: suggestions are
+        /// off).
+        #[ts(
+            type = "\"downloading\" | \"ready\" | \"failed\" | \"cancelled\" | \"dismissed\" | \"disabled\""
+        )]
+        state: String,
+        job_id: Option<String>,
+        model: Option<String>,
+        message: Option<String>,
+    },
 }
 
 /// A message waiting for an agent.
