@@ -30,6 +30,9 @@ use tokio::sync::broadcast;
 
 use crate::state::{CreateError, DaemonState};
 use imperium_protocol::methods::{
+    ConfigDescribe, ConfigDescribeParams, ConfigSet, ConfigSetParams,
+};
+use imperium_protocol::methods::{
     HfFiles, ModelDownload, ModelDownloadCancel, ModelDownloadCancelParams,
     ModelDownloadCancelResult, ModelDownloads, ModelDownloadsParams, ModelDownloadsResult,
 };
@@ -165,6 +168,14 @@ impl Connection {
                 Ok(ShutdownResult {
                     pid: std::process::id(),
                 })
+            }),
+            ConfigDescribe::NAME => {
+                call::<ConfigDescribe>(request.params, |_: ConfigDescribeParams| {
+                    crate::config::describe(&self.state)
+                })
+            }
+            ConfigSet::NAME => call::<ConfigSet>(request.params, |params: ConfigSetParams| {
+                crate::config::set(&self.state, params)
             }),
             Ping::NAME => call::<Ping>(request.params, |_: PingParams| {
                 Ok(PingResult {
@@ -687,6 +698,63 @@ mod tests {
         assert_eq!(result["models"][0]["endpoint_configured"], true);
         assert_eq!(result["models"][1]["location"], "local");
         assert_eq!(result["models"][1]["endpoint_configured"], false);
+    }
+
+    fn result(handled: Handled) -> Value {
+        match handled.response.map(|response| response.outcome) {
+            Some(Outcome::Result(result)) => result,
+            other => panic!("expected a result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn settings_are_described_and_written_to_the_user_file() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let mut connection = Connection::new(DaemonState::new(paths.clone(), settings, None));
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+
+        let described =
+            result(connection.handle_text(&request(2, ConfigDescribe::NAME, json!({}))));
+        let entries = described["entries"].as_array().unwrap();
+        let fidget = entries
+            .iter()
+            .find(|entry| entry["key"] == "pets.fidget")
+            .unwrap();
+        assert_eq!(fidget["section"], "pets");
+        assert_eq!(fidget["kind"], "bool");
+        assert_eq!(fidget["default"], true);
+        assert_eq!(fidget["restart"], true);
+
+        let set = result(connection.handle_text(&request(
+            3,
+            ConfigSet::NAME,
+            json!({"key": "pets.fidget", "value": false}),
+        )));
+        assert_eq!(set["entry"]["value"], false);
+        assert_eq!(set["entry"]["source"], "user");
+        assert_eq!(set["restart"], true);
+        assert_eq!(set["overridden"], false);
+        let text = std::fs::read_to_string(paths.user_config_file()).unwrap();
+        assert!(text.contains("fidget = false"), "{text}");
+
+        let refused = connection.handle_text(&request(
+            4,
+            ConfigSet::NAME,
+            json!({"key": "pets.fidget", "value": "sometimes"}),
+        ));
+        assert_eq!(error_code(&refused), Some(codes::INVALID_PARAMS));
+        let unknown = connection.handle_text(&request(
+            5,
+            ConfigSet::NAME,
+            json!({"key": "endpoints.x.base_url", "value": "u"}),
+        ));
+        assert_eq!(error_code(&unknown), Some(codes::INVALID_PARAMS));
     }
 
     #[test]

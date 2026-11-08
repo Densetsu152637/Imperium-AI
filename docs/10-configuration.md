@@ -25,8 +25,28 @@ them.
 - `imperium config explain <key> [--project <dir>]` shows the effective value and the layer
   that set it (for example `set by environment variable IMPERIUM_DAEMON__PORT`).
 
-The desktop settings UI will edit the same files; every setting will have a schema entry
-(published as JSON Schema for editor completion).
+### Editing settings from the app
+
+The desktop app's Settings page reads and changes settings through the daemon:
+
+- `config.describe` lists every user-settable scalar and list setting (one table in
+  `imperium-config`, `registry.rs`) with its `key`, `section`, `label`, `description`, `kind`
+  (`bool`, `integer`, `number`, `string`, `path`, `path_list`, `string_list`, `enum` with
+  `options`, or `secret_ref`), `default`, effective `value`, the `source` layer that set it
+  (`default`, `user`, `project`, or `env`), and `restart`. A `secret_ref` shows the secret's
+  name only, never its value.
+- `config.set { key, value }` writes the value into the **user** config file (created when
+  missing), keeping its comments, formatting, and unknown keys; a `null` value removes the key so
+  the default applies. The whole configuration is then loaded and validated, and an invalid
+  change is undone and reported as an error. Project files are never written. When an
+  environment variable sets the key, the file is still written but the result says
+  `overridden: true`, since the variable keeps winning.
+- The daemon reads its configuration once at start, so `restart: true` (every setting today)
+  means the change applies after a daemon restart, which the app offers.
+
+Structured lists and maps (`endpoints`, `models.catalog`, `routing.rules`, `mcp.servers`,
+`projects`, `schedules`, `hooks`, `github.watch`, `media.speech`, `media.transcription`) are not
+listed; edit them in the file.
 
 ### Implemented settings
 

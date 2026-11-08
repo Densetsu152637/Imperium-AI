@@ -7,11 +7,16 @@
 
 mod layers;
 mod paths;
+mod registry;
 mod secrets;
 mod settings;
 
 pub use layers::{Config, ConfigError, Explained, Layer, Source, load};
 pub use paths::{Paths, PathsError};
+pub use registry::{
+    SETTINGS, SetError, SettingDef, SettingKind, SettingState, describe, describe_key,
+    set_user_setting, setting,
+};
 pub use secrets::{
     KeychainSecrets, MemorySecrets, SecretError, SecretName, SecretStore, delete_secret,
     load_secret, store_secret,
