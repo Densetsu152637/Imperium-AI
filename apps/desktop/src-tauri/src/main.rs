@@ -10,12 +10,19 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(daemon::DaemonControl::default())
         .setup(|app| {
             update::setup(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             daemon::daemon_endpoint,
+            daemon::daemon_status,
+            daemon::daemon_start,
+            daemon::daemon_stop,
+            daemon::daemon_restart,
+            daemon::daemon_log,
+            daemon::daemon_set_keep_running,
             update::update_status,
             update::update_check,
             update::update_set_channel,
@@ -26,6 +33,7 @@ fn main() {
         .expect("the Imperium window could not start")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                daemon::on_exit(app);
                 update::install_on_exit(app);
             }
         });

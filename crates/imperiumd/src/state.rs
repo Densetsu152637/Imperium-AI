@@ -67,6 +67,8 @@ pub struct DaemonState {
     phone_address: OnceLock<std::net::SocketAddr>,
     /// Pull requests sessions watch: session id to (repo, number).
     watches: Mutex<HashMap<String, (String, u64)>>,
+    /// Signalled when a client asks the daemon to stop.
+    shutdown: tokio::sync::Notify,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +113,7 @@ impl DaemonState {
             devices,
             phone_address: OnceLock::new(),
             watches: Mutex::new(HashMap::new()),
+            shutdown: tokio::sync::Notify::new(),
         })
     }
 
@@ -439,6 +442,16 @@ impl DaemonState {
     /// Uses `hub` instead of the environment's, such as a local fake in tests. Call once.
     pub fn use_hub(&self, hub: imperium_local::hf::Hub) {
         let _ = self.hub.set(hub);
+    }
+
+    /// Asks the daemon to stop; `main` waits on [`Self::shutdown_requested`].
+    pub fn request_shutdown(&self) {
+        self.shutdown.notify_one();
+    }
+
+    /// Completes when a client has asked the daemon to stop.
+    pub async fn shutdown_requested(&self) {
+        self.shutdown.notified().await;
     }
 
     pub fn uptime_ms(&self) -> u64 {

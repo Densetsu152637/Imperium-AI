@@ -82,12 +82,14 @@ async fn run() -> anyhow::Result<()> {
     daemon.start_project_agents();
     daemon.start_scheduler();
     daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));
-    let server = tokio::spawn(imperiumd::serve(listener, token, daemon, async {
+    let server = tokio::spawn(imperiumd::serve(listener, token, daemon.clone(), async {
         stopped.await.ok();
     }));
-    tokio::signal::ctrl_c()
-        .await
-        .context("could not listen for Ctrl+C")?;
+    // Ctrl+C, or a client's `system.shutdown` (the desktop app's Stop, `imperium daemon stop`).
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => signal.context("could not listen for Ctrl+C")?,
+        () = daemon.shutdown_requested() => {}
+    }
     tracing::info!("shutting down");
     stop.send(()).ok();
     // Open WebSocket connections can hold graceful shutdown; stop waiting after a grace period.

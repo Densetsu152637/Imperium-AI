@@ -176,7 +176,7 @@ pub fn install_on_exit<R: Runtime>(app: &AppHandle<R>) {
     };
     let ready = updater.inner.lock().expect("updater state").ready.take();
     if let Some((update, bytes)) = ready {
-        crate::daemon::stop_bundled();
+        crate::daemon::stop_bundled_blocking(app);
         let _ = update.restart_after_install(false).install(bytes);
     }
 }
@@ -330,11 +330,10 @@ pub fn update_set_channel<R: Runtime>(
 
 /// Installs the downloaded update and starts the new version.
 #[tauri::command]
-pub fn update_restart<R: Runtime>(
-    app: AppHandle<R>,
-    updater: tauri::State<'_, Updater>,
-) -> Result<(), String> {
-    install_and_restart(&app, &updater)
+pub async fn update_restart<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    // The new version starts its own daemon.
+    crate::daemon::stop_bundled(&app).await;
+    install_and_restart(&app, &app.state::<Updater>())
 }
 
 /// Checks the channel now and, when it offers a newer build, downloads and installs it and
@@ -345,7 +344,10 @@ pub async fn update_install_now<R: Runtime>(app: AppHandle<R>) -> Result<UpdateS
     let updater = app.state::<Updater>();
     let status = updater.status(&app);
     match status.state {
-        UpdateState::Ready { .. } => install_and_restart(&app, &updater).map(|()| status),
+        UpdateState::Ready { .. } => {
+            crate::daemon::stop_bundled(&app).await;
+            install_and_restart(&app, &updater).map(|()| status)
+        }
         UpdateState::Failed { message } => Err(message),
         _ => Ok(status),
     }
@@ -356,9 +358,7 @@ fn install_and_restart<R: Runtime>(app: &AppHandle<R>, updater: &Updater) -> Res
     let Some((update, bytes)) = ready else {
         return Err("No update has been downloaded.".into());
     };
-    // The new version starts its own daemon. On Windows the installer takes over here and
-    // starts the new version itself.
-    crate::daemon::stop_bundled();
+    // On Windows the installer takes over here and starts the new version itself.
     update.install(bytes).map_err(|error| error.to_string())?;
     app.restart()
 }

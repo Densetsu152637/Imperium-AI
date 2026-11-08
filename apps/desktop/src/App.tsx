@@ -39,6 +39,7 @@ import { normalizeProject, useProjectIcons } from "./projectIcons";
 import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
 import { applySettings, loadSettings, saveSettings, type DisplaySettings } from "./settings";
 import { SettingsMenu } from "./SettingsMenu";
+import { type Daemon, useDaemon } from "./DaemonControl";
 import { UpdateControl, useUpdates } from "./UpdateControl";
 
 type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
@@ -174,6 +175,7 @@ export function App() {
       }
     }
   }, [modBus]);
+  const daemon = useDaemon(() => void connect(), status.kind === "connected");
 
   useEffect(() => {
     void connect();
@@ -313,10 +315,16 @@ export function App() {
         </button>
       </header>
       {showSettings && (
-        <SettingsMenu settings={settings} onChange={updateSettings} updates={updates} onClose={() => setShowSettings(false)} />
+        <SettingsMenu
+          settings={settings}
+          onChange={updateSettings}
+          updates={updates}
+          daemon={daemon}
+          onClose={() => setShowSettings(false)}
+        />
       )}
       {status.kind === "failed" ? (
-        <ConnectScreen message={status.message} onConnect={connect} />
+        <ConnectScreen message={status.message} onConnect={connect} daemon={daemon} />
       ) : (
         <main className="workspace">
           <Columns
@@ -436,7 +444,15 @@ export function App() {
   );
 }
 
-function ConnectScreen({ message, onConnect }: { message: string; onConnect: (connection?: DaemonConnection) => void }) {
+function ConnectScreen({
+  message,
+  onConnect,
+  daemon,
+}: {
+  message: string;
+  onConnect: (connection?: DaemonConnection) => void;
+  daemon: Daemon | null;
+}) {
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
   return (
@@ -444,10 +460,19 @@ function ConnectScreen({ message, onConnect }: { message: string; onConnect: (co
       <div className="connect-card">
         <h1>Not connected to imperiumd</h1>
         <p>{message}</p>
-        <p className="muted">
-          Start the daemon with <code>imperiumd</code>
-          {insideTauri() ? ", then retry." : ". In a browser, paste the url and token from its daemon.json."}
-        </p>
+        {daemon?.status.can_start ? (
+          <>
+            {daemon.error && <p className="error">{daemon.error}</p>}
+            <button className="primary" onClick={() => daemon.run("start")} disabled={daemon.busy !== null}>
+              {daemon.busy ? "Starting…" : "Start imperiumd"}
+            </button>
+          </>
+        ) : (
+          <p className="muted">
+            Start the daemon with <code>imperiumd</code>
+            {insideTauri() ? ", then retry." : ". In a browser, paste the url and token from its daemon.json."}
+          </p>
+        )}
         {!insideTauri() && (
           <form
             onSubmit={(event) => {

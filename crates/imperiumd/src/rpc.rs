@@ -20,7 +20,7 @@ use imperium_protocol::methods::{
     ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionCreate,
     SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
     SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe,
-    SessionSubscribeParams, SessionSubscribeResult,
+    SessionSubscribeParams, SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -159,6 +159,13 @@ impl Connection {
                     Ok(PhoneRevokeResult { found })
                 })
             }
+            Shutdown::NAME => call::<Shutdown>(request.params, |_: ShutdownParams| {
+                tracing::info!("a client asked imperiumd to stop");
+                self.state.request_shutdown();
+                Ok(ShutdownResult {
+                    pid: std::process::id(),
+                })
+            }),
             Ping::NAME => call::<Ping>(request.params, |_: PingParams| {
                 Ok(PingResult {
                     uptime_ms: self.state.uptime_ms(),
@@ -570,6 +577,20 @@ mod tests {
         let mut connection = handshaken();
         let ping = connection.handle_text(&request(2, Ping::NAME, Value::Null));
         assert_eq!(error_code(&ping), None, "{:?}", ping.response);
+    }
+
+    #[tokio::test]
+    async fn shutdown_replies_then_signals_the_daemon() {
+        let mut connection = handshaken();
+        let state = connection.state.clone();
+        let stopped = connection.handle_text(&request(2, Shutdown::NAME, Value::Null));
+        assert_eq!(error_code(&stopped), None, "{:?}", stopped.response);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            state.shutdown_requested(),
+        )
+        .await
+        .expect("the daemon is asked to stop");
     }
 
     #[test]

@@ -1350,6 +1350,8 @@ button.danger:hover:not(:disabled) {
   border-radius: var(--radius);
   box-shadow: var(--highlight), var(--shadow);
   animation: rise-in var(--slow) var(--ease);
+  max-height: calc(100vh - 4.5rem);
+  overflow-y: auto;
 }
 
 .settings-menu > button {
@@ -1382,17 +1384,74 @@ button.danger:hover:not(:disabled) {
   color: var(--muted);
 }
 
-.update-settings {
+.update-settings,
+.daemon-settings {
   padding-top: calc(var(--space) * 1.5);
   border-top: 1px solid var(--border);
 }
 
-.update-settings legend {
+.update-settings legend,
+.daemon-settings legend {
   font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
+}
+
+/* Daemon: a status line with a light, the actions, and an optional log tail. */
+.daemon-state {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.daemon-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.daemon-state[data-running="true"] .daemon-dot {
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+}
+
+.daemon-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space);
+}
+
+.daemon-settings .checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.daemon-log pre {
+  max-height: 14rem;
+  overflow: auto;
+  margin: 0.3rem 0 0;
+  padding: 0.5rem;
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.daemon-log-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
 }
 
 .update-channels {

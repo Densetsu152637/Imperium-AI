@@ -2200,7 +2200,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
- "futures-util",
+ "imperium-client",
  "imperium-config",
  "imperium-local",
  "imperium-memory",
@@ -2212,10 +2212,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
+ "toml 1.2.1+spec-1.1.0",
+]
+
+[[package]]
+name = "imperium-client"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "imperium-protocol",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.30.0",
- "toml 1.2.1+spec-1.1.0",
 ]
 
 [[package]]
@@ -2263,6 +2273,7 @@ dependencies = [
 name = "imperium-desktop"
 version = "0.1.0"
 dependencies = [
+ "imperium-client",
  "imperium-config",
  "imperium-protocol",
  "reqwest",
