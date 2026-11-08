@@ -303,7 +303,7 @@ wait, or join the running turn when the user asks.
 
 `imperium chat` reads input while a turn runs: a line typed then is queued, `/steer <text>`
 steers, and `/queue` lists the queue. The desktop composer stays enabled while the agent works
-([07](07-desktop-ui.md#projects-and-sessions-implemented)).
+([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
 ## Persistence
 
