@@ -17,7 +17,9 @@ is fed by every session's and subagent's status events (never transcript text) a
 `pet.state` to every client with the start time, so all clients draw in phase. The desktop's
 Pet panel draws the strip frame by frame with nearest-neighbour scaling (first frame only with
 reduced motion) and pats the pet on click (`pet.interact`); `pet.list` and `pet.strip` serve
-the metadata and strips. Pets are found in `pets.folders`, `<config>/pets`, `~/.claude/pets`,
+the metadata (with each pet's drawn animations and raw `pet.json`) and strips; both work with
+`pets.enabled` off (`pet.list` then has no `selected` or `state`, and `pet.strip` takes a
+`pet_id`, defaulting to the selected pet). Pets are found in `pets.folders`, `<config>/pets`, `~/.claude/pets`,
 and a `pets/` folder next to the daemon; Pixel Clawd ships in the repository's `pets/` with the
 Pixel Pets licence and notice. Not yet: the `look` glance, the `imperium` bindings, WASM
 behaviours, scopes other than global, the floating overlay, TUI drawing, `pet.install`/

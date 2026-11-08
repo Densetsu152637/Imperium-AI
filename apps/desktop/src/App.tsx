@@ -44,8 +44,8 @@ import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { normalizeProject, useProjectIcons } from "./projectIcons";
-import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
-import { applySettings, loadSettings, saveSettings, SettingsContext, type AppSettings } from "./settings";
+import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, snapshotSessions, type SessionState } from "./sessions";
+import { applySettings, loadSettings, modEnabled, saveSettings, SettingsContext, type AppSettings } from "./settings";
 import { SettingsWindow } from "./SettingsWindow";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
 import { getDoc, setDoc, subscribeDoc } from "./store";
@@ -267,6 +267,10 @@ export function App() {
   const allSessions = useMemo(() => Object.values(sessions), [sessions]);
   const session = selected ? (sessions[selected] ?? null) : null;
   const client = status.kind === "connected" ? status.client : null;
+  const modHost = useMemo(
+    () => ({ sessions: snapshotSessions(allSessions), selected, client }),
+    [allSessions, selected, client],
+  );
 
   const report = (error: unknown) =>
     window.alert(error instanceof Error ? error.message : String(error));
@@ -489,11 +493,11 @@ export function App() {
     },
     { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
     { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },
-    ...(mods?.mods ?? []).flatMap((mod) =>
+    ...(mods?.mods ?? []).filter((mod) => modEnabled(settings, mod)).flatMap((mod) =>
       mod.panels.map((panel) => ({
         id: `mod:${mod.id}:${panel.id}`,
         title: panel.title,
-        body: <ModFrame mod={mod} panelId={panel.id} bus={modBus} />,
+        body: <ModFrame mod={mod} panelId={panel.id} bus={modBus} host={modHost} />,
       })),
     ),
   ];
@@ -594,6 +598,7 @@ export function App() {
           updates={updates}
           daemon={daemon}
           client={client}
+          mods={mods}
           panels={PANELS}
           hidden={hidden}
           detached={Object.keys(detached)}

@@ -10,9 +10,9 @@ import { emit, listen } from "@tauri-apps/api/event";
 
 import { insideTauri } from "./daemon/connection";
 
-export type DocName = "settings" | "layout" | "cache";
+export type DocName = "settings" | "layout" | "cache" | "mods";
 
-const NAMES: DocName[] = ["settings", "layout", "cache"];
+const NAMES: DocName[] = ["settings", "layout", "cache", "mods"];
 const WRITE_DELAY_MS = 300;
 
 const DOC_EVENT = "imperium://doc";

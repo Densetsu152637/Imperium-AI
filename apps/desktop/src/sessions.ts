@@ -11,6 +11,7 @@ import type {
   TokenCountMethod,
   TokenUsage,
 } from "@imperium/protocol";
+import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
 export const ROOT = "root";
 
@@ -342,3 +343,32 @@ export function totals(calls: ModelCall[]): Totals {
 
 export const formatCost = (usd: number | null): string => (usd === null ? "—" : `$${usd.toFixed(4)}`);
 export const formatCount = (n: number): string => n.toLocaleString();
+
+/** What mods (`sessions:read`) see of each session: its agents and what each is doing now. */
+export function snapshotSessions(sessions: SessionState[]): SessionSnapshot[] {
+  return sessions.map((session) => {
+    const waiting = (agentId: string) =>
+      session.entries.some((entry) => entry.kind === "permission" && entry.agentId === agentId && !entry.answered);
+    const rootStatus: AgentSnapshot["status"] = waiting(ROOT)
+      ? "waiting"
+      : session.busy || session.status === "working"
+        ? "working"
+        : "idle";
+    const agents: AgentSnapshot[] = [{ agentId: ROOT, parentId: null, brief: "", status: rootStatus }];
+    for (const task of Object.values(session.tasks)) {
+      agents.push({
+        agentId: task.taskId,
+        parentId: ROOT,
+        brief: task.brief,
+        status: task.status === "running" ? (waiting(task.taskId) ? "waiting" : "working") : task.status,
+      });
+    }
+    return {
+      sessionId: session.summary.session_id,
+      title: sessionTitle(session),
+      projectDir: session.summary.project_dir,
+      status: session.status,
+      agents,
+    };
+  });
+}

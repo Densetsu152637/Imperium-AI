@@ -34,6 +34,8 @@ export type AppSettings = {
   // Startup
   restoreSession: boolean;
   autoStartDaemon: boolean;
+  // Mods: by id; a mod without an entry is on only if the user installed it (not bundled).
+  enabledMods: Record<string, boolean>;
 };
 
 /** The settings each display control used to be called. */
@@ -57,6 +59,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   titleBadge: true,
   restoreSession: true,
   autoStartDaemon: true,
+  enabledMods: {},
 };
 
 /** The saved document: the settings plus a version for future migrations. */
@@ -77,6 +80,11 @@ export function loadSettings(): AppSettings {
 export function saveSettings(settings: AppSettings): void {
   // Keep fields this version does not know, so a downgrade then upgrade loses nothing.
   setDoc("settings", { ...getDoc<Saved>("settings"), ...settings, version: VERSION });
+}
+
+/** Whether a mod's panels show: the user's choice, else on for installed mods and off for bundled ones. */
+export function modEnabled(settings: AppSettings, mod: { id: string; bundled: boolean }): boolean {
+  return settings.enabledMods[mod.id] ?? !mod.bundled;
 }
 
 const DENSITY_SPACE: Record<Density, number> = { compact: 0.7, comfortable: 1, spacious: 1.35 };

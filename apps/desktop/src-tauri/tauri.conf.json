@@ -5,9 +5,9 @@
   "mainBinaryName": "imperium-desktop",
   "identifier": "io.github.densetsu152637.imperium",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm -w -r --filter \"./mods/**\" --if-present run build && pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "pnpm -w -r --filter \"./mods/**\" --if-present run build && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -37,7 +37,8 @@
     "createUpdaterArtifacts": false,
     "resources": {
       "../../../policy/": "policy/",
-      "../../../pets/": "pets/"
+      "../../../pets/": "pets/",
+      "../../../mods/": "mods/"
     },
     "windows": {
       "nsis": {

@@ -100,7 +100,25 @@ inside the frame the bare import resolves through an import map, so both bundled
 mods work. The context offers `telemetry.subscribe("call.completed", ...)` (permission
 `telemetry:read`), `sessions.subscribe(...)` (raw session events, `sessions:read`), and
 `panel(id).render(html | node)`; the app forwards only the events a mod's permissions allow.
-Theme tokens are copied into the frame. An example lives in
+Theme tokens are copied into the frame.
+
+Beyond pushed events, a frame asks the app for data with request/response messages (`request`
+`{id, method, params}` answered by `response` `{id, result}` or `{id, error}`); the app answers
+only the window of that frame, and only for methods the mod's permissions cover.
+`sessions:read` adds `sessions.list()` (snapshots of every session and its agents, with each
+agent's status), `sessions.selected()`, and `sessions.onChange(...)`, which the app pushes at most
+every 250 ms. `pets:read` adds `pets.list()` (installed Pixel Pets packages, whether or not the
+daemon's own pet is on) and `pets.strip(petId, animation)` (a `data:image/png` URL, served by the
+daemon from the pet's own `strips/` folder). `storage` adds `storage.get(key)` and
+`storage.set(key, value)`: JSON values kept per mod in the app's `mods` document, with keys up to
+128 characters and at most 256 KiB per mod (setting `undefined` removes a key).
+
+Mods shipped with Imperium live in its `mods/` folder (bundled into the app, or the source tree
+when developing) and are listed after the installed ones; a mod installed in `<config>/mods`
+with the same id wins. `mods.list` marks them `bundled`. **Bundled mods are opt-in:** their
+panels show only after the user turns them on in Settings → Mods (installed mods are on until
+turned off). That section also lists each mod's version, permissions, panels, and load problems.
+An example lives in
 `examples/mods/tokens-per-dollar/`. Other contribution points, install and update commands,
 permission prompts at install, and trusted main-context mods are later work.
 

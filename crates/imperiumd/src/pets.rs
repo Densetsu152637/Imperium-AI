@@ -31,19 +31,7 @@ impl PetEngine {
         if !settings.enabled {
             return None;
         }
-        let mut folders: Vec<PathBuf> = settings.folders.clone();
-        folders.push(daemon.config_dir().join("pets"));
-        // Pets made for the Claude Code plugin, and the pets bundled with Imperium.
-        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-            folders.push(PathBuf::from(home).join(".claude").join("pets"));
-        }
-        if let Some(bundled) = crate::state::bundled_dirs("pets")
-            .into_iter()
-            .find(|dir| dir.is_dir())
-        {
-            folders.push(bundled);
-        }
-        let (pets, problems) = discover(&folders);
+        let (pets, problems) = discover_installed(daemon);
         for problem in problems {
             tracing::warn!(%problem, "pet skipped");
         }
@@ -79,18 +67,7 @@ impl PetEngine {
     }
 
     pub fn pets(&self) -> Vec<PetInfo> {
-        self.pets
-            .iter()
-            .map(|pet| PetInfo {
-                id: pet.id.clone(),
-                display_name: pet.display_name.clone(),
-                description: pet.description.clone(),
-                author: pet.author.clone(),
-                license: pet.license.clone(),
-                cell_width: pet.cell_width,
-                cell_height: pet.cell_height,
-            })
-            .collect()
+        self.pets.iter().map(pet_info).collect()
     }
 
     pub fn selected(&self) -> &str {
@@ -104,10 +81,9 @@ impl PetEngine {
             .clone()
     }
 
-    /// The selected pet's strip PNG for an animation it draws.
-    pub fn strip(&self, animation: &str) -> Option<Vec<u8>> {
-        let pet = self.pets.iter().find(|pet| pet.id == self.selected)?;
-        std::fs::read(pet.strip(animation)?).ok()
+    /// A strip PNG for an animation the pet draws; the selected pet when `pet_id` is `None`.
+    pub fn strip(&self, pet_id: Option<&str>, animation: &str) -> Option<Vec<u8>> {
+        strip_of(&self.pets, pet_id.unwrap_or(&self.selected), animation)
     }
 
     pub fn report(&self, source: String, event: PetEvent) {
@@ -138,6 +114,47 @@ impl PetEngine {
             }
         });
     }
+}
+
+/// Every loadable pet and the problems found, from the folders pets may be installed in. This
+/// works whether or not the daemon's own pet is on, so clients (and mods) can list pets anyway.
+pub fn discover_installed(daemon: &DaemonState) -> (Vec<Pet>, Vec<String>) {
+    let mut folders: Vec<PathBuf> = daemon.settings().pets.folders.clone();
+    folders.push(daemon.config_dir().join("pets"));
+    // Pets made for the Claude Code plugin, and the pets bundled with Imperium.
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        folders.push(PathBuf::from(home).join(".claude").join("pets"));
+    }
+    if let Some(bundled) = crate::state::bundled_dirs("pets")
+        .into_iter()
+        .find(|dir| dir.is_dir())
+    {
+        folders.push(bundled);
+    }
+    discover(&folders)
+}
+
+/// A pet as `pet.list` describes it, with its raw `pet.json` (empty if it cannot be read now).
+pub fn pet_info(pet: &Pet) -> PetInfo {
+    PetInfo {
+        id: pet.id.clone(),
+        display_name: pet.display_name.clone(),
+        description: pet.description.clone(),
+        author: pet.author.clone(),
+        license: pet.license.clone(),
+        cell_width: pet.cell_width,
+        cell_height: pet.cell_height,
+        drawn: pet.drawn.clone(),
+        pet_json: std::fs::read_to_string(pet.dir.join("pet.json")).unwrap_or_default(),
+    }
+}
+
+/// The strip PNG of a pet in `pets` for an animation it draws. `Pet::strip` keeps the path
+/// inside the pet's own `strips/` folder, and ids or animations that are not known names find
+/// nothing.
+pub fn strip_of(pets: &[Pet], pet_id: &str, animation: &str) -> Option<Vec<u8>> {
+    let pet = pets.iter().find(|pet| pet.id == pet_id)?;
+    std::fs::read(pet.strip(animation)?).ok()
 }
 
 /// How agent activity maps onto the pet (docs/16-pets.md#event-mapping).
