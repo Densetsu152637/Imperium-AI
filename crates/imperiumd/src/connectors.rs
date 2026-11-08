@@ -376,11 +376,11 @@ pub fn remove(
 // ---- mcp.test ----
 
 /// `mcp.test`: connects to the server as a session would, lists its tools, then stops it.
-pub fn test(
+pub async fn test(
     state: Arc<DaemonState>,
     params: McpTestParams,
-) -> impl Future<Output = Result<McpStatus, ErrorObject>> + Send + 'static {
-    async move {
+) -> Result<McpStatus, ErrorObject> {
+    {
         let settings = current(&state)?;
         let server = settings
             .mcp
