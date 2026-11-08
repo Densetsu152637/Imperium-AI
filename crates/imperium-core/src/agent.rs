@@ -99,7 +99,7 @@ impl Agent {
         role: String,
     ) -> Self {
         let root = shared.workspace.root_display();
-        let system = if can_delegate {
+        let mut system = if can_delegate {
             format!(
                 "You are Imperium, a coding agent working in the project folder {root}. Use the \
                  tools to inspect and change files and to run commands; paths are relative to the \
@@ -121,6 +121,15 @@ impl Agent {
                  arrived while you were working: take it into account and carry on."
             )
         };
+        // An environment's further folders are also open to the tools, by absolute path.
+        let others = shared.workspace.folders_display().split_off(1);
+        if !others.is_empty() {
+            system.push_str(&format!(
+                " The environment also includes these folders, which the tools accept by \
+                 absolute path: {}.",
+                others.join(", ")
+            ));
+        }
         // Each part is kept with its label, so context breakdowns count them separately.
         let mut parts = vec![(Category::SystemBase, system)];
         if !shared.extensions.skills.is_empty() {

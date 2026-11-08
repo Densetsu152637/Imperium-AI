@@ -38,7 +38,7 @@ pub async fn run_command(
 ) -> Result<String, ToolError> {
     let child = workspace
         .sandbox()
-        .command(workspace.root(), command)?
+        .command(&workspace.roots(), command)?
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

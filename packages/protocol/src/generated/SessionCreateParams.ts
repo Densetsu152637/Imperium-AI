@@ -2,10 +2,17 @@
 
 export type SessionCreateParams = { 
 /**
- * Absolute path of the project folder the session works in.
+ * The environment the session works in: its folders are the sandbox, the first is the
+ * working directory. Give this or `project_dir`.
  */
-project_dir: string, 
+environment_id?: string, 
 /**
- * `<endpoint>:<model>`; defaults to `models.default` from the configuration.
+ * Absolute path of a folder to work in, for clients that predate environments. It maps to
+ * the environment whose first folder it is, created (named after the folder) if needed.
+ */
+project_dir?: string, 
+/**
+ * A model table id or `<endpoint>:<model>`; defaults to `models.default` from the
+ * configuration.
  */
 model?: string, };

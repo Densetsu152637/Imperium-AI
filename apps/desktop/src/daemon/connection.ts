@@ -28,12 +28,12 @@ export function rememberDevConnection(connection: DaemonConnection): void {
   }
 }
 
-/** Asks for a project folder: a native picker in Tauri, a text prompt in a browser. */
-export async function pickFolder(): Promise<string | null> {
+/** Asks for a folder: a native picker in Tauri, a text prompt in a browser. */
+export async function pickFolder(title = "Add folder"): Promise<string | null> {
   if (insideTauri()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const chosen = await open({ directory: true, multiple: false, title: "Open project folder" });
+    const chosen = await open({ directory: true, multiple: false, title });
     return typeof chosen === "string" ? chosen : null;
   }
-  return window.prompt("Project folder (absolute path)")?.trim() || null;
+  return window.prompt(`${title} (absolute path)`)?.trim() || null;
 }

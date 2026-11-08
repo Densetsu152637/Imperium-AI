@@ -83,28 +83,28 @@ layout of panels, and every panel — including the built-in ones — is customi
 
 ```text
 ┌────────────────────┬──────────────────────────────────────────────────────┐
-│ Projects           │ Session: <name>                                      │
-│ (environments)     │ ┌──────────────────────────────────────────────────┐ │
+│ Environments       │ Session: <name>                                      │
+│ (and folders)      │ ┌──────────────────────────────────────────────────┐ │
 │                    │ │ Environment · model · isolation tier · budget    │ │
 │ stackable          │ ├──────────────────────────────────────────────────┤ │
 ├────────────────────┤ │ Conversation and plan                            │ │
 │ Sessions           │ │                                                  │ │
 │ (of the selected   │ ├────────────────┬─────────────────┬───────────────┤ │
-│  project)          │ │ Context        │ Outputs         │ Worktrees     │ │
+│  environment)      │ │ Context        │ Outputs         │ Worktrees     │ │
 │                    │ │ breakdown      │ (artefacts)     │               │ │
 │ stackable          │ └────────────────┴─────────────────┴───────────────┘ │
 │                    │ spans full height                                    │
 └────────────────────┴──────────────────────────────────────────────────────┘
 ```
 
-- **Projects panel** (top left): projects / environments, their location (local, container,
-  SSH host), project-agent status, and schedules.
-- **Sessions panel** (bottom left): sessions in the selected project, with status, cost, and
-  pending approvals.
+- **Environments panel** (top left): environments and their folders; planned: their location
+  (local, container, SSH host), project-agent status, and schedules.
+- **Sessions panel** (bottom left): sessions in the selected environment, with status, cost,
+  and pending approvals.
 - **Main session panel** (middle, full height): the selected session. It is built from
   sections — environment header, conversation and plan, context breakdown (tokens by system
   prompt, tools, workflow context, memories, and conversation against the window size; see
-  [context breakdown](#projects-and-sessions-implemented)), outputs, and worktrees —
+  [context breakdown](#environments-and-sessions-implemented)), outputs, and worktrees —
   each of which is itself a movable, replaceable module.
 
 Wide screens add further columns (agent tree, telemetry, terminal, browser) through layout
@@ -198,22 +198,38 @@ every setting:
   the daemon restarts; the window offers the restart.
 - **Data and storage** shows where everything is kept and resets app settings or the layout.
 
-App settings, the layout (panel sizes, closed panels, the selected project and session, opened
-folders), and the last-known sessions are files in `desktop/` inside Imperium's config folder,
-beside the daemon's `config.toml`, so they persist across updates and reinstalls. The workspace
-is always shown: while the daemon is away, a bar above it offers to start or reach it and the
-lists show the sessions as last seen.
+App settings, the layout (panel sizes, closed panels, the selected environment and session),
+and the last-known sessions are files in `desktop/` inside Imperium's config folder, beside the
+daemon's `config.toml`, so they persist across updates and reinstalls. The workspace is always
+shown: while the daemon is away, a bar above it offers to start or reach it and the lists show
+the sessions as last seen.
 
-## Projects and sessions (implemented)
+## Environments and sessions (implemented)
 
-Each project has an icon: a glyph on a coloured tile, chosen from the path by default and
-changeable by clicking it in the Projects panel (choices are kept per viewer). The Sessions
-panel lists every session across projects, each with its project's icon to the left of its
-title and a status badge (idle, working, needs attention, paused with its resume time,
-watching with its pull request, merged); sessions needing attention sort first. Clicking a
-session's icon opens that project's view, which lists only its sessions, with *All sessions*
-to return; clicking the row opens the session. The session header shows the status and the
-*Usage limits* controls (how to wait when usage runs out, and *Resume now* while paused).
+The Environments panel lists the daemon's
+[environments](14-projects-and-automation.md#environments-implemented). *New environment* asks
+for a name, creates it, and opens the folder picker for its first folder. Selecting an
+environment shows its folders (the first marked as the working directory when there are
+several) with *×* to remove one, and *Add folder* (the native folder picker), *Rename*, and
+*Delete* (asks once more; folders on disk are untouched). Each environment has an icon: a glyph
+on a coloured tile, derived from its id by default and changeable by clicking it; the choice is
+stored with the environment in the daemon. The first time the app connects after environments
+arrived, every project folder it knew (opened folders, the selected project, folders of running
+sessions) becomes an environment of its own, keeping the icon it had.
+
+*New session* (in the Sessions panel's header) starts a session in the selected environment;
+it is disabled, with the reason as its tooltip, while disconnected, with no environment
+selected, or when the environment has no folders. The model list beside it picks the session's
+model (*Default model* uses `models.default`); when no default is configured, starting with
+*Default model* shows the daemon's explanation above the list instead of failing silently.
+
+The Sessions panel lists every session across environments, each with its environment's icon
+to the left of its title and a status badge (idle, working, needs attention, paused with its
+resume time, watching with its pull request, merged); sessions needing attention sort first.
+Clicking a session's icon (or an environment) opens that environment's view, which lists only
+its sessions, with *All sessions* to return; clicking the row opens the session and selects its
+environment. The session header shows the status and the *Usage limits* controls (how to wait
+when usage runs out, and *Resume now* while paused).
 
 **Model picker (implemented):** among the header's environment pills, the session's model is a
 picker listing the model table (`models.list`; rows whose endpoint is not configured are shown
