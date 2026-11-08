@@ -139,5 +139,8 @@ no update feed).
   pull requests. The maintainer's explicit go-ahead is the approval, and the maintainer merges
   or authorises the merge.
 
-The `experimental` branch exists (created 2026-11-08) and is not protected; every push to it
-publishes an experimental release.
+`experimental` is the default branch (since 2026-11-08), so pull requests target it; every
+merge into it publishes an experimental release. `main` only takes `experimental`: the
+`source branch` job (part of `CI gate`) fails any pull request into `main` from another branch.
+Promoting is a pull request from `experimental` into `main`, then a `vX.Y.Z` tag on `main` for a
+main release.
