@@ -1356,6 +1356,34 @@ button.danger:hover:not(:disabled) {
   align-self: flex-end;
 }
 
+/* Updates: the version button carries the channel; the menu sits under it. */
+.update-version {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+}
+
+.channel-tag {
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.update-menu .row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space);
+}
+
+.update-state {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
 .setting {
   display: flex;
   flex-direction: column;

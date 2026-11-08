@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Replace the rolling "experimental" pre-release with dist/: publish-experimental.sh <sha>
+# Publish dist/ as an experimental pre-release: publish-experimental.sh <version> <sha>
 set -euo pipefail
 
-sha="$1"
+version="$1" sha="$2"
+tag="v$version"
+bash scripts/ci/updater-manifest.sh "$version" "$tag"
 (cd dist && sha256sum -- * > SHA256SUMS)
 
-gh release delete experimental --yes --cleanup-tag || true
-gh release create experimental dist/* --target "$sha" --prerelease --latest=false \
-  --title "Experimental build" \
-  --notes "Rolling experimental build of $sha. May be unstable; unsigned unless signing secrets are configured."
+gh release create "$tag" dist/* --target "$sha" --prerelease --latest=false \
+  --title "$tag (experimental)" \
+  --notes "Experimental build of \`experimental\` at $sha. May be unstable. Installs on the experimental update channel update to the next experimental build automatically."

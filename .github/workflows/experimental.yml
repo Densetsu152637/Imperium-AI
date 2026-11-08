@@ -1,8 +1,6 @@
 name: Experimental
 
 on:
-  schedule:
-    - cron: "0 3 * * *"
   push:
     branches: [experimental]
   workflow_dispatch:
@@ -12,14 +10,13 @@ permissions:
 
 concurrency:
   group: experimental
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      build: ${{ steps.prepare.outputs.build }}
       version: ${{ steps.prepare.outputs.version }}
       sha: ${{ steps.prepare.outputs.sha }}
     steps:
@@ -27,11 +24,10 @@ jobs:
         with:
           persist-credentials: false
       - id: prepare
-        run: bash scripts/ci/experimental-prepare.sh "$GITHUB_EVENT_NAME"
+        run: bash scripts/ci/experimental-prepare.sh
 
   build:
     needs: prepare
-    if: needs.prepare.outputs.build == 'true'
     uses: ./.github/workflows/build.yml
     with:
       channel: experimental
@@ -55,5 +51,6 @@ jobs:
           merge-multiple: true
       - env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
           SHA: ${{ needs.prepare.outputs.sha }}
-        run: bash scripts/ci/publish-experimental.sh "$SHA"
+        run: bash scripts/ci/publish-experimental.sh "$VERSION" "$SHA"
