@@ -1,5 +1,6 @@
 //! `imperium chat`: an interactive session in the terminal.
 
+use std::collections::VecDeque;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -7,13 +8,14 @@ use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
     ContextFit, SessionControl, SessionControlParams, SessionCreate, SessionCreateParams,
-    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSuggestionRespond,
-    SuggestionRespondParams,
+    SessionQueue, SessionQueueParams, SessionRespond, SessionRespondParams, SessionSend,
+    SessionSendParams, SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
-    AgentEvent, ContextCategory, PermissionDecision, ROOT_AGENT, SESSION_EVENT, SessionEvent,
-    SessionEventParams, StepStatus, TokenCountMethod,
+    AgentEvent, ContextCategory, PermissionDecision, QueuedMessage, ROOT_AGENT, SESSION_EVENT,
+    SendMode, SessionEvent, SessionEventParams, StepStatus, TokenCountMethod,
 };
+use tokio::sync::mpsc;
 
 use crate::{block_on, connect};
 
@@ -36,6 +38,7 @@ pub fn run(
                 model,
             })
             .await?;
+        let session_id = session.session_id.clone();
         println!(
             "Session {} with {} in {}",
             session.session_id,
@@ -43,65 +46,138 @@ pub fn run(
             project.display()
         );
         println!(
-            "Type a message. /context shows what the model is reading, /model <id> switches \
-             models, /compact summarises older turns; an empty line or /exit quits."
+            "Type a message. While the agent works, messages queue and run in order; /steer \
+             <text> adds a message to the running turn, /queue lists what waits. /context shows \
+             what the model is reading, /model <id> switches models, /compact summarises older \
+             turns; /download, /dismiss, or /never answer a model download suggestion; an \
+             empty line (when idle) or /exit quits."
         );
-        let mut latest = None;
-        // A model download suggestion waiting for /download, /dismiss, or /never.
-        let mut suggestion: Option<String> = None;
+        let mut lines = read_lines();
+        let mut chat = Chat {
+            context_summary,
+            ..Chat::default()
+        };
+        chat.prompt();
         loop {
-            let Some(text) = prompt("\n> ")? else { break };
-            let text = text.trim();
-            if text.is_empty() || text == "/exit" {
-                break;
-            }
-            if text == "/context" {
-                match &latest {
-                    Some(breakdown) => print!("{}", render_breakdown(breakdown)),
-                    None => println!("No model call yet; send a message first."),
-                }
-                continue;
-            }
-            if let Some(action) = suggestion_command(text) {
-                let Some(id) = suggestion.take() else {
-                    println!("No model suggestion is waiting.");
-                    continue;
-                };
-                let result = client
-                    .call::<SessionSuggestionRespond>(SuggestionRespondParams {
-                        session_id: session.session_id.clone(),
-                        suggestion_id: id.clone(),
-                        action: action.into(),
-                    })
-                    .await;
-                match result {
-                    Ok(result) => match result.job {
-                        Some(job) => println!(
-                            "Downloading {} {} ({}); you will be told when it is ready.",
-                            job.repo, job.variant, job.job_id
-                        ),
-                        None if action == "never" => {
-                            println!(
-                                "Model download suggestions are off (models.suggest_downloads)."
-                            )
-                        }
-                        None => println!("Not now."),
-                    },
-                    Err(error) => {
-                        println!("{error}");
-                        suggestion = Some(id);
+            tokio::select! {
+                line = lines.recv() => {
+                    let Some(line) = line else { break };
+                    if chat.on_line(&mut client, &session_id, line).await? == Flow::Quit {
+                        break;
                     }
                 }
-                continue;
+                notification = client.next_notification() => {
+                    let notification = notification?;
+                    if notification.method != SESSION_EVENT {
+                        continue;
+                    }
+                    let params: SessionEventParams = serde_json::from_value(notification.params)
+                        .context("could not read a session event")?;
+                    if params.session_id == session_id {
+                        chat.on_event(params.agent_event);
+                    }
+                }
             }
-            if let Some(action) = control_command(text) {
+        }
+        Ok(())
+    })
+}
+
+/// Reads standard input on its own thread, so the user can type while a turn runs. The
+/// channel closes at end of input.
+fn read_lines() -> mpsc::UnboundedReceiver<String> {
+    let (sender, receiver) = mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    receiver
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Flow {
+    Continue,
+    Quit,
+}
+
+/// The terminal side of a chat: whether a turn runs, the permission questions waiting for an
+/// answer, and the root agent's latest context breakdown.
+#[derive(Default)]
+struct Chat {
+    context_summary: bool,
+    busy: bool,
+    /// Permission requests in the order asked; the next line answers the first.
+    asking: VecDeque<(u64, String)>,
+    /// The user just sent a message to an idle agent, so its `turn_started` needs no echo.
+    sent_while_idle: bool,
+    latest: Option<Breakdown>,
+    /// A model download suggestion waiting for /download, /dismiss, or /never.
+    suggestion: Option<String>,
+}
+
+impl Chat {
+    fn prompt(&self) {
+        if let Some((_, summary)) = self.asking.front() {
+            print!("\nAllow: {summary}? [y]es / [a]lways this session / [n]o: ");
+        } else if !self.busy {
+            print!("\n> ");
+        }
+        std::io::stdout().flush().ok();
+    }
+
+    async fn on_line(
+        &mut self,
+        client: &mut Client,
+        session_id: &str,
+        line: String,
+    ) -> anyhow::Result<Flow> {
+        if let Some((request_id, _)) = self.asking.pop_front() {
+            client
+                .call::<SessionRespond>(SessionRespondParams {
+                    session_id: session_id.to_string(),
+                    request_id,
+                    decision: permission_answer(&line),
+                })
+                .await?;
+            self.prompt();
+            return Ok(Flow::Continue);
+        }
+        let text = line.trim();
+        if text == "/exit" || (text.is_empty() && !self.busy) {
+            return Ok(Flow::Quit);
+        }
+        if text.is_empty() {
+            return Ok(Flow::Continue);
+        }
+        match command(text) {
+            Some(Command::Context) => match &self.latest {
+                Some(breakdown) => print!("{}", render_breakdown(breakdown)),
+                None => println!("No model call yet; send a message first."),
+            },
+            Some(Command::Queue) => {
+                let queue = client
+                    .call::<SessionQueue>(SessionQueueParams {
+                        session_id: session_id.to_string(),
+                        action: "list".into(),
+                        agent_id: None,
+                        id: None,
+                        text: None,
+                    })
+                    .await?;
+                print!("{}", describe_queue(&queue.messages));
+            }
+            Some(Command::Control(action)) => {
                 let (action, model) = match action {
                     Control::SetModel(model) => ("set_model", Some(model)),
                     Control::Compact => ("compact", None),
                 };
                 let result = client
                     .call::<SessionControl>(SessionControlParams {
-                        session_id: session.session_id.clone(),
+                        session_id: session_id.to_string(),
                         action: action.into(),
                         resume_policy: None,
                         repo: None,
@@ -120,38 +196,339 @@ pub fn run(
                     ),
                     Err(error) => println!("{error}"),
                 }
-                continue;
             }
-            client
-                .call::<SessionSend>(SessionSendParams {
-                    session_id: session.session_id.clone(),
-                    text: text.to_string(),
-                })
-                .await?;
-            follow_turn(
-                &mut client,
-                &session.session_id,
-                &mut latest,
-                &mut suggestion,
-            )
-            .await?;
-            if context_summary && let Some(breakdown) = &latest {
-                println!("{}", summary_line(breakdown));
+            Some(Command::Steer(text)) => self.send(client, session_id, text, true).await?,
+            Some(Command::Suggestion(action)) => {
+                self.answer_suggestion(client, session_id, action).await?
+            }
+            None => {
+                self.send(client, session_id, text.to_string(), false)
+                    .await?
+            }
+        }
+        self.prompt();
+        Ok(Flow::Continue)
+    }
+
+    /// Answers the waiting model download suggestion (`session.suggestion_respond`).
+    async fn answer_suggestion(
+        &mut self,
+        client: &mut Client,
+        session_id: &str,
+        action: &'static str,
+    ) -> anyhow::Result<()> {
+        let Some(id) = self.suggestion.take() else {
+            println!("No model suggestion is waiting.");
+            return Ok(());
+        };
+        let result = client
+            .call::<SessionSuggestionRespond>(SuggestionRespondParams {
+                session_id: session_id.to_string(),
+                suggestion_id: id.clone(),
+                action: action.into(),
+            })
+            .await;
+        match result {
+            Ok(result) => match result.job {
+                Some(job) => println!(
+                    "Downloading {} {} ({}); you will be told when it is ready.",
+                    job.repo, job.variant, job.job_id
+                ),
+                None if action == "never" => {
+                    println!("Model download suggestions are off (models.suggest_downloads).")
+                }
+                None => println!("Not now."),
+            },
+            Err(error) => {
+                println!("{error}");
+                self.suggestion = Some(id);
             }
         }
         Ok(())
-    })
+    }
+
+    /// Sends a message: it starts a turn when the agent is idle and otherwise queues (or,
+    /// steering, joins the running turn); the daemon's `message_queued` says which.
+    async fn send(
+        &mut self,
+        client: &mut Client,
+        session_id: &str,
+        text: String,
+        steer: bool,
+    ) -> anyhow::Result<()> {
+        client
+            .call::<SessionSend>(SessionSendParams {
+                session_id: session_id.to_string(),
+                text,
+                mode: steer.then_some(SendMode::Steer),
+                agent_id: None,
+            })
+            .await?;
+        if !self.busy {
+            self.busy = true;
+            self.sent_while_idle = true;
+        }
+        Ok(())
+    }
+
+    /// Prints one event. Subagent lines are prefixed with their task id.
+    fn on_event(&mut self, AgentEvent { agent_id, event }: AgentEvent) {
+        let root = agent_id == ROOT_AGENT;
+        let tag = if root {
+            String::new()
+        } else {
+            format!("[{agent_id}] ")
+        };
+        match event {
+            SessionEvent::TurnStarted { text } if root => {
+                self.busy = true;
+                if !std::mem::take(&mut self.sent_while_idle) {
+                    println!("\n» {}", text.lines().next().unwrap_or_default());
+                }
+            }
+            SessionEvent::TurnStarted { .. } | SessionEvent::ModelCallCompleted { .. } => {}
+            SessionEvent::ContextBreakdown {
+                model,
+                context_window,
+                method,
+                categories,
+                cached_tokens,
+                ..
+            } if root => {
+                self.latest = Some(Breakdown {
+                    model,
+                    context_window,
+                    method,
+                    categories,
+                    cached_tokens,
+                });
+            }
+            SessionEvent::ContextBreakdown { .. } => {}
+            // Subagent replies arrive as their task report; only the root streams to the terminal.
+            SessionEvent::TextDelta { text } if root => {
+                print!("{text}");
+                std::io::stdout().flush().ok();
+            }
+            SessionEvent::TextDelta { .. } => {}
+            SessionEvent::ToolStarted { summary, .. } => println!("\n{tag}· {summary}"),
+            SessionEvent::PermissionRequested {
+                request_id,
+                summary,
+                ..
+            } => {
+                self.asking
+                    .push_back((request_id, format!("{tag}{summary}")));
+                if self.asking.len() == 1 {
+                    self.prompt();
+                }
+            }
+            SessionEvent::ToolFinished { ok, output, .. } => {
+                if !ok {
+                    println!("  {tag}✗ {}", output.lines().next().unwrap_or_default());
+                }
+            }
+            SessionEvent::PlanUpdated { plan } => {
+                println!("\n{tag}Plan: {}", plan.goal);
+                for step in plan.steps {
+                    let mark = match step.status {
+                        StepStatus::Done => "✓",
+                        StepStatus::InProgress => "▸",
+                        StepStatus::Blocked => "!",
+                        StepStatus::Skipped => "–",
+                        StepStatus::Pending => " ",
+                    };
+                    println!("  [{mark}] {}", step.title);
+                }
+            }
+            SessionEvent::TaskSpawned {
+                task_id,
+                brief,
+                model,
+            } => println!(
+                "\n{tag}→ {task_id} on {model}: {}",
+                brief.lines().next().unwrap_or_default()
+            ),
+            SessionEvent::TaskFinished {
+                task_id,
+                ok,
+                cost_usd,
+                ..
+            } => {
+                let cost = cost_usd.map_or(String::new(), |cost| format!(" (${cost:.4})"));
+                let state = if ok { "finished" } else { "failed" };
+                println!("\n← {task_id} {state}{cost}");
+            }
+            SessionEvent::TurnCompleted {
+                usage,
+                cost_usd,
+                steps,
+            } if root => {
+                let cost = cost_usd.map_or(String::new(), |cost| format!(", ${cost:.4}"));
+                println!(
+                    "\n[{} in ({} cached) / {} out tokens{cost}, {steps} model calls]",
+                    usage.prompt_tokens, usage.cached_tokens, usage.completion_tokens
+                );
+                if self.context_summary
+                    && let Some(breakdown) = &self.latest
+                {
+                    println!("{}", summary_line(breakdown));
+                }
+                self.turn_ended();
+            }
+            SessionEvent::TurnFailed { message } if root => {
+                println!("\nturn failed: {message}");
+                self.turn_ended();
+            }
+            SessionEvent::TurnCompleted { .. } => {}
+            SessionEvent::TurnFailed { message } => println!("\n{tag}failed: {message}"),
+            SessionEvent::Notice { message } => println!("\n{tag}note: {message}"),
+            SessionEvent::MemoryUsed { names } => {
+                println!("\n{tag}· recalled {}", names.join(", "));
+            }
+            SessionEvent::MemorySaved { name, scope } => {
+                println!("\n{tag}· saved memory {name} ({scope})");
+            }
+            SessionEvent::ContextManifest {
+                role,
+                items,
+                documentation,
+            } => {
+                let required = items.iter().filter(|item| item.required).count();
+                println!(
+                    "\n{tag}· context for {role}: {required} required, {} documentation pointers",
+                    documentation.len()
+                );
+            }
+            SessionEvent::Paused {
+                until_unix_ms,
+                reason,
+            } => {
+                let until = chrono::DateTime::from_timestamp_millis(
+                    i64::try_from(until_unix_ms).unwrap_or(0),
+                )
+                .map(|time| {
+                    time.with_timezone(&chrono::Local)
+                        .format("%H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+                println!("\n{tag}· usage limit; waiting until {until} ({reason})");
+            }
+            SessionEvent::Resumed {} => println!("\n{tag}· resuming"),
+            SessionEvent::StatusChanged { .. } => {}
+            SessionEvent::MediaCreated { path, kind, .. } => {
+                println!("\n{tag}· created {kind}: {path}");
+            }
+            SessionEvent::BrowserView { url, title, .. } => {
+                println!("\n{tag}· browser: {title} ({url})");
+            }
+            SessionEvent::ContextLoaded { references } => {
+                println!("\n{tag}· loaded {}", references.join(", "));
+            }
+            SessionEvent::MessageQueued { id, text, steer } => {
+                let first = text.lines().next().unwrap_or_default();
+                if steer {
+                    println!("\n{tag}· steering {id} joins the running turn: {first}");
+                } else {
+                    println!("\n{tag}· queued {id}: {first}");
+                }
+            }
+            SessionEvent::Steered { id, .. } => println!("\n{tag}· steering {id} delivered"),
+            SessionEvent::ModelSuggestion {
+                id,
+                repo,
+                quant,
+                size_bytes,
+                fit,
+                reason,
+                ..
+            } => {
+                println!(
+                    "\n{tag}· suggestion: download {repo} ({quant}, {:.1} GB, fits: {fit}) because \
+                     {reason}.\n  /download to get it, /dismiss for not now, /never to stop \
+                     suggesting downloads.",
+                    size_bytes as f64 / 1e9
+                );
+                self.suggestion = Some(id);
+            }
+            SessionEvent::ModelSuggestionUpdate {
+                state,
+                model,
+                message,
+                ..
+            } => match state.as_str() {
+                "ready" => println!(
+                    "\n{tag}· the suggested model is ready: /model {} switches to it",
+                    model.unwrap_or_default()
+                ),
+                "failed" | "cancelled" => println!(
+                    "\n{tag}· the suggested download {state}: {}",
+                    message.unwrap_or_default()
+                ),
+                _ => {}
+            },
+            // This client prints the result of its own /model and /compact, and lists the
+            // queue on /queue.
+            SessionEvent::ModelChanged { .. }
+            | SessionEvent::ContextCompacted { .. }
+            | SessionEvent::QueueChanged { .. } => {}
+        }
+    }
+
+    fn turn_ended(&mut self) {
+        self.busy = false;
+        self.sent_while_idle = false;
+        self.asking.clear();
+        self.prompt();
+    }
 }
 
-/// `/download`, `/dismiss`, or `/never`: the answer to a model download suggestion, as
-/// `session.suggestion_respond` names it.
-fn suggestion_command(text: &str) -> Option<&'static str> {
+/// A chat command that the client handles rather than sending as a message.
+#[derive(Debug, PartialEq, Eq)]
+enum Command {
+    /// `/context`: the latest context breakdown.
+    Context,
+    /// `/queue`: the messages waiting for the agent.
+    Queue,
+    /// `/steer <text>`: a message for the running turn.
+    Steer(String),
+    /// `/download`, `/dismiss`, or `/never`: the answer to a model download suggestion, as
+    /// `session.suggestion_respond` names it.
+    Suggestion(&'static str),
+    Control(Control),
+}
+
+fn command(text: &str) -> Option<Command> {
     match text {
-        "/download" => Some("download"),
-        "/dismiss" => Some("dismiss"),
-        "/never" => Some("never"),
-        _ => None,
+        "/context" => return Some(Command::Context),
+        "/queue" => return Some(Command::Queue),
+        "/download" => return Some(Command::Suggestion("download")),
+        "/dismiss" => return Some(Command::Suggestion("dismiss")),
+        "/never" => return Some(Command::Suggestion("never")),
+        _ => {}
     }
+    if let Some(steer) = text.strip_prefix("/steer ") {
+        let steer = steer.trim();
+        return (!steer.is_empty()).then(|| Command::Steer(steer.to_string()));
+    }
+    control_command(text).map(Command::Control)
+}
+
+/// The queue as `/queue` prints it.
+fn describe_queue(messages: &[QueuedMessage]) -> String {
+    if messages.is_empty() {
+        return "Nothing is queued.\n".into();
+    }
+    let mut out = String::new();
+    for message in messages {
+        let kind = if message.steer { " (steering)" } else { "" };
+        out.push_str(&format!(
+            "  {}{kind}: {}\n",
+            message.id,
+            message.text.lines().next().unwrap_or_default()
+        ));
+    }
+    out
 }
 
 /// A chat command that controls the session rather than messaging it.
@@ -322,231 +699,13 @@ fn render_breakdown(breakdown: &Breakdown) -> String {
     out
 }
 
-/// Prints a turn's events until the root agent completes or fails, asking the user about
-/// permissions. Subagent lines are prefixed with their task id. Keeps the root agent's latest
-/// context breakdown in `latest`.
-async fn follow_turn(
-    client: &mut Client,
-    session_id: &str,
-    latest: &mut Option<Breakdown>,
-    suggestion: &mut Option<String>,
-) -> anyhow::Result<()> {
-    loop {
-        let notification = client.next_notification().await?;
-        if notification.method != SESSION_EVENT {
-            continue;
-        }
-        let params: SessionEventParams = serde_json::from_value(notification.params)
-            .context("could not read a session event")?;
-        if params.session_id != session_id {
-            continue;
-        }
-        let AgentEvent { agent_id, event } = params.agent_event;
-        let root = agent_id == ROOT_AGENT;
-        let tag = if root {
-            String::new()
-        } else {
-            format!("[{agent_id}] ")
-        };
-        match event {
-            SessionEvent::TurnStarted { .. } | SessionEvent::ModelCallCompleted { .. } => {}
-            SessionEvent::ContextBreakdown {
-                model,
-                context_window,
-                method,
-                categories,
-                cached_tokens,
-                ..
-            } if root => {
-                *latest = Some(Breakdown {
-                    model,
-                    context_window,
-                    method,
-                    categories,
-                    cached_tokens,
-                });
-            }
-            SessionEvent::ContextBreakdown { .. } => {}
-            // Subagent replies arrive as their task report; only the root streams to the terminal.
-            SessionEvent::TextDelta { text } if root => {
-                print!("{text}");
-                std::io::stdout().flush().ok();
-            }
-            SessionEvent::TextDelta { .. } => {}
-            SessionEvent::ToolStarted { summary, .. } => println!("\n{tag}· {summary}"),
-            SessionEvent::PermissionRequested {
-                request_id,
-                summary,
-                ..
-            } => {
-                let decision = ask_permission(&format!("{tag}{summary}"))?;
-                client
-                    .call::<SessionRespond>(SessionRespondParams {
-                        session_id: session_id.to_string(),
-                        request_id,
-                        decision,
-                    })
-                    .await?;
-            }
-            SessionEvent::ToolFinished { ok, output, .. } => {
-                if !ok {
-                    println!("  {tag}✗ {}", output.lines().next().unwrap_or_default());
-                }
-            }
-            SessionEvent::PlanUpdated { plan } => {
-                println!("\n{tag}Plan: {}", plan.goal);
-                for step in plan.steps {
-                    let mark = match step.status {
-                        StepStatus::Done => "✓",
-                        StepStatus::InProgress => "▸",
-                        StepStatus::Blocked => "!",
-                        StepStatus::Skipped => "–",
-                        StepStatus::Pending => " ",
-                    };
-                    println!("  [{mark}] {}", step.title);
-                }
-            }
-            SessionEvent::TaskSpawned {
-                task_id,
-                brief,
-                model,
-            } => println!(
-                "\n{tag}→ {task_id} on {model}: {}",
-                brief.lines().next().unwrap_or_default()
-            ),
-            SessionEvent::TaskFinished {
-                task_id,
-                ok,
-                cost_usd,
-                ..
-            } => {
-                let cost = cost_usd.map_or(String::new(), |cost| format!(" (${cost:.4})"));
-                let state = if ok { "finished" } else { "failed" };
-                println!("\n← {task_id} {state}{cost}");
-            }
-            SessionEvent::TurnCompleted {
-                usage,
-                cost_usd,
-                steps,
-            } if root => {
-                let cost = cost_usd.map_or(String::new(), |cost| format!(", ${cost:.4}"));
-                println!(
-                    "\n[{} in ({} cached) / {} out tokens{cost}, {steps} model calls]",
-                    usage.prompt_tokens, usage.cached_tokens, usage.completion_tokens
-                );
-                return Ok(());
-            }
-            SessionEvent::TurnFailed { message } if root => {
-                println!("\nturn failed: {message}");
-                return Ok(());
-            }
-            SessionEvent::TurnCompleted { .. } => {}
-            SessionEvent::TurnFailed { message } => println!("\n{tag}failed: {message}"),
-            SessionEvent::Notice { message } => println!("\n{tag}note: {message}"),
-            SessionEvent::MemoryUsed { names } => {
-                println!("\n{tag}· recalled {}", names.join(", "));
-            }
-            SessionEvent::MemorySaved { name, scope } => {
-                println!("\n{tag}· saved memory {name} ({scope})");
-            }
-            SessionEvent::ContextManifest {
-                role,
-                items,
-                documentation,
-            } => {
-                let required = items.iter().filter(|item| item.required).count();
-                println!(
-                    "\n{tag}· context for {role}: {required} required, {} documentation pointers",
-                    documentation.len()
-                );
-            }
-            SessionEvent::Paused {
-                until_unix_ms,
-                reason,
-            } => {
-                let until = chrono::DateTime::from_timestamp_millis(
-                    i64::try_from(until_unix_ms).unwrap_or(0),
-                )
-                .map(|time| {
-                    time.with_timezone(&chrono::Local)
-                        .format("%H:%M")
-                        .to_string()
-                })
-                .unwrap_or_default();
-                println!("\n{tag}· usage limit; waiting until {until} ({reason})");
-            }
-            SessionEvent::Resumed {} => println!("\n{tag}· resuming"),
-            SessionEvent::StatusChanged { .. } => {}
-            SessionEvent::MediaCreated { path, kind, .. } => {
-                println!("\n{tag}· created {kind}: {path}");
-            }
-            SessionEvent::BrowserView { url, title, .. } => {
-                println!("\n{tag}· browser: {title} ({url})");
-            }
-            SessionEvent::ContextLoaded { references } => {
-                println!("\n{tag}· loaded {}", references.join(", "));
-            }
-            SessionEvent::ModelSuggestion {
-                id,
-                repo,
-                quant,
-                size_bytes,
-                fit,
-                reason,
-                ..
-            } => {
-                println!(
-                    "
-{tag}· suggestion: download {repo} ({quant}, {:.1} GB, fits: {fit}) because                      {reason}.
-  /download to get it, /dismiss for not now, /never to stop                      suggesting downloads.",
-                    size_bytes as f64 / 1e9
-                );
-                *suggestion = Some(id);
-            }
-            SessionEvent::ModelSuggestionUpdate {
-                state,
-                model,
-                message,
-                ..
-            } => match state.as_str() {
-                "ready" => println!(
-                    "
-{tag}· the suggested model is ready: /model {} switches to it",
-                    model.unwrap_or_default()
-                ),
-                "failed" | "cancelled" => println!(
-                    "
-{tag}· the suggested download {state}: {}",
-                    message.unwrap_or_default()
-                ),
-                _ => {}
-            },
-            // This client prints the result of its own /model and /compact.
-            SessionEvent::ModelChanged { .. } | SessionEvent::ContextCompacted { .. } => {}
-        }
-    }
-}
-
-fn ask_permission(summary: &str) -> anyhow::Result<PermissionDecision> {
-    let question = format!("\nAllow: {summary}? [y]es / [a]lways this session / [n]o: ");
-    let answer = prompt(&question)?.unwrap_or_default();
-    Ok(match answer.trim().to_ascii_lowercase().as_str() {
+/// The decision a typed answer to a permission question gives.
+fn permission_answer(answer: &str) -> PermissionDecision {
+    match answer.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" => PermissionDecision::Allow,
         "a" | "always" => PermissionDecision::AllowForSession,
         _ => PermissionDecision::Deny,
-    })
-}
-
-/// Prints a prompt and reads one line; `None` at end of input.
-fn prompt(text: &str) -> anyhow::Result<Option<String>> {
-    print!("{text}");
-    std::io::stdout().flush().ok();
-    let mut line = String::new();
-    let read = std::io::stdin()
-        .lock()
-        .read_line(&mut line)
-        .context("could not read from standard input")?;
-    Ok((read > 0).then_some(line))
+    }
 }
 
 #[cfg(test)]
@@ -573,10 +732,10 @@ mod tests {
     }
 
     #[test]
-    fn suggestion_answers_are_read() {
-        assert_eq!(suggestion_command("/download"), Some("download"));
-        assert_eq!(suggestion_command("/never"), Some("never"));
-        assert_eq!(suggestion_command("/model x"), None);
+    fn suggestion_answers_are_commands() {
+        assert_eq!(command("/download"), Some(Command::Suggestion("download")));
+        assert_eq!(command("/never"), Some(Command::Suggestion("never")));
+        assert_ne!(command("/dismiss"), None);
     }
 
     #[test]
@@ -588,6 +747,48 @@ mod tests {
         assert_eq!(control_command("/compact"), Some(Control::Compact));
         assert_eq!(control_command("/model "), None);
         assert_eq!(control_command("tell me about /model x"), None);
+    }
+
+    #[test]
+    fn steer_and_queue_commands_are_recognised() {
+        assert_eq!(
+            command("/steer use tabs"),
+            Some(Command::Steer("use tabs".into()))
+        );
+        assert_eq!(command("/steer   "), None);
+        assert_eq!(command("/queue"), Some(Command::Queue));
+        assert_eq!(command("/context"), Some(Command::Context));
+        assert_eq!(
+            command("/compact"),
+            Some(Command::Control(Control::Compact))
+        );
+        assert_eq!(command("please /steer this"), None);
+    }
+
+    #[test]
+    fn the_queue_lists_ids_and_marks_steering() {
+        assert_eq!(describe_queue(&[]), "Nothing is queued.\n");
+        let queue = [
+            QueuedMessage {
+                id: "q1".into(),
+                text: "then add tests\nmore".into(),
+                steer: false,
+            },
+            QueuedMessage {
+                id: "q2".into(),
+                text: "use tabs".into(),
+                steer: true,
+            },
+        ];
+        assert_eq!(
+            describe_queue(&queue),
+            "  q1: then add tests\n  q2 (steering): use tabs\n"
+        );
+        assert_eq!(
+            permission_answer(" A "),
+            PermissionDecision::AllowForSession
+        );
+        assert_eq!(permission_answer(""), PermissionDecision::Deny);
     }
 
     #[test]

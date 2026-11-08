@@ -96,6 +96,8 @@ async fn a_chat_turn_streams_events_to_the_client() {
         .call::<SessionSend>(SessionSendParams {
             session_id: session.session_id.clone(),
             text: "hello".into(),
+            mode: None,
+            agent_id: None,
         })
         .await
         .unwrap();

@@ -29,6 +29,7 @@ use imperium_protocol::methods::{Compaction, ContextFit};
 
 use crate::breakdown::{Call, Category, Measured, Request, Spans, join_parts, tool_texts};
 use crate::compact::{self, SwitchError};
+use crate::queue::{Inbox, QueueError, steering_text};
 use crate::session::{SessionMemory, Shared, lock};
 use crate::{LocalLease, ResolvedModel, TaskRequest, route};
 
@@ -50,6 +51,8 @@ enum AgentTool {
     UpdatePlan,
     SpawnAgent,
     AwaitTasks,
+    SteerAgent,
+    QueueAgent,
     LoadSkill,
     MemorySearch,
     MemoryRead,
@@ -75,6 +78,8 @@ pub struct Agent {
     spans: HashMap<usize, Spans>,
     /// Only the root agent delegates; subagents do their brief themselves.
     can_delegate: bool,
+    /// Messages waiting for this agent: steering ones join its running turn.
+    inbox: Arc<Inbox>,
     tasks: HashMap<String, JoinHandle<TaskReport>>,
     /// The workflow role whose files this agent loads: `root`, or what the delegator asked.
     role: String,
@@ -101,15 +106,19 @@ impl Agent {
                  project folder. For multi-step work, keep a checklist with update_plan. For \
                  independent pieces of a larger task, delegate with spawn_agent (a self-contained \
                  brief; optionally a tier: basic, standard, strong, frontier), then call \
-                 await_tasks to collect the reports; you use no tokens while waiting. Check the \
-                 results, and finish with a short summary of what was done."
+                 await_tasks to collect the reports; you use no tokens while waiting. To redirect \
+                 delegated work in progress, steer_agent adds a message to a task's current \
+                 turn and queue_agent gives it a follow-up turn. Check the results, and finish with a \
+                 short summary of what was done. A message marked <steering> arrived from the \
+                 user while you were working: take it into account and carry on."
             )
         } else {
             format!(
                 "You are an Imperium subagent working in the project folder {root}. Complete the \
                  brief you are given using the tools; paths are relative to the project folder. \
                  Your final reply is your report to the agent that delegated to you: state what \
-                 you did, what you found, and anything left undone."
+                 you did, what you found, and anything left undone. A message marked <steering> \
+                 arrived while you were working: take it into account and carry on."
             )
         };
         // Each part is kept with its label, so context breakdowns count them separately.
@@ -136,8 +145,10 @@ impl Agent {
             parts.push((Category::SystemProject, instructions.clone()));
         }
         let (system, spans) = join_parts(parts);
+        let inbox = shared.inboxes.open(&id);
         Agent {
             id,
+            inbox,
             shared,
             model,
             messages: vec![ChatMessage::System { content: system }],
@@ -153,6 +164,22 @@ impl Agent {
     /// The model this agent calls.
     pub fn model(&self) -> &ResolvedModel {
         &self.model
+    }
+
+    /// Messages waiting for this agent.
+    pub fn inbox(&self) -> &Arc<Inbox> {
+        &self.inbox
+    }
+
+    /// Adds the steering messages that arrived since the last model call to the conversation,
+    /// as user messages marked as steering. Called only between complete tool rounds, so tool
+    /// calls and their results stay together.
+    fn take_steering(&mut self) {
+        for message in self.inbox.take_steering() {
+            let (content, spans) = join_parts(vec![(Category::User, steering_text(&message.text))]);
+            self.spans.insert(self.messages.len(), spans);
+            self.messages.push(ChatMessage::User { content });
+        }
     }
 
     /// The conversation so far.
@@ -221,7 +248,12 @@ impl Agent {
             }
         }
         if self.can_delegate {
-            tools.extend([spawn_agent_spec(), await_tasks_spec()]);
+            tools.extend([
+                spawn_agent_spec(),
+                await_tasks_spec(),
+                steer_agent_spec(),
+                queue_agent_spec(),
+            ]);
         }
         (tools, mcp)
     }
@@ -261,6 +293,9 @@ impl Agent {
         let mut reply = String::new();
         let max_steps = self.shared.max_steps;
         for step in 1..=max_steps {
+            // The safe point for steering: the last model response's tool calls all have
+            // their results.
+            self.take_steering();
             let request = ChatRequest {
                 model: &self.model.model,
                 messages: &self.messages,
@@ -350,6 +385,10 @@ impl Agent {
                 content: Some(completion.text).filter(|text| !text.is_empty()),
                 tool_calls: completion.tool_calls.clone(),
             });
+            // Steering that arrived during the final answer keeps the turn going.
+            if completion.tool_calls.is_empty() && self.inbox.has_steering() {
+                continue;
+            }
             if completion.tool_calls.is_empty() {
                 self.emit(SessionEvent::TurnCompleted {
                     usage: token_usage(&total),
@@ -756,6 +795,8 @@ impl Agent {
             "update_plan" => AgentTool::UpdatePlan,
             "spawn_agent" if self.can_delegate => AgentTool::SpawnAgent,
             "await_tasks" if self.can_delegate => AgentTool::AwaitTasks,
+            "steer_agent" if self.can_delegate => AgentTool::SteerAgent,
+            "queue_agent" if self.can_delegate => AgentTool::QueueAgent,
             "load_skill" if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
             "context_load" if self.shared.context.is_some() => AgentTool::ContextLoad,
             "start_session" if self.can_delegate && self.shared.launcher.is_some() => {
@@ -777,6 +818,8 @@ impl Agent {
             AgentTool::UpdatePlan => "update the plan",
             AgentTool::SpawnAgent => "delegate a task",
             AgentTool::AwaitTasks => "wait for subagents",
+            AgentTool::SteerAgent => "steer a subagent",
+            AgentTool::QueueAgent => "queue a message for a subagent",
             AgentTool::LoadSkill => "load a skill",
             AgentTool::ContextLoad => "load workflow context",
             AgentTool::StartSession => "start a session",
@@ -793,6 +836,8 @@ impl Agent {
             AgentTool::UpdatePlan => self.update_plan(arguments),
             AgentTool::SpawnAgent => self.spawn_agent(arguments),
             AgentTool::AwaitTasks => self.await_tasks(arguments).await,
+            AgentTool::SteerAgent => self.message_agent(arguments, true),
+            AgentTool::QueueAgent => self.message_agent(arguments, false),
             AgentTool::LoadSkill => self.load_skill(arguments),
             AgentTool::ContextLoad => self.context_load(arguments),
             AgentTool::StartSession => self.start_session(arguments).await,
@@ -947,7 +992,19 @@ impl Agent {
                 .await;
             let role = args.role.unwrap_or_else(|| "leaf".into());
             let mut agent = Agent::new(id.clone(), Arc::clone(&shared), model, false, role);
-            let outcome = agent.run_turn(args.brief, None).await;
+            let mut outcome = agent.run_turn(args.brief, None).await;
+            // Messages queued for the subagent run as further turns before it reports; the
+            // report is the last turn's reply, with every turn's usage.
+            while let Some(message) = agent.inbox().pop_or_close() {
+                let next = agent.run_turn(message.text, None).await;
+                outcome = TurnOutcome {
+                    text: next.text,
+                    ok: next.ok,
+                    usage: add_usage(&outcome.usage, &next.usage),
+                    cost_usd: add_cost(outcome.cost_usd, next.cost_usd),
+                };
+            }
+            shared.inboxes.close(&id);
             shared
                 .hook(
                     HookEvent::AgentComplete,
@@ -976,6 +1033,46 @@ impl Agent {
         Ok(format!(
             "started {task_id}; call await_tasks to collect its report"
         ))
+    }
+
+    /// `steer_agent` and `queue_agent`: a message for one of this agent's running subagents.
+    fn message_agent(&self, arguments: &str, steer: bool) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            agent_id: String,
+            text: String,
+        }
+        let args: Args = parse(arguments)?;
+        if !self.tasks.contains_key(&args.agent_id) {
+            return Err(format!(
+                "{:?} is not a subagent you started and have not collected",
+                args.agent_id
+            ));
+        }
+        let id = self.shared.inboxes.next_id();
+        let message = self
+            .shared
+            .inboxes
+            .send(&args.agent_id, id, args.text, steer)
+            .map_err(|error| match error {
+                QueueError::Empty => error.to_string(),
+                _ => format!(
+                    "{} has finished; collect its report with await_tasks",
+                    args.agent_id
+                ),
+            })?;
+        Ok(if steer {
+            format!(
+                "{} reaches {} after its current step, in the same turn",
+                message.id, args.agent_id
+            )
+        } else {
+            format!(
+                "{} is queued for {}; it runs as a new turn after the current one, and the \
+                 report covers it",
+                message.id, args.agent_id
+            )
+        })
     }
 
     /// Waits for subagents without calling the model, then returns their reports.
@@ -1419,6 +1516,43 @@ fn await_tasks_spec() -> ToolSpec {
         parameters: json!({"type": "object", "properties": {
             "task_ids": {"type": "array", "items": {"type": "string"}}
         }}),
+    }
+}
+
+fn steer_agent_spec() -> ToolSpec {
+    ToolSpec {
+        name: "steer_agent".into(),
+        description: "Send a running subagent a message that joins its current turn: it reads it before its next model call and carries on. Use to correct or redirect work in progress.".into(),
+        parameters: json!({"type": "object", "properties": {
+            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
+            "text": {"type": "string"}
+        }, "required": ["agent_id", "text"]}),
+    }
+}
+
+fn queue_agent_spec() -> ToolSpec {
+    ToolSpec {
+        name: "queue_agent".into(),
+        description: "Give a running subagent a follow-up message that runs as a new turn after its current one, before it reports. Its report then covers the follow-up.".into(),
+        parameters: json!({"type": "object", "properties": {
+            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
+            "text": {"type": "string"}
+        }, "required": ["agent_id", "text"]}),
+    }
+}
+
+fn add_usage(a: &Usage, b: &Usage) -> Usage {
+    Usage {
+        prompt_tokens: a.prompt_tokens + b.prompt_tokens,
+        completion_tokens: a.completion_tokens + b.completion_tokens,
+        cached_tokens: a.cached_tokens + b.cached_tokens,
+    }
+}
+
+fn add_cost(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (None, None) => None,
+        (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
     }
 }
 

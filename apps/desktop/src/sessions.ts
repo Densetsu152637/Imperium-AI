@@ -5,6 +5,7 @@ import type {
   AgentEvent,
   ContextCategory,
   Plan,
+  QueuedMessage,
   ResumePolicy,
   SessionStatus,
   SessionSummary,
@@ -16,6 +17,8 @@ export const ROOT = "root";
 
 export type Entry =
   | { kind: "user"; text: string }
+  /** A steering message that joined the running turn. */
+  | { kind: "steer"; text: string }
   | { kind: "assistant"; text: string }
   | { kind: "tool"; callId: string; summary: string; ok: boolean | null; output: string }
   | { kind: "permission"; agentId: string; requestId: number; tool: string; summary: string; answered: boolean }
@@ -89,6 +92,8 @@ export type SessionState = {
   /** Each agent's latest context breakdown, by agent id. */
   breakdowns: Record<string, ContextBreakdown>;
   busy: boolean;
+  /** Messages waiting for the root agent, in delivery order (steering ones join its turn). */
+  queue: QueuedMessage[];
   /** The agent's browser after its latest action. */
   browser: { url: string; title: string; screenshot: string } | null;
   status: SessionStatus;
@@ -116,6 +121,7 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   calls: [],
   breakdowns: {},
   busy: false,
+  queue: [],
   browser: null,
   status: summary.status,
   statusDetail: summary.status_detail,
@@ -147,6 +153,9 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
   switch (event.type) {
     case "turn_started":
       next.push({ kind: "user", text: event.text });
+      break;
+    case "steered":
+      next.push({ kind: "steer", text: event.text });
       break;
     case "text_delta":
       if (last?.kind === "assistant") next[next.length - 1] = { ...last, text: last.text + event.text };
@@ -276,7 +285,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
     ];
   }
 
-  let { summary, tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause } = state;
+  let { summary, tasks, plan, calls, breakdowns, busy, queue, browser, status, statusDetail, pause } = state;
   if (event.type === "model_changed" && agentId === ROOT) summary = { ...summary, model: event.to };
   if (event.type === "status_changed") {
     status = event.status;
@@ -321,6 +330,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
   if (agentId === ROOT) {
     entries = applyToEntries(entries, agentEvent);
     if (event.type === "plan_updated") plan = event.plan;
+    if (event.type === "queue_changed") queue = event.messages;
     if (event.type === "turn_started") busy = true;
     if (event.type === "turn_completed" || event.type === "turn_failed") busy = false;
     if (event.type === "task_spawned") {
@@ -345,7 +355,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
         : { ...task, entries: applyToEntries(task.entries, agentEvent) };
     tasks = { ...tasks, [agentId]: updated };
   }
-  return { ...state, summary, entries, tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause };
+  return { ...state, summary, entries, tasks, plan, calls, breakdowns, busy, queue, browser, status, statusDetail, pause };
 }
 
 /** Tokens a breakdown's request held: the categories, which add up to the reported size. */

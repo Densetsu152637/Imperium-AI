@@ -184,6 +184,20 @@ pub enum SessionEvent {
         to: String,
         compacted: bool,
     },
+    /// A message arrived while the agent was busy and waits for it: a queued message runs as
+    /// the agent's next turn, a steering one joins its running turn at the next safe point.
+    /// `queue_changed` follows with the whole queue.
+    MessageQueued {
+        id: String,
+        text: String,
+        steer: bool,
+    },
+    /// The agent's queue after a message was queued, edited, removed, delivered, or joined the
+    /// running turn. The latest one is the queue; a resumed session restores it.
+    QueueChanged { messages: Vec<QueuedMessage> },
+    /// A steering message joined the running turn: the model reads it, as a user message
+    /// marked as steering, on its next call. The turn goes on; nothing was cancelled.
+    Steered { id: String, text: String },
     /// The daemon offers to download a local model better suited to what the session needs.
     /// Nothing is downloaded unless the user accepts with `session.suggestion_respond`.
     ModelSuggestion {
@@ -223,6 +237,32 @@ pub enum SessionEvent {
         model: Option<String>,
         message: Option<String>,
     },
+}
+
+/// A message waiting for an agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QueuedMessage {
+    /// `q1`, `q2`, ...: unique in the session.
+    pub id: String,
+    pub text: String,
+    /// Joins the agent's running turn at its next safe point instead of waiting for the turn
+    /// to end; when no turn is running it starts one.
+    pub steer: bool,
+}
+
+/// How `session.send` delivers a message.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SendMode {
+    /// Start a turn now when the agent is idle; otherwise wait in its queue and run as a new
+    /// turn after the current one, in order.
+    #[default]
+    Queue,
+    /// Join the running turn after its current model response and tool calls, before the next
+    /// model call, without cancelling it. Like `queue` when no turn is running.
+    Steer,
 }
 
 /// An instruction file or section in a context manifest.

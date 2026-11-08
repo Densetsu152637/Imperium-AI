@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use imperium_api::ToolProvider;
 use imperium_config::RoutingSettings;
 use imperium_protocol::session::{
-    AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
+    AgentEvent, PermissionDecision, QueuedMessage, ROOT_AGENT, ResumePolicy, SendMode,
+    SessionEvent, SessionStatus,
 };
 use imperium_tools::Workspace;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -25,6 +26,7 @@ use crate::agent::Agent;
 use crate::breakdown::TokenCounter;
 use crate::compact::SwitchError;
 use crate::journal::Journal;
+use crate::queue::{Inboxes, QueueError};
 use crate::status::Controls;
 use crate::{CatalogModel, LocalModels, ResolvedModel, SessionLauncher};
 
@@ -76,7 +78,9 @@ type FitReply = oneshot::Sender<Result<ContextFit, SwitchError>>;
 
 #[derive(Debug)]
 enum Command {
-    Message(String),
+    /// A message for the root agent: it starts a turn when the agent is idle, and otherwise
+    /// waits in its queue (or, steering, joins the running turn).
+    Message(QueuedMessage),
     Respond {
         request_id: u64,
         decision: PermissionDecision,
@@ -87,9 +91,7 @@ enum Command {
         reply: FitReply,
     },
     /// Compact the root agent's conversation now.
-    Compact {
-        reply: FitReply,
-    },
+    Compact { reply: FitReply },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -112,6 +114,7 @@ pub struct Session {
     events: broadcast::Sender<AgentEvent>,
     /// Every event so far, so late subscribers can catch up.
     history: History,
+    inboxes: Arc<Inboxes>,
     _task: JoinHandle<()>,
 }
 
@@ -151,10 +154,12 @@ impl Session {
             events: events.clone(),
             controls: Arc::clone(&controls),
         });
+        let inboxes = Arc::new(Inboxes::new(Arc::clone(&emitter), &history.lock()));
         let task = tokio::spawn(run(
             config,
             receiver,
             Arc::clone(&emitter),
+            Arc::clone(&inboxes),
             Arc::clone(&model),
         ));
         Ok(Session {
@@ -167,6 +172,7 @@ impl Session {
             commands,
             events,
             history,
+            inboxes,
             _task: task,
         })
     }
@@ -271,11 +277,71 @@ impl Session {
         (history.clone(), self.events.subscribe())
     }
 
-    /// Queues a user message; it runs when any current turn finishes.
+    /// Sends a user message to the root agent: it starts a turn now when the agent is idle,
+    /// and otherwise waits in the queue and runs when the current turn finishes.
     pub fn send(&self, text: String) -> Result<(), SessionClosed> {
         self.commands
-            .send(Command::Message(text))
+            .send(Command::Message(QueuedMessage {
+                id: self.inboxes.next_id(),
+                text,
+                steer: false,
+            }))
             .map_err(|_| SessionClosed)
+    }
+
+    /// Sends a user message to the root agent (`agent_id` `None` or `root`) or to a running
+    /// subagent. `Queue` runs it as a new turn once the agent's current turn ends (at once when
+    /// it is idle); `Steer` joins the running turn after its current model response and tool
+    /// calls, before the next model call. Returns the message's id, which `message_queued`
+    /// carries when the message waits.
+    pub fn send_message(
+        &self,
+        text: String,
+        mode: SendMode,
+        agent_id: Option<&str>,
+    ) -> Result<String, QueueError> {
+        if text.trim().is_empty() {
+            return Err(QueueError::Empty);
+        }
+        let id = self.inboxes.next_id();
+        let steer = mode == SendMode::Steer;
+        match agent_id.filter(|agent| *agent != ROOT_AGENT) {
+            // A subagent is busy until it reports, so its messages always wait in its inbox.
+            Some(agent) => self
+                .inboxes
+                .send(agent, id, text, steer)
+                .map(|message| message.id),
+            None => {
+                self.commands
+                    .send(Command::Message(QueuedMessage {
+                        id: id.clone(),
+                        text,
+                        steer,
+                    }))
+                    .map_err(|_| QueueError::Closed)?;
+                Ok(id)
+            }
+        }
+    }
+
+    /// The messages waiting for the root agent or a running subagent, in delivery order.
+    pub fn queue(&self, agent_id: Option<&str>) -> Result<Vec<QueuedMessage>, QueueError> {
+        self.inboxes.list(agent_id.unwrap_or(ROOT_AGENT))
+    }
+
+    /// Replaces the text of a message that has not been delivered yet.
+    pub fn edit_queued(
+        &self,
+        agent_id: Option<&str>,
+        id: &str,
+        text: String,
+    ) -> Result<(), QueueError> {
+        self.inboxes.edit(agent_id.unwrap_or(ROOT_AGENT), id, text)
+    }
+
+    /// Drops a message that has not been delivered yet.
+    pub fn remove_queued(&self, agent_id: Option<&str>, id: &str) -> Result<(), QueueError> {
+        self.inboxes.remove(agent_id.unwrap_or(ROOT_AGENT), id)
     }
 
     /// Answers a permission request. Answers to unknown or already-answered requests are
@@ -319,6 +385,8 @@ pub(crate) struct Shared {
     pub instructions: Option<String>,
     /// Token counts for context breakdowns, shared so agents on one model count text once.
     pub tokens: TokenCounter,
+    /// Messages waiting for each agent.
+    pub inboxes: Arc<Inboxes>,
     next_task: AtomicU32,
 }
 
@@ -334,6 +402,7 @@ async fn run(
     config: SessionConfig,
     mut commands: mpsc::UnboundedReceiver<Command>,
     emitter: Arc<Emitter>,
+    inboxes: Arc<Inboxes>,
     model: Arc<Mutex<String>>,
 ) {
     for message in config.notices {
@@ -367,6 +436,7 @@ async fn run(
         launcher: config.launcher,
         instructions: config.instructions,
         tokens: TokenCounter::default(),
+        inboxes,
         next_task: AtomicU32::new(0),
     });
     shared
@@ -401,12 +471,13 @@ async fn run(
             );
         }
     }
-    let mut queued = VecDeque::new();
+    let queue = shared.inboxes.open(ROOT_AGENT);
     loop {
-        let text = match queued.pop_front() {
-            Some(text) => text,
+        // Messages that waited for the last turn run first, in order.
+        let text = match queue.pop() {
+            Some(message) => message.text,
             None => match commands.recv().await {
-                Some(Command::Message(text)) => text,
+                Some(Command::Message(message)) => message.text,
                 // Subagents still running after their parent's turn may be waiting for this.
                 Some(Command::Respond {
                     request_id,
@@ -454,7 +525,9 @@ async fn run(
                         Some(Command::Respond { request_id, decision }) => {
                             shared.broker.resolve(request_id, decision);
                         }
-                        Some(Command::Message(text)) => queued.push_back(text),
+                        // Busy: the message waits, or (steering) joins the turn at its next
+                        // safe point.
+                        Some(Command::Message(message)) => shared.inboxes.queue_for_root(message),
                         // Never mid-turn: the conversation is in use.
                         Some(Command::SetModel { reply, .. } | Command::Compact { reply }) => {
                             let _ = reply.send(Err(SwitchError::Busy));

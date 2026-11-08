@@ -1116,6 +1116,99 @@ button.danger:hover:not(:disabled) {
   stroke-linejoin: round;
 }
 
+/* Steering: a user message that joined a running turn, marked with an accent edge and label */
+.message.user.steer {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: var(--highlight), inset 3px 0 0 var(--accent);
+}
+
+.steer-label {
+  display: block;
+  margin-bottom: calc(var(--space) * 0.25);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Messages waiting for the agent, stacked just above the composer */
+.queue {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 0.5);
+  width: calc(100% - var(--space) * 6);
+  max-width: var(--prose-max);
+  margin: 0 auto var(--space);
+  padding: 0;
+  list-style: none;
+}
+
+.queue li {
+  display: flex;
+  align-items: center;
+  gap: var(--space);
+  min-width: 0;
+  padding: calc(var(--space) * 0.5) var(--space) calc(var(--space) * 0.5) calc(var(--space) * 1.5);
+  background: var(--surface-2);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+}
+
+.queue li.steer {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.queue-kind {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.queue li.steer .queue-kind {
+  color: var(--accent);
+}
+
+.queue-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue input {
+  flex: 1;
+  min-width: 0;
+}
+
+.queue .buttons {
+  flex: none;
+  display: flex;
+  gap: calc(var(--space) * 0.5);
+}
+
+.queue button {
+  padding: calc(var(--space) * 0.25) var(--space);
+  font-size: 0.75rem;
+}
+
+/* Steer: beside the send button while a turn runs */
+.composer .steer {
+  flex: none;
+  align-self: center;
+  height: 2.25rem;
+  padding: 0 calc(var(--space) * 1.5);
+  border-radius: var(--radius-lg);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+}
+
 .session-sections {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));

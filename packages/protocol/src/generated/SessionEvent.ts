@@ -3,6 +3,7 @@ import type { ContextCategory } from "./ContextCategory";
 import type { ContextItem } from "./ContextItem";
 import type { ContextPointer } from "./ContextPointer";
 import type { Plan } from "./Plan";
+import type { QueuedMessage } from "./QueuedMessage";
 import type { SessionStatus } from "./SessionStatus";
 import type { TokenCountMethod } from "./TokenCountMethod";
 import type { TokenUsage } from "./TokenUsage";
@@ -64,7 +65,7 @@ summarised_messages: number,
 /**
  * The tokens the conversation may use: the window less room for the reply.
  */
-budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "model_suggestion", 
+budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, } | { "type": "model_suggestion", 
 /**
  * Names the suggestion in `session.suggestion_respond` and `model_suggestion_update`.
  */
