@@ -151,9 +151,7 @@ impl Agent {
     /// model call, and that reply is its report.
     pub fn single_call(mut self) -> Self {
         let root = self.shared.workspace.root_display();
-        let system = format!(
-            "You are an Imperium subagent for the project at {root}. You have no tools and              cannot look anything up: the brief contains everything you need. Answer it              completely in one reply. Your reply is returned unchanged as your report to the              agent that delegated to you, so give the finished answer, not a plan or questions."
-        );
+        let system = single_call_prompt(&root);
         let (system, spans) = join_parts(vec![(Category::SystemBase, system)]);
         self.messages = vec![ChatMessage::System { content: system }];
         self.spans = HashMap::from([(0, spans)]);
@@ -1022,6 +1020,19 @@ impl Agent {
     }
 }
 
+/// The system prompt of a single-call agent.
+fn single_call_prompt(root: &str) -> String {
+    format!(
+        concat!(
+            "You are an Imperium subagent for the project at {root}. You have no tools and cannot ",
+            "look anything up: the brief contains everything you need. Answer it completely in one ",
+            "reply. Your reply is returned unchanged as your report to the agent that delegated to ",
+            "you, so give the finished answer, not a plan or questions."
+        ),
+        root = root
+    )
+}
+
 /// Tool arguments as JSON for hooks, or the raw text when they do not parse.
 fn tool_input(arguments: &str) -> serde_json::Value {
     serde_json::from_str(arguments).unwrap_or_else(|_| arguments.into())
@@ -1211,5 +1222,17 @@ mod tests {
             assert_eq!(spec.description, definition.description);
             assert_eq!(spec.parameters, definition.parameters);
         }
+    }
+}
+
+#[cfg(test)]
+mod single_call_tests {
+    use super::single_call_prompt;
+
+    #[test]
+    fn the_single_call_prompt_has_no_runs_of_spaces() {
+        let prompt = single_call_prompt("/work");
+        assert!(!prompt.contains("  "), "{prompt}");
+        assert!(prompt.contains("/work") && prompt.contains("subagent"));
     }
 }

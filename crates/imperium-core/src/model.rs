@@ -175,10 +175,17 @@ pub fn route(
         None
     };
     let rule = user_rule.or(builtin_rule.as_ref());
-    let tier = rule
+    // A user rule's tier is a requirement; a built-in rule's is a preference.
+    let tier = user_rule
         .and_then(|rule| rule.tier)
         .map_or(request.tier, |floor| floor.max(request.tier));
+    let preferred_tier = builtin_rule
+        .as_ref()
+        .and_then(|rule| rule.tier)
+        .map_or(tier, |floor| floor.max(tier));
     // An agent's or user rule's location is a requirement; a built-in rule's is a preference.
+    // If no model fits a built-in rule's location and tier, the task's own tier applies in
+    // every location.
     let location = request
         .location
         .or_else(|| user_rule.and_then(|rule| rule.location));
@@ -207,7 +214,7 @@ pub fn route(
             .map_or(0.0, |p| p.input_usd_per_mtok + p.output_usd_per_mtok);
         (!preferred, price, availability(c))
     };
-    let best = |wanted: Option<Location>| {
+    let best = |wanted: Option<Location>, tier: Tier| {
         catalog
             .iter()
             .filter(usable)
@@ -221,8 +228,8 @@ pub fn route(
                     .then(a_rank.2.cmp(&b_rank.2))
             })
     };
-    best(preferred_location)
-        .or_else(|| best(None))
+    best(preferred_location, preferred_tier)
+        .or_else(|| best(None, tier))
         .map_or_else(|| fallback.clone(), |chosen| chosen.model.clone())
 }
 
@@ -461,6 +468,57 @@ mod tests {
             ..RoutingSettings::default()
         };
         assert_eq!(class_pick(&off, &["math".into()]), "local");
+    }
+
+    #[test]
+    fn a_task_class_floor_is_a_preference_and_menial_work_keeps_its_tier() {
+        let routing = RoutingSettings::default();
+        // No frontier row: a math task takes the best row at its own tier, not the session model.
+        let tags = ["math".to_string()];
+        let request = TaskRequest {
+            tags: &tags,
+            ..TaskRequest::default()
+        };
+        assert_eq!(
+            route(&catalog(), &routing, &fallback(), request, None).model,
+            "local"
+        );
+        let strong = TaskRequest {
+            tier: Tier::Strong,
+            ..request
+        };
+        assert_eq!(
+            route(&catalog(), &routing, &fallback(), strong, None).model,
+            "big"
+        );
+        // Menial work does not raise the tier, so a basic local row qualifies.
+        let mut rows = catalog();
+        rows.retain(|c| c.id == "cheap" || c.id == "mid");
+        let mut basic_local = rows[0].clone();
+        basic_local.id = "tiny".into();
+        basic_local.model.model = "tiny".into();
+        basic_local.location = Location::Local;
+        rows.push(basic_local);
+        let tests = ["tests".to_string()];
+        let basic = TaskRequest {
+            tier: Tier::Basic,
+            tags: &tests,
+            ..TaskRequest::default()
+        };
+        assert_eq!(
+            route(&rows, &routing, &fallback(), basic, None).model,
+            "tiny"
+        );
+        // A hard class beats a menial one on the same task.
+        let both = ["ui".to_string(), "design".to_string()];
+        let mixed = TaskRequest {
+            tags: &both,
+            ..TaskRequest::default()
+        };
+        assert_eq!(
+            route(&class_catalog(), &routing, &fallback(), mixed, None).model,
+            "frontier"
+        );
     }
 
     #[test]

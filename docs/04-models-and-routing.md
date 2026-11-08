@@ -230,15 +230,17 @@ frontier models, from the tags an agent puts on `spawn_agent`. These built-in ru
 your `[[routing.rules]]` and apply only when none of yours matched, so a rule of yours for the
 same tag (or a catch-all) replaces them:
 
-| Tags | Location | Minimum tier |
+| Tags (checked in this order) | Location | Tier |
 | --- | --- | --- |
-| `refactor`, `tests`, `ui`, `format`, `docs` | `local` | `standard` |
-| `architecture`, `math`, `proof`, `algorithm`, `design` | `cloud` | `frontier` |
+| `architecture`, `math`, `proof`, `algorithm`, `design` | `cloud` | at least `frontier` |
+| `refactor`, `tests`, `ui`, `format`, `docs` | `local` | the task's own (not raised) |
 
-A built-in rule's location is a preference, not a restriction: when no local `standard` row
-fits (none in the table, or memory is short) or no cloud `frontier` row exists, the router
-ranks the rows of every location by the usual steps. An explicit `location` on the call is
-still a restriction. Set `routing.builtin_rules = false` to turn the built-ins off.
+A task with tags from both rows counts as hard. A built-in rule's location and tier floor are
+preferences, not restrictions: the router first looks for a row in that location at the floor,
+and when there is none (no local row, memory is short, or no cloud `frontier` row) it ranks the
+rows of every location at the task's own tier by the usual steps. An explicit `location` on the
+call, and a `location` or `tier` in a rule of yours, remain requirements. Set
+`routing.builtin_rules = false` to turn the built-ins off.
 
 A task for a frontier model can be sent with `single_call: true`: the subagent gets the brief
 and no tools, makes exactly one model call, and its reply is the report. The brief must carry

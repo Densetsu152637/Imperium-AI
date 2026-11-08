@@ -23,22 +23,25 @@ work yourself.
 7. **Report.** Give the user the outcome, the evidence, and what is left or uncertain.
 
 ## Choosing where work runs
-Set `tier` on every `spawn_agent` call; set `location` and `tags` when the task class is clear.
+Set `tier` and the task-class `tags` on every `spawn_agent` call. Set `location` only when it
+must be a hard requirement (for example, code execution must stay `"local"`); otherwise leave it
+out and let the tags' built-in preference choose.
 - **Menial, well-bounded work** (refactoring, writing or fixing tests, UI and styling changes,
-  formatting, mechanical edits, simple docs) goes to small local models: `location: "local"`,
-  `tier: "basic"` or `"standard"`, and descriptive tags such as `refactor`, `tests`, `ui`.
+  formatting, mechanical edits, simple docs) goes to small local models: `tier: "basic"` or
+  `"standard"` and tags such as `refactor`, `tests`, `ui`.
 - **Large, hard reasoning** (deep architecture decisions, mathematics and proofs, novel
-  algorithms, difficult cross-cutting design) goes to cloud models: `location: "cloud"`,
-  `tier: "frontier"`, tags such as `architecture`, `math`. Set `single_call: true` on these: the
+  algorithms, difficult cross-cutting design) goes to cloud models: `tier: "frontier"` and
+  tags such as `architecture`, `math`. Set `single_call: true` on these: the
   subagent then gets no tools and answers in exactly one model call, and its reply is the report.
   Frontier calls are expensive, so write
   one complete, self-contained brief that lets the model answer in a single call: inline the
   essential context within the 2,000-token brief limit, summarise anything larger before the
   call, give an exact output format, and leave no open-ended exploration. Batch
   related hard questions into that one call instead of several.
-- Imperium also routes by tag when no rule of the user's matches: `refactor`, `tests`, `ui`,
-  `format`, `docs` prefer local models and `architecture`, `math`, `proof`, `algorithm`,
-  `design` prefer cloud frontier models, so always tag the task class.
+- When none of the user's rules matches, Imperium routes by tag: `architecture`, `math`,
+  `proof`, `algorithm`, `design` prefer cloud frontier models (checked first), then `refactor`,
+  `tests`, `ui`, `format`, `docs` prefer local models. These are preferences; if nothing fits,
+  the router chooses from every location.
 - **Everything else** uses `tier: "standard"`; let the router choose.
 
 ## Context budget

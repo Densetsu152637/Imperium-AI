@@ -784,24 +784,25 @@ pub const MENIAL_TAGS: [&str; 5] = ["refactor", "tests", "ui", "format", "docs"]
 pub const HARD_TAGS: [&str; 5] = ["architecture", "math", "proof", "algorithm", "design"];
 
 impl RoutingSettings {
-    /// The built-in task-class rules: menial tags prefer local `standard` models and hard
-    /// tags cloud `frontier` models. They are checked only when no entry of `rules` matched,
-    /// and their location is a preference: when no model there fits, the normal router
-    /// chooses from every location.
+    /// The built-in task-class rules, hard classes first so a task tagged with both a hard
+    /// and a menial class counts as hard. Hard tags prefer cloud `frontier` models; menial
+    /// tags prefer local models and keep the task's own tier. They are checked only when no
+    /// entry of `rules` matched, and their location and tier floor are preferences: when no
+    /// model fits, the normal router chooses from every location at the task's own tier.
     pub fn builtin_rules() -> Vec<RoutingRule> {
         let class = |tag: &str, location, tier| RoutingRule {
             when_tag: Some(tag.to_string()),
             location: Some(location),
-            tier: Some(tier),
+            tier,
             ..RoutingRule::default()
         };
-        MENIAL_TAGS
+        HARD_TAGS
             .iter()
-            .map(|tag| class(tag, Location::Local, Tier::Standard))
+            .map(|tag| class(tag, Location::Cloud, Some(Tier::Frontier)))
             .chain(
-                HARD_TAGS
+                MENIAL_TAGS
                     .iter()
-                    .map(|tag| class(tag, Location::Cloud, Tier::Frontier)),
+                    .map(|tag| class(tag, Location::Local, None)),
             )
             .collect()
     }
