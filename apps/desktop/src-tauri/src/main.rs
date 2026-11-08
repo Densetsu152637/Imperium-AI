@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod daemon;
+mod store;
 mod update;
 
 fn main() {
@@ -23,6 +24,9 @@ fn main() {
             daemon::daemon_restart,
             daemon::daemon_log,
             daemon::daemon_set_keep_running,
+            store::store_read,
+            store::store_write,
+            store::store_folder,
             update::update_status,
             update::update_check,
             update::update_set_channel,

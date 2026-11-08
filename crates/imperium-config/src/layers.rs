@@ -19,6 +19,18 @@ pub enum Source {
     Environment(String),
 }
 
+impl Source {
+    /// The layer's kind without its location: `default`, `user`, `project`, or `env`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Source::Default => "default",
+            Source::User(_) => "user",
+            Source::Project(_) => "project",
+            Source::Environment(_) => "env",
+        }
+    }
+}
+
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

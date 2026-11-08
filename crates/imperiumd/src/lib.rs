@@ -3,6 +3,7 @@
 
 mod approvals;
 mod autofix;
+mod config;
 mod downloads;
 mod endpoint;
 mod local;

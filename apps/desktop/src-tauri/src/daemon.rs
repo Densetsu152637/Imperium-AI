@@ -71,18 +71,22 @@ pub struct DaemonControl {
 }
 
 /// The running daemon's endpoint, starting the bundled daemon first when none answers (unless
-/// the user stopped it).
+/// the user stopped it, or turned off starting it with the app).
 #[tauri::command]
 pub async fn daemon_endpoint<R: Runtime>(
     app: AppHandle<R>,
     control: tauri::State<'_, DaemonControl>,
+    autostart: Option<bool>,
 ) -> Result<DaemonConnection, String> {
     let endpoint_file = endpoint_file()?;
     if let Some(endpoint) = live_endpoint(&endpoint_file) {
         return Ok(connection(endpoint));
     }
     if control.stopped_by_user.load(Ordering::Relaxed) {
-        return Err("imperiumd is stopped. Start it from here or in Settings.".into());
+        return Err("imperiumd is stopped.".into());
+    }
+    if autostart == Some(false) {
+        return Err("imperiumd is not running, and Imperium is set not to start it.".into());
     }
     let Some(daemon) = bundled_daemon() else {
         // Development builds and archive installs run the daemon themselves.

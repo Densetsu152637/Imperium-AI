@@ -2321,3 +2321,327 @@ button.sort:hover:not(:disabled) {
     color: CanvasText;
   }
 }
+
+/* Settings window: a centred sheet over a dimmed workspace, sections on the left. */
+.settings-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: rgb(0 0 0 / 0.55);
+  backdrop-filter: blur(3px);
+  animation: fade-in var(--fast, 120ms) ease-out;
+}
+
+.settings-window {
+  display: grid;
+  grid-template-columns: 15rem 1fr;
+  width: min(62rem, 100%);
+  height: min(42rem, 100%);
+  overflow: hidden;
+  background: var(--metal-card, var(--surface));
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: calc(var(--radius) * 1.5);
+  box-shadow: var(--highlight), var(--shadow);
+  animation: rise-in var(--slow) var(--ease);
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.9rem 0.6rem;
+  overflow-y: auto;
+  background: rgb(0 0 0 / 0.18);
+  border-right: 1px solid var(--border);
+}
+
+.settings-search {
+  margin-bottom: 0.6rem;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin-bottom: 0.6rem;
+}
+
+.settings-group-label {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.settings-nav-item {
+  justify-content: flex-start;
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  font-size: 0.88rem;
+}
+
+.settings-nav-item:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.settings-nav-item.active {
+  background: var(--accent-soft);
+  color: var(--fg);
+  border-color: transparent;
+}
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.settings-content-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-content-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.settings-rows {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.4rem 1.4rem 1.4rem;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.settings-row-label {
+  font-size: 0.9rem;
+}
+
+.settings-row-description {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.settings-row-control {
+  flex-shrink: 0;
+  max-width: 55%;
+}
+
+.settings-row-control input[type="text"],
+.settings-row-control input[type="number"],
+.settings-row-control textarea,
+.settings-row-control select {
+  width: 16rem;
+  max-width: 100%;
+}
+
+.settings-row-control .daemon-settings,
+.settings-rows > .daemon-settings,
+.settings-rows > .update-settings {
+  border-top: none;
+  padding-top: 0.6rem;
+}
+
+.settings-row .slider {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.settings-row .slider output {
+  min-width: 3.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.row-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.settings-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0.8rem 1.4rem 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: 0.85rem;
+}
+
+.settings-content > .error {
+  margin: 0.6rem 1.4rem 0;
+}
+
+.reset-link {
+  padding: 0 0.3rem;
+  font-size: 0.72rem;
+  color: var(--accent);
+}
+
+.source-badge {
+  margin-left: 0.3rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong, var(--border));
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+.path {
+  display: block;
+  max-width: 22rem;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.shortcuts td {
+  padding: 0.45rem 1rem 0.45rem 0;
+}
+
+/* A switch: a pill with a knob that slides to the accent when on. */
+.switch {
+  position: relative;
+  width: 2.4rem;
+  height: 1.35rem;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong, var(--border));
+  box-shadow: none;
+}
+
+.switch-knob {
+  position: absolute;
+  top: 50%;
+  left: 0.15rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--silver, #c9c3b6);
+  transform: translateY(-50%);
+  transition: left var(--fast, 120ms) ease;
+}
+
+.switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch.on .switch-knob {
+  left: calc(100% - 1.15rem);
+  background: #fff;
+}
+
+/* The connection bar above the workspace while the daemon is away. */
+.connection-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 1rem;
+  font-size: 0.82rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.connection-banner[data-state="offline"] {
+  background: rgb(224 96 126 / 0.08);
+}
+
+.connection-banner[data-state="offline"] .daemon-dot {
+  background: var(--danger, #e0607e);
+}
+
+.connection-message {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.connection-form {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.panel-close {
+  margin-left: 0.2rem;
+  padding: 0 0.35rem;
+  font-size: 1rem;
+  line-height: 1;
+  opacity: 0.5;
+}
+
+.panel-close:hover {
+  opacity: 1;
+}
+
+/* Settings that change how text and motion behave everywhere. */
+.prose {
+  font-family: var(--font-prose, var(--font-ui));
+}
+
+.wrap-code pre,
+.wrap-code code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .settings-window {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    max-height: 10rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
