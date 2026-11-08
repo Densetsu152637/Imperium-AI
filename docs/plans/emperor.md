@@ -464,8 +464,16 @@ hard parts, briefed so one call settles them.
   one model call and no tool offers; the default rules route a `tests` task local and a `math`
   task to a cloud frontier row in `cargo test -p imperium-models`; the exported `spawn_agent`
   schema includes `single_call`; `bash scripts/check-rust.sh` passes.
-- Status: pending
-- Outcome:
+- Status: done (2026-11-09; branch `feat/task-class-routing`, stacked on `feat/dispatch-contract`,
+  pushed, not yet merged)
+- Outcome: commits 2cf5127, 7921fd0. `spawn_agent.single_call` (one model call, no tools, reply
+  is the report); built-in task-class rules in `route()` (`crates/imperium-core/src/model.rs`)
+  after user rules, hard classes first, location and tier floor as preferences with fallback to
+  the task's own tier; menial classes keep the requested tier; `routing.builtin_rules` switch and
+  `RoutingRule.tier`; emperor-root.md sets tier and tags always, location only when it must be
+  hard. `check-rust.sh` exit 0 (320 passed). Gate review converged after one fix round (F1 soft
+  floor, F2 menial tier, F3 prompt whitespace). Expect conflicts in `agent.rs` with
+  `feat/shared-local-slots` when merging. G15 itself needs training (stage 4) and eval.
 - Handoff notes: the emperor-root prompt's "Choosing where work runs" section was added during
   stage 1.
 
