@@ -7,10 +7,12 @@ import { advance, current, dispatch, initial, nextWake } from "./arbiter.ts";
 import type { Current, Env, PetEvent } from "./arbiter.ts";
 import { isReviewer } from "./events.ts";
 import { clip, hash } from "./pick.ts";
-import { DROWSY_MS, chooseKind, dueShots, isOver, nextPlayDelay, pickPair, roleOf, startPlay } from "./play.ts";
+import { DROWSY_MS, GATHER_MS, MEET_DIST, beginScript, chooseKind, dueShots, isOver, nextPlayDelay, passingPair, pickPair, roleOf, startPlay } from "./play.ts";
 import type { Candidate, Play, Pose } from "./play.ts";
 import { REMOVE_MS, ROOT, busyOf, busySubs, keyOf, repair, routeEvent } from "./route.ts";
 import type { Mode } from "./route.ts";
+import { distance } from "./space.ts";
+import type { Pos } from "./space.ts";
 import type { PetsArbiter } from "./types.ts";
 
 export type Entry = {
@@ -51,20 +53,20 @@ export class Nursery {
   private retired = new Set<string>();
   private serial = 0;
   onChange: () => void = () => {};
-  /** The `play` setting: pets that are free now and then play with a neighbour. */
+  /** The `play` setting: free pets now and then play with each other. */
   playEnabled = true;
   /** The interaction in progress, if any (one at a time per nursery). */
   playing: Play | null = null;
   /** Randomness for play; tests inject a seeded one. */
   rand: () => number = Math.random;
-  /** Which pets stand next to `key`; the view replaces this with the grid's real layout. */
-  neighbors: (key: string) => string[] = (key) => {
-    const keys = this.sorted().map((e) => e.key);
-    const i = keys.indexOf(key);
-    return [keys[i - 1], keys[i + 1]].flatMap((k) => (k === undefined ? [] : [k]));
+  /** Where pet `key` stands in the room; the view replaces this with the real positions. */
+  at: (key: string) => Pos | null = (key) => {
+    const i = this.sorted().findIndex((e) => e.key === key);
+    return i < 0 ? null : { x: i * 100, y: 0 };
   };
   // When play may next start; 0 means "not set yet" (set from the next tick's clock).
   private nextPlayAt = 0;
+  private nextPassAt = 0;
   private clock = 0;
 
   readonly mode: Mode | "mine";
@@ -245,7 +247,7 @@ export class Nursery {
 
   /**
    * Runs play: delivers the shots now due, ends it when it is over or either pet got real work,
-   * and now and then starts a new one between two free neighbours. `reduced` (reduced motion)
+   * and now and then starts a new one between two free pets (or a greeting between two that pass close). `reduced` (reduced motion)
    * or `playEnabled` false stops it altogether.
    */
   tickPlay(now: number, reduced: boolean): void {
@@ -261,6 +263,11 @@ export class Nursery {
       if (pair.some((e) => !e || e.removeAt !== null || busyOf(e.arbiter))) {
         this.playing = null;
         this.nextPlayAt = 0;
+        return;
+      }
+      if (playing.gather !== null) {
+        const [a, b] = [this.at(playing.keys[0]), this.at(playing.keys[1])];
+        if (!a || !b || distance(a, b) <= MEET_DIST || now >= playing.gather) this.playing = beginScript(playing, now);
         return;
       }
       const due = dueShots(playing, now);
@@ -279,18 +286,33 @@ export class Nursery {
       this.nextPlayAt = now + nextPlayDelay(this.rand);
       return;
     }
-    if (now < this.nextPlayAt) return;
-    const cands: Candidate[] = [...this.entries.values()].map((e) => {
-      const cur = this.view(e, now);
-      return { key: e.key, shown: cur.name, kind: cur.kind, hidden: cur.isHidden, busy: busyOf(e.arbiter) !== null, leaving: e.removeAt !== null, inPlay: false, quietFor: now - e.arbiter.activeAt };
-    });
-    const pair = pickPair(cands, this.neighbors, this.rand);
+    const candidates = (): Candidate[] =>
+      [...this.entries.values()].map((e) => {
+        const cur = this.view(e, now);
+        return { key: e.key, shown: cur.name, kind: cur.kind, hidden: cur.isHidden, busy: busyOf(e.arbiter) !== null, leaving: e.removeAt !== null, inPlay: false, quietFor: now - e.arbiter.activeAt };
+      });
+    if (now < this.nextPlayAt) {
+      // Two free pets that happen to pass close may greet each other.
+      if (now >= this.nextPassAt) {
+        this.nextPassAt = now + 500;
+        const near = passingPair(candidates(), this.at, this.rand);
+        if (near && this.rand() < 0.1) {
+          this.playing = startPlay("greet", [near.a.key, near.b.key], now, this.rand);
+          this.nextPlayAt = 0;
+          this.tickPlay(now, reduced);
+        }
+      }
+      return;
+    }
+    const pair = pickPair(candidates(), this.at, this.rand);
     if (!pair) {
       this.nextPlayAt = now + 5000;
       return;
     }
     const drowsy = pair.a.quietFor >= DROWSY_MS && pair.b.quietFor >= DROWSY_MS;
-    this.playing = startPlay(chooseKind(this.rand, drowsy), [pair.a.key, pair.b.key], now, this.rand);
+    const [pa, pb] = [this.at(pair.a.key), this.at(pair.b.key)];
+    const gather = pa && pb && distance(pa, pb) > MEET_DIST ? GATHER_MS : 0;
+    this.playing = startPlay(chooseKind(this.rand, drowsy), [pair.a.key, pair.b.key], now, this.rand, gather);
     this.nextPlayAt = 0;
     this.tickPlay(now, reduced);
   }

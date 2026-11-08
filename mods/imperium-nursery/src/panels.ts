@@ -9,7 +9,7 @@ import { Nursery } from "./nursery.ts";
 import type { Deps } from "./nursery.ts";
 import { MIX, count, pickPet } from "./pick.ts";
 import { allDrawn } from "./pet.ts";
-import { CSS, FrameLoop, Grid, reducedMotion } from "./view.ts";
+import { CSS, FrameLoop, Room, reducedMotion } from "./view.ts";
 
 const SLEEP_AGENT_MS = 180_000;
 const SLEEP_MINE_MS = 60_000;
@@ -37,15 +37,15 @@ function setOptions(select: HTMLSelectElement, options: [string, string][], fall
   select.value = options.some(([v]) => v === keep) ? keep : fallback;
 }
 
-/** The common frame of a panel: styles, a controls bar, a summary line, the grid, an empty note. */
-function shell(ctx: ModContext, grid: Grid): { bar: HTMLElement; summary: HTMLElement; empty: HTMLElement } {
+/** The common frame of a panel: styles, a controls bar, a summary line, the room, an empty note. */
+function shell(ctx: ModContext, room: Room): { bar: HTMLElement; summary: HTMLElement; empty: HTMLElement } {
   const root = el("div", "nursery");
   const style = el("style");
   style.textContent = CSS;
   const bar = el("div", "bar");
   const summary = el("div", "summary");
   const empty = el("div", "empty");
-  root.append(style, bar, summary, grid.el, empty);
+  root.append(style, bar, summary, empty, room.el);
   ctx.panel(ctx.panelId).render(root);
   return { bar, summary, empty };
 }
@@ -72,7 +72,7 @@ function petSetting(ctx: ModContext, lib: PetLibrary, bar: HTMLElement, setting:
   bar.append(labelled("Pets", select));
 }
 
-/** The "Play" checkbox: whether free pets play with their neighbours (`play`, on by default). */
+/** The "Play" checkbox: whether free pets play with each other (`play`, on by default). */
 function playToggle(ctx: ModContext, bar: HTMLElement, nursery: Nursery, on: boolean): void {
   const box = el("input");
   box.type = "checkbox";
@@ -86,8 +86,8 @@ function playToggle(ctx: ModContext, bar: HTMLElement, nursery: Nursery, on: boo
 }
 
 /** Runs every frame before painting: membership changes, then play. */
-function frameWork(loop: FrameLoop, nursery: Nursery, grid: Grid): void {
-  nursery.neighbors = (key) => grid.neighbors(key);
+function frameWork(loop: FrameLoop, nursery: Nursery, room: Room): void {
+  nursery.at = (key) => room.pos(key);
   loop.onFrame(() => {
     const now = Date.now();
     nursery.tick(now);
@@ -113,15 +113,15 @@ async function sessionsPanel(ctx: ModContext, mode: "session" | "global"): Promi
     assign: ({ key, sessionId, root }) => pickPet(lib.ids(), setting, mode === "session" ? key : sessionId, mode === "session" && root),
   };
   const nursery = new Nursery(mode, deps);
-  const grid = new Grid(nursery, lib, { size: SIZE, mine: false, badges: mode === "global", onPat: (key) => nursery.pat(key, Date.now()) });
-  const { bar, summary, empty } = shell(ctx, grid);
+  const room = new Room(nursery, lib, { size: SIZE, mine: false, badges: mode === "global", onPat: (key) => nursery.pat(key, Date.now()) });
+  const { bar, summary, empty } = shell(ctx, room);
 
   let sessions: SessionSnapshot[] = [];
   let selected: string | null = null;
   const pick = el("select");
   const refresh = (): void => {
     const s = nursery.summary();
-    grid.sync();
+    room.sync();
     if (lib.pets.length === 0) empty.textContent = "No pets installed";
     else if (mode === "global") empty.textContent = sessions.length === 0 ? "No sessions yet" : "";
     else empty.textContent = sessions.length === 0 ? "No sessions yet" : nursery.target() === null ? "No session selected" : "";
@@ -170,8 +170,8 @@ async function sessionsPanel(ctx: ModContext, mode: "session" | "global"): Promi
   apply();
   refresh();
 
-  loop.add(grid);
-  frameWork(loop, nursery, grid);
+  loop.add(room);
+  frameWork(loop, nursery, room);
   loop.start();
 }
 
@@ -180,7 +180,7 @@ async function minePanel(ctx: ModContext): Promise<void> {
   const loop = new FrameLoop();
   const lib = new PetLibrary(ctx.pets);
   const nursery = new Nursery("mine", { envFor: envFor(lib, SLEEP_MINE_MS), assign: () => null });
-  const grid = new Grid(nursery, lib, {
+  const room = new Room(nursery, lib, {
     size: SIZE,
     mine: true,
     badges: false,
@@ -190,7 +190,7 @@ async function minePanel(ctx: ModContext): Promise<void> {
       save();
     },
   });
-  const { bar, summary, empty } = shell(ctx, grid);
+  const { bar, summary, empty } = shell(ctx, room);
   const names = new Map<string, string>();
 
   const save = (): void => {
@@ -199,7 +199,7 @@ async function minePanel(ctx: ModContext): Promise<void> {
   };
   nursery.onChange = () =>
     queueMicrotask(() => {
-      grid.sync();
+      room.sync();
       empty.textContent = lib.pets.length === 0 ? "No pets installed" : nursery.entries.size === 0 ? "Your nursery is empty — put a pet in" : "";
       summary.textContent = nursery.entries.size === 0 ? "" : count(nursery.entries.size, "pet");
     });
@@ -236,8 +236,8 @@ async function minePanel(ctx: ModContext): Promise<void> {
   playToggle(ctx, bar, nursery, await reading(ctx, "play", true));
   nursery.onChange();
 
-  loop.add(grid);
-  frameWork(loop, nursery, grid);
+  loop.add(room);
+  frameWork(loop, nursery, room);
   loop.start();
 }
 

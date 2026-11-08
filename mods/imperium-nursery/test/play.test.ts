@@ -7,10 +7,9 @@ import type { SessionEvent, SessionSnapshot } from "@imperium/mod-sdk";
 import type { Env } from "../src/arbiter.ts";
 import { Nursery } from "../src/nursery.ts";
 import { allDrawn } from "../src/pet.ts";
-import { angleTo, chooseKind, isFree, isOver, pickPair, poseAt, reachPx, startPlay, stepsOf } from "../src/play.ts";
+import { angleTo, beginScript, chooseKind, isFree, isOver, passingPair, pickPair, poseAt, startPlay, stepsOf } from "../src/play.ts";
 import type { Candidate, PlayKind } from "../src/play.ts";
 import { busyOf } from "../src/route.ts";
-import { PLAY_SPEED, stepWalker } from "../src/wander.ts";
 import { expect } from "./expect.ts";
 
 const T0 = 1_000_000;
@@ -41,14 +40,38 @@ test("a free pet is awake, idle at P6, settled, and not at work or leaving", () 
   }
 });
 
-test("pairs are free neighbours; none when nobody is free next to anybody", () => {
-  const next = (k: string): string[] => ({ a: ["b"], b: ["a", "c"], c: ["b"] })[k] ?? [];
-  const pair = pickPair([cand("a"), cand("b"), cand("c")], next, () => 0);
+test("pairs are free pets, the partner usually the nearest, across the whole room", () => {
+  const spots: Record<string, { x: number; y: number }> = { a: { x: 0, y: 0 }, b: { x: 400, y: 10 }, c: { x: 30, y: 200 } };
+  const at = (k: string) => spots[k] ?? null;
+  // rand 0 picks the first free pet and its nearest partner (c is nearer to a than b is).
+  const pair = pickPair([cand("a"), cand("b"), cand("c")], at, () => 0);
   expect(pair?.a.key).toBe("a");
-  expect(pair?.b.key).toBe("b");
-  // b is busy: a and c are free but not neighbours.
-  expect(pickPair([cand("a"), cand("b", { busy: true }), cand("c")], next, () => 0)).toBeNull();
-  expect(pickPair([cand("a")], next, () => 0)).toBeNull();
+  expect(pair?.b.key).toBe("c");
+  // c is busy: a pairs with b although they are far apart.
+  const far = pickPair([cand("a"), cand("b"), cand("c", { busy: true })], at, () => 0);
+  expect(far?.a.key).toBe("a");
+  expect(far?.b.key).toBe("b");
+  expect(pickPair([cand("a"), cand("b", { busy: true }), cand("c", { busy: true })], at, () => 0)).toBeNull();
+  expect(pickPair([cand("a")], at, () => 0)).toBeNull();
+});
+
+test("a greeting in passing needs two free pets that are close", () => {
+  const spots: Record<string, { x: number; y: number }> = { a: { x: 0, y: 0 }, b: { x: 40, y: 10 }, c: { x: 300, y: 0 } };
+  const at = (k: string) => spots[k] ?? null;
+  const near = passingPair([cand("a"), cand("b"), cand("c")], at, () => 0);
+  expect([near?.a.key, near?.b.key].sort()).toEqual(["a", "b"]);
+  expect(passingPair([cand("a"), cand("b", { busy: true }), cand("c")], at, () => 0)).toBeNull();
+});
+
+test("pets far apart gather first; the script starts when they meet or time runs out", () => {
+  const p = startPlay("highfive", ["a", "b"], 1000, () => 0, 5000);
+  expect(p.gather).toBe(6000);
+  expect(poseAt(p, 0, 2000)).toEqual({ mode: "walk", toward: 1 });
+  expect(isOver(p, 1_000_000)).toBe(false);
+  const go = beginScript(p, 3000);
+  expect(go.gather).toBeNull();
+  expect(isOver(go, 3000 + stepsOf("highfive").endMs)).toBe(true);
+  expect(startPlay("greet", ["a", "b"], 1000, () => 0).gather).toBeNull();
 });
 
 test("a nap needs drowsy pets; the weights reach every other interaction", () => {
@@ -189,23 +212,28 @@ test("reduced motion: no play starts and one in progress stops", () => {
   expect(n.playing).toBeNull();
 });
 
-test("reach and facing: half the gap between the sprites toward the partner, at most 40 px", () => {
-  expect(reachPx(200, 64)).toBe(40);
-  expect(reachPx(-200, 64)).toBe(-40);
-  expect(reachPx(100, 64)).toBe(15);
-  expect(reachPx(60, 64)).toBe(0);
+test("facing: the angle from a pet to its partner, clockwise from up", () => {
   expect(angleTo(10, 0)).toBe(90);
   expect(angleTo(-10, 0)).toBe(270);
   expect(angleTo(0, -10)).toBe(0);
   expect(angleTo(0, 10)).toBe(180);
 });
 
-test("a playing walker covers ground faster than a wanderer and stops at its target", () => {
-  let w = { x: 0, target: 30, nextAt: Infinity };
-  for (let t = 0; t < 2000; t += 50) w = stepWalker(w, t, 50, true, () => 0, 0, PLAY_SPEED).walker;
-  expect(w.x).toBe(30);
-  // A busy pet is eased back to its slot with no walk animation.
-  const home = stepWalker({ x: 10, target: 10, nextAt: 0 }, 0, 100, false, () => 0);
-  expect(home.dir).toBe(0);
-  expect(home.walker.x).toBeLessThan(10);
+test("pets far apart in a nursery gather before the script, then play", () => {
+  const n = settled();
+  const far: Record<string, { x: number; y: number }> = { a: { x: 0, y: 0 }, b: { x: 500, y: 0 }, c: { x: 5000, y: 5000 } };
+  n.at = (k) => far[k] ?? null;
+  let sawGather = false;
+  let sawScript = false;
+  for (let t = T0 + 5000; t <= T0 + 5000 + 46_000; t += 100) {
+    if (n.playing?.gather !== null && n.playing) {
+      sawGather = true;
+      // the view walks them together
+      far.a = { x: far.a!.x + 5, y: 0 };
+    }
+    n.tickPlay(t, false);
+    if (n.playing && n.playing.gather === null) sawScript = true;
+  }
+  expect(sawGather).toBe(true);
+  expect(sawScript).toBe(true);
 });

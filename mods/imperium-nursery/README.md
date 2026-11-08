@@ -31,32 +31,52 @@ transcript text.
   working, 5 subagents"). Working and waiting sessions come first. The pet hears all of its
   session's events, so a subagent that needs you makes it show `alert`.
 - **My nursery** (panel `mine`): your own pets. Pick any installed pet, give it an optional
-  nickname and press **Put in**; press **×** on a pet to take it out. Residents idle, wander, play with each other
+  nickname and press **Put in**; press **×** on a pet to take it out. Residents idle, roam, play with each other
   and fidget, fall asleep after a minute, and play `petted` when clicked. Who lives there is
   kept across restarts.
 
-Clicking a pet in any nursery pats it.
+Clicking a pet in any nursery pats it; every pet is also a focusable button, so the keyboard
+works too.
+
+## One shared room
+
+Each panel is a single room that fills the panel below its controls. There are no cards or
+cages: pets stand anywhere in it, and a pet lower on screen (nearer) is drawn in front of one
+higher up, with a small shadow on the floor. A pet's label stays under it, the badge of the
+global nursery and the **×** of My nursery (shown on hover or focus) travel with it.
+
+- **Roaming.** A free pet picks a spot anywhere in the room, walks there at a steady pace
+  (`walk-left`/`walk-right` by direction; a pet without walk strips glides in `idle`), pauses
+  a few seconds and goes on. Pets keep from stacking up: they push each other apart softly.
+- **Busy pets** (working, waiting, reacting) stop where they are and play their animation.
+  A finished subagent walks to the nearer side of the room and fades out as it is removed.
+  A new subagent appears (`pop-out`) next to its parent in the session nursery.
+- **Size.** The room follows the panel (pets are pulled back inside when it shrinks) and grows
+  taller when crowded, about 11 000 px squared per pet; the panel scrolls only past that.
+- **Reduced motion.** With `prefers-reduced-motion` nothing walks: the pets stand spread out
+  over the room in a fixed layout and show their first frames.
 
 ## Play
 
-Every 15 to 45 seconds, if two pets that stand next to each other are both free, they act out
-a short scripted interaction, picked at random:
+Every 15 to 45 seconds, if two pets are both free, they act out a short scripted interaction,
+picked at random. Any two free pets in the room can play: usually the nearest pair, now and
+then two far apart, in which case they first walk across the room to each other (up to about
+12 seconds). Two roaming pets that pass close to each other may also greet in passing.
 
 - **greet**: they turn toward each other with the `look` cells, then both wave.
-- **chase**: one walks toward the other, which walks away; both jump at the end.
+- **chase**: one runs after the other, which runs away across the room; both jump at the end.
 - **high-five**: they approach each other and jump in sync.
-- **nap together**: drowsy pets settle side by side, sleep for a while, then wake (`waking`).
+- **nap together**: drowsy pets settle down next to each other, sleep for a while, then wake (`waking`).
 - **show-off**: one celebrates, the other watches (`look`) and then waves.
 
 A pet is free when it is awake, shows an idle-level animation (idle, fidget, look), is not at
 work for an agent, is not a finished subagent waiting to leave, and has not been touched in the
 last few seconds. Play goes through each pet's own arbiter as ordinary one-shots, plus a pose
 (walk, look, sleep) laid over `idle`; it never outranks anything. Any real event for either
-pet, or a pat, ends the interaction for both at once and they return to their slots. A pet that
+pet, or a pat, ends the interaction for both at once and they stop and go back to roaming. A pet that
 does not draw an animation falls back along its chain (a pet without walk strips slides
-instead, one without `celebrating` jumps). Movement stays within a band of about 40 px around
-each pet's slot, so the labelled grid stays usable. With `prefers-reduced-motion` nothing
-moves and nothing plays. The **Play** checkbox next to the Pets select (stored as `play`, on by
+instead, one without `celebrating` jumps). With `prefers-reduced-motion` nothing moves and
+nothing plays. The **Play** checkbox next to the Pets select (stored as `play`, on by
 default) turns it off.
 
 ## Which pet an agent gets
@@ -98,7 +118,7 @@ The build bundles `src/` into one self-contained ES module, `index.js`, because 
 inlines the entry into a sandboxed frame where relative imports do not resolve. Only
 `@imperium/mod-sdk` stays external; the frame supplies it. Tests use Node's built-in runner
 with type stripping (Node 24 or newer) and cover the arbiter, the pet package parser, frame
-timing, the per-nursery event routing and the nursery state; none of it needs a DOM.
+timing, the room (bounds, roaming, separation, pairing, layout), the per-nursery event routing and the nursery state; none of it needs a DOM.
 
 ## Licence
 

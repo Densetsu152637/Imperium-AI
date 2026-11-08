@@ -1,5 +1,6 @@
 // Play, pure: every so often two free pets act out a short scripted interaction. Time and
-// randomness are injected, like the arbiter's.
+// randomness are injected, like the arbiter's. Any two free pets in the room may play: they first
+// walk to each other when they are far apart (the gather phase), then run the script.
 //
 // A script is a timeline of steps per pet. A `shot` step is a one-shot handed to that pet's
 // own arbiter (waving, jumping, celebrating, waking), so the arbiter's rules decide whether it
@@ -9,11 +10,14 @@
 // cancels play the moment either pet gets one, and the view draws a pose only while the
 // arbiter shows `idle`.
 
+import { distance, nearestPartner } from "./space.ts";
+import type { Pos } from "./space.ts";
+
 export type PlayKind = "greet" | "chase" | "highfive" | "nap" | "showoff";
 
 /**
- * What an idle pet does during play. `toward` for `walk` is the fraction of its reach to cover:
- * 1 is all the way toward the partner, -1 all the way away, 0 back at its slot.
+ * What an idle pet does during play. `toward` for `walk`: 1 is to the partner's side, a smaller
+ * positive fraction stops farther off, -1 runs away from the partner, 0 stands where it is.
  */
 export type Pose = { mode: "idle" | "walk" | "look" | "sleep"; toward: number };
 
@@ -27,6 +31,8 @@ export type Play = {
   startedAt: number;
   steps: Step[];
   endMs: number;
+  /** While set, the pets are still walking to each other; the script starts when they meet or at this time. */
+  gather: number | null;
   /** Steps before this index have been delivered. */
   next: number;
 };
@@ -68,11 +74,18 @@ export function stepsOf(kind: PlayKind): { steps: Step[]; endMs: number } {
   }
 }
 
-/** Starts an interaction; `rand` decides which pet takes the first role. */
-export function startPlay(kind: PlayKind, keys: [string, string], now: number, rand: () => number): Play {
+/**
+ * Starts an interaction; `rand` decides which pet takes the first role. With `gatherMs` above 0
+ * the pets first walk to each other (for at most that long) and the script begins after.
+ */
+export function startPlay(kind: PlayKind, keys: [string, string], now: number, rand: () => number, gatherMs = 0): Play {
   const { steps, endMs } = stepsOf(kind);
-  return { kind, keys: rand() < 0.5 ? keys : [keys[1], keys[0]], startedAt: now, steps, endMs, next: 0 };
+  const gathering = gatherMs > 0;
+  return { kind, keys: rand() < 0.5 ? keys : [keys[1], keys[0]], startedAt: gathering ? Infinity : now, steps, endMs, gather: gathering ? now + gatherMs : null, next: 0 };
 }
+
+/** Ends the gather phase: the script starts at `now`. */
+export const beginScript = (play: Play, now: number): Play => ({ ...play, startedAt: now, gather: null });
 
 /** The shots now due (and the play with them marked delivered). */
 export function dueShots(play: Play, now: number): { shots: { key: string; name: string }[]; play: Play } {
@@ -88,6 +101,7 @@ export function dueShots(play: Play, now: number): { shots: { key: string; name:
 
 /** What pet `who` does at `now`: the latest pose step that has started. */
 export function poseAt(play: Play, who: 0 | 1, now: number): Pose {
+  if (play.gather !== null) return { mode: "walk", toward: 1 };
   let out: Pose = { mode: "idle", toward: 0 };
   for (const s of play.steps) if (s.who === who && s.at + play.startedAt <= now && s.act.kind === "pose") out = s.act.pose;
   return out;
@@ -104,6 +118,13 @@ export function roleOf(play: Play, key: string, now: number): { pose: Pose; part
 
 /** Time to the next try at play: 15 to 45 seconds. */
 export const nextPlayDelay = (rand: () => number): number => 15_000 + Math.floor(rand() * 30_000);
+
+/** Pets this close that are both free may greet in passing. */
+export const PASS_DIST = 64;
+/** Pets farther apart than this walk to each other before the script starts. */
+export const MEET_DIST = 120;
+/** The longest a play waits for its pets to meet. */
+export const GATHER_MS = 12_000;
 
 /** How long a pet must have been quiet to be drowsy enough for a nap. */
 export const DROWSY_MS = 25_000;
@@ -131,16 +152,30 @@ export function isFree(c: Candidate): boolean {
   return c.shown === "idle" || c.shown === "fidget" || (c.kind === "look" && c.shown === "look");
 }
 
-/** Two free pets standing next to each other, picked at random; null when there are none. */
-export function pickPair(cands: Candidate[], neighbors: (key: string) => string[], rand: () => number): { a: Candidate; b: Candidate } | null {
-  const free = new Map(cands.filter(isFree).map((c) => [c.key, c]));
-  const keys = [...free.keys()];
-  // Walk the free pets from a random start until one has a free neighbour.
-  const start = Math.floor(rand() * keys.length);
-  for (let i = 0; i < keys.length; i++) {
-    const a = free.get(keys[(start + i) % keys.length]!)!;
-    const near = neighbors(a.key).flatMap((k) => (free.has(k) ? [free.get(k)!] : []));
-    if (near.length > 0) return { a, b: near[Math.floor(rand() * near.length)]! };
+/** Two free pets: a random one and a partner for it, usually the nearest (`at` gives positions). */
+export function pickPair(cands: Candidate[], at: (key: string) => Pos | null, rand: () => number): { a: Candidate; b: Candidate } | null {
+  const free = cands.filter(isFree).flatMap((c) => {
+    const p = at(c.key);
+    return p ? [{ c, ...p }] : [];
+  });
+  if (free.length < 2) return null;
+  const a = free[Math.floor(rand() * free.length)]!;
+  const key = nearestPartner(a, free.filter((f) => f.c.key !== a.c.key).map((f) => ({ key: f.c.key, x: f.x, y: f.y })), rand);
+  const b = free.find((f) => f.c.key === key);
+  return b ? { a: a.c, b: b.c } : null;
+}
+
+/** Two free pets standing within `within` px of each other, if any (the first found from a random start). */
+export function passingPair(cands: Candidate[], at: (key: string) => Pos | null, rand: () => number, within = PASS_DIST): { a: Candidate; b: Candidate } | null {
+  const free = cands.filter(isFree).flatMap((c) => {
+    const p = at(c.key);
+    return p ? [{ c, p }] : [];
+  });
+  const start = Math.floor(rand() * Math.max(1, free.length));
+  for (let i = 0; i < free.length; i++) {
+    const a = free[(start + i) % free.length]!;
+    const b = free.find((f) => f.c.key !== a.c.key && distance(a.p, f.p) <= within);
+    if (b) return { a: a.c, b: b.c };
   }
   return null;
 }
@@ -162,15 +197,6 @@ export function chooseKind(rand: () => number, drowsy: boolean): PlayKind {
     if (roll < 0) return kind;
   }
   return "greet";
-}
-
-/**
- * How far a pet can walk toward its partner, in px (signed): half the gap between the sprites,
- * at most `max`. The partner is `dx` px away (centre to centre), the sprites `size` px wide.
- */
-export function reachPx(dx: number, size: number, max = 40): number {
-  const room = Math.max(0, (Math.abs(dx) - size - 6) / 2);
-  return Math.sign(dx) * Math.min(max, room);
 }
 
 /** The angle, clockwise from up in degrees, from a pet to its partner `dx`, `dy` px away. */

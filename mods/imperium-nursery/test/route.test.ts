@@ -11,7 +11,6 @@ import type { Deps } from "../src/nursery.ts";
 import { MIX, clip, hash, pickPet } from "../src/pick.ts";
 import { allDrawn } from "../src/pet.ts";
 import { REMOVE_MS, busyOf, repair, routeEvent } from "../src/route.ts";
-import { newWalker, stepWalker } from "../src/wander.ts";
 import { expect } from "./expect.ts";
 
 const T0 = 1_000_000;
@@ -200,21 +199,4 @@ test("pet choice: a setting wins, otherwise a stable spread with the root agent 
   expect(new Set(["s1", "s2", "s3", "s4", "s5", "s6"].map((k) => pickPet(ids, MIX, k, false))).size).toBeGreaterThan(1);
   expect(clip("  a   b\nc ", 10)).toBe("a b c");
   expect(clip("abcdefghij", 5)).toBe("abcd…");
-});
-
-test("wandering: an idle walker strays within range and stops; a busy one stops at once", () => {
-  let w = newWalker(0, () => 0);
-  expect(w.nextAt).toBe(6000);
-  const rand = (): number => 1;
-  let seen = 0;
-  for (let t = 6000; t < 12_000; t += 50) {
-    const r = stepWalker(w, t, 50, true, rand, 14);
-    w = r.walker;
-    seen = Math.max(seen, w.x);
-    expect(w.x).toBeLessThanOrEqual(14);
-  }
-  expect(seen).toBeGreaterThan(10);
-  const stopped = stepWalker({ x: 3, target: 14, nextAt: 0 }, 100, 50, false, rand);
-  expect(stopped.dir).toBe(0);
-  expect(stopped.walker.target).toBe(0);
 });

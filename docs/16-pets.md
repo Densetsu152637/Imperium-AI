@@ -119,14 +119,17 @@ each with its own copy of the behaviour arbiter ported from Pixel Pets. It contr
 panels: a **Session nursery** (one pet per agent of the selected or pinned session, with a
 count of working subagents), a **Global nursery** (one pet per session, with a badge for its
 working subagents) and **My nursery** (pets you put in with an optional nickname and take out
-again; residents idle, wander, sleep and play `petted` when clicked). It reads session
+again; residents idle, roam, sleep and play `petted` when clicked). Each panel is one shared room
+that fills it: no cages, the pets walk anywhere in it, nearer ones (lower on screen) drawn in front. It reads session
 snapshots and events, the installed pets and its own storage through the
 [mod SDK](06-extensibility.md), maps events as in [Event mapping](#event-mapping), and sees status only, never
-transcripts. Free pets also play: now and then (every 15 to 45 seconds) two idle neighbours act
-out a short scripted interaction (greet, chase, high-five, nap together, show-off), walking
-toward each other inside a small band around their slots. Pets at work never play, any real
-event or a pat ends it at once, and `prefers-reduced-motion` turns it off. A "Play" checkbox
-in each panel switches it off (the `play` setting). See the mod's `README.md` for the details.
+transcripts. Free pets roam the whole room, walking to a spot, pausing and walking on,
+and also play: now and then (every 15 to 45 seconds) any two free pets, usually the nearest
+pair, act out a short scripted interaction (greet, chase, high-five, nap together, show-off),
+first walking across the room to each other when they are far apart; two pets that happen to
+pass close may greet. Pets at work stop where they are and never play, any real event or a pat
+ends a play at once, and with `prefers-reduced-motion` nothing walks or plays and the pets
+stand spread out. A "Play" checkbox in each panel switches play off (the `play` setting). See the mod's `README.md` for the details.
 
 ## Creating pets
 
