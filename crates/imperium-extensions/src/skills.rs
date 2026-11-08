@@ -4,7 +4,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use crate::markdown::front_matter;
+use imperium_api::markdown::front_matter;
 
 /// Longest description shown in the skill list.
 const DESCRIPTION_CHARS: usize = 300;

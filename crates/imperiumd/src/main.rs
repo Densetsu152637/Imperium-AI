@@ -1,10 +1,11 @@
 use std::fs::{File, TryLockError};
 use std::io::IsTerminal;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
-use imperium_config::Paths;
+use imperium_config::{KeychainSecrets, Paths, SecretStore};
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
 use imperiumd::{AccessToken, DaemonState, EndpointFile};
@@ -61,7 +62,8 @@ async fn run() -> anyhow::Result<()> {
 
     let (stop, stopped) = oneshot::channel();
     let local = imperiumd::LocalRuntime::start(&paths, &settings);
-    let daemon = DaemonState::new(paths.clone(), settings, local);
+    let secrets: Arc<dyn SecretStore> = Arc::new(KeychainSecrets);
+    let daemon = DaemonState::with_secrets(paths.clone(), settings, local, secrets);
     daemon.start_pets();
     let resumed = daemon.resume_sessions();
     if resumed > 0 {

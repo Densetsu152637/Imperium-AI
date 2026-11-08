@@ -2174,6 +2174,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "imperium-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "imperium-automation"
 version = "0.1.0"
 dependencies = [
@@ -2215,7 +2223,7 @@ name = "imperium-config"
 version = "0.1.0"
 dependencies = [
  "directories",
- "imperium-models",
+ "imperium-api",
  "keyring",
  "serde",
  "tempfile",
@@ -2231,6 +2239,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "getrandom 0.4.3",
+ "imperium-api",
  "imperium-config",
  "imperium-extensions",
  "imperium-mcp",
@@ -2270,6 +2279,7 @@ dependencies = [
 name = "imperium-extensions"
 version = "0.1.0"
 dependencies = [
+ "imperium-api",
  "imperium-mcp",
  "imperium-tools",
  "serde",
@@ -2299,6 +2309,7 @@ dependencies = [
  "axum",
  "flate2",
  "futures-util",
+ "imperium-api",
  "imperium-config",
  "imperium-core",
  "imperium-models",
@@ -2321,7 +2332,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures-util",
- "imperium-models",
+ "imperium-api",
  "reqwest",
  "serde",
  "serde_json",
@@ -2336,7 +2347,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
- "imperium-models",
+ "imperium-api",
  "reqwest",
  "serde",
  "serde_json",
@@ -2349,7 +2360,7 @@ dependencies = [
 name = "imperium-memory"
 version = "0.1.0"
 dependencies = [
- "imperium-extensions",
+ "imperium-api",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
@@ -2361,6 +2372,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures-util",
+ "imperium-api",
  "reqwest",
  "serde",
  "serde_json",
@@ -2392,7 +2404,7 @@ dependencies = [
 name = "imperium-tools"
 version = "0.1.0"
 dependencies = [
- "imperium-models",
+ "imperium-api",
  "serde",
  "serde_json",
  "tempfile",
@@ -2406,7 +2418,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures-util",
- "imperium-models",
+ "imperium-api",
  "reqwest",
  "serde",
  "serde_json",

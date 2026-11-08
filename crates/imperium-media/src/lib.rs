@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use imperium_models::ToolSpec;
+use imperium_api::ToolSpec;
 use serde_json::{Value, json};
 
 const TIMEOUT: Duration = Duration::from_secs(600);

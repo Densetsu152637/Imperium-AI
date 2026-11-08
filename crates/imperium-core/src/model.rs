@@ -1,10 +1,9 @@
+use imperium_api::{Availability, LocalModels};
 use imperium_config::{
     LLAMACPP_ENDPOINT, Location, Preference, RoutingSettings, SecretError, SecretName, Settings,
     Tier, VLLM_ENDPOINT,
 };
 use imperium_models::{Endpoint, Pricing};
-
-use crate::local::{Availability, LocalModels};
 
 /// A model chosen for a session: where to call it, its id, and its prices.
 #[derive(Debug, Clone)]
@@ -391,7 +390,7 @@ mod tests {
                 .map_or(Availability::Unavailable, |(_, availability)| *availability)
         }
 
-        fn acquire<'a>(&'a self, _model: &'a str) -> crate::local::AcquireFuture<'a> {
+        fn acquire<'a>(&'a self, _model: &'a str) -> imperium_api::AcquireFuture<'a> {
             Box::pin(async { Err("not used".to_string()) })
         }
     }

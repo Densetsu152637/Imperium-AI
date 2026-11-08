@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use imperium_models::Pricing;
+use imperium_api::Pricing;
 use serde::Deserialize;
 
 use crate::SecretName;

@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::markdown::front_matter;
+use imperium_api::markdown::front_matter;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlashCommand {

@@ -12,7 +12,10 @@ mod settings;
 
 pub use layers::{Config, ConfigError, Explained, Layer, Source, load};
 pub use paths::{Paths, PathsError};
-pub use secrets::{SecretError, SecretName, delete_secret, load_secret, store_secret};
+pub use secrets::{
+    KeychainSecrets, MemorySecrets, SecretError, SecretName, SecretStore, delete_secret,
+    load_secret, store_secret,
+};
 pub use settings::{
     ActionSettings, AgentSettings, AutofixSettings, CatalogEntry, DaemonSettings, EndpointSettings,
     Enforce, ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HookSettings,

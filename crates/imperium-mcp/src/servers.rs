@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use imperium_models::ToolSpec;
+use imperium_api::ToolSpec;
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 

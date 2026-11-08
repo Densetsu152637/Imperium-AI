@@ -1,0 +1,15 @@
+[package]
+name = "imperium-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared types and traits for Imperium crates: chat messages, tool specs, usage and pricing, the local-model interface, and Markdown front matter"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[lints]
+workspace = true

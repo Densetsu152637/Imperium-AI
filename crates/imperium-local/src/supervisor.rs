@@ -13,8 +13,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
+use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels};
 use imperium_config::{LlamaCppSettings, VllmSettings};
-use imperium_core::{AcquireFuture, Availability, LocalLease, LocalModels};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::hardware::Hardware;

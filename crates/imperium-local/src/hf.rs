@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use imperium_config::SecretStore;
 use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, LINK, RANGE};
 use sha2::{Digest, Sha256};
@@ -204,9 +205,9 @@ impl Hub {
         }
     }
 
-    /// The Hub at `HF_ENDPOINT` (or [`DEFAULT_ENDPOINT`]), with a token from `HF_TOKEN` or the
-    /// keychain secret [`TOKEN_SECRET`].
-    pub fn from_env() -> Self {
+    /// The Hub at `HF_ENDPOINT` (or [`DEFAULT_ENDPOINT`]), with a token from `HF_TOKEN` or, when
+    /// that is unset or empty, the secret [`TOKEN_SECRET`] in `secrets`.
+    pub fn from_env(secrets: &dyn SecretStore) -> Self {
         let endpoint = std::env::var("HF_ENDPOINT")
             .ok()
             .filter(|endpoint| !endpoint.is_empty())
@@ -216,7 +217,7 @@ impl Hub {
             .filter(|token| !token.is_empty())
             .or_else(|| {
                 let name = TOKEN_SECRET.parse().ok()?;
-                imperium_config::load_secret(&name).ok().flatten()
+                secrets.load(&name).ok().flatten()
             });
         Hub::new(endpoint, token)
     }
