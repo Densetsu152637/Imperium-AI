@@ -20,7 +20,7 @@ const FADE_MS = 2500;
 
 export const CSS = `
 :root { color-scheme: light dark; }
-body { margin: 0; }
+body { margin: 0; padding: 0; }
 .nursery { display: flex; flex-direction: column; gap: var(--space, 8px); font-size: 13px; min-height: 100vh; box-sizing: border-box; padding: var(--space, 8px); }
 .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .bar label { color: var(--muted); }

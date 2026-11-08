@@ -43,11 +43,17 @@ fn default_entry() -> String {
     "index.js".into()
 }
 
-/// Where mods shipped with Imperium may be: the resource folders, then the source tree for
-/// development builds.
+/// Where mods shipped with Imperium may be: the resource folders, then the source tree. Debug
+/// builds look in the source tree first, since building the desktop app leaves a copy of
+/// `mods/` beside the daemon that goes stale as soon as a mod is rebuilt.
 pub fn bundled_roots() -> Vec<PathBuf> {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
     let mut roots = crate::state::bundled_dirs("mods");
-    roots.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods"));
+    if cfg!(debug_assertions) {
+        roots.insert(0, source);
+    } else {
+        roots.push(source);
+    }
     roots
 }
 
