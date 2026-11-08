@@ -141,7 +141,11 @@ those definitions, and `cargo test` exports each one to
 with an `index.json` listing names and status (`available` or `planned`). `scripts/check-rust.sh`
 fails when the checked-in files differ from what the tests write, the same drift check as the
 generated TypeScript. The Emperor training repository vendors that folder at a pinned Imperium
-commit. No schema has a credential, key, endpoint or auth-scope field.
+commit. A test rejects credential-like property names (key, secret, token, password, bearer,
+auth, scope, header, base URL, endpoint; `url` and `chunk_tokens` are allowed), so no schema
+has such a field. Descriptions are not checked. `spawn_agent` keeps its current `brief`,
+`tier`, `location`, `tags` and `model` parameters; `requirements`, `budget` and `result` are
+not there yet.
 
 | Tool | Status |
 | --- | --- |
@@ -149,9 +153,9 @@ commit. No schema has a credential, key, endpoint or auth-scope field.
 | `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | planned: definition only, not offered to models |
 | `ask_user(questions[])`: each question has text, optional options, and a recommended answer | planned: definition only, not offered to models |
 
-**Templates and root prompt (implemented):** checked in under
+**Templates and root prompt (implemented):** hand-written files checked in under
 [`crates/imperium-protocol/schemas/prompts/`](../crates/imperium-protocol/schemas/prompts/) and
-exported with the schemas.
+next to the exported schemas (not generated).
 
 - [`brief.md`](../crates/imperium-protocol/schemas/prompts/brief.md): the shape of a
   `spawn_agent` brief: goal, context, constraints, acceptance, output format; at most 2,000

@@ -5,7 +5,9 @@
 //! checked-in files are exactly what models are offered. The Emperor training repository
 //! vendors that folder, and `schemas/prompts/` next to it, at a pinned Imperium commit.
 //!
-//! No definition carries a credential, key, endpoint URL or auth-scope field.
+//! No definition has a credential, key, endpoint, header or auth-scope property: a test
+//! rejects such property names. The prompts under `schemas/prompts/` are hand-written files
+//! checked in next to the exported schemas, not generated.
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -63,7 +65,7 @@ pub fn spawn_agent() -> ToolDefinition {
         parameters: json!({"type": "object", "properties": {
             "brief": {"type": "string"},
             "tier": {"type": "string", "enum": ["basic", "standard", "strong", "frontier"], "description": "Minimum model capability; the cheapest suitable model is chosen. Default standard."},
-            "model": {"type": "string", "description": "A model table id (or <provider>:<model>) to use"},
+            "model": {"type": "string", "description": "A model table id (or <endpoint>:<model>) to use"},
             "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},
             "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match"}
         }, "required": ["brief"]}),
@@ -237,30 +239,40 @@ mod tests {
         }
     }
 
+    /// Property names are lowercased, stripped of `_` and `-`, and stripped of a trailing `s`;
+    /// the result must not contain a credential-like substring, and no word of the name may be
+    /// `key`. Only `chunk_tokens` (a size) and `url` (web_fetch's page address) are allowed
+    /// through by name. Descriptions are free text and are not checked.
     #[test]
     fn no_schema_has_a_credential_or_endpoint_property() {
-        const FORBIDDEN: [&str; 8] = [
-            "key",
+        const FORBIDDEN: [&str; 12] = [
+            "apikey",
             "secret",
             "token",
             "password",
+            "credential",
+            "bearer",
             "authorization",
             "auth",
+            "scope",
+            "header",
+            "baseurl",
             "endpoint",
-            "base_url",
         ];
+        const ALLOWED: [&str; 2] = ["chunk_tokens", "url"];
+        let strip = |word: &str| word.to_ascii_lowercase().trim_end_matches('s').to_string();
         for tool in all() {
             let mut names = Vec::new();
             property_names(&tool.parameters, &mut names);
             for name in names {
-                let lower = name.to_ascii_lowercase();
-                assert!(
-                    !FORBIDDEN
-                        .iter()
-                        .any(|word| lower == *word || lower.ends_with(&format!("_{word}"))),
-                    "{} has a credential-like property {name}",
-                    tool.name
-                );
+                if ALLOWED.contains(&name.as_str()) {
+                    continue;
+                }
+                let words: Vec<String> = name.split(['_', '-']).map(strip).collect();
+                let joined = words.concat();
+                let bad = words.iter().any(|word| word == "key")
+                    || FORBIDDEN.iter().any(|word| joined.contains(word));
+                assert!(!bad, "{} has a credential-like property {name}", tool.name);
             }
         }
     }

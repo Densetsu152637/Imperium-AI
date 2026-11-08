@@ -15,7 +15,8 @@ if ! git diff --quiet -- "$generated" || [ -n "$untracked" ]; then
   exit 1
 fi
 
-# The same for the model-facing tool schemas and prompts exported by the protocol crate.
+# The same for the tool schemas the protocol crate exports; the prompts next to them are
+# hand-written files, so this also catches stray or modified files there.
 contract=crates/imperium-protocol/schemas
 untracked="$(git ls-files --others --exclude-standard -- "$contract")"
 if ! git diff --quiet -- "$contract" || [ -n "$untracked" ]; then

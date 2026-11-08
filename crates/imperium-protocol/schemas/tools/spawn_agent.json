@@ -15,7 +15,7 @@
         "type": "string"
       },
       "model": {
-        "description": "A model table id (or <provider>:<model>) to use",
+        "description": "A model table id (or <endpoint>:<model>) to use",
         "type": "string"
       },
       "tags": {
