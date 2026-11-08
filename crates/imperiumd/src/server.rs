@@ -72,13 +72,15 @@ async fn upgrade(
     })
 }
 
-/// Reads requests and writes responses, interleaving notifications from subscribed sessions.
+/// Reads requests and writes responses, interleaving notifications from subscribed sessions
+/// and replies that took a while (such as Hugging Face listings).
 pub(crate) async fn run_connection(
     mut socket: WebSocket,
     mut connection: Connection,
     mut announcements: broadcast::Receiver<Notification>,
 ) {
     let (notify, mut notifications) = mpsc::unbounded_channel::<Notification>();
+    let (reply, mut replies) = mpsc::unbounded_channel::<Response>();
     loop {
         let outgoing = tokio::select! {
             incoming = socket.recv() => {
@@ -86,11 +88,12 @@ pub(crate) async fn run_connection(
                 let handled = match message {
                     Message::Text(text) => connection.handle_text(text.as_str()),
                     Message::Binary(_) => crate::rpc::Handled {
-                        response: Response::failure(
+                        response: Some(Response::failure(
                             None,
                             ErrorObject::new(codes::INVALID_REQUEST, "send JSON-RPC as text frames"),
-                        ),
+                        )),
                         subscription: None,
+                        deferred: None,
                     },
                     Message::Close(_) => break,
                     // Pings and pongs are answered by the WebSocket layer.
@@ -99,8 +102,19 @@ pub(crate) async fn run_connection(
                 if let Some(subscription) = handled.subscription {
                     tokio::spawn(forward(subscription, notify.clone()));
                 }
-                serde_json::to_string(&handled.response)
+                if let Some(deferred) = handled.deferred {
+                    let reply = reply.clone();
+                    tokio::spawn(async move {
+                        // The client may have gone; then nobody needs the reply.
+                        let _ = reply.send(deferred.await);
+                    });
+                }
+                match handled.response {
+                    Some(response) => serde_json::to_string(&response),
+                    None => continue,
+                }
             }
+            Some(response) = replies.recv() => serde_json::to_string(&response),
             Some(notification) = notifications.recv() => serde_json::to_string(&notification),
             announcement = announcements.recv() => match announcement {
                 Ok(notification) => serde_json::to_string(&notification),

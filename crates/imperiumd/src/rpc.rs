@@ -1,5 +1,7 @@
 //! Request handling for one client connection.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use base64::Engine;
@@ -27,6 +29,10 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
 use crate::state::{CreateError, DaemonState};
+use imperium_protocol::methods::{
+    HfFiles, ModelDownload, ModelDownloadCancel, ModelDownloadCancelParams,
+    ModelDownloadCancelResult, ModelDownloads, ModelDownloadsParams, ModelDownloadsResult,
+};
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 
 /// A session's events, to be forwarded to this connection as notifications.
@@ -36,11 +42,29 @@ pub struct Subscription {
     pub events: broadcast::Receiver<AgentEvent>,
 }
 
+/// A reply that waits on something slow, such as the network.
+pub type Deferred = Pin<Box<dyn Future<Output = Response> + Send>>;
+
+/// A method's result that is still being worked out.
+type Later = Pin<Box<dyn Future<Output = Result<Value, ErrorObject>> + Send>>;
+
 /// The reply to one frame, plus any subscription the call started.
-#[derive(Debug)]
 pub struct Handled {
-    pub response: Response,
+    /// The reply, or `None` when `deferred` produces it.
+    pub response: Option<Response>,
     pub subscription: Option<Subscription>,
+    /// Sent when it resolves; the connection serves other calls meanwhile.
+    pub deferred: Option<Deferred>,
+}
+
+impl std::fmt::Debug for Handled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Handled")
+            .field("response", &self.response)
+            .field("subscription", &self.subscription)
+            .field("deferred", &self.deferred.is_some())
+            .finish()
+    }
 }
 
 /// Per-connection protocol state. The first call must be `system.handshake`.
@@ -96,6 +120,7 @@ impl Connection {
 
     fn handle(&mut self, request: Request) -> Handled {
         let mut subscription = None;
+        let mut later = None;
         let outcome = match request.method.as_str() {
             Handshake::NAME => call::<Handshake>(request.params, |params| self.handshake(params)),
             _ if !self.handshake_done => Err(ErrorObject::new(
@@ -287,6 +312,28 @@ impl Connection {
                     Ok(self.state.local_models())
                 })
             }
+            HfFiles::NAME => call_later::<HfFiles, _>(request.params, &mut later, |params| {
+                crate::downloads::files(Arc::clone(&self.state), params)
+            }),
+            ModelDownload::NAME => {
+                call_later::<ModelDownload, _>(request.params, &mut later, |params| {
+                    crate::downloads::start(Arc::clone(&self.state), params)
+                })
+            }
+            ModelDownloads::NAME => {
+                call::<ModelDownloads>(request.params, |_: ModelDownloadsParams| {
+                    Ok(ModelDownloadsResult {
+                        jobs: self.state.downloads().list(),
+                    })
+                })
+            }
+            ModelDownloadCancel::NAME => {
+                call::<ModelDownloadCancel>(request.params, |params: ModelDownloadCancelParams| {
+                    Ok(ModelDownloadCancelResult {
+                        found: self.state.downloads().cancel(&self.state, &params.job_id),
+                    })
+                })
+            }
             SessionList::NAME => call::<SessionList>(request.params, |_: SessionListParams| {
                 Ok(SessionListResult {
                     sessions: self
@@ -329,13 +376,27 @@ impl Connection {
                 format!("unknown method {other:?}"),
             )),
         };
+        let id = request.id;
+        if let (Ok(_), Some(later)) = (&outcome, later) {
+            return Handled {
+                response: None,
+                subscription,
+                deferred: Some(Box::pin(async move {
+                    match later.await {
+                        Ok(result) => Response::success(id, result),
+                        Err(error) => Response::failure(Some(id), error),
+                    }
+                })),
+            };
+        }
         let response = match outcome {
-            Ok(result) => Response::success(request.id, result),
-            Err(error) => Response::failure(Some(request.id), error),
+            Ok(result) => Response::success(id, result),
+            Err(error) => Response::failure(Some(id), error),
         };
         Handled {
-            response,
+            response: Some(response),
             subscription,
+            deferred: None,
         }
     }
 
@@ -387,8 +448,9 @@ impl Connection {
 
 fn reply(response: Response) -> Handled {
     Handled {
-        response,
+        response: Some(response),
         subscription: None,
+        deferred: None,
     }
 }
 
@@ -413,13 +475,34 @@ fn call<M: Method>(
     params: Option<Value>,
     run: impl FnOnce(M::Params) -> Result<M::Result, ErrorObject>,
 ) -> Result<Value, ErrorObject> {
-    let params = serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|error| {
+    run(decode::<M>(params)?).map(|result| to_value(&result))
+}
+
+/// Like [`call`] for a method whose result takes a while: decodes the params now and leaves
+/// the work in `later`, for the connection to reply when it is done.
+fn call_later<M: Method, F>(
+    params: Option<Value>,
+    later: &mut Option<Later>,
+    run: impl FnOnce(M::Params) -> F,
+) -> Result<Value, ErrorObject>
+where
+    F: Future<Output = Result<M::Result, ErrorObject>> + Send + 'static,
+    M::Result: Send,
+{
+    let work = run(decode::<M>(params)?);
+    *later = Some(Box::pin(async move {
+        work.await.map(|result| to_value(&result))
+    }));
+    Ok(Value::Null)
+}
+
+fn decode<M: Method>(params: Option<Value>) -> Result<M::Params, ErrorObject> {
+    serde_json::from_value(params.unwrap_or_else(|| json!({}))).map_err(|error| {
         ErrorObject::new(
             codes::INVALID_PARAMS,
             format!("invalid params for {}: {error}", M::NAME),
         )
-    })?;
-    run(params).map(|result| to_value(&result))
+    })
 }
 
 fn to_value(result: &impl Serialize) -> Value {
@@ -453,7 +536,8 @@ mod tests {
     }
 
     fn error_code(handled: &Handled) -> Option<i32> {
-        match &handled.response.outcome {
+        let response = handled.response.as_ref().expect("an immediate reply");
+        match &response.outcome {
             Outcome::Error(error) => Some(error.code),
             Outcome::Result(_) => None,
         }
@@ -475,7 +559,10 @@ mod tests {
         let mut connection = connection();
         let handled = connection.handle_text(&request(1, Ping::NAME, json!({})));
         assert_eq!(error_code(&handled), Some(codes::HANDSHAKE_REQUIRED));
-        assert_eq!(handled.response.id, Some(RequestId::Number(1)));
+        assert_eq!(
+            handled.response.as_ref().unwrap().id,
+            Some(RequestId::Number(1))
+        );
     }
 
     #[test]
@@ -508,7 +595,10 @@ mod tests {
 
         let invalid = connection.handle_text(r#"{"jsonrpc":"2.0","id":5}"#);
         assert_eq!(error_code(&invalid), Some(codes::INVALID_REQUEST));
-        assert_eq!(invalid.response.id, Some(RequestId::Number(5)));
+        assert_eq!(
+            invalid.response.as_ref().unwrap().id,
+            Some(RequestId::Number(5))
+        );
 
         let bad_params = connection.handle_text(&request(3, Handshake::NAME, json!({"x": 1})));
         assert_eq!(error_code(&bad_params), Some(codes::INVALID_PARAMS));
@@ -567,7 +657,8 @@ mod tests {
             handshake_params(PROTOCOL_VERSION.major),
         ));
         let handled = connection.handle_text(&request(2, ModelList::NAME, json!({})));
-        let Outcome::Result(result) = handled.response.outcome else {
+        let Some(Outcome::Result(result)) = handled.response.map(|response| response.outcome)
+        else {
             panic!("models.list failed");
         };
         assert_eq!(result["prefer"], "cheapest");

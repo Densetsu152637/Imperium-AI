@@ -446,6 +446,55 @@ api_key = { secret = 'Bad Name' }",
     }
 
     #[test]
+    fn downloads_go_to_the_configured_folder_or_the_first_model_folder() {
+        let data = std::path::Path::new("/data");
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        assert_eq!(
+            settings.models.download_dir(data),
+            data.join("models"),
+            "with no folders, downloads go under the data folder"
+        );
+        let absolute = if cfg!(windows) {
+            "D:/Models"
+        } else {
+            "/models"
+        };
+        let folders = format!(
+            "[models]
+folders = [{absolute:?}, \"{absolute}/more\"]"
+        );
+        let settings =
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), &folders)])
+                .settings()
+                .unwrap();
+        assert_eq!(
+            settings.models.download_dir(data),
+            std::path::Path::new(absolute)
+        );
+        let explicit = format!(
+            "{folders}
+download_dir = \"{absolute}/hf\""
+        );
+        let settings = Config::from_layers([
+            Layer::defaults(),
+            layer(Source::User("u".into()), &explicit),
+        ])
+        .settings()
+        .unwrap();
+        assert_eq!(
+            settings.models.download_dir(data),
+            std::path::Path::new(&format!("{absolute}/hf"))
+        );
+        let relative = "[models]
+download_dir = \"models\"";
+        let error =
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), relative)])
+                .settings()
+                .unwrap_err();
+        assert!(error.to_string().contains("absolute"), "{error}");
+    }
+
+    #[test]
     fn settings_report_values_of_the_wrong_type() {
         let config = Config::from_layers([
             Layer::defaults(),

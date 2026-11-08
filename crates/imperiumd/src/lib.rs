@@ -3,6 +3,7 @@
 
 mod approvals;
 mod autofix;
+mod downloads;
 mod endpoint;
 mod local;
 mod mcp;
@@ -18,12 +19,13 @@ mod token;
 
 pub use approvals::Approvals;
 pub use autofix::{fix_ci, watch_pull_requests};
+pub use downloads::Downloads;
 pub use endpoint::EndpointFile;
 pub use local::LocalRuntime;
 pub use pets::PetEngine;
 pub use phone::Devices;
 pub use project_agent::ProjectAgents;
-pub use rpc::{Connection, Handled, Subscription};
+pub use rpc::{Connection, Deferred, Handled, Subscription};
 pub use scheduler::Scheduler;
 pub use server::serve;
 pub use state::{CreateError, DaemonState, SessionOptions};

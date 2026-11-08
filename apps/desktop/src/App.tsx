@@ -410,7 +410,7 @@ export function App() {
                   {
                     id: "local-models",
                     title: "Local models",
-                    body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} />,
+                    body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} client={client} />,
                   },
                   { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
                   { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },

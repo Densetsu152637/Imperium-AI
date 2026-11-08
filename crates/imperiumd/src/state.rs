@@ -24,6 +24,7 @@ use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
 
 use crate::approvals::Approvals;
+use crate::downloads::Downloads;
 use crate::local::LocalRuntime;
 use crate::pets::PetEngine;
 use crate::phone::Devices;
@@ -48,7 +49,11 @@ pub struct DaemonState {
     paths: Paths,
     settings: Settings,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
-    local: Option<LocalRuntime>,
+    /// Set at start when there are model folders, or after the first download.
+    local: OnceLock<LocalRuntime>,
+    downloads: Downloads,
+    /// The Hugging Face Hub to use instead of the one from the environment (for tests).
+    hub: OnceLock<imperium_local::hf::Hub>,
     /// Notifications for every connected client, such as schedule runs.
     announcements: broadcast::Sender<Notification>,
     scheduler: OnceLock<Arc<Scheduler>>,
@@ -81,7 +86,9 @@ impl DaemonState {
             paths,
             settings,
             sessions: Mutex::new(HashMap::new()),
-            local,
+            local: local.map(OnceLock::from).unwrap_or_default(),
+            downloads: Downloads::default(),
+            hub: OnceLock::new(),
             announcements: broadcast::channel(256).0,
             scheduler: OnceLock::new(),
             approvals: Approvals::default(),
@@ -387,8 +394,46 @@ impl DaemonState {
     /// Local models, the hardware they are planned against, and what is loaded.
     pub fn local_models(&self) -> LocalModelListResult {
         self.local
-            .as_ref()
+            .get()
             .map_or_else(crate::local::disabled, LocalRuntime::listing)
+    }
+
+    /// The memory local models may use, when the local runtime is running.
+    pub fn local_budget(&self) -> Option<imperium_local::planner::Budget> {
+        self.local.get().map(LocalRuntime::budget)
+    }
+
+    /// Scans the model folders again (after a download), starting the local runtime when it
+    /// was not running for want of folders. Must run inside the Tokio runtime; it blocks.
+    pub fn rescan_local_models(&self) {
+        if let Some(local) = self.local.get() {
+            return local.rescan(&self.paths, &self.settings);
+        }
+        if let Some(started) = LocalRuntime::start(&self.paths, &self.settings)
+            && self.local.set(started).is_err()
+            && let Some(local) = self.local.get()
+        {
+            // Another download started it first, perhaps before this one's files landed.
+            local.rescan(&self.paths, &self.settings);
+        }
+    }
+
+    pub fn downloads(&self) -> &Downloads {
+        &self.downloads
+    }
+
+    /// The Hugging Face Hub: `HF_ENDPOINT` and a token from `HF_TOKEN` or the keychain, read
+    /// on each use so a newly stored token is picked up.
+    pub fn hub(&self) -> imperium_local::hf::Hub {
+        self.hub
+            .get()
+            .cloned()
+            .unwrap_or_else(imperium_local::hf::Hub::from_env)
+    }
+
+    /// Uses `hub` instead of the environment's, such as a local fake in tests. Call once.
+    pub fn use_hub(&self, hub: imperium_local::hf::Hub) {
+        let _ = self.hub.set(hub);
     }
 
     pub fn uptime_ms(&self) -> u64 {
@@ -544,7 +589,7 @@ impl DaemonState {
             model,
             catalog,
             routing: self.settings.routing.clone(),
-            local: self.local.as_ref().map(|local| {
+            local: self.local.get().map(|local| {
                 let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
                 supervisor
             }),

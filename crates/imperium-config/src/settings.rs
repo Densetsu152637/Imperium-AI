@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use imperium_models::Pricing;
 use serde::Deserialize;
@@ -171,6 +171,14 @@ impl Settings {
         }
         if !matches!(self.github.autofix.push.as_str(), "ask" | "auto") {
             return Err("github.autofix.push must be ask or auto".into());
+        }
+        if let Some(dir) = &self.models.download_dir
+            && !dir.is_absolute()
+        {
+            return Err(format!(
+                "models.download_dir must be an absolute path, not {:?}",
+                dir.display().to_string()
+            ));
         }
         for (name, server) in &self.mcp.servers {
             if server.command.is_some() == server.url.is_some() {
@@ -621,6 +629,20 @@ pub struct ModelSettings {
     /// Folders scanned recursively for GGUF models.
     #[serde(default)]
     pub folders: Vec<PathBuf>,
+    /// Where models downloaded from Hugging Face go; see [`ModelSettings::download_dir`].
+    #[serde(default)]
+    pub download_dir: Option<PathBuf>,
+}
+
+impl ModelSettings {
+    /// Where downloads go: `download_dir`, else the first of `folders`, else
+    /// `<data_dir>/models`. Each repository lands in `<owner>/<repo>/` below it.
+    pub fn download_dir(&self, data_dir: &Path) -> PathBuf {
+        self.download_dir
+            .clone()
+            .or_else(|| self.folders.first().cloned())
+            .unwrap_or_else(|| data_dir.join("models"))
+    }
 }
 
 /// Inference runtimes the daemon supervises.

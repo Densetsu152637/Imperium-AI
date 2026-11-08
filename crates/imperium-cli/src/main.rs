@@ -5,6 +5,7 @@ mod local;
 mod memory;
 mod phone;
 mod project;
+mod pull;
 mod remote;
 mod schedule;
 mod workflow;
@@ -18,7 +19,7 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use imperium_cli::client::{Client, read_endpoint};
 use imperium_config::{Paths, SecretName};
-use imperium_protocol::methods::{Peer, Ping, PingParams};
+use imperium_protocol::methods::{ModelDownloadParams, Peer, Ping, PingParams};
 
 /// Command-line client for the Imperium daemon.
 #[derive(Debug, Parser)]
@@ -56,7 +57,7 @@ enum Command {
         #[command(subcommand)]
         command: SecretCommand,
     },
-    /// Local models in the configured model folders.
+    /// Local models: the configured model folders, and downloads from Hugging Face.
     Models {
         #[command(subcommand)]
         command: ModelsCommand,
@@ -115,6 +116,37 @@ enum Command {
 enum ModelsCommand {
     /// List GGUF models in models.folders, whether each fits in memory, and what is loaded.
     Local,
+    /// List the quantisations a Hugging Face repository offers, with sizes and whether each
+    /// fits this machine.
+    Files {
+        /// The repository, as owner/name.
+        repo: String,
+        /// A branch, tag, or commit.
+        #[arg(long)]
+        revision: Option<String>,
+    },
+    /// Download a model from Hugging Face into models.download_dir, showing progress.
+    Pull {
+        /// The repository, as owner/name.
+        repo: String,
+        /// The GGUF quantisation, such as Q4_K_M (the default); any case.
+        #[arg(long, conflicts_with = "file")]
+        quant: Option<String>,
+        /// A file by name or path instead of a quantisation; every part when it is split.
+        #[arg(long)]
+        file: Option<String>,
+        /// A branch, tag, or commit.
+        #[arg(long, default_value = "main")]
+        revision: String,
+        /// Also download the multimodal projector (mmproj).
+        #[arg(long)]
+        mmproj: bool,
+    },
+    /// Stop a download; pulling the same model again resumes it.
+    Cancel {
+        /// The job id `pull` printed, such as dl-1.
+        job_id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -276,9 +308,24 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Secret {
             command: SecretCommand::Delete { name },
         } => delete_secret(&name),
-        Command::Models {
-            command: ModelsCommand::Local,
-        } => local::list(),
+        Command::Models { command } => match command {
+            ModelsCommand::Local => local::list(),
+            ModelsCommand::Files { repo, revision } => pull::files(repo, revision),
+            ModelsCommand::Pull {
+                repo,
+                quant,
+                file,
+                revision,
+                mmproj,
+            } => pull::pull(ModelDownloadParams {
+                repo,
+                quant,
+                file,
+                revision: Some(revision),
+                mmproj,
+            }),
+            ModelsCommand::Cancel { job_id } => pull::cancel(job_id),
+        },
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
