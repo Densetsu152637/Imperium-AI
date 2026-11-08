@@ -22,8 +22,9 @@ done
 pnpm --filter @imperium/protocol run generate
 
 # The installer carries the daemon and CLI beside the app, which starts the daemon itself.
-# Tauri expects them as binaries/<name>-<target>[.exe]; the universal macOS build merges both
-# architectures.
+# Tauri expects them as binaries/<name>-<target>[.exe]. A universal macOS build compiles the app
+# once per architecture and checks each one's sidecars, so it needs the per-architecture binaries
+# as well as the merged universal one.
 ext=""
 if [[ "$target" == *windows* ]]; then ext=".exe"; fi
 rust_targets=("$target")
@@ -39,7 +40,10 @@ for bin in imperium imperiumd; do
   out="$sidecars/$bin-$target$ext"
   if [ "${#rust_targets[@]}" -gt 1 ]; then
     inputs=()
-    for t in "${rust_targets[@]}"; do inputs+=("target/$t/release/$bin"); done
+    for t in "${rust_targets[@]}"; do
+      inputs+=("target/$t/release/$bin")
+      cp "target/$t/release/$bin" "$sidecars/$bin-$t"
+    done
     lipo -create -output "$out" "${inputs[@]}"
   else
     cp "target/$target/release/$bin$ext" "$out"
