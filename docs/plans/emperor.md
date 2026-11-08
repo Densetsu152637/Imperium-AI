@@ -416,7 +416,11 @@ its whole context.
   request waits longer than one batch plus one swap; `bash scripts/check-rust.sh` passes.
 - Status: pending
 - Outcome:
-- Handoff notes: concurrent sessions complicate "the orchestrator is asleep": evict only when
+- Handoff notes: from the stage 2c review: the `--cache-ram` reservation is counted as RAM
+  per loaded model and can crowd out a second model on RAM-tight machines, so let the arbiter
+  shrink or release it when another model needs room; and a model idle between one agent's
+  calls can now be evicted mid-turn (the next `acquire` fails instead of reloading), which this
+  stage must turn into a reload. Concurrent sessions complicate "the orchestrator is asleep": evict only when
   every agent using that model is waiting. A slot file can be stale if the model or its
   settings changed; key files by model id, file hash, and context size.
 
