@@ -3,6 +3,7 @@
 // The workspace is always shown: while the daemon is away, a banner offers to start or reach it
 // and the lists show what was last known, and the layout reopens as the user left it.
 
+import { FolderPlus, Plug, Plus, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
@@ -43,6 +44,7 @@ import { normalizeProject, useProjectIcons } from "./projectIcons";
 import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
 import { applySettings, loadSettings, saveSettings, SettingsContext, type AppSettings } from "./settings";
 import { SettingsWindow } from "./SettingsWindow";
+import { ConnectorsWindow } from "./ConnectorsWindow";
 import { getDoc, setDoc } from "./store";
 import { type Daemon, useDaemon } from "./DaemonControl";
 import { UpdateControl, useUpdates } from "./UpdateControl";
@@ -72,6 +74,7 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
   const [hidden, setHidden] = useState<string[]>(saved.hidden);
   const [showSettings, setShowSettings] = useState(false);
+  const [showConnectors, setShowConnectors] = useState(false);
   const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
@@ -394,10 +397,24 @@ export function App() {
         </span>
         <span className="spacer" />
         <UpdateControl updates={updates} onOpen={() => setShowSettings(true)} />
-        <button className="ghost" onClick={() => setShowSettings((open) => !open)} aria-expanded={showSettings}>
-          Settings
+        <button
+          className="ghost titlebar-button"
+          onClick={() => setShowConnectors((open) => !open)}
+          aria-expanded={showConnectors}
+          title="MCP servers, plugins, and skills"
+        >
+          <Plug aria-hidden="true" /> Connectors
+        </button>
+        <button
+          className="ghost titlebar-button"
+          onClick={() => setShowSettings((open) => !open)}
+          aria-expanded={showSettings}
+          title="Settings (Ctrl+,)"
+        >
+          <Settings aria-hidden="true" /> Settings
         </button>
       </header>
+      {showConnectors && <ConnectorsWindow client={client} onClose={() => setShowConnectors(false)} />}
       {showSettings && (
         <SettingsWindow
           settings={settings}
@@ -408,6 +425,10 @@ export function App() {
           panels={PANELS}
           hidden={hidden}
           onTogglePanel={togglePanel}
+          onOpenConnectors={() => {
+            setShowSettings(false);
+            setShowConnectors(true);
+          }}
           onResetLayout={() => {
             resetLayout();
             window.location.reload();
@@ -428,7 +449,11 @@ export function App() {
                   {
                     id: "projects",
                     title: "Projects",
-                    actions: <button onClick={openFolder}>Open folder</button>,
+                    actions: (
+                      <button onClick={openFolder}>
+                        <FolderPlus aria-hidden="true" /> Open folder
+                      </button>
+                    ),
                     body: (
                       <ProjectsPanel
                         projects={projects}
@@ -450,7 +475,7 @@ export function App() {
                         disabled={!project || !client}
                         title={project ? `New session in ${project}` : "Select a project first"}
                       >
-                        New session
+                        <Plus aria-hidden="true" /> New session
                       </button>
                     ),
                     body: (

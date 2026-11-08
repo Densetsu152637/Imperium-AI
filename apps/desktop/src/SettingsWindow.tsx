@@ -4,11 +4,45 @@
 // and written through the daemon's config.describe / config.set into its config file. Both
 // persist across versions.
 
+import {
+  Bell,
+  Bot,
+  Brain,
+  Clock,
+  Cpu,
+  Download,
+  Globe,
+  HardDrive,
+  Image,
+  Info,
+  Keyboard,
+  LayoutGrid,
+  MemoryStick,
+  MessageSquare,
+  Network,
+  Palette,
+  PawPrint,
+  Plug,
+  Puzzle,
+  Route,
+  Search,
+  Server,
+  Shield,
+  SlidersHorizontal,
+  Smartphone,
+  Boxes,
+  GitPullRequest,
+  Workflow,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { ConfigDescribeResult, ConfigEntry, ConfigSetResult } from "@imperium/protocol";
 
+import { Select } from "./components/Select";
+import { Switch as Toggle } from "./components/Switch";
 import type { DaemonClient } from "./daemon/client";
 import { type Daemon, DaemonSettings } from "./DaemonControl";
 import { preview } from "./notify";
@@ -25,6 +59,8 @@ type Props = {
   panels: { id: string; title: string }[];
   hidden: string[];
   onTogglePanel: (id: string, open: boolean) => void;
+  /** Opens the Connectors window (MCP servers, plugins, skills). */
+  onOpenConnectors: () => void;
   onResetLayout: () => void;
   onClose: () => void;
 };
@@ -200,11 +236,44 @@ const APP_SECTIONS: Section[] = [
   { id: "shortcuts", label: "Keyboard", group: "Imperium" },
   { id: "daemon", label: "Daemon", group: "Imperium" },
   { id: "updates", label: "Updates", group: "Imperium" },
+  { id: "connectors", label: "Connectors", group: "Imperium" },
 ];
 const TAIL_SECTIONS: Section[] = [
   { id: "data", label: "Data and storage", group: "About" },
   { id: "about", label: "About", group: "About" },
 ];
+
+/** One icon per section, in the same line style as the rest of the app. */
+const SECTION_ICONS: Record<string, LucideIcon> = {
+  general: SlidersHorizontal,
+  appearance: Palette,
+  chat: MessageSquare,
+  notifications: Bell,
+  panels: LayoutGrid,
+  shortcuts: Keyboard,
+  daemon: Server,
+  updates: Download,
+  connectors: Plug,
+  data: HardDrive,
+  about: Info,
+  "config:agents": Bot,
+  "config:models": Boxes,
+  "config:routing": Route,
+  "config:runtime": Cpu,
+  "config:hardware": MemoryStick,
+  "config:memory": Brain,
+  "config:workflow": Workflow,
+  "config:web": Globe,
+  "config:media": Image,
+  "config:isolation": Shield,
+  "config:mcp": Plug,
+  "config:extensions": Puzzle,
+  "config:github": GitPullRequest,
+  "config:pets": PawPrint,
+  "config:phone": Smartphone,
+  "config:resume": Clock,
+  "config:daemon": Network,
+};
 
 const SHORTCUTS: [string, string][] = [
   ["Ctrl+,", "Open or close Settings"],
@@ -340,6 +409,20 @@ export function SettingsWindow(props: Props) {
         ) : (
           <p className="muted">Updates are available in the desktop app.</p>
         );
+      case "connectors":
+        return (
+          <>
+            <Row
+              label="Connectors"
+              description="Browse and add MCP servers such as GitHub, a database, or web search; test, turn off, or remove them; and manage plugins and skills."
+            >
+              <button className="primary" onClick={props.onOpenConnectors}>
+                <Plug aria-hidden="true" /> Open connectors
+              </button>
+            </Row>
+            {config && configRows(config.entries.filter((entry) => entry.section === "mcp" || entry.section === "extensions"))}
+          </>
+        );
       case "data":
         return <DataSection userFile={config?.user_file ?? null} settings={settings} onChange={onChange} onResetLayout={props.onResetLayout} />;
       case "about":
@@ -371,14 +454,17 @@ export function SettingsWindow(props: Props) {
     <div className="settings-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="settings-window" role="dialog" aria-modal="true" aria-label="Settings">
         <nav className="settings-nav">
-          <input
-            className="settings-search"
-            type="search"
-            placeholder="Search settings"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            autoFocus
-          />
+          <label className="search-field settings-search">
+            <Search aria-hidden="true" />
+            <input
+              type="search"
+              placeholder="Search settings"
+              aria-label="Search settings"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              autoFocus
+            />
+          </label>
           {groups.map((group) => (
             <div key={group} className="settings-group">
               <span className="settings-group-label">{group}</span>
@@ -392,7 +478,12 @@ export function SettingsWindow(props: Props) {
                       setSection(s.id);
                       setQuery("");
                     }}
+                    aria-current={s.id === section && !query.trim() ? "page" : undefined}
                   >
+                    {(() => {
+                      const Icon = SECTION_ICONS[s.id] ?? SlidersHorizontal;
+                      return <Icon aria-hidden="true" />;
+                    })()}
                     {s.label}
                   </button>
                 ))}
@@ -402,8 +493,8 @@ export function SettingsWindow(props: Props) {
         <section className="settings-content">
           <header className="settings-content-header">
             <h2>{title}</h2>
-            <button className="ghost" onClick={onClose} aria-label="Close settings">
-              ×
+            <button className="ghost icon-only" onClick={onClose} aria-label="Close settings" title="Close (Esc)">
+              <X />
             </button>
           </header>
           {needsRestart && (
@@ -445,21 +536,6 @@ function Row({ label, description, children, badge }: { label: string; descripti
   );
 }
 
-function Toggle({ checked, onChange, label, disabled }: { checked: boolean; onChange: (value: boolean) => void; label: string; disabled?: boolean }) {
-  return (
-    <button
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      className={`switch${checked ? " on" : ""}`}
-      onClick={() => onChange(!checked)}
-      disabled={disabled}
-    >
-      <span className="switch-knob" />
-    </button>
-  );
-}
-
 function FieldRow({
   field,
   value,
@@ -482,13 +558,12 @@ function FieldRow({
         <Toggle checked={Boolean(value)} onChange={(next) => onChange(field.key, next as never)} label={field.label} />
       )}
       {control.type === "select" && (
-        <select value={String(value)} onChange={(event) => onChange(field.key, event.target.value as never)} aria-label={field.label}>
-          {control.options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+        <Select
+          value={String(value)}
+          options={control.options}
+          onChange={(next) => onChange(field.key, next as never)}
+          aria-label={field.label}
+        />
       )}
       {control.type === "slider" && (
         <label className="slider">
@@ -565,18 +640,23 @@ function ConfigRow({ entry, disabled, onSet }: { entry: ConfigEntry; disabled: b
     control = <Toggle checked={entry.value === true} onChange={(next) => onSet(entry.key, next)} label={entry.label} disabled={disabled} />;
   } else if (entry.kind === "enum") {
     control = (
-      <select value={text(entry.value)} onChange={(event) => onSet(entry.key, event.target.value)} disabled={disabled} aria-label={entry.label}>
-        {!entry.options.includes(text(entry.value)) && <option value={text(entry.value)}>{text(entry.value) || "—"}</option>}
-        {entry.options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
+      <Select
+        value={text(entry.value)}
+        options={entry.options.map((option) => ({
+          value: option,
+          label: humanize(option),
+          description: option === text(entry.default) ? "Default" : undefined,
+        }))}
+        onChange={(next) => onSet(entry.key, next)}
+        disabled={disabled}
+        placeholder="—"
+        aria-label={entry.label}
+      />
     );
   } else if (entry.kind === "path_list" || entry.kind === "string_list") {
     control = (
       <textarea
+        className="field"
         value={draft}
         rows={Math.min(Math.max(draft.split("\n").length, 2), 6)}
         placeholder="One per line"
@@ -589,7 +669,9 @@ function ConfigRow({ entry, disabled, onSet }: { entry: ConfigEntry; disabled: b
   } else {
     control = (
       <input
+        className={`field${entry.kind === "integer" || entry.kind === "number" ? " numeric" : ""}`}
         type={entry.kind === "integer" || entry.kind === "number" ? "number" : "text"}
+        spellCheck={false}
         value={draft}
         placeholder={text(entry.default) || (entry.kind === "secret_ref" ? "secret name" : "not set")}
         onChange={(event) => setDraft(event.target.value)}
@@ -605,6 +687,13 @@ function ConfigRow({ entry, disabled, onSet }: { entry: ConfigEntry; disabled: b
       {control}
     </Row>
   );
+}
+
+/** `wait_for_reset` → "Wait for reset"; values with dots or digits (q8_0, cuda12) stay as they are. */
+function humanize(option: string): string {
+  if (/[0-9.]/.test(option) || option.length <= 3) return option;
+  const words = option.replace(/[_-]+/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 function DataSection({

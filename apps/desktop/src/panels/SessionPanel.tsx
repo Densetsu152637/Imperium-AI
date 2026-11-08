@@ -2,6 +2,7 @@
 // usage-limit controls, and the folded context and outputs sections; then the conversation and
 // the composer.
 
+import { ArrowUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -20,6 +21,7 @@ import {
   type Entry,
   type SessionState,
 } from "../sessions";
+import { ToolState } from "../components/ToolState";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
@@ -199,9 +201,7 @@ export function SessionPanel({
           rows={1}
         />
         <button type="submit" className="send" disabled={!draft.trim()} aria-label="Send" title="Send (Enter)">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 19V5M5 12l7-7 7 7" />
-          </svg>
+          <ArrowUp aria-hidden="true" />
         </button>
       </form>
     </div>
@@ -230,7 +230,10 @@ function EntryView({
       return (
         <details className={`tool ${entry.ok === false ? "failed" : ""}`}>
           <summary>
-            <span className="tool-state">{entry.ok === null ? "…" : entry.ok ? "✓" : "✗"}</span> {entry.summary}
+            <span className="tool-state">
+              <ToolState ok={entry.ok} />
+            </span>{" "}
+            {entry.summary}
           </summary>
           {entry.output && <pre>{entry.output}</pre>}
         </details>
