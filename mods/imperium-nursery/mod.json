@@ -1,0 +1,14 @@
+{
+  "id": "imperium-nursery",
+  "name": "Imperium Nursery",
+  "version": "0.1.0",
+  "entry": "index.js",
+  "permissions": ["sessions:read", "pets:read", "storage"],
+  "contributes": {
+    "panels": [
+      { "id": "session", "title": "Session nursery", "slot": "sidebar.right" },
+      { "id": "global", "title": "Global nursery", "slot": "sidebar.right" },
+      { "id": "mine", "title": "My nursery", "slot": "sidebar.right" }
+    ]
+  }
+}

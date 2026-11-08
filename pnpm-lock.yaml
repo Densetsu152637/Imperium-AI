@@ -51,6 +51,18 @@ importers:
         specifier: 8.3.6
         version: 8.3.6
 
+  mods/imperium-nursery:
+    devDependencies:
+      '@imperium/mod-sdk':
+        specifier: workspace:*
+        version: link:../../packages/mod-sdk
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vite:
+        specifier: 8.3.6
+        version: 8.3.6
+
   packages/mod-sdk:
     devDependencies:
       typescript:

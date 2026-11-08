@@ -110,6 +110,18 @@ Pixel Pets ignores unknown top-level fields, so Imperium adds an optional `imper
   ([06](06-extensibility.md#permissions-model-for-extensions)) and see agent status events only,
   never transcript content.
 
+## Imperium-Nursery
+
+`mods/imperium-nursery` is an opt-in UI mod (Settings → Mods) that puts many pets on screen,
+each with its own copy of the behaviour arbiter ported from Pixel Pets. It contributes three
+panels: a **Session nursery** (one pet per agent of the selected or pinned session, with a
+count of working subagents), a **Global nursery** (one pet per session, with a badge for its
+working subagents) and **My nursery** (pets you put in with an optional nickname and take out
+again; residents idle, wander, sleep and play `petted` when clicked). It reads session
+snapshots and events, the installed pets and its own storage through the
+[mod SDK](06-extensibility.md), maps events as in [Event mapping](#event-mapping), and sees status only, never
+transcripts. See the mod's `README.md` for the details.
+
 ## Creating pets
 
 The Pixel Pets skills (`hatch-pet`, `import-codex-pet`, `pet-format`) are Agent Skills, so
