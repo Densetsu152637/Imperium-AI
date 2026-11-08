@@ -591,8 +591,19 @@ CPU. It should yield to the user and catch up when the machine is quiet.
   `cargo test -p imperium-local background_priority` (an interactive request is served before
   queued background requests; background work never evicts a recently used interactive
   model); `bash scripts/check-rust.sh` passes.
-- Status: pending
-- Outcome:
+- Status: done (2026-11-09; branch `feat/quiet-background`, stacked on `feat/cpu-lane`, pushed,
+  not yet merged)
+- Outcome: commits a6b289e, f2fd015, ef894ab. A `LoadView` (`quiet`/`busy`/`saturated`, `[load]`
+  settings, rise at once, settle 60 s) from working sessions, slot queues, swaps, CPU and free
+  RAM; schedule prompts and project-agent dispatches are background (persisted in `.meta.json`);
+  the arbiter admits interactive calls first and never lets background work evict a model the
+  user used within `load.interactive_hold_min`; `prefer_quiet`/`max_defer` on schedules and
+  projects, `conditions.when_quiet`; background agents pause before a model call when not quiet,
+  detached from their model, and resume when quiet; a run a person started or that waited out
+  `max_defer` never gives way again. `check-rust.sh` exit 0 (391 passed), `check-web.sh` exit 0.
+  Gate review converged after two fix rounds. Not done: user input idle time (needs `unsafe`,
+  forbidden in the workspace), GPU utilisation polling, the other schedule conditions in doc 14,
+  a desktop Schedules/Projects pane, subtracting the daemon's own CPU, real-hardware tuning.
 - Handoff notes: keep thresholds configurable and conservative; user input idle time is not
   available on every platform (fall back to resource signals only).
 
