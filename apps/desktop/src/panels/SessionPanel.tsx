@@ -2,6 +2,7 @@
 // usage-limit controls, and the folded context and outputs sections; then the conversation and
 // the composer.
 
+import { ArrowUp, CornerDownRight, ListPlus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -28,6 +29,7 @@ import {
   type Entry,
   type SessionState,
 } from "../sessions";
+import { ToolState } from "../components/ToolState";
 import type { DaemonClient } from "../daemon/client";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { ModelSuggestionCard } from "./ModelSuggestionCard";
@@ -239,7 +241,7 @@ export function SessionPanel({
             onClick={() => send("steer")}
             title="Add this message to the running turn; the agent reads it after its current step (Ctrl+Shift+Enter)"
           >
-            Steer
+            <CornerDownRight aria-hidden="true" /> Steer
           </button>
         )}
         <button
@@ -249,9 +251,7 @@ export function SessionPanel({
           aria-label={session.busy ? "Queue" : "Send"}
           title={session.busy ? "Queue for after this turn (Enter)" : "Send (Enter)"}
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 19V5M5 12l7-7 7 7" />
-          </svg>
+          {session.busy ? <ListPlus aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}
         </button>
       </form>
     </div>
@@ -287,7 +287,10 @@ function EntryView({
       return (
         <details className={`tool ${entry.ok === false ? "failed" : ""}`}>
           <summary>
-            <span className="tool-state">{entry.ok === null ? "…" : entry.ok ? "✓" : "✗"}</span> {entry.summary}
+            <span className="tool-state">
+              <ToolState ok={entry.ok} />
+            </span>{" "}
+            {entry.summary}
           </summary>
           {entry.output && <pre>{entry.output}</pre>}
         </details>

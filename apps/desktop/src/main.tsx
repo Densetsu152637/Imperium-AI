@@ -1,3 +1,4 @@
+import { LucideProvider } from "lucide-react";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -10,7 +11,10 @@ import "./styles.css";
 void loadStore().finally(() =>
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
-      <App />
+      {/* One stroke for every icon; their size follows the text around them (styles.css). */}
+      <LucideProvider strokeWidth={1.75}>
+        <App />
+      </LucideProvider>
     </StrictMode>,
   ),
 );

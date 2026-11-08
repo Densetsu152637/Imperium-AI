@@ -2,6 +2,7 @@
 // panels; columns and stack dividers are resizable and sizes are kept as proportions in the
 // saved layout (state.ts). Panels with `onClose` can be closed; Settings → Panels reopens them.
 
+import { X } from "lucide-react";
 import { useRef, useState, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
 
 import { getLayout, updateLayout } from "./state";
@@ -96,8 +97,8 @@ function Panel({ panel }: { panel: PanelSpec }) {
         <h2 id={`panel-${panel.id}`}>{panel.title}</h2>
         {panel.actions}
         {panel.onClose && (
-          <button className="ghost panel-close" onClick={panel.onClose} aria-label={`Close ${panel.title}`} title="Close panel">
-            ×
+          <button className="ghost panel-close icon-only" onClick={panel.onClose} aria-label={`Close ${panel.title}`} title="Close panel">
+            <X />
           </button>
         )}
       </header>

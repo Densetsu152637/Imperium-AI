@@ -1,6 +1,7 @@
 // Self-update: the native side checks the chosen channel on its own and downloads newer builds;
 // this module shows its status, switches channel, and installs on request. Absent outside Tauri.
 
+import { Download, RotateCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -101,7 +102,7 @@ export function UpdateControl({ updates, onOpen }: { updates: Updates | null; on
     <>
       {status.state === "ready" && (
         <button className="primary update-ready" onClick={updates.restart}>
-          Restart to update
+          <RotateCw aria-hidden="true" /> Restart to update
         </button>
       )}
       <button className="ghost update-version" onClick={onOpen} title="Updates">
@@ -141,7 +142,7 @@ export function UpdateSettings({ updates }: { updates: Updates }) {
       </p>
       {updates.error && <p className="error">{updates.error}</p>}
       <button className="primary" onClick={updates.installNow} disabled={busy}>
-        {busy ? "Updating…" : "Check and install updates"}
+        <Download aria-hidden="true" /> {busy ? "Updating…" : "Check and install updates"}
       </button>
     </fieldset>
   );

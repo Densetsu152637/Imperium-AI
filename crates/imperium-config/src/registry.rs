@@ -142,6 +142,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("hardware.ram_mb", "RAM override (MB)", Integer, "Overrides the probed system memory; empty uses the probe."),
     def("mcp.trusted_projects", "Trusted MCP projects", PathList, "Project folders whose .mcp.json servers may start."),
     def("extensions.plugin_dirs", "Plugin folders", PathList, "More plugin folders (Claude Code layout), besides <config>/plugins."),
+    def("extensions.disabled_plugins", "Disabled plugins", StringList, "Plugins, by name, whose skills, commands, hooks, and servers are not loaded."),
     def("memory.enabled", "Memory", Bool, "Global and project memory for agents."),
     choice("memory.write.global", "Save global memories", WRITE_POLICY, "Whether agents may save global memories."),
     choice("memory.write.project", "Save project memories", WRITE_POLICY, "Whether agents may save shared project memories."),
@@ -335,6 +336,19 @@ pub fn set_user_setting(
             })?,
         ),
     };
+    let config = edit_user_file(paths, env, |document| edit(document, key, new))?;
+    Ok(state(def, &config, &default_values()))
+}
+
+/// Applies `change` to the user's `config.toml` (creating it when missing) and saves it, keeping
+/// comments, formatting, and keys this build does not know. The whole configuration (user file
+/// and `env`, no project) is then loaded and validated; if that fails the file is restored and
+/// the error returned. Returns the configuration as loaded after the change.
+pub(crate) fn edit_user_file(
+    paths: &Paths,
+    env: impl IntoIterator<Item = (String, String)>,
+    change: impl FnOnce(&mut DocumentMut) -> Result<(), String>,
+) -> Result<Config, SetError> {
     let _guard = USER_FILE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -350,7 +364,7 @@ pub fn set_user_setting(
             message: format!("it is not valid TOML: {error}"),
         },
     )?;
-    edit(&mut document, key, new).map_err(|message| SetError::UserFile {
+    change(&mut document).map_err(|message| SetError::UserFile {
         path: path.clone(),
         message,
     })?;
@@ -360,7 +374,7 @@ pub fn set_user_setting(
         Ok(config)
     });
     match checked {
-        Ok(config) => Ok(state(def, &config, &default_values())),
+        Ok(config) => Ok(config),
         Err(error) => {
             let restored = match &previous {
                 Some(text) => write(&path, text),

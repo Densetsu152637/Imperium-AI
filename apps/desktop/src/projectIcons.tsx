@@ -1,32 +1,38 @@
 // Project icons: a small glyph on a coloured tile. Each project gets a default derived from its
 // path, and the user's own choices are remembered per viewer in local storage.
 
+import {
+  BookOpen,
+  Briefcase,
+  Camera,
+  ChartColumn,
+  Code,
+  FlaskConical,
+  Folder,
+  Globe,
+  Music,
+  Rocket,
+  Star,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** Glyphs drawn on a 24×24 grid as stroked paths. */
+/** Glyphs, from the same line-icon set as the rest of the app. The names are what is saved. */
 const GLYPHS = {
-  folder: ["M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
-  code: ["M8 8l-4 4 4 4", "M16 8l4 4-4 4", "M14 5l-4 14"],
-  book: ["M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z", "M5 17a3 3 0 0 1 3-3h11"],
-  flask: ["M9 3h6", "M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3", "M7.5 15h9"],
-  rocket: [
-    "M12 3c3 2 5 5.5 5 9.5L15 17H9l-2-4.5C7 8.5 9 5 12 3z",
-    "M9 17l-2 4",
-    "M15 17l2 4",
-    "M13.5 10a1.5 1.5 0 1 1-3 0a1.5 1.5 0 1 1 3 0",
-  ],
-  star: ["M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"],
-  briefcase: ["M4 8h16v11H4z", "M9 8V5h6v3", "M4 13h16"],
-  chart: ["M4 20h16", "M7 16v-5", "M12 16V7", "M17 16V9"],
-  music: ["M9 18V5l11-2v13", "M9 18a3 3 0 1 1-6 0a3 3 0 1 1 6 0", "M20 16a3 3 0 1 1-6 0a3 3 0 1 1 6 0"],
-  camera: ["M4 8h3l2-3h6l2 3h3v11H4z", "M15.5 13a3.5 3.5 0 1 1-7 0a3.5 3.5 0 1 1 7 0"],
-  globe: [
-    "M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0",
-    "M3 12h18",
-    "M12 3c2.5 2.5 3.5 5.5 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-5.5-3.5-9s1-6.5 3.5-9",
-  ],
-  bolt: ["M13 3L5 14h6l-1 7 8-11h-6z"],
-} satisfies Record<string, string[]>;
+  folder: Folder,
+  code: Code,
+  book: BookOpen,
+  flask: FlaskConical,
+  rocket: Rocket,
+  star: Star,
+  briefcase: Briefcase,
+  chart: ChartColumn,
+  music: Music,
+  camera: Camera,
+  globe: Globe,
+  bolt: Zap,
+} satisfies Record<string, LucideIcon>;
 
 export type Glyph = keyof typeof GLYPHS;
 export const GLYPH_NAMES = Object.keys(GLYPHS) as Glyph[];
@@ -134,13 +140,8 @@ export function environmentIcon(env: { id: string; icon: string | null; color: s
 export const projectName = (path: string): string => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 
 export function GlyphSvg({ glyph }: { glyph: Glyph }) {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      {GLYPHS[glyph].map((d) => (
-        <path key={d} d={d} />
-      ))}
-    </svg>
-  );
+  const Icon = GLYPHS[glyph];
+  return <Icon aria-hidden="true" focusable="false" />;
 }
 
 /** The coloured tile. Decorative; whatever wraps it supplies the accessible name. */

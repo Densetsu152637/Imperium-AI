@@ -1,5 +1,6 @@
 // The model table: every model delegation can use, searchable and sortable.
 
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import type { ModelListResult, ModelRow } from "@imperium/protocol";
@@ -57,7 +58,8 @@ export function ModelsPanel({ table }: { table: ModelListResult | null }) {
         onClick={() => setSort((current) => ({ key, descending: current.key === key && !current.descending }))}
       >
         {label}
-        {sort.key === key ? (sort.descending ? " ▾" : " ▴") : ""}
+        {sort.key === key &&
+          (sort.descending ? <ChevronDown aria-hidden="true" /> : <ChevronUp aria-hidden="true" />)}
       </button>
     </th>
   );
