@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::{get, post};
-use imperium_core::{ResolvedModel, Session, SessionConfig};
+use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
@@ -129,7 +129,7 @@ async fn agents_research_and_cite_sources() {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         tools: vec![Arc::new(WebTools {
             web: Web::new(Some(Arc::new(Searxng { url: searxng }))),
@@ -258,7 +258,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         tools: vec![Arc::new(WebTools {
             web: Web::new(None),

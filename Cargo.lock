@@ -2244,7 +2244,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "imperium-core"
+name = "imperium-engine"
 version = "0.1.0"
 dependencies = [
  "axum",
@@ -2325,7 +2325,7 @@ dependencies = [
  "futures-util",
  "imperium-api",
  "imperium-config",
- "imperium-core",
+ "imperium-engine",
  "imperium-models",
  "imperium-protocol",
  "imperium-tools",
@@ -2467,7 +2467,7 @@ dependencies = [
  "imperium-api",
  "imperium-automation",
  "imperium-config",
- "imperium-core",
+ "imperium-engine",
  "imperium-extensions",
  "imperium-github",
  "imperium-local",

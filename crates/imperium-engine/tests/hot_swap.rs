@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use imperium_core::{ResolvedModel, Session, SessionConfig, SwitchError, journalled_model};
+use imperium_engine::{ResolvedModel, Session, SessionConfig, SwitchError, journalled_model};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{AgentEvent, SessionEvent};
 use imperium_tools::Workspace;
@@ -125,7 +125,7 @@ fn start(model: ResolvedModel, dir: &std::path::Path, resume: bool) -> Session {
         pre_approved: Vec::new(),
         launcher: None,
         resume,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 5,
         journal_path: dir.join(".sessions/s.jsonl"),

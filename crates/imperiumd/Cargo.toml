@@ -17,7 +17,7 @@ getrandom = "0.4.3"
 imperium-api = { version = "0.1.0", path = "../imperium-api" }
 imperium-automation = { version = "0.1.0", path = "../imperium-automation" }
 imperium-config = { version = "0.1.0", path = "../imperium-config" }
-imperium-core = { version = "0.1.0", path = "../imperium-core" }
+imperium-engine = { version = "0.1.0", path = "../imperium-engine" }
 imperium-extensions = { version = "0.1.0", path = "../imperium-extensions" }
 imperium-github = { version = "0.1.0", path = "../imperium-github" }
 imperium-local = { version = "0.1.0", path = "../imperium-local" }

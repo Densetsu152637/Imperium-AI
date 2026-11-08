@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use imperium_core::{
+use imperium_engine::{
     AcquireFuture, Availability, LocalLease, LocalModels, ResolvedModel, Session, SessionConfig,
 };
 use imperium_models::Endpoint;
@@ -212,7 +212,7 @@ fn start(dir: &std::path::Path, base_url: String, local: bool) -> Session {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: Some(INSTRUCTIONS.into()),
         max_steps: 5,
         journal_path: dir.join(".journal/context.jsonl"),

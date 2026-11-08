@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use imperium_core::{ResolvedModel, Session, SessionConfig};
+use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_mcp::{Launch, McpTools, ServerSpec};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{PermissionDecision, SessionEvent};
@@ -138,7 +138,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 5,
         journal_path: dir.path().join("journal.jsonl"),

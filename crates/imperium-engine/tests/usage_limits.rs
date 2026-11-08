@@ -9,7 +9,7 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
-use imperium_core::{ResolvedModel, Session, SessionConfig, default_resume_policy};
+use imperium_engine::{ResolvedModel, Session, SessionConfig, default_resume_policy};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{ResumePolicy, SessionEvent, SessionStatus};
 use imperium_tools::Workspace;

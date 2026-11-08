@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::routing::post;
 use imperium_config::{MemorySettings, MemoryWrite, WritePolicy};
-use imperium_core::{ResolvedModel, Session, SessionConfig, SessionMemory};
+use imperium_engine::{ResolvedModel, Session, SessionConfig, SessionMemory};
 use imperium_memory::Store;
 use imperium_models::Endpoint;
 use imperium_protocol::session::{PermissionDecision, SessionEvent};
@@ -94,7 +94,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 5,
         journal_path: data.join(format!("{id}.jsonl")),

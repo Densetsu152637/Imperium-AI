@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use imperium_core::{ResolvedModel, Session, SessionConfig};
+use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_extensions::{ConfiguredHook, Sources};
 use imperium_models::Endpoint;
 use imperium_protocol::session::SessionEvent;
@@ -115,7 +115,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 5,
         journal_path: project.path().join(".journal.jsonl"),

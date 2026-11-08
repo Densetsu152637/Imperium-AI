@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use base64::Engine;
-use imperium_core::{QueueError, Session, SwitchError};
+use imperium_engine::{QueueError, Session, SwitchError};
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
@@ -30,7 +30,7 @@ use tokio::sync::broadcast;
 
 use crate::environments::EnvironmentError;
 use crate::state::{CreateError, DaemonState, SessionOptions};
-use imperium_core::ModelError;
+use imperium_engine::ModelError;
 use imperium_protocol::methods::SessionSuggestionRespond;
 use imperium_protocol::methods::{
     ConfigDescribe, ConfigDescribeParams, ConfigSet, ConfigSetParams,
@@ -682,7 +682,7 @@ fn reply(response: Response) -> Handled {
     }
 }
 
-fn stopped(error: imperium_core::SessionClosed) -> ErrorObject {
+fn stopped(error: imperium_engine::SessionClosed) -> ErrorObject {
     ErrorObject::new(codes::INTERNAL_ERROR, error.to_string())
 }
 

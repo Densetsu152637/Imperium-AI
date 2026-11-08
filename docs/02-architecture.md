@@ -77,7 +77,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | --------------------- | ---------------------------------------------------------------------- |
 | `imperium-api`        | Shared types and traits: chat messages, tool specs, usage and pricing, the local-model and tool-provider interfaces, Markdown front matter (implemented) |
 | `imperium-protocol`   | Wire types, method/event definitions, TS export                        |
-| `imperium-core`       | Sessions, agent loop, delegation, task graph, event bus                |
+| `imperium-engine`     | Agent engine library: sessions, agent loop, delegation, task graph, event bus |
 | `imperium-models`     | Endpoint clients behind `ChatClient`, model registry, router, cost accounting |
 | `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, runtime supervision (llama.cpp, vLLM) |
 | `imperium-tools`      | Built-in tools: files, commands, isolation tiers (implemented)         |
@@ -102,11 +102,11 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 depend on it rather than on each other: `imperium-tools`, `imperium-mcp`, `imperium-web`, and
 `imperium-media` take `ToolSpec` from it instead of `imperium-models`; `imperium-config` takes
 `Pricing`; `imperium-memory` takes the front-matter parser instead of `imperium-extensions`;
-and `imperium-local` implements its `LocalModels` trait without depending on `imperium-core`.
+and `imperium-local` implements its `LocalModels` trait without depending on `imperium-engine`.
 Likewise `imperium-web`, `imperium-media`, and `imperium-mcp` implement its `ToolProvider` trait,
-so `imperium-core` does not depend on them (it reaches `imperium-mcp` only through
+so `imperium-engine` does not depend on them (it reaches `imperium-mcp` only through
 `imperium-extensions`, for plugins' server definitions); the daemon builds the providers.
-`imperium-models`, `imperium-core`, and `imperium-extensions` re-export the moved items at their
+`imperium-models`, `imperium-engine`, and `imperium-extensions` re-export the moved items at their
 old paths.
 
 Secrets go through the `SecretStore` trait in `imperium-config` (`load`, `store`, `delete`):

@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use imperium_core::{ChatClient, ChatClients, ResolvedModel, Session, SessionConfig};
+use imperium_engine::{ChatClient, ChatClients, ResolvedModel, Session, SessionConfig};
 use imperium_models::{
     ChatFuture, ChatRequest, Completion, Endpoint, TokenFuture, Tokenizer, Usage,
 };
@@ -109,7 +109,7 @@ async fn a_session_calls_the_client_registered_for_its_endpoint_kind() {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 3,
         journal_path: dir.path().join("journal.jsonl"),
@@ -184,7 +184,7 @@ async fn an_unknown_endpoint_kind_fails_the_turn() {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 3,
         journal_path: dir.path().join("journal.jsonl"),

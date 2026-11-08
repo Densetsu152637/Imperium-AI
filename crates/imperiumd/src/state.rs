@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use imperium_config::{KeychainSecrets, Paths, SecretStore, Settings};
-use imperium_core::{
+use imperium_engine::{
     CatalogModel, ChatClients, LocalModels, ModelError, ResolvedModel, Session, SessionConfig,
     SessionMemory, TaskRequest, ToolProvider, new_session_id, resolve_model, route,
 };
@@ -41,7 +41,7 @@ pub struct SessionOptions {
     pub resume_id: Option<String>,
     /// Tools that run without asking.
     pub pre_approved: Vec<String>,
-    pub launcher: Option<Arc<dyn imperium_core::SessionLauncher>>,
+    pub launcher: Option<Arc<dyn imperium_engine::SessionLauncher>>,
     pub instructions: Option<String>,
     /// The environment the session works in, recorded with it.
     pub environment_id: Option<String>,
@@ -427,7 +427,7 @@ impl DaemonState {
             };
             let project = meta["project_dir"].as_str().unwrap_or_default();
             // A model the session switched to is in its journal; else the one it started with.
-            let switched = imperium_core::journalled_model(&journal);
+            let switched = imperium_engine::journalled_model(&journal);
             let model = switched.as_deref().or(meta["model"].as_str());
             let options = SessionOptions {
                 resume_id: Some(id.clone()),
