@@ -131,6 +131,45 @@ root ──spawn A──spawn B──await────────────�
 The router ([04](04-models-and-routing.md#routing)) resolves `requirements` to a concrete
 model; the parent model never needs to name one, though it may express a preference.
 
+## Dispatch contract
+
+**Tool contract (implemented):** every model-facing tool Emperor uses is defined once in
+`imperium-protocol` (`crates/imperium-protocol/src/tools.rs`): its name, description and JSON
+Schema parameters. `imperium-core` and `imperium-web` build the tools they send to models from
+those definitions, and `cargo test` exports each one to
+[`crates/imperium-protocol/schemas/tools/<name>.json`](../crates/imperium-protocol/schemas/tools/)
+with an `index.json` listing names and status (`available` or `planned`). `scripts/check-rust.sh`
+fails when the checked-in files differ from what the tests write, the same drift check as the
+generated TypeScript. The Emperor training repository vendors that folder at a pinned Imperium
+commit. No schema has a credential, key, endpoint or auth-scope field.
+
+| Tool | Status |
+| --- | --- |
+| `spawn_agent`, `await_tasks`, `update_plan`, `web_search`, `web_fetch` | implemented |
+| `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | planned: definition only, not offered to models |
+| `ask_user(questions[])`: each question has text, optional options, and a recommended answer | planned: definition only, not offered to models |
+
+**Templates and root prompt (implemented):** checked in under
+[`crates/imperium-protocol/schemas/prompts/`](../crates/imperium-protocol/schemas/prompts/) and
+exported with the schemas.
+
+- [`brief.md`](../crates/imperium-protocol/schemas/prompts/brief.md): the shape of a
+  `spawn_agent` brief: goal, context, constraints, acceptance, output format; at most 2,000
+  tokens.
+- [`plan.md`](../crates/imperium-protocol/schemas/prompts/plan.md): the plan kept with
+  `update_plan`: goals, stages with dependencies and acceptance checks, assumptions, open
+  questions.
+- [`questions.md`](../crates/imperium-protocol/schemas/prompts/questions.md): one batch of
+  questions, each with options and a recommended answer; only decisions that are the user's or
+  cannot be researched.
+- [`emperor-root.md`](../crates/imperium-protocol/schemas/prompts/emperor-root.md): the root
+  system prompt Emperor is trained with.
+
+**Context-budget line:** the root prompt is followed by a line of exactly the form
+`context budget: <N>K tokens` (for example `context budget: 64K tokens`) naming the active
+context size. The model delegates and chunks earlier on small budgets. Engine support for
+adding the line is planned; the form is fixed now so training data matches.
+
 ## Budgets and limits
 
 - Budgets are hierarchical: a child's budget is carved from its parent's.

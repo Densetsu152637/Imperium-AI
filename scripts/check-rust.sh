@@ -14,3 +14,12 @@ if ! git diff --quiet -- "$generated" || [ -n "$untracked" ]; then
   git status --short -- "$generated" >&2
   exit 1
 fi
+
+# The same for the model-facing tool schemas and prompts exported by the protocol crate.
+contract=crates/imperium-protocol/schemas
+untracked="$(git ls-files --others --exclude-standard -- "$contract")"
+if ! git diff --quiet -- "$contract" || [ -n "$untracked" ]; then
+  echo "Exported tool schemas are out of date. Run cargo test and commit $contract:" >&2
+  git status --short -- "$contract" >&2
+  exit 1
+fi

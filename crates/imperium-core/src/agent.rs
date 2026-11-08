@@ -15,6 +15,7 @@ use imperium_protocol::session::{
     ContextItem, ContextPointer, PermissionDecision, Plan, PlanStep, SessionEvent, StepStatus,
     TokenUsage,
 };
+use imperium_protocol::tools as contract;
 use imperium_tools::{Access, Invocation, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
@@ -1107,42 +1108,25 @@ fn load_skill_spec() -> ToolSpec {
     }
 }
 
-fn update_plan_spec() -> ToolSpec {
+/// A protocol tool definition as the spec sent to the model.
+fn tool_spec(definition: contract::ToolDefinition) -> ToolSpec {
     ToolSpec {
-        name: "update_plan".into(),
-        description: "Replace your plan: a goal and its steps with statuses. Keep exactly one step in_progress while working.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "goal": {"type": "string"},
-            "steps": {"type": "array", "items": {"type": "object", "properties": {
-                "title": {"type": "string"},
-                "status": {"type": "string", "enum": ["pending", "in_progress", "done", "blocked", "skipped"]}
-            }, "required": ["title", "status"]}}
-        }, "required": ["steps"]}),
+        name: definition.name.into(),
+        description: definition.description.into(),
+        parameters: definition.parameters,
     }
+}
+
+fn update_plan_spec() -> ToolSpec {
+    tool_spec(contract::update_plan())
 }
 
 fn spawn_agent_spec() -> ToolSpec {
-    ToolSpec {
-        name: "spawn_agent".into(),
-        description: "Delegate an independent task to a subagent that runs in parallel. The brief must be self-contained. Returns a task id; collect the report with await_tasks.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "brief": {"type": "string"},
-            "tier": {"type": "string", "enum": ["basic", "standard", "strong", "frontier"], "description": "Minimum model capability; the cheapest suitable model is chosen. Default standard."},
-            "model": {"type": "string", "description": "A model table id (or <endpoint>:<model>) to use"},
-            "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},
-            "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match"}
-        }, "required": ["brief"]}),
-    }
+    tool_spec(contract::spawn_agent())
 }
 
 fn await_tasks_spec() -> ToolSpec {
-    ToolSpec {
-        name: "await_tasks".into(),
-        description: "Wait for subagents to finish and return their reports. Omit task_ids to wait for all running tasks. Uses no tokens while waiting.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "task_ids": {"type": "array", "items": {"type": "string"}}
-        }}),
-    }
+    tool_spec(contract::await_tasks())
 }
 
 fn token_usage(usage: &Usage) -> TokenUsage {
@@ -1174,4 +1158,23 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
         },
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The delegation and planning tools sent to models are the protocol's exported definitions.
+    #[test]
+    fn specs_are_the_protocol_definitions() {
+        for (spec, definition) in [
+            (update_plan_spec(), contract::update_plan()),
+            (spawn_agent_spec(), contract::spawn_agent()),
+            (await_tasks_spec(), contract::await_tasks()),
+        ] {
+            assert_eq!(spec.name, definition.name);
+            assert_eq!(spec.description, definition.description);
+            assert_eq!(spec.parameters, definition.parameters);
+        }
+    }
 }

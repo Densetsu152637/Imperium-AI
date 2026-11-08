@@ -1,0 +1,45 @@
+{
+  "description": "Delegate an independent task to a subagent that runs in parallel. The brief must be self-contained. Returns a task id; collect the report with await_tasks.",
+  "name": "spawn_agent",
+  "parameters": {
+    "properties": {
+      "brief": {
+        "type": "string"
+      },
+      "location": {
+        "description": "Restrict to models on this machine or at hosted providers",
+        "enum": [
+          "local",
+          "cloud"
+        ],
+        "type": "string"
+      },
+      "model": {
+        "description": "A model table id (or <provider>:<model>) to use",
+        "type": "string"
+      },
+      "tags": {
+        "description": "Labels such as code or vision that delegation rules match",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "tier": {
+        "description": "Minimum model capability; the cheapest suitable model is chosen. Default standard.",
+        "enum": [
+          "basic",
+          "standard",
+          "strong",
+          "frontier"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "brief"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

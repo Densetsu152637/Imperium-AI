@@ -1,0 +1,267 @@
+//! The model-facing tools: one definition of each tool's name, description and JSON Schema.
+//!
+//! `imperium-core` and `imperium-web` build the tools they send to models from these
+//! definitions, and a test exports them to `schemas/tools/` (with an `index.json`), so the
+//! checked-in files are exactly what models are offered. The Emperor training repository
+//! vendors that folder, and `schemas/prompts/` next to it, at a pinned Imperium commit.
+//!
+//! No definition carries a credential, key, endpoint URL or auth-scope field.
+
+use serde::Serialize;
+use serde_json::{Value, json};
+
+/// Whether the engine offers the tool to models yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolStatus {
+    /// Implemented and offered to models.
+    Available,
+    /// Defined for the contract only; the engine does not offer it yet.
+    Planned,
+}
+
+/// A tool as models see it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolDefinition {
+    pub name: &'static str,
+    pub description: &'static str,
+    /// JSON Schema for the arguments object.
+    pub parameters: Value,
+    pub status: ToolStatus,
+}
+
+impl ToolDefinition {
+    /// The exported form: name, description, status and parameters.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "name": self.name,
+            "description": self.description,
+            "status": self.status,
+            "parameters": self.parameters,
+        })
+    }
+}
+
+/// Every model-facing tool Emperor uses, in index order.
+pub fn all() -> Vec<ToolDefinition> {
+    vec![
+        spawn_agent(),
+        await_tasks(),
+        update_plan(),
+        web_search(),
+        web_fetch(),
+        delegate_chunks(),
+        ask_user(),
+    ]
+}
+
+/// Delegate an independent task to a subagent.
+pub fn spawn_agent() -> ToolDefinition {
+    ToolDefinition {
+        name: "spawn_agent",
+        description: "Delegate an independent task to a subagent that runs in parallel. The brief must be self-contained. Returns a task id; collect the report with await_tasks.",
+        parameters: json!({"type": "object", "properties": {
+            "brief": {"type": "string"},
+            "tier": {"type": "string", "enum": ["basic", "standard", "strong", "frontier"], "description": "Minimum model capability; the cheapest suitable model is chosen. Default standard."},
+            "model": {"type": "string", "description": "A model table id (or <provider>:<model>) to use"},
+            "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match"}
+        }, "required": ["brief"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Wait for subagents and collect their reports.
+pub fn await_tasks() -> ToolDefinition {
+    ToolDefinition {
+        name: "await_tasks",
+        description: "Wait for subagents to finish and return their reports. Omit task_ids to wait for all running tasks. Uses no tokens while waiting.",
+        parameters: json!({"type": "object", "properties": {
+            "task_ids": {"type": "array", "items": {"type": "string"}}
+        }}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Replace the agent's plan.
+pub fn update_plan() -> ToolDefinition {
+    ToolDefinition {
+        name: "update_plan",
+        description: "Replace your plan: a goal and its steps with statuses. Keep exactly one step in_progress while working.",
+        parameters: json!({"type": "object", "properties": {
+            "goal": {"type": "string"},
+            "steps": {"type": "array", "items": {"type": "object", "properties": {
+                "title": {"type": "string"},
+                "status": {"type": "string", "enum": ["pending", "in_progress", "done", "blocked", "skipped"]}
+            }, "required": ["title", "status"]}}
+        }, "required": ["steps"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Search the web through the configured provider.
+pub fn web_search() -> ToolDefinition {
+    ToolDefinition {
+        name: "web_search",
+        description: "Search the web; returns titles, URLs, and snippets. Fetch pages for details and cite their URLs.",
+        parameters: json!({"type": "object", "properties": {
+            "query": {"type": "string"},
+            "count": {"type": "integer", "description": "Results to return, up to 20"}
+        }, "required": ["query"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Read a web page as text.
+pub fn web_fetch() -> ToolDefinition {
+    ToolDefinition {
+        name: "web_fetch",
+        description: "Read a web page as text. Long pages come in chunks: pass offset to continue. Cite the URL when you use what it says.",
+        parameters: json!({"type": "object", "properties": {
+            "url": {"type": "string"},
+            "offset": {"type": "integer", "description": "Character to start from"},
+            "limit": {"type": "integer", "description": "Characters to return"}
+        }, "required": ["url"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Split a large stored artefact into chunks and process each with a subagent (planned).
+pub fn delegate_chunks() -> ToolDefinition {
+    ToolDefinition {
+        name: "delegate_chunks",
+        description: "Split a large stored artefact into chunks of about chunk_tokens tokens and give each chunk to its own subagent with the same brief. Returns task ids; collect the reports with await_tasks. With reduce, one more subagent merges the chunk reports using that instruction.",
+        parameters: json!({"type": "object", "properties": {
+            "artefact_id": {"type": "string", "description": "The stored artefact to split"},
+            "chunk_tokens": {"type": "integer", "description": "Approximate size of each chunk in tokens"},
+            "brief": {"type": "string", "description": "What each subagent does with its chunk; self-contained"},
+            "reduce": {"type": "string", "description": "How to merge the chunk reports into one result"}
+        }, "required": ["artefact_id", "chunk_tokens", "brief"]}),
+        status: ToolStatus::Planned,
+    }
+}
+
+/// Ask the user one batch of questions (planned).
+pub fn ask_user() -> ToolDefinition {
+    ToolDefinition {
+        name: "ask_user",
+        description: "Ask the user one batch of questions about decisions that are theirs to make or that cannot be researched. Give each question a recommended answer, and options when the choices are few. Keep working on whatever does not depend on the answers.",
+        parameters: json!({"type": "object", "properties": {
+            "questions": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
+                "question": {"type": "string"},
+                "options": {"type": "array", "items": {"type": "string"}, "description": "The choices, when there are only a few"},
+                "recommended": {"type": "string", "description": "The answer you suggest, and why in a few words"}
+            }, "required": ["question", "recommended"]}}
+        }, "required": ["questions"]}),
+        status: ToolStatus::Planned,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn schemas_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas")
+    }
+
+    fn pretty(value: &Value) -> String {
+        let mut text = serde_json::to_string_pretty(value).expect("serialises");
+        text.push('\n');
+        text
+    }
+
+    /// Writes the tool schemas and the index under `schemas/tools/`; `scripts/check-rust.sh`
+    /// then fails when what this writes differs from what is checked in.
+    #[test]
+    fn exports_the_tool_schemas() {
+        let dir = schemas_dir().join("tools");
+        std::fs::create_dir_all(&dir).expect("create schemas/tools");
+        let tools = all();
+        let mut index = Vec::new();
+        for tool in &tools {
+            std::fs::write(
+                dir.join(format!("{}.json", tool.name)),
+                pretty(&tool.to_json()),
+            )
+            .expect("write tool schema");
+            index.push(json!({"name": tool.name, "status": tool.status}));
+        }
+        std::fs::write(dir.join("index.json"), pretty(&json!({"tools": index})))
+            .expect("write index");
+    }
+
+    #[test]
+    fn names_are_unique_and_planned_tools_are_marked() {
+        let tools = all();
+        let mut names: Vec<_> = tools.iter().map(|tool| tool.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), tools.len());
+        let planned: Vec<_> = tools
+            .iter()
+            .filter(|tool| tool.status == ToolStatus::Planned)
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(planned, ["delegate_chunks", "ask_user"]);
+    }
+
+    fn prompt(name: &str) -> String {
+        std::fs::read_to_string(schemas_dir().join("prompts").join(name)).expect("prompt file")
+    }
+
+    #[test]
+    fn prompts_are_present_and_consistent_with_the_tools() {
+        // About four characters per token: the brief template stays well inside 2,000 tokens.
+        assert!(prompt("brief.md").len() / 4 < 2_000);
+        let root = prompt("emperor-root.md");
+        assert!(root.contains("context budget: <N>K tokens"));
+        for name in ["spawn_agent", "await_tasks", "update_plan"] {
+            assert!(root.contains(name), "{name} missing from the root prompt");
+        }
+        assert!(prompt("questions.md").contains("recommended"));
+        assert!(prompt("plan.md").contains("## Open questions"));
+    }
+
+    fn property_names(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(Value::Object(properties)) = map.get("properties") {
+                    out.extend(properties.keys().cloned());
+                }
+                map.values().for_each(|inner| property_names(inner, out));
+            }
+            Value::Array(items) => items.iter().for_each(|inner| property_names(inner, out)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn no_schema_has_a_credential_or_endpoint_property() {
+        const FORBIDDEN: [&str; 8] = [
+            "key",
+            "secret",
+            "token",
+            "password",
+            "authorization",
+            "auth",
+            "endpoint",
+            "base_url",
+        ];
+        for tool in all() {
+            let mut names = Vec::new();
+            property_names(&tool.parameters, &mut names);
+            for name in names {
+                let lower = name.to_ascii_lowercase();
+                assert!(
+                    !FORBIDDEN
+                        .iter()
+                        .any(|word| lower == *word || lower.ends_with(&format!("_{word}"))),
+                    "{} has a credential-like property {name}",
+                    tool.name
+                );
+            }
+        }
+    }
+}

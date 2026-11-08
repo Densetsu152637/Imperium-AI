@@ -1,0 +1,41 @@
+{
+  "description": "Replace your plan: a goal and its steps with statuses. Keep exactly one step in_progress while working.",
+  "name": "update_plan",
+  "parameters": {
+    "properties": {
+      "goal": {
+        "type": "string"
+      },
+      "steps": {
+        "items": {
+          "properties": {
+            "status": {
+              "enum": [
+                "pending",
+                "in_progress",
+                "done",
+                "blocked",
+                "skipped"
+              ],
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "status"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "steps"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}
