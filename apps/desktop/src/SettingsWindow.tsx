@@ -24,7 +24,10 @@ type Props = {
   client: DaemonClient | null;
   panels: { id: string; title: string }[];
   hidden: string[];
+  /** Panels that are in windows of their own. */
+  detached: string[];
   onTogglePanel: (id: string, open: boolean) => void;
+  onDock: (id: string) => void;
   onResetLayout: () => void;
   onClose: () => void;
 };
@@ -300,7 +303,16 @@ export function SettingsWindow(props: Props) {
         return (
           <>
             {props.panels.map((panel) => (
-              <Row key={panel.id} label={panel.title} description="Shown in the workspace. Close it from its × as well.">
+              <Row
+                key={panel.id}
+                label={panel.title}
+                description={
+                  props.detached.includes(panel.id)
+                    ? "In its own window."
+                    : "Shown in the workspace. Close it from its × as well."
+                }
+              >
+                {props.detached.includes(panel.id) && <button onClick={() => props.onDock(panel.id)}>Dock</button>}
                 <Toggle
                   checked={!props.hidden.includes(panel.id)}
                   onChange={(open) => props.onTogglePanel(panel.id, open)}

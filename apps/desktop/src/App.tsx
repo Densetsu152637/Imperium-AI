@@ -2,6 +2,9 @@
 // left, the session spanning the middle, agents, models, and telemetry stacked on the right.
 // The workspace is always shown: while the daemon is away, a banner offers to start or reach it
 // and the lists show what was last known, and the layout reopens as the user left it.
+// Any panel can be detached into a window of its own, which runs this same component with
+// `?panel=<id>`: it connects to the daemon itself but shows only that panel. The main window
+// owns the layout and the list of detached panels; see panelWindows.ts.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -26,8 +29,9 @@ import type {
 
 import { DaemonClient, type DaemonConnection } from "./daemon/client";
 import { findDaemon, insideTauri, pickFolder, rememberDevConnection } from "./daemon/connection";
-import { Columns, type PanelSpec } from "./layout/Columns";
-import { getLayout, resetLayout, updateLayout } from "./layout/state";
+import { Columns, type ColumnSpec, type PanelSpec } from "./layout/Columns";
+import { PanelWindow } from "./layout/PanelWindow";
+import { getLayout, resetLayout, updateLayout, type DetachedPanel } from "./layout/state";
 import { notify } from "./notify";
 import { ProjectsPanel, SessionsPanel } from "./panels/NavigationPanels";
 import { SessionPanel } from "./panels/SessionPanel";
@@ -43,7 +47,8 @@ import { normalizeProject, useProjectIcons } from "./projectIcons";
 import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
 import { applySettings, loadSettings, saveSettings, SettingsContext, type AppSettings } from "./settings";
 import { SettingsWindow } from "./SettingsWindow";
-import { getDoc, setDoc } from "./store";
+import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
+import { getDoc, setDoc, subscribeDoc } from "./store";
 import { type Daemon, useDaemon } from "./DaemonControl";
 import { UpdateControl, useUpdates } from "./UpdateControl";
 
@@ -62,7 +67,11 @@ function cachedSessions(): Record<string, SessionState> {
 export function App() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const saved = useMemo(() => getLayout(), []);
-  const restore = settings.restoreSession;
+  // The panel this window shows alone; null in the main window.
+  const detachedId = useMemo(detachedPanelId, []);
+  const isDetached = detachedId !== null;
+  // A detached window follows the main window's selection, so it always restores it.
+  const restore = settings.restoreSession || isDetached;
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
   const [sessions, setSessions] = useState<Record<string, SessionState>>(cachedSessions);
   const [extraProjects, setExtraProjects] = useState<string[]>(saved.folders);
@@ -71,6 +80,9 @@ export function App() {
   const [projectView, setProjectView] = useState(restore && saved.projectView);
   const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
   const [hidden, setHidden] = useState<string[]>(saved.hidden);
+  const [detached, setDetached] = useState<Record<string, DetachedPanel>>(saved.detached);
+  // Panels whose windows this session has opened, so each opens once.
+  const opened = useRef(new Set<string>());
   const [showSettings, setShowSettings] = useState(false);
   const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
@@ -83,6 +95,20 @@ export function App() {
   const icons = useProjectIcons();
 
   useEffect(() => applySettings(settings), [settings]);
+
+  // Settings changed in another window apply here too.
+  useEffect(() => subscribeDoc("settings", () => setSettings(loadSettings())), []);
+
+  // A detached window follows the main window's selected project and session.
+  useEffect(() => {
+    if (!isDetached) return;
+    return subscribeDoc("layout", () => {
+      const next = getLayout();
+      setProject(next.project);
+      setProjectView(next.projectView);
+      setSelected(next.session);
+    });
+  }, [isDetached]);
 
   // Each connection attempt gets a generation; a superseded attempt (React's development
   // double-mount, a retry) closes its own client instead of adding a second listener.
@@ -98,7 +124,7 @@ export function App() {
     current.current = null;
     setStatus({ kind: "connecting" });
     try {
-      const target = connection ?? (await findDaemon(loadSettings().autoStartDaemon));
+      const target = connection ?? (await findDaemon(!isDetached && loadSettings().autoStartDaemon));
       if (!target) {
         setStatus({ kind: "failed", message: "Enter the daemon's URL and token to connect." });
         return;
@@ -192,23 +218,26 @@ export function App() {
         setStatus({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
       }
     }
-  }, [modBus]);
-  const daemon = useDaemon(() => void connect(), status.kind === "connected");
+  }, [modBus, isDetached]);
+  const daemon = useDaemon(() => void connect(), status.kind === "connected", !isDetached);
 
   // Remember the selection, opened folders, and closed panels.
+  // Only the main window writes the layout.
   useEffect(() => {
-    updateLayout({ project, session: selected, projectView, folders: extraProjects, hidden });
-  }, [project, selected, projectView, extraProjects, hidden]);
+    if (isDetached) return;
+    updateLayout({ project, session: selected, projectView, folders: extraProjects, hidden, detached });
+  }, [isDetached, project, selected, projectView, extraProjects, hidden, detached]);
 
   // Remember the sessions as last seen, for the next time the daemon is away.
   useEffect(() => {
-    if (status.kind !== "connected") return;
+    if (status.kind !== "connected" || isDetached) return;
     const summaries = Object.values(sessions).map((s) => s.summary);
     setDoc<Cache>("cache", { sessions: summaries, savedAt: Date.now() });
-  }, [sessions, status.kind]);
+  }, [sessions, status.kind, isDetached]);
 
   // Ctrl+, (Cmd+, on macOS) opens Settings, as in most desktop apps.
   useEffect(() => {
+    if (isDetached) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "," && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
@@ -217,7 +246,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [isDetached]);
 
   useEffect(() => {
     void connect();
@@ -358,27 +387,187 @@ export function App() {
   // Sound and a title badge when an agent needs approval or a session finishes.
   const approvalCount = useRef(0);
   useEffect(() => {
-    if (approvals.length > approvalCount.current) notify("approval", settings);
+    if (!isDetached && approvals.length > approvalCount.current) notify("approval", settings);
     approvalCount.current = approvals.length;
-  }, [approvals.length, settings]);
+  }, [approvals.length, settings, isDetached]);
   const running = useRef(new Set<string>());
   useEffect(() => {
+    if (isDetached) return;
     for (const s of Object.values(sessions)) {
       const busy = s.summary.status === "working";
       if (!busy && running.current.has(s.summary.session_id)) notify("finished", settings);
       if (busy) running.current.add(s.summary.session_id);
       else running.current.delete(s.summary.session_id);
     }
-  }, [sessions, settings]);
+  }, [sessions, settings, isDetached]);
+
+  // Every panel the app has, in the order they are laid out. The main window docks the ones not
+  // closed or detached; a detached window shows just its own.
+  const leftPanels: PanelSpec[] = [
+    {
+      id: "projects",
+      title: "Projects",
+      actions: <button onClick={openFolder}>Open folder</button>,
+      body: (
+        <ProjectsPanel
+          projects={projects}
+          selected={project}
+          icons={icons}
+          onSelect={(next) => {
+            showProject(next);
+            setSelected(null);
+          }}
+        />
+      ),
+    },
+    {
+      id: "sessions",
+      title: "Sessions",
+      actions: (
+        <button
+          onClick={startSession}
+          disabled={!project || !client}
+          title={project ? `New session in ${project}` : "Select a project first"}
+        >
+          New session
+        </button>
+      ),
+      body: (
+        <SessionsPanel
+          sessions={allSessions}
+          project={projectView ? project : null}
+          selected={selected}
+          icons={icons}
+          onSelect={selectSession}
+          onShowProject={showProject}
+          onShowAll={() => setProjectView(false)}
+        />
+      ),
+    },
+    {
+      id: "pet",
+      title: pets?.pets.find((p) => p.id === pets.selected)?.display_name ?? "Pet",
+      body: (
+        <PetPanel
+          client={client}
+          pet={pets?.pets.find((p) => p.id === pets.selected) ?? null}
+          state={petState}
+        />
+      ),
+    },
+  ];
+  const approvalsPanel: PanelSpec =
+                            {
+                              id: "approvals",
+                              title: `Approvals (${approvals.length})`,
+                              body: <ApprovalsPanel approvals={approvals} onRespond={respondToApproval} />,
+    }
+  ;
+  const sessionPanel: PanelSpec = {
+    id: "session",
+    title: "Session",
+    body: (
+      <SessionPanel
+        session={session}
+        icons={icons}
+        onSend={send}
+        onRespond={respond}
+        onSetResumePolicy={setResumePolicy}
+        onResumeNow={resumeNow}
+        models={modelTable?.models ?? []}
+        onSetModel={setModel}
+      />
+    ),
+  };
+  const rightPanels: PanelSpec[] = [
+    { id: "agents", title: "Agents", body: <AgentsPanel session={session} /> },
+    { id: "models", title: "Models", body: <ModelsPanel table={modelTable} /> },
+    {
+      id: "local-models",
+      title: "Local models",
+      body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} client={client} />,
+    },
+    { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
+    { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },
+    ...(mods?.mods ?? []).flatMap((mod) =>
+      mod.panels.map((panel) => ({
+        id: `mod:${mod.id}:${panel.id}`,
+        title: panel.title,
+        body: <ModFrame mod={mod} panelId={panel.id} bus={modBus} />,
+      })),
+    ),
+  ];
+  // Approvals appear in the main window only while something waits, but a detached one stays.
+  const everyPanel = [...leftPanels, approvalsPanel, sessionPanel, ...rightPanels];
+  const findPanel = (id: string) => everyPanel.find((panel) => panel.id === id);
 
   const closePanel = (id: string) => setHidden((all) => (all.includes(id) ? all : [...all, id]));
   const togglePanel = (id: string, open: boolean) =>
     setHidden((all) => (open ? all.filter((panel) => panel !== id) : all.includes(id) ? all : [...all, id]));
-  /** Leaves out closed panels and lets the rest be closed. */
+  /** Leaves out closed and detached panels and lets the rest be closed or detached. */
   const visible = (panels: PanelSpec[]) =>
     panels
-      .filter((panel) => !hidden.includes(panel.id))
-      .map((panel) => ({ ...panel, onClose: () => closePanel(panel.id) }));
+      .filter((panel) => !hidden.includes(panel.id) && !detached[panel.id])
+      .map((panel) => ({ ...panel, onClose: () => closePanel(panel.id), onDetach: () => detach(panel.id) }));
+
+  /** Moves a panel to its own window (the effect above opens it). */
+  const detach = (id: string) => setDetached((all) => (all[id] ? all : { ...all, [id]: { pinned: false } }));
+  const forget = (id: string) => {
+    opened.current.delete(id);
+    setDetached(({ [id]: _gone, ...rest }) => rest);
+  };
+  /** Docks a panel from the main window, which also closes its window. */
+  const dock = (id: string) => {
+    emitPanelEvent({ kind: "close", id });
+    forget(id);
+  };
+
+  // Open the windows of detached panels: at startup, once their panel exists, and on detaching.
+  useEffect(() => {
+    if (isDetached) return;
+    for (const id of Object.keys(detached)) {
+      const spec = findPanel(id);
+      if (opened.current.has(id) || !spec) continue;
+      opened.current.add(id);
+      void openPanelWindow(id, spec.title, detached[id], () => forget(id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detached, mods]);
+
+  // What the user does in a panel window: pin it, move it, dock it.
+  useEffect(() => {
+    if (isDetached) return;
+    return listenPanelEvents((event) => {
+      if (event.kind === "dock") forget(event.id);
+      else if (event.kind === "pinned" || event.kind === "bounds") {
+        setDetached((all) => {
+          const current = all[event.id];
+          if (!current) return all;
+          return { ...all, [event.id]: event.kind === "pinned" ? { ...current, pinned: event.pinned } : { ...current, bounds: event.bounds } };
+        });
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (detachedId !== null) {
+    return (
+      <SettingsContext.Provider value={settings}>
+        <div className="app app-panel">
+          {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={null} />}
+          <PanelWindow id={detachedId} panel={findPanel(detachedId) ?? null} />
+        </div>
+      </SettingsContext.Provider>
+    );
+  }
+
+  const columns: ColumnSpec[] = [
+    { id: "left", mode: "stack", panels: visible([...leftPanels, ...(approvals.length > 0 ? [approvalsPanel] : [])]) },
+    ...(detached[sessionPanel.id]
+      ? []
+      : [{ id: "main", mode: "span" as const, panel: { ...sessionPanel, onDetach: () => detach(sessionPanel.id) } }]),
+    { id: "right", mode: "stack", panels: visible(rightPanels) },
+  ];
 
   return (
     <SettingsContext.Provider value={settings}>
@@ -407,7 +596,9 @@ export function App() {
           client={client}
           panels={PANELS}
           hidden={hidden}
+          detached={Object.keys(detached)}
           onTogglePanel={togglePanel}
+          onDock={dock}
           onResetLayout={() => {
             resetLayout();
             window.location.reload();
@@ -418,119 +609,7 @@ export function App() {
       {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={daemon} />}
       {(
         <main className="workspace">
-          <Columns
-            initial={[0.2, 0.55, 0.25]}
-            columns={[
-              {
-                id: "left",
-                mode: "stack",
-                panels: visible([
-                  {
-                    id: "projects",
-                    title: "Projects",
-                    actions: <button onClick={openFolder}>Open folder</button>,
-                    body: (
-                      <ProjectsPanel
-                        projects={projects}
-                        selected={project}
-                        icons={icons}
-                        onSelect={(next) => {
-                          showProject(next);
-                          setSelected(null);
-                        }}
-                      />
-                    ),
-                  },
-                  {
-                    id: "sessions",
-                    title: "Sessions",
-                    actions: (
-                      <button
-                        onClick={startSession}
-                        disabled={!project || !client}
-                        title={project ? `New session in ${project}` : "Select a project first"}
-                      >
-                        New session
-                      </button>
-                    ),
-                    body: (
-                      <SessionsPanel
-                        sessions={allSessions}
-                        project={projectView ? project : null}
-                        selected={selected}
-                        icons={icons}
-                        onSelect={selectSession}
-                        onShowProject={showProject}
-                        onShowAll={() => setProjectView(false)}
-                      />
-                    ),
-                  },
-                  {
-                    id: "pet",
-                    title: pets?.pets.find((p) => p.id === pets.selected)?.display_name ?? "Pet",
-                    body: (
-                      <PetPanel
-                        client={client}
-                        pet={pets?.pets.find((p) => p.id === pets.selected) ?? null}
-                        state={petState}
-                      />
-                    ),
-                  },
-                  ...(approvals.length > 0
-                    ? [
-                        {
-                          id: "approvals",
-                          title: `Approvals (${approvals.length})`,
-                          body: <ApprovalsPanel approvals={approvals} onRespond={respondToApproval} />,
-                        },
-                      ]
-                    : []),
-                ]),
-              },
-              {
-                id: "main",
-                mode: "span",
-                panel: {
-                  id: "session",
-                  title: "Session",
-                  body: (
-                    <SessionPanel
-                      session={session}
-                      icons={icons}
-                      onSend={send}
-                      onRespond={respond}
-                      onSetResumePolicy={setResumePolicy}
-                      onResumeNow={resumeNow}
-                      models={modelTable?.models ?? []}
-                      onSetModel={setModel}
-                    />
-                  ),
-                },
-              },
-              {
-                id: "right",
-                mode: "stack",
-                panels: visible([
-                  { id: "agents", title: "Agents", body: <AgentsPanel session={session} /> },
-                  { id: "models", title: "Models", body: <ModelsPanel table={modelTable} /> },
-                  {
-                    id: "local-models",
-                    title: "Local models",
-                    body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} client={client} />,
-                  },
-                  { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
-                  { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },
-                  ...(mods?.mods ?? []).flatMap((mod) =>
-                    mod.panels.map((panel) => ({
-                      id: `mod:${mod.id}:${panel.id}`,
-                      title: panel.title,
-                      body: <ModFrame mod={mod} panelId={panel.id} bus={modBus} />,
-                    })),
-                  ),
-                ]),
-              },
-            ]}
-          />
+          <Columns initial={columns.length === 3 ? [0.2, 0.55, 0.25] : undefined} columns={columns} />
         </main>
       )}
     </div>

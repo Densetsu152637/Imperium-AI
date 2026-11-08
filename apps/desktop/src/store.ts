@@ -2,9 +2,11 @@
 // sessions shown while the daemon is away. In the desktop app they are files in Imperium's
 // config folder (src-tauri/src/store.rs), so they survive updates and reinstalls; in a browser
 // they live in local storage. All are loaded once before the first render, then read
-// synchronously and written back shortly after each change.
+// synchronously and written back shortly after each change. Every change is also broadcast to
+// the app's other windows (detached panels), which take it into memory without writing it.
 
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 
 import { insideTauri } from "./daemon/connection";
 
@@ -13,8 +15,30 @@ export type DocName = "settings" | "layout" | "cache";
 const NAMES: DocName[] = ["settings", "layout", "cache"];
 const WRITE_DELAY_MS = 300;
 
+const DOC_EVENT = "imperium://doc";
+
 const docs = new Map<DocName, unknown>();
 const pending = new Map<DocName, number>();
+const listeners = new Map<DocName, Set<() => void>>();
+
+type DocMessage = { name: DocName; value: unknown; source: string };
+
+/** Tells this window's own broadcasts from other windows' (Tauri delivers events to the sender too). */
+const SOURCE = Math.random().toString(36).slice(2);
+const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("imperium-doc");
+
+/** A change another window made: take it into memory without writing it back. */
+function receive(message: DocMessage): void {
+  if (message.source === SOURCE || !NAMES.includes(message.name)) return;
+  docs.set(message.name, message.value);
+  listeners.get(message.name)?.forEach((listener) => listener());
+}
+
+function broadcast(name: DocName, value: unknown): void {
+  const message: DocMessage = { name, value, source: SOURCE };
+  if (insideTauri()) emit(DOC_EVENT, message).catch(() => undefined);
+  else channel?.postMessage(message);
+}
 
 async function read(name: DocName): Promise<unknown> {
   try {
@@ -44,6 +68,8 @@ function write(name: DocName): void {
 /** Loads every document; call once before rendering. */
 export async function loadStore(): Promise<void> {
   await Promise.all(NAMES.map(async (name) => docs.set(name, await read(name))));
+  if (insideTauri()) await listen<DocMessage>(DOC_EVENT, (event) => receive(event.payload)).catch(() => undefined);
+  else if (channel) channel.onmessage = (event: MessageEvent<DocMessage>) => receive(event.data);
   // Save what is pending when the window goes away.
   window.addEventListener("pagehide", flushStore);
 }
@@ -52,9 +78,18 @@ export function getDoc<T>(name: DocName): T | undefined {
   return docs.get(name) as T | undefined;
 }
 
-/** Replaces a document and saves it shortly after (changes in quick succession save once). */
+/** Runs `listener` when another window changes the document; returns how to stop listening. */
+export function subscribeDoc(name: DocName, listener: () => void): () => void {
+  const set = listeners.get(name) ?? new Set();
+  listeners.set(name, set);
+  set.add(listener);
+  return () => void set.delete(listener);
+}
+
+/** Replaces a document, tells the other windows, and saves it shortly after (quick changes save once). */
 export function setDoc<T>(name: DocName, value: T): void {
   docs.set(name, value);
+  broadcast(name, value);
   window.clearTimeout(pending.get(name));
   pending.set(
     name,

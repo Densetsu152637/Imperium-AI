@@ -21,8 +21,17 @@
   columns are brushed-metal rails; the conversation is a centred column with the user's turns
   as pills on the right.
 
-Not yet: dragging panels and modules between columns, the edit-layout mode, detachable windows,
-project layout overrides, mods, and themes beyond light and dark.
+- Detachable panels: every panel, built-in or from a mod, has a Detach button (⧉) that moves it
+  to a window of its own. A detached window shows only that panel under a slim header with the
+  panel's actions, a Pin toggle (always on top), and Dock. Many can be open at once; each keeps
+  its position, size, and pin in the saved layout, and all reopen at the next start (moved onto
+  a visible monitor if theirs is gone). Closing one with the OS button docks it; quitting from
+  the main window leaves them detached. Only the main window writes the layout, so detached
+  windows report pinning, moving, and docking to it; documents are synced between windows, and a
+  detached window follows the main window's selected project and session. In a plain browser
+  the window is a popup and cannot be pinned.
+
+Not yet: dragging panels and modules between columns, the edit-layout mode, project layout overrides, mods, and themes beyond light and dark.
 
 ## Shell
 

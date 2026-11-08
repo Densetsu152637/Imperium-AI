@@ -35,23 +35,24 @@ export type Daemon = {
 /**
  * The daemon's status and controls, or null outside the desktop app. `onChanged` runs after a
  * start or restart so the window reconnects; after a stop the window sees its connection close.
+ * Detached panel windows pass `enabled: false`: only the main window controls the daemon.
  */
-export function useDaemon(onChanged: () => void, connected: boolean): Daemon | null {
+export function useDaemon(onChanged: () => void, connected: boolean, enabled = true): Daemon | null {
   const [status, setStatus] = useState<DaemonStatus | null>(null);
   const [busy, setBusy] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    if (!insideTauri()) return;
+    if (!insideTauri() || !enabled) return;
     invoke<DaemonStatus>("daemon_status")
       .then(setStatus)
       .catch((reason: unknown) => setError(String(reason)));
-  }, []);
+  }, [enabled]);
 
   // The connection changing is when the daemon most likely changed.
   useEffect(refresh, [refresh, connected]);
 
-  if (!status) return null;
+  if (!status || !enabled) return null;
   return {
     status,
     busy,

@@ -2,7 +2,7 @@
 // and session, and the folders they opened. Kept in the local `layout` document (store.ts), so
 // the window reopens the same way after a restart, an update, or a reinstall.
 
-import { getDoc, setDoc } from "../store";
+import { getDoc, setDoc, subscribeDoc } from "../store";
 
 export type Layout = {
   /** Proportions per split, by key ("columns", "stack.left", ...). */
@@ -14,9 +14,18 @@ export type Layout = {
   projectView: boolean;
   /** Project folders opened here that have no sessions yet. */
   folders: string[];
+  /** Panels in their own windows, by panel id. */
+  detached: Record<string, DetachedPanel>;
 };
 
-const EMPTY: Layout = { sizes: {}, hidden: [], project: null, session: null, projectView: false, folders: [] };
+export type DetachedPanel = {
+  /** Whether the window stays above other windows. */
+  pinned: boolean;
+  /** Where the window was last left, in logical pixels. */
+  bounds?: { x: number; y: number; width: number; height: number };
+};
+
+const EMPTY: Layout = { sizes: {}, hidden: [], project: null, session: null, projectView: false, folders: [], detached: {} };
 const LEGACY_PREFIX = "imperium.layout.";
 
 let layout: Layout | null = null;
@@ -43,12 +52,17 @@ export function getLayout(): Layout {
   return layout;
 }
 
+// Only the main window writes the layout; the others read the copy it broadcasts.
+subscribeDoc("layout", () => {
+  layout = { ...EMPTY, ...getDoc<Partial<Layout>>("layout") };
+});
+
 export function updateLayout(patch: Partial<Layout>): void {
   layout = { ...getLayout(), ...patch };
   setDoc("layout", layout);
 }
 
-/** Forgets sizes and closed panels; the selection and folders stay. */
+/** Forgets sizes, closed panels, and detached windows; the selection and folders stay. */
 export function resetLayout(): void {
-  updateLayout({ sizes: {}, hidden: [] });
+  updateLayout({ sizes: {}, hidden: [], detached: {} });
 }
