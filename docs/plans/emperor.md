@@ -149,7 +149,7 @@ adds ~2.5 GB to every row.
   VRAM, preferring q8_0 KV and dropping to q4_0 only when that fits a larger tier; the user can
   pin a tier. On CPU or partial offload, smaller tiers keep it usable but slow.
 - **Tier-aware behaviour (G12).** Emperor is told its window in the system prompt
-  (`context budget: 64K`) and trained across all tiers, so on a small tier it delegates and
+  (`context budget: 64K tokens`) and trained across all tiers, so on a small tier it delegates and
   chunks earlier rather than filling its window. The 75 % artefact threshold in stage 2a follows
   the tier automatically.
 - **Weight quants are a second axis.** Q4_K_M is the default; Q5_K_M and Q8_0 trade VRAM for
@@ -262,8 +262,9 @@ them.
 ## Stage 1: Dispatch contract
 
 - Objective: freeze what the model emits and sees, so data, training, and the engine agree.
-  Export JSON Schemas for every tool Emperor uses: `spawn_agent` (brief, `requirements`,
-  `budget`, `result`), `await_tasks`, `update_plan`, `web_search`, `web_fetch`, and the new
+  Export JSON Schemas for every tool Emperor uses: `spawn_agent` (brief, `tier`,
+  `location`, `tags`, `model`; the task contract's `requirements`, `budget`, and `result` are
+  later engine work), `await_tasks`, `update_plan`, `web_search`, `web_fetch`, and the new
   `delegate_chunks` and `ask_user` (stage 2a), from `imperium-protocol`. Define the brief
   template (goal, context, constraints, acceptance, output format, ≤ 2K tokens), the plan
   template (goals, stages with dependencies and acceptance checks, assumptions, open
