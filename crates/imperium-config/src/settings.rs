@@ -35,6 +35,15 @@ ram_headroom_mb = 2048
 # left after the model and the models loaded beside it, counts against the budget, and 0 turns
 # it off.
 cache_ram_mb = 8192
+# Disk (MiB) for the slots of models swapped out to make room for another, so an agent's context
+# is restored instead of read again when its model comes back. Oldest files go first, starting
+# with the session holding the most; 0 turns saving off.
+swap_cache_mb = 8192
+# Seconds a model with an agent mid-turn on it stays loaded before a model another agent has
+# been waiting for may swap it out; a model nothing is waiting for can go at once.
+min_residency_s = 30
+# Swaps allowed per minute; beyond it, work that needs a swap waits or goes to a hosted model.
+max_swaps_per_min = 6
 "#;
 
 /// Typed view of the merged configuration. Keys this build does not know are ignored, so a
@@ -693,6 +702,12 @@ pub struct LlamaCppSettings {
     /// Host memory for llama.cpp's prompt cache (`--cache-ram`), before it is capped to the RAM
     /// the model leaves free; 0 disables it.
     pub cache_ram_mb: u64,
+    /// Disk for the saved slots of swapped-out models (`--slot-save-path`); 0 turns saving off.
+    pub swap_cache_mb: u64,
+    /// How long a model with an agent mid-turn on it is kept before another may swap it out.
+    pub min_residency_s: u64,
+    /// Swaps per minute before swapping pauses.
+    pub max_swaps_per_min: u32,
     /// Extra arguments passed to every `llama-server`.
     #[serde(default)]
     pub extra_args: Vec<String>,

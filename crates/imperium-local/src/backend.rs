@@ -137,6 +137,10 @@ impl RuntimeBackend for LlamaCpp {
             spec.cache_ram_mb.to_string(),
             "--jinja".into(),
         ];
+        if let Some(dir) = &spec.slot_save_path {
+            // Where slots are saved before the model is swapped out, and restored from.
+            args.extend(["--slot-save-path".into(), dir.display().to_string()]);
+        }
         if let Some(mmproj) = &spec.mmproj {
             args.extend(["--mmproj".into(), mmproj.display().to_string()]);
         }

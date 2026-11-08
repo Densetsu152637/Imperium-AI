@@ -138,18 +138,70 @@ reuses the same `llama-server`. What changed is how long a slot is held:
   slot has not seen is processed. vLLM chooses its own sequences and receives neither field.
 - **A prompt cache in host memory.** `llama-server` starts with `--cache-ram`, set from
   `runtime.llamacpp.cache_ram_mb` (default 8192 MiB, llama.cpp's own default) and capped to the
-  RAM left in the budget once the model and every model that stays loaded beside it are counted
-  (idle models are unloaded to make room only when the new model does not fit beside them), so
-  committed RAM never exceeds the budget; `0` turns it off. The cache counts as RAM held by that
+  RAM left in the budget once the model and every model that stays loaded beside it are counted,
+  so committed RAM never exceeds the budget; `0` turns it off. The cache counts as RAM held by that
   model, so models loaded later are planned without it. When a pinned slot holds another agent's
   prompt, llama.cpp saves that prompt to the cache and restores the requesting agent's own by
   prefix, so a switch costs host memory instead of re-reading the prompt. This relies on the
   server's default `--slot-prompt-similarity` (Imperium never sets it to 0, which would skip both
-  the save and the restore). Saving slots to disk (`--slot-save-path`) is stage 2d.
+  the save and the restore).
 
-A model that is idle between one agent's calls can be unloaded to make room for another model, as
-any idle model can; the agent reloads it on its next call. Making a waiting orchestrator yield
-its model to a subagent's is stage 2d.
+**Implemented (stage 2d): subagent-first model swapping.** On a machine that cannot hold an
+orchestrator's model and its subagents' model at once, the work still runs locally: the
+orchestrator, asleep in `await_tasks`, is swapped out with its context saved, the subagents run,
+and the orchestrator comes back with its context restored. The daemon's one supervisor is the
+memory arbiter for every session (`crates/imperium-local/src/arbiter.rs` holds the policy):
+
+- **Who may be swapped out.** A model with a slot in use, or a call queued for one, is never
+  unloaded. Agents tell the runtime what they are doing: an agent is attached to its model for
+  its turn, and marked waiting while it is in `await_tasks`. A loaded model is *free* when none
+  of the agents that took a slot on it since it was loaded is mid-turn (all are waiting or done),
+  and *claimed* otherwise.
+- **When.** A model that would not run as well beside the loaded models as on its own (fewer
+  layers on the GPU, or none at all) swaps out free models, least recently used first, as few as
+  give it its best placement. If only a claimed model is in the way, it waits for that model's
+  agent to start waiting or finish its turn (an orchestrator that spawns a subagent usually
+  starts waiting moments later), for up to `min_residency_s`. After that it loads beside the
+  claimed model if it fits at all, and swaps the claimed model out only when nothing else fits
+  and that model has been loaded at least `min_residency_s`. A model too big for the whole
+  budget fails at once; otherwise a call never fails for want of room: it waits until the models
+  in its way are done and then loads, including a model swapped out between one agent's calls.
+- **Swap out with state.** Before a model is unloaded, each slot holding an agent's prompt is
+  saved with `POST /slots/{id}?action=save` into `<data>/swap`, which `llama-server` is started
+  with as `--slot-save-path`. Files are keyed by the agent and by the model: its id, the file's
+  path, size, and modification time (not a hash of the contents, which would read gigabytes on
+  every load), the per-slot context, and the cache type, so a stale file is never restored. When
+  the model loads again, each saved agent gets its old slot back while it is free, and its file
+  is restored with `action=restore` into the slot it leased before its next request is sent; a
+  failed restore only means the prompt is read again. Models unloaded after `idle_unload_s` are
+  saved the same way.
+- **Cache, do not discard.** Saved files are kept up to `swap_cache_mb` of disk; past that the
+  oldest go first, taken from the session holding the most, so one busy session cannot push every
+  other session's saved context out. Files a previous daemon run left are removed at start.
+  Weights are memory-mapped, so a model swapped out recently reloads from the OS page cache.
+- **Batch by model.** Calls for a model that is not loaded wait in arrival order, so priority
+  ages with waiting time, and only the earliest may load. A loaded model keeps serving the agents
+  already in its batch (those that took a slot since it was loaded), but a new agent joins only
+  while no earlier call for another model is waiting. Three sessions' subagent tasks for one
+  model therefore run in a single load, and an orchestrator that wakes is served right after the
+  batch ahead of it.
+- **No thrashing.** Loads and unloads run one at a time (they contend for the disk and the PCIe
+  bus); a call that arrives mid-swap waits its turn. At most `max_swaps_per_min` swaps happen per
+  minute; beyond that, calls that need a swap wait, and the router treats such models as
+  unavailable so new tasks go to the next suitable row.
+- **The prompt cache yields.** When a model is swapped out only because another model's
+  `--cache-ram` took the RAM it needs, the newcomer's cache is sized to leave room for it to come
+  back without its cache, so after one restart both stay loaded with smaller caches instead of
+  taking turns.
+- **Visibility.** Every client receives `model.swapped_out` and `model.swapped_in` notifications
+  (`ModelSwap`: `model_id`, `seconds`, `bytes`, `slots`, and a `reason`: `room` or `idle` out,
+  `swap` or `restore` in). Out counts the slot bytes written and the time to save and stop; in
+  counts the memory taken and the time to start, and `slots` is how many saved slots wait for
+  their agents.
+
+Not done in stage 2d: per-session ceilings on slots and on `--cache-ram` (llama.cpp manages its
+prompt cache itself), the longest wait per session, swap events in the desktop's Models panel,
+and the measured run on a 16 GB GPU.
 
 **Slots × context (stage 2c, partly open).** `--ctx-size` is the per-slot context times the
 slots (`runtime.llamacpp.context` × `runtime.llamacpp.parallel`), and the memory planner counts
@@ -265,10 +317,14 @@ endpoint is unknown or whose key is missing are skipped with a warning. `models.
 the table, and the desktop app shows it in a searchable, sortable Models panel.
 
 **Implemented (phase 4):** rows with spec `llamacpp:<id>` (location must be `local`) are
-placed by the memory planner. A local row is considered only while it can run: loaded, or
-fitting in the memory not held by models in use (idle models are unloaded to make room). In
-each ranking step a loaded model beats one that would have to be loaded, and nothing in use is
-evicted, so when memory is short the choice falls to the next suitable row, typically hosted.
+placed by the memory planner. A local row is considered only while it can run: loaded, fitting
+beside the loaded models, or fitting once loaded models nobody has a slot on are swapped out
+(stage 2d; not while the swap limit is reached). In each ranking step a loaded model beats one
+that would have to be loaded, which beats one that needs a swap, and nothing in use is evicted,
+so when memory is short the choice falls to the next suitable row, typically hosted. A row that
+needs a swap carries the expected seconds (the model's last measured load, or its size at
+2 GiB/s), for stage 2e's comparison of the swap with a hosted model's price per task class; until
+then a local row that can swap wins on price like any local row.
 A session's own model can also be `llamacpp:<id>`. The cost scoring with load latency and
 queue delay, capability filters, and escalation below are later work.
 

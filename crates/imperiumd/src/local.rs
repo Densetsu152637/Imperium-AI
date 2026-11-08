@@ -59,11 +59,12 @@ impl LocalRuntime {
             tracing::warn!(path = %skipped.path.display(), reason = %skipped.reason, "skipped model file");
         }
         let vllm = &settings.runtime.vllm;
-        let launcher = Arc::new(ProcessLauncher::new(
+        let launcher = ProcessLauncher::new(
             server.clone(),
             PathBuf::from(&vllm.command),
             paths.data_dir().join("logs"),
-        ));
+        )
+        .with_slot_dir(paths.data_dir().join("swap"));
         let runtimes = Runtimes {
             vllm: vllm.clone(),
             vllm_available: cfg!(target_os = "linux"),
@@ -73,7 +74,7 @@ impl LocalRuntime {
             llamacpp.clone(),
             runtimes,
             &hardware,
-            launcher,
+            Arc::new(launcher),
         );
         Some(LocalRuntime {
             supervisor,

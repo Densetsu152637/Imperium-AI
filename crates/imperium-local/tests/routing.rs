@@ -131,6 +131,9 @@ fn supervisor(launcher: Arc<FakeLlama>, vram_gib: u64) -> Arc<Supervisor> {
         cache_type: "f16".into(),
         ram_headroom_mb: 0,
         cache_ram_mb: 0,
+        swap_cache_mb: 0,
+        min_residency_s: 30,
+        max_swaps_per_min: 6,
         extra_args: Vec::new(),
     };
     Supervisor::start(

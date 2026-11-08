@@ -497,6 +497,30 @@ pub struct ModelDownloadCancelResult {
 /// a [`DownloadJob`].
 pub const MODEL_DOWNLOAD_PROGRESS: &str = "models.download_progress";
 
+/// Notification sent to every client when a local model is unloaded to make room for another
+/// (or after `idle_unload_s`), with its slots saved to disk. The payload is a [`ModelSwap`].
+pub const MODEL_SWAPPED_OUT: &str = "model.swapped_out";
+/// Notification sent to every client when a local model is loaded in place of one swapped out,
+/// or comes back with saved slots. The payload is a [`ModelSwap`].
+pub const MODEL_SWAPPED_IN: &str = "model.swapped_in";
+
+/// A local model swapped out or in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelSwap {
+    pub model_id: String,
+    /// Out: saving the slots and stopping the server. In: starting the server.
+    pub seconds: f64,
+    /// Out: bytes of slot state written to disk. In: memory the model took.
+    #[ts(type = "number")]
+    pub bytes: u64,
+    /// Out: slots saved. In: saved slots waiting to be restored on their agents' next calls.
+    pub slots: u32,
+    /// Out: `room` (another model needed the memory) or `idle`. In: `swap` (it replaced a
+    /// model) or `restore` (it came back with saved slots).
+    pub reason: String,
+}
+
 /// A download and how far it has got.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

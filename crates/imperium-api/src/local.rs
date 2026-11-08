@@ -11,9 +11,14 @@ use std::pin::Pin;
 pub enum Availability {
     /// Loaded with a free slot: reusing it costs nothing.
     Loaded,
-    /// Not loaded (or every slot is busy) but fits in free memory: it can be loaded.
+    /// Not loaded (or every slot is busy) but fits beside the loaded models: it can be loaded.
     Fits,
-    /// Cannot run without evicting a model that is in use, or the model is unknown.
+    /// Fits once loaded models nobody has a slot on are swapped out (their slots saved and
+    /// restored when they come back). `seconds` is the expected wait for the swap, from the
+    /// model's last measured load, so a caller can weigh it against a hosted model.
+    Swap { seconds: u32 },
+    /// Cannot run without evicting a model that is in use, swapping is paused because the
+    /// swap limit was reached, or the model is unknown.
     Unavailable,
 }
 
@@ -50,15 +55,50 @@ impl fmt::Debug for LocalLease {
     }
 }
 
+/// What an agent told the local runtime about itself ([`LocalModels::attach`],
+/// [`LocalModels::waiting`]); dropping it withdraws that.
+pub struct LocalPresence(Option<Box<dyn Send + Sync>>);
+
+impl LocalPresence {
+    /// `withdraw` is dropped with the presence; its `Drop` withdraws it.
+    pub fn new(withdraw: impl Send + Sync + 'static) -> Self {
+        LocalPresence(Some(Box::new(withdraw)))
+    }
+
+    /// A presence the runtime does not track.
+    pub fn untracked() -> Self {
+        LocalPresence(None)
+    }
+}
+
+impl fmt::Debug for LocalPresence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("LocalPresence")
+            .field(&self.0.is_some())
+            .finish()
+    }
+}
+
 pub type AcquireFuture<'a> = Pin<Box<dyn Future<Output = Result<LocalLease, String>> + Send + 'a>>;
 
 /// Local models the router may place work on.
 pub trait LocalModels: Send + Sync + fmt::Debug {
     /// Where the model with this id stands, without loading anything.
     fn availability(&self, model: &str) -> Availability;
-    /// Takes a slot on the model for one call, loading the model first if needed and queueing
-    /// first-come, first-served while every slot is busy. `holder` names the agent asking, so
-    /// the model can give it back the slot it used last, whose cached prompt is still there
-    /// unless another agent has overwritten it.
+    /// Takes a slot on the model for one call, loading the model first if needed (waiting for
+    /// room while the models in the way are in use) and queueing first-come, first-served while
+    /// every slot is busy. `holder` names the agent asking, so the model can give it back the
+    /// slot it used last, whose cached prompt is still there unless another agent has
+    /// overwritten it (or restored from disk if the model was swapped out meanwhile).
     fn acquire<'a>(&'a self, model: &'a str, holder: &'a str) -> AcquireFuture<'a>;
+    /// Says that `holder` is working on `model` for one turn, so between its calls the model is
+    /// not swapped out for another unless the other has waited long. Held for the turn.
+    fn attach(&self, _model: &str, _holder: &str) -> LocalPresence {
+        LocalPresence::untracked()
+    }
+    /// Says that `holder` is asleep waiting for its subagents, so its model may be swapped out
+    /// for theirs. Held while it waits.
+    fn waiting(&self, _model: &str, _holder: &str) -> LocalPresence {
+        LocalPresence::untracked()
+    }
 }

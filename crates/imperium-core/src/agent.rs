@@ -27,7 +27,7 @@ use imperium_memory::{NewEntry, Scope};
 
 use crate::breakdown::{Call, Category, Request, Spans, join_parts, tool_texts};
 use crate::session::{SessionMemory, Shared, lock};
-use crate::{LocalLease, ResolvedModel, TaskRequest, route};
+use crate::{LocalLease, LocalModels, ResolvedModel, TaskRequest, route};
 
 /// Longest tool output or report shown in events (the model receives the full text).
 const EVENT_OUTPUT_CHARS: usize = 2_000;
@@ -237,8 +237,12 @@ impl Agent {
         let mut total = Usage::default();
         let mut reply = String::new();
         let max_steps = self.shared.max_steps;
-        // Names this agent to a local model, which gives it back the slot it used last.
-        let holder = format!("{}/{}", self.shared.session_id, self.id);
+        // Names this agent to a local model, which gives it back the slot it used last and
+        // keeps the model loaded between its calls.
+        let holder = self.holder();
+        let _attached = self
+            .local_models()
+            .map(|local| local.attach(&self.model.model, &holder));
         for step in 1..=max_steps {
             let mut waits = 0;
             let mut waited = std::time::Duration::ZERO;
@@ -658,6 +662,16 @@ impl Agent {
         finish(ok, output)
     }
 
+    /// This agent's name to a local model.
+    fn holder(&self) -> String {
+        format!("{}/{}", self.shared.session_id, self.id)
+    }
+
+    /// The local runtime, when this agent's model runs on it.
+    fn local_models(&self) -> Option<&dyn LocalModels> {
+        self.shared.local.as_deref().filter(|_| self.model.local)
+    }
+
     /// The client for one model call, with the slot held on a local model until the call ends.
     async fn client(
         &self,
@@ -972,6 +986,11 @@ impl Agent {
             task_ids: Option<Vec<String>>,
         }
         let args: Args = parse(arguments)?;
+        // Asleep until the reports arrive: the local runtime may swap this agent's model out
+        // for its subagents' and restore it afterwards.
+        let _waiting = self
+            .local_models()
+            .map(|local| local.waiting(&self.model.model, &self.holder()));
         let mut ids = args
             .task_ids
             .unwrap_or_else(|| self.tasks.keys().cloned().collect());

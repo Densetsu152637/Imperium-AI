@@ -9,12 +9,14 @@ use imperium_core::{
     ToolProvider, new_session_id, resolve_model,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
+use imperium_local::supervisor::SwapDirection;
 use imperium_mcp::McpTools;
 use imperium_media::{ImageConfig, ImageGenerators, Media, MediaTools, Service};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
-    LocalModelListResult, ModelListResult, ModelRow, SESSION_CREATED, SessionSummary,
+    LocalModelListResult, MODEL_SWAPPED_IN, MODEL_SWAPPED_OUT, ModelListResult, ModelRow,
+    ModelSwap, SESSION_CREATED, SessionSummary,
 };
 use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
@@ -94,7 +96,7 @@ impl DaemonState {
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
         let devices = Devices::load(paths.data_dir().join("devices.json"));
-        Arc::new(DaemonState {
+        let state = Arc::new(DaemonState {
             started: Instant::now(),
             paths,
             settings,
@@ -111,7 +113,46 @@ impl DaemonState {
             devices,
             phone_address: OnceLock::new(),
             watches: Mutex::new(HashMap::new()),
-        })
+        });
+        if let Some(local) = state.local.get()
+            && tokio::runtime::Handle::try_current().is_ok()
+        {
+            state.announce_swaps(local);
+        }
+        state
+    }
+
+    /// Tells every client when a local model is swapped out or in (`model.swapped_out`,
+    /// `model.swapped_in`).
+    fn announce_swaps(self: &Arc<Self>, local: &LocalRuntime) {
+        let mut swaps = local.supervisor.swap_events();
+        let state = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let event = match swaps.recv().await {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                let method = match event.direction {
+                    SwapDirection::Out => MODEL_SWAPPED_OUT,
+                    SwapDirection::In => MODEL_SWAPPED_IN,
+                };
+                state.announce(
+                    method,
+                    ModelSwap {
+                        model_id: event.model_id,
+                        seconds: event.seconds,
+                        bytes: event.bytes,
+                        slots: event.slots,
+                        reason: event.reason.to_string(),
+                    },
+                );
+            }
+        });
     }
 
     /// Starts running `[[schedules]]`. Call once, inside the Tokio runtime.
@@ -410,14 +451,18 @@ impl DaemonState {
 
     /// Scans the model folders again (after a download), starting the local runtime when it
     /// was not running for want of folders. Must run inside the Tokio runtime; it blocks.
-    pub fn rescan_local_models(&self) {
+    pub fn rescan_local_models(self: &Arc<Self>) {
         if let Some(local) = self.local.get() {
             return local.rescan(&self.paths, &self.settings);
         }
-        if let Some(started) = LocalRuntime::start(&self.paths, &self.settings)
-            && self.local.set(started).is_err()
-            && let Some(local) = self.local.get()
-        {
+        let Some(started) = LocalRuntime::start(&self.paths, &self.settings) else {
+            return;
+        };
+        if self.local.set(started).is_ok() {
+            if let Some(local) = self.local.get() {
+                self.announce_swaps(local);
+            }
+        } else if let Some(local) = self.local.get() {
             // Another download started it first, perhaps before this one's files landed.
             local.rescan(&self.paths, &self.settings);
         }

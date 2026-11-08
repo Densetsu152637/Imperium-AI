@@ -124,8 +124,9 @@ pub struct TaskRequest<'a> {
 }
 
 /// Picks a subagent's model. Local models are considered only when `local` reports they can run
-/// (loaded with a free slot, or fitting in free memory); a loaded model is preferred to loading
-/// one, and nothing in use is evicted, so when memory is short the choice falls to hosted models.
+/// (loaded with a free slot, fitting in free memory, or fitting once idle models are swapped
+/// out); a loaded model is preferred to loading one, and loading to swapping, and nothing in use
+/// is evicted, so when memory is short the choice falls to hosted models.
 ///
 /// 1. a model the agent named, if it is in the table;
 /// 2. the first `[[routing.rules]]` entry matching the task's tier and tags decides: its `use`
