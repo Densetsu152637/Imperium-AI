@@ -1,8 +1,8 @@
 # Plan: Emperor, an open-weight delegation model
 
-Revision: 2026-11-08 r3 (r2: local-only training, the name Emperor, separate repositories,
+Revision: 2026-11-08 r4 (r2: local-only training, the name Emperor, separate repositories,
 teacher licences; r3: strategy and planning from vague prompts, clarify-or-research, G10–G11;
-stage 0 in progress)
+r4: context tiers from 64K to 256K and up, G12; stage 0 in progress)
 
 **Emperor** is a small open-weight model, fine-tuned to be the **root agent** of an Imperium
 session on a 16 GB GPU. It reads the task, plans, writes compact briefs, and hands the work to
@@ -58,12 +58,13 @@ there, once, and record why.
 | G3 | End-to-end task success with Emperor as root is within 5 points of a frontier root on the same suite, at ≤ 50 % of that run's total cost | `eval --suite e2e` (cost from the session ledger) |
 | G4 | Every brief is ≤ 2,000 tokens and self-contained (a judge model answers the subagent's task from the brief alone on ≥ 90 % of samples) | `eval --metric brief` |
 | G5 | Zero credentials, keys, endpoint URLs, or auth scopes in model output across the held-out set | `eval --metric leakage` |
-| G6 | The Q4_K_M GGUF serves 64K tokens per slot on the 16 GB GPU with peak VRAM ≤ 15.0 GB, and scores ≥ 90 % on a 64K retrieval test (RULER-style) | `imperium models local` fit, plus the `nvidia-smi` peak during `eval --suite longctx` |
+| G6 | Every supported [context tier](#context-tiers) (64K, 96K, 128K, 256K) runs within its listed VRAM target with its listed KV cache type, and scores ≥ 90 % on a retrieval test (RULER-style) at its full length (≥ 85 % at 256K) | `imperium models local` fit per tier, plus the `nvidia-smi` peak during `eval --suite longctx --context-tier <tier>` |
 | G7 | Weights, GGUF quants, model card, eval report, and recipe are on `Imperium.AI/emperor` under Apache-2.0, and every teacher's licence permits it | The Hub pages; the datasheet's licence table |
 | G8 | A fresh install selects Emperor as the session root with one config change, and docs 04, 12, and 13 describe it | `imperium chat` with `models.default = "llamacpp:emperor-…"`; docs diff |
 | G9 | Every training stage runs on the local 16 GB GPU; no rented GPUs | Training logs record the device; the recipe lists no cloud GPU step |
 | G10 | From vague one-line prompts, Emperor's plans score ≥ 4.0 of 5 on a rubric (measurable goals, complete decomposition, correct dependencies, stated assumptions, executable steps) judged blind against a frontier root's plans, and score no worse than them on ≥ 70 % of prompts | `eval --metric plan` |
 | G11 | On prompts with labelled gaps, Emperor asks the user about ≥ 90 % of the gaps labelled "user's decision", and about ≤ 10 % of those labelled "researchable" or "safe default", which it resolves itself and records as assumptions; it never asks more than one batch before starting independent work | `eval --metric clarify` |
+| G12 | Emperor adapts to its tier: on the held-out suite, task success at the 64K tier is within 5 points of the 256K tier (it delegates and chunks earlier instead of failing), and no tier ever overflows its window | `eval --suite heldout --context-tier 64k` vs `--context-tier 256k`; overflow count in the report |
 
 ## Scope and non-goals
 
@@ -104,24 +105,40 @@ several specifics are wrong for this project or this hardware. This plan wins ov
 | Payload carries the endpoint and authorization scopes | Model output must never hold credentials; keys live in the keychain ([D7](../13-decisions.md)) | The model emits `tier`, `tags`, `location`, and `requirements`; the router resolves the endpoint and key |
 | The model compresses a 100K log into a 2K "State Packet" | To compress 100K tokens the model must first hold them, which is the cost being avoided | The daemon stores large inputs as artefacts; the model delegates chunks (map), then merges the reports (reduce); briefs are the state packet (G4) |
 | A `<WAIT_FOR_AGENT_ID>` token | Already solved: `await_tasks` suspends the loop at zero tokens and resumes on completion events | Train on `spawn_agent` / `await_tasks`; no new tokens |
-| 64K–128K context "natively" | Memory capacity is not quality; small models degrade well before their window | Target 64K per slot and prove it (G6); beyond that, delegate |
+| 64K–128K context "natively" | Memory capacity is not quality; small models degrade well before their window | Each [context tier](#context-tiers) is measured for quality, not just fit (G6); beyond a tier's window, delegate |
 
-## VRAM budget (16 GB, llama.cpp)
+## Context tiers
 
-Qwen3-4B-Instruct-2507 and Qwen3-8B have the same attention shape (36 layers × 8 KV heads ×
-128 head dim), so their KV cache per token is identical: 73,728 elements, about 144 KiB at f16,
-77 KiB at q8_0, and 41 KiB at q4_0. The 4B saves weights, not KV. These figures are estimates
-until stage 6 measures them.
+Emperor ships as **one set of weights** that runs at several active-context sizes, so weaker
+hardware runs a smaller window instead of a different model. A tier is a runtime setting (the
+per-slot context and KV cache type llama.cpp is started with), not a separate checkpoint. All
+tiers up to 256K are inside the base's native 262,144-token window, so none needs RoPE scaling.
 
-| Component | 4B, 64K, q8_0 KV | 4B, 128K, q8_0 KV | 8B, 64K, q8_0 KV |
-| --------- | ---------------- | ----------------- | ---------------- |
-| Weights (Q4_K_M) | ~2.5 GB | ~2.5 GB | ~5.0 GB |
-| KV cache | ~5.0 GB | ~10.1 GB | ~5.0 GB |
-| Compute buffers and CUDA context | ~1.5 GB | ~2.0 GB | ~1.5 GB |
-| Total | ~9.0 GB | ~14.6 GB | ~11.5 GB |
+KV cache per token, for the lead base's attention shape (36 layers × 8 KV heads × 128 head dim =
+73,728 elements; Qwen3-8B has the same shape): about 144 KiB at f16, 77 KiB at q8_0, and 41 KiB
+at q4_0. Totals below assume the 4B at Q4_K_M (~2.5 GB of weights) plus 1.5–2.5 GB of compute
+buffers and CUDA context. They are estimates until stage 6 measures them; the 8B fallback
+adds ~2.5 GB to every row.
 
-With the 4B, 64K leaves room for a second slot or a small local subagent, and 128K fits on its
-own; G6 stays at 64K until stage 6 measures quality at 128K.
+| Tier | KV at q8_0 | Total at q8_0 | KV at q4_0 | Total at q4_0 | Smallest GPU (KV type) | Status |
+| ---- | ---------- | ------------- | ---------- | ------------- | ---------------------- | ------ |
+| 32K (floor, optional) | ~2.6 GB | ~6.6 GB | ~1.4 GB | ~5.4 GB | 6 GB (q4_0) | Optional, for 6 GB cards |
+| 64K | ~5.1 GB | ~9.1 GB | ~2.7 GB | ~6.7 GB | 8 GB (q4_0), 10 GB (q8_0) | Supported |
+| 96K | ~7.7 GB | ~11.7 GB | ~4.1 GB | ~8.1 GB | 10 GB (q4_0), 16 GB (q8_0) | Supported |
+| 128K | ~10.3 GB | ~14.3 GB | ~5.4 GB | ~9.4 GB | 12 GB (q4_0), 16 GB (q8_0) | Supported |
+| 256K | ~20.5 GB | ~25.0 GB | ~10.9 GB | ~15.4 GB | 16 GB (q4_0, tight), 32 GB (q8_0) | Supported |
+| 512K and up | ~41 GB | ~46 GB | ~21.7 GB | ~26.7 GB | 32 GB (q4_0) | Experimental: beyond the native window, needs YaRN scaling; quality unverified, and the 16 GB development GPU cannot measure it |
+
+- **Choosing a tier.** Imperium's memory planner picks the largest tier that fits the free
+  VRAM, preferring q8_0 KV and dropping to q4_0 only when that fits a larger tier; the user can
+  pin a tier. On CPU or partial offload, smaller tiers keep it usable but slow.
+- **Tier-aware behaviour (G12).** Emperor is told its window in the system prompt
+  (`context budget: 64K`) and trained across all tiers, so on a small tier it delegates and
+  chunks earlier rather than filling its window. The 75 % artefact threshold in stage 2a follows
+  the tier automatically.
+- **Weight quants are a second axis.** Q4_K_M is the default; Q5_K_M and Q8_0 trade VRAM for
+  quality on bigger cards, and IQ4_XS or Q3_K_M can rescue a tier on a card just short of it.
+  The model card publishes the full tier × quant table.
 
 ## Teacher licences
 
@@ -234,7 +251,8 @@ them.
   `delegate_chunks` and `ask_user` (stage 2a), from `imperium-protocol`. Define the brief
   template (goal, context, constraints, acceptance, output format, ≤ 2K tokens), the plan
   template (goals, stages with dependencies and acceptance checks, assumptions, open
-  questions), the question format (batched, each with options and a recommended answer), and
+  questions), the question format (batched, each with options and a recommended answer), the
+  context-budget line that tells Emperor its tier, and
   the root system prompt Emperor is trained with. The `emperor` repository vendors the schemas
   at a pinned Imperium version.
 - Depends on: none
@@ -305,6 +323,9 @@ them.
   clarify-or-research cases: prompts with gaps labelled "user's decision", "researchable", or
   "safe default", where the reference turn asks about the first kind (batched, with
   recommendations) and resolves the others with search or defaults recorded as assumptions.
+  Every trajectory carries a context budget drawn from the [tiers](#context-tiers), and
+  trajectories that would overflow a small budget are re-run (or rewritten) with earlier
+  delegation and chunking, so each behaviour is seen at every tier.
 - Depends on: stages 1, 3
 - Owned paths: `emperor/data/`; the dataset itself goes to `Imperium.AI/emperor-traces` (private)
 - Acceptance checks: `uv run data validate` reports 100 % of samples parsing against the stage-1
@@ -332,11 +353,14 @@ them.
 
 - Objective: DPO with pairs ranked by verifiable signals (schema validity, routing match, brief
   judge, plan cost from the router's prices, leakage); GRPO only if DPO falls short and a local
-  run fits. Merge the adapter, export GGUF (Q4_K_M, Q5_K_M, Q8_0) and AWQ, and measure memory and
-  long-context quality.
+  run fits. Merge the adapter, export GGUF (Q4_K_M, Q5_K_M, Q8_0, IQ4_XS, Q3_K_M) and AWQ, and
+  measure memory and long-context quality at every [context tier](#context-tiers) and KV type.
+  Smaller cards are emulated on the 16 GB GPU: the peak `nvidia-smi` usage is the measurement,
+  whatever the card's size.
 - Depends on: stage 5
 - Owned paths: `emperor/train/`, `emperor/export/`
-- Acceptance checks: G1, G2, G4, G5, G6, G10, and G11 met; G3 measured on the `e2e` suite.
+- Acceptance checks: G1, G2, G4, G5, G6, G10, G11, and G12 met; G3 measured on the `e2e` suite;
+  the measured tier × quant table replaces the estimates in this plan.
 - Status: pending
 - Outcome:
 - Handoff notes: skip the preference step if stage 5 already meets G1–G5. If the memory planner
@@ -347,10 +371,16 @@ them.
 - Objective: a bundled model-table seed entry and an "Emperor root" preset (session model =
   Emperor, `routing.prefer = "cheapest"`, cloud rows for `strong` and `frontier`);
   `imperium models pull Imperium.AI/emperor-GGUF` works; the desktop Models panel shows it.
+  The memory planner learns context tiers: it picks the largest tier and KV type that fit (see
+  [Context tiers](#context-tiers)), a config setting pins one, and the chosen tier reaches
+  Emperor's system prompt as its context budget.
 - Depends on: stage 6
-- Owned paths: `crates/imperium-config`, `crates/imperium-models`, `apps/desktop` (preset UI)
+- Owned paths: `crates/imperium-config`, `crates/imperium-models`, `crates/imperium-local`,
+  `apps/desktop` (preset UI)
 - Acceptance checks: G8: with a fresh `IMPERIUM_HOME` and one config line, `imperium chat`
-  completes a delegation task; `bash scripts/check-rust.sh` and `scripts/check-web.sh` pass.
+  completes a delegation task; with `[hardware] vram_mb` set to 8192, 12288, and 16384 the
+  planner picks the 64K, 128K, and 256K tiers respectively (`cargo test -p imperium-local
+  context_tier`); `bash scripts/check-rust.sh` and `scripts/check-web.sh` pass.
 - Status: pending
 - Outcome:
 - Handoff notes:
