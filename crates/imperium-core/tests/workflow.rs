@@ -112,6 +112,7 @@ fn model(spec: &str, url: &str) -> ResolvedModel {
         model: spec.into(),
         pricing: None,
         local: false,
+        context_window: None,
     }
 }
 

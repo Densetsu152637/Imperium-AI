@@ -152,7 +152,8 @@ impl Loaded {
 
 /// Supervises local model servers. Cheap to share: hand out `Arc<Supervisor>`.
 pub struct Supervisor {
-    models: Vec<LocalModel>,
+    /// Replaced when the folders are scanned again, such as after a download.
+    models: Mutex<Vec<LocalModel>>,
     settings: LlamaCppSettings,
     vllm: VllmSettings,
     /// Whether vLLM can run here; Hugging Face models are unavailable otherwise.
@@ -168,7 +169,7 @@ pub struct Supervisor {
 impl fmt::Debug for Supervisor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Supervisor")
-            .field("models", &self.models.len())
+            .field("models", &lock(&self.models).len())
             .field("budget", &self.budget)
             .field("launcher", &self.launcher)
             .finish_non_exhaustive()
@@ -189,15 +190,10 @@ impl Supervisor {
         hardware: &Hardware,
         launcher: Arc<dyn Launcher>,
     ) -> Arc<Self> {
-        let headroom = settings.ram_headroom_mb * 1024 * 1024;
-        let budget = Budget {
-            vram_bytes: hardware.vram_free_bytes(),
-            ram_bytes: hardware.ram_available_bytes.saturating_sub(headroom),
-            unified: hardware.unified_memory,
-        };
+        let budget = Budget::of(hardware, settings.ram_headroom_mb * 1024 * 1024);
         let vllm_available = runtimes.vllm_available;
         let supervisor = Arc::new(Supervisor {
-            models,
+            models: Mutex::new(models),
             settings,
             vllm: runtimes.vllm,
             vllm_available,
@@ -211,8 +207,14 @@ impl Supervisor {
         supervisor
     }
 
-    pub fn models(&self) -> &[LocalModel] {
-        &self.models
+    pub fn models(&self) -> Vec<LocalModel> {
+        lock(&self.models).clone()
+    }
+
+    /// Replaces the models after a new scan. Loaded models keep running; one that is gone
+    /// from disk can no longer be loaded again.
+    pub fn set_models(&self, models: Vec<LocalModel>) {
+        *lock(&self.models) = models;
     }
 
     pub fn budget(&self) -> Budget {
@@ -292,8 +294,11 @@ impl Supervisor {
         }
     }
 
-    fn model(&self, id: &str) -> Option<&LocalModel> {
-        self.models.iter().find(|model| model.id == id)
+    fn model(&self, id: &str) -> Option<LocalModel> {
+        lock(&self.models)
+            .iter()
+            .find(|model| model.id == id)
+            .cloned()
     }
 
     /// Takes a free slot if `id` is loaded and has one.
@@ -325,8 +330,7 @@ impl Supervisor {
         }
         let model = self
             .model(id)
-            .ok_or_else(|| format!("no local model {id:?} in models.folders"))?
-            .clone();
+            .ok_or_else(|| format!("no local model {id:?} in models.folders"))?;
         let placement = {
             let mut loaded = lock(&self.loaded);
             let footprint = self.footprint(&model);
@@ -455,7 +459,7 @@ impl LocalModels for Supervisor {
                 };
             }
         }
-        match self.placement(model) {
+        match self.placement(&model) {
             Some(_) => Availability::Fits,
             None => Availability::Unavailable,
         }

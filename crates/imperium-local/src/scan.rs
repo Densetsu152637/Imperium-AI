@@ -269,7 +269,7 @@ fn add_hf_dir(dir: &Path, scan: &mut Scan, ids: &mut BTreeMap<String, PathBuf>) 
 }
 
 /// Splits `name-00001-of-00003` into (`name`, 1, 3).
-fn split_part(stem: &str) -> Option<(&str, u32, u32)> {
+pub(crate) fn split_part(stem: &str) -> Option<(&str, u32, u32)> {
     let (rest, count) = stem.rsplit_once("-of-")?;
     let (base, index) = rest.rsplit_once('-')?;
     let digits = |text: &str| text.len() == 5 && text.bytes().all(|b| b.is_ascii_digit());

@@ -97,6 +97,7 @@ async fn agents_generate_images_and_audio() {
             model: "model".into(),
             pricing: None,
             local: false,
+            context_window: None,
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),

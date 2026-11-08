@@ -48,7 +48,8 @@ fn text_body(text: &str) -> String {
     )
 }
 
-/// The next event, skipping status changes (tested on their own in tests/usage_limits.rs).
+/// The next event, skipping status changes (tested on their own in tests/usage_limits.rs) and
+/// context breakdowns (tests/context.rs).
 async fn next(events: &mut broadcast::Receiver<AgentEvent>) -> SessionEvent {
     loop {
         let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
@@ -56,7 +57,10 @@ async fn next(events: &mut broadcast::Receiver<AgentEvent>) -> SessionEvent {
             .expect("an event within 10 s")
             .unwrap()
             .event;
-        if !matches!(event, SessionEvent::StatusChanged { .. }) {
+        if !matches!(
+            event,
+            SessionEvent::StatusChanged { .. } | SessionEvent::ContextBreakdown { .. }
+        ) {
             return event;
         }
     }
@@ -71,6 +75,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
             endpoint,
             model: "model".into(),
             local: false,
+            context_window: None,
             pricing: Some(Pricing {
                 input_usd_per_mtok: 1.0,
                 output_usd_per_mtok: 2.0,
@@ -175,14 +180,16 @@ async fn an_approved_write_changes_the_file_and_the_turn_reports_cost() {
     );
     let journal = std::fs::read_to_string(dir.path().join(".journal/test.jsonl")).unwrap();
     let (history, _) = session.subscribe_with_history();
-    // Eight turn events, plus the status changes they caused (working, needs attention while
-    // asking, working, idle).
-    let statuses = history
-        .iter()
-        .filter(|event| matches!(event.event, SessionEvent::StatusChanged { .. }))
-        .count();
-    assert_eq!(history.len() - statuses, 8);
+    // Eight turn events, a context breakdown after each of the two model calls, and the status
+    // changes they caused (working, needs attention while asking, working, idle).
+    let count = |matches: fn(&SessionEvent) -> bool| {
+        history.iter().filter(|event| matches(&event.event)).count()
+    };
+    let statuses = count(|event| matches!(event, SessionEvent::StatusChanged { .. }));
+    let breakdowns = count(|event| matches!(event, SessionEvent::ContextBreakdown { .. }));
+    assert_eq!(history.len() - statuses - breakdowns, 8);
     assert_eq!(statuses, 4);
+    assert_eq!(breakdowns, 2);
     assert_eq!(journal.lines().count(), history.len());
     assert!(matches!(history[0].event, SessionEvent::TurnStarted { .. }));
     assert!(history.iter().all(|event| event.agent_id == "root"));
@@ -277,6 +284,7 @@ async fn the_root_delegates_waits_without_model_calls_and_collects_reports() {
 
     let mut spawned = Vec::new();
     let mut finished = Vec::new();
+    let mut breakdowns = std::collections::BTreeMap::<String, usize>::new();
     loop {
         let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
             .await
@@ -293,10 +301,18 @@ async fn the_root_delegates_waits_without_model_calls_and_collects_reports() {
                 assert_eq!(steps, 3);
                 break;
             }
+            SessionEvent::ContextBreakdown { .. } => {
+                *breakdowns.entry(event.agent_id).or_default() += 1;
+            }
             SessionEvent::TurnFailed { message } => panic!("{} failed: {message}", event.agent_id),
             _ => {}
         }
     }
+    // Every agent reports what each of its own model calls read.
+    assert_eq!(
+        breakdowns.into_iter().collect::<Vec<_>>(),
+        [("root".into(), 3), ("t1".into(), 1), ("t2".into(), 1)]
+    );
     assert_eq!(spawned, ["t1", "t2"]);
     finished.sort();
     assert_eq!(finished, ["t1", "t2"]);

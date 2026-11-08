@@ -1,11 +1,12 @@
 //! The daemon's local model runtime: scanned folders, the hardware probe, and the supervisor.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use imperium_config::{Paths, Settings};
 use imperium_local::hardware::{Hardware, probe};
-use imperium_local::planner::Placement;
+use imperium_local::hf::Weights;
+use imperium_local::planner::{Budget, Footprint, Placement, place, place_on_gpu};
 use imperium_local::process::ProcessLauncher;
 use imperium_local::runtime::{llama_cpp_ref, server_path};
 use imperium_local::scan::{Format, Skipped, scan};
@@ -17,18 +18,29 @@ use imperium_protocol::methods::{
 #[derive(Debug)]
 pub struct LocalRuntime {
     pub supervisor: Arc<Supervisor>,
-    folders: Vec<PathBuf>,
+    /// The folders and what the last scan skipped; both change when they are scanned again.
+    scanned: Mutex<(Vec<PathBuf>, Vec<Skipped>)>,
     hardware: Hardware,
-    skipped: Vec<Skipped>,
     pack: String,
     server: PathBuf,
 }
 
+/// Folders to scan: `models.folders`, plus the download folder when it exists and is not
+/// already inside one of them.
+pub fn scan_folders(paths: &Paths, settings: &Settings) -> Vec<PathBuf> {
+    let mut folders = settings.models.folders.clone();
+    let downloads = settings.models.download_dir(paths.data_dir());
+    if downloads.is_dir() && !folders.iter().any(|folder| downloads.starts_with(folder)) {
+        folders.push(downloads);
+    }
+    folders
+}
+
 impl LocalRuntime {
-    /// Scans `models.folders`, probes the hardware, and starts the supervisor. `None` when no
-    /// folders are configured. Must run inside the Tokio runtime.
+    /// Scans the model folders ([`scan_folders`]), probes the hardware, and starts the
+    /// supervisor. `None` when there is nothing to scan. Must run inside the Tokio runtime.
     pub fn start(paths: &Paths, settings: &Settings) -> Option<Self> {
-        let folders = settings.models.folders.clone();
+        let folders = scan_folders(paths, settings);
         if folders.is_empty() {
             return None;
         }
@@ -65,12 +77,25 @@ impl LocalRuntime {
         );
         Some(LocalRuntime {
             supervisor,
-            folders,
+            scanned: Mutex::new((folders, found.skipped)),
             hardware,
-            skipped: found.skipped,
             pack,
             server,
         })
+    }
+
+    /// Scans the folders again, such as after a download, so new models can be used.
+    pub fn rescan(&self, paths: &Paths, settings: &Settings) {
+        let folders = scan_folders(paths, settings);
+        let found = scan(&folders);
+        tracing::info!(models = found.models.len(), "local models scanned again");
+        self.supervisor.set_models(found.models);
+        *self.scanned.lock().unwrap_or_else(PoisonError::into_inner) = (folders, found.skipped);
+    }
+
+    /// The memory local models may use.
+    pub fn budget(&self) -> Budget {
+        self.supervisor.budget()
     }
 
     pub fn listing(&self) -> LocalModelListResult {
@@ -106,16 +131,16 @@ impl LocalRuntime {
             })
             .collect();
         let budget = self.supervisor.budget();
+        let scanned = self.scanned.lock().unwrap_or_else(PoisonError::into_inner);
+        let (folders, skipped) = &*scanned;
         LocalModelListResult {
             enabled: true,
-            folders: self
-                .folders
+            folders: folders
                 .iter()
                 .map(|folder| folder.display().to_string())
                 .collect(),
             models,
-            skipped: self
-                .skipped
+            skipped: skipped
                 .iter()
                 .map(|skipped| SkippedModel {
                     path: skipped.path.display().to_string(),
@@ -160,6 +185,31 @@ fn placement_name(placement: Option<&Placement>, hardware: &Hardware) -> &'stati
         Some(_) if hardware.unified_memory => "gpu",
         Some(_) => "cpu",
     }
+}
+
+/// How a model of `size_bytes` not on disk yet would load within `budget`, for download
+/// choices: `gpu`, `partial`, `cpu`, or `none`. vLLM needs the GPU and Linux.
+pub fn fit(size_bytes: u64, weights: Weights, budget: Budget) -> &'static str {
+    let footprint = Footprint::estimate(size_bytes);
+    let placement = match weights {
+        Weights::Gguf => place(footprint, budget),
+        Weights::Safetensors if cfg!(target_os = "linux") => place_on_gpu(footprint, budget),
+        Weights::Safetensors => None,
+    };
+    match placement {
+        None => "none",
+        Some(p) if p.all_layers_on_gpu => "gpu",
+        Some(p) if p.gpu_layers > 0 => "partial",
+        Some(_) => "cpu",
+    }
+}
+
+/// The memory budget when no local runtime is running, from a fresh hardware probe.
+pub fn probed_budget(settings: &Settings) -> Budget {
+    Budget::of(
+        &probe(&settings.hardware),
+        settings.runtime.llamacpp.ram_headroom_mb * 1024 * 1024,
+    )
 }
 
 /// The listing when no folders are configured.

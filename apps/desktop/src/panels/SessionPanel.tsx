@@ -8,7 +8,8 @@ import remarkGfm from "remark-gfm";
 import type { PermissionDecision, Plan, ResumePolicy } from "@imperium/protocol";
 
 import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
-import { formatCost, formatCount, sessionTitle, totals, type Entry, type SessionState } from "../sessions";
+import { ROOT, describeUse, formatCost, formatCount, sessionTitle, totals, type Entry, type SessionState } from "../sessions";
+import { ContextBreakdownView } from "./ContextBreakdown";
 import { StatusBadge } from "./StatusBadge";
 
 type Props = {
@@ -41,6 +42,7 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
     );
   }
   const sum = totals(session.calls);
+  const rootContext = session.breakdowns[ROOT];
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
   const send = () => {
     const text = draft.trim();
@@ -87,12 +89,17 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
             <summary>
               Context and outputs{" "}
               <span className="muted">
-                · {formatCount(sum.prompt)} prompt tokens · {session.calls.length} model calls
+                · {rootContext ? describeUse(rootContext) : `${formatCount(sum.prompt)} prompt tokens`} ·{" "}
+                {session.calls.length} model calls
               </span>
             </summary>
             <div className="session-sections">
+              <section className="context-window-section">
+                <h3>Context window</h3>
+                <ContextBreakdownView session={session} />
+              </section>
               <section>
-                <h3>Context</h3>
+                <h3>Session totals</h3>
                 <dl>
                   <dt>Prompt tokens</dt>
                   <dd>{formatCount(sum.prompt)}</dd>

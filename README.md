@@ -81,6 +81,13 @@ cargo run --bin imperium -- runtime install
 cargo run --bin imperium -- models local
 ```
 
+Or download one from Hugging Face (into the first model folder, or `models.download_dir`):
+
+```bash
+cargo run --bin imperium -- models files Qwen/Qwen3-8B-GGUF
+cargo run --bin imperium -- models pull Qwen/Qwen3-8B-GGUF --quant Q4_K_M
+```
+
 The desktop app needs the daemon running, then:
 
 ```bash

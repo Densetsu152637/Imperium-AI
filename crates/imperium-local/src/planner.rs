@@ -5,12 +5,16 @@
 //! required = weights + kv_bytes_per_token × context × slots + runtime_overhead
 //! ```
 
+use crate::hardware::Hardware;
 use crate::scan::LocalModel;
 
 /// Compute buffers and runtime state llama.cpp needs beyond weights and KV cache.
 pub const RUNTIME_OVERHEAD_BYTES: u64 = 512 * 1024 * 1024;
 /// Assumed when a header lacks what the KV estimate needs: a fifth of the weights.
 const UNKNOWN_KV_FRACTION: f64 = 0.2;
+/// Layers assumed for a model whose header has not been read (one not downloaded yet), so a
+/// GPU and RAM split can still be estimated.
+const ASSUMED_LAYERS: u32 = 32;
 
 /// Memory available to new models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -19,6 +23,19 @@ pub struct Budget {
     pub ram_bytes: u64,
     /// GPU and CPU share `ram_bytes`.
     pub unified: bool,
+}
+
+impl Budget {
+    /// Memory free on `hardware`, keeping `ram_headroom_bytes` of RAM for everything else.
+    pub fn of(hardware: &Hardware, ram_headroom_bytes: u64) -> Self {
+        Budget {
+            vram_bytes: hardware.vram_free_bytes(),
+            ram_bytes: hardware
+                .ram_available_bytes
+                .saturating_sub(ram_headroom_bytes),
+            unified: hardware.unified_memory,
+        }
+    }
 }
 
 /// How a model would be loaded.
@@ -57,6 +74,16 @@ impl Footprint {
                 .info
                 .block_count
                 .and_then(|layers| u32::try_from(layers).ok()),
+        }
+    }
+
+    /// An estimate from the weights' size alone, for a model not on disk yet: the KV cache as
+    /// for a header without the model's shape, and an assumed layer count.
+    pub fn estimate(weights_bytes: u64) -> Self {
+        Footprint {
+            weights_bytes,
+            kv_bytes: (weights_bytes as f64 * UNKNOWN_KV_FRACTION) as u64,
+            layers: Some(ASSUMED_LAYERS),
         }
     }
 
@@ -218,6 +245,19 @@ mod tests {
             ..short
         };
         assert!(place_on_gpu(footprint(), roomy).unwrap().all_layers_on_gpu);
+    }
+
+    #[test]
+    fn estimates_from_file_size_can_still_split() {
+        let estimate = Footprint::estimate(10 * GIB);
+        assert_eq!(estimate.kv_bytes, 2 * GIB);
+        let budget = Budget {
+            vram_bytes: 6 * GIB,
+            ram_bytes: 32 * GIB,
+            unified: false,
+        };
+        let placement = place(estimate, budget).unwrap();
+        assert!(placement.gpu_layers > 0 && !placement.all_layers_on_gpu);
     }
 
     #[test]

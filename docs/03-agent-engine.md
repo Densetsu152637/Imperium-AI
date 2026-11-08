@@ -29,7 +29,9 @@ with the built-in tools, sequential tool execution with permission prompts, and 
 project folder; policy layers, memory, hooks, and concurrent tool calls come later. Each turn
 emits `turn_started`, `text_delta`, `permission_requested`, `tool_started`, `tool_finished`,
 `model_call_completed` after every model call (tokens, duration, time to first token, tokens
-per second, cost), and `turn_completed` (token usage, cost, model calls) or `turn_failed`.
+per second, cost) followed by that call's `context_breakdown` ([context
+management](#context-management)), and `turn_completed` (token usage, cost, model calls) or
+`turn_failed`.
 
 Tool calling works with native function-calling models and, as a fallback, a constrained
 JSON/grammar format (llama.cpp grammars, vLLM guided decoding) for models without native
@@ -117,6 +119,60 @@ model; the parent model never needs to name one, though it may express a prefere
 - Hitting a budget ends the child with a partial result and a `budget_exhausted` status.
 
 ## Context management
+
+**Context breakdown (implemented):** after every model call, the agent that made it emits
+`context_breakdown`: what that call's request held, by category, against the model's context
+window, like Claude Code's `/context`. Each agent (the root and every subagent) reports its own
+calls, under its agent id.
+
+The agent records what each part of a message is as it builds it, so the request divides into
+labelled segments without guessing: the system prompt's parts (base instruction, skills
+listing, memory instructions, web citation rules, project instructions), the tool definitions
+as the JSON actually sent (built-in and MCP tools separately), and, for each user message, its
+workflow context manifest, recalled memories, and the user's own text. Assistant messages
+count their text plus each tool call's name and arguments; tool results count their content.
+Conversations restored after a daemon restart recognise the manifest and memories by the tags
+they are wrapped in.
+
+| Category key | Label |
+| --- | --- |
+| `system_base`, `system_skills`, `system_memory`, `system_citations`, `system_project` | The system prompt's parts |
+| `tools_builtin`, `tools_mcp` | Tool definitions |
+| `manifest`, `memories` | Workflow context manifest and recalled memories, from user-message preambles |
+| `user`, `assistant`, `tool_results` | The conversation |
+| `overhead` | Chat template and formatting: roles, call ids, separators, template markup |
+
+Empty categories are left out. Counting uses the best method available, named in `method`:
+
+- **`exact`**: for local llama.cpp models (and any server on this machine that answers
+  llama.cpp's `POST /tokenize`), each segment is counted with the model's own tokenizer, without
+  BOS and with special tokens parsed as the chat template's output is. Counts are cached by
+  content hash per model, so unchanged messages are not tokenized again on later calls. Tool
+  definitions count as the chat template renders them, not as the JSON sent: templates add
+  their own tool instructions and re-serialise the JSON (Qwen3's spends about 2.6 times the
+  sent JSON's tokens on one tool). Each tool set is measured once with `POST /apply-template`,
+  as the difference it makes to a minimal conversation. The
+  overhead is the provider's reported `prompt_tokens` minus the segments; it absorbs token
+  merges across part boundaries, and is negative when the template drops text the request
+  carried (such as earlier reasoning). The context window is the server's per-request context
+  from `GET /props` (`default_generation_settings.n_ctx`, or the older shapes).
+- **`calibrated`**: every other endpoint, or when the tokenizer fails or takes more than five
+  seconds. Each segment is estimated with a cheap heuristic (words, punctuation runs, line
+  breaks) and the formatting with a per-message allowance; the estimates are then scaled, with
+  largest-remainder rounding, so they add up to the reported `prompt_tokens` exactly. The
+  context window comes from the model table's `context_window`, else it is unknown; it is never
+  invented.
+- **`estimated`**: the provider reported no usage. Segments use the tokenizer when available,
+  else the heuristic, and the overhead is the formatting allowance.
+
+Whenever usage is reported, the categories (overhead included) add up to `prompt_tokens`. The
+event also carries `cached_tokens`. Breakdowns are computed after the call completes, so they
+never delay streaming, and they never fail a turn.
+
+`imperium chat` prints the root agent's latest breakdown with `/context` (a used/free bar and a
+table with each category's share of the window); `--context` adds a one-line summary after each
+turn. The desktop shows it in the session's *Context and outputs* section
+([07](07-desktop-ui.md#projects-and-sessions-implemented)).
 
 - Per-agent context windows track usage; near the limit, the engine compacts older turns
   into a summary using a cheap model, keeping tool results referenced by ID.

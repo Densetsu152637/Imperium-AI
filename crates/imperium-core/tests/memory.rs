@@ -69,6 +69,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
             model: "model".into(),
             pricing: None,
             local: false,
+            context_window: None,
         },
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),

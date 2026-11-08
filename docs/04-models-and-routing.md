@@ -37,8 +37,9 @@ projectors (attached to the other models in their folder) are recognised. Each m
 its file name without `.gguf` or the split suffix; use it as `llamacpp:<id>`. GGUF headers are
 read for architecture, layers, head counts, embedding and head sizes, context length, and
 quantisation, skipping the tokenizer arrays. `imperium models local` and the desktop's Local
-models panel list what was found and whether each fits. Watching folders for changes, network
-and SSH paths, Hugging Face directories, and Hub downloads are later work.
+models panel list what was found and whether each fits. Hugging Face folders (`config.json`
+and safetensors) are found too, for vLLM. Watching folders for changes and network and SSH
+paths are later work.
 
 - Users configure any number of **model folders** (local paths, network shares, or paths on an
   SSH host). The daemon scans them recursively and watches for changes.
@@ -48,6 +49,59 @@ and SSH paths, Hugging Face directories, and Hub downloads are later work.
 - GGUF headers are parsed for architecture, layer count, head counts, embedding size, context
   length, and quant type — enough to compute the memory footprint without loading the model.
 - Optional Hugging Face Hub search and download into a chosen folder.
+
+## Downloading from Hugging Face
+
+**Implemented:** the daemon downloads models from the Hugging Face Hub into
+`models.download_dir` ([configuration](10-configuration.md#implemented-settings)), under
+`<owner>/<repo>/`, where the scanner finds them. The folder is scanned with `models.folders`
+(when it is not already inside one), and again when a download finishes, so the model is in
+`models.local` at once without a restart.
+
+```bash
+imperium models files Qwen/Qwen3-8B-GGUF          # quantisations, sizes, and whether each fits
+imperium models pull Qwen/Qwen3-8B-GGUF            # Q4_K_M by default
+imperium models pull Qwen/Qwen3-8B-GGUF --quant q8_0
+imperium models pull unsloth/gemma-3-4b-it-GGUF --mmproj
+imperium models pull owner/repo --file model-Q5_K_M-00001-of-00002.gguf --revision main
+imperium models pull Qwen/Qwen3-8B                 # a safetensors folder, for vLLM
+imperium models cancel dl-1
+```
+
+- **What is chosen.** The Hub's file listing (`/api/models/<repo>/tree/<revision>`) gives each
+  file's size and, for large files, its SHA256. In a GGUF repository each quantisation is one
+  choice; it is read from the file name (`Q4_K_M`, `IQ4_XS`, `BF16`, `MXFP4`, ...) or, failing
+  that, the folder, and matched without regard to case. Split sets (`-00001-of-0000N`) are
+  downloaded whole, even when `--file` names one part. With neither `--quant` nor `--file`, the
+  only quantisation is taken, else `Q4_K_M`, else the safetensors folder. `mmproj` projectors
+  are left out unless asked for (`--mmproj` takes the F16 one when there are several). In a
+  safetensors repository the top-level weights, `*.json` (config, generation config,
+  tokenizer, index), and tokenizer files (`tokenizer.model`, `*.tiktoken`, `merges.txt`,
+  `vocab.txt`, `*.jinja`) are downloaded; `.bin` and `.pth` checkpoints and subfolders such as
+  `original/` are not.
+- **Fit.** `models.hf_files` estimates whether each choice fits this machine from its size
+  alone (the header is not read yet): the KV cache is taken as a fifth of the weights, and the
+  answer is `gpu`, `partial`, `cpu`, or `none`, as in `models.local`. vLLM folders need Linux
+  and the GPU.
+- **Downloading.** Each file streams to `<file>.part`; an interrupted download resumes from it
+  with a `Range` request (from scratch if the server ignores the range). The SHA256 is checked
+  when the listing gave one, and a mismatching file is deleted. Only then is the file renamed
+  into place. A file already present with the listed size is kept. Downloads run in the
+  daemon, so closing the terminal does not stop them; `imperium models cancel` does, leaving
+  the `.part` files to resume from. One download per repository runs at a time.
+- **Tokens.** Gated and private repositories need a token, sent as `Authorization: Bearer`:
+  `HF_TOKEN` in the daemon's environment, or a keychain secret named `huggingface`
+  (`imperium secret set huggingface`). A request without one that the Hub refuses says so; the
+  token is never logged. Accept a gated model's terms on its Hub page first. `HF_ENDPOINT`
+  points the daemon at a mirror, as it does for `huggingface_hub`.
+- **Protocol.** `models.hf_files` (`repo`, `revision?`) returns the variants, the default, the
+  projectors, every file, and the destination. `models.download` (`repo`, `quant?`, `file?`,
+  `revision?`, `mmproj?`) checks the request against the listing, then returns a
+  `DownloadJob` whose `job_id` the `models.download_progress` notifications carry (file,
+  bytes done and total, `state` of `running`, `done`, `failed` with a `message`, or
+  `cancelled`). `models.downloads` lists jobs since the daemon started;
+  `models.download_cancel` (`job_id`) stops one. The desktop's Local models panel has the same
+  form, with progress bars.
 
 ## Runtimes
 
@@ -133,6 +187,7 @@ id = "sonnet"
 spec = "openrouter:anthropic/claude-sonnet"
 location = "cloud"
 tier = "strong"
+context_window = 200000               # optional; for context breakdowns (local models report theirs)
 
 [routing]
 prefer = "local"                      # cheapest (default) | local | cloud

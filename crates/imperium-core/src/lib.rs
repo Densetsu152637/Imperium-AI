@@ -6,6 +6,7 @@
 //! [`AgentEvent`](imperium_protocol::session::AgentEvent)s by subscribing.
 
 mod agent;
+mod breakdown;
 mod journal;
 mod launcher;
 mod local;

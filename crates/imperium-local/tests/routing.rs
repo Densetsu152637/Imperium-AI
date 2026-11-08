@@ -158,6 +158,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
             cached_input_usd_per_mtok: None,
         }),
         local: false,
+        context_window: None,
     };
     let catalog = vec![
         CatalogModel {
@@ -171,6 +172,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
                 model: "small".into(),
                 pricing: None,
                 local: true,
+                context_window: None,
             },
             tier: Tier::Standard,
             location: Location::Local,

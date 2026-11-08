@@ -239,6 +239,9 @@ pub struct ModelRow {
     pub output_usd_per_mtok: Option<f64>,
     /// False when the row names an endpoint that is not configured.
     pub endpoint_configured: bool,
+    /// The row's `context_window`, in tokens, when configured.
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 /// `models.local`: models found in `models.folders`, the hardware they are planned against, and
@@ -343,6 +346,185 @@ pub struct RuntimeInfo {
     pub server_path: String,
     pub installed: bool,
     pub llama_cpp_ref: String,
+}
+
+/// `models.hf_files`: what a Hugging Face repository offers to download (GGUF quantisations and
+/// a safetensors folder), with sizes and whether each would fit on this machine.
+#[derive(Debug)]
+pub struct HfFiles;
+
+impl Method for HfFiles {
+    const NAME: &'static str = "models.hf_files";
+    type Params = HfFilesParams;
+    type Result = HfFilesResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HfFilesParams {
+    /// `owner/name`, such as `Qwen/Qwen3-8B-GGUF`.
+    pub repo: String,
+    /// A branch, tag, or commit; `main` when absent.
+    #[serde(default)]
+    pub revision: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HfFilesResult {
+    pub repo: String,
+    pub revision: String,
+    /// GGUF quantisations in name order, then the safetensors folder when there is one.
+    pub variants: Vec<HfVariant>,
+    /// The variant `models.download` picks when given neither `quant` nor `file`.
+    pub default: Option<String>,
+    /// Multimodal projector files, downloaded with `mmproj: true`.
+    pub projectors: Vec<HfFile>,
+    /// Every file in the repository, for `models.download` with `file`.
+    pub files: Vec<HfFile>,
+    /// Where `models.download` would put the files (`<download_dir>/<owner>/<repo>`).
+    pub download_dir: String,
+}
+
+/// One downloadable model in a repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HfVariant {
+    /// The quantisation, such as `Q4_K_M`, or `safetensors`.
+    pub name: String,
+    #[ts(type = "\"llamacpp\" | \"vllm\"")]
+    pub runtime: String,
+    /// The id the model will have in `models.local`.
+    pub model_id: String,
+    /// Every file, all parts of a split set.
+    pub files: Vec<String>,
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    /// How it would load on this machine when nothing else is loaded, estimated from its size.
+    #[ts(type = "\"gpu\" | \"partial\" | \"cpu\" | \"none\"")]
+    pub fit: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HfFile {
+    pub path: String,
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    /// SHA256 of large (LFS) files, checked after download.
+    pub sha256: Option<String>,
+}
+
+/// `models.download`: starts downloading a model from Hugging Face into `models.download_dir`.
+/// The download runs in the background, reported by `models.download_progress`; once done the
+/// model is in `models.local`.
+#[derive(Debug)]
+pub struct ModelDownload;
+
+impl Method for ModelDownload {
+    const NAME: &'static str = "models.download";
+    type Params = ModelDownloadParams;
+    type Result = DownloadJob;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelDownloadParams {
+    /// `owner/name`.
+    pub repo: String,
+    /// A GGUF quantisation, matched without regard to case; `Q4_K_M` by default (or the only
+    /// variant, or the safetensors folder).
+    #[serde(default)]
+    pub quant: Option<String>,
+    /// A file by path or name instead of a quantisation; every part when it is split.
+    #[serde(default)]
+    pub file: Option<String>,
+    /// A branch, tag, or commit; `main` when absent.
+    #[serde(default)]
+    pub revision: Option<String>,
+    /// Also download the multimodal projector of a GGUF repository.
+    #[serde(default)]
+    pub mmproj: bool,
+}
+
+/// `models.downloads`: downloads started since the daemon started, oldest first.
+#[derive(Debug)]
+pub struct ModelDownloads;
+
+impl Method for ModelDownloads {
+    const NAME: &'static str = "models.downloads";
+    type Params = ModelDownloadsParams;
+    type Result = ModelDownloadsResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelDownloadsParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelDownloadsResult {
+    pub jobs: Vec<DownloadJob>,
+}
+
+/// `models.download_cancel`: stops a running download. Its `.part` files stay, so downloading
+/// the same model again resumes.
+#[derive(Debug)]
+pub struct ModelDownloadCancel;
+
+impl Method for ModelDownloadCancel {
+    const NAME: &'static str = "models.download_cancel";
+    type Params = ModelDownloadCancelParams;
+    type Result = ModelDownloadCancelResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelDownloadCancelParams {
+    pub job_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelDownloadCancelResult {
+    /// False when no running download has that id.
+    pub found: bool,
+}
+
+/// Notification sent to every client as a download progresses and when it ends. The payload is
+/// a [`DownloadJob`].
+pub const MODEL_DOWNLOAD_PROGRESS: &str = "models.download_progress";
+
+/// A download and how far it has got.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DownloadJob {
+    pub job_id: String,
+    pub repo: String,
+    pub revision: String,
+    /// The quantisation, `safetensors`, or the file asked for.
+    pub variant: String,
+    /// What to use in `[[models.catalog]]` or `--model` once it is done, such as
+    /// `llamacpp:Qwen3-8B-Q4_K_M`.
+    pub model: String,
+    pub files: Vec<String>,
+    /// The folder the files go in.
+    pub dir: String,
+    /// The file being downloaded.
+    pub file: Option<String>,
+    #[ts(type = "number")]
+    pub file_done_bytes: u64,
+    #[ts(type = "number")]
+    pub file_total_bytes: u64,
+    /// Across every file.
+    #[ts(type = "number")]
+    pub done_bytes: u64,
+    #[ts(type = "number")]
+    pub total_bytes: u64,
+    #[ts(type = "\"running\" | \"done\" | \"failed\" | \"cancelled\"")]
+    pub state: String,
+    /// Why it failed.
+    pub message: Option<String>,
 }
 
 /// `mods.list`: UI mods installed in `<config>/mods`, with their entry modules.
