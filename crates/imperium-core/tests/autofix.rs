@@ -125,7 +125,8 @@ async fn a_failing_check_is_fixed_and_pushed_after_approval() {
     .settings()
     .unwrap();
     let watch = settings.github.watch[0].clone();
-    let daemon = imperiumd::DaemonState::new(imperium_config::Paths::under(&home), settings, None);
+    let daemon =
+        imperium_core::DaemonState::new(imperium_config::Paths::under(&home), settings, None);
     let mut announcements = daemon.announcements();
 
     let pr = FailingPr {
@@ -137,7 +138,7 @@ async fn a_failing_check_is_fixed_and_pushed_after_approval() {
     };
     let fixing = {
         let daemon = Arc::clone(&daemon);
-        tokio::spawn(async move { imperiumd::fix_ci(&daemon, &FakeGitHub, &watch, &pr).await })
+        tokio::spawn(async move { imperium_core::fix_ci(&daemon, &FakeGitHub, &watch, &pr).await })
     };
 
     let mut statuses = Vec::new();

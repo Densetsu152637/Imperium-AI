@@ -43,7 +43,7 @@ async fn watched_pull_requests_turn_into_merged_sessions() {
     .settings()
     .unwrap();
     let daemon =
-        imperiumd::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        imperium_core::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
     let (session, _) = daemon
         .create_session(&project.path().display().to_string(), None)
         .unwrap();
@@ -54,7 +54,7 @@ async fn watched_pull_requests_turn_into_merged_sessions() {
         (SessionStatus::Watching, Some("owner/repo#12".into()))
     );
     let github = Arc::new(FakeGitHub::default());
-    imperiumd::watch_pull_requests(&daemon, github.clone(), Duration::from_millis(50));
+    imperium_core::watch_pull_requests(&daemon, github.clone(), Duration::from_millis(50));
     github.merged.store(true, Ordering::SeqCst);
     for _ in 0..100 {
         if session.status().0 == SessionStatus::Merged {

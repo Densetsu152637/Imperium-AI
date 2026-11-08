@@ -6,8 +6,8 @@ use std::time::Duration;
 use axum::Router;
 use axum::routing::post;
 use futures_util::{SinkExt, StreamExt};
+use imperium_core::AccessToken;
 use imperium_protocol::PROTOCOL_VERSION;
-use imperiumd::AccessToken;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
@@ -73,10 +73,10 @@ async fn schedules_run_without_a_window_and_notify_clients() {
     .settings()
     .unwrap();
     let daemon =
-        imperiumd::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        imperium_core::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}/rpc", listener.local_addr().unwrap());
-    tokio::spawn(imperiumd::serve(
+    tokio::spawn(imperium_core::serve(
         listener,
         AccessToken::from("secret".to_string()),
         std::sync::Arc::clone(&daemon),

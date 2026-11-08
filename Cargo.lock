@@ -2202,11 +2202,11 @@ dependencies = [
  "clap",
  "imperium-client",
  "imperium-config",
+ "imperium-core",
  "imperium-local",
  "imperium-memory",
  "imperium-protocol",
  "imperium-workflow",
- "imperiumd",
  "reqwest",
  "rpassword",
  "serde",
@@ -2244,6 +2244,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "imperium-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "constant_time_eq",
+ "futures-util",
+ "getrandom 0.4.3",
+ "imperium-api",
+ "imperium-automation",
+ "imperium-config",
+ "imperium-engine",
+ "imperium-extensions",
+ "imperium-github",
+ "imperium-local",
+ "imperium-mcp",
+ "imperium-media",
+ "imperium-memory",
+ "imperium-pets",
+ "imperium-protocol",
+ "imperium-tools",
+ "imperium-web",
+ "imperium-workflow",
+ "notify-rust",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "toml 1.2.1+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "imperium-desktop"
+version = "0.1.0"
+dependencies = [
+ "imperium-client",
+ "imperium-config",
+ "imperium-protocol",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-updater",
+ "tokio",
+]
+
+[[package]]
 name = "imperium-engine"
 version = "0.1.0"
 dependencies = [
@@ -2269,24 +2327,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "imperium-desktop"
-version = "0.1.0"
-dependencies = [
- "imperium-client",
- "imperium-config",
- "imperium-protocol",
- "reqwest",
- "serde",
- "serde_json",
- "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-updater",
- "tokio",
 ]
 
 [[package]]
@@ -2451,46 +2491,6 @@ dependencies = [
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
  "tracing",
-]
-
-[[package]]
-name = "imperiumd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.23.1",
- "chrono",
- "constant_time_eq",
- "futures-util",
- "getrandom 0.4.3",
- "imperium-api",
- "imperium-automation",
- "imperium-config",
- "imperium-engine",
- "imperium-extensions",
- "imperium-github",
- "imperium-local",
- "imperium-mcp",
- "imperium-media",
- "imperium-memory",
- "imperium-pets",
- "imperium-protocol",
- "imperium-tools",
- "imperium-web",
- "imperium-workflow",
- "notify-rust",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-tungstenite 0.30.0",
- "toml 1.2.1+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

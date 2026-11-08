@@ -1,7 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
+use imperium_core::AccessToken;
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::jsonrpc::{Outcome, Response};
-use imperiumd::AccessToken;
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -13,12 +13,12 @@ async fn start_server(token: &str) -> String {
     let settings = imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
         .settings()
         .unwrap();
-    let daemon = imperiumd::DaemonState::new(
+    let daemon = imperium_core::DaemonState::new(
         imperium_config::Paths::under(std::path::Path::new("unused")),
         settings,
         None,
     );
-    tokio::spawn(imperiumd::serve(
+    tokio::spawn(imperium_core::serve(
         listener,
         AccessToken::from(token.to_string()),
         daemon,

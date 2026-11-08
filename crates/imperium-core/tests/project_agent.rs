@@ -102,7 +102,7 @@ async fn a_scheduled_event_wakes_the_project_agent_which_dispatches_and_hears_ba
     .settings()
     .unwrap();
     let daemon =
-        imperiumd::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        imperium_core::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
     let mut announcements = daemon.announcements();
     daemon.start_project_agents();
     let agents = daemon.project_agents().list();

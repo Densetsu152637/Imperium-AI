@@ -185,7 +185,7 @@ export function ConnectorsWindow({
 
   let body: ReactNode;
   if (!client) {
-    body = <p className="connectors-empty muted">Connect to imperiumd to manage connectors.</p>;
+    body = <p className="connectors-empty muted">Connect to imperium-core to manage connectors.</p>;
   } else if (view.kind === "add") {
     body = (
       <AddForm
@@ -281,7 +281,7 @@ export function ConnectorsWindow({
           </button>
         </header>
         {restartNeeded && (
-          <div className="settings-notice">Restart imperiumd for plugin changes to apply to new sessions.</div>
+          <div className="settings-notice">Restart imperium-core for plugin changes to apply to new sessions.</div>
         )}
         {error && (
           <p className="error connectors-error" role="alert">

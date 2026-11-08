@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use imperium_config::{KeychainSecrets, Paths, SecretStore};
+use imperium_core::{AccessToken, DaemonState, EndpointFile};
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
-use imperiumd::{AccessToken, DaemonState, EndpointFile};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tracing_subscriber::EnvFilter;
@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     // One worker per core (Tokio's default): every agent is a task, so busy agents spread
     // across cores while idle ones cost nothing (see docs/02-architecture.md).
     tokio::runtime::Builder::new_multi_thread()
-        .thread_name("imperiumd-worker")
+        .thread_name("imperium-core-worker")
         .enable_all()
         .build()
         .context("could not start the I/O runtime")?
@@ -58,10 +58,10 @@ async fn run() -> anyhow::Result<()> {
         },
     )
     .context("could not write the endpoint file")?;
-    tracing::info!(%address, protocol = %PROTOCOL_VERSION, "imperiumd listening");
+    tracing::info!(%address, protocol = %PROTOCOL_VERSION, "imperium-core listening");
 
     let (stop, stopped) = oneshot::channel();
-    let local = imperiumd::LocalRuntime::start(&paths, &settings);
+    let local = imperium_core::LocalRuntime::start(&paths, &settings);
     let secrets: Arc<dyn SecretStore> = Arc::new(KeychainSecrets);
     let daemon = DaemonState::with_secrets(paths.clone(), settings, local, secrets);
     daemon.start_pets();
@@ -82,9 +82,14 @@ async fn run() -> anyhow::Result<()> {
     daemon.start_project_agents();
     daemon.start_scheduler();
     daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));
-    let server = tokio::spawn(imperiumd::serve(listener, token, daemon.clone(), async {
-        stopped.await.ok();
-    }));
+    let server = tokio::spawn(imperium_core::serve(
+        listener,
+        token,
+        daemon.clone(),
+        async {
+            stopped.await.ok();
+        },
+    ));
     // Ctrl+C, or a client's `system.shutdown` (the desktop app's Stop, `imperium daemon stop`).
     tokio::select! {
         signal = tokio::signal::ctrl_c() => signal.context("could not listen for Ctrl+C")?,
@@ -110,7 +115,7 @@ fn acquire_single_instance_lock(paths: &Paths) -> anyhow::Result<File> {
         .with_context(|| format!("could not open {}", path.display()))?;
     match file.try_lock() {
         Ok(()) => Ok(file),
-        Err(TryLockError::WouldBlock) => bail!("imperiumd is already running for this user"),
+        Err(TryLockError::WouldBlock) => bail!("imperium-core is already running for this user"),
         Err(TryLockError::Error(error)) => {
             Err(error).with_context(|| format!("could not lock {}", path.display()))
         }

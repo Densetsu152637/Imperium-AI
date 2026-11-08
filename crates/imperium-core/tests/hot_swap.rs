@@ -5,10 +5,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use imperium_core::{Connection, DaemonState};
 use imperium_protocol::jsonrpc::{Outcome, Response, codes};
 use imperium_protocol::methods::SessionControlResult;
 use imperium_protocol::session::SessionEvent;
-use imperiumd::{Connection, DaemonState};
 use serde_json::{Value, json};
 
 fn daemon(home: &std::path::Path) -> Arc<DaemonState> {

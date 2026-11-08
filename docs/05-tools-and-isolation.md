@@ -108,7 +108,7 @@ to the config only as `{ secret = "<name>" }`; no method returns them. New sessi
 servers as saved, without restarting the daemon; running sessions keep the servers they
 started with. Turning a plugin on or off goes through `config.set` and applies after a restart.
 
-The directory is data, not code: `crates/imperiumd/catalog/connectors.json` is built in, and
+The directory is data, not code: `crates/imperium-core/catalog/connectors.json` is built in, and
 `<config>/connectors.json` (same shape, `{ "entries": [...] }`) adds entries or replaces
 built-in ones with the same `id`. An entry has a name, description, category, publisher,
 homepage, a [Lucide](https://lucide.dev) icon name, and either a `command` with `args` and
@@ -191,13 +191,13 @@ keep-alives) until Ctrl+C. The forwarded endpoint, with the remote daemon's per-
 is recorded in `<data>/remotes/<name>.json` (readable only by the user on Unix) and removed on
 disconnect; `imperium --remote <name> <command>` talks to the remote daemon, which owns the
 host's files, processes, models, and GPUs (its own `models.folders`, runtimes, and isolation
-apply). Not yet: installing `imperiumd` on the host, Unix-socket binding, `~/.ssh/config`
+apply). Not yet: installing `imperium-core` on the host, Unix-socket binding, `~/.ssh/config`
 discovery in the app, choosing a remote in the desktop app (its connection form accepts the
 recorded URL and token), and cross-host routing.
 
 - Hosts are configured from `~/.ssh/config` entries or added manually; keys stay in the user's
   SSH agent. Imperium never stores SSH passwords.
-- On first connect, Imperium installs or updates a matching `imperiumd` on the host (with
+- On first connect, Imperium installs or updates a matching `imperium-core` on the host (with
   consent), starts it bound to a Unix socket, and forwards that socket.
 - The remote daemon owns the remote files, processes, models, and GPUs. The local router can
   still send remote subagents to hosted endpoints or to local-machine models when the user

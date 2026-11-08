@@ -9,8 +9,8 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
+use imperium_core::AccessToken;
 use imperium_protocol::PROTOCOL_VERSION;
-use imperiumd::AccessToken;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::net::{TcpListener, TcpStream};
@@ -78,9 +78,10 @@ async fn start_daemon(home: &std::path::Path, hub: String) -> Socket {
     let settings = imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
         .settings()
         .unwrap();
-    let daemon = imperiumd::DaemonState::new(imperium_config::Paths::under(home), settings, None);
+    let daemon =
+        imperium_core::DaemonState::new(imperium_config::Paths::under(home), settings, None);
     daemon.use_hub(imperium_local::hf::Hub::new(hub, None));
-    tokio::spawn(imperiumd::serve(
+    tokio::spawn(imperium_core::serve(
         listener,
         AccessToken::from("t".to_string()),
         daemon,

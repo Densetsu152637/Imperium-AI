@@ -39,7 +39,7 @@ static REMOTE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Check that imperiumd is running and measure a round trip.
+    /// Check that imperium-core is running and measure a round trip.
     Ping,
     /// Chat with an agent in an environment or a project folder.
     Chat {
@@ -184,14 +184,14 @@ enum MemoryCommand {
 
 #[derive(Debug, Subcommand)]
 enum DaemonCommand {
-    /// Start imperiumd when you log in (enable, disable, or status).
+    /// Start imperium-core when you log in (enable, disable, or status).
     Autostart {
         #[arg(value_parser = ["enable", "disable", "status"])]
         action: String,
     },
-    /// Start imperiumd in the background.
+    /// Start imperium-core in the background.
     Start,
-    /// Stop the running imperiumd gracefully.
+    /// Stop the running imperium-core gracefully.
     Stop,
     /// Print the running daemon's endpoint as JSON (used by `imperium remote connect`).
     Endpoint,
@@ -209,7 +209,7 @@ enum PhoneCommand {
 
 #[derive(Debug, Subcommand)]
 enum RemoteCommand {
-    /// Forward a host's imperiumd over SSH (starting it there if needed) until Ctrl+C.
+    /// Forward a host's imperium-core over SSH (starting it there if needed) until Ctrl+C.
     Connect {
         /// An SSH destination: user@host, or a Host from ~/.ssh/config.
         destination: String,
@@ -476,7 +476,7 @@ fn stop_daemon() -> anyhow::Result<()> {
     block_on(async {
         let (mut client, url) = connect().await?;
         let stopped = client.call::<Shutdown>(ShutdownParams {}).await?;
-        println!("imperiumd (pid {}) at {url} is stopping", stopped.pid);
+        println!("imperium-core (pid {}) at {url} is stopping", stopped.pid);
         Ok(())
     })
 }
@@ -504,7 +504,7 @@ async fn connect() -> anyhow::Result<(Client, String)> {
     };
     let client = Client::connect(&endpoint, me).await.with_context(|| {
         format!(
-            "imperiumd at {} did not answer; it may have stopped without removing {}",
+            "imperium-core at {} did not answer; it may have stopped without removing {}",
             endpoint.url,
             file.display()
         )

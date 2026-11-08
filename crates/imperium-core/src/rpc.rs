@@ -178,7 +178,7 @@ impl Connection {
                 })
             }
             Shutdown::NAME => call::<Shutdown>(request.params, |_: ShutdownParams| {
-                tracing::info!("a client asked imperiumd to stop");
+                tracing::info!("a client asked imperium-core to stop");
                 self.state.request_shutdown();
                 Ok(ShutdownResult {
                     pid: std::process::id(),
@@ -455,7 +455,7 @@ impl Connection {
         self.handshake_done = true;
         Ok(HandshakeResult {
             daemon: Peer {
-                name: "imperiumd".into(),
+                name: "imperium-core".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
             },
             protocol: PROTOCOL_VERSION,

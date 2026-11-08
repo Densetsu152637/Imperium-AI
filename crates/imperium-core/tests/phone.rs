@@ -49,7 +49,7 @@ async fn a_paired_phone_approves_a_queued_action() {
     .settings()
     .unwrap();
     let daemon =
-        imperiumd::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+        imperium_core::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
     let address = daemon.start_phone().await.unwrap().unwrap();
     let base = format!("http://{address}");
 

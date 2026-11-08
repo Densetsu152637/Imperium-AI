@@ -1,4 +1,4 @@
-//! Wire contract between `imperiumd` and its clients.
+//! Wire contract between `imperium-core` and its clients.
 //!
 //! Messages are JSON-RPC 2.0 over a WebSocket. Every type here derives [`ts_rs::TS`] and is
 //! exported to `packages/protocol/src/generated/` when the crate's tests run, so TypeScript
