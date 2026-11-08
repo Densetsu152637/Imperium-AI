@@ -5,7 +5,8 @@ teacher licences; r3: strategy and planning from vague prompts, clarify-or-resea
 r4: context tiers from 64K to 256K and up, G12; r5: one loaded model shared by many
 sessions, G13, stage 2c; r6: a 192K tier; r7: subagent-first model swapping, G14, stage 2d;
 task-class routing and single-call cloud tasks, G15, stage 2e; Marcus Aurelius as the default
-personality; stage 0 and stage 1 in progress)
+personality; a CPU lane for slow, accurate work in system RAM, G16, stage 2f; stage 0 and
+stage 1 in progress)
 
 **Emperor** is a small open-weight model, fine-tuned to be the **root agent** of an Imperium
 session on a 16 GB GPU. It reads the task, plans, writes compact briefs, and hands the work to
@@ -77,6 +78,7 @@ there, once, and record why.
 | G13 | One loaded Emperor serves many sessions: with a single slot, three sessions whose roots are waiting on subagents all make progress, because no agent holds a slot while it waits; a root resuming on a different slot re-reads ≤ 10 % of its context when the host prompt cache is on | `cargo test -p imperium-core shared_slot`; llama.cpp `timings.prompt_n` vs the context length on resume |
 | G14 | On a GPU too small for Emperor and a local subagent model together, a delegated local task runs on the GPU: the idle orchestrator is swapped out (its KV saved), the subagent finishes, and the orchestrator is reloaded with its context restored (re-reading ≤ 10 % of it); a running subagent is never evicted for the orchestrator | `cargo test -p imperium-local swap` (fake launcher, budget fits one model); a measured run on the 16 GB GPU logs the swap times and `timings.prompt_n` on resume |
 | G15 | Delegations follow task class: on a labelled set, ≥ 90 % of menial tasks (refactoring, tests, UI) go to local small models and ≥ 90 % of hard tasks (deep architecture, maths) go to a cloud frontier model; ≥ 80 % of frontier tasks complete in one model call | `eval --metric routing` per class; call counts per task from the session ledger |
+| G16 | A CPU lane serves slow, high-accuracy work: with a ~32 GB model resident in system RAM (64 GB machine), plan critiques and reviews run on it while the GPU keeps serving Emperor and other subagents, VRAM use is unchanged, and total RAM use stays under the planner's budget | `cargo test -p imperium-local cpu_lane`; a measured run logs both servers' memory and the critique's tokens/s |
 
 ## Scope and non-goals
 
@@ -443,6 +445,45 @@ hard parts, briefed so one call settles them.
 - Outcome:
 - Handoff notes: the emperor-root prompt's "Choosing where work runs" section was added during
   stage 1.
+
+## Stage 2f: CPU lane for slow, high-accuracy work (Imperium)
+
+Some work needs accuracy, not speed: critiquing a plan, reviewing a design, checking a proof.
+On a machine with plenty of system RAM (the development machine has 64 GB), a larger model can
+live entirely in RAM and run on the CPU, beside Emperor on the GPU, at no API cost.
+
+- Objective:
+  1. **Pinned placement.** A model-table row can set `placement = "cpu"`: it is always served
+     by its own `llama-server` with no GPU layers (`-ngl 0`), its weights and KV cache in system
+     RAM, and it never competes for VRAM or takes part in stage 2d's GPU swaps.
+  2. **RAM budget.** The memory planner budgets RAM for everything that lives there: the CPU
+     model's weights and KV, every server's `--cache-ram`, stage 2d's slot files and warm
+     weights, and a headroom for the OS (`runtime.llamacpp.ram_headroom_mb`). On a 64 GB
+     machine that leaves room for a ~20–32 GB model plus its KV.
+  3. **Routing.** Default rules send tags `critique`, `review`, `verify`, `proof-check` to the
+     CPU lane (tier `strong`, location `local`); Emperor's root prompt names the lane for work
+     where it can wait minutes for a better answer, and uses it for its own plan critique
+     before executing a large plan.
+  4. **Throughput-aware scheduling.** The router knows the lane is slow (measured tokens/s per
+     model): it gives CPU tasks a longer `max_wall_s`, never puts a task with a short deadline
+     there, and runs one CPU task at a time unless the cores allow more slots.
+  5. **Model choice.** Prefer a mixture-of-experts model whose active parameters are small
+     (Qwen3-30B-A3B class: ~18 GB at Q4_K_M, ~3B active parameters, so tens of tokens/s on a
+     desktop CPU) over a dense 32B (~4 tokens/s); both must be Apache-2.0 or MIT if Imperium
+     suggests them. Measure on the development machine before choosing the default suggestion.
+- Depends on: stage 2c (per-call leasing); coordinates with stage 2d (shared RAM budget) and
+  stage 2e (default rules)
+- Owned paths: `crates/imperium-local` (`planner.rs`, `backend.rs`, `supervisor.rs`),
+  `crates/imperium-config` (the `placement` field, default rules), `crates/imperium-models`
+  (router), `docs/04-models-and-routing.md`, `docs/10-configuration.md`
+- Acceptance checks: G16; `cargo test -p imperium-local cpu_lane` (a CPU-pinned row is started
+  with no GPU layers, is excluded from VRAM accounting and GPU swaps, and is refused when RAM
+  is short); `bash scripts/check-rust.sh` passes.
+- Status: pending
+- Outcome:
+- Handoff notes: the existing planner already offloads layers to RAM when a model does not fit
+  the GPU ("partial"); a pinned CPU row is different: it is placed on the CPU on purpose even
+  when VRAM is free. Training (stage 4) labels critique and review tasks for this lane.
 
 ## Stage 2b: Eval harness (emperor repository)
 
