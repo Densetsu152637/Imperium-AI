@@ -3,12 +3,15 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use tokio::process::{Child, Command};
 
 use crate::backend::{LLAMA_CPP, VLLM};
-use crate::supervisor::{LaunchFuture, LaunchSpec, Launcher, Server, SlotFuture, SlotTransfer};
+use crate::supervisor::{
+    LaunchFuture, LaunchSpec, Launcher, Server, SlotFuture, SlotTransfer, StopFuture,
+};
 
 /// How long a model may take to load before the launch is abandoned.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
@@ -85,7 +88,7 @@ impl ProcessLauncher {
         let ready = tokio::time::timeout(LOAD_TIMEOUT, self.wait_ready(&base, &mut child)).await;
         match ready {
             Ok(Ok(())) => Ok(Box::new(ProcessServer {
-                _child: child,
+                child: Mutex::new(Some(child)),
                 base_url: format!("{base}/v1"),
                 root: base,
                 http: self.http.clone(),
@@ -126,7 +129,8 @@ impl Launcher for ProcessLauncher {
 
 /// A running server process; dropping it kills the process.
 struct ProcessServer {
-    _child: Child,
+    /// Killed on drop if [`Server::stop`] has not taken it.
+    child: Mutex<Option<Child>>,
     base_url: String,
     /// The server's address without `/v1`, where llama.cpp's `/slots` endpoints are.
     root: String,
@@ -184,6 +188,21 @@ impl Server for ProcessServer {
 
     fn restore_slot<'a>(&'a self, slot: u32, file: &'a str) -> SlotFuture<'a> {
         Box::pin(self.slot_action(slot, "restore", file))
+    }
+
+    fn stop(&self) -> StopFuture<'_> {
+        let child = self
+            .child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        Box::pin(async move {
+            if let Some(mut child) = child
+                && let Err(error) = child.kill().await
+            {
+                tracing::warn!(%error, "could not stop a model server");
+            }
+        })
     }
 }
 

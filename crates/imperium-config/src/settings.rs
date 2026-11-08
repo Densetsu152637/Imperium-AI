@@ -42,8 +42,11 @@ swap_cache_mb = 8192
 # Seconds a model with an agent mid-turn on it stays loaded before a model another agent has
 # been waiting for may swap it out; a model nothing is waiting for can go at once.
 min_residency_s = 30
-# Swaps allowed per minute; beyond it, work that needs a swap waits or goes to a hosted model.
+# Swaps allowed per minute; beyond it, a call for a model that does not fit beside the loaded
+# ones fails, and routing sends new work to a hosted model. 0 turns swapping off.
 max_swaps_per_min = 6
+# Longest a call waits for room or a slot on a local model before it fails.
+max_wait_s = 600
 "#;
 
 /// Typed view of the merged configuration. Keys this build does not know are ignored, so a
@@ -706,8 +709,10 @@ pub struct LlamaCppSettings {
     pub swap_cache_mb: u64,
     /// How long a model with an agent mid-turn on it is kept before another may swap it out.
     pub min_residency_s: u64,
-    /// Swaps per minute before swapping pauses.
+    /// Swaps per minute before swapping pauses; 0 turns swapping off.
     pub max_swaps_per_min: u32,
+    /// Longest a call waits for room or a slot on a local model.
+    pub max_wait_s: u64,
     /// Extra arguments passed to every `llama-server`.
     #[serde(default)]
     pub extra_args: Vec<String>,

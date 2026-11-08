@@ -3,16 +3,23 @@
 //! servers.
 //!
 //! - A model with a slot in use, or a call queued for one, is never swapped out ([`Use::Busy`]).
-//! - A model whose agents are all waiting for subagents, or done, is swapped out whenever that
-//!   gives the newcomer a better placement (more of it on the GPU) ([`Use::Free`]).
+//! - A model whose agents are all waiting for subagents, or done, is swapped out when the
+//!   newcomer does not fit beside it, or would get less than half the GPU memory beside it that
+//!   it gets once the model is gone ([`Use::Free`]). A newcomer that fits beside it about as
+//!   well loads beside it.
 //! - A model with an agent mid-turn on it ([`Use::Claimed`]) is expected back soon: the newcomer
 //!   waits for that agent to finish or start waiting, up to `min_residency`. After that it loads
 //!   beside the model if it can, and swaps it out only when nothing else fits and the model has
 //!   been loaded at least `min_residency`.
+//! - When swapping is paused (the swaps per minute are used up, or swapping is off) and the
+//!   newcomer does not fit beside the loaded models, it is refused rather than left waiting.
 
 use std::time::Duration;
 
 use crate::planner::{Budget, Placement};
+
+/// A swap must at least double the GPU memory the newcomer gets beside the loaded models.
+const SWAP_GAIN: u64 = 2;
 
 /// What a loaded model is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,12 +66,14 @@ pub(crate) enum Decision {
     Wait,
     /// The model does not fit even on an empty machine.
     TooBig,
+    /// It does not fit beside the loaded models and swapping is paused.
+    SwapsPaused,
 }
 
 /// What loading a model would take, for routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Outlook {
-    /// It fits beside the loaded models as well as it would anywhere.
+    /// It fits beside the loaded models well enough not to swap them out.
     Fits,
     /// It needs models nobody has a slot on swapped out.
     Swap,
@@ -87,13 +96,13 @@ pub(crate) fn decide(
     let beside = place(left_after(budget, residents, &[]));
     let free = candidates(residents, |r| r.use_ == Use::Free);
     let best_now = place(left_after(budget, residents, &free));
-    if policy.may_swap && better(&best_now, &beside) {
+    if policy.may_swap && worth_swapping(&best_now, &beside) {
         return evict_fewest(&place, budget, residents, &free, &best_now);
     }
     let aged = waited >= policy.min_residency;
     let idle = candidates(residents, |r| r.use_ != Use::Busy);
     let settled = place(left_after(budget, residents, &idle));
-    if policy.may_swap && !aged && better(&settled, &beside) {
+    if policy.may_swap && !aged && worth_swapping(&settled, &beside) {
         // An agent mid-turn, such as an orchestrator about to wait for this subagent, holds a
         // model that is in the way; it is usually moments from letting go.
         return Decision::Wait;
@@ -104,7 +113,10 @@ pub(crate) fn decide(
             placement,
         };
     }
-    if !policy.may_swap || !aged {
+    if !policy.may_swap {
+        return Decision::SwapsPaused;
+    }
+    if !aged {
         return Decision::Wait;
     }
     let movable = candidates(residents, |r| {
@@ -129,7 +141,7 @@ pub(crate) fn outlook(
     let best = place(left_after(budget, residents, &idle));
     if best.is_none() {
         Outlook::Unavailable
-    } else if !better(&best, &beside) {
+    } else if !worth_swapping(&best, &beside) {
         Outlook::Fits
     } else if may_swap {
         Outlook::Swap
@@ -214,6 +226,16 @@ fn evict_fewest(
     Decision::Wait
 }
 
+/// Whether swapping models out to reach `gain` is worth it over `base`: the model does not fit
+/// otherwise, or gets at least [`SWAP_GAIN`] times the GPU memory.
+fn worth_swapping(gain: &Option<Placement>, base: &Option<Placement>) -> bool {
+    match (gain, base) {
+        (Some(_), None) => true,
+        (Some(gain), Some(base)) => base.vram_bytes.saturating_mul(SWAP_GAIN) < gain.vram_bytes,
+        (None, _) => false,
+    }
+}
+
 /// Whether `a` puts more of the model on the GPU than `b` (any placement beats none).
 fn better(a: &Option<Placement>, b: &Option<Placement>) -> bool {
     let layers = |p: &Option<Placement>| p.map_or(-1, |p| i64::from(p.gpu_layers));
@@ -287,11 +309,21 @@ mod tests {
 
     #[test]
     fn only_as_many_models_as_needed_are_swapped_out_least_recently_used_first() {
-        let mut older = resident("older", Use::Free, 3);
+        // Beside both, the newcomer gets under 2 GiB of the GPU; without one, all of it.
+        let mut older = resident("older", Use::Free, 4);
         older.idle_for = Duration::from_secs(50);
-        let residents = [resident("newer", Use::Free, 3), older];
+        let residents = [resident("newer", Use::Free, 4), older];
         let decision = decide(six_gib, budget(), &residents, Duration::ZERO, policy());
         assert_eq!(evicted(&decision), Some(vec!["older".into()]));
+    }
+
+    #[test]
+    fn a_model_nobody_is_working_on_stays_when_the_newcomer_fits_beside_it_well_enough() {
+        // Beside a 5 GiB model the newcomer keeps most of its layers on the GPU.
+        let residents = [resident("small", Use::Free, 5)];
+        let decision = decide(six_gib, budget(), &residents, Duration::ZERO, policy());
+        assert_eq!(evicted(&decision), Some(Vec::new()));
+        assert_eq!(outlook(six_gib, budget(), &residents, true), Outlook::Fits);
     }
 
     #[test]
@@ -352,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn when_swapping_is_paused_the_newcomer_loads_beside_or_waits() {
+    fn when_swapping_is_paused_the_newcomer_loads_beside_or_is_refused() {
         let paused = Policy {
             may_swap: false,
             ..policy()
@@ -375,7 +407,7 @@ mod tests {
         };
         assert_eq!(
             decide(six_gib, no_ram, &residents, Duration::ZERO, paused),
-            Decision::Wait
+            Decision::SwapsPaused
         );
         assert_eq!(
             outlook(six_gib, no_ram, &residents, false),

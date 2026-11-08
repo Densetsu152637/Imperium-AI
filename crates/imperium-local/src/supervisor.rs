@@ -12,12 +12,13 @@
 //! The supervisor is the one memory arbiter for every session. Memory is reserved per loaded
 //! model against the budget measured when it started. A model that does not fit beside the
 //! loaded ones swaps out models nobody has a slot on ([`crate::arbiter`] decides which, and when
-//! to wait instead), saving each of their occupied slots to disk first; an agent whose slot was
-//! saved gets it restored into its model before its next call. Calls for a model that is not
-//! loaded wait in arrival order, and a loaded model takes on new agents only while no earlier
-//! call for another model is waiting, so work is batched by model and nothing waits longer than
-//! the batch ahead of it. Loads and unloads run one at a time, swaps are limited per minute, and
-//! idle models are unloaded after `idle_unload_s`.
+//! to wait instead), saving to disk the slots of their agents that can still come back; an
+//! agent whose slot was saved gets it restored into its model before its next call. Calls for a
+//! model that is not loaded wait in arrival order, and a loaded model takes on new agents only
+//! while no earlier call for another model is waiting, so work is batched by model and nothing
+//! waits longer than the batch ahead of it. Loads and unloads run one at a time, swaps are
+//! limited per minute (past the limit a model that does not fit is refused), no call waits
+//! longer than `max_wait_s`, and idle models are unloaded after `idle_unload_s`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -109,6 +110,7 @@ pub struct SlotTransfer {
 }
 
 pub type SlotFuture<'a> = Pin<Box<dyn Future<Output = Result<SlotTransfer, String>> + Send + 'a>>;
+pub type StopFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
 /// A running model server; dropping it stops the server.
 pub trait Server: Send + Sync {
@@ -123,6 +125,12 @@ pub trait Server: Send + Sync {
     /// Loads `file` from the server's [`LaunchSpec::slot_save_path`] into `slot`.
     fn restore_slot<'a>(&'a self, _slot: u32, _file: &'a str) -> SlotFuture<'a> {
         Box::pin(async { Err("this runtime cannot restore slots".to_string()) })
+    }
+
+    /// Stops the server and returns once it has exited, so its memory is free before the next
+    /// model loads.
+    fn stop(&self) -> StopFuture<'_> {
+        Box::pin(async {})
     }
 }
 
@@ -609,7 +617,15 @@ impl Supervisor {
         let slot_files = launcher
             .slot_dir()
             .filter(|_| settings.swap_cache_mb > 0)
-            .map(|dir| Mutex::new(SlotFiles::open(dir, settings.swap_cache_mb * MIB)));
+            .and_then(
+                |dir| match SlotFiles::open(dir.clone(), settings.swap_cache_mb * MIB) {
+                    Ok(files) => Some(Mutex::new(files)),
+                    Err(error) => {
+                        tracing::warn!(dir = %dir.display(), %error, "could not create the slot folder; slots of models swapped out will not be saved");
+                        None
+                    }
+                },
+            );
         let supervisor = Arc::new(Supervisor {
             models: Mutex::new(models),
             settings,
@@ -762,6 +778,15 @@ impl Supervisor {
             .model(id)
             .ok_or_else(|| format!("no local model {id:?} in models.folders"))?;
         let ticket = self.ticket(id);
+        let max_wait = Duration::from_secs(self.settings.max_wait_s);
+        let deadline = tokio::time::Instant::now() + max_wait;
+        let too_long = || {
+            format!(
+                "waited {} s for local model {id} (runtime.llamacpp.max_wait_s) while the models \
+                 in its way stayed in use",
+                max_wait.as_secs()
+            )
+        };
         loop {
             // Listen before looking, so a change between the two is not missed.
             let changed = self.changed.notified();
@@ -773,10 +798,13 @@ impl Supervisor {
                 }
                 Step::Queued(queued) => {
                     let pool = Arc::clone(&queued.0);
-                    let permit = Arc::clone(&pool.permits)
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| "the model was unloaded".to_string())?;
+                    let permit = tokio::time::timeout_at(
+                        deadline,
+                        Arc::clone(&pool.permits).acquire_owned(),
+                    )
+                    .await
+                    .map_err(|_| too_long())?
+                    .map_err(|_| "the model was unloaded".to_string())?;
                     drop(queued);
                     if let Some((lease, restore)) =
                         self.lease_if_current(id, &pool, permit, holder, ticket.seq)?
@@ -787,7 +815,9 @@ impl Supervisor {
                     continue;
                 }
                 Step::Load => {
-                    let swapping = self.swapping.lock().await;
+                    let swapping = tokio::time::timeout_at(deadline, self.swapping.lock())
+                        .await
+                        .map_err(|_| too_long())?;
                     match self.plan(&model, &ticket)? {
                         Plan::Retry => continue,
                         Plan::Load(load) => {
@@ -798,7 +828,11 @@ impl Supervisor {
                 }
                 Step::Wait => {}
             }
-            let _ = tokio::time::timeout(RECHECK, changed.as_mut()).await;
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return Err(too_long());
+            }
+            let _ = tokio::time::timeout(RECHECK.min(deadline - now), changed.as_mut()).await;
         }
     }
 
@@ -878,6 +912,14 @@ impl Supervisor {
         );
         let (evict, placement) = match decision {
             Decision::TooBig => return Err(no_room()),
+            Decision::SwapsPaused => {
+                return Err(format!(
+                    "{}: it does not fit beside the loaded models, and swapping is paused \
+                     (runtime.llamacpp.max_swaps_per_min = {})",
+                    no_room(),
+                    self.settings.max_swaps_per_min
+                ));
+            }
             Decision::Wait => return Ok(Plan::Wait),
             Decision::Load { evict, placement } => (evict, placement),
         };
@@ -947,7 +989,14 @@ impl Supervisor {
         };
         tracing::info!(model = %model.id, gpu_layers = placement.gpu_layers, cache_ram_mb, "loading local model");
         let started = Instant::now();
-        let server: Arc<dyn Server> = match self.launcher.launch(&spec).await {
+        let launched = match self.launcher.launch(&spec).await {
+            Ok(server) => Ok(server),
+            Err(error) => {
+                tracing::warn!(model = %model.id, %error, "could not start the model; trying once more");
+                self.launcher.launch(&spec).await
+            }
+        };
+        let server: Arc<dyn Server> = match launched {
             Ok(server) => Arc::from(server),
             Err(error) => {
                 drop(swapping);
@@ -1023,6 +1072,8 @@ impl Supervisor {
         for (id, loaded) in victims {
             let started = Instant::now();
             let (bytes, slots) = self.save_slots(&loaded).await;
+            // Wait for the process to exit, so the next model finds its memory free.
+            loaded.server.stop().await;
             drop(loaded);
             let seconds = started.elapsed().as_secs_f64();
             tracing::info!(model = %id, reason, slots, bytes, seconds, "swapped out local model");
@@ -1038,12 +1089,19 @@ impl Supervisor {
         self.changed.notify_waiters();
     }
 
-    /// Saves each slot holding a holder's prompt; returns the bytes written and slots saved.
+    /// Saves each slot holding the prompt of a holder that can still come back (one mid-turn or
+    /// waiting for subagents, not one whose turn is over); returns the bytes written and slots
+    /// saved.
     async fn save_slots(&self, loaded: &Loaded) -> (u64, u32) {
         let (Some(key), Some(files)) = (loaded.key, &self.slot_files) else {
             return (0, 0);
         };
-        let occupied = lock(&loaded.pool.table).occupied();
+        let present: HashSet<String> = lock(&self.presence.users).keys().cloned().collect();
+        let occupied: Vec<_> = lock(&loaded.pool.table)
+            .occupied()
+            .into_iter()
+            .filter(|(_, holder)| present.contains(holder))
+            .collect();
         let (mut bytes, mut slots) = (0, 0);
         for (slot, holder) in occupied {
             let file = SlotFiles::file_name(key, &holder);
@@ -1051,13 +1109,14 @@ impl Supervisor {
                 Ok(saved) => {
                     bytes += saved.bytes;
                     slots += 1;
-                    lock(files).record(Saved {
+                    let saved = Saved {
                         holder,
                         key,
                         slot,
                         file,
                         bytes: saved.bytes,
-                    });
+                    };
+                    lock(files).record(saved, |holder| present.contains(holder));
                 }
                 Err(error) => {
                     tracing::warn!(%holder, slot, %error, "could not save a slot before unloading its model");
@@ -1281,6 +1340,7 @@ mod tests {
             swap_cache_mb: 0,
             min_residency_s: 30,
             max_swaps_per_min: 6,
+            max_wait_s: 600,
             extra_args: Vec::new(),
         }
     }
@@ -1711,8 +1771,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_model_beside_an_idle_one_is_placed_in_the_memory_actually_left() {
-        // 32 GiB of RAM: "b" could load beside idle "a" partly in RAM, but swapping "a" out
-        // puts it all on the GPU; either way the loaded models fit the budget.
+        // 32 GiB of RAM: "b" keeps over half its layers on the GPU beside idle "a", so "a" is
+        // not swapped out, and "b" is placed in the VRAM "a" leaves.
         let hardware = Hardware {
             ram_available_bytes: 32 * GIB,
             ..hardware()
@@ -1729,12 +1789,14 @@ mod tests {
         let loaded = supervisor.loaded();
         let vram: u64 = loaded.iter().map(|model| model.vram_bytes).sum();
         assert!(vram <= 10 * GIB, "{vram} bytes of VRAM committed");
-        assert_eq!(
-            loaded.len(),
-            1,
-            "a was swapped out for a full GPU placement"
+        assert_eq!(loaded.len(), 2, "a stays loaded");
+        let b = loaded.iter().find(|model| model.model_id == "b").unwrap();
+        assert!(
+            b.gpu_layers > 0 && b.gpu_layers < 32,
+            "{} layers",
+            b.gpu_layers
         );
-        assert_eq!(loaded[0].gpu_layers, u32::MAX);
+        assert!(b.ram_bytes > 0, "the rest of b is in RAM");
     }
 
     #[tokio::test]

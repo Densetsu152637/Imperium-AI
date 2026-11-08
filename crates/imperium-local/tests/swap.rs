@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -16,8 +17,8 @@ use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
 use imperium_local::scan::{Format, LocalModel};
 use imperium_local::supervisor::{
-    LaunchFuture, LaunchSpec, Launcher, Runtimes, Server, SlotFuture, SlotTransfer, Supervisor,
-    SwapDirection, SwapEvent,
+    LaunchFuture, LaunchSpec, Launcher, Runtimes, Server, SlotFuture, SlotTransfer, StopFuture,
+    Supervisor, SwapDirection, SwapEvent,
 };
 
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -38,6 +39,8 @@ struct Log {
     in_use: Mutex<HashMap<String, u32>>,
     /// Models stopped while a lease on them was held.
     stopped_in_use: Mutex<Vec<String>>,
+    /// Launches that fail before the next one succeeds.
+    launch_failures: AtomicU32,
 }
 
 impl Log {
@@ -90,6 +93,22 @@ impl Server for FakeServer {
         })
     }
 
+    /// Takes a moment to exit, so a launch that does not wait for it would come first.
+    fn stop(&self) -> StopFuture<'_> {
+        Box::pin(async move {
+            if lock(&self.log.in_use)
+                .get(&self.model)
+                .copied()
+                .unwrap_or(0)
+                > 0
+            {
+                lock(&self.log.stopped_in_use).push(self.model.clone());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            self.log.push(format!("stop {}", self.model));
+        })
+    }
+
     fn restore_slot<'a>(&'a self, slot: u32, file: &'a str) -> SlotFuture<'a> {
         Box::pin(async move {
             self.log
@@ -99,20 +118,6 @@ impl Server for FakeServer {
                 bytes: 1024 * 1024,
             })
         })
-    }
-}
-
-impl Drop for FakeServer {
-    fn drop(&mut self) {
-        if lock(&self.log.in_use)
-            .get(&self.model)
-            .copied()
-            .unwrap_or(0)
-            > 0
-        {
-            lock(&self.log.stopped_in_use).push(self.model.clone());
-        }
-        self.log.push(format!("stop {}", self.model));
     }
 }
 
@@ -126,6 +131,11 @@ impl Launcher for FakeLauncher {
             );
             self.log.push(format!("launch {}", spec.model_id));
             tokio::time::sleep(LOAD).await;
+            let failures = &self.log.launch_failures;
+            if failures.load(Ordering::SeqCst) > 0 {
+                failures.fetch_sub(1, Ordering::SeqCst);
+                return Err("the server exited while loading".into());
+            }
             Ok(Box::new(FakeServer {
                 model: spec.model_id.clone(),
                 url: format!("http://fake/{}/v1", spec.model_id),
@@ -170,6 +180,7 @@ fn settings() -> LlamaCppSettings {
         swap_cache_mb: 1024,
         min_residency_s: 30,
         max_swaps_per_min: 6,
+        max_wait_s: 600,
         extra_args: Vec::new(),
     }
 }
@@ -196,7 +207,7 @@ fn start(settings: LlamaCppSettings) -> (Arc<Supervisor>, Arc<Log>) {
         overridden: true,
     };
     let supervisor = Supervisor::start(
-        vec![model("emperor"), model("worker")],
+        vec![model("emperor"), model("worker"), model("helper")],
         settings,
         Runtimes::default(),
         &hardware,
@@ -297,7 +308,7 @@ async fn swap_out_an_awaiting_orchestrator_for_its_subagent_and_restore_it() {
             "save emperor 0",
             "stop emperor",
             "launch worker",
-            "save worker 0",
+            // The subagent's turn is over, so its slot is not saved.
             "stop worker",
             "launch emperor",
             "restore emperor 0",
@@ -402,25 +413,120 @@ async fn swap_reloads_a_model_evicted_between_calls() {
 }
 
 #[tokio::test]
-async fn swap_limit_pauses_swapping_and_reports_the_model_unavailable() {
+async fn swap_limit_pauses_swapping_and_refuses_what_does_not_fit() {
     let (supervisor, log) = start(LlamaCppSettings {
         max_swaps_per_min: 1,
         ..settings()
     });
     call(&supervisor, &log, "emperor", "a/root", Duration::ZERO).await;
     call(&supervisor, &log, "worker", "b/root", Duration::ZERO).await;
-    // One swap this minute: the router is told to look elsewhere, and a call waits.
+    // One swap this minute: the router is told to look elsewhere, and a call fails at once
+    // rather than waiting for the window.
     assert_eq!(
         supervisor.availability("emperor"),
         Availability::Unavailable
     );
-    let waiting = tokio::time::timeout(
+    let refused = tokio::time::timeout(
         Duration::from_millis(300),
         supervisor.acquire("emperor", "a/root"),
     )
-    .await;
-    assert!(waiting.is_err(), "the call queues instead of swapping");
+    .await
+    .expect("the call does not wait");
+    let error = refused.unwrap_err();
+    assert!(error.contains("swapping is paused"), "{error}");
     assert_eq!(supervisor.loaded()[0].model_id, "worker");
+}
+
+#[tokio::test]
+async fn swap_off_refuses_a_model_that_does_not_fit_beside_the_loaded_ones() {
+    let (supervisor, log) = start(LlamaCppSettings {
+        max_swaps_per_min: 0,
+        ..settings()
+    });
+    call(&supervisor, &log, "emperor", "a/root", Duration::ZERO).await;
+    assert_eq!(supervisor.availability("worker"), Availability::Unavailable);
+    let error = supervisor.acquire("worker", "b/root").await.unwrap_err();
+    assert!(error.contains("not enough memory for worker"), "{error}");
+    assert_eq!(log.steps(), ["launch emperor"]);
+}
+
+#[tokio::test]
+async fn swap_waits_are_capped_by_max_wait() {
+    let (supervisor, log) = start(LlamaCppSettings {
+        max_wait_s: 1,
+        ..settings()
+    });
+    // Another session holds the worker for longer than the cap.
+    let busy = supervisor.acquire("worker", "b/root").await.unwrap();
+    let asked = Instant::now();
+    let error = supervisor.acquire("emperor", "a/root").await.unwrap_err();
+    assert!(error.contains("max_wait_s"), "{error}");
+    let waited = asked.elapsed();
+    assert!(
+        waited >= Duration::from_secs(1) && waited < Duration::from_secs(3),
+        "{waited:?}"
+    );
+    drop(busy);
+    assert_eq!(log.steps(), ["launch worker"]);
+}
+
+#[tokio::test]
+async fn swap_waits_for_the_old_server_to_exit_and_retries_a_failed_launch() {
+    let (supervisor, log) = start(settings());
+    call(&supervisor, &log, "emperor", "a/root", Duration::ZERO).await;
+    log.launch_failures.store(1, Ordering::SeqCst);
+    call(&supervisor, &log, "worker", "b/root", Duration::ZERO).await;
+    assert_eq!(
+        log.steps(),
+        [
+            "launch emperor",
+            "stop emperor",
+            "launch worker",
+            "launch worker"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn swap_cache_keeps_a_waiting_orchestrators_slot_over_a_finished_subagents() {
+    // Room on disk for two saved slots of 1 MiB; nothing is kept loaded for long.
+    let (supervisor, log) = start(LlamaCppSettings {
+        swap_cache_mb: 2,
+        min_residency_s: 0,
+        ..settings()
+    });
+    let root = "s/root";
+    let _turn = supervisor.attach("emperor", root);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    let waiting = supervisor.waiting("emperor", root);
+    // The subagent swaps the orchestrator out (saving its slot) and is mid-turn when another
+    // session's agent swaps the worker out (saving the subagent's slot too).
+    let subagent = supervisor.attach("worker", "s/t1");
+    call(&supervisor, &log, "worker", "s/t1", Duration::ZERO).await;
+    let _other = supervisor.attach("helper", "x/root");
+    call(&supervisor, &log, "helper", "x/root", Duration::ZERO).await;
+    // The subagent finishes and the orchestrator wakes; saving the other agent's slot needs
+    // room, and the finished subagent's file goes even though the orchestrator's is older.
+    drop(subagent);
+    drop(waiting);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert_eq!(
+        log.steps(),
+        [
+            "launch emperor",
+            "save emperor 0",
+            "stop emperor",
+            "launch worker",
+            "save worker 0",
+            "stop worker",
+            "launch helper",
+            "save helper 0",
+            "stop helper",
+            "launch emperor",
+            "restore emperor 0",
+        ]
+    );
+    assert_eq!(log.file("save emperor"), log.file("restore emperor"));
 }
 
 /// An orchestrator: one call, two subagents on the worker model, a wait for them, one more
