@@ -1,3 +1,6 @@
+//! A client for the daemon protocol: connect with an endpoint's token, handshake, and make
+//! typed calls. Used by the `imperium` CLI and the desktop app's native side.
+
 use std::collections::VecDeque;
 
 use futures_util::{SinkExt, StreamExt};

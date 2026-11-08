@@ -19,7 +19,9 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use imperium_cli::client::{Client, read_endpoint};
 use imperium_config::{Paths, SecretName};
-use imperium_protocol::methods::{ModelDownloadParams, Peer, Ping, PingParams};
+use imperium_protocol::methods::{
+    ModelDownloadParams, Peer, Ping, PingParams, Shutdown, ShutdownParams,
+};
 
 /// Command-line client for the Imperium daemon.
 #[derive(Debug, Parser)]
@@ -179,6 +181,8 @@ enum DaemonCommand {
     },
     /// Start imperiumd in the background.
     Start,
+    /// Stop the running imperiumd gracefully.
+    Stop,
     /// Print the running daemon's endpoint as JSON (used by `imperium remote connect`).
     Endpoint,
 }
@@ -354,6 +358,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             command: DaemonCommand::Start,
         } => remote::start_daemon(),
         Command::Daemon {
+            command: DaemonCommand::Stop,
+        } => stop_daemon(),
+        Command::Daemon {
             command: DaemonCommand::Endpoint,
         } => remote::print_endpoint(),
         Command::Daemon {
@@ -411,6 +418,15 @@ fn ping() -> anyhow::Result<()> {
             pong.uptime_ms as f64 / 1000.0,
             round_trip.as_secs_f64() * 1000.0,
         );
+        Ok(())
+    })
+}
+
+fn stop_daemon() -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, url) = connect().await?;
+        let stopped = client.call::<Shutdown>(ShutdownParams {}).await?;
+        println!("imperiumd (pid {}) at {url} is stopping", stopped.pid);
         Ok(())
     })
 }

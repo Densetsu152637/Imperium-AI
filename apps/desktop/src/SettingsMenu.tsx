@@ -1,7 +1,8 @@
 // Settings: display (UI scale, prose and code font scale, density, line length) and, in the
-// desktop app, updates.
+// desktop app, the daemon and updates.
 
 import type { Density, DisplaySettings } from "./settings";
+import { type Daemon, DaemonSettings } from "./DaemonControl";
 import { UpdateSettings, type Updates } from "./UpdateControl";
 
 type Props = {
@@ -9,6 +10,8 @@ type Props = {
   onChange: (settings: DisplaySettings) => void;
   /** The updater, in the desktop app only. */
   updates: Updates | null;
+  /** The daemon controls, in the desktop app only. */
+  daemon: Daemon | null;
   onClose: () => void;
 };
 
@@ -41,7 +44,7 @@ function Slider({
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 
-export function SettingsMenu({ settings, onChange, updates, onClose }: Props) {
+export function SettingsMenu({ settings, onChange, updates, daemon, onClose }: Props) {
   const set = (patch: Partial<DisplaySettings>) => onChange({ ...settings, ...patch });
   return (
     <div className="settings-menu" role="dialog" aria-label="Settings">
@@ -75,6 +78,7 @@ export function SettingsMenu({ settings, onChange, updates, onClose }: Props) {
           </label>
         ))}
       </fieldset>
+      {daemon && <DaemonSettings daemon={daemon} />}
       {updates && <UpdateSettings updates={updates} />}
       <button className="primary" onClick={onClose}>
         Done

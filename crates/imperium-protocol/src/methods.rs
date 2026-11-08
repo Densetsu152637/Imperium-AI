@@ -34,6 +34,28 @@ impl Method for Ping {
     type Result = PingResult;
 }
 
+/// `system.shutdown`: stops the daemon gracefully. It replies first, then stops serving; clients
+/// see their connection close.
+#[derive(Debug)]
+pub struct Shutdown;
+
+impl Method for Shutdown {
+    const NAME: &'static str = "system.shutdown";
+    type Params = ShutdownParams;
+    type Result = ShutdownResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ShutdownParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ShutdownResult {
+    /// The daemon's process id, so a caller can wait for it to exit.
+    pub pid: u32,
+}
+
 /// Names and versions a program, such as the CLI or the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
