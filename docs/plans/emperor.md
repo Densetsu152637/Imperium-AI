@@ -16,7 +16,7 @@ Work is split across three places, so no one basket holds all the eggs:
 | Where | Holds | Status |
 | ----- | ----- | ------ |
 | This repository (Imperium-AI) | Engine features Emperor needs (stages 1, 2a, 7), integration, docs, and this plan of record | exists |
-| `Densetsu152637/emperor` (GitHub, new) | Training code: dataset builders, training recipes, eval harness, export scripts (Python, `uv`) | to create in stage 0 |
+| `Densetsu152637/emperor` (GitHub, new) | Training code: dataset builders, training recipes, eval harness, export scripts (Python, `uv`) | created (private) in stage 0 |
 | `Imperium.AI/emperor` (Hugging Face, placeholder org) | Released weights, model card, eval report; GGUF quants in `Imperium.AI/emperor-GGUF`; private datasets in `Imperium.AI/emperor-traces` | to create in stage 8 |
 
 When the `emperor` repository exists, stages 2b to 6 move into its own `docs/plans/` and this
@@ -193,9 +193,13 @@ them.
 - Owned paths: the new repository
 - Acceptance checks: `gh repo view Densetsu152637/emperor` succeeds; `uv run eval --help` runs in
   CI.
-- Status: pending
-- Outcome:
-- Handoff notes: creating public repositories needs the user's go-ahead.
+- Status: in progress (GitHub repository done; Hugging Face organisation not yet created)
+- Outcome: `Densetsu152637/emperor` created **private** on 2026-11-08 with a `uv` project, an
+  `eval` CLI (`--help`, and `--dry-run` printing the report shape), tests, `scripts/check.sh`,
+  and a Checks workflow running it on pull requests and pushes to `main`.
+- Handoff notes: the repository stays private until there is something to release; making it
+  public is the user's call. Hugging Face organisations are created on the website, so the
+  user creates `Imperium.AI` (or the final name) there.
 
 ## Stage 1: Dispatch contract
 
