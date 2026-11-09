@@ -1,0 +1,21 @@
+{
+  "description": "Give a running subagent a follow-up message that runs as a new turn after its current one, before it reports. Its report then covers the follow-up.",
+  "name": "queue_agent",
+  "parameters": {
+    "properties": {
+      "agent_id": {
+        "description": "The subagent's task id, such as t1",
+        "type": "string"
+      },
+      "text": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent_id",
+      "text"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

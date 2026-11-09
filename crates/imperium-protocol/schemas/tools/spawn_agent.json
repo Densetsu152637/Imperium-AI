@@ -18,8 +18,12 @@
         "description": "A model table id (or <endpoint>:<model>) to use",
         "type": "string"
       },
+      "single_call": {
+        "description": "The subagent gets the brief and no tools, answers in exactly one model call, and its reply is the report. Use for hard, self-contained questions; put everything it needs in the brief. Default false.",
+        "type": "boolean"
+      },
       "tags": {
-        "description": "Labels such as code or vision that delegation rules match",
+        "description": "Labels such as code or vision that delegation rules match. Task classes route by default: refactor, tests, ui, format, docs prefer small local models; architecture, math, proof, algorithm, design prefer cloud frontier models.",
         "items": {
           "type": "string"
         },

@@ -60,6 +60,11 @@ impl Paths {
         self.config_dir.join("config.toml")
     }
 
+    /// The layer the desktop app writes model settings to; it wins over `config.toml`.
+    pub fn app_models_file(&self) -> PathBuf {
+        self.config_dir.join("models.toml")
+    }
+
     /// Written by a running daemon so local clients can find it.
     pub fn daemon_endpoint_file(&self) -> PathBuf {
         self.data_dir.join("daemon.json")

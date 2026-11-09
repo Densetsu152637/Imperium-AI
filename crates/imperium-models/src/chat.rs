@@ -1,4 +1,5 @@
 use std::fmt;
+use std::time::Instant;
 
 use futures_util::StreamExt;
 use imperium_api::{ChatMessage, FunctionCall, ToolCall, ToolSpec, Usage};
@@ -29,6 +30,12 @@ pub struct ChatRequest<'a> {
     pub model: &'a str,
     pub messages: &'a [ChatMessage],
     pub tools: &'a [ToolSpec],
+    /// For a llama.cpp server: the slot to run the request on (`id_slot`), with the slot's
+    /// cached prompt kept and reused (`cache_prompt`). `None` leaves both to the server, and
+    /// other endpoints never receive these fields.
+    pub slot: Option<u32>,
+    /// Most tokens the reply may generate (`max_tokens`); `None` sends none.
+    pub max_tokens: Option<u32>,
 }
 
 /// The assembled result of one streamed completion.
@@ -38,6 +45,13 @@ pub struct Completion {
     pub tool_calls: Vec<ToolCall>,
     /// Absent when the endpoint does not report usage for streamed responses.
     pub usage: Option<Usage>,
+    /// When the first generated text arrived, answer or reasoning. A thinking model streams
+    /// its reasoning before the answer and counts it in `completion_tokens`, so generation
+    /// speed is measured from here; the reasoning itself is not kept.
+    pub first_token: Option<Instant>,
+    /// Why the reply ended, from the stream's last choice: `stop`, `tool_calls`, or `length`
+    /// when it hit `max_tokens`. Absent when the endpoint does not say.
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -135,15 +149,7 @@ pub async fn stream_chat(
         "{}/chat/completions",
         endpoint.base_url.trim_end_matches('/')
     );
-    let mut body = json!({
-        "model": request.model,
-        "messages": request.messages,
-        "stream": true,
-        "stream_options": { "include_usage": true },
-    });
-    if !request.tools.is_empty() {
-        body["tools"] = request.tools.iter().map(ToolSpec::to_wire).collect();
-    }
+    let body = request_body(request);
     let mut builder = http.post(url).json(&body);
     if let Some(key) = &endpoint.api_key {
         builder = builder.bearer_auth(key);
@@ -178,6 +184,31 @@ pub async fn stream_chat(
     Ok(assembler.finish())
 }
 
+/// The JSON body of a streamed chat completion request.
+fn request_body(request: ChatRequest<'_>) -> serde_json::Value {
+    let mut body = json!({
+        "model": request.model,
+        "messages": request.messages,
+        "stream": true,
+        "stream_options": { "include_usage": true },
+    });
+    if !request.tools.is_empty() {
+        body["tools"] = request.tools.iter().map(ToolSpec::to_wire).collect();
+    }
+    if let Some(slot) = request.slot {
+        // llama.cpp's chat endpoint passes these on to its completion task. A pinned slot that
+        // holds another prompt still has it saved to the host cache and the agent's own prompt
+        // restored, but only under the server's default `--slot-prompt-similarity` (never 0);
+        // see `LlamaCpp::launch_args`.
+        body["id_slot"] = json!(slot);
+        body["cache_prompt"] = json!(true);
+    }
+    if let Some(max_tokens) = request.max_tokens {
+        body["max_tokens"] = json!(max_tokens);
+    }
+    body
+}
+
 #[derive(Debug, Deserialize)]
 struct StreamChunk {
     #[serde(default)]
@@ -190,12 +221,20 @@ struct StreamChunk {
 struct StreamChoice {
     #[serde(default)]
     delta: Delta,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct Delta {
     #[serde(default)]
     content: Option<String>,
+    /// A thinking model's reasoning: llama.cpp sends `reasoning_content` (b12180,
+    /// `server_chat_msg_diff_to_json_oaicompat`); some OpenAI-compatible services `reasoning`.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Vec<ToolCallDelta>,
 }
@@ -244,6 +283,8 @@ struct Assembler {
     text: String,
     tool_calls: Vec<ToolCall>,
     usage: Option<Usage>,
+    first_token: Option<Instant>,
+    finish_reason: Option<String>,
 }
 
 impl Assembler {
@@ -258,7 +299,19 @@ impl Assembler {
                     .map_or(0, |details| details.cached_tokens),
             });
         }
-        let delta = chunk.choices.into_iter().next()?.delta;
+        let choice = chunk.choices.into_iter().next()?;
+        if choice.finish_reason.is_some() {
+            self.finish_reason = choice.finish_reason;
+        }
+        let delta = choice.delta;
+        let generated =
+            |text: &Option<String>| text.as_deref().is_some_and(|text| !text.is_empty());
+        if generated(&delta.content)
+            || generated(&delta.reasoning_content)
+            || generated(&delta.reasoning)
+        {
+            self.first_token.get_or_insert_with(Instant::now);
+        }
         for fragment in delta.tool_calls {
             while self.tool_calls.len() <= fragment.index {
                 self.tool_calls.push(ToolCall {
@@ -293,6 +346,8 @@ impl Assembler {
             text: self.text,
             tool_calls: self.tool_calls,
             usage: self.usage,
+            first_token: self.first_token,
+            finish_reason: self.finish_reason,
         }
     }
 }
@@ -339,6 +394,8 @@ mod tests {
                     content: "hi".into(),
                 }],
                 tools: &[],
+                slot: None,
+                max_tokens: None,
             },
             |text| streamed.push_str(text),
         )
@@ -365,6 +422,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reasoning_marks_the_first_token_without_becoming_reply_text() {
+        let endpoint = fake_endpoint(concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Let me think\"}}]}
+
+",
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\" more\"}}]}
+
+",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":40}}
+
+",
+            "data: [DONE]
+
+",
+        ))
+        .await;
+
+        let mut streamed = String::new();
+        let before = Instant::now();
+        let completion = stream_chat(
+            &reqwest::Client::new(),
+            &endpoint,
+            ChatRequest {
+                model: "m",
+                messages: &[],
+                tools: &[],
+                slot: None,
+                max_tokens: None,
+            },
+            |text| streamed.push_str(text),
+        )
+        .await
+        .unwrap();
+
+        assert!(streamed.is_empty() && completion.text.is_empty());
+        assert!(completion.first_token.is_some_and(|first| first >= before));
+    }
+
+    #[tokio::test]
     async fn http_errors_carry_the_status_and_body() {
         let app = Router::new().route(
             "/v1/chat/completions",
@@ -384,6 +480,8 @@ mod tests {
                 model: "m",
                 messages: &[],
                 tools: &[],
+                slot: None,
+                max_tokens: None,
             },
             |_| {},
         )
@@ -393,6 +491,35 @@ mod tests {
             matches!(error, ModelError::Status { status: 401, ref body, .. } if body == "bad key"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_reply_cap_is_sent_only_when_set() {
+        let request = |max_tokens| ChatRequest {
+            model: "m",
+            messages: &[],
+            tools: &[],
+            slot: None,
+            max_tokens,
+        };
+        assert!(request_body(request(None)).get("max_tokens").is_none());
+        assert_eq!(request_body(request(Some(512)))["max_tokens"], 512);
+    }
+
+    #[test]
+    fn llama_cpp_slots_are_requested_only_when_the_call_has_one() {
+        let request = |slot| ChatRequest {
+            model: "m",
+            messages: &[],
+            tools: &[],
+            slot,
+            max_tokens: None,
+        };
+        let plain = request_body(request(None));
+        assert!(plain.get("id_slot").is_none() && plain.get("cache_prompt").is_none());
+        let pinned = request_body(request(Some(1)));
+        assert_eq!(pinned["id_slot"], 1);
+        assert_eq!(pinned["cache_prompt"], true);
     }
 
     #[test]

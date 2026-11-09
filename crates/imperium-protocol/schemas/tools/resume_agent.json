@@ -1,0 +1,22 @@
+{
+  "description": "Give a finished subagent a follow-up. It continues with its full earlier conversation (what it read, found, and did), so prefer it to spawn_agent for follow-ups on the same area. Collect its report with await_tasks.",
+  "name": "resume_agent",
+  "parameters": {
+    "properties": {
+      "agent_id": {
+        "description": "The subagent's task id, such as t1",
+        "type": "string"
+      },
+      "text": {
+        "description": "The follow-up",
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent_id",
+      "text"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

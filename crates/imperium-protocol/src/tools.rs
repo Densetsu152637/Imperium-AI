@@ -1,7 +1,7 @@
 //! The model-facing tools: one definition of each tool's name, description and JSON Schema.
 //!
-//! `imperium-core` and `imperium-web` build the tools they send to models from these
-//! definitions, and a test exports them to `schemas/tools/` (with an `index.json`), so the
+//! `imperium-engine`, `imperium-core` (the daemon's `suggest_local_model`) and `imperium-web`
+//! build the tools they send to models from these definitions, and a test exports them to `schemas/tools/` (with an `index.json`), so the
 //! checked-in files are exactly what models are offered. The Emperor training repository
 //! vendors that folder, and `schemas/prompts/` next to it, at a pinned Imperium commit.
 //!
@@ -49,9 +49,14 @@ pub fn all() -> Vec<ToolDefinition> {
     vec![
         spawn_agent(),
         await_tasks(),
+        steer_agent(),
+        queue_agent(),
+        list_agents(),
+        resume_agent(),
         update_plan(),
         web_search(),
         web_fetch(),
+        suggest_local_model(),
         delegate_chunks(),
         ask_user(),
     ]
@@ -67,7 +72,8 @@ pub fn spawn_agent() -> ToolDefinition {
             "tier": {"type": "string", "enum": ["basic", "standard", "strong", "frontier"], "description": "Minimum model capability; the cheapest suitable model is chosen. Default standard."},
             "model": {"type": "string", "description": "A model table id (or <endpoint>:<model>) to use"},
             "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},
-            "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match"}
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match. Task classes route by default: refactor, tests, ui, format, docs prefer small local models; architecture, math, proof, algorithm, design prefer cloud frontier models."},
+            "single_call": {"type": "boolean", "description": "The subagent gets the brief and no tools, answers in exactly one model call, and its reply is the report. Use for hard, self-contained questions; put everything it needs in the brief. Default false."}
         }, "required": ["brief"]}),
         status: ToolStatus::Available,
     }
@@ -81,6 +87,77 @@ pub fn await_tasks() -> ToolDefinition {
         parameters: json!({"type": "object", "properties": {
             "task_ids": {"type": "array", "items": {"type": "string"}}
         }}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Add a message to a running subagent's current turn.
+pub fn steer_agent() -> ToolDefinition {
+    ToolDefinition {
+        name: "steer_agent",
+        description: "Send a running subagent a message that joins its current turn: it reads it before its next model call and carries on. Use to correct or redirect work in progress.",
+        parameters: json!({"type": "object", "properties": {
+            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
+            "text": {"type": "string"}
+        }, "required": ["agent_id", "text"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Give a running subagent a follow-up turn.
+pub fn queue_agent() -> ToolDefinition {
+    ToolDefinition {
+        name: "queue_agent",
+        description: "Give a running subagent a follow-up message that runs as a new turn after its current one, before it reports. Its report then covers the follow-up.",
+        parameters: json!({"type": "object", "properties": {
+            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
+            "text": {"type": "string"}
+        }, "required": ["agent_id", "text"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// List the session's subagents.
+pub fn list_agents() -> ToolDefinition {
+    ToolDefinition {
+        name: "list_agents",
+        description: "List this session's subagents: status (running, idle, failed, interrupted), model, turns, brief, and latest report. Finished subagents keep their conversation and can be given a follow-up with resume_agent.",
+        parameters: json!({"type": "object", "properties": {}}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Give a finished subagent a follow-up.
+pub fn resume_agent() -> ToolDefinition {
+    ToolDefinition {
+        name: "resume_agent",
+        description: "Give a finished subagent a follow-up. It continues with its full earlier conversation (what it read, found, and did), so prefer it to spawn_agent for follow-ups on the same area. Collect its report with await_tasks.",
+        parameters: json!({"type": "object", "properties": {
+            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
+            "text": {"type": "string", "description": "The follow-up"}
+        }, "required": ["agent_id", "text"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Propose downloading a local model that suits the task (the user decides).
+pub fn suggest_local_model() -> ToolDefinition {
+    ToolDefinition {
+        name: "suggest_local_model",
+        description: "Propose downloading a local model from Hugging Face that suits this task better than the models available (for example one that reads images, writes code, calls tools reliably, or reads a longer context). The user is asked and decides; nothing downloads without their consent, and you carry on with the current model meanwhile. Use sparingly: at most once per need.",
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "description": "What the model is needed for, in a few words."},
+                "needs": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["chat", "code", "vision", "tools", "context"]},
+                    "description": "What the model must be good at."
+                },
+                "context_tokens": {"type": "integer", "description": "For context: the tokens it must read."}
+            },
+            "required": ["task", "needs"]
+        }),
         status: ToolStatus::Available,
     }
 }
@@ -234,7 +311,15 @@ mod tests {
         assert!(prompt("brief.md").len() / 4 < 2_000);
         let root = prompt("emperor-root.md");
         assert!(root.contains("context budget: <N>K tokens"));
-        for name in ["spawn_agent", "await_tasks", "update_plan"] {
+        for name in [
+            "spawn_agent",
+            "await_tasks",
+            "steer_agent",
+            "queue_agent",
+            "list_agents",
+            "resume_agent",
+            "update_plan",
+        ] {
             assert!(root.contains(name), "{name} missing from the root prompt");
         }
         assert!(prompt("questions.md").contains("recommended"));
@@ -288,8 +373,8 @@ mod tests {
 
     /// Property names are lowercased, stripped of `_` and `-`, and stripped of a trailing `s`;
     /// the result must not contain a credential-like substring, and no word of the name may be
-    /// `key`. Only `chunk_tokens` (a size) and `url` (web_fetch's page address) are allowed
-    /// through by name. Descriptions are free text and are not checked.
+    /// `key`. Only `chunk_tokens` and `context_tokens` (sizes) and `url` (web_fetch's page
+    /// address) are allowed through by name. Descriptions are free text and are not checked.
     #[test]
     fn no_schema_has_a_credential_or_endpoint_property() {
         const FORBIDDEN: [&str; 12] = [
@@ -306,7 +391,7 @@ mod tests {
             "baseurl",
             "endpoint",
         ];
-        const ALLOWED: [&str; 2] = ["chunk_tokens", "url"];
+        const ALLOWED: [&str; 3] = ["chunk_tokens", "context_tokens", "url"];
         let strip = |word: &str| word.to_ascii_lowercase().trim_end_matches('s').to_string();
         for tool in all() {
             let mut names = Vec::new();

@@ -8,7 +8,19 @@ export type LocalModelListResult = {
 /**
  * False when no `models.folders` are configured.
  */
-enabled: boolean, folders: Array<string>, models: Array<LocalModelRow>, 
+enabled: boolean, 
+/**
+ * Every folder scanned: `models.folders` and the download folder.
+ */
+folders: Array<string>, 
+/**
+ * `models.folders` alone, the folders `models.remove_folder` can remove.
+ */
+configured_folders: Array<string>, 
+/**
+ * `models.default`: the model new sessions use, when set.
+ */
+default_model: string | null, models: Array<LocalModelRow>, 
 /**
  * Files that looked like models but could not be used, with the reason.
  */

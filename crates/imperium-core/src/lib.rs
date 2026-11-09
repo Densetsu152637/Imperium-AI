@@ -1,36 +1,45 @@
-//! Sessions and the agent loop.
-//!
-//! Every agent (a session's root and each subagent) is its own task on the daemon's
-//! multi-threaded Tokio runtime, so agents run in parallel across cores and idle agents use no
-//! CPU. Callers talk to a [`Session`] over channels and receive its
-//! [`AgentEvent`](imperium_protocol::session::AgentEvent)s by subscribing.
+//! The Imperium daemon: the single process that owns all state. Clients (the CLI, the desktop
+//! app, remote hosts) talk to it over JSON-RPC on a local, token-protected WebSocket.
 
-mod agent;
-mod artefacts;
-mod breakdown;
-mod journal;
-mod launcher;
-mod model;
-mod session;
-mod status;
+mod approvals;
+mod autofix;
+mod config;
+mod connectors;
+mod downloads;
+mod endpoint;
+mod environments;
+mod load;
+mod local;
+mod mcp;
+mod model_config;
+mod mods;
+mod onboarding;
+mod pets;
+mod phone;
+mod project_agent;
+mod resources;
+mod rpc;
+mod runtimes;
+mod scheduler;
+mod server;
+mod state;
+mod suggestions;
+mod token;
+mod worktrees;
 
-pub use imperium_api::{
-    AcquireFuture, Availability, LocalLease, LocalModels, ToolCheck, ToolContext, ToolEvent,
-    ToolFuture, ToolGroup, ToolProvider,
-};
-pub use imperium_models::{ChatClient, ChatClients};
-pub use launcher::{LaunchFuture, SessionLauncher};
-pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
-pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};
-pub use status::next_attempt;
-
-/// The resume policy used when nothing is configured: wait for the provider's reset, retrying
-/// every five minutes, for up to twelve hours.
-pub fn default_resume_policy() -> imperium_protocol::session::ResumePolicy {
-    imperium_protocol::session::ResumePolicy {
-        mode: "wait_for_reset".into(),
-        at_time: None,
-        retry_every_minutes: 5,
-        max_wait_hours: 12,
-    }
-}
+pub use approvals::Approvals;
+pub use autofix::{fix_ci, watch_pull_requests};
+pub use downloads::Downloads;
+pub use endpoint::EndpointFile;
+pub use environments::{EnvironmentError, Environments};
+pub use load::{LoadMonitor, ManualLoad, Sample, classify};
+pub use local::LocalRuntime;
+pub use pets::PetEngine;
+pub use phone::Devices;
+pub use project_agent::ProjectAgents;
+pub use resources::{ResourceMonitor, Watch as ResourceWatch};
+pub use rpc::{Connection, Deferred, Handled, Subscription};
+pub use scheduler::Scheduler;
+pub use server::serve;
+pub use state::{CreateError, DaemonState, SessionOptions};
+pub use token::AccessToken;

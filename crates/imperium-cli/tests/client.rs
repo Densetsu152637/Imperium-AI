@@ -4,13 +4,13 @@ use axum::Router;
 use axum::routing::post;
 use imperium_cli::client::{Client, ClientError, read_endpoint};
 use imperium_config::{Config, Layer, Paths, Source};
+use imperium_core::{AccessToken, DaemonState};
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
 use imperium_protocol::methods::{
     Peer, Ping, PingParams, SessionCreate, SessionCreateParams, SessionSend, SessionSendParams,
 };
 use imperium_protocol::session::{SESSION_EVENT, SessionEvent, SessionEventParams};
-use imperiumd::{AccessToken, DaemonState};
 use tokio::net::TcpListener;
 
 fn me() -> Peer {
@@ -29,7 +29,7 @@ async fn start_daemon(daemon: Arc<DaemonState>) -> DaemonEndpoint {
         pid: std::process::id(),
         protocol: PROTOCOL_VERSION,
     };
-    tokio::spawn(imperiumd::serve(
+    tokio::spawn(imperium_core::serve(
         listener,
         token,
         daemon,
@@ -53,7 +53,7 @@ async fn ping_round_trips_through_the_daemon() {
     let data = tempfile::tempdir().unwrap();
     let endpoint = start_daemon(daemon_with("", data.path())).await;
     let mut client = Client::connect(&endpoint, me()).await.unwrap();
-    assert_eq!(client.daemon().daemon.name, "imperiumd");
+    assert_eq!(client.daemon().daemon.name, "imperium-core");
     assert_eq!(client.daemon().protocol, PROTOCOL_VERSION);
     client.call::<Ping>(PingParams {}).await.unwrap();
 }
@@ -86,16 +86,20 @@ async fn a_chat_turn_streams_events_to_the_client() {
 
     let session = client
         .call::<SessionCreate>(SessionCreateParams {
-            project_dir: project.path().to_string_lossy().into_owned(),
+            environment_id: None,
+            project_dir: Some(project.path().to_string_lossy().into_owned()),
             model: None,
+            ..SessionCreateParams::default()
         })
         .await
         .unwrap();
-    assert_eq!(session.model, "fake:m");
+    assert_eq!(session.model.as_deref(), Some("fake:m"));
     client
         .call::<SessionSend>(SessionSendParams {
             session_id: session.session_id.clone(),
             text: "hello".into(),
+            mode: None,
+            agent_id: None,
         })
         .await
         .unwrap();

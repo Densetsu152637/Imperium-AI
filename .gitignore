@@ -4,3 +4,10 @@ packages/protocol/src/index.ts
 apps/desktop/dist/
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/binaries/
+
+# Built mod bundles
+/mods/*/index.js
+
+# Bundled mods staged for the installers (scripts/stage-mods.mjs)
+/apps/desktop/src-tauri/mods/*
+!/apps/desktop/src-tauri/mods/.gitkeep

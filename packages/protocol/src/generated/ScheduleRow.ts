@@ -14,6 +14,11 @@ action: string, project: string,
  */
 next_run: string | null, last_run: string | null, last_ok: boolean | null, running: boolean, 
 /**
+ * Set while a run waits for a quiet machine (`prefer_quiet`, `when_quiet`): why. Run it
+ * now with `schedules.run`.
+ */
+deferred: string | null, 
+/**
  * Why the schedule cannot run, if it cannot.
  */
 problem: string | null, };

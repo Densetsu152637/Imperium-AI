@@ -1,57 +1,119 @@
-// The main session panel: a header with title and status, environment, usage-limit controls,
-// and the folded context and outputs sections; then the conversation and the composer.
+// The main session panel: the title and status at the top, then the conversation, the composer,
+// and under it a footer with the model selector at the left and the context meter at the right.
+// The meter opens the context breakdown, session totals, and outputs above the composer; the
+// options button opens Markdown rendering and the usage-limit policy there.
 
-import { useEffect, useRef, useState } from "react";
+import { ArrowUp, CornerDownRight, ListPlus, SlidersHorizontal, X } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { PermissionDecision, Plan, Question, ResumePolicy } from "@imperium/protocol";
+import type {
+  LocalModelRow,
+  ModelRow,
+  PermissionDecision,
+  Plan,
+  Question,
+  QueuedMessage,
+  ResumePolicy,
+  SendMode,
+  SessionControlResult,
+} from "@imperium/protocol";
 
 import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
-import { ROOT, describeUse, formatCost, formatCount, sessionTitle, totals, type Entry, type SessionState } from "../sessions";
+import {
+  ROOT,
+  breakdownUsed,
+  describeUse,
+  formatCost,
+  formatCount,
+  formatTokens,
+  sessionTitle,
+  totals,
+  type Entry,
+  type SessionState,
+} from "../sessions";
+import { Select } from "../components/Select";
+import { Switch } from "../components/Switch";
+import { ToolState } from "../components/ToolState";
+import type { DaemonClient } from "../daemon/client";
 import { ContextBreakdownView } from "./ContextBreakdown";
+import { ModelSuggestionCard } from "./ModelSuggestionCard";
+import { SessionModelSelect } from "./ModelSelect";
 import { StatusBadge } from "./StatusBadge";
+import { useSettings } from "../settings";
 
 type Props = {
-  session: SessionState | null;
+  session: SessionState;
   icons: ProjectIcons;
-  onSend: (text: string) => void;
+  /** Sends a message: `queue` starts a turn, or waits while one runs; `steer` joins the running turn. */
+  onSend: (text: string, mode: SendMode) => void;
+  /** Edits a queued message, or removes it when `text` is null. */
+  onChangeQueued: (id: string, text: string | null) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
   /** One answer per question, in order. */
   onAnswer: (requestId: number, answers: string[]) => void;
   /** Resolves once the daemon accepted the policy. */
   onSetResumePolicy: (policy: ResumePolicy) => Promise<void>;
   onResumeNow: () => void;
+  /** The model table (`models.list`), offered in the model selector. */
+  models: ModelRow[];
+  /** Local models found in the model folders (`models.local`), offered after the table. */
+  localModels: LocalModelRow[];
+  /** Switches the session's model; resolves with the daemon's answer, rejects with its reason. */
+  onSetModel: (model: string) => Promise<SessionControlResult>;
+  /** For answering model download suggestions and following their downloads. */
+  client?: DaemonClient | null;
+  /** Resumes an archived session. */
+  onUnarchive?: () => void;
 };
 
-export function SessionPanel({ session, icons, onSend, onRespond, onAnswer, onSetResumePolicy, onResumeNow }: Props) {
+/** What the footer has opened above the composer. */
+type Drawer = "context" | "options" | null;
+
+export function SessionPanel({
+  session,
+  icons,
+  onSend,
+  onChangeQueued,
+  onRespond,
+  onAnswer,
+  onSetResumePolicy,
+  onResumeNow,
+  models,
+  localModels,
+  onSetModel,
+  client = null,
+  onUnarchive,
+}: Props) {
+  const settings = useSettings();
   const [draft, setDraft] = useState("");
-  const [rendered, setRendered] = useState(true);
+  const [rendered, setRendered] = useState(settings.renderMarkdown);
+  const [drawer, setDrawer] = useState<Drawer>(null);
+  const drawerId = useId();
+  useEffect(() => setRendered(settings.renderMarkdown), [settings.renderMarkdown]);
   const end = useRef<HTMLDivElement>(null);
-  const entryCount = session?.entries.length ?? 0;
-  const lastLength = session?.entries.at(-1) && "text" in session.entries.at(-1)! ? (session.entries.at(-1) as { text: string }).text.length : 0;
+  const entryCount = session.entries.length;
+  const last = session.entries.at(-1);
+  const lastLength = last && "text" in last ? last.text.length : 0;
 
   // Block body: newer browsers return a promise from scrollIntoView, which an effect must not return.
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end" });
-  }, [entryCount, lastLength]);
+    if (settings.autoScroll) end.current?.scrollIntoView({ block: "end" });
+  }, [entryCount, lastLength, settings.autoScroll]);
 
-  if (!session) {
-    return (
-      <div className="session-empty">
-        <p className="empty">Open a project folder and start a session to begin.</p>
-      </div>
-    );
-  }
   const sum = totals(session.calls);
-  const rootContext = session.breakdowns[ROOT];
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
-  const send = () => {
+  const archived = session.summary.archived;
+  // While the agent works the composer stays open: Enter queues the message for after the turn,
+  // and Steer (Ctrl+Shift+Enter) adds it to the running turn.
+  const send = (mode: SendMode = "queue") => {
     const text = draft.trim();
     if (!text) return;
-    onSend(text);
+    onSend(text, mode);
     setDraft("");
   };
+  const toggle = (next: Exclude<Drawer, null>) => setDrawer((open) => (open === next ? null : next));
 
   return (
     <div className="session">
@@ -68,33 +130,67 @@ export function SessionPanel({ session, icons, onSend, onRespond, onAnswer, onSe
             </button>
           )}
         </div>
+      </header>
 
-        <div className="session-env">
-          <span title={session.summary.project_dir}>{projectName(session.summary.project_dir)}</span>
-          <span title="Model">{session.summary.model}</span>
-          <span title="Isolation tier">{session.summary.isolation}</span>
-          <span title="Session cost">{formatCost(sum.costUsd)}</span>
-          <label className="toggle">
-            <input type="checkbox" checked={rendered} onChange={(event) => setRendered(event.target.checked)} />
-            Markdown
-          </label>
+      {session.plan && <PlanView plan={session.plan} />}
+
+      <div className="conversation" aria-live="polite">
+        {session.entries.map((entry, index) =>
+          entry.kind === "suggestion" ? (
+            <ModelSuggestionCard
+              key={index}
+              entry={entry}
+              sessionId={session.summary.session_id}
+              client={client}
+              onSetModel={(model) => onSetModel(model).catch(() => null)}
+            />
+          ) : (
+            <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} onAnswer={onAnswer} />
+          ),
+        )}
+        {session.busy && <p className="working">Working…</p>}
+        <div ref={end} />
+      </div>
+
+      {archived && (
+        <div className="archived-note" role="status">
+          <span>This session is archived: it is not running and keeps its history. Unarchive it to continue.</span>
+          {onUnarchive && (
+            <button className="primary" onClick={onUnarchive}>
+              Unarchive
+            </button>
+          )}
         </div>
+      )}
 
-        {/* Settings and statistics fold away so the conversation keeps the room. */}
-        <div className="session-tools">
-          <ResumeControls
-            key={session.summary.session_id}
-            policy={session.summary.resume_policy}
-            onSave={onSetResumePolicy}
-          />
-          <details className="session-details">
-            <summary>
-              Context and outputs{" "}
-              <span className="muted">
-                · {rootContext ? describeUse(rootContext) : `${formatCount(sum.prompt)} prompt tokens`} ·{" "}
-                {session.calls.length} model calls
-              </span>
-            </summary>
+      {session.summary.model === null && !archived && (
+        <p className="needs-model" role="status">
+          This session has no model yet. Pick one with the model selector under the message box (or set a default under
+          Settings → Models);
+          {session.status === "needs_model"
+            ? " your messages are waiting and run as soon as it has one."
+            : " messages you send wait until then."}
+        </p>
+      )}
+
+      {session.queue.length > 0 && <QueueView queue={session.queue} onChange={onChangeQueued} />}
+
+      {drawer && (
+        <section
+          id={drawerId}
+          className="session-drawer"
+          aria-label={drawer === "context" ? "Context and outputs" : "Session options"}
+        >
+          <button
+            type="button"
+            className="ghost icon-only session-drawer-close"
+            onClick={() => setDrawer(null)}
+            aria-label="Close"
+            title="Close"
+          >
+            <X aria-hidden="true" />
+          </button>
+          {drawer === "context" ? (
             <div className="session-sections">
               <section className="context-window-section">
                 <h3>Context window</h3>
@@ -111,6 +207,8 @@ export function SessionPanel({ session, icons, onSend, onRespond, onAnswer, onSe
                   <dd>{formatCount(sum.completion)}</dd>
                   <dt>Model calls</dt>
                   <dd>{session.calls.length}</dd>
+                  <dt>Cost</dt>
+                  <dd>{formatCost(sum.costUsd)}</dd>
                 </dl>
               </section>
               <section>
@@ -128,22 +226,34 @@ export function SessionPanel({ session, icons, onSend, onRespond, onAnswer, onSe
                 )}
               </section>
             </div>
-          </details>
-        </div>
-      </header>
-
-      {session.plan && <PlanView plan={session.plan} />}
-
-      <div className="conversation" aria-live="polite">
-        {session.entries.map((entry, index) => (
-          <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} onAnswer={onAnswer} />
-        ))}
-        {session.busy && <p className="working">Working…</p>}
-        <div ref={end} />
-      </div>
+          ) : (
+            <div className="session-sections session-options">
+              <section>
+                <h3>Display</h3>
+                <label className="option-row">
+                  <Switch checked={rendered} onChange={setRendered} label="Render Markdown" />
+                  Render Markdown
+                </label>
+                <p className="muted" title={session.summary.project_dir}>
+                  {projectName(session.summary.project_dir)} · {session.summary.isolation}
+                </p>
+              </section>
+              <section>
+                <h3>Usage limits</h3>
+                <ResumeControls
+                  key={session.summary.session_id}
+                  policy={session.summary.resume_policy}
+                  onSave={onSetResumePolicy}
+                />
+              </section>
+            </div>
+          )}
+        </section>
+      )}
 
       <form
         className="composer"
+        hidden={archived}
         onSubmit={(event) => {
           event.preventDefault();
           send();
@@ -151,23 +261,135 @@ export function SessionPanel({ session, icons, onSend, onRespond, onAnswer, onSe
       >
         <textarea
           value={draft}
-          placeholder="Message the agent (Enter to send, Shift+Enter for a new line)"
+          aria-label="Message"
+          placeholder={composerHint(settings.sendKey === "enter", session.busy)}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (event.key !== "Enter") return;
+            const modified = event.ctrlKey || event.metaKey;
+            if (modified && event.shiftKey) {
+              event.preventDefault();
+              send("steer");
+              return;
+            }
+            const sends = settings.sendKey === "enter" ? !event.shiftKey && !modified : modified;
+            if (sends) {
               event.preventDefault();
               send();
             }
           }}
           rows={1}
         />
-        <button type="submit" className="send" disabled={!draft.trim()} aria-label="Send" title="Send (Enter)">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 19V5M5 12l7-7 7 7" />
-          </svg>
+        {session.busy && (
+          <button
+            type="button"
+            className="steer"
+            disabled={!draft.trim()}
+            onClick={() => send("steer")}
+            title="Add this message to the running turn; the agent reads it after its current step (Ctrl+Shift+Enter)"
+          >
+            <CornerDownRight aria-hidden="true" /> Steer
+          </button>
+        )}
+        <button
+          type="submit"
+          className="send"
+          disabled={!draft.trim()}
+          aria-label={session.busy ? "Queue" : "Send"}
+          title={session.busy ? "Queue for after this turn (Enter)" : "Send (Enter)"}
+        >
+          {session.busy ? <ListPlus aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}
         </button>
       </form>
+
+      <footer className="session-footer" aria-label="Session status">
+        <SessionModelSelect
+          key={session.summary.session_id}
+          current={session.summary.model}
+          busy={session.busy}
+          disabled={archived}
+          models={models}
+          local={localModels}
+          onSwitch={onSetModel}
+        />
+        <span className="session-footer-spacer" />
+        {sum.costUsd !== null && (
+          <span className="session-cost muted" title="Session cost">
+            {formatCost(sum.costUsd)}
+          </span>
+        )}
+        <button
+          type="button"
+          className="ghost icon-only footer-button"
+          onClick={() => toggle("options")}
+          aria-label="Session options"
+          aria-expanded={drawer === "options"}
+          aria-controls={drawer === "options" ? drawerId : undefined}
+          title={`Session options: Markdown and usage limits (when usage runs out: ${describePolicy(session.summary.resume_policy)})`}
+        >
+          <SlidersHorizontal aria-hidden="true" />
+        </button>
+        <ContextMeter
+          session={session}
+          promptTokens={sum.prompt}
+          open={drawer === "context"}
+          controls={drawer === "context" ? drawerId : undefined}
+          onToggle={() => toggle("context")}
+        />
+      </footer>
     </div>
+  );
+}
+
+/**
+ * How full the root agent's context was on its latest call, as a small bar and `12.3k / 32.8k`;
+ * pressing it opens the full breakdown.
+ */
+function ContextMeter({
+  session,
+  promptTokens,
+  open,
+  controls,
+  onToggle,
+}: {
+  session: SessionState;
+  promptTokens: number;
+  open: boolean;
+  controls?: string;
+  onToggle: () => void;
+}) {
+  const breakdown = session.breakdowns[ROOT];
+  const used = breakdown ? breakdownUsed(breakdown) : 0;
+  const limit = breakdown?.contextWindow ?? null;
+  const share = limit ? Math.min(used / limit, 1) : null;
+  const text = breakdown
+    ? limit
+      ? `${formatTokens(used)} / ${formatTokens(limit)}`
+      : `${formatTokens(used)} tokens`
+    : promptTokens > 0
+      ? `${formatTokens(promptTokens)} prompt tokens`
+      : "Context";
+  const level = share === null ? "" : share >= 0.9 ? " full" : share >= 0.7 ? " high" : "";
+  return (
+    <button
+      type="button"
+      className={`ghost context-meter${level}`}
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-controls={controls}
+      title={
+        breakdown
+          ? `Context: ${describeUse(breakdown)}${share !== null ? ` (${Math.round(share * 100)}%)` : ""}. Show the breakdown, totals, and outputs.`
+          : "Show the context breakdown, totals, and outputs"
+      }
+    >
+      {share !== null && (
+        <span className="context-meter-bar" aria-hidden="true">
+          <span style={{ width: `${Math.max(share * 100, 2)}%` }} />
+        </span>
+      )}
+      <span className="context-meter-text">{text}</span>
+    </button>
   );
 }
 
@@ -244,6 +466,13 @@ function EntryView({
   switch (entry.kind) {
     case "user":
       return <div className="message user prose">{entry.text}</div>;
+    case "steer":
+      return (
+        <div className="message user steer prose" title="Steering: joined the running turn">
+          <span className="steer-label">Steering</span>
+          {entry.text}
+        </div>
+      );
     case "assistant":
       return (
         <div className="message assistant prose">
@@ -254,7 +483,10 @@ function EntryView({
       return (
         <details className={`tool ${entry.ok === false ? "failed" : ""}`}>
           <summary>
-            <span className="tool-state">{entry.ok === null ? "…" : entry.ok ? "✓" : "✗"}</span> {entry.summary}
+            <span className="tool-state">
+              <ToolState ok={entry.ok} />
+            </span>{" "}
+            {entry.summary}
           </summary>
           {entry.output && <pre>{entry.output}</pre>}
         </details>
@@ -300,7 +532,63 @@ function EntryView({
       return <p className="error">Turn failed: {entry.message}</p>;
     case "notice":
       return <p className="notice">{entry.message}</p>;
+    case "suggestion":
+      return null;
   }
+}
+
+/** The composer's placeholder: what Enter does now, and how to steer while a turn runs. */
+function composerHint(enterSends: boolean, busy: boolean): string {
+  const key = enterSends ? "Enter" : "Ctrl+Enter";
+  const newline = enterSends ? "Shift+Enter" : "Enter";
+  return busy
+    ? `${key} queues for after this turn · Ctrl+Shift+Enter steers the running turn`
+    : `Message the agent (${key} to send, ${newline} for a new line)`;
+}
+
+/** Messages waiting for the agent, above the composer; each can be edited or removed until delivered. */
+function QueueView({ queue, onChange }: { queue: QueuedMessage[]; onChange: Props["onChangeQueued"] }) {
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  const save = () => {
+    if (!editing) return;
+    const text = editing.text.trim();
+    if (text) onChange(editing.id, text);
+    setEditing(null);
+  };
+  return (
+    <ol className="queue" aria-label="Queued messages">
+      {queue.map((message) => (
+        <li key={message.id} className={message.steer ? "steer" : undefined}>
+          <span className="queue-kind">{message.steer ? "Steering" : "Queued"}</span>
+          {editing?.id === message.id ? (
+            <input
+              aria-label="Edit queued message"
+              autoFocus
+              value={editing.text}
+              onChange={(event) => setEditing({ id: message.id, text: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") save();
+                if (event.key === "Escape") setEditing(null);
+              }}
+              onBlur={save}
+            />
+          ) : (
+            <span className="queue-text" title={message.text}>
+              {message.text}
+            </span>
+          )}
+          <span className="buttons">
+            {editing?.id !== message.id && (
+              <button onClick={() => setEditing({ id: message.id, text: message.text })}>Edit</button>
+            )}
+            <button className="danger" onClick={() => onChange(message.id, null)} aria-label="Remove queued message">
+              Remove
+            </button>
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
 }
 
 const RESUME_MODES: Record<ResumePolicy["mode"], string> = {
@@ -340,10 +628,7 @@ function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Prop
   const retries = draft.mode !== "stop";
 
   return (
-    <details className="usage-limits">
-      <summary>
-        Usage limits <span className="muted">· {describePolicy(policy)}</span>
-      </summary>
+    <div className="usage-limits">
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -352,16 +637,15 @@ function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Prop
           onSave(draft).finally(() => setSaving(false));
         }}
       >
-        <label>
+        <span className="usage-mode">
           When usage runs out:
-          <select value={draft.mode} onChange={(event) => set({ mode: event.target.value as ResumePolicy["mode"] })}>
-            {Object.entries(RESUME_MODES).map(([mode, label]) => (
-              <option key={mode} value={mode}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
+          <Select
+            aria-label="When usage runs out"
+            value={draft.mode}
+            onChange={(mode) => set({ mode: mode as ResumePolicy["mode"] })}
+            options={Object.entries(RESUME_MODES).map(([mode, label]) => ({ value: mode, label }))}
+          />
+        </span>
         {draft.mode === "at_time" && (
           <label>
             At
@@ -410,7 +694,7 @@ function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Prop
           </button>
         </span>
       </form>
-    </details>
+    </div>
   );
 }
 

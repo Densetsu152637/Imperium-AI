@@ -2,8 +2,10 @@
 import type { ContextCategory } from "./ContextCategory";
 import type { ContextItem } from "./ContextItem";
 import type { ContextPointer } from "./ContextPointer";
+import type { PauseCause } from "./PauseCause";
 import type { Plan } from "./Plan";
 import type { Question } from "./Question";
+import type { QueuedMessage } from "./QueuedMessage";
 import type { SessionStatus } from "./SessionStatus";
 import type { TokenCountMethod } from "./TokenCountMethod";
 import type { TokenUsage } from "./TokenUsage";
@@ -12,6 +14,11 @@ import type { TokenUsage } from "./TokenUsage";
  * Something that happened in a session, in order.
  */
 export type SessionEvent = { "type": "turn_started", text: string, } | { "type": "text_delta", text: string, } | { "type": "tool_started", call_id: string, tool: string, summary: string, } | { "type": "permission_requested", request_id: number, tool: string, summary: string, } | { "type": "tool_finished", call_id: string, ok: boolean, output: string, } | { "type": "model_call_completed", model: string, usage: TokenUsage, duration_ms: number, 
+/**
+ * Time the call waited for a slot on a local model before it started, which
+ * `duration_ms` leaves out; absent for hosted models.
+ */
+queue_wait_ms: number | null, 
 /**
  * Time to the first streamed text; absent when the call produced no text.
  */
@@ -41,7 +48,11 @@ cached_tokens: number, } | { "type": "plan_updated", plan: Plan, } | { "type": "
 /**
  * The subagent's final reply, truncated for display.
  */
-report: string, usage: TokenUsage, cost_usd: number | null, } | { "type": "turn_completed", usage: TokenUsage, 
+report: string, usage: TokenUsage, cost_usd: number | null, } | { "type": "task_resumed", task_id: string, 
+/**
+ * The follow-up message.
+ */
+text: string, model: string, } | { "type": "turn_completed", usage: TokenUsage, 
 /**
  * Absent when the model has no configured prices.
  */
@@ -49,4 +60,67 @@ cost_usd: number | null,
 /**
  * Model calls made in this turn.
  */
-steps: number, } | { "type": "turn_failed", message: string, } | { "type": "notice", message: string, } | { "type": "memory_used", names: Array<string>, } | { "type": "memory_saved", name: string, scope: string, } | { "type": "context_manifest", role: string, items: Array<ContextItem>, documentation: Array<ContextPointer>, } | { "type": "context_loaded", references: Array<string>, } | { "type": "browser_view", url: string, title: string, screenshot: string, } | { "type": "paused", until_unix_ms: number, reason: string, } | { "type": "resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "questions_asked", request_id: number, questions: Array<Question>, } | { "type": "questions_answered", request_id: number, };
+steps: number, } | { "type": "turn_failed", message: string, } | { "type": "notice", message: string, } | { "type": "memory_used", names: Array<string>, } | { "type": "memory_saved", name: string, scope: string, } | { "type": "context_manifest", role: string, items: Array<ContextItem>, documentation: Array<ContextPointer>, } | { "type": "context_loaded", references: Array<string>, } | { "type": "browser_view", url: string, title: string, screenshot: string, } | { "type": "paused", until_unix_ms: number, reason: string, 
+/**
+ * Why it waits; older journals have no cause and mean a usage limit.
+ */
+cause: PauseCause, } | { "type": "resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "context_compacted", 
+/**
+ * The model whose window the conversation was fitted to.
+ */
+model: string, 
+/**
+ * The conversation's size for `model` before and after, counted by `method`.
+ */
+before_tokens: number, after_tokens: number, 
+/**
+ * Messages replaced by the summary.
+ */
+summarised_messages: number, 
+/**
+ * The tokens the conversation may use: the window less room for the reply.
+ */
+budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, } | { "type": "model_suggestion", 
+/**
+ * Names the suggestion in `session.suggestion_respond` and `model_suggestion_update`.
+ */
+id: string, 
+/**
+ * `local` (a general local model), `vision`, `tools`, `code`, or `context`.
+ */
+need: string, 
+/**
+ * The Hugging Face repository, `owner/name`.
+ */
+repo: string, 
+/**
+ * The GGUF quantisation chosen to fit this machine.
+ */
+quant: string, 
+/**
+ * What the session can switch to once it is downloaded, such as `llamacpp:Qwen3-4B-Q4_K_M`.
+ */
+model: string, 
+/**
+ * The download's size, a vision projector included.
+ */
+size_bytes: number, 
+/**
+ * How it would load here: `gpu`, `partial` (split with system memory), or `cpu`.
+ */
+fit: "gpu" | "partial" | "cpu", 
+/**
+ * Why it is suggested, in words for the user.
+ */
+reason: string, 
+/**
+ * The multimodal projector is downloaded too.
+ */
+mmproj: boolean, } | { "type": "model_suggestion_update", id: string, 
+/**
+ * `downloading` (with `job_id`; follow `models.download_progress`), `ready` (with
+ * `model`; switch with `session.control` `set_model`), `failed` or `cancelled` (with
+ * `message`), `dismissed` (not now), or `disabled` (don't ask again: suggestions are
+ * off).
+ */
+state: "downloading" | "ready" | "failed" | "cancelled" | "dismissed" | "disabled", job_id: string | null, model: string | null, message: string | null, } | { "type": "questions_asked", request_id: number, questions: Array<Question>, } | { "type": "questions_answered", request_id: number, };

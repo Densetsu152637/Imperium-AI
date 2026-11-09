@@ -95,6 +95,51 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "D:/Notes"]
 trusted_projects = ["D:/Git Repositories/Imperium-AI"]
 ```
 
+A stdio server's tokens go in `secret_env`, environment variables read from the keychain when
+the server starts, so the config file never holds them:
+`secret_env = { SLACK_BOT_TOKEN = { secret = "mcp.slack.bot-token" } }`. A server may also
+record `catalog = "<id>"`, the connector it was added from, and `enabled = false` keeps it
+configured without starting it. Plugins found in the plugin folders can be turned off by name
+with `extensions.disabled_plugins`.
+
+### Connectors: managing MCP servers from the app (implemented)
+
+The desktop app's **Connectors** window (title bar, or Settings → Connectors) lists installed
+MCP servers, plugins, and skills, and offers a directory of popular servers to add. It works
+through these daemon methods, which write `[mcp.servers.<name>]` in the user config with
+`toml_edit` the way `config.set` does: comments, formatting, and unknown keys are kept, the
+whole configuration is validated after the edit, and a change that would make it invalid is
+undone. Server names are 1–40 lowercase letters, digits, `_` or `-`.
+
+| Method | Does |
+|---|---|
+| `mcp.list` | The servers in the user config with their last known status (`untested`, `connected` with the tool names, `error` with the reason, or `disabled`) and any secrets missing from the keychain; the plugins in `<config>/plugins` and `extensions.plugin_dirs` (with skill, command, hook, and server counts and whether each is enabled); and the user's and plugins' skills. |
+| `mcp.catalog` | The connector directory. |
+| `mcp.install` | Adds a directory entry under a name, filling its settings from the form's values. |
+| `mcp.save` | Adds or replaces a server from its full settings (custom servers and *Configure*). |
+| `mcp.set_enabled` | Turns a server on or off (`enabled = false`). |
+| `mcp.remove` | Removes a server; optionally deletes the secrets it referred to. |
+| `mcp.test` | Starts the server as a session would, lists its tools, and stops it; the result is what `mcp.list` shows until the next test. |
+
+Secret values (tokens, keys, connection strings with passwords) are sent once with
+`mcp.install` or `mcp.save`, stored in the keychain (named `mcp.<server>.<field>`), and written
+to the config only as `{ secret = "<name>" }`; no method returns them. New sessions start the
+servers as saved, without restarting the daemon; running sessions keep the servers they
+started with. Turning a plugin on or off goes through `config.set` and applies after a restart.
+
+The directory is data, not code: `crates/imperium-core/catalog/connectors.json` is built in, and
+`<config>/connectors.json` (same shape, `{ "entries": [...] }`) adds entries or replaces
+built-in ones with the same `id`. An entry has a name, description, category, publisher,
+homepage, a [Lucide](https://lucide.dev) icon name, and either a `command` with `args` and
+`env` or a `url` with `headers` and `bearer`, plus the `fields` the user fills in (`text`,
+`path`, `path_list`, `url`, or `secret`, each optionally required, with a placeholder and a
+default). `{{field}}` in an argument, an `env` or header value, or the URL is replaced by the
+field's value; an argument that is exactly `{{field}}` of a `path_list` becomes one argument
+per line, and an optional field left empty drops its argument or variable. A `secret` field
+may only fill a whole `env` value (it becomes `secret_env`) or `bearer`. The built-in
+directory has Filesystem, Git, GitHub (hosted), Fetch, Memory, PostgreSQL, SQLite, Slack,
+Brave Search, Playwright, Notion, Context7, Sequential Thinking, and Time.
+
 Planned:
 
 - Client support for stdio and streamable-HTTP MCP servers, including tools, resources,
@@ -119,6 +164,15 @@ Decisions are logged in the session journal.
 
 The UI always shows the active tier for each session and agent.
 
+**Multi-folder sandbox (implemented):** a session's workspace is its
+[environment's](14-projects-and-automation.md#environments-implemented) folders, not one
+project folder. The first folder is the working directory: relative paths resolve there and
+`run_command` starts there. The file tools accept an absolute path inside any of the folders and
+refuse anything outside all of them (after resolving `..` and symbolic links), and the agent's
+system prompt lists the further folders. The OS tier makes every folder writable (one
+`--bind` per folder for bubblewrap, one `subpath` per folder for Seatbelt); the container tier
+mounts the first folder at `/workspace` and the others at `/folders/2`, `/folders/3`, … in order.
+
 **Implemented (phase 7):** `isolation.tier` chooses where `run_command` (and auto-fix and
 scheduled sessions' commands) run, and each session reports its tier (`session.list`,
 `session.create`, and the session header). `policy` is tier 0. `os` runs commands under
@@ -132,6 +186,37 @@ and `--network none` without network. `isolation.network` (default `true`) appli
 The file tools stay tier 0 (they run in the daemon, confined to the workspace). Not yet: policy
 forcing tiers per model or agent, GPU flags for containers, Windows AppContainer, and a default
 dev image.
+
+### Environment runtimes (implemented)
+
+An [environment's runtime](14-projects-and-automation.md#runtimes-implemented) can move a
+session's tools off this machine. With a remote runtime the workspace's folders are POSIX paths
+inside it, and every file and command tool is a short `sh -c` script run through the runtime's
+own client, so the runtime needs nothing but a POSIX shell:
+
+- **Docker container** (`docker` with `container`): `docker exec -i -w <folder> <container> sh -c …`.
+- **WSL** (`wsl` with `distro`, Windows only): `wsl.exe -d <distro> --cd <folder> --exec sh -c …`
+  (`--exec` hands the script to `sh` as one argument; after a plain `--`, wsl.exe would join the
+  arguments for the login shell). Windows paths given as folders or to tools (`C:\work\app`,
+  `\\wsl$\<distro>\…`) are translated (`/mnt/c/work/app`).
+- **SSH** (`ssh` with `host`): `ssh -o BatchMode=yes -T [-p port] <host> "sh -c 'cd <folder> && …'"`
+  with the system client, so `~/.ssh/config` aliases, keys, and agents apply and no password is
+  ever asked for. `user@host:port` is split into the destination and `-p`.
+
+`read_file` runs `cat`, `write_file` runs `mkdir -p` and `cat >` with the content on standard
+input (so any bytes survive), `edit_file` reads and writes the same way, and `list_dir` runs
+`ls -1Ap`. Paths are resolved against the working directory and checked against the folders as
+written (after resolving `.` and `..`); links inside the runtime are not followed from here.
+`run_command` reports the exit code, output, and errors as on this machine, and the session's
+isolation reads `runtime · ssh <host>` (or the container or distribution). A Docker **image**
+without a container is the container tier above with the environment's local folders mounted
+(network on). The permission prompts and approvals are unchanged; hooks still run on this
+machine (in its temporary folder).
+
+**Worktrees:** a session can be started on git worktrees of its environment's repositories so
+its edits stay apart from the user's checkout; see
+[worktrees](14-projects-and-automation.md#worktrees). The sandbox is then the worktrees (and
+any folders outside git).
 
 | Tier            | Boundary                                                                     | Protects against                                    | Does not protect against                           |
 | --------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |
@@ -156,13 +241,13 @@ keep-alives) until Ctrl+C. The forwarded endpoint, with the remote daemon's per-
 is recorded in `<data>/remotes/<name>.json` (readable only by the user on Unix) and removed on
 disconnect; `imperium --remote <name> <command>` talks to the remote daemon, which owns the
 host's files, processes, models, and GPUs (its own `models.folders`, runtimes, and isolation
-apply). Not yet: installing `imperiumd` on the host, Unix-socket binding, `~/.ssh/config`
+apply). Not yet: installing `imperium-core` on the host, Unix-socket binding, `~/.ssh/config`
 discovery in the app, choosing a remote in the desktop app (its connection form accepts the
 recorded URL and token), and cross-host routing.
 
 - Hosts are configured from `~/.ssh/config` entries or added manually; keys stay in the user's
   SSH agent. Imperium never stores SSH passwords.
-- On first connect, Imperium installs or updates a matching `imperiumd` on the host (with
+- On first connect, Imperium installs or updates a matching `imperium-core` on the host (with
   consent), starts it bound to a Unix socket, and forwards that socket.
 - The remote daemon owns the remote files, processes, models, and GPUs. The local router can
   still send remote subagents to hosted endpoints or to local-machine models when the user

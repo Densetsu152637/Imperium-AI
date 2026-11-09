@@ -1,5 +1,7 @@
 // Requests from unattended work (schedules, auto-fix) waiting for the user's yes or no.
 
+import { Check, X } from "lucide-react";
+
 import type { ApprovalInfo } from "@imperium/protocol";
 
 export function ApprovalsPanel({
@@ -21,9 +23,11 @@ export function ApprovalsPanel({
           </p>
           <div className="approval-actions">
             <button className="primary" onClick={() => onRespond(approval.id, true)}>
-              Approve
+              <Check aria-hidden="true" /> Approve
             </button>
-            <button onClick={() => onRespond(approval.id, false)}>Decline</button>
+            <button onClick={() => onRespond(approval.id, false)}>
+              <X aria-hidden="true" /> Decline
+            </button>
           </div>
         </li>
       ))}
