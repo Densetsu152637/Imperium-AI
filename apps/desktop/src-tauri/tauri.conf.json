@@ -5,9 +5,9 @@
   "mainBinaryName": "imperium-desktop",
   "identifier": "io.github.densetsu152637.imperium",
   "build": {
-    "beforeDevCommand": "pnpm -w -r --filter \"./mods/**\" --if-present run build && pnpm dev",
+    "beforeDevCommand": "pnpm -w run build:mods && pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm -w -r --filter \"./mods/**\" --if-present run build && pnpm build",
+    "beforeBuildCommand": "pnpm -w run build:mods && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src imperium-mod: http://imperium-mod.localhost https://imperium-mod.localhost"
     }
   },
   "bundle": {
@@ -40,7 +40,7 @@
     "resources": {
       "../../../policy/": "policy/",
       "../../../pets/": "pets/",
-      "../../../mods/": "mods/"
+      "mods/": "mods/"
     },
     "windows": {
       "nsis": {

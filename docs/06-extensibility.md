@@ -95,7 +95,11 @@ export default defineMod({
 `contributes.panels` with `id` and `title`) are listed by the daemon's `mods.list` and shown as
 panels in the right-hand column. Each panel runs in its own frame with `sandbox="allow-scripts"`
 and no same-origin access, so the mod cannot reach the app window, the daemon token, or other
-mods. `@imperium/mod-sdk` (`packages/mod-sdk`) provides `defineMod` and the context types;
+mods. In the desktop app the frame loads a page from the app's `imperium-mod` protocol, which
+carries a content security policy of its own (inline scripts and `data:` modules, nothing from
+the network), and receives its document from the app; the app's own policy allows no inline
+scripts and would block a `srcdoc` frame. The installers build bundled mods first and ship only
+their manifest, entry and notices. `@imperium/mod-sdk` (`packages/mod-sdk`) provides `defineMod` and the context types;
 inside the frame the bare import resolves through an import map, so both bundled and unbundled
 mods work. The context offers `telemetry.subscribe("call.completed", ...)` (permission
 `telemetry:read`), `sessions.subscribe(...)` (raw session events, `sessions:read`), and

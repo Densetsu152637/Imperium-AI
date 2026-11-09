@@ -1,14 +1,19 @@
 // Runs one UI mod panel in a sandboxed frame. The frame has an opaque origin (no
 // allow-same-origin), so the mod cannot reach this window, the daemon token, or other mods;
 // it receives only the events its permissions allow, through postMessage, and asks for the rest
-// with request/response messages that this file checks against those permissions.
+// with request/response messages that this file checks against those permissions. In the desktop
+// app the frame loads a page from the `imperium-mod` protocol (src-tauri/src/mod_frames.rs) and
+// is handed its document once that page says it is ready, since the app's content security
+// policy would block a `srcdoc` frame's scripts; in a plain browser it uses `srcdoc`.
 
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef } from "react";
 
 import type { PetPackage, SessionSnapshot } from "@imperium/mod-sdk";
 import type { ModInfo, PetListResult, PetStripResult, SessionEventParams } from "@imperium/protocol";
 
 import type { DaemonClient } from "../daemon/client";
+import { insideTauri } from "../daemon/connection";
 import { getDoc, setDoc } from "../store";
 
 type Listener = (params: SessionEventParams) => void;
@@ -207,6 +212,9 @@ async function petList(client: DaemonClient): Promise<PetPackage[]> {
   }));
 }
 
+/** The page frames load in the desktop app, or null to use `srcdoc`. */
+const framePage = (): string | null => (insideTauri() ? convertFileSrc("frame.html", "imperium-mod") : null);
+
 /** What the app shows of itself to mods; the frame reads it through requests and pushes. */
 export type ModHost = { sessions: SessionSnapshot[]; selected: string | null; client: DaemonClient | null };
 
@@ -215,6 +223,20 @@ export function ModFrame({ mod, panelId, bus, host }: { mod: ModInfo; panelId: s
   const document = useMemo(() => frameDocument(mod, panelId), [mod, panelId]);
   const latest = useRef(host);
   latest.current = host;
+  const page = useMemo(framePage, []);
+
+  // Hands the frame page its document when it says it is ready (desktop app only).
+  useEffect(() => {
+    if (!page) return;
+    const onMessage = (message: MessageEvent) => {
+      const target = frame.current?.contentWindow;
+      if (!target || message.source !== target || message.origin !== "null") return;
+      if ((message.data as { kind?: unknown } | null)?.kind !== "imperium.frame-ready") return;
+      target.postMessage({ kind: "imperium.frame", html: document }, "*");
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [page, document]);
 
   // Requests from the frame. Only its own window is believed, and only for what it was granted.
   useEffect(() => {
@@ -307,7 +329,10 @@ export function ModFrame({ mod, panelId, bus, host }: { mod: ModInfo; panelId: s
       ref={frame}
       className="mod-frame"
       sandbox="allow-scripts"
-      srcDoc={document}
+      // A new document reloads the page, which asks for it again.
+      key={page ? document : undefined}
+      src={page ?? undefined}
+      srcDoc={page ? undefined : document}
       title={`${mod.name}: ${panelId}`}
     />
   );
