@@ -78,7 +78,7 @@ read again, so such a save never brings an old value back.
 | `models.add_endpoint` `{id, base_url, api_key?, model?, make_default}` | — | Writes `[endpoints.<id>]` with the key as a keychain reference (`<id>-api-key`), optionally making `<id>:<model>` the default |
 | `runtime.status` | `imperium runtime status` | See [runtime readiness](#runtime-readiness) |
 | `runtime.set_server` `{path}` | `imperium runtime use [<path>]` | Sets (or with null clears) `runtime.llamacpp.custom_path`; models loaded from then on use it |
-| `runtime.install` | `imperium runtime install` | Installs the runtime pack for this machine in the background with `runtime.install_progress` notifications; new loads use it unless a custom server is set |
+| `runtime.install` | `imperium runtime install` | Installs llama.cpp's own build for this machine from its GitHub release in the background with `runtime.install_progress` notifications, falling back to the next build when one does not run ([runtimes](#runtimes)); new loads use it unless a custom server is set |
 
 `models.default`, `models.folders`, and `runtime.llamacpp.custom_path` set with `config.set`
 (Settings) apply at once in the same way.
@@ -206,11 +206,42 @@ desktop shows a card ([07](07-desktop-ui.md)); `imperium chat` prints the sugges
 
 ## Runtimes
 
-**Implemented (phase 4):** `imperium runtime install [--pack <id>]` downloads the pack for
-this machine (or `runtime.llamacpp.backend`) from the `runtime-llama.cpp-<ref>` release,
-checks it against the release's `SHA256SUMS`, and unpacks it under
-`<data>/runtimes/llama.cpp/<ref>/`. `runtime.llamacpp.custom_path` points at your own
-`llama-server` instead. The daemon starts one `llama-server` per loaded model on a free
+**Implemented:** `imperium runtime install [--pack <id>]` (and `runtime.install`, *Install
+llama.cpp* in the app) installs llama.cpp's own release build from
+[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases) at the ref pinned in
+`runtimes/llama-cpp.env`:
+
+- **Which build.** For `runtime.llamacpp.backend = "auto"` the builds are tried best first: on
+  an NVIDIA GPU CUDA 13 (driver 580 or newer), then CUDA 12 (driver 525 or newer, x64), then
+  Vulkan, then the CPU build; Metal on Apple Silicon; the CPU build elsewhere. A configured
+  backend (or `--pack windows-x64-vulkan`) installs only that build. Builds are named
+  `<os>-<arch>-<backend>` and matched to the release's assets, such as
+  `llama-<ref>-bin-win-cuda-13.5-x64.zip`; a CUDA build also gets its CUDA runtime libraries
+  (`cudart-llama-bin-win-cuda-13.5-x64.zip`), unpacked beside `llama-server`.
+- **Download and verification.** The release is read from the GitHub API, and each asset is
+  downloaded through its API URL with `Accept: application/octet-stream` (the
+  `github.com/.../releases/download` links have returned 504 for hours at a time). Every asset
+  is checked against the SHA-256 `digest` GitHub publishes for it; an asset without one, or
+  with a different hash, is refused and nothing is replaced.
+- **Fallback.** After unpacking, the build is checked as in [runtime readiness](#runtime-readiness).
+  A build that does not start is removed and the next one tried; one that starts but does not
+  see the GPU is kept only if no later build does better. A failed download stops the install.
+- **Where.** `<data>/runtimes/llama.cpp/<ref>/imperium-runtime-llama.cpp-<build>/bin/`, with an
+  `imperium-runtime.json` recording the assets and digests. The first installed build of the
+  list above is used.
+
+**Which `llama-server` is used**, in order: `runtime.llamacpp.custom_path`; an installed build;
+otherwise, while `runtime.llamacpp.find_existing` is on (the default), a `llama-server` already
+on this machine (on `PATH`, or in `~/.unsloth/llama.cpp` and `~/llama.cpp` build folders) that
+starts and whose `--help` lists every flag Imperium passes (`--kv-unified-per-slot`,
+`--no-cache-idle-slots`, ...), preferring one that sees the GPU. The daemon looks for one in the
+background when it starts and whenever the server is changed; `runtime.status` reports it as
+source `detected` and the app says so on the runtime card. Installing a build replaces it.
+Only when none is found does a load fail, with *No llama.cpp runtime yet — open Local models →
+Runtime to install one or choose an existing llama-server (or run `imperium runtime install`)*,
+and the session model selector warns before a llama.cpp model is chosen.
+
+The daemon starts one `llama-server` per loaded model on a free
 loopback port with `--parallel` slots over one shared KV pool, waits for `/health`, logs its output to
 `<data>/logs/llama-<id>.log`, and stops it when it has been idle for `idle_unload_s` or the
 daemon exits. vLLM is later work.
@@ -223,20 +254,22 @@ the server runs, its version, the devices it sees (`CUDA0: NVIDIA GeForce RTX 50
 it sees a GPU, a one-line summary, and, when something is wrong, the problem in words with what
 to do:
 
-- no file at the path: install the runtime pack that suits this machine, or choose your own;
+- no file at the path: *No llama.cpp runtime yet*; install llama.cpp's build for this machine,
+  or choose your own;
 - it cannot start because a library is missing (Windows `STATUS_DLL_NOT_FOUND`, or "error while
   loading shared libraries"): for a CUDA build, the CUDA runtime is missing;
 - it runs but lists no GPU on a machine with one: for a CUDA build (a `ggml-cuda` library beside
   it), *llama-server can't see your GPU — the CUDA runtime is missing or the NVIDIA driver is too
-  old*; otherwise it is a CPU-only build and the GPU pack is suggested;
+  old*; otherwise it is a CPU-only build and the GPU build is suggested;
 - an old build without `--list-devices` runs, and whether it uses the GPU shows once a model
   loads.
 
 It also lists `llama-server` executables already on the machine (on `PATH`, and in
 `~/.unsloth/llama.cpp` and `~/llama.cpp` build folders) so one can be picked with
-`runtime.set_server`. Choosing a server or installing a pack changes the executable for models
-loaded from then on, without a restart; a model already loaded keeps its server until it
-unloads.
+`runtime.set_server`. Choosing a server or installing a build changes the executable for models
+loaded from then on, without a restart (a build installed by the CLI while the daemon runs is
+picked up at the next `runtime.status`, which the CLI asks for); a model already loaded keeps
+its server until it unloads.
 
 ### When models load
 
@@ -587,9 +620,10 @@ fits (GPU and RAM, or GPU only), the server's arguments, and checks its executab
 process launcher looks up by the backend's id. Adding a runtime means implementing the trait
 and passing it to `Supervisor::with_backends`.
 
-- **llama.cpp:** runtime packs per backend (CPU, CUDA, Vulkan, ROCm, Metal) are built by CI
-  ([11](11-ci-cd.md#runtime-packs)) and downloaded on demand, verified by SHA-256. Users can
-  point at their own `llama-server` build instead.
+- **llama.cpp:** llama.cpp's own release builds per backend (CPU, CUDA 12/13, Vulkan, ROCm,
+  Metal) are downloaded on demand and verified by SHA-256 ([runtimes](#runtimes)). Users can
+  point at their own `llama-server` build instead, and one already on the machine is used
+  while none is installed.
 - **vLLM:** installed into a managed `uv` environment on Linux/WSL2, or run from the official
   Docker image, or used on a remote host. Imperium never bundles vLLM.
 - Each loaded model is a supervised process with a port, health check, idle timeout, and

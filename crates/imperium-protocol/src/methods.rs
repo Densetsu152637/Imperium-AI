@@ -881,7 +881,8 @@ pub struct GpuInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RuntimeInfo {
-    /// The runtime pack in use, such as `windows-x64-cuda13`, or `custom`.
+    /// The llama.cpp build in use, such as `windows-x64-cuda13`; `custom` for your own
+    /// `llama-server`, `detected` for one found on this machine.
     pub pack: String,
     pub server_path: String,
     pub installed: bool,
@@ -1060,12 +1061,14 @@ pub struct RuntimeSetServerParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RuntimeStatusResult {
-    /// `custom` (your own `llama-server`) or `pack` (a runtime pack).
-    #[ts(type = "\"custom\" | \"pack\"")]
+    /// `custom` (your own `llama-server`), `pack` (llama.cpp's build installed by
+    /// `runtime.install`, or the one it would install when `installed` is false), or
+    /// `detected` (a `llama-server` found on this machine, used while none is installed).
+    #[ts(type = "\"custom\" | \"pack\" | \"detected\"")]
     pub source: String,
-    /// The pack used when `source` is `pack`, such as `windows-x64-cuda13`.
+    /// The installed build when `source` is `pack`, such as `windows-x64-cuda13`.
     pub pack: String,
-    /// The pack that suits this machine, which `runtime.install` installs.
+    /// The build that suits this machine best, which `runtime.install` tries first.
     pub suggested_pack: String,
     pub server_path: String,
     /// The `llama-server` file exists.
@@ -1098,9 +1101,10 @@ pub struct RuntimeDevice {
     pub gpu: bool,
 }
 
-/// `runtime.install`: downloads and installs the runtime pack that suits this machine in the
-/// background, verified against the release's checksums, reporting
-/// `runtime.install_progress`. Once done, new model loads use it (unless a custom
+/// `runtime.install`: downloads and installs llama.cpp's own build for this machine from its
+/// GitHub release in the background, verified against the release's SHA-256 digests and
+/// falling back to the next build (CUDA 13, CUDA 12, Vulkan, CPU) when one does not run here,
+/// reporting `runtime.install_progress`. Once done, new model loads use it (unless a custom
 /// `llama-server` is set).
 #[derive(Debug)]
 pub struct RuntimeInstall;
@@ -1118,6 +1122,7 @@ pub struct RuntimeInstallParams {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RuntimeInstallJob {
+    /// The build being installed; it changes when one does not run here and the next is tried.
     pub pack: String,
     #[ts(type = "\"running\" | \"done\" | \"failed\"")]
     pub state: String,

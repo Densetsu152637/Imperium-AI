@@ -113,6 +113,7 @@ fn settings(cache_ram_mb: u64) -> LlamaCppSettings {
     LlamaCppSettings {
         backend: "auto".into(),
         custom_path: None,
+        find_existing: true,
         idle_unload_s: 900,
         context: 4096,
         parallel: 2,

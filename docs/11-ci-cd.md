@@ -12,7 +12,7 @@ updates.
 | `build.yml`         | Called by release workflows only                     | Builds desktop bundles and CLI archives       |
 | `release.yml`       | Tags `v*` (for example `v0.4.0`, `v0.5.0-beta.1`)    | Main-channel GitHub Release                   |
 | `experimental.yml`  | Pushes to `experimental`, manual run on it           | Experimental-channel GitHub pre-release       |
-| `runtime-packs.yml` | Changes to `runtimes/`, manual                       | llama.cpp runtime packs per hardware backend  |
+| `runtime-packs.yml` | Changes to `runtimes/`, manual                       | Self-built llama.cpp packs (unused by the app; see [runtime packs](#runtime-packs)) |
 
 ### Checks (`ci.yml`)
 
@@ -117,10 +117,19 @@ Losing the key means installed apps can no longer update, so keep a copy outside
 
 ## Runtime packs
 
-Desktop bundles do not include inference runtimes. `runtime-packs.yml` builds `llama-server`
-and its libraries from the llama.cpp ref pinned in `runtimes/llama-cpp.env`, one pack per
-platform and backend, and publishes them to a `runtime-llama.cpp-<ref>` release. The daemon
-downloads the right pack on demand and verifies its checksum.
+Desktop bundles do not include inference runtimes. The app installs llama.cpp's own release
+build for the ref pinned in `runtimes/llama-cpp.env` from
+[ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases), verified against the
+SHA-256 digests GitHub publishes for each asset
+([04](04-models-and-routing.md#runtimes)); raising `LLAMA_CPP_REF` is all a llama.cpp update
+needs on the release side, once the new ref's builds are checked locally.
+
+`runtime-packs.yml` builds `llama-server` and its libraries from the same ref, one pack per
+platform and backend, and would publish them to a `runtime-llama.cpp-<ref>` release. **The app
+no longer downloads these packs**, and no run has published one yet: Windows CUDA fails because
+the CUDA 12.9 compiler rejects the runner's Visual Studio version (and `cudafe++` crashes), and
+the macOS packs fail to build. It is kept, unused, for building packs llama.cpp does not
+publish; fix it before relying on it.
 
 | Pack                | OS / arch       | Backend                         |
 | ------------------- | --------------- | ------------------------------- |

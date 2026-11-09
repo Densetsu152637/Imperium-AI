@@ -123,6 +123,48 @@ async fn run(server: &Path, arg: &str) -> Result<(Option<i32>, String), ProbeOut
     }
 }
 
+/// Probes `server` and explains the outcome against `hardware`.
+pub async fn check(server: &Path, hardware: &Hardware) -> RuntimeCheck {
+    let outcome = probe(server).await;
+    explain(
+        server,
+        &outcome,
+        hardware,
+        has_cuda_backend(server),
+        &hardware.suggested_pack(),
+    )
+}
+
+/// Flags Imperium starts `llama-server` with that older builds lack; a server found on the
+/// machine is only used when its `--help` lists them all.
+pub const REQUIRED_FLAGS: &[&str] = &[
+    "--kv-unified",
+    "--kv-unified-per-slot",
+    "--no-cache-idle-slots",
+    "--cache-ram",
+    "--jinja",
+    "--device",
+];
+
+/// The [`REQUIRED_FLAGS`] that `--help` output does not mention.
+pub fn missing_in_help(help: &str) -> Vec<&'static str> {
+    REQUIRED_FLAGS
+        .iter()
+        .copied()
+        .filter(|flag| {
+            !help
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .any(|word| word == *flag)
+        })
+        .collect()
+}
+
+/// The [`REQUIRED_FLAGS`] `server` lacks; `None` when `--help` could not be read.
+pub async fn missing_flags(server: &Path) -> Option<Vec<&'static str>> {
+    let (code, help) = run(server, "--help").await.ok()?;
+    (code == Some(0)).then(|| missing_in_help(&help))
+}
+
 /// The devices in `--list-devices` output: lines such as `  CUDA0: NVIDIA ... (16275 MiB, ...)`
 /// after `Available devices:`.
 pub fn parse_devices(text: &str) -> Vec<Device> {
@@ -193,8 +235,8 @@ pub fn explain(
         ProbeOutcome::NotFound => {
             // The path is shown beside the verdict; it is long, so it is not repeated here.
             return failed(format!(
-                "No llama-server is installed there yet. Install the {suggested_pack} runtime \
-                 pack, or choose a llama-server you already have."
+                "No llama.cpp runtime yet. Install one (llama.cpp's {suggested_pack} build), \
+                 or choose a llama-server you already have."
             ));
         }
         ProbeOutcome::SpawnFailed(error) => {
@@ -295,6 +337,13 @@ fn mentions_missing_library(text: &str) -> bool {
         || text.contains("was not found")
         || text.contains("cannot open shared object")
         || text.contains("library not loaded")
+}
+
+/// The user's home folder, where llama.cpp builds are often left.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
 }
 
 /// `llama-server` executables already on this machine: on `PATH`, and in the places llama.cpp
@@ -445,7 +494,21 @@ mod tests {
             missing
                 .problem
                 .unwrap()
-                .contains("windows-x64-cuda13 runtime pack")
+                .contains("No llama.cpp runtime yet")
+        );
+    }
+
+    #[test]
+    fn help_without_the_flags_imperium_uses_is_refused() {
+        let help = "-kvu,  --kv-unified, -no-kvu, --no-kv-unified\n\
+                    --kv-unified-per-slot N   context limit per slot\n\
+                    --cache-idle-slots, --no-cache-idle-slots\n\
+                    -cram, --cache-ram N\n--jinja\n-dev,  --device <dev1,dev2,..>\n";
+        assert!(missing_in_help(help).is_empty());
+        let old = "-kvu,  --kv-unified\n-cram, --cache-ram N\n--jinja\n-dev,  --device <dev>\n";
+        assert_eq!(
+            missing_in_help(old),
+            ["--kv-unified-per-slot", "--no-cache-idle-slots"]
         );
     }
 

@@ -409,17 +409,19 @@ enum WorkflowCommand {
 
 #[derive(Debug, Subcommand)]
 enum RuntimeCommand {
-    /// Download and verify the llama.cpp runtime pack for this machine.
+    /// Download llama.cpp's own build for this machine from its GitHub release, verified
+    /// against the release's SHA-256 digests; falls back to the next build (CUDA 13, CUDA 12,
+    /// Vulkan, CPU) when one does not run here.
     Install {
-        /// Pack to install, such as `windows-x64-vulkan`; defaults to the configured backend
-        /// (`runtime.llamacpp.backend`), or the one that suits this machine.
+        /// Build to install, such as `windows-x64-vulkan`; defaults to the configured backend
+        /// (`runtime.llamacpp.backend`), or the best that runs on this machine.
         #[arg(long)]
         pack: Option<String>,
     },
     /// Show whether llama-server runs and sees the GPU, and what to do when it does not.
     Status,
     /// Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back
-    /// to the runtime pack.
+    /// to the installed runtime.
     Use { path: Option<PathBuf> },
 }
 

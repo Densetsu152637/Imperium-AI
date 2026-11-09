@@ -14,10 +14,8 @@ use std::time::{Duration, Instant};
 use imperium_api::{LocalModels, LocalRequest};
 use imperium_config::{SetError, Settings};
 use imperium_local::hardware::{Hardware, probe};
-use imperium_local::runtime::{
-    RELEASES_URL, install_with_progress, llama_cpp_ref, pack_for, server_path,
-};
-use imperium_local::runtime_check::{self, find_existing, has_cuda_backend};
+use imperium_local::runtime::{GITHUB_API, install, llama_cpp_ref, pack_for, packs_for, resolve};
+use imperium_local::runtime_check::{self, find_existing, has_cuda_backend, home_dir};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
     LocalModelListResult, ModelAddEndpointParams, ModelAddEndpointResult, ModelFolderParams,
@@ -462,13 +460,6 @@ pub async fn test_model(
     Ok(result)
 }
 
-/// The user's home folder, where llama.cpp builds are often left.
-fn home() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-}
-
 /// The hardware the local runtime planned against, or a fresh probe when it is not running.
 async fn hardware(state: &DaemonState) -> Hardware {
     if let Some(local) = state.local_runtime() {
@@ -485,25 +476,39 @@ pub async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResult {
     let settings = state.settings();
     let llamacpp = &settings.runtime.llamacpp;
     let hardware = hardware(&state).await;
-    let pack = pack_for(&llamacpp.backend, &hardware);
-    let (source, server) = server_path(llamacpp, state.data_dir(), &hardware);
-    let outcome = runtime_check::probe(&server).await;
-    let check = runtime_check::explain(
-        &server,
-        &outcome,
-        &hardware,
-        has_cuda_backend(&server),
-        &pack,
-    );
-    let candidates = find_existing(home().as_deref())
+    let suggested = pack_for(&llamacpp.backend, &hardware);
+    let home = home_dir();
+    let resolved = resolve(llamacpp, state.data_dir(), &hardware, home.as_deref()).await;
+    // A runtime installed or found since the local runtime chose its server is used from now
+    // on, such as one `imperium runtime install` put in place.
+    if let Some(local) = state.local_runtime()
+        && local.server() != (resolved.label(), resolved.server.clone())
+    {
+        local.set_server(resolved.label(), resolved.server.clone());
+    }
+    let server = resolved.server.clone();
+    let check = match resolved.check {
+        Some(check) => check,
+        None => {
+            let outcome = runtime_check::probe(&server).await;
+            runtime_check::explain(
+                &server,
+                &outcome,
+                &hardware,
+                has_cuda_backend(&server),
+                &suggested,
+            )
+        }
+    };
+    let candidates = find_existing(home.as_deref())
         .into_iter()
         .filter(|candidate| candidate != &server)
         .map(|candidate| candidate.display().to_string())
         .collect();
     RuntimeStatusResult {
-        source: if source == "custom" { "custom" } else { "pack" }.into(),
-        pack: pack.clone(),
-        suggested_pack: pack,
+        source: resolved.source.into(),
+        pack: resolved.pack,
+        suggested_pack: suggested,
         server_path: server.display().to_string(),
         installed: server.is_file(),
         runs: check.runs,
@@ -628,11 +633,13 @@ fn update_install(state: &DaemonState, change: impl FnOnce(&mut RuntimeInstallJo
     state.announce(RUNTIME_INSTALL_PROGRESS, job);
 }
 
-/// `runtime.install`: starts installing the pack that suits this machine (or
-/// `runtime.llamacpp.backend`), unless an installation is running.
+/// `runtime.install`: starts installing llama.cpp's build for this machine (or for
+/// `runtime.llamacpp.backend`) from its GitHub release, falling back to the next build when one
+/// does not run here, unless an installation is running.
 pub async fn install_runtime(state: Arc<DaemonState>) -> Result<RuntimeInstallJob, ErrorObject> {
     let hardware = hardware(&state).await;
-    let pack = pack_for(&state.settings().runtime.llamacpp.backend, &hardware);
+    let packs = packs_for(&state.settings().runtime.llamacpp.backend, &hardware);
+    let pack = packs[0].clone();
     let job = {
         let mut slot = state
             .runtime_install
@@ -660,33 +667,45 @@ pub async fn install_runtime(state: Arc<DaemonState>) -> Result<RuntimeInstallJo
                 .checked_sub(PROGRESS_INTERVAL)
                 .unwrap_or_else(Instant::now),
         );
-        let progress = |done: u64, total: Option<u64>| {
+        let progress = |installing: &str, done: u64, total: u64| {
             let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
-            if last.elapsed() < PROGRESS_INTERVAL {
+            if last.elapsed() < PROGRESS_INTERVAL && done != 0 {
                 return;
             }
             *last = Instant::now();
             update_install(&state, |job| {
+                installing.clone_into(&mut job.pack);
                 job.done_bytes = done;
-                job.total_bytes = total.unwrap_or_default();
+                job.total_bytes = total;
             });
         };
-        let result = install_with_progress(
-            &reqwest::Client::new(),
-            RELEASES_URL,
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
+            .build()
+            .unwrap_or_default();
+        let result = install(
+            &http,
+            GITHUB_API,
             state.data_dir(),
-            &pack,
+            &packs,
+            &hardware,
             &progress,
         )
         .await;
         match result {
-            Ok(server) => {
-                tracing::info!(%pack, server = %server.display(), "runtime pack installed");
+            Ok(installed) => {
+                tracing::info!(
+                    pack = %installed.pack,
+                    server = %installed.server.display(),
+                    skipped = ?installed.skipped,
+                    "llama.cpp runtime installed"
+                );
                 apply_server(&state);
                 update_install(&state, |job| {
                     job.state = "done".into();
+                    job.pack.clone_from(&installed.pack);
                     job.done_bytes = job.total_bytes.max(job.done_bytes);
-                    job.message = Some(server.display().to_string());
+                    job.message = Some(installed.server.display().to_string());
                 });
             }
             Err(error) => {

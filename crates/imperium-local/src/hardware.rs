@@ -35,24 +35,39 @@ impl Hardware {
 
     /// The runtime pack that suits this machine, for `runtime.llamacpp.backend = "auto"`.
     pub fn suggested_pack(&self) -> String {
+        format!("{}-{}", platform(), self.backend_chain()[0])
+    }
+
+    /// The llama.cpp backends to try on this machine, best first, for
+    /// `runtime.llamacpp.backend = "auto"`: on an NVIDIA GPU the newest CUDA its driver
+    /// supports, then Vulkan (which needs no CUDA runtime), then the CPU; Metal on Apple Silicon.
+    pub fn backend_chain(&self) -> Vec<&'static str> {
         let platform = platform();
         if self.unified_memory {
-            return format!("{platform}-metal");
+            return vec!["metal", "cpu"];
         }
-        let nvidia = self.gpus.iter().find(|gpu| gpu.vendor == "nvidia");
-        match nvidia {
-            // CUDA 13 needs a 580-series or newer driver.
-            Some(gpu) if platform.ends_with("x64") => {
-                let major = gpu
-                    .driver
-                    .as_deref()
-                    .and_then(|driver| driver.split('.').next()?.parse::<u32>().ok())
-                    .unwrap_or(0);
-                let cuda = if major >= 580 { "cuda13" } else { "cuda12" };
-                format!("{platform}-{cuda}")
-            }
-            _ => format!("{platform}-cpu"),
+        if platform.starts_with("macos") {
+            return vec!["cpu"];
         }
+        let Some(gpu) = self.gpus.iter().find(|gpu| gpu.vendor == "nvidia") else {
+            return vec!["cpu"];
+        };
+        let major = gpu
+            .driver
+            .as_deref()
+            .and_then(|driver| driver.split('.').next()?.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        let mut chain = Vec::new();
+        // CUDA 13 needs a 580-series or newer driver, CUDA 12 a 525-series or newer one;
+        // llama.cpp publishes CUDA 12 builds for x64 only.
+        if major >= 580 {
+            chain.push("cuda13");
+        }
+        if major >= 525 && platform.ends_with("x64") {
+            chain.push("cuda12");
+        }
+        chain.extend(["vulkan", "cpu"]);
+        chain
     }
 }
 
@@ -192,5 +207,43 @@ mod tests {
         assert!(hardware.overridden);
         hardware.gpus.clear();
         assert!(hardware.suggested_pack().ends_with("-cpu"));
+    }
+
+    #[test]
+    fn the_backend_chain_falls_back_from_the_newest_cuda_to_the_cpu() {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let mut hardware = Hardware {
+            gpus: parse_nvidia_smi("GPU, 8000, 7000, 581.57"),
+            ram_total_bytes: 0,
+            ram_available_bytes: 0,
+            cpu_cores: 8,
+            unified_memory: false,
+            overridden: false,
+        };
+        let x64 = platform().ends_with("x64");
+        let expect = |chain: &[&'static str]| -> Vec<&'static str> {
+            chain
+                .iter()
+                .copied()
+                .filter(|backend| x64 || *backend != "cuda12")
+                .collect()
+        };
+        assert_eq!(
+            hardware.backend_chain(),
+            expect(&["cuda13", "cuda12", "vulkan", "cpu"])
+        );
+        hardware.gpus[0].driver = Some("552.22".into());
+        assert_eq!(
+            hardware.backend_chain(),
+            expect(&["cuda12", "vulkan", "cpu"])
+        );
+        hardware.gpus[0].driver = Some("470.10".into());
+        assert_eq!(hardware.backend_chain(), ["vulkan", "cpu"]);
+        hardware.gpus.clear();
+        assert_eq!(hardware.backend_chain(), ["cpu"]);
+        hardware.unified_memory = true;
+        assert_eq!(hardware.backend_chain(), ["metal", "cpu"]);
     }
 }

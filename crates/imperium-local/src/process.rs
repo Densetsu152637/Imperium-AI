@@ -234,16 +234,24 @@ fn free_port() -> Result<u16, String> {
         .map_err(|error| error.to_string())
 }
 
-/// Runtime packs keep shared libraries in `lib/` beside `bin/` (Windows finds DLLs in `bin/`).
+/// Shared libraries are found beside `llama-server` (llama.cpp's own release builds) or in
+/// `lib/` beside `bin/` (self-built packs); Windows finds DLLs beside the program by itself.
 pub(crate) fn library_path(command: &mut Command, server: &Path) {
-    let Some(lib) = server
-        .parent()
-        .and_then(Path::parent)
-        .map(|pack| pack.join("lib"))
-    else {
+    if cfg!(windows) {
+        return;
+    }
+    let Some(bin) = server.parent() else {
         return;
     };
-    if !lib.is_dir() {
+    let mut paths: Vec<std::path::PathBuf> = [
+        Some(bin.to_path_buf()),
+        bin.parent().map(|pack| pack.join("lib")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|dir| dir.is_dir())
+    .collect();
+    if paths.is_empty() {
         return;
     }
     let variable = if cfg!(target_os = "macos") {
@@ -251,7 +259,6 @@ pub(crate) fn library_path(command: &mut Command, server: &Path) {
     } else {
         "LD_LIBRARY_PATH"
     };
-    let mut paths = vec![lib];
     if let Some(existing) = std::env::var_os(variable) {
         paths.extend(std::env::split_paths(&existing));
     }

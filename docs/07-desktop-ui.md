@@ -444,13 +444,20 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   (*Stop scanning this folder*; nothing in it is deleted), the download folder when it is separate,
   and *Add folder*. *Rescan* scans again.
 - **Runtime.** A *llama.cpp runtime* card runs `runtime.status` when the panel opens: which
-  `llama-server` is used (yours or the runtime pack's), its version, the devices it sees, and a
+  `llama-server` is used (yours, the installed llama.cpp build, or one *Found on this computer*
+  that is used until a runtime is installed), its version, the devices it sees, and a
   verdict (*ready*, *check*, *not ready*) with the problem and what to do in words, such as
   *llama-server can't see your GPU — the CUDA runtime is missing or the NVIDIA driver is too old
   for this build*. `llama-server` executables found on this computer are offered with *Use this*;
-  *Choose llama-server…* opens the native file picker; *Install runtime pack* downloads the pack
-  that suits this machine with a progress bar (`runtime.install_progress`); *Use the runtime pack
-  instead* drops a custom server.
+  *Choose llama-server…* opens the native file picker; *Install llama.cpp <ref>* downloads
+  llama.cpp's build for this machine with a progress bar (`runtime.install_progress`), falling
+  back to the next build when one does not run; *Use the installed runtime instead* drops a
+  custom server. When the server in use changes, the model listing is read again.
+- **Choosing a local model without a runtime.** When no `llama-server` is there
+  (`models.local` reports the runtime not installed), choosing a llama.cpp model in a session's
+  model selector first says *No llama.cpp runtime yet — open Local models → Runtime to install
+  one or choose an existing llama-server*, with *Open Local models*, *Use anyway*, and a button
+  that keeps the current model.
 - **Models.** Each model row shows its id, its repository (`unsloth/Qwen3-8B-GGUF`), *vision*
   when a projector is paired, *default*, quantisation, size, trained context and per-session
   context, and fit on this machine. *Use* makes it the default for new sessions (`models.use`),

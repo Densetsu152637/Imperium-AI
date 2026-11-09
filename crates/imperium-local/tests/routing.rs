@@ -146,6 +146,7 @@ fn supervisor(launcher: Arc<FakeLlama>, vram_gib: u64) -> Arc<Supervisor> {
     let settings = LlamaCppSettings {
         backend: "auto".into(),
         custom_path: None,
+        find_existing: true,
         idle_unload_s: 900,
         context: 4096,
         parallel: 1,
