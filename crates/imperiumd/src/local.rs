@@ -108,13 +108,14 @@ impl LocalRuntime {
         })
     }
 
-    /// Scans the folders again, such as after a download, so new models can be used.
+    /// Scans the folders again, such as after a download, so new models can be used. The caller
+    /// applies the per-model settings afterwards, reading them under the lock that serialises
+    /// saves (see `DaemonState::rescan_local_models`), so a save made meanwhile is not undone.
     pub fn rescan(&self, paths: &Paths, settings: &Settings) {
         let folders = scan_folders(paths, settings);
         let found = scan(&folders);
         tracing::info!(models = found.models.len(), "local models scanned again");
         self.supervisor.set_models(found.models);
-        self.apply_model_settings(settings);
         *self.scanned.lock().unwrap_or_else(PoisonError::into_inner) = (folders, found.skipped);
     }
 

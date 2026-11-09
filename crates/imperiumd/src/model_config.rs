@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::PoisonError;
 
 use imperium_config::{
-    CACHE_TYPES, Config, LocalModelSettings, ModelLaunch, Paths, Settings, TableOverride,
+    CACHE_TYPES, Config, LocalModelSettings, ModelLaunch, Settings, TableOverride,
     check_local_model, load_layers, replace_app_layer,
 };
 use imperium_protocol::methods::{
@@ -22,7 +22,11 @@ const HEADER: &str = "# Written by the Imperium desktop app (Models dialog). Set
 
 /// Every local model's settings and every model-table row's, as saved and as in effect.
 pub fn config(state: &DaemonState) -> ModelConfigResult {
-    let saved = read_app_file(&state.paths().app_models_file());
+    let file = state.paths().app_models_file();
+    let saved = read_app_file(&file).unwrap_or_else(|error| {
+        tracing::warn!("{error}");
+        Table::new()
+    });
     result(state, &state.settings(), &saved)
 }
 
@@ -38,7 +42,8 @@ pub fn set_config(
         .unwrap_or_else(PoisonError::into_inner);
     let paths = state.paths();
     let file = paths.app_models_file();
-    let mut saved = read_app_file(&file);
+    // A file that is not valid TOML is not overwritten: what it held would be lost.
+    let mut saved = read_app_file(&file)?;
     let current = state.settings();
     for update in &params.local {
         let model = state
@@ -99,7 +104,7 @@ pub fn set_config(
             table_table(settings),
         );
     }
-    let candidate = candidate(paths, &file, &saved)?;
+    let candidate = candidate(state, &file, &saved)?;
     if params.dry_run {
         return Ok(result(state, &candidate, &saved));
     }
@@ -121,23 +126,36 @@ pub fn set_config(
 }
 
 /// The settings the configuration layers would give with `saved` as the app layer, checked
-/// strictly: any invalid value refuses the save.
-fn candidate(paths: &Paths, file: &Path, saved: &Table) -> Result<Settings, String> {
-    let layers = load_layers(paths, None, std::env::vars()).map_err(|error| error.to_string())?;
+/// strictly: any invalid value refuses the save. The other layers are the ones the live
+/// settings were built from, so edits made to config.toml since the daemon started are not
+/// picked up by a save (they apply on restart); without them (settings given alone) they are
+/// read again.
+fn candidate(state: &DaemonState, file: &Path, saved: &Table) -> Result<Settings, String> {
+    let layers = match state.config_layers() {
+        Some(layers) => layers,
+        None => {
+            load_layers(state.paths(), None, std::env::vars()).map_err(|error| error.to_string())?
+        }
+    };
     let layers = replace_app_layer(layers, file.to_path_buf(), saved.clone());
     Config::from_layers(layers)
         .settings()
         .map_err(|error| error.to_string())
 }
 
-/// Reads the app file; one that is missing or not valid TOML counts as empty.
-fn read_app_file(file: &Path) -> Table {
-    let Ok(text) = std::fs::read_to_string(file) else {
-        return Table::new();
+/// Reads the app file; one that is missing counts as empty, one that cannot be read or is not
+/// valid TOML is an error naming the file.
+fn read_app_file(file: &Path) -> Result<Table, String> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Table::new()),
+        Err(error) => return Err(format!("could not read {}: {error}", file.display())),
     };
-    text.parse().unwrap_or_else(|error| {
-        tracing::warn!(file = %file.display(), %error, "ignoring an app settings file that is not valid TOML");
-        Table::new()
+    text.parse().map_err(|error| {
+        format!(
+            "{} is not valid TOML, so it was not overwritten; fix or remove it first: {error}",
+            file.display()
+        )
     })
 }
 

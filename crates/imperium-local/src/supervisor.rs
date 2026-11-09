@@ -382,8 +382,9 @@ struct SlotPool {
     context: u32,
     /// Tokens of KV cache the slots share.
     pool_tokens: u32,
-    /// Most tokens a reply may generate before it is retried uncapped; 0 = no cap.
-    max_output_tokens: u32,
+    /// Most tokens a reply may generate before it is retried uncapped; 0 = no cap. Only
+    /// reservations use it, so a settings change applies without a restart.
+    max_output_tokens: AtomicU32,
     /// One permit per token of the pool, queueing waiters first-come, first-served. Only for
     /// runtimes that address slots (llama.cpp): vLLM manages its own paged KV cache.
     tokens: Option<Arc<Semaphore>>,
@@ -418,7 +419,7 @@ impl SlotPool {
             slots,
             context: launch.context,
             pool_tokens: launch.pool_tokens,
-            max_output_tokens: launch.max_output_tokens,
+            max_output_tokens: AtomicU32::new(launch.max_output_tokens),
             tokens: pins_slots.then(|| Arc::new(Semaphore::new(launch.pool_tokens as usize))),
             permits: Arc::new(Semaphore::new(slots as usize)),
             table: Mutex::new(SlotTable::new(slots)),
@@ -447,9 +448,10 @@ impl SlotPool {
     /// What a call of `request` reserves from the pool, and the `max_tokens` it must send.
     fn reservation(&self, request: &LocalRequest) -> Reservation {
         let whole = self.context.min(self.pool_tokens).max(1);
+        let max_output_tokens = self.max_output_tokens.load(Ordering::SeqCst);
         match request.prompt_tokens {
-            Some(prompt) if !request.uncapped && self.max_output_tokens > 0 => {
-                let reserve = prompt.saturating_add(self.max_output_tokens).min(whole);
+            Some(prompt) if !request.uncapped && max_output_tokens > 0 => {
+                let reserve = prompt.saturating_add(max_output_tokens).min(whole);
                 // A prompt that already fills the context leaves no room to cap: the server's
                 // own over-context error is the answer.
                 let max_tokens = (prompt < whole && reserve > prompt).then(|| reserve - prompt);
@@ -589,6 +591,14 @@ impl Loaded {
     /// A slot is in use or a call is queued for one.
     fn busy(&self) -> bool {
         self.in_use() > 0 || self.pool.waiting.load(Ordering::SeqCst) > 0
+    }
+
+    /// Applies the settings that only shape reservations, which need no restart.
+    fn retune(&mut self, now: &ModelLaunch) {
+        self.launch.max_output_tokens = now.max_output_tokens;
+        self.pool
+            .max_output_tokens
+            .store(now.max_output_tokens, Ordering::SeqCst);
     }
 
     fn restore_handle(&self) -> Restore {
@@ -1113,6 +1123,7 @@ impl Supervisor {
                 let now = self.launch(&id);
                 if let Some(entry) = state.loaded.get_mut(&id) {
                     entry.stale = entry.launch.restarts_for(&now);
+                    entry.retune(&now);
                     any |= entry.stale;
                 }
             }
@@ -1665,7 +1676,7 @@ impl Supervisor {
             victims,
             call,
             priority,
-            launch,
+            mut launch,
             cpu_pinned,
         } = load;
         let replaced = !victims.is_empty();
@@ -1681,14 +1692,17 @@ impl Supervisor {
         placement.ram_bytes += cache_bytes;
         let files = self.slot_files.as_ref().filter(|_| backend.slot_aware());
         let key = files.map(|_| slot_files::model_key(model, &launch));
-        // The runtime's own arguments, then the model's.
+        // The runtime's own arguments, then the model's, as the plan captured them: a settings
+        // change while this loads marks the new server stale instead of half-applying.
         let mut extra_args = backend.extra_args();
-        if let Some(own) = lock(&self.model_settings)
-            .get(&model.id)
-            .and_then(|own| own.extra_args.clone())
-        {
-            extra_args.extend(own);
-        }
+        extra_args.extend(
+            launch
+                .extra_args
+                .strip_prefix(self.settings.extra_args.as_slice())
+                .unwrap_or(&launch.extra_args)
+                .iter()
+                .cloned(),
+        );
         let spec = LaunchSpec {
             backend: Arc::clone(&backend),
             format: model.format,
@@ -1753,7 +1767,13 @@ impl Supervisor {
             max_tokens: reservation.max_tokens,
         };
         let lease = pool.lease(granted, holder, priority)?;
-        {
+        // Settings changed while it loaded: it serves this call, then restarts once free.
+        let now = self.launch(&model.id);
+        let stale = launch.restarts_for(&now);
+        launch.max_output_tokens = now.max_output_tokens;
+        pool.max_output_tokens
+            .store(now.max_output_tokens, Ordering::SeqCst);
+        let spawn_stale = {
             let mut state = lock(&self.state);
             state.load_seconds.insert(model.id.clone(), seconds);
             state.set_admitted(call, true);
@@ -1769,12 +1789,20 @@ impl Supervisor {
                     loaded_at: Instant::now(),
                     batch: HashSet::from([holder.to_string()]),
                     launch,
-                    stale: false,
+                    stale,
                 },
             );
-        }
+            let spawn = stale && !state.stale_task;
+            if spawn {
+                state.stale_task = true;
+            }
+            spawn
+        };
         drop(swapping);
         self.changed.notify_waiters();
+        if spawn_stale {
+            tokio::spawn(unload_stale(Weak::clone(&self.me)));
+        }
         if replaced || restorable > 0 {
             self.emit(SwapEvent {
                 direction: SwapDirection::In,
@@ -1982,6 +2010,20 @@ impl Supervisor {
                 .filter_map(|id| state.loaded.remove_entry(id))
                 .collect()
         };
+        // Slots saved under a key the restarted server will not have could never be restored:
+        // they are not saved.
+        let victims = victims
+            .into_iter()
+            .map(|(id, mut entry)| {
+                let restorable = self.model(&id).is_some_and(|model| {
+                    entry.key == Some(slot_files::model_key(&model, &self.launch(&id)))
+                });
+                if !restorable {
+                    entry.key = None;
+                }
+                (id, entry)
+            })
+            .collect();
         if let Err(error) = self.swap_out_detached(victims, "config", swapping).await {
             tracing::warn!(%error, "could not restart models after a settings change");
         }

@@ -30,7 +30,9 @@ them.
   refuses invalid values when saving and writes nothing; when the daemon or the CLI loads, an
   entry of the file that does not validate is dropped with a warning (logged by the daemon, listed
   by the loader), and a file that is not valid TOML is ignored with a warning, so a bad
-  `models.toml` never stops the daemon.
+  `models.toml` never stops the daemon; saving from the app refuses such a file (naming it and
+  the parse error) rather than overwrite it. A save applies only what `models.toml` changes:
+  edits made to `config.toml` while the daemon runs take effect when it restarts.
 - **Unknown keys are ignored**, so a config written for a newer version still loads; a known
   key with the wrong type is an error naming the problem.
 - `imperium config explain <key> [--project <dir>]` shows the effective value and the layer
@@ -67,7 +69,7 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `runtime.llamacpp.cache_type` | `f16` | Default KV cache type of keys and values: `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0`, or `q5_1` |
 | `runtime.llamacpp.flash_attn` | `auto` | `--flash-attn`: `auto`, `on`, or `off`; a quantised V cache type needs `on` or `auto` |
 | `runtime.llamacpp.max_output_tokens` | `8192` | Most tokens one local reply may generate before it is retried once without a cap; `0` = uncapped (the call reserves the whole context). See [runtimes](04-models-and-routing.md#runtimes) |
-| `runtime.llamacpp.models."<id>".*` | none | Settings of one local model, overriding the defaults above: `context`, `pool_tokens` (at least `context`), `slots`, `cache_type_k`, `cache_type_v`, `flash_attn`, `max_gpu_layers` (cap on the layers placed on the GPU), `max_wait_s`, `max_output_tokens`, and `extra_args` (added after `runtime.llamacpp.extra_args`; may not contain a flag Imperium sets, such as `--ctx-size`, with or without `=value`). A CPU-lane row's `parallel`, `context` and `max_wait_s` count too; a row and this table setting different values are refused. Changing a loaded model's settings restarts it once nothing is using it. Model ids may contain dots: write them as quoted keys |
+| `runtime.llamacpp.models."<id>".*` | none | Settings of one local model, overriding the defaults above: `context`, `pool_tokens` (at least `context`), `slots`, `cache_type_k`, `cache_type_v`, `flash_attn`, `max_gpu_layers` (cap on the layers placed on the GPU), `max_wait_s`, `max_output_tokens`, and `extra_args` (added after `runtime.llamacpp.extra_args`; may not contain a flag Imperium sets, such as `--ctx-size`, with or without `=value`). A CPU-lane row's `parallel`, `context` and `max_wait_s` count too; a row and this table setting different values are refused. Changing a loaded model's settings restarts it once nothing is using it; `max_wait_s` and `max_output_tokens` apply without a restart. Model ids may contain dots: write them as quoted keys |
 | `models.overrides."<id>".*` | none | What the app changes on a model-table row: `enabled`, `tier`, `tags`, `context_window`, and both `input_usd_per_mtok` and `output_usd_per_mtok` (the endpoint price for that model). An id that names no row is ignored. `enabled` is also accepted on `[[models.catalog]]` rows; `false` leaves the row out of routing |
 | `runtime.llamacpp.idle_unload_s` | `900` | Seconds an unused model stays loaded |
 | `runtime.llamacpp.ram_headroom_mb` | `2048` | System memory kept free when placing models; the one RAM budget is free RAM less this, shared by GPU models' RAM share, every server's `--cache-ram`, and models pinned to the CPU lane (their weights and KV) |

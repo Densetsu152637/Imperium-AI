@@ -68,6 +68,7 @@ async fn run() -> anyhow::Result<()> {
     let local = imperiumd::LocalRuntime::start(&paths, &settings);
     let secrets: Arc<dyn SecretStore> = Arc::new(KeychainSecrets);
     let daemon = DaemonState::with_secrets(paths.clone(), settings, local, secrets);
+    daemon.remember_config(&config);
     daemon.start_pets();
     let resumed = daemon.resume_sessions();
     if resumed > 0 {

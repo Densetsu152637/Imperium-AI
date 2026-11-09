@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
-use imperium_config::{KeychainSecrets, ModelPlacement, Paths, SecretStore, Settings};
+use imperium_config::{
+    Config, KeychainSecrets, Layer, ModelPlacement, Paths, SecretStore, Settings,
+};
 use imperium_core::{
     Background, CatalogModel, ChatClients, LoadView, LocalModels, ModelError, Session,
     SessionConfig, SessionMemory, ToolProvider, new_session_id, resolve_model,
@@ -60,6 +62,9 @@ pub struct DaemonState {
     settings: RwLock<Arc<Settings>>,
     /// Serialises saves of model settings.
     pub(crate) config_saves: Mutex<()>,
+    /// The configuration layers the settings were built from, so a save rebuilds them with
+    /// only the app file replaced; `None` when the caller gave settings alone.
+    config_layers: Mutex<Option<Vec<Layer>>>,
     /// Where API keys and tokens are read from: the OS keychain unless the caller chose another.
     secrets: Arc<dyn SecretStore>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
@@ -118,6 +123,7 @@ impl DaemonState {
             paths,
             settings: RwLock::new(Arc::new(settings)),
             config_saves: Mutex::new(()),
+            config_layers: Mutex::new(None),
             secrets,
             sessions: Mutex::new(HashMap::new()),
             local: local.map(OnceLock::from).unwrap_or_default(),
@@ -324,6 +330,23 @@ impl DaemonState {
     /// when they need it rather than keeping it.
     pub fn settings(&self) -> Arc<Settings> {
         Arc::clone(&self.settings.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Keeps the layers `config` merged, which the settings were built from: saving model
+    /// settings then changes only what the app file sets, never what other files say now.
+    pub fn remember_config(&self, config: &Config) {
+        *self
+            .config_layers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(config.layers().to_vec());
+    }
+
+    /// The layers kept by [`DaemonState::remember_config`].
+    pub(crate) fn config_layers(&self) -> Option<Vec<Layer>> {
+        self.config_layers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Replaces the settings snapshot, such as after the app saved model settings.
@@ -633,19 +656,32 @@ impl DaemonState {
     /// was not running for want of folders. Must run inside the Tokio runtime; it blocks.
     pub fn rescan_local_models(self: &Arc<Self>) {
         if let Some(local) = self.local.get() {
-            return local.rescan(&self.paths, &self.settings());
+            local.rescan(&self.paths, &self.settings());
+            return self.apply_local_settings(local);
         }
         let Some(started) = LocalRuntime::start(&self.paths, &self.settings()) else {
             return;
         };
         if self.local.set(started).is_ok() {
             if let Some(local) = self.local.get() {
+                self.apply_local_settings(local);
                 self.announce_swaps(local);
             }
         } else if let Some(local) = self.local.get() {
             // Another download started it first, perhaps before this one's files landed.
             local.rescan(&self.paths, &self.settings());
+            self.apply_local_settings(local);
         }
+    }
+
+    /// Hands the local runtime the per-model settings in effect, read under the lock that
+    /// serialises saves: a save is never overwritten by a snapshot taken before it.
+    fn apply_local_settings(&self, local: &LocalRuntime) {
+        let _saving = self
+            .config_saves
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        local.apply_model_settings(&self.settings());
     }
 
     pub fn downloads(&self) -> &Downloads {

@@ -22,6 +22,8 @@ const CAP: u32 = 777;
 #[derive(Debug, Default)]
 struct Pool {
     requests: Mutex<Vec<LocalRequest>>,
+    /// Leases carry no cap, as for a model with no output cap or a prompt that fills the context.
+    never_cap: bool,
 }
 
 impl LocalModels for Pool {
@@ -41,7 +43,7 @@ impl LocalModels for Pool {
     ) -> AcquireFuture<'a> {
         Box::pin(async move {
             self.requests.lock().unwrap().push(request);
-            let cap = (!request.uncapped).then_some(CAP);
+            let cap = (!request.uncapped && !self.never_cap).then_some(CAP);
             Ok(LocalLease::new("http://fake/v1".into(), Some(0), cap, ()))
         })
     }
@@ -326,4 +328,18 @@ async fn a_pool_overflow_is_retried_once_uncapped_and_a_second_failure_is_not() 
         Some(SessionEvent::TurnCompleted { .. })
     ));
     assert_eq!(pool.requests.lock().unwrap().len(), 2);
+
+    // An overflow of a call that was never capped is not retried: it would be sent the same.
+    let pool = Arc::new(Pool {
+        never_cap: true,
+        ..Pool::default()
+    });
+    let script = Arc::new(Script::default());
+    script.replies.lock().unwrap().extend([overflow()]);
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(&pool, &script, dir.path());
+    let mut events = session.subscribe();
+    let seen = turn(&session, &mut events, "go").await;
+    assert!(matches!(seen.last(), Some(SessionEvent::TurnFailed { .. })));
+    assert_eq!(pool.requests.lock().unwrap().len(), 1);
 }

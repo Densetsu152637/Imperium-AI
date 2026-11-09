@@ -254,11 +254,14 @@ impl Agent {
             let mut waited = std::time::Duration::ZERO;
             // A reply cut short by its reservation is retried once without a cap.
             let mut uncapped = false;
+            // What the reservation counted for the prompt, to compare with what it was.
+            let mut estimate: u32;
             let (client, queue_wait, started, first_text, result) = loop {
                 // A local model's slot is held for this one request, not for the turn: tool
                 // calls, `await_tasks`, and usage-limit pauses run without one. The model is
                 // loaded here if needed.
                 let prompt_tokens = self.prompt_estimate(&tool_texts);
+                estimate = prompt_tokens;
                 let (client, lease) = match self.client(&holder, prompt_tokens, uncapped).await {
                     Ok(taken) => taken,
                     Err(message) => {
@@ -292,13 +295,11 @@ impl Agent {
                 };
                 let result = client.stream(request, &mut on_text).await;
                 drop(lease);
-                // A local reply that hit its reservation (or overflowed the KV pool) starts
-                // again with the whole context.
-                if self.model.local && !uncapped {
+                // A capped local reply that hit its reservation (or overflowed the KV pool) starts
+                // again with the whole context; one sent uncapped would only fail the same way.
+                if self.model.local && !uncapped && capped {
                     let cut = match &result {
-                        Ok(completion) => {
-                            capped && completion.finish_reason.as_deref() == Some("length")
-                        }
+                        Ok(completion) => completion.finish_reason.as_deref() == Some("length"),
                         Err(error) => error.to_string().contains("Context size has been exceeded"),
                     };
                     if cut {
@@ -350,6 +351,15 @@ impl Agent {
                 }
             };
             let usage = completion.usage.unwrap_or_default();
+            // The pool admits calls by the estimate: a prompt above it overcommits the pool.
+            if self.model.local && usage.prompt_tokens > u64::from(estimate) {
+                tracing::warn!(
+                    model = %self.model.model,
+                    estimate,
+                    prompt_tokens = usage.prompt_tokens,
+                    "a local prompt exceeded its reservation estimate"
+                );
+            }
             total.prompt_tokens += usage.prompt_tokens;
             total.completion_tokens += usage.completion_tokens;
             total.cached_tokens += usage.cached_tokens;

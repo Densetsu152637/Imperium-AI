@@ -351,6 +351,60 @@ async fn a_stale_model_restarts_only_when_free() {
 }
 
 #[tokio::test]
+async fn settings_changed_during_a_load_restart_the_model_once_it_is_free() {
+    let (supervisor, log) = start(settings());
+    log.launch_ms.store(400, Ordering::SeqCst);
+    let loading = {
+        let supervisor = Arc::clone(&supervisor);
+        tokio::spawn(async move { supervisor.acquire("a", "first/root").await })
+    };
+    while log.launches("a") == 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    supervisor.set_model_settings(only(
+        "a",
+        LocalModelSettings {
+            slots: Some(3),
+            extra_args: Some(vec!["--n-cpu-moe".into(), "4".into()]),
+            ..LocalModelSettings::default()
+        },
+    ));
+    let lease = loading.await.unwrap().unwrap();
+    // It started with the shape the load planned, arguments included, and is stale.
+    let args = log.args("a");
+    assert!(args.contains("--parallel 8"), "{args}");
+    assert!(!args.contains("--n-cpu-moe"), "{args}");
+    assert!(supervisor.loaded()[0].stale);
+    drop(lease);
+    log.launch_ms.store(0, Ordering::SeqCst);
+    supervisor.unload_stale_now().await;
+    assert!(supervisor.loaded().is_empty());
+    drop(supervisor.acquire("a", "first/root").await.unwrap());
+    let args = log.args("a");
+    assert!(args.contains("--parallel 3"), "{args}");
+    assert!(args.ends_with("--n-cpu-moe 4"), "{args}");
+    assert_eq!(log.launches("a"), 2);
+
+    // The output cap only sizes reservations: it applies without a restart.
+    supervisor.set_model_settings(only(
+        "a",
+        LocalModelSettings {
+            slots: Some(3),
+            extra_args: Some(vec!["--n-cpu-moe".into(), "4".into()]),
+            max_output_tokens: Some(1000),
+            ..LocalModelSettings::default()
+        },
+    ));
+    assert!(!supervisor.loaded()[0].stale);
+    let lease = supervisor
+        .acquire_with("a", "first/root", small(100))
+        .await
+        .unwrap();
+    assert_eq!(lease.max_tokens, Some(1000));
+    assert_eq!(log.launches("a"), 2);
+}
+
+#[tokio::test]
 async fn more_sessions_than_the_old_parallel_value_run_at_once() {
     // `parallel = 2` no longer caps anything: the default is 8 slots, and six small calls
     // fit the pool together.

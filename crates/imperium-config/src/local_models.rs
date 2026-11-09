@@ -119,13 +119,15 @@ pub struct ModelLaunch {
 
 impl ModelLaunch {
     /// Whether a server started with `self` must be restarted to match `other`: any setting
-    /// that reaches the launch arguments, the memory plan, or the token pool differs.
+    /// that reaches the launch arguments, the memory plan, or the token pool differs. The wait
+    /// and the output cap (which only sizes reservations) apply without a restart.
     pub fn restarts_for(&self, other: &ModelLaunch) -> bool {
-        let same_wait = ModelLaunch {
+        let same_live = ModelLaunch {
             max_wait_s: self.max_wait_s,
+            max_output_tokens: self.max_output_tokens,
             ..other.clone()
         };
-        *self != same_wait
+        *self != same_live
     }
 }
 

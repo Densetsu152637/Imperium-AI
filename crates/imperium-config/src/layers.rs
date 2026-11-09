@@ -150,6 +150,8 @@ pub struct Config {
     merged: Table,
     origins: BTreeMap<String, Source>,
     warnings: Vec<String>,
+    /// The layers merged, in order, so a caller can rebuild with one of them replaced.
+    layers: Vec<Layer>,
 }
 
 /// A value and, for a leaf, the layer that set it. Tables mix origins and have none.
@@ -163,10 +165,12 @@ impl Config {
     /// Merges layers in order: later layers override earlier ones key by key; arrays and
     /// other non-table values are replaced whole.
     pub fn from_layers(layers: impl IntoIterator<Item = Layer>) -> Self {
+        let layers: Vec<Layer> = layers.into_iter().collect();
         let mut config = Config {
             merged: Table::new(),
             origins: BTreeMap::new(),
             warnings: Vec::new(),
+            layers: layers.clone(),
         };
         for layer in layers {
             merge_into(
@@ -196,6 +200,13 @@ impl Config {
     /// Parts of the app's settings file that were left out because they were invalid.
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    /// The layers this configuration merged, invalid app entries already left out. With
+    /// [`replace_app_layer`], a caller rebuilds these settings with another app file without
+    /// reading the other files again.
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers
     }
 
     pub fn settings(&self) -> Result<Settings, ConfigError> {

@@ -136,7 +136,9 @@ reuses the same `llama-server`. What changed is how long a slot is held:
   no `max_tokens`, so the server's own over-context error surfaces. A reply that stops with
   `finish_reason = "length"` (or fails with "Context size has been exceeded.") is retried once,
   without a cap and with the whole context reserved, after a `Notice`; only the retry's reply is
-  kept in the conversation. vLLM manages its own paged KV cache, so a vLLM lease reserves no
+  kept in the conversation. A call that was sent uncapped is not retried, since the retry would be
+  the same request. A prompt larger than its estimate is logged as a warning, so how often the
+  pool is overcommitted is visible. vLLM manages its own paged KV cache, so a vLLM lease reserves no
   tokens and carries no `max_tokens`.
 - **A queue.** Calls that find every slot busy, or too few tokens left in the pool, wait
   first-come, first-served, for at most `max_wait_s` (stage 2d; default 600 s), after which the

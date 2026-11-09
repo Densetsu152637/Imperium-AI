@@ -47,11 +47,9 @@ base_url = "https://example.invalid/v1"
     let paths = Paths::under(home);
     std::fs::create_dir_all(paths.config_dir()).unwrap();
     std::fs::write(paths.user_config_file(), text).unwrap();
-    let settings = imperium_config::load(&paths, None, [])
-        .unwrap()
-        .settings()
-        .unwrap();
-    let daemon = imperiumd::DaemonState::new(paths, settings, None);
+    let config = imperium_config::load(&paths, None, []).unwrap();
+    let daemon = imperiumd::DaemonState::new(paths, config.settings().unwrap(), None);
+    daemon.remember_config(&config);
     daemon.rescan_local_models();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("ws://{}/rpc", listener.local_addr().unwrap());
@@ -189,5 +187,60 @@ async fn set_config_saves_reloads_and_applies() {
     assert!(
         saved.contains("coder"),
         "the other model keeps its settings: {saved}"
+    );
+}
+
+#[tokio::test]
+async fn a_save_applies_only_the_app_file_not_later_config_toml_edits() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    let paths = Paths::under(home.path());
+    // config.toml is edited by hand while the daemon runs: those edits wait for a restart.
+    let user = paths.user_config_file();
+    let edited = std::fs::read_to_string(&user)
+        .unwrap()
+        .replace("tier = \"basic\"", "tier = \"strong\"")
+        + "[runtime.llamacpp]
+slots = 5
+";
+    std::fs::write(&user, edited).unwrap();
+
+    let update = json!({"table": [{"id": "coder", "settings": {"enabled": false}}]});
+    let result = call(&mut socket, "models.set_config", update)
+        .await
+        .unwrap();
+    assert_eq!(result["table"][0]["effective"]["enabled"], false);
+    assert_eq!(result["table"][0]["effective"]["tier"], "basic");
+    assert_eq!(result["local"][0]["effective"]["slots"], 8);
+    let live = daemon.settings();
+    assert_eq!(live.models.catalog[0].tier.as_str(), "basic");
+    assert!(!live.models.catalog[0].enabled);
+    assert_eq!(live.launch_of("tiny").slots, 8);
+}
+
+#[tokio::test]
+async fn an_app_file_that_is_not_valid_toml_is_not_overwritten() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, _daemon) = start_daemon(home.path()).await;
+    let file = Paths::under(home.path()).app_models_file();
+    std::fs::write(
+        &file,
+        "[runtime.llamacpp.models.tiny
+slots = 3
+",
+    )
+    .unwrap();
+    let update = json!({"local": [{"id": "tiny", "settings": {"slots": 2}}]});
+    let error = call(&mut socket, "models.set_config", update)
+        .await
+        .unwrap_err();
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("models.toml"), "{error}");
+    assert!(message.contains("not valid TOML"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "[runtime.llamacpp.models.tiny
+slots = 3
+"
     );
 }
