@@ -57,6 +57,15 @@ enum Command {
         /// for the full breakdown at any time).
         #[arg(long)]
         context: bool,
+        /// Start on git worktrees: each folder in a git repository gets a new worktree on a new
+        /// branch (`imperium/<session id>`, or the branch given).
+        #[arg(long, value_name = "BRANCH", num_args = 0..=1, default_missing_value = "")]
+        worktree: Option<String>,
+    },
+    /// Manage running sessions.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
     },
     /// Inspect configuration.
     Config {
@@ -223,6 +232,17 @@ enum RemoteCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum SessionCommand {
+    /// Stop and forget a session so it does not continue after a restart.
+    Delete {
+        session_id: String,
+        /// Also remove the session's git worktrees (their branches are kept).
+        #[arg(long)]
+        remove_worktrees: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum EnvCommand {
     /// List environments and their folders.
     List,
@@ -385,7 +405,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             project,
             model,
             context,
-        } => chat::run(env, project, model, context),
+            worktree,
+        } => chat::run(
+            env,
+            project,
+            model,
+            context,
+            worktree.map(|branch| (!branch.is_empty()).then_some(branch)),
+        ),
+        Command::Session {
+            command:
+                SessionCommand::Delete {
+                    session_id,
+                    remove_worktrees,
+                },
+        } => env::delete_session(session_id, remove_worktrees),
         Command::Env { command } => match command {
             EnvCommand::List => env::list(),
             EnvCommand::Create { name, folders } => env::create(name, folders),

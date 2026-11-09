@@ -122,6 +122,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("daemon.port", "Port", Integer, "Port of the local WebSocket listener; 0 picks a free port at each start."),
     def("agents.max_steps", "Steps per turn", Integer, "Model calls an agent may make in one turn before it stops."),
     def("agents.resume_days", "Resume sessions (days)", Integer, "Sessions active within this many days continue after the daemon restarts."),
+    live(def("sessions.worktree_dir", "Worktree folder", PathKind, "Where sessions started in a git worktree put it, as <folder>/<repo>/<branch>. Empty: inside the repository, in .worktrees/<branch> (excluded from git).")),
     def("models.default", "Default model", STRING, "Model for new sessions, as <endpoint>:<model>."),
     def("models.folders", "Model folders", PathList, "Folders scanned for GGUF models and Hugging Face model folders."),
     def("models.download_dir", "Download folder", PathKind, "Where Hugging Face downloads go (absolute). Defaults to the first model folder, else <data>/models."),

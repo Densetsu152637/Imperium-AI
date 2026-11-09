@@ -26,6 +26,7 @@ import type {
   PetStateInfo,
   ModelListResult,
   SessionListResult,
+  RuntimeTestResult,
   SessionSummary,
   SessionSubscribeResult,
 } from "@imperium/protocol";
@@ -119,6 +120,7 @@ export function App() {
   const [creatingEnv, setCreatingEnv] = useState(false);
   /** The model "New session" asks for; empty for the configured default. */
   const [newModel, setNewModel] = useState("");
+  const [newWorktree, setNewWorktree] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
   const [hidden, setHidden] = useState<string[]>(saved.hidden);
@@ -185,6 +187,15 @@ export function App() {
         }
         if (notification.method === "environments.changed") {
           setEnvironments((notification.params as EnvironmentListResult).environments);
+          return;
+        }
+        if (notification.method === "session.deleted") {
+          const { session_id } = notification.params as { session_id: string };
+          known.current.delete(session_id);
+          setSessions((all) => {
+            const { [session_id]: _gone, ...rest } = all;
+            return rest;
+          });
           return;
         }
         if (notification.method === "session.created") {
@@ -372,6 +383,21 @@ export function App() {
         ?.call<EnvironmentInfo>("environments.update", { id, icon: choice?.icon ?? "", color: choice?.color ?? "" })
         .then(replaceEnvironment, report);
     },
+    onSetRuntime: async (id, runtime) => {
+      if (!client) return;
+      try {
+        replaceEnvironment(await client.call<EnvironmentInfo>("environments.update", { id, runtime }));
+      } catch (error) {
+        report(error);
+      }
+    },
+    onTestRuntime: async (id) => {
+      if (!client) throw new Error("Not connected to imperium-core.");
+      return client.call<RuntimeTestResult>("environments.test_runtime", { id });
+    },
+    onSetPersistentAgent: (id, on) => {
+      client?.call<EnvironmentInfo>("environments.update", { id, persistent_agent: on }).then(replaceEnvironment, report);
+    },
   };
 
   const addFolder = async (id: string) => {
@@ -397,6 +423,7 @@ export function App() {
       const created = await client.call<SessionCreateResult>("session.create", {
         environment_id: environment.id,
         ...(newModel ? { model: newModel } : {}),
+        ...(newWorktree ? { worktree: true } : {}),
       });
       known.current.add(created.session_id);
       // The rest of the summary arrives with the daemon's session.created notice.
@@ -411,6 +438,8 @@ export function App() {
         status: "idle",
         status_detail: null,
         resume_policy: DEFAULT_RESUME_POLICY,
+        persistent: false,
+        worktrees: created.worktrees,
       };
       setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
       setSelected(created.session_id);
@@ -640,6 +669,10 @@ export function App() {
                             })),
                           ]}
                         />
+                        <label className="new-session-worktree" title="Start on a new git worktree and branch">
+                          <input type="checkbox" checked={newWorktree} onChange={(event) => setNewWorktree(event.target.checked)} />
+                          Start in a worktree
+                        </label>
                         <button
                           onClick={startSession}
                           disabled={newSessionBlocker !== null}

@@ -193,7 +193,57 @@ pub struct SessionSummary {
     /// after restarts, and is listed first among its environment's sessions.
     #[serde(default)]
     pub persistent: bool,
+    /// Git worktrees the session works in instead of its environment's folders.
+    #[serde(default)]
+    pub worktrees: Vec<SessionWorktree>,
 }
+
+/// A git worktree a session was started on: its tools use `path` instead of `folder`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionWorktree {
+    /// The environment folder it stands in for.
+    pub folder: String,
+    /// The worktree's folder.
+    pub path: String,
+    /// The new branch it is on, such as `imperium/3fa2c1d0`.
+    pub branch: String,
+    /// The repository it belongs to.
+    pub repo: String,
+}
+
+/// `session.delete`: stops a session and forgets it, so it does not continue after a restart.
+/// With `remove_worktrees`, its git worktrees are removed too (their branches are kept). An
+/// environment's persistent agent is turned off with `environments.update` instead.
+#[derive(Debug)]
+pub struct SessionDelete;
+
+impl Method for SessionDelete {
+    const NAME: &'static str = "session.delete";
+    type Params = SessionDeleteParams;
+    type Result = SessionDeleteResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionDeleteParams {
+    pub session_id: String,
+    #[serde(default)]
+    pub remove_worktrees: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionDeleteResult {
+    /// Worktree folders removed.
+    pub removed_worktrees: Vec<String>,
+    /// Worktrees that could not be removed, with why.
+    pub failed: Vec<String>,
+}
+
+/// Notification sent to every client when a session is deleted; the payload is
+/// [`SessionDeleteParams`] (without `remove_worktrees`' effect).
+pub const SESSION_DELETED: &str = "session.deleted";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -208,7 +258,7 @@ pub struct SessionSubscribeResult {
     pub history: Vec<crate::session::AgentEvent>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionCreateParams {
     /// The environment the session works in: its folders are the sandbox, the first is the
@@ -226,6 +276,15 @@ pub struct SessionCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
+    /// Start on git worktrees: every folder of the environment that is in a git repository is
+    /// replaced by a new worktree on a new branch (`imperium/<session id>` unless
+    /// `worktree_branch` names one). Other folders are used as they are. Local folders only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub worktree: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub worktree_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -240,6 +299,9 @@ pub struct SessionCreateResult {
     /// The session's folders, the working directory first.
     #[serde(default)]
     pub folders: Vec<String>,
+    /// The worktrees it was started on.
+    #[serde(default)]
+    pub worktrees: Vec<SessionWorktree>,
 }
 
 /// An environment: a named set of folders sessions work in. The folders are the sandbox the

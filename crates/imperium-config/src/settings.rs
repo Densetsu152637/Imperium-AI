@@ -70,6 +70,8 @@ pub struct Settings {
     pub phone: PhoneSettings,
     #[serde(default)]
     pub resume: ResumeSettings,
+    #[serde(default)]
+    pub sessions: SessionSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -231,6 +233,15 @@ impl Default for AutofixSettings {
             model: None,
         }
     }
+}
+
+/// `[sessions]`: how sessions are started.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SessionSettings {
+    /// Where sessions started on a git worktree put it: `<worktree_dir>/<repo>/<branch>`. When
+    /// unset, worktrees go in `<repo>/.worktrees/<branch>` (excluded from git).
+    pub worktree_dir: Option<PathBuf>,
 }
 
 /// How sessions wait when a provider's usage or rate limit is hit (each session can override).

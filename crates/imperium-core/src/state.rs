@@ -15,7 +15,7 @@ use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
     EnvironmentRuntime, LocalModelListResult, ModelListResult, ModelRow, SESSION_CREATED,
-    SessionSummary,
+    SessionDeleteParams, SessionDeleteResult, SessionSummary, SessionWorktree,
 };
 use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
@@ -54,6 +54,14 @@ pub struct SessionOptions {
     pub persistent: bool,
     /// Compact the conversation when a turn starts over the model's budget.
     pub auto_compact: bool,
+    /// The id for a new session (one is made when unset).
+    pub id: Option<String>,
+    /// Start on git worktrees (environment sessions only), on `worktree_branch` or
+    /// `imperium/<session id>`.
+    pub worktree: bool,
+    pub worktree_branch: Option<String>,
+    /// Worktrees a resumed session was started on.
+    pub worktrees: Vec<SessionWorktree>,
 }
 
 /// Where a session works: its environment and every folder, the working directory first.
@@ -62,6 +70,7 @@ struct Placement {
     environment_id: Option<String>,
     folders: Vec<String>,
     persistent: bool,
+    worktrees: Vec<SessionWorktree>,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -115,6 +124,8 @@ pub enum CreateError {
     Start(String),
     #[error("the environment's runtime: {0}")]
     Runtime(String),
+    #[error("could not start on a worktree: {0}")]
+    Worktree(String),
 }
 
 impl DaemonState {
@@ -509,6 +520,7 @@ impl DaemonState {
             let model = switched.as_deref().or(meta["model"].as_str());
             let options = SessionOptions {
                 resume_id: Some(id.clone()),
+                worktrees: serde_json::from_value(meta["worktrees"].clone()).unwrap_or_default(),
                 ..SessionOptions::default()
             };
             let resumed_session = match meta["environment_id"].as_str() {
@@ -768,6 +780,7 @@ impl DaemonState {
             environment_id: options.environment_id.clone(),
             folders: workspace.folders_display(),
             persistent: options.persistent,
+            worktrees: options.worktrees.clone(),
         };
         // A remote runtime's folders are not on this machine: project files (instructions,
         // skills, project memory) are not read from them.
@@ -793,7 +806,7 @@ impl DaemonState {
         mcp.append(&mut extensions.servers);
         notices.append(&mut extensions.notices);
         let resume = options.resume_id.is_some();
-        let id = match options.resume_id.clone() {
+        let id = match options.resume_id.clone().or_else(|| options.id.clone()) {
             Some(id) => id,
             None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
         };
@@ -858,6 +871,7 @@ impl DaemonState {
                 "model": model_spec,
                 "environment_id": placement.environment_id,
                 "folders": placement.folders,
+                "worktrees": placement.worktrees,
             });
             let path = self
                 .paths
@@ -900,13 +914,49 @@ impl DaemonState {
             .environments
             .get(environment_id)
             .ok_or_else(|| EnvironmentError::NotFound(environment_id.to_string()))?;
-        let Some((first, rest)) = env.folders.split_first() else {
+        if env.folders.is_empty() {
             return Err(EnvironmentError::Invalid(format!(
                 "the environment {} has no folders yet; add one first",
                 env.name
             ))
             .into());
-        };
+        }
+        let mut options = options;
+        let mut folders = env.folders.clone();
+        if !options.worktrees.is_empty() {
+            // A resumed session goes back to its worktrees.
+            folders = crate::worktrees::apply(&folders, &options.worktrees);
+        } else if options.worktree {
+            if env.runtime.is_remote() {
+                return Err(CreateError::Worktree(
+                    "worktrees are made only for folders on this machine".into(),
+                ));
+            }
+            let id = match options.id.clone() {
+                Some(id) => id,
+                None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
+            };
+            let branch = options
+                .worktree_branch
+                .clone()
+                .filter(|branch| !branch.trim().is_empty())
+                .unwrap_or_else(|| format!("imperium/{}", &id[..id.len().min(8)]));
+            // Read afresh, so a change in Settings applies to the next session.
+            let fresh = crate::connectors::saved_settings(&self.paths);
+            let dir = fresh
+                .as_ref()
+                .unwrap_or(&self.settings)
+                .sessions
+                .worktree_dir
+                .clone()
+                .filter(|dir| !dir.as_os_str().is_empty());
+            let (used, made) = crate::worktrees::create(&folders, branch.trim(), dir.as_deref())
+                .map_err(CreateError::Worktree)?;
+            folders = used;
+            options.worktrees = made;
+            options.id = Some(id);
+        }
+        let (first, rest) = folders.split_first().expect("checked above");
         let options = SessionOptions {
             environment_id: Some(env.id.clone()),
             folders: rest.to_vec(),
@@ -914,6 +964,46 @@ impl DaemonState {
             ..options
         };
         self.create_session_with(first, model, options)
+    }
+
+    /// Stops and forgets a session so it does not continue after a restart, removing its
+    /// worktrees when asked (their branches stay). An environment's persistent agent is refused:
+    /// it is turned off in its environment instead.
+    pub fn delete_session(
+        &self,
+        id: &str,
+        remove_worktrees: bool,
+    ) -> Result<SessionDeleteResult, String> {
+        let placement = self
+            .placements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned();
+        let Some(placement) = placement else {
+            return Err(format!("no session {id}"));
+        };
+        if placement.persistent {
+            return Err(
+                "this is its environment's persistent agent; turn it off in the environment".into(),
+            );
+        }
+        self.forget_session(id);
+        let sessions = self.paths.data_dir().join("sessions");
+        let _ = std::fs::remove_file(sessions.join(format!("{id}.meta.json")));
+        let mut result = SessionDeleteResult::default();
+        if remove_worktrees && !placement.worktrees.is_empty() {
+            (result.removed_worktrees, result.failed) =
+                crate::worktrees::remove(&placement.worktrees);
+        }
+        self.announce(
+            imperium_protocol::methods::SESSION_DELETED,
+            SessionDeleteParams {
+                session_id: id.to_string(),
+                remove_worktrees,
+            },
+        );
+        Ok(result)
     }
 
     pub fn environments(&self) -> &Environments {
@@ -943,6 +1033,7 @@ impl DaemonState {
             environment_id: placement.environment_id,
             folders: placement.folders,
             persistent: placement.persistent,
+            worktrees: placement.worktrees,
             ..summary(session)
         }
     }
@@ -1155,6 +1246,7 @@ fn summary(session: &Session) -> SessionSummary {
         status_detail,
         resume_policy: session.resume_policy(),
         persistent: false,
+        worktrees: Vec::new(),
     }
 }
 

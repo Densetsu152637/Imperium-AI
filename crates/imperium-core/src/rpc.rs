@@ -18,9 +18,10 @@ use imperium_protocol::methods::{
     ProjectAgentRow, ProjectList, ProjectListParams, ProjectListResult, ProjectMessage,
     ProjectMessageParams, ProjectMessageResult, ScheduleList, ScheduleListParams,
     ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionCreate,
-    SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
-    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe,
-    SessionSubscribeParams, SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
+    SessionCreateParams, SessionCreateResult, SessionDelete, SessionDeleteParams, SessionList,
+    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSend,
+    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult, Shutdown,
+    ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -427,6 +428,13 @@ impl Connection {
                     crate::suggestions::respond(Arc::clone(&self.state), params)
                 })
             }
+            SessionDelete::NAME => {
+                call::<SessionDelete>(request.params, |params: SessionDeleteParams| {
+                    self.state
+                        .delete_session(&params.session_id, params.remove_worktrees)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                })
+            }
             SessionRespond::NAME => {
                 call::<SessionRespond>(request.params, |params: SessionRespondParams| {
                     self.session(&params.session_id)?
@@ -483,17 +491,17 @@ impl Connection {
         params: SessionCreateParams,
     ) -> Result<(SessionCreateResult, broadcast::Receiver<AgentEvent>), ErrorObject> {
         let model = params.model.as_deref();
+        let options = || SessionOptions {
+            worktree: params.worktree.unwrap_or(false),
+            worktree_branch: params.worktree_branch.clone(),
+            ..SessionOptions::default()
+        };
         let created = match (&params.environment_id, &params.project_dir) {
-            (Some(env), _) => {
-                self.state
-                    .create_in_environment(env, model, SessionOptions::default())
-            }
+            (Some(env), _) => self.state.create_in_environment(env, model, options()),
             // A bare folder: the environment it is the working directory of, made if needed.
             (None, Some(dir)) => match self.state.environments().for_folder(dir) {
                 Ok(env) => {
-                    let created =
-                        self.state
-                            .create_in_environment(&env.id, model, SessionOptions::default());
+                    let created = self.state.create_in_environment(&env.id, model, options());
                     self.state.announce_environments();
                     created
                 }
@@ -510,7 +518,8 @@ impl Connection {
             let code = match &error {
                 CreateError::Project(..)
                 | CreateError::Environment(_)
-                | CreateError::Runtime(_) => codes::INVALID_PARAMS,
+                | CreateError::Runtime(_)
+                | CreateError::Worktree(_) => codes::INVALID_PARAMS,
                 CreateError::Model(ModelError::NoDefault) => {
                     return ErrorObject::new(
                         codes::MODEL_UNAVAILABLE,
@@ -531,6 +540,7 @@ impl Connection {
                 isolation: session.isolation().to_string(),
                 environment_id: summary.environment_id,
                 folders: summary.folders,
+                worktrees: summary.worktrees,
             },
             events,
         ))

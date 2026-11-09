@@ -15,4 +15,10 @@ project_dir?: string,
  * A model table id or `<endpoint>:<model>`; defaults to `models.default` from the
  * configuration.
  */
-model?: string, };
+model?: string, 
+/**
+ * Start on git worktrees: every folder of the environment that is in a git repository is
+ * replaced by a new worktree on a new branch (`imperium/<session id>` unless
+ * `worktree_branch` names one). Other folders are used as they are. Local folders only.
+ */
+worktree?: boolean, worktree_branch?: string, };

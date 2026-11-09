@@ -4,7 +4,7 @@
 import { ArrowLeft, FolderPlus, Pencil, Trash, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import type { EnvironmentInfo } from "@imperium/protocol";
+import type { EnvironmentInfo, EnvironmentRuntime, RuntimeTestResult } from "@imperium/protocol";
 
 import {
   IconPicker,
@@ -15,6 +15,7 @@ import {
   type ProjectIconChoice,
 } from "../projectIcons";
 import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
+import { EnvironmentRuntimeFields } from "./EnvironmentRuntimeFields";
 import { StatusBadge } from "./StatusBadge";
 
 /** The environment a session works in: the one it names, else the one whose first folder it uses. */
@@ -31,6 +32,9 @@ export type EnvironmentActions = {
   onAddFolder: (id: string) => void;
   onRemoveFolder: (id: string, folder: string) => void;
   onSetIcon: (id: string, choice: ProjectIconChoice | null) => void;
+  onSetRuntime: (id: string, runtime: EnvironmentRuntime) => Promise<void>;
+  onTestRuntime: (id: string) => Promise<RuntimeTestResult>;
+  onSetPersistentAgent: (id: string, on: boolean) => void;
 };
 
 export function EnvironmentsPanel({
@@ -138,6 +142,13 @@ export function EnvironmentsPanel({
                       ))}
                       {env.folders.length === 0 && <li className="muted">Add a folder to start sessions here.</li>}
                     </ul>
+                    <EnvironmentRuntimeFields
+                      env={env}
+                      connected={connected}
+                      onSave={(runtime) => actions.onSetRuntime(env.id, runtime)}
+                      onTest={() => actions.onTestRuntime(env.id)}
+                      onSetPersistentAgent={(on) => actions.onSetPersistentAgent(env.id, on)}
+                    />
                     <div className="environment-actions">
                       <button onClick={() => actions.onAddFolder(env.id)} disabled={!connected}>
                         <FolderPlus aria-hidden="true" /> Add folder
@@ -224,8 +235,10 @@ function NameForm({
   );
 }
 
-/** Sessions needing the user come first, merged ones last, and otherwise the most recent first. */
+/** An environment's persistent agent is pinned first; then sessions needing the user, merged
+ * ones last, and otherwise the most recent first. */
 function rank(session: SessionState): number {
+  if (session.summary.persistent) return -1;
   if (session.status === "needs_attention") return 0;
   if (session.status === "merged") return 2;
   return 1;
@@ -304,8 +317,23 @@ export function SessionsPanel({
                     aria-current={id === selected ? "true" : undefined}
                     onClick={() => onSelect(id)}
                   >
-                    <span className="name">{sessionTitle(session)}</span>
+                    <span className="name">
+                      {session.summary.persistent ? `${place} agent` : sessionTitle(session)}
+                    </span>
                     <span className="row-meta">
+                      {session.summary.persistent && (
+                        <span className="badge persistent" title="Always available; keeps its conversation across restarts">
+                          Persistent
+                        </span>
+                      )}
+                      {(session.summary.worktrees?.length ?? 0) > 0 && (
+                        <span
+                          className="badge worktree"
+                          title={session.summary.worktrees.map((tree) => `${tree.path} (${tree.branch})`).join("\n")}
+                        >
+                          Worktree
+                        </span>
+                      )}
                       <StatusBadge session={session} />
                       <span className="detail">
                         {!scope && `${place} · `}

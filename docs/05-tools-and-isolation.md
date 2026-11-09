@@ -168,6 +168,37 @@ The file tools stay tier 0 (they run in the daemon, confined to the workspace). 
 forcing tiers per model or agent, GPU flags for containers, Windows AppContainer, and a default
 dev image.
 
+### Environment runtimes (implemented)
+
+An [environment's runtime](14-projects-and-automation.md#runtimes-implemented) can move a
+session's tools off this machine. With a remote runtime the workspace's folders are POSIX paths
+inside it, and every file and command tool is a short `sh -c` script run through the runtime's
+own client, so the runtime needs nothing but a POSIX shell:
+
+- **Docker container** (`docker` with `container`): `docker exec -i -w <folder> <container> sh -c …`.
+- **WSL** (`wsl` with `distro`, Windows only): `wsl.exe -d <distro> --cd <folder> --exec sh -c …`
+  (`--exec` hands the script to `sh` as one argument; after a plain `--`, wsl.exe would join the
+  arguments for the login shell). Windows paths given as folders or to tools (`C:\work\app`,
+  `\\wsl$\<distro>\…`) are translated (`/mnt/c/work/app`).
+- **SSH** (`ssh` with `host`): `ssh -o BatchMode=yes -T [-p port] <host> "sh -c 'cd <folder> && …'"`
+  with the system client, so `~/.ssh/config` aliases, keys, and agents apply and no password is
+  ever asked for. `user@host:port` is split into the destination and `-p`.
+
+`read_file` runs `cat`, `write_file` runs `mkdir -p` and `cat >` with the content on standard
+input (so any bytes survive), `edit_file` reads and writes the same way, and `list_dir` runs
+`ls -1Ap`. Paths are resolved against the working directory and checked against the folders as
+written (after resolving `.` and `..`); links inside the runtime are not followed from here.
+`run_command` reports the exit code, output, and errors as on this machine, and the session's
+isolation reads `runtime · ssh <host>` (or the container or distribution). A Docker **image**
+without a container is the container tier above with the environment's local folders mounted
+(network on). The permission prompts and approvals are unchanged; hooks still run on this
+machine (in its temporary folder).
+
+**Worktrees:** a session can be started on git worktrees of its environment's repositories so
+its edits stay apart from the user's checkout; see
+[worktrees](14-projects-and-automation.md#worktrees). The sandbox is then the worktrees (and
+any folders outside git).
+
 | Tier            | Boundary                                                                     | Protects against                                    | Does not protect against                           |
 | --------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |
 | 0 — Policy      | Daemon refuses built-in file tools outside allowed roots                     | Model mistakes with built-in tools                  | Code run through `exec`, which has the user's full rights |

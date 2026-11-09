@@ -8,7 +8,7 @@ use imperium_protocol::methods::{
     EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
     EnvironmentFolderParams, EnvironmentInfo, EnvironmentList, EnvironmentListParams,
     EnvironmentRef, EnvironmentRemoveFolder, EnvironmentRuntime, EnvironmentTestRuntime,
-    EnvironmentUpdate, EnvironmentUpdateParams,
+    EnvironmentUpdate, EnvironmentUpdateParams, SessionDelete, SessionDeleteParams,
 };
 
 use crate::{block_on, connect};
@@ -163,6 +163,26 @@ pub fn test(env: String) -> anyhow::Result<()> {
         } else {
             bail!("{}", result.message)
         }
+    })
+}
+
+pub fn delete_session(session_id: String, remove_worktrees: bool) -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let result = client
+            .call::<SessionDelete>(SessionDeleteParams {
+                session_id: session_id.clone(),
+                remove_worktrees,
+            })
+            .await?;
+        println!("deleted session {session_id}");
+        for removed in result.removed_worktrees {
+            println!("removed worktree {removed} (its branch is kept)");
+        }
+        for failure in &result.failed {
+            eprintln!("could not remove worktree {failure}");
+        }
+        Ok(())
     })
 }
 

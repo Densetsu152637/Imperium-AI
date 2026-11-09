@@ -89,6 +89,7 @@ async fn a_chat_turn_streams_events_to_the_client() {
             environment_id: None,
             project_dir: Some(project.path().to_string_lossy().into_owned()),
             model: None,
+            ..SessionCreateParams::default()
         })
         .await
         .unwrap();

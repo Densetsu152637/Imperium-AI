@@ -250,15 +250,32 @@ stored with the environment in the daemon. The first time the app connects after
 arrived, every project folder it knew (opened folders, the selected project, folders of running
 sessions) becomes an environment of its own, keeping the icon it had.
 
+**Runtime and persistent agent (implemented):** below its folders, a selected environment has a
+*Runtime* section (`EnvironmentRuntimeFields`, a small component any environment editor can
+host): a select for *This machine*, *Docker*, *WSL*, or *SSH* with that runtime's fields (the
+image and an optional running container, the distribution, or the host), *Save runtime*, and
+*Test*, which calls `environments.test_runtime` and shows its answer in green or red (for
+example *Docker is running but image rust:1 is not present; get it with: docker pull rust:1*).
+For a remote runtime the folders are paths inside it
+([runtimes](14-projects-and-automation.md#runtimes-implemented)). The *Persistent agent* switch
+turns on the environment's
+[persistent agent](14-projects-and-automation.md#persistent-agent-implemented).
+
 *New session* (in the Sessions panel's header) starts a session in the selected environment;
 it is disabled, with the reason as its tooltip, while disconnected, with no environment
 selected, or when the environment has no folders. The model list beside it picks the session's
 model (*Default model* uses `models.default`); when no default is configured, starting with
 *Default model* shows the daemon's explanation above the list instead of failing silently.
+*Start in a worktree* beside it starts the session on new git worktrees of the environment's
+repositories ([worktrees](14-projects-and-automation.md#worktrees)).
 
 The Sessions panel lists every session across environments, each with its environment's icon
 to the left of its title and a status badge (idle, working, needs attention, paused with its
 resume time, watching with its pull request, merged); sessions needing attention sort first.
+An environment's persistent agent is pinned above everything else, titled *<environment>
+agent* with a *Persistent* badge; a session on worktrees has a *Worktree* badge whose tooltip
+lists each worktree and branch. A session deleted elsewhere (`session.deleted`) leaves the
+list.
 Clicking a session's icon (or an environment) opens that environment's view, which lists only
 its sessions, with *All sessions* to return; clicking the row opens the session and selects its
 environment. The session header shows the status and the *Usage limits* controls (how to wait

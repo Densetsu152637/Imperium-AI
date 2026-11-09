@@ -3774,3 +3774,62 @@ button.select.open .select-chevron {
     grid-template-columns: 1fr;
   }
 }
+
+/* An environment's runtime and persistent agent, inside its detail. */
+.environment-runtime {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space);
+  margin-top: var(--space);
+  padding-top: var(--space);
+  border-top: 1px solid var(--border);
+}
+
+.runtime-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space);
+}
+
+.runtime-label {
+  font-size: 0.85rem;
+}
+
+.runtime-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+}
+
+.runtime-hint,
+.runtime-result {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.runtime-result.ok {
+  color: var(--ok);
+}
+
+.runtime-result.error {
+  color: var(--danger);
+}
+
+.badge.persistent {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.badge.worktree {
+  border-color: var(--border-strong);
+}
+
+.new-session-worktree {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
