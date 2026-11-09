@@ -74,7 +74,7 @@ impl ProcessLauncher {
         let ready = tokio::time::timeout(LOAD_TIMEOUT, self.wait_ready(&base, &mut child)).await;
         match ready {
             Ok(Ok(())) => Ok(Box::new(ProcessServer {
-                _child: child,
+                child,
                 base_url: format!("{base}/v1"),
             })),
             Ok(Err(message)) => Err(format!("{message}; see {}", log_path.display())),
@@ -109,13 +109,17 @@ impl Launcher for ProcessLauncher {
 
 /// A running server process; dropping it kills the process.
 struct ProcessServer {
-    _child: Child,
+    child: Child,
     base_url: String,
 }
 
 impl Server for ProcessServer {
     fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.child.id()
     }
 }
 

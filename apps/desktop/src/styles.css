@@ -1873,6 +1873,179 @@ button.sort:hover:not(:disabled) {
   }
 }
 
+/* Resources: usage meters with sparklines, then the local models and endpoints in use */
+.resources {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 1.5);
+  font-size: 0.8rem;
+}
+
+.resources .meters {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 0.75);
+}
+
+.resources .gpu {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 0.5);
+}
+
+.meter {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(3rem, 1fr) 2.75rem minmax(3rem, 6rem);
+  grid-template-areas:
+    "label bar value spark"
+    ". detail detail detail";
+  align-items: center;
+  column-gap: var(--space);
+  row-gap: 0.1rem;
+}
+
+.meter-label {
+  grid-area: label;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.meter-bar {
+  grid-area: bar;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.meter-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 400ms var(--ease);
+}
+
+.meter-bar[data-level="busy"] > span {
+  background: var(--warn);
+}
+
+.meter-bar[data-level="high"] > span {
+  background: var(--danger);
+}
+
+.meter-value {
+  grid-area: value;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sparkline {
+  grid-area: spark;
+  width: 100%;
+  height: 1.25rem;
+}
+
+.sparkline polyline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.meter-detail {
+  grid-area: detail;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  margin: 0 0 calc(var(--space) * 0.5);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.resources table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.resources th,
+.resources td {
+  text-align: left;
+  padding: 0.3rem 0.35rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.resources th {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.resources td:first-child {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.resources tbody tr:hover {
+  background: var(--hover);
+}
+
+.resources td.errors {
+  color: var(--danger);
+}
+
+.resources button.icon-only {
+  width: 1.6rem;
+  height: 1.6rem;
+}
+
+.resources .warning {
+  color: var(--warn);
+  margin: 0;
+}
+
+.resources .daemon-usage {
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+/* Narrow panels drop the sparklines and the less important columns. */
+@container (max-width: 20rem) {
+  .meter {
+    grid-template-columns: 4.5rem minmax(3rem, 1fr) 2.75rem;
+    grid-template-areas:
+      "label bar value"
+      ". detail detail";
+  }
+
+  .sparkline {
+    display: none;
+  }
+
+  .resources th:nth-child(2),
+  .resources td:nth-child(2),
+  .resources th:nth-child(4),
+  .resources td:nth-child(4) {
+    display: none;
+  }
+}
+
 /* Local models */
 .local-models .warning {
   font-size: 0.8rem;

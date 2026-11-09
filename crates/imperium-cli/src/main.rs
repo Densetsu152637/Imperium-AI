@@ -8,6 +8,7 @@ mod phone;
 mod project;
 mod pull;
 mod remote;
+mod resources;
 mod schedule;
 mod session;
 mod workflow;
@@ -136,12 +137,23 @@ enum Command {
         #[command(subcommand)]
         command: RuntimeCommand,
     },
+    /// CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use.
+    Resources {
+        /// Keep printing a fresh snapshot every two seconds until Ctrl+C.
+        #[arg(long)]
+        watch: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum ModelsCommand {
     /// List GGUF models in models.folders, whether each fits in memory, and what is loaded.
     Local,
+    /// Unload an idle local model now, freeing its memory.
+    Unload {
+        /// The local model id, as `imperium resources` lists it.
+        model: String,
+    },
     /// List the quantisations a Hugging Face repository offers, with sizes and whether each
     /// fits this machine.
     Files {
@@ -462,6 +474,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => delete_secret(&name),
         Command::Models { command } => match command {
             ModelsCommand::Local => local::list(),
+            ModelsCommand::Unload { model } => resources::unload(model),
             ModelsCommand::Files { repo, revision } => pull::files(repo, revision),
             ModelsCommand::Pull {
                 repo,
@@ -481,6 +494,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
+        Command::Resources { watch } => resources::show(watch),
         Command::Phone { command } => match command {
             PhoneCommand::Pair => phone::pair(),
             PhoneCommand::Devices => phone::devices(),

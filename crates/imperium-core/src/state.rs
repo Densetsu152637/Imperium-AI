@@ -123,6 +123,8 @@ pub struct DaemonState {
     suggestions: Suggestions,
     /// Runs processes for remote runtimes; a fake in tests.
     runner: OnceLock<Arc<dyn Runner>>,
+    /// Machine usage for `system.resources` and its watchers.
+    resources: Arc<crate::resources::ResourceMonitor>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -183,6 +185,7 @@ impl DaemonState {
             connectors: crate::connectors::StatusCache::default(),
             suggestions: Suggestions::new(suggest),
             runner: OnceLock::new(),
+            resources: Arc::default(),
         })
     }
 
@@ -640,6 +643,31 @@ impl DaemonState {
             .map_or_else(crate::local::disabled, LocalRuntime::listing)
     }
 
+    /// The resource monitor behind `system.resources`.
+    pub fn resource_monitor(&self) -> &Arc<crate::resources::ResourceMonitor> {
+        &self.resources
+    }
+
+    /// Local models loaded now, in use or idle.
+    pub fn loaded_local_models(&self) -> Vec<imperium_local::supervisor::LoadedStatus> {
+        self.local
+            .get()
+            .map(|local| local.supervisor.loaded())
+            .unwrap_or_default()
+    }
+
+    /// Unloads an idle local model now.
+    pub fn unload_local_model(&self, model: &str) -> Result<(), String> {
+        let local = self
+            .local
+            .get()
+            .ok_or_else(|| format!("{model} is not loaded: no local runtime is running"))?;
+        local
+            .supervisor
+            .unload(model)
+            .map_err(|error| error.to_string())
+    }
+
     /// The memory local models may use, when the local runtime is running.
     pub fn local_budget(&self) -> Option<imperium_local::planner::Budget> {
         self.local.get().map(LocalRuntime::budget)
@@ -932,6 +960,7 @@ impl DaemonState {
         }
         if let Some(me) = self.me.upgrade() {
             crate::suggestions::watch(&me, id.clone(), session.subscribe());
+            crate::resources::watch_session(&me, id.clone(), session.subscribe());
         }
         let session = Arc::new(session);
         self.placements
