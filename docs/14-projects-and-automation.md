@@ -16,15 +16,16 @@ RPC:
 | Method | Params | Result |
 | --- | --- | --- |
 | `environments.list` | `{}` | `{ environments: EnvironmentInfo[], git: string[] }` (`git`: ids of local environments with a folder inside a git repository, which can start sessions on worktrees; also sent with `environments.changed`) |
-| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent? }` | `EnvironmentInfo` |
-| `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent? }` (empty icon/colour clears it) | `EnvironmentInfo` |
+| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent?, pet? }` | `EnvironmentInfo` |
+| `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent?, pet? }` (empty icon/colour/pet clears it) | `EnvironmentInfo` |
 | `environments.test_runtime` | `{ id }` | `{ ok, message }` |
 | `environments.delete` | `{ id }` | `{}` (folders and running sessions are left alone) |
 | `environments.add_folder` | `{ id, folder }` (an existing absolute folder) | `EnvironmentInfo` |
 | `environments.remove_folder` | `{ id, folder }` | `EnvironmentInfo` |
 
 `EnvironmentInfo` is `{ id, name, icon, color, folders, pinned, runtime, persistent_agent,
-agent_session_id }`, folders first-to-last with the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
+agent_session_id, pet }`, where `pet` is the environment's default pet (an installed pet's id) for the
+[nursery](16-pets.md#imperium-nursery), or none to let the nursery decide; folders first-to-last with the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
 (the full list). `session.create` takes `environment_id`; `project_dir` still works and maps to
 the environment whose first folder it is, created (named after the folder) when there is none.
 Sessions from before environments are moved the same way when the daemon resumes them, and the

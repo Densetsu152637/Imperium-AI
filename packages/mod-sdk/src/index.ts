@@ -36,6 +36,12 @@ export type SessionSnapshot = {
   projectDir: string;
   /** The daemon's session status (`idle`, `working`, `waiting`, ...). */
   status: string;
+  /** The environment the session runs in, or null for the default one. */
+  environmentId: string | null;
+  /** Whether the session is archived. */
+  archived: boolean;
+  /** The environment's default pet (an installed pet id), or null when the nursery decides. */
+  pet: string | null;
   /** The root agent first, then subagents in the order they were spawned. */
   agents: AgentSnapshot[];
 };

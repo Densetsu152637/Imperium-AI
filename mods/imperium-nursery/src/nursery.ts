@@ -1,5 +1,8 @@
 // A nursery's state, no DOM: its pets (one arbiter each), fed by session events and snapshots
-// through the routing in route.ts, or by hand for "My nursery". The view only reads it.
+// through the routing in route.ts, or by hand for the extra pets. The view only reads it.
+//
+// Two modes. `session`: the selected session's agents, one pet each. `nursery`: your pet (always
+// there, hears every session), one pet per unarchived session, and the extra pets you put in.
 
 import type { SessionEvent, SessionSnapshot } from "@imperium/mod-sdk";
 
@@ -10,13 +13,18 @@ import { clip, hash } from "./pick.ts";
 import { DROWSY_MS, GATHER_MS, MEET_DIST, beginScript, chooseKind, dueShots, isOver, nextPlayDelay, passingPair, pickPair, roleOf, startPlay } from "./play.ts";
 import type { Candidate, Play, Pose } from "./play.ts";
 import { REMOVE_MS, ROOT, busyOf, busySubs, keyOf, repair, routeEvent } from "./route.ts";
-import type { Mode } from "./route.ts";
 import { distance } from "./space.ts";
 import type { Pos } from "./space.ts";
 import type { PetsArbiter } from "./types.ts";
 
+/** What a pet in the nursery is: yours, a session's, or one you put in by hand. */
+export type Kind = "resident" | "session" | "extra" | "agent";
+
 export type Entry = {
   key: string;
+  kind: Kind;
+  /** A session pet: the pet its environment names, or null. */
+  envPet: string | null;
   sessionId: string;
   agentId: string;
   root: boolean;
@@ -36,12 +44,26 @@ export type Entry = {
 
 export type Deps = {
   /** The arbiter's environment for a pet (its catalog, sleep and fidget settings). */
-  envFor(petId: string | null): Env;
+  envFor(petId: string | null, kind: Kind): Env;
   /** The pet for something new or after the setting changed. */
-  assign(who: { key: string; sessionId: string; root: boolean }): string | null;
+  assign(who: { key: string; sessionId: string; root: boolean; envPet: string | null }): string | null;
 };
 
-type Init = { sessionId: string; agentId: string; root: boolean; label: string; petId?: string | null };
+type Init = { sessionId: string; agentId: string; root: boolean; label: string; petId?: string | null; kind?: Kind; envPet?: string | null };
+
+/** The key of your pet, and of a session's pet, in the nursery. */
+export const RESIDENT = "resident";
+export const sessionKey = (sessionId: string): string => `session:${sessionId}`;
+/** How long an archived session's pet takes to walk out. */
+export const LEAVE_MS = 4000;
+
+/** A source id for one agent of one session, on your pet (which hears them all). */
+const scoped = (sessionId: string, source: string): string => `${sessionId}:${source}`;
+
+/** `events` heard by your pet: every source belongs to its session. */
+function scopeEvents(events: PetEvent[], sessionId: string): PetEvent[] {
+  return events.map((ev) => ("source" in ev && ev.source !== null ? { ...ev, source: scoped(sessionId, ev.source) } : ev));
+}
 
 export class Nursery {
   readonly entries = new Map<string, Entry>();
@@ -69,10 +91,12 @@ export class Nursery {
   private nextPassAt = 0;
   private clock = 0;
 
-  readonly mode: Mode | "mine";
+  readonly mode: "session" | "nursery";
   private deps: Deps;
+  /** Sessions that are listed and not archived (nursery). */
+  private liveSessions = new Set<string>();
 
-  constructor(mode: Mode | "mine", deps: Deps) {
+  constructor(mode: "session" | "nursery", deps: Deps) {
     this.mode = mode;
     this.deps = deps;
   }
@@ -85,9 +109,13 @@ export class Nursery {
   }
 
   private create(key: string, init: Init, now: number): Entry {
-    const petId = init.petId !== undefined ? init.petId : this.deps.assign({ key, sessionId: init.sessionId, root: init.root });
+    const envPet = init.envPet ?? null;
+    const petId = init.petId !== undefined ? init.petId : this.deps.assign({ key, sessionId: init.sessionId, root: init.root, envPet });
+    const kind = init.kind ?? "agent";
     const entry: Entry = {
       key,
+      kind,
+      envPet,
       sessionId: init.sessionId,
       agentId: init.agentId,
       root: init.root,
@@ -100,14 +128,14 @@ export class Nursery {
       order: this.serial++,
       cache: null,
     };
-    entry.arbiter = dispatch(entry.arbiter, { type: "start" }, now, this.deps.envFor(petId));
+    entry.arbiter = dispatch(entry.arbiter, { type: "start" }, now, this.deps.envFor(petId, kind));
     this.entries.set(key, entry);
     return entry;
   }
 
   /** Applies events to one pet; a reviewer's `working` loop is `review`, a stale unblock is dropped. */
   private send(entry: Entry, events: PetEvent[], now: number): void {
-    const env = this.deps.envFor(entry.petId);
+    const env = this.deps.envFor(entry.petId, entry.kind);
     for (const ev of events) {
       if (ev.type === "unblock" && entry.arbiter.sources[ev.source]?.waits[ev.id] === undefined) continue;
       const out = (ev.type === "loop" || ev.type === "ensure" || ev.type === "spawn") && ev.name === "working" && entry.review[ev.source] ? { ...ev, name: "review" } : ev;
@@ -130,12 +158,40 @@ export class Nursery {
 
   // --- the nurseries -------------------------------------------------------------------
 
-  /** A session event: routed to the pets of the nursery it concerns. */
+  /** A session event: routed to the pets it concerns. */
   event(e: SessionEvent, now: number): void {
-    if (this.mode === "mine") return;
-    if (this.mode === "session" && e.sessionId !== this.target()) return;
+    if (this.mode === "session") {
+      if (e.sessionId !== this.target()) return;
+      this.sessionEvent(e, now);
+      return;
+    }
     let changed = false;
-    for (const step of routeEvent(this.mode, e)) {
+    for (const step of routeEvent("global", e)) {
+      const own = this.entries.get(sessionKey(step.sessionId));
+      const resident = this.entries.get(RESIDENT);
+      const child = step.spawn?.agentId;
+      const reviewer = isReviewer("", step.spawn?.brief ?? "");
+      if (own && this.liveSessions.has(step.sessionId)) {
+        if (child) own.review[child] = reviewer;
+        if (step.overlay) own.overlayEnds[step.overlay.source] = now + step.overlay.ms;
+        this.endPlayFor(own.key);
+        this.send(own, step.events, now);
+        changed = true;
+      }
+      if (resident && (this.liveSessions.has(step.sessionId) || !this.sessionIds.has(step.sessionId))) {
+        if (child) resident.review[scoped(step.sessionId, child)] = reviewer;
+        if (step.overlay) resident.overlayEnds[scoped(step.sessionId, step.overlay.source)] = now + step.overlay.ms;
+        this.endPlayFor(resident.key);
+        this.send(resident, scopeEvents(step.events, step.sessionId), now);
+        changed = true;
+      }
+    }
+    if (changed) this.onChange();
+  }
+
+  private sessionEvent(e: SessionEvent, now: number): void {
+    let changed = false;
+    for (const step of routeEvent("session", e)) {
       let entry = this.entries.get(step.key);
       if (!entry) {
         if (!step.create || (this.retired.has(step.key) && !step.root)) continue;
@@ -143,9 +199,8 @@ export class Nursery {
         entry = this.create(step.key, { sessionId: step.sessionId, agentId: step.agentId, root: step.root, label }, now);
       }
       if (step.spawn) {
-        const src = this.mode === "session" ? "main" : step.spawn.agentId;
-        entry.review[src] = isReviewer("", step.spawn.brief);
-        if (this.mode === "session") entry.label = clip(step.spawn.brief || step.spawn.agentId, 60);
+        entry.review.main = isReviewer("", step.spawn.brief);
+        entry.label = clip(step.spawn.brief || step.spawn.agentId, 60);
       }
       if (step.removeAfterMs !== undefined) entry.removeAt = now + step.removeAfterMs;
       if (step.overlay) entry.overlayEnds[step.overlay.source] = now + step.overlay.ms;
@@ -158,23 +213,31 @@ export class Nursery {
 
   /** The sessions and selection changed (or were first read): seed new pets, repair the rest. */
   snapshots(sessions: SessionSnapshot[], selected: string | null, now: number): void {
-    if (this.mode === "mine") return;
     this.selected = selected;
     this.sessionIds = new Set(sessions.map((s) => s.sessionId));
     for (const s of sessions) this.titles.set(s.sessionId, s.title);
-    if (this.mode === "global") this.globalSnapshots(sessions, now);
+    if (this.mode === "nursery") this.nurserySnapshots(sessions, now);
     else this.sessionSnapshots(sessions, now);
     this.onChange();
   }
 
-  private globalSnapshots(sessions: SessionSnapshot[], now: number): void {
-    const seen = new Set<string>();
-    sessions.forEach((s, i) => {
-      const key = keyOf("global", s.sessionId, ROOT);
-      seen.add(key);
-      const entry = this.entries.get(key) ?? this.create(key, { sessionId: s.sessionId, agentId: ROOT, root: true, label: s.title }, now);
+  /** Your pet follows every unarchived session; each of them has a pet of its own. */
+  private nurserySnapshots(sessions: SessionSnapshot[], now: number): void {
+    const live = sessions.filter((s) => !s.archived);
+    this.liveSessions = new Set(live.map((s) => s.sessionId));
+    const resident = this.entries.get(RESIDENT);
+    const heard = new Set<string>();
+    live.forEach((s, i) => {
+      const key = sessionKey(s.sessionId);
+      let entry = this.entries.get(key);
+      if (!entry) entry = this.create(key, { sessionId: s.sessionId, agentId: ROOT, root: true, label: s.title, kind: "session", envPet: s.pet }, now);
+      entry.removeAt = null;
       entry.label = s.title;
       entry.order = i;
+      if (entry.envPet !== s.pet) {
+        entry.envPet = s.pet;
+        this.assignTo(entry, now);
+      }
       const ids = new Set<string>();
       for (const ag of s.agents) {
         const root = ag.agentId === ROOT || ag.parentId === null;
@@ -182,11 +245,24 @@ export class Nursery {
         ids.add(src);
         if (!root) entry.review[src] = isReviewer("", ag.brief);
         this.send(entry, repair(entry.arbiter, src, ag.status, !root), now);
+        if (resident) {
+          const mine = scoped(s.sessionId, src);
+          heard.add(mine);
+          if (!root) resident.review[mine] = isReviewer("", ag.brief);
+          this.send(resident, repair(resident.arbiter, mine, ag.status, !root), now);
+        }
       }
       // A subagent the app no longer lists is over.
       for (const src of Object.keys(entry.arbiter.sources)) if (src !== "main" && !ids.has(src)) this.send(entry, [{ type: "end", source: src }], now);
     });
-    for (const key of [...this.entries.keys()]) if (!seen.has(key)) this.remove(key);
+    if (resident) {
+      // Whatever the app no longer lists (a subagent, an archived or deleted session) is over.
+      for (const src of Object.keys(resident.arbiter.sources)) if (src !== "main" && !heard.has(src)) this.send(resident, [{ type: "end", source: src }], now);
+    }
+    // An archived or deleted session's pet walks out; if it comes back in time it simply stays.
+    for (const entry of this.entries.values()) {
+      if (entry.kind === "session" && !this.liveSessions.has(entry.sessionId)) entry.removeAt ??= now + LEAVE_MS;
+    }
   }
 
   private sessionSnapshots(sessions: SessionSnapshot[], now: number): void {
@@ -217,16 +293,33 @@ export class Nursery {
 
   // --- my nursery -----------------------------------------------------------------------
 
-  /** Puts a pet in (My nursery). */
+  /** Puts an extra pet in. */
   add(uid: string, petId: string, name: string, now: number): void {
     if (this.entries.has(uid)) return;
-    this.create(uid, { sessionId: "", agentId: uid, root: false, label: name, petId }, now);
+    this.create(uid, { sessionId: "", agentId: uid, root: false, label: name, petId, kind: "extra" }, now);
     this.onChange();
   }
 
-  /** Takes a pet out. */
+  /** Takes an extra pet out; your pet and the session pets cannot be taken out. */
   take(key: string): void {
+    if (this.entries.get(key)?.kind !== "extra") return;
     this.remove(key);
+    this.onChange();
+  }
+
+  /** Sets your pet (it is always in the nursery): created the first time, then changed in place. */
+  setResident(petId: string | null, label: string, now: number): void {
+    const entry = this.entries.get(RESIDENT);
+    if (!entry) {
+      if (petId === null) return;
+      const created = this.create(RESIDENT, { sessionId: "", agentId: RESIDENT, root: false, label, petId, kind: "resident" }, now);
+      created.order = -1;
+    } else {
+      entry.petId = petId;
+      entry.label = label;
+      entry.arbiter = advance(entry.arbiter, now, this.deps.envFor(petId, "resident"));
+      entry.cache = null;
+    }
     this.onChange();
   }
 
@@ -322,7 +415,7 @@ export class Nursery {
     let changed = false;
     for (const entry of [...this.entries.values()]) {
       if (entry.removeAt !== null && entry.removeAt <= now) {
-        this.retired.add(entry.key);
+        if (entry.kind === "agent") this.retired.add(entry.key);
         this.remove(entry.key);
         changed = true;
         continue;
@@ -337,31 +430,37 @@ export class Nursery {
     return changed;
   }
 
-  /** The pet with the current `petId`s redrawn: after the setting or the installed pets changed. */
+  /** The pets with their `petId`s chosen again: after the setting or the installed pets changed. */
   reassign(now: number): void {
     for (const entry of this.entries.values()) {
-      if (this.mode === "mine") continue;
-      entry.petId = this.deps.assign({ key: entry.key, sessionId: entry.sessionId, root: entry.root });
-      entry.arbiter = advance(entry.arbiter, now, this.deps.envFor(entry.petId));
-      entry.cache = null;
+      if (entry.kind === "extra" || entry.kind === "resident") continue;
+      this.assignTo(entry, now);
     }
     this.onChange();
+  }
+
+  private assignTo(entry: Entry, now: number): void {
+    entry.petId = this.deps.assign({ key: entry.key, sessionId: entry.sessionId, root: entry.root, envPet: entry.envPet });
+    entry.arbiter = advance(entry.arbiter, now, this.deps.envFor(entry.petId, entry.kind));
+    entry.cache = null;
   }
 
   /** What the pet shows at `now`, cached until its next change of its own. */
   view(entry: Entry, now: number): Current {
     const hit = entry.cache;
     if (hit && now >= hit.from && (hit.wake === null || now < hit.wake)) return hit.cur;
-    const env = this.deps.envFor(entry.petId);
+    const env = this.deps.envFor(entry.petId, entry.kind);
     const cur = current(entry.arbiter, now, env);
     entry.cache = { cur, wake: nextWake(entry.arbiter, now, env), from: now };
     return cur;
   }
 
-  /** The pets in display order: session nursery by spawn order, global with busy sessions first. */
+  /** The pets in display order: yours first, then the sessions' (busy ones first), then the extras. */
   sorted(): Entry[] {
     const rank = (e: Entry): number => {
-      if (this.mode !== "global") return 0;
+      if (e.kind === "resident") return -1;
+      if (e.kind === "extra") return 3;
+      if (this.mode === "session") return 0;
       const b = busyOf(e.arbiter);
       return b === "waiting" ? 0 : b === "working" ? 1 : 2;
     };
@@ -369,11 +468,14 @@ export class Nursery {
   }
 
   /** The counts the summary line reports. */
-  summary(): { pets: number; busy: number; subagents: number } {
+  summary(): { pets: number; sessions: number; busy: number; subagents: number } {
     let busy = 0;
     let subagents = 0;
+    let sessions = 0;
     for (const e of this.entries.values()) {
-      if (this.mode === "global") {
+      if (this.mode === "nursery") {
+        if (e.kind !== "session" || e.removeAt !== null) continue;
+        sessions++;
         if (busyOf(e.arbiter)) busy++;
         subagents += busySubs(e.arbiter);
       } else if (!e.root) {
@@ -381,7 +483,6 @@ export class Nursery {
         if (busyOf(e.arbiter)) subagents++;
       }
     }
-    return { pets: this.entries.size, busy, subagents };
+    return { pets: this.entries.size, sessions, busy, subagents };
   }
 }
-

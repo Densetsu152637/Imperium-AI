@@ -7,45 +7,50 @@ sleeps and reacts on its own.
 
 ## Enabling it
 
-The mod ships with Imperium and is on by default, in place of the single Pet panel: the
-Global nursery docks in the left column where the Pet panel was, and the Session nursery and
-My nursery in the right column. Turn it off in **Settings → Mods**; reopen the Pet panel from
-**Settings → Panels**. Its permissions are:
+The mod ships with Imperium and is on by default. Its Nursery panel *is* the app's pet panel
+(the built-in Pet panel is gone): it docks in the left column where that panel was, and the
+Session nursery sits in the right column. Turn the mod off in **Settings → Mods**. Its
+permissions are:
 
 | Permission     | Why |
 |----------------|-----|
 | `sessions:read`| Session snapshots and the raw session events that drive the pets. |
 | `pets:read`    | The installed pets and their animation strips. |
-| `storage`      | Your settings and "My nursery" residents. |
+| `storage`      | Your settings, your pet and the extra pets. |
 
 Pets see activity status only (a turn started, a tool ran, a subagent finished). They never see
 transcript text.
 
-## The three nurseries
+## The two panels
 
 - **Session nursery** (panel `session`): one pet per agent of a session, the root agent plus
   each subagent, with a line such as "3 subagents working". It follows the session selected in
   the app; the *Session* selector pins it to a specific session instead (remembered). A
   subagent's pet appears when it is spawned and leaves about 30 seconds after it finishes, after
   playing `jumping` or `failed`. Each pet hears only its own agent's events.
-- **Global nursery** (panel `global`): one pet per session the app knows about, labelled with
-  the session title, with a badge for its working subagents and a total line ("4 sessions, 2
-  working, 5 subagents"). Working and waiting sessions come first. The pet hears all of its
-  session's events, so a subagent that needs you makes it show `alert`.
-- **My nursery** (panel `mine`): your own pets. Pick any installed pet, give it an optional
-  nickname and press **Put in**; press **×** on a pet to take it out. Residents idle, roam, play with each other
-  and fidget, fall asleep after a minute, and play `petted` when clicked. Who lives there is
-  kept across restarts.
+- **Nursery** (panel `nursery`, left column): one room with three kinds of pets.
+  - **Your pet** is always there and cannot be taken out. Choose it with the *Your pet* select
+    (any installed pet; the first one is the default, stored as `resident`). It reacts to every
+    unarchived session's activity combined (working while any session works, waiting while any
+    asks for permission), as the old single pet panel did.
+  - **One pet per unarchived session**, labelled with the session title, with a badge for its
+    working subagents. It hears all of its session's events, so a subagent that needs you makes
+    it show `alert`. A new session's pet pops in; archiving the session makes its pet walk out
+    and fade; unarchiving brings it back. The summary line reads "4 sessions, 2 working, 5
+    subagents", and working and waiting sessions come first.
+  - **Extra pets**: open *Add a pet*, pick any installed pet, give it an optional nickname and
+    press **Put in**; press **×** on one to take it out. They idle, roam, play with each other
+    and fidget, fall asleep after a minute, and play `petted` when clicked. Who is there is
+    kept across restarts (the `residents` storage key, as in the former My nursery).
 
-Clicking a pet in any nursery pats it; every pet is also a focusable button, so the keyboard
-works too.
+Clicking a pet pats it; every pet is also a focusable button, so the keyboard works too.
 
 ## One shared room
 
 Each panel is a single room that fills the panel below its controls. There are no cards or
 cages: pets stand anywhere in it, and a pet lower on screen (nearer) is drawn in front of one
 higher up, with a small shadow on the floor. A pet's label stays under it, the badge of the
-global nursery and the **×** of My nursery (shown on hover or focus) travel with it.
+session pets and the **×** of an extra pet (shown on hover or focus) travel with it.
 
 - **Roaming.** A free pet picks a spot anywhere in the room, walks there at a steady pace
   (`walk-left`/`walk-right` by direction; a pet without walk strips glides in `idle`), pauses
@@ -83,10 +88,12 @@ default) turns it off.
 
 ## Which pet an agent gets
 
-The **Pets** select at the top of the session and global panels chooses the pet for agents and
-sessions: *A mix of my pets* (the default; the pet is picked from the installed ones by hashing
-the agent or session id, and the root agent of the session nursery gets the first pet) or one
-specific pet. The choice is stored as `agentPets`.
+A session's pet is, in order: the **default pet of its environment** (set in the environment
+window; the host passes it as `SessionSnapshot.pet`) when that pet is installed; else the
+**Pets** select at the top of the panel: *A mix of my pets* (the default; picked from the
+installed ones by hashing the session id), *Same as my pet* (Nursery panel only), or one
+specific pet; else your pet. The choice is stored as `agentPets`. In the Session nursery the
+select picks the pets of agents (the root agent gets the first pet in a mix).
 
 ## Adding your own pets
 

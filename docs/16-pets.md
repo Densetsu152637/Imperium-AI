@@ -14,10 +14,9 @@ one-shots interrupting only equal or lower priority, 1500 ms coalescing, `minMs`
 transitions, `waking` before reacting while asleep, `duck-in`/`pop-out` hiding, `alert`,
 sleeping after `pets.sleep_after_minutes`, and fidgets) with injected time. One pet per daemon
 is fed by every session's and subagent's status events (never transcript text) and sends
-`pet.state` to every client with the start time, so all clients draw in phase. The desktop's
-Pet panel (closed by default, since the nursery below takes its place; Settings → Panels reopens
-it) draws the strip frame by frame with nearest-neighbour scaling (first frame only with
-reduced motion) and pats the pet on click (`pet.interact`); `pet.list` and `pet.strip` serve
+`pet.state` to every client with the start time, so all clients draw in phase (the phone and
+the CLI show it; the desktop has no panel of its own for it, the [Nursery](#imperium-nursery)
+mod being the desktop's pet panel); `pet.interact` pats it. `pet.list` and `pet.strip` serve
 the metadata (with each pet's drawn animations and raw `pet.json`) and strips; both work with
 `pets.enabled` off (`pet.list` then has no `selected` or `state`, and `pet.strip` takes a
 `pet_id`, defaulting to the selected pet). Pets are found in `pets.folders`, `<config>/pets`, `~/.claude/pets`,
@@ -103,8 +102,8 @@ Pixel Pets ignores unknown top-level fields, so Imperium adds an optional `imper
 
 ## Rendering and options
 
-- Desktop: a **Pet module** that can live in any panel ([07](07-desktop-ui.md#modules-inside-panels)),
-  plus the floating overlay. Frames are cropped from strips and scaled with nearest-neighbour;
+- Desktop: the [Nursery](#imperium-nursery) mod's panel (a Pet module that can live in any panel,
+  [07](07-desktop-ui.md#modules-inside-panels)), plus the floating overlay. Frames are cropped from strips and scaled with nearest-neighbour;
   `prefers-reduced-motion` shows first frames only.
 - Options follow the Pixel Pets plugin: `pet`, `sleepAfterMinutes`, `fidget`, `size`,
   `petsDir` (Imperium accepts a list of pet folders), plus `overlay` and `scope`.
@@ -116,12 +115,18 @@ Pixel Pets ignores unknown top-level fields, so Imperium adds an optional `imper
 ## Imperium-Nursery
 
 `mods/imperium-nursery` is a UI mod, bundled and on by default (Settings → Mods turns it off),
-that puts many pets on screen in place of the single Pet panel,
-each with its own copy of the behaviour arbiter ported from Pixel Pets. It contributes three
-panels: a **Session nursery** (one pet per agent of the selected or pinned session, with a
-count of working subagents), a **Global nursery** (one pet per session, with a badge for its
-working subagents; it docks in the left column where the Pet panel was) and **My nursery** (pets you put in with an optional nickname and take out
-again; residents idle, roam, sleep and play `petted` when clicked). Each panel is one shared room
+that is the desktop's pet panel: it puts many pets on screen, each with its own copy of the
+behaviour arbiter ported from Pixel Pets. It contributes two panels. The **Nursery** docks in
+the left column where the Pet panel used to be and holds **your pet** (always there, chosen with
+the "Your pet" select, and feeling every session's activity combined as the single pet did),
+**one pet per unarchived session** (labelled with the session title, with a badge for its
+working subagents; it pops in when the session is created, walks out when the session is
+archived and returns when it is unarchived) and **extra pets** you put in with an optional
+nickname and take out again. A session's pet is its environment's default pet
+(`EnvironmentInfo.pet`, set in the environment window) when that is installed, else the "Pets"
+setting (a mix, one pet, or the same as yours). The **Session nursery** has one pet per agent of
+the selected or pinned session, with a count of working subagents. Pets idle, roam, sleep and
+play `petted` when clicked. Each panel is one shared room
 that fills it: no cages, the pets walk anywhere in it, nearer ones (lower on screen) drawn in front. It reads session
 snapshots and events, the installed pets and its own storage through the
 [mod SDK](06-extensibility.md), maps events as in [Event mapping](#event-mapping), and sees status only, never

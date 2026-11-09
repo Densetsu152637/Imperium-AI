@@ -411,6 +411,10 @@ pub struct EnvironmentInfo {
     /// Whether the environment keeps a persistent agent session (off unless turned on).
     #[serde(default)]
     pub persistent_agent: bool,
+    /// The environment's default pet (an installed pet's id) for the nursery; none lets the
+    /// nursery decide.
+    #[serde(default)]
+    pub pet: Option<String>,
     /// The persistent agent's session id, once it has started; kept when the agent is turned
     /// off so turning it on again continues the same conversation.
     #[serde(default)]
@@ -510,11 +514,15 @@ pub struct EnvironmentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub persistent_agent: Option<bool>,
+    /// The environment's default pet, an installed pet's id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pet: Option<String>,
 }
 
 /// `environments.update`: rename an environment, change its icon, its runtime, or turn its
-/// persistent agent on or off. Fields left out keep their value; an empty `icon` or `color`
-/// clears it.
+/// persistent agent on or off. Fields left out keep their value; an empty `icon`, `color` or
+/// `pet` clears it.
 #[derive(Debug)]
 pub struct EnvironmentUpdate;
 
@@ -548,6 +556,10 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub persistent_agent: Option<bool>,
+    /// The default pet; an empty id clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pet: Option<String>,
 }
 
 /// `environments.test_runtime`: checks that an environment's runtime can be reached: Docker is

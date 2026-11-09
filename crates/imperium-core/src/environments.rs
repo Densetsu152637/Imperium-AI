@@ -114,6 +114,7 @@ impl Environments {
             runtime,
             persistent_agent: params.persistent_agent.unwrap_or(false),
             agent_session_id: None,
+            pet: params.pet.filter(|pet| !pet.is_empty()),
             pinned: false,
         };
         self.change(|list| {
@@ -154,6 +155,9 @@ impl Environments {
             }
             if let Some(on) = params.persistent_agent {
                 env.persistent_agent = on;
+            }
+            if let Some(pet) = params.pet {
+                env.pet = (!pet.is_empty()).then_some(pet);
             }
             Ok(())
         })
@@ -590,6 +594,53 @@ mod tests {
             Err(EnvironmentError::NotFound(_))
         ));
         assert_eq!(store(data.path()).list().len(), 1);
+    }
+
+    #[test]
+    fn the_default_pet_is_set_changed_and_cleared() {
+        let data = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        let plain = new(&envs, "Plain", None, &[]).unwrap();
+        assert_eq!(plain.pet, None);
+        let env = envs
+            .create(EnvironmentCreateParams {
+                name: "Pets".into(),
+                pet: Some("pixel-clawd".into()),
+                ..EnvironmentCreateParams::default()
+            })
+            .unwrap();
+        assert_eq!(env.pet.as_deref(), Some("pixel-clawd"));
+        // A fresh store reads it back; an update that leaves it out keeps it.
+        let reloaded = store(data.path());
+        assert_eq!(
+            reloaded.get(&env.id).unwrap().pet.as_deref(),
+            Some("pixel-clawd")
+        );
+        let renamed = reloaded
+            .update(EnvironmentUpdateParams {
+                id: env.id.clone(),
+                name: Some("Renamed".into()),
+                ..EnvironmentUpdateParams::default()
+            })
+            .unwrap();
+        assert_eq!(renamed.pet.as_deref(), Some("pixel-clawd"));
+        let changed = reloaded
+            .update(EnvironmentUpdateParams {
+                id: env.id.clone(),
+                pet: Some("other".into()),
+                ..EnvironmentUpdateParams::default()
+            })
+            .unwrap();
+        assert_eq!(changed.pet.as_deref(), Some("other"));
+        let cleared = reloaded
+            .update(EnvironmentUpdateParams {
+                id: env.id,
+                pet: Some(String::new()),
+                ..EnvironmentUpdateParams::default()
+            })
+            .unwrap();
+        assert_eq!(cleared.pet, None);
+        assert_eq!(store(data.path()).list()[1].pet, None);
     }
 
     #[test]

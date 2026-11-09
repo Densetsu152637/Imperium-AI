@@ -6,9 +6,8 @@
   "permissions": ["sessions:read", "pets:read", "storage"],
   "contributes": {
     "panels": [
-      { "id": "session", "title": "Session nursery", "slot": "sidebar.right" },
-      { "id": "global", "title": "Global nursery", "slot": "sidebar.left" },
-      { "id": "mine", "title": "My nursery", "slot": "sidebar.right" }
+      { "id": "nursery", "title": "Nursery", "slot": "sidebar.left" },
+      { "id": "session", "title": "Session nursery", "slot": "sidebar.right" }
     ]
   }
 }

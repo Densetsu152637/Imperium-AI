@@ -32,3 +32,19 @@ export function clip(text: string, max: number): string {
 
 /** "3 subagents", "1 subagent". */
 export const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+/** The `agentPets` value that gives sessions the same pet as yours. */
+export const MINE = "resident";
+
+/**
+ * The pet for a session: its environment's default when that pet is installed, else the nursery's
+ * "Pets" setting (`mix`, `mine` = your pet, or one pet), else your pet.
+ */
+export function sessionPet(ids: readonly string[], envPet: string | null, setting: string, sessionId: string, resident: string | null): string | null {
+  if (envPet !== null && ids.includes(envPet)) return envPet;
+  if (setting !== MINE) {
+    const picked = pickPet(ids, setting, sessionId, false);
+    if (picked !== null) return picked;
+  }
+  return resident ?? ids[0] ?? null;
+}

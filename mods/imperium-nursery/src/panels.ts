@@ -1,18 +1,18 @@
-// The three panels. Each runs in its own frame: `activate` branches on `ctx.panelId` and
-// calls one of these. They wire a Nursery to the host (sessions, pets, storage) and the view.
+// The two panels. Each runs in its own frame: `activate` branches on `ctx.panelId` and calls
+// one of these. They wire a Nursery to the host (sessions, pets, storage) and the view.
 
 import type { ModContext, SessionSnapshot } from "@imperium/mod-sdk";
 
 import type { Env } from "./arbiter.ts";
 import { PetLibrary } from "./library.ts";
 import { Nursery } from "./nursery.ts";
-import type { Deps } from "./nursery.ts";
-import { MIX, count, pickPet } from "./pick.ts";
+import type { Deps, Kind } from "./nursery.ts";
+import { MINE, MIX, count, pickPet, sessionPet } from "./pick.ts";
 import { allDrawn } from "./pet.ts";
 import { CSS, FrameLoop, Room, reducedMotion } from "./view.ts";
 
 const SLEEP_AGENT_MS = 180_000;
-const SLEEP_MINE_MS = 60_000;
+const SLEEP_PERSONAL_MS = 60_000;
 const SIZE = 64;
 
 type Resident = { uid: string; petId: string; name: string };
@@ -56,15 +56,21 @@ function labelled(text: string, control: HTMLElement): HTMLElement {
   return wrap;
 }
 
+/** Agents' and sessions' pets sleep late; your pet and the extras, which hear less, sooner. */
 const envFor =
-  (lib: PetLibrary, sleepAfterMs: number) =>
-  (petId: string | null): Env => ({ catalog: lib.get(petId)?.catalog ?? allDrawn(), sleepAfterMs, fidget: true });
+  (lib: PetLibrary) =>
+  (petId: string | null, kind: Kind): Env => ({
+    catalog: lib.get(petId)?.catalog ?? allDrawn(),
+    sleepAfterMs: kind === "agent" || kind === "session" ? SLEEP_AGENT_MS : SLEEP_PERSONAL_MS,
+    fidget: true,
+  });
 
-/** The "Pets" select: which pet agents get. */
-function petSetting(ctx: ModContext, lib: PetLibrary, bar: HTMLElement, setting: string, change: (value: string) => void): void {
+/** The "Pets" select: which pet agents (in the nursery, sessions without an environment pet) get. */
+function petSetting(ctx: ModContext, lib: PetLibrary, bar: HTMLElement, setting: string, change: (value: string) => void, withMine = false): void {
   const select = el("select");
-  setOptions(select, [[MIX, "A mix of my pets"], ...lib.pets.map((p): [string, string] => [p.id, p.name])], MIX);
-  select.value = lib.pets.some((p) => p.id === setting) ? setting : MIX;
+  const extra: [string, string][] = withMine ? [[MINE, "Same as my pet"]] : [];
+  setOptions(select, [[MIX, "A mix of my pets"], ...extra, ...lib.pets.map((p): [string, string] => [p.id, p.name])], MIX);
+  select.value = setting === MINE && withMine ? MINE : lib.pets.some((p) => p.id === setting) ? setting : MIX;
   select.addEventListener("change", () => {
     void ctx.storage.set("agentPets", select.value);
     change(select.value);
@@ -103,17 +109,17 @@ const reading = async <T>(ctx: ModContext, key: string, fallback: T): Promise<T>
   }
 };
 
-/** The session and global nurseries share almost everything. */
-async function sessionsPanel(ctx: ModContext, mode: "session" | "global"): Promise<void> {
+/** The session nursery: the pets of the selected session's agents. */
+async function sessionPanel(ctx: ModContext): Promise<void> {
   const loop = new FrameLoop();
   const lib = new PetLibrary(ctx.pets);
   let setting = await reading(ctx, "agentPets", MIX);
   const deps: Deps = {
-    envFor: envFor(lib, SLEEP_AGENT_MS),
-    assign: ({ key, sessionId, root }) => pickPet(lib.ids(), setting, mode === "session" ? key : sessionId, mode === "session" && root),
+    envFor: envFor(lib),
+    assign: ({ key, root }) => pickPet(lib.ids(), setting, key, root),
   };
-  const nursery = new Nursery(mode, deps);
-  const room = new Room(nursery, lib, { size: SIZE, mine: false, badges: mode === "global", onPat: (key) => nursery.pat(key, Date.now()) });
+  const nursery = new Nursery("session", deps);
+  const room = new Room(nursery, lib, { size: SIZE, takeable: false, badges: false, onPat: (key) => nursery.pat(key, Date.now()) });
   const { bar, summary, empty } = shell(ctx, room);
 
   let sessions: SessionSnapshot[] = [];
@@ -123,21 +129,9 @@ async function sessionsPanel(ctx: ModContext, mode: "session" | "global"): Promi
     const s = nursery.summary();
     room.sync();
     if (lib.pets.length === 0) empty.textContent = "No pets installed";
-    else if (mode === "global") empty.textContent = sessions.length === 0 ? "No sessions yet" : "";
     else empty.textContent = sessions.length === 0 ? "No sessions yet" : nursery.target() === null ? "No session selected" : "";
-    summary.textContent =
-      mode === "global"
-        ? sessions.length === 0
-          ? ""
-          : `${count(sessions.length, "session")}, ${s.busy} working, ${count(s.subagents, "subagent")}`
-        : nursery.target() === null
-          ? ""
-          : s.subagents === 0
-            ? "No subagents working"
-            : `${count(s.subagents, "subagent")} working`;
-    if (mode === "session") {
-      setOptions(pick, [["", "Follow the selected session"], ...sessions.map((x): [string, string] => [x.sessionId, x.title || x.sessionId])], nursery.pinned ?? "");
-    }
+    summary.textContent = nursery.target() === null ? "" : s.subagents === 0 ? "No subagents working" : `${count(s.subagents, "subagent")} working`;
+    setOptions(pick, [["", "Follow the selected session"], ...sessions.map((x): [string, string] => [x.sessionId, x.title || x.sessionId])], nursery.pinned ?? "");
   };
   const apply = (): void => {
     nursery.snapshots(sessions, selected, Date.now());
@@ -150,15 +144,13 @@ async function sessionsPanel(ctx: ModContext, mode: "session" | "global"): Promi
     nursery.reassign(Date.now());
   });
   playToggle(ctx, bar, nursery, await reading(ctx, "play", true));
-  if (mode === "session") {
-    nursery.pinned = await reading<string | null>(ctx, "pinnedSession", null);
-    pick.addEventListener("change", () => {
-      nursery.pinned = pick.value || null;
-      void ctx.storage.set("pinnedSession", nursery.pinned);
-      apply();
-    });
-    bar.append(labelled("Session", pick));
-  }
+  nursery.pinned = await reading<string | null>(ctx, "pinnedSession", null);
+  pick.addEventListener("change", () => {
+    nursery.pinned = pick.value || null;
+    void ctx.storage.set("pinnedSession", nursery.pinned);
+    apply();
+  });
+  bar.append(labelled("Session", pick));
 
   ctx.sessions.subscribe((event) => nursery.event(event, Date.now()));
   ctx.sessions.onChange((list, sel) => {
@@ -175,15 +167,30 @@ async function sessionsPanel(ctx: ModContext, mode: "session" | "global"): Promi
   loop.start();
 }
 
-/** "My nursery": pets the person puts in and takes out, kept in storage. */
-async function minePanel(ctx: ModContext): Promise<void> {
+/**
+ * The Nursery, which is also the pet panel: your pet (always in, hearing every session), one pet
+ * per unarchived session (its environment's pet, else the "Pets" setting), and extra pets you
+ * put in and take out.
+ */
+async function nurseryPanel(ctx: ModContext): Promise<void> {
   const loop = new FrameLoop();
   const lib = new PetLibrary(ctx.pets);
-  const nursery = new Nursery("mine", { envFor: envFor(lib, SLEEP_MINE_MS), assign: () => null });
+  let setting = await reading(ctx, "agentPets", MIX);
+  let mine: string | null = null;
+  const deps: Deps = {
+    envFor: envFor(lib),
+    assign: ({ sessionId, envPet }) => sessionPet(lib.ids(), envPet, setting, sessionId, mine),
+  };
+  const nursery = new Nursery("nursery", deps);
+  const names = new Map<string, string>();
+  const save = (): void => {
+    const residents: Resident[] = nursery.sorted().flatMap((e) => (e.kind === "extra" && e.petId ? [{ uid: e.key, petId: e.petId, name: names.get(e.key) ?? "" }] : []));
+    void ctx.storage.set("residents", residents);
+  };
   const room = new Room(nursery, lib, {
     size: SIZE,
-    mine: true,
-    badges: false,
+    takeable: true,
+    badges: true,
     onPat: (key) => nursery.pat(key, Date.now()),
     onTake: (key) => {
       nursery.take(key);
@@ -191,29 +198,55 @@ async function minePanel(ctx: ModContext): Promise<void> {
     },
   });
   const { bar, summary, empty } = shell(ctx, room);
-  const names = new Map<string, string>();
 
-  const save = (): void => {
-    const residents: Resident[] = nursery.sorted().flatMap((e) => (e.petId ? [{ uid: e.key, petId: e.petId, name: names.get(e.key) ?? "" }] : []));
-    void ctx.storage.set("residents", residents);
+  let sessions: SessionSnapshot[] = [];
+  const refresh = (): void => {
+    const s = nursery.summary();
+    room.sync();
+    empty.textContent = lib.pets.length === 0 ? "No pets installed" : "";
+    summary.textContent = s.sessions === 0 ? "" : `${count(s.sessions, "session")}, ${s.busy} working, ${count(s.subagents, "subagent")}`;
   };
-  nursery.onChange = () =>
-    queueMicrotask(() => {
-      room.sync();
-      empty.textContent = lib.pets.length === 0 ? "No pets installed" : nursery.entries.size === 0 ? "Your nursery is empty — put a pet in" : "";
-      summary.textContent = nursery.entries.size === 0 ? "" : count(nursery.entries.size, "pet");
-    });
+  nursery.onChange = () => queueMicrotask(refresh);
 
   await lib.load().catch(() => {});
-  const stored = await reading<Resident[]>(ctx, "residents", []);
+  const stored = await reading<string | null>(ctx, "resident", null);
+  const nameOf = (id: string | null): string => lib.get(id)?.name ?? id ?? "";
+  mine = stored !== null && lib.get(stored) ? stored : (lib.pets[0]?.id ?? null);
+  nursery.setResident(mine, nameOf(mine), Date.now());
+
+  // Your pet: always in the nursery; this chooses which one it is.
+  const yours = el("select");
+  setOptions(yours, lib.pets.map((p): [string, string] => [p.id, p.name]), mine ?? "");
+  yours.value = mine ?? "";
+  yours.addEventListener("change", () => {
+    mine = yours.value || null;
+    void ctx.storage.set("resident", mine);
+    nursery.setResident(mine, nameOf(mine), Date.now());
+    nursery.reassign(Date.now());
+  });
+  bar.append(labelled("Your pet", yours));
+  petSetting(
+    ctx,
+    lib,
+    bar,
+    setting,
+    (value) => {
+      setting = value;
+      nursery.reassign(Date.now());
+    },
+    true,
+  );
+  playToggle(ctx, bar, nursery, await reading(ctx, "play", true));
+
+  // Extra pets, put in and taken out by hand (the old "My nursery"; its `residents` are kept).
+  const kept = await reading<Resident[]>(ctx, "residents", []);
   const now = Date.now();
-  for (const r of Array.isArray(stored) ? stored : []) {
+  for (const r of Array.isArray(kept) ? kept : []) {
     if (typeof r?.uid !== "string" || typeof r.petId !== "string") continue;
     const name = typeof r.name === "string" ? r.name : "";
     names.set(r.uid, name);
     nursery.add(r.uid, r.petId, name || lib.get(r.petId)?.name || r.petId, now);
   }
-
   const which = el("select");
   setOptions(which, lib.pets.map((p): [string, string] => [p.id, p.name]), lib.pets[0]?.id ?? "");
   const nick = el("input");
@@ -232,9 +265,18 @@ async function minePanel(ctx: ModContext): Promise<void> {
     nick.value = "";
     save();
   });
-  bar.append(labelled("Pet", which), nick, put);
-  playToggle(ctx, bar, nursery, await reading(ctx, "play", true));
-  nursery.onChange();
+  const more = el("details", "more");
+  more.append(el("summary", "", "Add a pet"), labelled("Pet", which), nick, put);
+  bar.append(more);
+
+  ctx.sessions.subscribe((event) => nursery.event(event, Date.now()));
+  ctx.sessions.onChange((list) => {
+    sessions = list;
+    nursery.snapshots(sessions, null, Date.now());
+  });
+  sessions = await ctx.sessions.list();
+  nursery.snapshots(sessions, null, Date.now());
+  refresh();
 
   loop.add(room);
   frameWork(loop, nursery, room);
@@ -242,7 +284,7 @@ async function minePanel(ctx: ModContext): Promise<void> {
 }
 
 export function startPanel(ctx: ModContext): void {
-  const run = ctx.panelId === "mine" ? minePanel(ctx) : sessionsPanel(ctx, ctx.panelId === "global" ? "global" : "session");
+  const run = ctx.panelId === "session" ? sessionPanel(ctx) : nurseryPanel(ctx);
   run.catch((error: unknown) => {
     ctx.panel(ctx.panelId).render(`The nursery failed to start: ${String(error)}`);
   });

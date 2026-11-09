@@ -3,6 +3,7 @@
 
 import type {
   AgentEvent,
+  EnvironmentInfo,
   ContextCategory,
   PauseCause,
   Plan,
@@ -420,7 +421,7 @@ export const formatCost = (usd: number | null): string => (usd === null ? "—" 
 export const formatCount = (n: number): string => n.toLocaleString();
 
 /** What mods (`sessions:read`) see of each session: its agents and what each is doing now. */
-export function snapshotSessions(sessions: SessionState[]): SessionSnapshot[] {
+export function snapshotSessions(sessions: SessionState[], environments: EnvironmentInfo[] = []): SessionSnapshot[] {
   return sessions.map((session) => {
     const waiting = (agentId: string) =>
       session.entries.some((entry) => entry.kind === "permission" && entry.agentId === agentId && !entry.answered);
@@ -443,6 +444,9 @@ export function snapshotSessions(sessions: SessionState[]): SessionSnapshot[] {
       title: sessionTitle(session),
       projectDir: session.summary.project_dir,
       status: session.status,
+      environmentId: session.summary.environment_id,
+      archived: session.summary.archived,
+      pet: environments.find((env) => env.id === session.summary.environment_id)?.pet ?? null,
       agents,
     };
   });

@@ -4,7 +4,7 @@
 
 import { lookIndex } from "./arbiter.ts";
 import type { LoadedPet, PetLibrary } from "./library.ts";
-import type { Entry, Nursery } from "./nursery.ts";
+import type { Entry, Kind, Nursery } from "./nursery.ts";
 import { resolveAnimation } from "./pet.ts";
 import { angleTo } from "./play.ts";
 import { busyOf, busySubs } from "./route.ts";
@@ -27,6 +27,9 @@ body { margin: 0; padding: 0; }
 .bar select, .bar input, .bar button { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius, 6px); padding: 3px 6px; max-width: 100%; }
 .bar button { cursor: pointer; }
 .bar button:hover:not(:disabled) { border-color: var(--accent); }
+.bar .more { flex-basis: 100%; color: var(--muted); font-size: 11px; }
+.bar .more[open] { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.bar .more summary { cursor: pointer; }
 .summary { color: var(--muted); }
 .empty { color: var(--muted); padding: 4px 0; text-align: center; }
 .empty:empty { display: none; }
@@ -53,9 +56,9 @@ body { margin: 0; padding: 0; }
 export type RoomOptions = {
   /** Sprite size in px (a pet is fitted inside a size x size square). */
   size: number;
-  /** A button takes a pet out ("My nursery"). */
-  mine: boolean;
-  /** Show the count of busy subagents on a pet (global nursery). */
+  /** Extra pets get a button that takes them out. */
+  takeable: boolean;
+  /** Show the count of busy subagents on session pets. */
   badges: boolean;
   onPat(key: string): void;
   onTake?(key: string): void;
@@ -168,7 +171,7 @@ export class Room {
     for (const entry of entries) {
       let cell = this.cells.get(entry.key);
       if (!cell) {
-        cell = this.build(entry.key);
+        cell = this.build(entry.key, entry.kind);
         this.cells.set(entry.key, cell);
         this.el.append(cell.el);
       }
@@ -183,7 +186,7 @@ export class Room {
     else this.fit();
   }
 
-  private build(key: string): Cell {
+  private build(key: string, kind: Kind): Cell {
     const el = make("div", "pet");
     el.style.width = `${LABEL_W}px`;
     const hit = make("button", "hit") as HTMLButtonElement;
@@ -202,7 +205,7 @@ export class Room {
     const badge = make("div", "badge");
     badge.hidden = true;
     el.append(hit, badge);
-    if (this.opts.mine) {
+    if (this.opts.takeable && kind === "extra") {
       const take = make("button", "take", "×") as HTMLButtonElement;
       take.type = "button";
       take.title = "Take out of the nursery";
@@ -302,7 +305,7 @@ export class Room {
       cell.state = state;
       cell.el.dataset.state = state;
     }
-    if (this.opts.badges) {
+    if (this.opts.badges && entry.kind === "session") {
       const n = busySubs(entry.arbiter);
       cell.badge.hidden = n === 0;
       if (n > 0) {
