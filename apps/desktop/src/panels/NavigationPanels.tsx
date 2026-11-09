@@ -309,7 +309,7 @@ export function SessionsPanel({
                       <StatusBadge session={session} />
                       <span className="detail">
                         {!scope && `${place} · `}
-                        {session.summary.model} · {formatCost(totals(session.calls).costUsd)}
+                        {session.summary.model ?? "No model"} · {formatCost(totals(session.calls).costUsd)}
                       </span>
                     </span>
                   </button>
