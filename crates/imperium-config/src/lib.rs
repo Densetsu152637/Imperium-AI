@@ -10,6 +10,7 @@ mod layers;
 mod local_models;
 mod mcp_servers;
 mod paths;
+mod permissions;
 mod registry;
 mod secrets;
 mod settings;
@@ -26,6 +27,7 @@ pub use mcp_servers::{
     MAX_SERVER_NAME, remove_mcp_server, save_mcp_server, set_mcp_server_enabled, valid_server_name,
 };
 pub use paths::{Paths, PathsError};
+pub use permissions::{PermissionSettings, save_permissions};
 pub use registry::{
     SETTINGS, SetError, SettingDef, SettingKind, SettingState, describe, describe_key,
     set_user_setting, setting,

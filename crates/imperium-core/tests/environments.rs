@@ -292,3 +292,103 @@ async fn pins_on_environments_and_sessions_survive_a_restart() {
     assert_eq!(listed["sessions"][0]["session_id"], session_id.as_str());
     assert_eq!(listed["sessions"][0]["pinned"], true);
 }
+
+#[tokio::test]
+async fn environment_grants_open_paths_and_rules_deny_calls() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    std::fs::write(cache.path().join("index.txt"), "from the cache\n").unwrap();
+    std::fs::write(project.path().join("secret.txt"), "not for the agent\n").unwrap();
+    let url = fake_model(
+        cache.path().join("index.txt").display().to_string(),
+        "secret.txt".into(),
+    )
+    .await;
+
+    let state = daemon(home.path(), &url);
+    let mut connection = Connection::new(Arc::clone(&state));
+    call(
+        &mut connection,
+        1,
+        "system.handshake",
+        json!({"client": {"name": "test", "version": "0"}, "protocol": {"major": 0, "minor": 5}}),
+    );
+    let env = call(
+        &mut connection,
+        2,
+        "environments.create",
+        json!({
+            "name": "Granted",
+            "folders": [project.path()],
+            "permissions": {
+                "grants": [{"path": cache.path(), "mode": "read"}],
+                "rules": [{"tool": "read_file", "pattern": "secret.txt", "action": "deny"}]
+            }
+        }),
+    );
+    assert_eq!(env["permissions"]["grants"][0]["mode"], "read");
+    let env_id = env["id"].as_str().unwrap().to_string();
+    let created = call(
+        &mut connection,
+        3,
+        "session.create",
+        json!({"environment_id": env_id}),
+    );
+    let session = state
+        .session(created["session_id"].as_str().unwrap())
+        .unwrap();
+    let mut events = session.subscribe();
+    session.send("read both".into()).unwrap();
+    let mut results = Vec::new();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match events.recv().await.unwrap().event {
+                SessionEvent::ToolFinished { ok, output, .. } => results.push((ok, output)),
+                SessionEvent::TurnCompleted { .. } => break,
+                SessionEvent::TurnFailed { message } => panic!("{message}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the turn ends within 30 s");
+    assert!(
+        results[0].0 && results[0].1.contains("from the cache"),
+        "{results:?}"
+    );
+    assert!(
+        !results[1].0 && results[1].1.contains("permission rule denies"),
+        "{results:?}"
+    );
+
+    // Global rules are saved in the user config; "always allow" adds to the environment.
+    let saved = call(
+        &mut connection,
+        4,
+        "permissions.set",
+        json!({"rules": [{"tool": "run_command", "pattern": "cargo test", "action": "allow"}]}),
+    );
+    assert_eq!(saved["global"]["rules"][0]["pattern"], "cargo test");
+    assert!(!saved["presets"].as_array().unwrap().is_empty());
+    let added = call(
+        &mut connection,
+        5,
+        "permissions.add_rule",
+        json!({
+            "session_id": created["session_id"],
+            "rule": {"tool": "write_file", "pattern": "src/**", "action": "allow"}
+        }),
+    );
+    assert_eq!(added["environment_id"], env_id.as_str());
+    let listed = call(&mut connection, 6, "environments.list", json!({}));
+    assert_eq!(
+        listed["environments"][0]["permissions"]["rules"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let global = call(&mut connection, 7, "permissions.get", json!({}));
+    assert_eq!(global["global"]["rules"].as_array().unwrap().len(), 1);
+}

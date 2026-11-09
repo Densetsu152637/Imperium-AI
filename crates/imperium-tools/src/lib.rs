@@ -5,6 +5,7 @@
 mod exec;
 mod files;
 mod invocation;
+pub mod permissions;
 mod remote_files;
 pub mod runtime;
 mod sandbox;
@@ -14,4 +15,4 @@ pub use exec::shell;
 pub use invocation::{Access, Invocation, ToolError, specs};
 pub use runtime::{ProcessRunner, ProcessSpec, Remote, RunOutput, Runner};
 pub use sandbox::Sandbox;
-pub use workspace::Workspace;
+pub use workspace::{GrantedPath, Workspace};

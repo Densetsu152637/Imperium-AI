@@ -17,6 +17,7 @@ use imperium_protocol::session::{
     Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
 };
 use imperium_protocol::tools as contract;
+use imperium_tools::permissions::{PermissionRule, RuleAction, Target, suggest};
 use imperium_tools::{Access, Invocation, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
@@ -169,6 +170,20 @@ impl Agent {
                 " The environment also includes these folders, which the tools accept by \
                  absolute path: {}.",
                 others.join(", ")
+            ));
+        }
+        // Paths outside the environment that grants open (package caches, toolchains).
+        let grants: Vec<String> = shared
+            .workspace
+            .grants()
+            .iter()
+            .map(|grant| grant.describe())
+            .collect();
+        if !grants.is_empty() {
+            system.push_str(&format!(
+                " These paths outside the environment are also open to the tools, by absolute \
+                 path: {}.",
+                grants.join(", ")
             ));
         }
         // Each part is kept with its label, so context breakdowns count them separately.
@@ -817,8 +832,23 @@ impl Agent {
         imperium_extensions::skills::load(skill, args.file.as_deref())
     }
 
+    /// What the global and environment permission rules say about a call.
+    fn rule_for(&self, tool: &str, target: &Target) -> Option<RuleAction> {
+        self.shared.workspace.permissions().evaluate(tool, target)
+    }
+
     /// Asks the user to approve a call to `tool`, unless they allowed it for the session.
     async fn approve(&self, tool: &str, summary: &str) -> bool {
+        self.approve_with(tool, summary, None).await
+    }
+
+    /// Like [`Agent::approve`], offering `suggested` as the rule "always allow" would add.
+    async fn approve_with(
+        &self,
+        tool: &str,
+        summary: &str,
+        suggested: Option<PermissionRule>,
+    ) -> bool {
         if lock(&self.shared.allowed_tools).contains(tool) {
             return true;
         }
@@ -827,6 +857,7 @@ impl Agent {
             request_id,
             tool: tool.to_string(),
             summary: summary.to_string(),
+            suggested_rule: suggested.map(wire_rule),
         });
         // Asleep until the person answers: the local runtime may swap the model out meanwhile.
         let waiting = self
@@ -861,6 +892,10 @@ impl Agent {
             Ok(check) => check,
             Err(error) => return finish(false, format!("error: {error}")),
         };
+        let rule = self.rule_for(name, &Target::Other);
+        if rule == Some(RuleAction::Deny) {
+            return finish(false, denied_by_rule(&check.summary));
+        }
         if let Some(blocked) = self.before_tool(name, arguments).await {
             return finish(false, blocked);
         }
@@ -869,7 +904,16 @@ impl Agent {
         {
             return finish(false, missing);
         }
-        if check.ask && !self.approve(name, &check.summary).await {
+        let ask = match rule {
+            Some(RuleAction::Allow) => false,
+            Some(RuleAction::Ask) => true,
+            _ => check.ask,
+        };
+        if ask
+            && !self
+                .approve_with(name, &check.summary, suggest(name, &Target::Other))
+                .await
+        {
             return finish(false, "The user denied this action.".into());
         }
         self.emit(SessionEvent::ToolStarted {
@@ -1171,6 +1215,17 @@ impl Agent {
         };
         let tool = invocation.tool_name();
         let summary = invocation.summary();
+        let target = match &invocation {
+            Invocation::RunCommand { command, .. } => Target::Command(command.clone()),
+            Invocation::ReadFile { path, .. }
+            | Invocation::WriteFile { path, .. }
+            | Invocation::EditFile { path, .. }
+            | Invocation::ListDir { path } => self.shared.workspace.rule_target(path),
+        };
+        let rule = self.rule_for(tool, &target);
+        if rule == Some(RuleAction::Deny) {
+            return finish(false, denied_by_rule(&summary));
+        }
         if let Some(blocked) = self.before_tool(tool, &call.function.arguments).await {
             return finish(false, blocked);
         }
@@ -1179,7 +1234,16 @@ impl Agent {
         {
             return finish(false, missing);
         }
-        if invocation.access() != Access::Read && !self.approve(tool, &summary).await {
+        let ask = match rule {
+            Some(RuleAction::Allow) => false,
+            Some(RuleAction::Ask) => true,
+            _ => invocation.access() != Access::Read,
+        };
+        if ask
+            && !self
+                .approve_with(tool, &summary, suggest(tool, &target))
+                .await
+        {
             return finish(false, "The user denied this action.".into());
         }
         self.emit(SessionEvent::ToolStarted {
@@ -2382,6 +2446,28 @@ pub(crate) fn resume_subagent(
         text
     };
     Ok((tokio::spawn(run_subagent(agent, text, None, true)), spec))
+}
+
+/// What the model is told when a permission rule refuses a call.
+fn denied_by_rule(summary: &str) -> String {
+    format!(
+        "A permission rule denies this action ({summary}). Do not retry it; find another way or \
+         ask the user to change the rule."
+    )
+}
+
+/// A rule as the protocol carries it.
+fn wire_rule(rule: PermissionRule) -> imperium_protocol::permissions::PermissionRule {
+    use imperium_protocol::permissions::RuleAction as Wire;
+    imperium_protocol::permissions::PermissionRule {
+        tool: rule.tool,
+        pattern: rule.pattern,
+        action: match rule.action {
+            RuleAction::Allow => Wire::Allow,
+            RuleAction::Ask => Wire::Ask,
+            RuleAction::Deny => Wire::Deny,
+        },
+    }
 }
 
 fn add_usage(a: &Usage, b: &Usage) -> Usage {

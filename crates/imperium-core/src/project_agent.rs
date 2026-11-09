@@ -236,6 +236,7 @@ async fn answer_permissions(
             request_id,
             tool,
             summary,
+            ..
         } = event.event
         {
             let Some(daemon) = daemon.upgrade() else {

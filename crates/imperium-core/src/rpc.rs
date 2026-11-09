@@ -23,6 +23,9 @@ use imperium_protocol::methods::{
     SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
     SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
 };
+use imperium_protocol::permissions::{
+    PermissionsAddRule, PermissionsGet, PermissionsGetParams, PermissionsSet,
+};
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
 use serde::Serialize;
@@ -272,6 +275,17 @@ impl Connection {
             }),
             McpRemove::NAME => call::<McpRemove>(request.params, |params| {
                 crate::connectors::remove(&self.state, params)
+            }),
+            PermissionsGet::NAME => {
+                call::<PermissionsGet>(request.params, |_: PermissionsGetParams| {
+                    crate::permissions::get(&self.state)
+                })
+            }
+            PermissionsSet::NAME => call::<PermissionsSet>(request.params, |params| {
+                crate::permissions::set(&self.state, params)
+            }),
+            PermissionsAddRule::NAME => call::<PermissionsAddRule>(request.params, |params| {
+                crate::permissions::add_rule(&self.state, params)
             }),
             McpTest::NAME => call_later::<McpTest, _>(request.params, &mut later, |params| {
                 crate::connectors::test(Arc::clone(&self.state), params)
@@ -742,7 +756,14 @@ impl Connection {
                 call::<EnvironmentUpdate>(params, |p: EnvironmentUpdateParams| {
                     let id = p.id.clone();
                     let runtime_changed = p.runtime.is_some();
+                    let permissions_changed = p.permissions.is_some();
                     let env = envs.update(p).map_err(failed)?;
+                    if permissions_changed {
+                        // Running sessions follow the new rules from their next call.
+                        self.state
+                            .permissions()
+                            .set_environment(&id, &env.permissions.rules);
+                    }
                     if runtime_changed {
                         // The agent's tools follow the new runtime from its next start.
                         self.restart_environment_agent(&id);
