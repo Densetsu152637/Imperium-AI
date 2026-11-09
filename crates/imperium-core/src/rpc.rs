@@ -876,6 +876,14 @@ impl Connection {
                     session.set_resume_policy(params.resume_policy);
                     None
                 }
+                "stop" => {
+                    session.stop();
+                    None
+                }
+                "resume" => {
+                    session.resume_work();
+                    None
+                }
                 "resume_now" => {
                     session.resume_now();
                     if session.run_now().released() {

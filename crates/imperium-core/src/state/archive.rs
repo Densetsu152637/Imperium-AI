@@ -7,7 +7,8 @@
 //! on by default), and after a number of days without activity
 //! (`sessions.auto_archive_after_days`, off by default). A session that is working, waiting on
 //! the user (an approval, a usage limit, a model), has queued messages, is pinned, or is a
-//! project agent is never archived on its own.
+//! project agent is never archived on its own. A session the user stopped is not idle-done:
+//! it is archived only by the idle check, once it has been idle for the configured days.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -230,11 +231,17 @@ impl DaemonState {
     /// Whether a session may be archived on its own: it is idle (or its pull request merged),
     /// nothing waits for it, and it is neither pinned nor a project agent.
     pub fn may_auto_archive(&self, session: &Session) -> bool {
+        self.may_archive(session, false)
+    }
+
+    /// [`may_auto_archive`](Self::may_auto_archive), where `idle_long` says the session has
+    /// been idle past `sessions.auto_archive_after_days`: only then does a session the user
+    /// stopped (and left with nothing else waiting on them) count as quiet.
+    fn may_archive(&self, session: &Session, idle_long: bool) -> bool {
         let placement = self.placement(session.id());
-        let quiet = matches!(
-            session.status().0,
-            SessionStatus::Idle | SessionStatus::Merged
-        );
+        let status = session.status().0;
+        let quiet = matches!(status, SessionStatus::Idle | SessionStatus::Merged)
+            || (idle_long && session.is_stopped() && status == SessionStatus::Paused);
         let nothing_queued = session.queue(None).map_or(true, |queue| queue.is_empty());
         quiet
             && nothing_queued
@@ -266,7 +273,9 @@ impl DaemonState {
                 .and_then(|meta| meta.modified())
                 .unwrap_or(now);
             let idle = now.duration_since(last).unwrap_or_default() >= idle_for;
-            if idle && self.may_auto_archive(&session) && self.archive_at(session.id(), now).is_ok()
+            if idle
+                && self.may_archive(&session, true)
+                && self.archive_at(session.id(), now).is_ok()
             {
                 archived.push(session.id().to_string());
             }

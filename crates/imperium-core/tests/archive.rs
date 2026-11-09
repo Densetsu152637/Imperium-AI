@@ -133,12 +133,20 @@ async fn idle_sessions_are_archived_after_the_set_days_but_not_pinned_busy_or_pe
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert_eq!(waiting.status().0, SessionStatus::NeedsAttention);
+    // A session the user stopped is paused, not idle-done: only the idle check archives it.
+    let (stopped, _) = state.create_session(&dir, None).unwrap();
+    stopped.stop();
+    assert_eq!(stopped.status().0, SessionStatus::Paused);
+    assert!(!state.may_auto_archive(&stopped));
 
     let now = SystemTime::now();
     // Not idle long enough yet.
     assert!(state.archive_idle_sessions(now + DAY * 6).is_empty());
-    let archived = state.archive_idle_sessions(now + DAY * 8);
-    assert_eq!(archived, vec![idle.id().to_string()]);
+    let mut archived = state.archive_idle_sessions(now + DAY * 8);
+    archived.sort();
+    let mut expected = vec![idle.id().to_string(), stopped.id().to_string()];
+    expected.sort();
+    assert_eq!(archived, expected);
     for kept in [&pinned, &agent, &persistent, &waiting] {
         assert!(
             state.session(kept.id()).is_some(),

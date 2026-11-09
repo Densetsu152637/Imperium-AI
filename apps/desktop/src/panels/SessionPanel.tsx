@@ -5,7 +5,7 @@
 // small budget mark shows when a budget over the session (its environment, endpoint, or model, or
 // all usage) has passed an alert threshold.
 
-import { ArrowUp, CornerDownRight, Gauge, ListPlus, Pencil, SlidersHorizontal, Trash, X } from "lucide-react";
+import { ArrowUp, CornerDownRight, Gauge, ListPlus, Pencil, Play, SlidersHorizontal, Square, Trash, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -49,6 +49,7 @@ import { ModelSuggestionCard } from "./ModelSuggestionCard";
 import { SessionModelSelect } from "./ModelSelect";
 import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
+import { canStop, isStopShortcut, isStopped } from "../stop";
 import { editStillValid, queueActions, queueLabel, steeredLabel, type QueueChange } from "../queue";
 
 type Props = {
@@ -66,6 +67,8 @@ type Props = {
   /** Resolves once the daemon accepted the policy. */
   onSetResumePolicy: (policy: ResumePolicy) => Promise<void>;
   onResumeNow: () => void;
+  /** Stops all of the session's work (`true`) or resumes it (`false`): `session.control` `stop` / `resume`. */
+  onStop: (stop: boolean) => void;
   /** The model table (`models.list`), offered in the model selector. */
   models: ModelRow[];
   /** Local models found in the model folders (`models.local`), offered after the table. */
@@ -97,6 +100,7 @@ export function SessionPanel({
   onAnswer,
   onSetResumePolicy,
   onResumeNow,
+  onStop,
   models,
   localModels,
   localRuntime = null,
@@ -135,6 +139,21 @@ export function SessionPanel({
     setDraft("");
   };
   const toggle = (next: Exclude<Drawer, null>) => setDrawer((open) => (open === next ? null : next));
+  const stopped = isStopped(session);
+  const runningTasks = Object.values(session.tasks).filter((task) => task.status === "running").length;
+  const stoppable = !archived && canStop(session, runningTasks);
+  // Ctrl+. (Cmd+. on macOS) stops a running session or resumes a stopped one.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!isStopShortcut(event) || archived) return;
+      if (stopped || stoppable) {
+        event.preventDefault();
+        onStop(!stopped);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [stopped, stoppable, archived, onStop]);
 
   return (
     <div className="session">
@@ -145,10 +164,25 @@ export function SessionPanel({
             {sessionTitle(session)}
           </h3>
           <StatusBadge session={session} />
-          {session.status === "paused" && (
-            <button className="resume-now primary" onClick={onResumeNow}>
-              Resume now
+          {stoppable && (
+            <button
+              className="stop-session ghost danger"
+              onClick={() => onStop(true)}
+              title="Stop: pause the agent and its subagents at their next safe point (Ctrl+.)"
+            >
+              <Square aria-hidden="true" /> Stop
             </button>
+          )}
+          {stopped ? (
+            <button className="resume-now primary" onClick={() => onStop(false)} title="Resume all work (Ctrl+.)">
+              <Play aria-hidden="true" /> Resume
+            </button>
+          ) : (
+            session.status === "paused" && (
+              <button className="resume-now primary" onClick={onResumeNow}>
+                Resume now
+              </button>
+            )
           )}
         </div>
       </header>
@@ -201,6 +235,14 @@ export function SessionPanel({
         </p>
       )}
 
+      {stopped && !archived && (
+        <div className="stopped-banner" role="status">
+          <span>Stopped. The agent and its subagents are paused where they were; messages you send wait in the queue.</span>
+          <button className="primary" onClick={() => onStop(false)}>
+            <Play aria-hidden="true" /> Resume
+          </button>
+        </div>
+      )}
       {session.queue.length > 0 && <QueueView queue={session.queue} busy={session.busy} onChange={onChangeQueued} />}
 
       {drawer && (

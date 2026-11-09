@@ -510,6 +510,10 @@ impl Chat {
             SessionEvent::TaskPaused { task_id, .. } => {
                 println!("\n‖ {task_id} paused; /resume-agent continues it");
             }
+            SessionEvent::WorkStopped {} => {
+                println!("\n‖ session stopped; every agent halts at its next safe point");
+            }
+            SessionEvent::WorkResumed {} => println!("\n▶ session resumed"),
             SessionEvent::TurnCompleted {
                 usage,
                 cost_usd,

@@ -3439,6 +3439,43 @@ button.colour-choice[aria-checked="true"]::after {
   font-size: 0.85rem;
 }
 
+/* Stop / Resume: halt or continue all of a session's work */
+.stop-session,
+.resume-now,
+.stopped-banner button {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--space) * 0.35);
+}
+
+.stop-session {
+  font-size: 0.85rem;
+}
+
+.stop-session svg,
+.resume-now svg,
+.stopped-banner svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+/* Shown while the user has the session stopped, above the queue and the composer */
+.stopped-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space);
+  width: calc(100% - var(--space) * 6);
+  max-width: var(--prose-max);
+  margin: 0 auto var(--space);
+  padding: calc(var(--space) * 0.75) var(--space) calc(var(--space) * 0.75) calc(var(--space) * 1.5);
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+}
+
 .usage-limits {
   font-size: 0.8rem;
 }

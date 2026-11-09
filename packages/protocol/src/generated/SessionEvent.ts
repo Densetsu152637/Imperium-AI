@@ -74,7 +74,7 @@ steps: number, } | { "type": "turn_failed", message: string, } | { "type": "noti
 /**
  * Why it waits; older journals have no cause and mean a usage limit.
  */
-cause: PauseCause, } | { "type": "resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "context_compacted", 
+cause: PauseCause, } | { "type": "resumed", } | { "type": "work_stopped", } | { "type": "work_resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "context_compacted", 
 /**
  * The model whose window the conversation was fitted to.
  */

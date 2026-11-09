@@ -577,6 +577,18 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   and *Update a package-manager llama.cpp* (`runtime.llamacpp.update_external`) are there as
   well.
 
+**Stop and resume (implemented):** while the agent or any subagent works, the session header
+shows **Stop**. Ctrl+. (⌘. on macOS) does the same, and on a stopped session it resumes. Stop
+halts the root and every subagent at their next safe point
+([03](03-agent-engine.md#stopping-a-session)): a tool call in flight finishes, a model request
+in flight is cancelled and sent again on resume, and local models may free the session's
+slots. The status badge reads *Paused*. The header's **Resume** and a banner above the composer
+("Stopped. The agent and its subagents are paused where they were; messages you send wait in
+the queue.") continue the work. While stopped, the composer still works: messages you send
+are queued (with Edit, Steer, and Remove as usual) and run after Resume. The Agents panel
+shows running subagents as `paused`. The stop survives a daemon restart; the session waits
+for Resume.
+
 **Composer, queue, and steering (implemented):** the composer stays enabled while the agent
 works, and sending while a turn runs always queues: the send key (Enter, or Ctrl+Enter, as set
 in Settings) and the send button (which reads *Queue* then) put the message in the queue for

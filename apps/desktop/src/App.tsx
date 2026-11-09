@@ -640,6 +640,11 @@ export function App() {
     if (selected) control(selected, { action: "resume_now" }).catch(report);
   };
 
+  /** Stops all of the selected session's work, or resumes it; the status follows `status_changed`. */
+  const stopSession = (stop: boolean) => {
+    if (selected) control(selected, { action: stop ? "stop" : "resume" }).catch(report);
+  };
+
   /** Switches the selected session's model without loading it; the next message loads it and
    * compacts the conversation first if it does not fit.
    * Rejects with the daemon's reason, which the model selector shows beside itself. */
@@ -771,6 +776,7 @@ export function App() {
         onAnswer={answer}
         onSetResumePolicy={setResumePolicy}
         onResumeNow={resumeNow}
+        onStop={stopSession}
         models={modelTable?.models ?? []}
         localModels={localModels?.models ?? []}
         localRuntime={localModels?.runtime ?? null}
