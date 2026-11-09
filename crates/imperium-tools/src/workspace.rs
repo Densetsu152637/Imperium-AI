@@ -1,18 +1,41 @@
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
+use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
 use crate::{Sandbox, ToolError};
 
 /// The folders an agent works in: an environment's folders, the first of which is the working
 /// directory (the root). Relative paths given to tools resolve against the root; absolute paths
 /// may name anything inside any of the folders. Nothing may escape them, including through `..`
 /// or symbolic links.
+///
+/// A remote workspace's folders are paths inside a runtime ([`Remote`]); its tools run there
+/// through a [`Runner`], and paths are checked as written (after resolving `.` and `..`), since
+/// links inside the runtime cannot be followed from here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     root: PathBuf,
     /// Further folders the agent may use, canonical and distinct from the root and each other.
     extra: Vec<PathBuf>,
     sandbox: Sandbox,
+    remote: Option<RemoteFolders>,
 }
+
+/// A remote workspace's runtime and folders (POSIX paths inside it, the root first).
+#[derive(Debug, Clone)]
+pub(crate) struct RemoteFolders {
+    pub target: Remote,
+    pub folders: Vec<String>,
+    pub runner: Arc<dyn Runner>,
+}
+
+impl PartialEq for RemoteFolders {
+    fn eq(&self, other: &Self) -> bool {
+        self.target == other.target && self.folders == other.folders
+    }
+}
+
+impl Eq for RemoteFolders {}
 
 impl Workspace {
     /// `root` must be an existing directory.
@@ -22,7 +45,118 @@ impl Workspace {
             root,
             extra: Vec::new(),
             sandbox: Sandbox::Policy,
+            remote: None,
         })
+    }
+
+    /// A workspace inside a remote runtime. `folders` are absolute POSIX paths there, the
+    /// working directory first (for WSL, Windows paths are translated to `/mnt/<drive>/…`).
+    /// Nothing is checked on the runtime itself: a missing folder fails the tool that uses it.
+    pub fn remote(
+        target: Remote,
+        folders: &[String],
+        runner: Arc<dyn Runner>,
+    ) -> Result<Self, ToolError> {
+        let mut checked: Vec<String> = Vec::new();
+        for folder in folders {
+            let written = match target {
+                Remote::Wsl { .. } => wsl_path(folder),
+                _ => folder.trim().to_string(),
+            };
+            let folder = normalize_posix(&written).ok_or_else(|| {
+                ToolError::Invalid(format!(
+                    "{written} is not an absolute path inside the runtime"
+                ))
+            })?;
+            if !checked.contains(&folder) {
+                checked.push(folder);
+            }
+        }
+        let Some(first) = checked.first() else {
+            return Err(ToolError::Invalid("the workspace has no folder".into()));
+        };
+        Ok(Workspace {
+            root: PathBuf::from(first),
+            extra: Vec::new(),
+            sandbox: Sandbox::Policy,
+            remote: Some(RemoteFolders {
+                target,
+                folders: checked,
+                runner,
+            }),
+        })
+    }
+
+    /// The runtime a remote workspace's tools run in.
+    pub fn runtime(&self) -> Option<&Remote> {
+        self.remote.as_ref().map(|remote| &remote.target)
+    }
+
+    pub(crate) fn remote_folders(&self) -> Option<&RemoteFolders> {
+        self.remote.as_ref()
+    }
+
+    /// Where the session's commands run, such as `tier 0 · folder policy` or `runtime · WSL
+    /// Ubuntu`.
+    pub fn isolation_label(&self) -> String {
+        match &self.remote {
+            Some(remote) => remote.target.label(),
+            None => self.sandbox.label(),
+        }
+    }
+
+    /// A local folder to run local helpers (hooks) in: the root, or for a remote workspace the
+    /// system's temporary folder, since its root is not on this machine.
+    pub fn local_dir(&self) -> PathBuf {
+        match &self.remote {
+            Some(_) => std::env::temp_dir(),
+            None => self.root.clone(),
+        }
+    }
+
+    /// Resolves a path for a remote workspace (relative to the root, or absolute inside any
+    /// folder) to an absolute POSIX path inside the runtime.
+    pub(crate) fn resolve_remote(&self, path: &str) -> Result<String, ToolError> {
+        let Some(remote) = &self.remote else {
+            return Err(ToolError::Io("not a remote workspace".into()));
+        };
+        let written = match remote.target {
+            Remote::Wsl { .. } => wsl_path(path),
+            _ => path.trim().to_string(),
+        };
+        let joined = if written.starts_with('/') {
+            written
+        } else {
+            format!("{}/{written}", remote.folders[0])
+        };
+        let resolved =
+            normalize_posix(&joined).ok_or_else(|| ToolError::OutsideWorkspace(path.into()))?;
+        let inside = remote.folders.iter().any(|folder| {
+            folder == "/"
+                || resolved == *folder
+                || resolved
+                    .strip_prefix(folder.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        });
+        if !inside {
+            return Err(ToolError::OutsideWorkspace(path.into()));
+        }
+        Ok(resolved)
+    }
+
+    /// A remote path for display: relative to the root, else in full.
+    pub(crate) fn display_remote(&self, path: &str) -> String {
+        let root = self.root_display();
+        if path == root {
+            return ".".into();
+        }
+        match path
+            .strip_prefix(root.as_str())
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
+            Some(relative) => relative.to_string(),
+            None => path.to_string(),
+        }
     }
 
     /// The same workspace with further folders the agent may use. Each must be an existing
@@ -59,6 +193,9 @@ impl Workspace {
 
     /// Every folder as people write them, the root first.
     pub fn folders_display(&self) -> Vec<String> {
+        if let Some(remote) = &self.remote {
+            return remote.folders.clone();
+        }
         self.roots().into_iter().map(plain).collect()
     }
 
@@ -70,6 +207,9 @@ impl Workspace {
     /// inside the workspace. The path itself need not exist yet; its nearest existing ancestor
     /// must lie inside one of the folders after resolving symbolic links.
     pub fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {
+        if self.remote.is_some() {
+            return self.resolve_remote(path).map(PathBuf::from);
+        }
         let candidate = self.root.join(path);
         let mut existing = candidate.as_path();
         let mut missing = Vec::new();
@@ -102,6 +242,9 @@ impl Workspace {
 
     /// The root as people write it: without Windows' `\\?\` verbatim prefix on drive paths.
     pub fn root_display(&self) -> String {
+        if let Some(remote) = &self.remote {
+            return remote.folders[0].clone();
+        }
         plain(&self.root)
     }
 

@@ -179,6 +179,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 8,
+        auto_compact: false,
         journal_path: project.path().join(".journal.jsonl"),
     })
     .unwrap();

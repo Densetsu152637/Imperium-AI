@@ -269,11 +269,24 @@ environment in the daemon. The first time the app connects after environments ar
 project folder it knew (opened folders, the selected project, folders of running sessions)
 becomes an environment of its own, keeping the icon it had.
 
+**Runtime and persistent agent (implemented):** the environment window (create and edit) has a
+*Runtime* section (`EnvironmentRuntimeFields`): a select for *This machine*, *Docker*, *WSL*,
+or *SSH* with that runtime's fields (the image and an optional running container, the
+distribution, or the host), *Test*, which calls `environments.test_runtime` for the saved
+runtime and shows its answer in green or red (for example *Docker is running but image rust:1
+is not present; get it with: docker pull rust:1*), and the *Persistent agent* switch for the
+environment's [persistent agent](14-projects-and-automation.md#persistent-agent-implemented).
+Both apply with *Create* or *Save*. For a remote runtime the folders are paths inside it
+([runtimes](14-projects-and-automation.md#runtimes-implemented)), typed in with *Add path*
+instead of the folder picker.
+
 *New session* (in the Sessions panel's header) starts a session in the selected environment;
 it is disabled, with the reason as its tooltip, while disconnected, with no environment
 selected, or when the environment has no folders. The model list beside it picks the session's
 model (*Default model* uses `models.default`); when no default is configured, starting with
 *Default model* shows the daemon's explanation above the list instead of failing silently.
+*Start in a worktree* beside it starts the session on new git worktrees of the environment's
+repositories ([worktrees](14-projects-and-automation.md#worktrees)).
 
 The Sessions panel lists every session across environments, each with its environment's icon
 to the left of its title and a status badge (idle, working, needs attention, paused with its
@@ -287,8 +300,11 @@ choice is kept in the local layout. Pins on sessions and environments are kept b
 they survive restarts; the daemon announces a changed session as `session.updated`. Clicking an
 environment (or *Show* in a session's menu) opens that environment's view, which lists only its
 sessions, with *All sessions* to return; clicking the row opens the session and selects its
-environment. Renaming, stopping, and deleting sessions are not offered yet: the daemon has no
-methods for them. The session header shows the status and the *Usage limits* controls (how to wait
+environment. An environment's persistent agent is listed above everything else in its group,
+titled *<environment> agent* with a *Persistent* badge; a session on worktrees has a *Worktree*
+badge whose tooltip lists each worktree and branch. Renaming and stopping sessions are not
+offered yet; deleting one is `session.delete` (`imperium session delete`), and a session
+deleted elsewhere (`session.deleted`) leaves the list. The session header shows the status and the *Usage limits* controls (how to wait
 when usage runs out, and *Resume now* while paused).
 
 **Model picker (implemented):** among the header's environment pills, the session's model is a

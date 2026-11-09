@@ -18,9 +18,10 @@ use imperium_protocol::methods::{
     ProjectAgentRow, ProjectList, ProjectListParams, ProjectListResult, ProjectMessage,
     ProjectMessageParams, ProjectMessageResult, ScheduleList, ScheduleListParams,
     ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionCreate,
-    SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
-    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe,
-    SessionSubscribeParams, SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
+    SessionCreateParams, SessionCreateResult, SessionDelete, SessionDeleteParams, SessionList,
+    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSend,
+    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult, Shutdown,
+    ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -38,7 +39,8 @@ use imperium_protocol::methods::{
 use imperium_protocol::methods::{
     EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
     EnvironmentFolderParams, EnvironmentList, EnvironmentListParams, EnvironmentListResult,
-    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentUpdate, EnvironmentUpdateParams,
+    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentTestRuntime, EnvironmentUpdate,
+    EnvironmentUpdateParams,
 };
 use imperium_protocol::methods::{
     HfFiles, ModelDownload, ModelDownloadCancel, ModelDownloadCancelParams,
@@ -226,6 +228,21 @@ impl Connection {
                 });
                 Ok(result)
             }),
+            EnvironmentTestRuntime::NAME => {
+                call_later::<EnvironmentTestRuntime, _>(request.params, &mut later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        let env = state.environments().find(&params.id).map_err(|error| {
+                            ErrorObject::new(codes::INVALID_PARAMS, error.to_string())
+                        })?;
+                        let runner = state.runner();
+                        Ok(
+                            crate::runtimes::test(&env.runtime, runner.as_ref(), cfg!(windows))
+                                .await,
+                        )
+                    }
+                })
+            }
             method if method.starts_with("environments.") => {
                 self.environment_call(method, request.params)
             }
@@ -426,6 +443,13 @@ impl Connection {
                     crate::suggestions::respond(Arc::clone(&self.state), params)
                 })
             }
+            SessionDelete::NAME => {
+                call::<SessionDelete>(request.params, |params: SessionDeleteParams| {
+                    self.state
+                        .delete_session(&params.session_id, params.remove_worktrees)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                })
+            }
             SessionRespond::NAME => {
                 call::<SessionRespond>(request.params, |params: SessionRespondParams| {
                     self.session(&params.session_id)?
@@ -482,17 +506,17 @@ impl Connection {
         params: SessionCreateParams,
     ) -> Result<(SessionCreateResult, broadcast::Receiver<AgentEvent>), ErrorObject> {
         let model = params.model.as_deref();
+        let options = || SessionOptions {
+            worktree: params.worktree.unwrap_or(false),
+            worktree_branch: params.worktree_branch.clone(),
+            ..SessionOptions::default()
+        };
         let created = match (&params.environment_id, &params.project_dir) {
-            (Some(env), _) => {
-                self.state
-                    .create_in_environment(env, model, SessionOptions::default())
-            }
+            (Some(env), _) => self.state.create_in_environment(env, model, options()),
             // A bare folder: the environment it is the working directory of, made if needed.
             (None, Some(dir)) => match self.state.environments().for_folder(dir) {
                 Ok(env) => {
-                    let created =
-                        self.state
-                            .create_in_environment(&env.id, model, SessionOptions::default());
+                    let created = self.state.create_in_environment(&env.id, model, options());
                     self.state.announce_environments();
                     created
                 }
@@ -507,7 +531,10 @@ impl Connection {
         };
         let (session, events) = created.map_err(|error| {
             let code = match &error {
-                CreateError::Project(..) | CreateError::Environment(_) => codes::INVALID_PARAMS,
+                CreateError::Project(..)
+                | CreateError::Environment(_)
+                | CreateError::Runtime(_)
+                | CreateError::Worktree(_) => codes::INVALID_PARAMS,
                 CreateError::Model(ModelError::NoDefault) => {
                     return ErrorObject::new(
                         codes::MODEL_UNAVAILABLE,
@@ -528,6 +555,7 @@ impl Connection {
                 isolation: session.isolation().to_string(),
                 environment_id: summary.environment_id,
                 folders: summary.folders,
+                worktrees: summary.worktrees,
             },
             events,
         ))
@@ -553,23 +581,35 @@ impl Connection {
             }
             EnvironmentCreate::NAME => {
                 call::<EnvironmentCreate>(params, |p: EnvironmentCreateParams| {
-                    envs.create(&p.name, p.icon, p.color, &p.folders)
-                        .map_err(failed)
+                    let env = envs.create(p).map_err(failed)?;
+                    self.state.sync_environment_agent(&env.id);
+                    Ok(envs.get(&env.id).unwrap_or(env))
                 })
             }
             EnvironmentUpdate::NAME => {
                 call::<EnvironmentUpdate>(params, |p: EnvironmentUpdateParams| {
-                    envs.update(&p.id, p.name.as_deref(), p.icon, p.color, p.pinned)
-                        .map_err(failed)
+                    let id = p.id.clone();
+                    let runtime_changed = p.runtime.is_some();
+                    let env = envs.update(p).map_err(failed)?;
+                    if runtime_changed {
+                        // The agent's tools follow the new runtime from its next start.
+                        self.restart_environment_agent(&id);
+                    }
+                    self.state.sync_environment_agent(&id);
+                    Ok(envs.get(&id).unwrap_or(env))
                 })
             }
             EnvironmentDelete::NAME => call::<EnvironmentDelete>(params, |p: EnvironmentRef| {
                 envs.delete(&p.id).map_err(failed)?;
+                self.state.sync_environment_agent(&p.id);
                 Ok(Accepted {})
             }),
             EnvironmentAddFolder::NAME => {
                 call::<EnvironmentAddFolder>(params, |p: EnvironmentFolderParams| {
-                    envs.add_folder(&p.id, &p.folder).map_err(failed)
+                    let env = envs.add_folder(&p.id, &p.folder).map_err(failed)?;
+                    // An agent waiting for a first folder can start now.
+                    self.state.sync_environment_agent(&p.id);
+                    Ok(envs.get(&p.id).unwrap_or(env))
                 })
             }
             EnvironmentRemoveFolder::NAME => {
@@ -586,6 +626,17 @@ impl Connection {
             self.state.announce_environments();
         }
         result
+    }
+
+    /// Stops an environment's persistent agent so the next sync starts it afresh (resuming its
+    /// conversation) with the environment as it is now.
+    fn restart_environment_agent(&self, environment_id: &str) {
+        if let Some(session) = self.state.project_agents().environment(environment_id) {
+            self.state
+                .project_agents()
+                .forget_environment(environment_id);
+            self.state.forget_session(session.id());
+        }
     }
 
     /// `session.control`. Most actions apply at once; switching models and compacting wait for

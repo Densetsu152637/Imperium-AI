@@ -15,11 +15,13 @@ mod pets;
 mod phone;
 mod project_agent;
 mod rpc;
+mod runtimes;
 mod scheduler;
 mod server;
 mod state;
 mod suggestions;
 mod token;
+mod worktrees;
 
 pub use approvals::Approvals;
 pub use autofix::{fix_ci, watch_pull_requests};

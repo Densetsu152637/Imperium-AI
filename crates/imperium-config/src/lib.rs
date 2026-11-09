@@ -32,7 +32,7 @@ pub use settings::{
     McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings, MemorySettings,
     MemoryWrite, ModelSettings, PetSettings, PhoneSettings, Preference, ProjectSettings,
     ResumeSettings, RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef,
-    Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings,
-    WritePolicy,
+    SessionSettings, Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings,
+    WorkflowSettings, WritePolicy,
 };
 pub use settings::{SuggestionCandidate, default_suggestions};

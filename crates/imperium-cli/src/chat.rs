@@ -24,6 +24,7 @@ pub fn run(
     project: Option<PathBuf>,
     model: Option<String>,
     context_summary: bool,
+    worktree: Option<Option<String>>,
 ) -> anyhow::Result<()> {
     let project = match (&env, project) {
         (Some(_), _) => None,
@@ -49,9 +50,17 @@ pub fn run(
                 environment_id,
                 project_dir: project.map(|project| project.to_string_lossy().into_owned()),
                 model,
+                worktree: worktree.as_ref().map(|_| true),
+                worktree_branch: worktree.flatten(),
             })
             .await?;
         let session_id = session.session_id.clone();
+        for tree in &session.worktrees {
+            println!(
+                "Worktree {} on branch {} (for {})",
+                tree.path, tree.branch, tree.folder
+            );
+        }
         println!(
             "Session {} with {} in {}",
             session.session_id,

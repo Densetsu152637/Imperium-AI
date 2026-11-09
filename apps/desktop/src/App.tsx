@@ -137,6 +137,7 @@ export function App() {
   const [sessionSort, setSessionSort] = useState<SessionSort>(saved.sessionSort);
   /** The model "New session" asks for; empty for the configured default. */
   const [newModel, setNewModel] = useState("");
+  const [newWorktree, setNewWorktree] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
   const [hidden, setHidden] = useState<string[]>(saved.hidden);
@@ -220,6 +221,15 @@ export function App() {
         }
         if (notification.method === "environments.changed") {
           setEnvironments((notification.params as EnvironmentListResult).environments);
+          return;
+        }
+        if (notification.method === "session.deleted") {
+          const { session_id } = notification.params as { session_id: string };
+          known.current.delete(session_id);
+          setSessions((all) => {
+            const { [session_id]: _gone, ...rest } = all;
+            return rest;
+          });
           return;
         }
         if (notification.method === "session.updated") {
@@ -417,6 +427,7 @@ export function App() {
       const created = await client.call<SessionCreateResult>("session.create", {
         environment_id: environment.id,
         ...(newModel ? { model: newModel } : {}),
+        ...(newWorktree ? { worktree: true } : {}),
       });
       known.current.add(created.session_id);
       // The rest of the summary arrives with the daemon's session.created notice.
@@ -431,6 +442,8 @@ export function App() {
         status: "idle",
         status_detail: null,
         resume_policy: DEFAULT_RESUME_POLICY,
+        persistent: false,
+        worktrees: created.worktrees,
         pinned: false,
       };
       setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
@@ -603,6 +616,10 @@ export function App() {
               })),
             ]}
           />
+          <label className="new-session-worktree" title="Start on a new git worktree and branch">
+            <input type="checkbox" checked={newWorktree} onChange={(event) => setNewWorktree(event.target.checked)} />
+            Start in a worktree
+          </label>
           <button
             onClick={startSession}
             disabled={newSessionBlocker !== null}

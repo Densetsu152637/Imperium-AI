@@ -111,10 +111,13 @@ const STATUS_GROUPS: { label: string; statuses: SessionStatus[] }[] = [
   { label: "Merged", statuses: ["merged"] },
 ];
 
-/** Pinned first, then the most recently active. */
+/** An environment's persistent agent first, then pinned sessions, then the most recently active. */
 export function sortSessions(sessions: SessionState[]): SessionState[] {
   return [...sessions].sort(
-    (a, b) => Number(!!b.summary.pinned) - Number(!!a.summary.pinned) || b.updatedAt - a.updatedAt,
+    (a, b) =>
+      Number(!!b.summary.persistent) - Number(!!a.summary.persistent) ||
+      Number(!!b.summary.pinned) - Number(!!a.summary.pinned) ||
+      b.updatedAt - a.updatedAt,
   );
 }
 
@@ -184,7 +187,7 @@ export function SessionsPanel({
     const env = environmentOf(session, environments);
     const place = env?.name ?? projectName(session.summary.project_dir);
     const pinned = !!session.summary.pinned;
-    const title = sessionTitle(session);
+    const title = session.summary.persistent ? `${place} agent` : sessionTitle(session);
     return (
       <li key={id}>
         <div className="row nav-row">
@@ -200,6 +203,19 @@ export function SessionsPanel({
                 {pinned && <Pin className="pin-mark" aria-label="Pinned" />}
               </span>
               <span className="row-meta">
+                {session.summary.persistent && (
+                  <span className="badge persistent" title="Always available; keeps its conversation across restarts">
+                    Persistent
+                  </span>
+                )}
+                {(session.summary.worktrees?.length ?? 0) > 0 && (
+                  <span
+                    className="badge worktree"
+                    title={session.summary.worktrees.map((tree) => `${tree.path} (${tree.branch})`).join("\n")}
+                  >
+                    Worktree
+                  </span>
+                )}
                 <StatusBadge session={session} />
                 <span className="detail">
                   {!scope && sort !== "environment" && `${place} · `}
