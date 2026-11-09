@@ -213,15 +213,40 @@ async fn send_modes_and_queue_actions() {
         .await,
     );
     assert_eq!(removed.messages.len(), 2);
+    // Steering a message that already steers changes nothing; the order stays.
+    let steered: SessionQueueResult = result(
+        call(
+            &mut connection,
+            20,
+            "session.queue",
+            queue("steer", Some(&steering.id), None),
+        )
+        .await,
+    );
+    let order: Vec<(&str, bool)> = steered
+        .messages
+        .iter()
+        .map(|message| (message.id.as_str(), message.steer))
+        .collect();
+    assert_eq!(
+        order,
+        [(queued.id.as_str(), false), (steering.id.as_str(), true)]
+    );
 
-    // Refusals: an unknown message, a missing id, an unknown action, an unknown agent, and
-    // an empty message.
+    // Refusals: an unknown message, a missing id, an unknown action, an unknown agent, an
+    // empty message, editing a steering message, and steering an unknown one.
     for (id, method, params) in [
         (9, "session.queue", queue("remove", Some("q99"), None)),
         (10, "session.queue", queue("edit", None, Some("x"))),
         (11, "session.queue", queue("shuffle", None, None)),
         (12, "session.send", send("hi", Some("steer"), Some("t9"))),
         (13, "session.send", send("  ", None, None)),
+        (
+            15,
+            "session.queue",
+            queue("edit", Some(&steering.id), Some("changed")),
+        ),
+        (16, "session.queue", queue("steer", Some("q99"), None)),
     ] {
         assert_eq!(
             error_code(call(&mut connection, id, method, params).await),
@@ -257,6 +282,7 @@ async fn send_modes_and_queue_actions() {
     assert!(root.contains(&&SessionEvent::Steered {
         id: steering.id.clone(),
         text: "mind the tests".into(),
+        paused: Vec::new(),
     }));
     let turns: Vec<&String> = root
         .iter()

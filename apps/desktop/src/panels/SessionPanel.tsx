@@ -5,7 +5,7 @@
 // small budget mark shows when a budget over the session (its environment, endpoint, or model, or
 // all usage) has passed an alert threshold.
 
-import { ArrowUp, CornerDownRight, Gauge, ListPlus, SlidersHorizontal, X } from "lucide-react";
+import { ArrowUp, CornerDownRight, Gauge, ListPlus, Pencil, SlidersHorizontal, Trash, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -49,14 +49,15 @@ import { ModelSuggestionCard } from "./ModelSuggestionCard";
 import { SessionModelSelect } from "./ModelSelect";
 import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
+import { editStillValid, queueActions, queueLabel, steeredLabel, type QueueChange } from "../queue";
 
 type Props = {
   session: SessionState;
   icons: ProjectIcons;
   /** Sends a message: `queue` starts a turn, or waits while one runs; `steer` joins the running turn. */
   onSend: (text: string, mode: SendMode) => void;
-  /** Edits a queued message, or removes it when `text` is null. */
-  onChangeQueued: (id: string, text: string | null) => void;
+  /** Edits, removes, or steers a queued message (`session.queue`). */
+  onChangeQueued: (id: string, change: QueueChange) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
   /** Saves `rule` (an allow rule the daemon suggested) and allows the request. */
   onAlwaysAllow?: (requestId: number, rule: PermissionRule) => void;
@@ -124,8 +125,9 @@ export function SessionPanel({
   const sum = totals(session.calls);
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
   const archived = session.summary.archived;
-  // While the agent works the composer stays open: Enter queues the message for after the turn,
-  // and Steer (Ctrl+Shift+Enter) adds it to the running turn.
+  // While the agent works the composer stays open and sending always queues the message for
+  // after the turn; a queued message's Steer button moves it into the running turn. The one
+  // shortcut that steers directly is Ctrl+Shift+Enter.
   const send = (mode: SendMode = "queue") => {
     const text = draft.trim();
     if (!text) return;
@@ -199,7 +201,7 @@ export function SessionPanel({
         </p>
       )}
 
-      {session.queue.length > 0 && <QueueView queue={session.queue} onChange={onChangeQueued} />}
+      {session.queue.length > 0 && <QueueView queue={session.queue} busy={session.busy} onChange={onChangeQueued} />}
 
       {drawer && (
         <section
@@ -306,17 +308,6 @@ export function SessionPanel({
           }}
           rows={1}
         />
-        {session.busy && (
-          <button
-            type="button"
-            className="steer"
-            disabled={!draft.trim()}
-            onClick={() => send("steer")}
-            title="Add this message to the running turn; the agent reads it after its current step (Ctrl+Shift+Enter)"
-          >
-            <CornerDownRight aria-hidden="true" /> Steer
-          </button>
-        )}
         <button
           type="submit"
           className="send"
@@ -536,8 +527,8 @@ function EntryView({
       return <div className="message user prose">{entry.text}</div>;
     case "steer":
       return (
-        <div className="message user steer prose" title="Steering: joined the running turn">
-          <span className="steer-label">Steering</span>
+        <div className="message user steer prose" title="Steered: joined the running turn here">
+          <span className="steer-label">{steeredLabel(entry.paused)}</span>
           {entry.text}
         </div>
       );
@@ -618,51 +609,93 @@ function composerHint(enterSends: boolean, busy: boolean): string {
   const key = enterSends ? "Enter" : "Ctrl+Enter";
   const newline = enterSends ? "Shift+Enter" : "Enter";
   return busy
-    ? `${key} queues for after this turn · Ctrl+Shift+Enter steers the running turn`
+    ? `${key} queues for after this turn · Steer a queued message to send it now (or Ctrl+Shift+Enter)`
     : `Message the agent (${key} to send, ${newline} for a new line)`;
 }
 
-/** Messages waiting for the agent, above the composer; each can be edited or removed until delivered. */
-function QueueView({ queue, onChange }: { queue: QueuedMessage[]; onChange: Props["onChangeQueued"] }) {
+/**
+ * Messages waiting for the agent, above the composer. A queued one can be edited, steered into
+ * the running turn, or removed until it is delivered; one that is steering waits for the
+ * agent's next safe point and can only be removed.
+ */
+function QueueView({
+  queue,
+  busy,
+  onChange,
+}: {
+  queue: QueuedMessage[];
+  busy: boolean;
+  onChange: Props["onChangeQueued"];
+}) {
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  // Another window (or the agent) may steer, deliver, or remove the message being edited.
+  useEffect(() => {
+    if (editing && !editStillValid(queue, editing.id)) setEditing(null);
+  }, [queue, editing]);
   const save = () => {
     if (!editing) return;
     const text = editing.text.trim();
-    if (text) onChange(editing.id, text);
+    if (text) onChange(editing.id, { kind: "edit", text });
     setEditing(null);
   };
   return (
     <ol className="queue" aria-label="Queued messages">
-      {queue.map((message) => (
-        <li key={message.id} className={message.steer ? "steer" : undefined}>
-          <span className="queue-kind">{message.steer ? "Steering" : "Queued"}</span>
-          {editing?.id === message.id ? (
-            <input
-              aria-label="Edit queued message"
-              autoFocus
-              value={editing.text}
-              onChange={(event) => setEditing({ id: message.id, text: event.target.value })}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") save();
-                if (event.key === "Escape") setEditing(null);
-              }}
-              onBlur={save}
-            />
-          ) : (
-            <span className="queue-text" title={message.text}>
-              {message.text}
-            </span>
-          )}
-          <span className="buttons">
-            {editing?.id !== message.id && (
-              <button onClick={() => setEditing({ id: message.id, text: message.text })}>Edit</button>
+      {queue.map((message) => {
+        const actions = queueActions(message, busy);
+        const isEditing = editing?.id === message.id;
+        return (
+          <li key={message.id} className={message.steer ? "steer" : undefined}>
+            <span className="queue-kind">{queueLabel(message)}</span>
+            {isEditing ? (
+              <input
+                aria-label="Edit queued message"
+                autoFocus
+                value={editing.text}
+                onChange={(event) => setEditing({ id: message.id, text: event.target.value })}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") save();
+                  if (event.key === "Escape") setEditing(null);
+                }}
+                onBlur={save}
+              />
+            ) : (
+              <span className="queue-text" title={message.text}>
+                {message.text}
+              </span>
             )}
-            <button className="danger" onClick={() => onChange(message.id, null)} aria-label="Remove queued message">
-              Remove
-            </button>
-          </span>
-        </li>
-      ))}
+            <span className="buttons">
+              {actions.includes("edit") && !isEditing && (
+                <button
+                  className="ghost"
+                  onClick={() => setEditing({ id: message.id, text: message.text })}
+                  aria-label="Edit queued message"
+                  title="Edit"
+                >
+                  <Pencil aria-hidden="true" /> Edit
+                </button>
+              )}
+              {actions.includes("steer") && (
+                <button
+                  className="ghost steer"
+                  onClick={() => onChange(message.id, { kind: "steer" })}
+                  aria-label="Steer the running turn with this message"
+                  title="Steer: the agent reads it after its current step, instead of after the turn"
+                >
+                  <CornerDownRight aria-hidden="true" /> Steer
+                </button>
+              )}
+              <button
+                className="ghost danger"
+                onClick={() => onChange(message.id, { kind: "remove" })}
+                aria-label="Remove queued message"
+                title="Remove"
+              >
+                <Trash aria-hidden="true" /> Remove
+              </button>
+            </span>
+          </li>
+        );
+      })}
     </ol>
   );
 }

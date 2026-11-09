@@ -290,6 +290,28 @@ impl AgentStore {
         Ok(before)
     }
 
+    /// Marks a subagent that is not working as cancelled (failed, with that report), so it is
+    /// no longer listed as paused. Fails for the root, an unknown agent, or one that works.
+    pub fn cancel(&self, id: &str) -> Result<(), String> {
+        let mut state = lock(&self.state);
+        if id == ROOT_AGENT {
+            return Err("the root agent cannot be cancelled".into());
+        }
+        let record = state
+            .records
+            .get_mut(id)
+            .ok_or_else(|| format!("no agent {id:?} in this session"))?;
+        if record.summary.status == AgentStatus::Running {
+            return Err(format!(
+                "{id} is still working; it pauses when the user steers, or finishes on its own"
+            ));
+        }
+        record.summary.status = AgentStatus::Failed;
+        record.summary.updated_at_ms = now_ms();
+        self.write(record);
+        Ok(())
+    }
+
     /// Gives back a claim that could not start, restoring the status it had.
     pub fn release(&self, id: &str, status: AgentStatus) {
         let mut state = lock(&self.state);
@@ -345,6 +367,14 @@ impl AgentStore {
                     Some(imperium_api::truncate_chars(report, REPORT_CHARS));
                 task_id.as_str()
             }),
+            SessionEvent::TaskPaused { task_id, progress } => {
+                records.get_mut(task_id).map(|record| {
+                    record.summary.status = AgentStatus::Paused;
+                    record.summary.last_report =
+                        Some(imperium_api::truncate_chars(progress, REPORT_CHARS));
+                    task_id.as_str()
+                })
+            }
             SessionEvent::TurnStarted { .. } => {
                 let record = if agent == ROOT_AGENT {
                     records.entry(agent.to_string()).or_insert_with(root)

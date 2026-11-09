@@ -54,7 +54,11 @@ cached_tokens: number, } | { "type": "plan_updated", plan: Plan, } | { "type": "
 /**
  * The subagent's final reply, truncated for display.
  */
-report: string, usage: TokenUsage, cost_usd: number | null, } | { "type": "task_resumed", task_id: string, 
+report: string, usage: TokenUsage, cost_usd: number | null, } | { "type": "task_paused", task_id: string, 
+/**
+ * What it had done so far, and any messages queued for it that were not delivered.
+ */
+progress: string, } | { "type": "task_resumed", task_id: string, 
 /**
  * The follow-up message.
  */
@@ -86,7 +90,7 @@ summarised_messages: number,
 /**
  * The tokens the conversation may use: the window less room for the reply.
  */
-budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, } | { "type": "model_suggestion", 
+budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, paused: Array<string>, } | { "type": "model_suggestion", 
 /**
  * Names the suggestion in `session.suggestion_respond` and `model_suggestion_update`.
  */
