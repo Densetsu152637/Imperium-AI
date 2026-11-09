@@ -39,7 +39,7 @@ import {
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import type { ConfigDescribeResult, ConfigEntry, ConfigSetResult } from "@imperium/protocol";
+import type { ConfigDescribeResult, ConfigEntry, ConfigSetResult, ModListResult } from "@imperium/protocol";
 
 import { Select } from "./components/Select";
 import { Row } from "./components/SettingsRow";
@@ -47,7 +47,7 @@ import { Switch as Toggle } from "./components/Switch";
 import type { DaemonClient } from "./daemon/client";
 import { type Daemon, DaemonSettings } from "./DaemonControl";
 import { preview } from "./notify";
-import { ACCENTS, DEFAULT_SETTINGS, type AppSettings } from "./settings";
+import { ACCENTS, DEFAULT_SETTINGS, BUNDLED_ON_BY_DEFAULT, modEnabled, type AppSettings } from "./settings";
 import { storeFolder } from "./store";
 import { type Updates, UpdateSettings } from "./UpdateControl";
 
@@ -57,9 +57,13 @@ type Props = {
   updates: Updates | null;
   daemon: Daemon | null;
   client: DaemonClient | null;
+  mods: ModListResult | null;
   panels: { id: string; title: string }[];
   hidden: string[];
+  /** Panels that are in windows of their own. */
+  detached: string[];
   onTogglePanel: (id: string, open: boolean) => void;
+  onDock: (id: string) => void;
   /** Opens the Connectors window (MCP servers, plugins, skills). */
   onOpenConnectors: () => void;
   onResetLayout: () => void;
@@ -235,6 +239,7 @@ const APP_SECTIONS: Section[] = [
   { id: "chat", label: "Chat", group: "Imperium" },
   { id: "notifications", label: "Notifications", group: "Imperium" },
   { id: "panels", label: "Panels", group: "Imperium" },
+  { id: "mods", label: "Mods", group: "Imperium" },
   { id: "shortcuts", label: "Keyboard", group: "Imperium" },
   { id: "daemon", label: "Daemon", group: "Imperium" },
   { id: "updates", label: "Updates", group: "Imperium" },
@@ -371,7 +376,16 @@ export function SettingsWindow(props: Props) {
         return (
           <>
             {props.panels.map((panel) => (
-              <Row key={panel.id} label={panel.title} description="Shown in the workspace. Close it from its × as well.">
+              <Row
+                key={panel.id}
+                label={panel.title}
+                description={
+                  props.detached.includes(panel.id)
+                    ? "In its own window."
+                    : "Shown in the workspace. Close it from its × as well."
+                }
+              >
+                {props.detached.includes(panel.id) && <button onClick={() => props.onDock(panel.id)}>Dock</button>}
                 <Toggle
                   checked={!props.hidden.includes(panel.id)}
                   onChange={(open) => props.onTogglePanel(panel.id, open)}
@@ -384,6 +398,8 @@ export function SettingsWindow(props: Props) {
             </Row>
           </>
         );
+      case "mods":
+        return <ModsSection mods={props.mods} settings={settings} onChange={onChange} />;
       case "shortcuts":
         return (
           <table className="shortcuts">
@@ -694,6 +710,44 @@ function ConfigRow({ entry, disabled, onSet }: { entry: ConfigEntry; disabled: b
   );
 }
 
+/** Mods the daemon found: installed ones and the nursery are on until turned off, other bundled ones are opt-in. */
+function ModsSection({
+  mods,
+  settings,
+  onChange,
+}: {
+  mods: ModListResult | null;
+  settings: AppSettings;
+  onChange: (settings: AppSettings) => void;
+}) {
+  if (!mods) return <p className="muted">Connect to imperiumd to see the mods it found.</p>;
+  const toggle = (id: string, on: boolean) => onChange({ ...settings, enabledMods: { ...settings.enabledMods, [id]: on } });
+  return (
+    <>
+      {mods.mods.length === 0 && <p className="muted">No mods are installed. Put one in the mods folder of the Imperium config folder.</p>}
+      {mods.mods.map((mod) => {
+        const panels = mod.panels.map((panel) => panel.title).join(", ") || "none";
+        const permissions = mod.permissions.join(", ") || "none";
+        return (
+          <Row
+            key={mod.id}
+            label={`${mod.name}${mod.version ? ` ${mod.version}` : ""}`}
+            badge={<span className="badge">{mod.bundled ? "bundled" : "installed"}</span>}
+            description={`Panels: ${panels}. Permissions: ${permissions}.${mod.bundled && !BUNDLED_ON_BY_DEFAULT.includes(mod.id) ? " Off until you turn it on." : ""}`}
+          >
+            <Toggle checked={modEnabled(settings, mod)} onChange={(on) => toggle(mod.id, on)} label={mod.name} />
+          </Row>
+        );
+      })}
+      {mods.problems.map((problem) => (
+        <p key={problem} className="muted">
+          Could not load {problem}
+        </p>
+      ))}
+    </>
+  );
+}
+
 /** `wait_for_reset` → "Wait for reset"; values with dots or digits (q8_0, cuda12) stay as they are. */
 function humanize(option: string): string {
   if (/[0-9.]/.test(option) || option.length <= 3) return option;
@@ -716,7 +770,9 @@ function DataSection({
   useEffect(() => {
     storeFolder().then(setFolder, () => setFolder(null));
   }, []);
-  const changed = (Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]).filter((key) => settings[key] !== DEFAULT_SETTINGS[key]);
+  const changed = (Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]).filter(
+    (key) => JSON.stringify(settings[key]) !== JSON.stringify(DEFAULT_SETTINGS[key]),
+  );
   return (
     <>
       <Row label="App settings and layout" description="Kept on this computer, outside the install folder, so they survive updates and reinstalls.">

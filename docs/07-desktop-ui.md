@@ -21,6 +21,16 @@
   columns are brushed-metal rails; the conversation is a centred column with the user's turns
   as pills on the right.
 
+- Detachable panels: every panel, built-in or from a mod, has a Detach button (⧉) that moves it
+  to a window of its own. A detached window shows only that panel under a slim header with the
+  panel's actions, a Pin toggle (always on top), and Dock. Many can be open at once; each keeps
+  its position, size, and pin in the saved layout, and all reopen at the next start (moved onto
+  a visible monitor if theirs is gone). Closing one with the OS button docks it; quitting from
+  the main window leaves them detached. Only the main window writes the layout, so detached
+  windows report pinning, moving, and docking to it; documents are synced between windows, and a
+  detached window follows the main window's selected project and session. In a plain browser
+  the window is a popup and cannot be pinned.
+
 **Model download suggestions (implemented):** a `model_suggestion` event shows as a card in the
 conversation, styled like a permission prompt: the repository, quantisation, size, how it fits
 this machine (on the GPU, split with system memory, or on the CPU), and why it is suggested,
@@ -30,8 +40,8 @@ when it is done the card offers **Switch to it** (`session.control` `set_model`)
 downloaded until Download is clicked. The answers go through `session.suggestion_respond`
 ([04](04-models-and-routing.md#model-download-suggestions)).
 
-Not yet: dragging panels and modules between columns, the edit-layout mode, detachable windows,
-project layout overrides, mods, and themes beyond light and dark.
+Not yet: dragging panels and modules between columns, the edit-layout mode, project layout
+overrides, mods, and themes beyond light and dark.
 
 ## Shell
 

@@ -51,6 +51,8 @@ export type AppSettings = {
   // Updates (read by the native side at startup too; see src-tauri/src/update.rs)
   updateIntervalDays: UpdateInterval;
   checkUpdatesAtLogin: boolean;
+  // Mods: by id; a mod without an entry is on only if the user installed it (not bundled).
+  enabledMods: Record<string, boolean>;
 };
 
 /** The settings each display control used to be called. */
@@ -76,6 +78,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoStartDaemon: true,
   updateIntervalDays: 1,
   checkUpdatesAtLogin: false,
+  enabledMods: {},
 };
 
 /** The saved document: the settings plus a version for future migrations. */
@@ -96,6 +99,14 @@ export function loadSettings(): AppSettings {
 export function saveSettings(settings: AppSettings): void {
   // Keep fields this version does not know, so a downgrade then upgrade loses nothing.
   setDoc("settings", { ...getDoc<Saved>("settings"), ...settings, version: VERSION });
+}
+
+/** Bundled mods that are on until the user turns them off; other bundled mods are opt-in. */
+export const BUNDLED_ON_BY_DEFAULT = ["imperium-nursery"];
+
+/** Whether a mod's panels show: the user's choice, else on for installed mods and the bundled ones above. */
+export function modEnabled(settings: AppSettings, mod: { id: string; bundled: boolean }): boolean {
+  return settings.enabledMods[mod.id] ?? (!mod.bundled || BUNDLED_ON_BY_DEFAULT.includes(mod.id));
 }
 
 const DENSITY_SPACE: Record<Density, number> = { compact: 0.7, comfortable: 1, spacious: 1.35 };

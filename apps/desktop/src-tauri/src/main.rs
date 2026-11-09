@@ -10,6 +10,8 @@ mod daemon;
 mod store;
 mod update;
 
+use tauri::Manager;
+
 fn main() {
     let background = update::background();
     tauri::Builder::default()
@@ -32,6 +34,19 @@ fn main() {
             }
             update::setup(app.handle());
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Closing the main window quits the app, taking any detached panel windows with it
+            // (they are not docked, so they reopen at the next start). Exiting here runs the
+            // `RunEvent::Exit` handling below.
+            if window.label() == "main"
+                && matches!(
+                    event,
+                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+                )
+            {
+                window.app_handle().exit(0);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             daemon::daemon_endpoint,

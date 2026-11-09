@@ -1,13 +1,14 @@
 // The window is a row of columns. A column holds either one spanning panel or a stack of
 // panels; columns and stack dividers are resizable and sizes are kept as proportions in the
 // saved layout (state.ts). Panels with `onClose` can be closed; Settings → Panels reopens them.
+// Panels with `onDetach` can move to a window of their own (panelWindows.ts).
 
-import { X } from "lucide-react";
+import { ExternalLink, X } from "lucide-react";
 import { useRef, useState, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
 
 import { getLayout, updateLayout } from "./state";
 
-export type PanelSpec = { id: string; title: string; body: ReactNode; actions?: ReactNode; onClose?: () => void };
+export type PanelSpec = { id: string; title: string; body: ReactNode; actions?: ReactNode; onClose?: () => void; onDetach?: () => void };
 export type ColumnSpec =
   | { id: string; mode: "span"; panel: PanelSpec }
   | { id: string; mode: "stack"; panels: PanelSpec[] };
@@ -96,6 +97,16 @@ function Panel({ panel }: { panel: PanelSpec }) {
       <header className="panel-header">
         <h2 id={`panel-${panel.id}`}>{panel.title}</h2>
         {panel.actions}
+        {panel.onDetach && (
+          <button
+            className="ghost panel-close panel-detach icon-only"
+            onClick={panel.onDetach}
+            aria-label={`Detach ${panel.title}`}
+            title="Open in its own window"
+          >
+            <ExternalLink />
+          </button>
+        )}
         {panel.onClose && (
           <button className="ghost panel-close icon-only" onClick={panel.onClose} aria-label={`Close ${panel.title}`} title="Close panel">
             <X />
