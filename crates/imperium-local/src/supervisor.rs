@@ -869,7 +869,7 @@ enum Plan {
     Wait {
         yielded: bool,
     },
-    Load(Load),
+    Load(Box<Load>),
 }
 
 struct Load {
@@ -1420,7 +1420,7 @@ impl Supervisor {
                         Plan::Retry => continue,
                         Plan::Load(load) => {
                             return self
-                                .swap_in(&model, holder, &request, load, swapping)
+                                .swap_in(&model, holder, &request, *load, swapping)
                                 .await
                                 .map(|lease| lease.with_wait(waited));
                         }
@@ -1637,7 +1637,7 @@ impl Supervisor {
         if !victims.is_empty() {
             state.swaps.push_back(tokio::time::Instant::now());
         }
-        Ok(Plan::Load(Load {
+        Ok(Plan::Load(Box::new(Load {
             backend,
             placement,
             cache_room,
@@ -1646,7 +1646,7 @@ impl Supervisor {
             priority,
             launch: self.launch(&model.id),
             cpu_pinned: self.cpu_lane(&model.id).is_some(),
-        }))
+        })))
     }
 
     /// Swaps out the plan's victims, loads `model`, and gives `holder` its first slot.
