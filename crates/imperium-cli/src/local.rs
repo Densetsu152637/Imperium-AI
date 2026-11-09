@@ -309,7 +309,7 @@ pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
         let mut shown = shown
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if shown.0 == pack && (shown.1 == percent || percent % 10 != 0) {
+        if shown.0 == pack && (shown.1 == percent || !percent.is_multiple_of(10)) {
             return;
         }
         if shown.0 != pack {
