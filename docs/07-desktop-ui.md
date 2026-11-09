@@ -318,8 +318,13 @@ repositories ([worktrees](14-projects-and-automation.md#worktrees)).
 
 The Sessions panel lists every session across environments, each with its environment's icon
 to the left of its title and a status badge (idle, working, needs attention, paused with its
-resume time, watching with its pull request, merged), and a *⋯* menu with *Pin*/*Unpin* and
-*Show* its environment. A sort control above the list orders it *Recent* (the default: most
+resume time, watching with its pull request, merged), and a *⋯* menu with *Pin*/*Unpin*,
+*Archive*, and *Show* its environment. Archived sessions (archived by hand, or on their own once
+their pull request closes or after the inactivity set in Settings → Sessions; see
+[archiving sessions](14-projects-and-automation.md#archiving-sessions)) leave the list and are
+kept in a collapsed *Archived* group at the bottom, most recently archived first, with
+*Unarchive* in their menu. Opening one shows its history with a note that it is archived and an
+*Unarchive* button in place of the composer. A sort control above the list orders it *Recent* (the default: most
 recently active first), *By environment* (grouped under environment headings, pinned
 environments first), or *By status* (groups *Waiting for approval*, *Active* — working or
 watching —, *Paused*, *Idle*, *Merged*); pinned sessions stay on top within each group, and the

@@ -1,9 +1,10 @@
 // The Environments and Sessions panels on the left. An environment is a named set of folders;
 // its sessions' tools may use every folder, and the first is the working directory. Each row
 // is an icon and a title with a "more" menu; environments are created and edited in the
-// environment window (EnvironmentWindow.tsx). Pinned environments and sessions come first.
+// environment window (EnvironmentWindow.tsx). Pinned environments and sessions come first;
+// archived sessions are kept apart in a collapsed Archived group at the bottom.
 
-import { ArrowLeft, FolderOpen, Pencil, Pin, PinOff, Trash } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, FolderOpen, Pencil, Pin, PinOff, Trash } from "lucide-react";
 
 import type { EnvironmentInfo, SessionStatus } from "@imperium/protocol";
 
@@ -161,6 +162,7 @@ export function SessionsPanel({
   onSort,
   onSelect,
   onSetPinned,
+  onSetArchived,
   onShowEnvironment,
   onShowAll,
 }: {
@@ -175,12 +177,18 @@ export function SessionsPanel({
   onSort: (sort: SessionSort) => void;
   onSelect: (sessionId: string) => void;
   onSetPinned: (sessionId: string, pinned: boolean) => void;
+  /** Archives a session (`true`) or resumes an archived one. */
+  onSetArchived: (sessionId: string, archived: boolean) => void;
   onShowEnvironment: (id: string) => void;
   onShowAll: () => void;
 }) {
   const inScope = scope ? sessions.filter((s) => environmentOf(s, environments)?.id === scope.id) : sessions;
+  const active = inScope.filter((s) => !s.summary.archived);
+  const archived = sortSessions(inScope.filter((s) => s.summary.archived)).sort(
+    (a, b) => (b.summary.archived_at ?? 0) - (a.summary.archived_at ?? 0),
+  );
   // Within one environment, grouping by environment would be a single group.
-  const groups = groupSessions(inScope, environments, scope && sort === "environment" ? "recent" : sort);
+  const groups = groupSessions(active, environments, scope && sort === "environment" ? "recent" : sort);
 
   const row = (session: SessionState) => {
     const id = session.summary.session_id;
@@ -227,9 +235,20 @@ export function SessionsPanel({
           <RowMenu
             label={`More for ${title}`}
             items={[
-              pinned
-                ? { label: "Unpin", icon: PinOff, onSelect: () => onSetPinned(id, false) }
-                : { label: "Pin", icon: Pin, onSelect: () => onSetPinned(id, true) },
+              ...(session.summary.archived
+                ? [{ label: "Unarchive", icon: ArchiveRestore, onSelect: () => onSetArchived(id, false) }]
+                : [
+                    pinned
+                      ? { label: "Unpin", icon: PinOff, onSelect: () => onSetPinned(id, false) }
+                      : { label: "Pin", icon: Pin, onSelect: () => onSetPinned(id, true) },
+                    {
+                      label: "Archive",
+                      icon: Archive,
+                      onSelect: () => onSetArchived(id, true),
+                      // An environment's agent runs while the daemon does.
+                      disabled: !!session.summary.persistent,
+                    },
+                  ]),
               {
                 label: `Show ${place}`,
                 icon: FolderOpen,
@@ -272,7 +291,7 @@ export function SessionsPanel({
           options={SORT_OPTIONS}
         />
       </div>
-      {inScope.length === 0 ? (
+      {active.length === 0 ? (
         <p className="empty">{scope ? "No sessions in this environment." : "No sessions yet."}</p>
       ) : (
         groups.map((group) => (
@@ -292,6 +311,18 @@ export function SessionsPanel({
             </ul>
           </section>
         ))
+      )}
+      {archived.length > 0 && (
+        <details className="session-group archived-sessions">
+          <summary className="session-group-label">
+            <Archive aria-hidden="true" />
+            <span>Archived</span>
+            <span className="session-group-count">{archived.length}</span>
+          </summary>
+          <ul className="list" aria-label="Archived sessions">
+            {archived.map(row)}
+          </ul>
+        </details>
       )}
     </div>
   );

@@ -2259,6 +2259,45 @@ button.sort:hover:not(:disabled) {
   opacity: 0.8;
 }
 
+/* Archived sessions: a collapsed group at the bottom of the list. */
+.archived-sessions {
+  margin-top: var(--space);
+  border-top: 1px solid var(--border);
+  padding-top: calc(var(--space) * 0.5);
+}
+
+.archived-sessions > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.archived-sessions > summary::-webkit-details-marker {
+  display: none;
+}
+
+.archived-sessions > summary .lucide {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.archived-sessions .row-main {
+  opacity: 0.75;
+}
+
+/* An archived session's transcript: what it is, and the way back. */
+.archived-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space);
+  margin: 0 var(--space) var(--space);
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed var(--border-strong, var(--border));
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 /* The environment window: a narrower sheet like Settings. */
 .environment-window {
   display: flex;

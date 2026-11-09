@@ -53,6 +53,8 @@ type Props = {
   onSetModel: (model: string) => Promise<SessionControlResult | null>;
   /** For answering model download suggestions and following their downloads. */
   client?: DaemonClient | null;
+  /** Resumes an archived session. */
+  onUnarchive?: () => void;
 };
 
 export function SessionPanel({
@@ -66,6 +68,7 @@ export function SessionPanel({
   models,
   onSetModel,
   client = null,
+  onUnarchive,
 }: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
@@ -204,7 +207,18 @@ export function SessionPanel({
         <div ref={end} />
       </div>
 
-      {session.summary.model === null && (
+      {session.summary.archived && (
+        <div className="archived-note" role="status">
+          <span>This session is archived: it is not running and keeps its history. Unarchive it to continue.</span>
+          {onUnarchive && (
+            <button className="primary" onClick={onUnarchive}>
+              Unarchive
+            </button>
+          )}
+        </div>
+      )}
+
+      {session.summary.model === null && !session.summary.archived && (
         <p className="needs-model" role="status">
           This session has no model yet. Pick one in the model list above (or set a default under Settings → Models);
           {session.status === "needs_model"
@@ -217,6 +231,7 @@ export function SessionPanel({
 
       <form
         className="composer"
+        hidden={session.summary.archived}
         onSubmit={(event) => {
           event.preventDefault();
           send();

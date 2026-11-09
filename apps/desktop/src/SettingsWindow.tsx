@@ -5,6 +5,7 @@
 // persist across versions.
 
 import {
+  Archive,
   Bell,
   Bot,
   Brain,
@@ -228,6 +229,7 @@ const CONFIG_SECTIONS: Record<string, string> = {
   pets: "Pets",
   phone: "Phone",
   resume: "Resuming",
+  sessions: "Sessions",
   daemon: "Network",
 };
 
@@ -279,6 +281,7 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
   "config:pets": PawPrint,
   "config:phone": Smartphone,
   "config:resume": Clock,
+  "config:sessions": Archive,
   "config:daemon": Network,
 };
 

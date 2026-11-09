@@ -244,6 +244,33 @@ Schedules emit `schedule.fire`, `schedule.complete`, and `schedule.failed` hook 
 hooks can create, pause, or trigger schedules through the CLI or protocol. A plugin can ship
 schedules and hooks together (for example, a "nightly dependency audit" plugin).
 
+## Archiving sessions
+
+**Implemented:** a session can be archived, the way Claude's desktop app keeps its list tidy.
+An archived session stops running and is not resumed when the daemon restarts, but its journal
+and record are kept: `session.list` still returns it, with `archived: true` and `archived_at`
+(milliseconds since the Unix epoch), and `session.subscribe` returns its history with nothing
+live to follow. It takes no messages. `session.control` `archive` archives it and `unarchive`
+resumes it where it left off; both are announced as `session.updated` (unarchiving also as
+`session.created`), and the state is kept in the session's meta file, so it survives restarts.
+`session.delete` deletes an archived session as well. From the CLI: `imperium session archive
+<id>`, `imperium session unarchive <id>`, and `imperium session list [--archived]`.
+
+Sessions are also archived on their own:
+
+- **When its pull request closes** (`sessions.auto_archive_on_pr_close`, on by default): the
+  watcher that follows the pull requests sessions [watch](#github-auto-fix) archives the
+  session once the pull request is merged or closed. A merged session still busy is archived
+  at a later check, once it is idle; it keeps its `merged` status in the list.
+- **After inactivity** (`sessions.auto_archive_after_days`, `0` = off, the default): the daemon
+  looks every hour (first a minute after it starts) for sessions whose last journalled event is
+  that many days old.
+
+Neither rule archives a session that is working, waiting on the user (an approval, a usage
+limit, a failed turn, a model), has queued messages, is pinned, or is an environment's
+[persistent agent](#persistent-agent-implemented) or a [project agent](#project-agent); those
+two cannot be archived by hand either.
+
 ## GitHub auto-fix
 
 Projects linked to a GitHub repository can react to repository activity automatically: fix a
