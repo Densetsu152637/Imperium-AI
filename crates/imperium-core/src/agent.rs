@@ -831,24 +831,18 @@ impl Agent {
         struct Args {
             #[serde(default)]
             goal: String,
-            steps: Vec<StepArgs>,
-        }
-        #[derive(Deserialize)]
-        struct StepArgs {
-            title: String,
-            status: StepStatus,
+            steps: Vec<PlanStep>,
+            #[serde(default)]
+            assumptions: Vec<String>,
+            #[serde(default)]
+            open_questions: Vec<String>,
         }
         let args: Args = parse(arguments)?;
         let plan = Plan {
             goal: args.goal,
-            steps: args
-                .steps
-                .into_iter()
-                .map(|step| PlanStep {
-                    title: step.title,
-                    status: step.status,
-                })
-                .collect(),
+            steps: args.steps,
+            assumptions: args.assumptions,
+            open_questions: args.open_questions,
         };
         let done = plan
             .steps

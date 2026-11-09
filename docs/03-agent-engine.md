@@ -161,8 +161,9 @@ next to the exported schemas (not generated).
   `spawn_agent` brief: goal, context, constraints, acceptance, output format; at most 2,000
   tokens.
 - [`plan.md`](../crates/imperium-protocol/schemas/prompts/plan.md): the plan kept with
-  `update_plan`: goals, stages with dependencies and acceptance checks, assumptions, open
-  questions.
+  `update_plan`: `goal`; `steps` with `title`, `status`, `depends_on` (titles of earlier
+  steps), `owner` and `acceptance`; `assumptions`; `open_questions`. Everything after `status`
+  is optional, so plans saved before these fields existed still load.
 - [`questions.md`](../crates/imperium-protocol/schemas/prompts/questions.md): one batch of
   questions, each with options and a recommended answer; only decisions that are the user's or
   cannot be researched.

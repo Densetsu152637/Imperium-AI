@@ -1,9 +1,10 @@
 # Question format
 
-One `ask_user` call carries every question you have, as a single batch. Before asking, try to
-answer each question yourself from the request, the project, sensible defaults or research. Ask
-only about decisions that are the user's to make (scope, budget, taste, authority) or that would
-change the plan materially and cannot be researched.
+Ask every question you have as a single batch: one `ask_user` call when that tool is offered,
+otherwise one reply to the user in this format. Before asking, try to answer each question
+yourself from the request, the project, sensible defaults or research. Ask only about decisions
+that are the user's to make (scope, budget, taste, authority) or that would change the plan
+materially and cannot be researched.
 
 Each question has:
 

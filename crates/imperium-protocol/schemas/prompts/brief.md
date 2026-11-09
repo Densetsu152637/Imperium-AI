@@ -1,8 +1,10 @@
 # Brief template
 
-The `brief` argument of `spawn_agent` (and of `delegate_chunks`). The subagent sees only this
-text: it has none of your conversation, so everything it needs must be in it. Keep it under
-2,000 tokens; put large material in a stored artefact and name it instead of pasting it.
+The `brief` argument of `spawn_agent` (and of `delegate_chunks` when it is offered). The
+subagent sees only this text: it has none of your conversation, so everything it needs must be
+in it. Keep it under 2,000 tokens. Do not paste large material: name where it lives (a file
+path, a URL, or a stored artefact when `delegate_chunks` is offered) so the subagent can read
+it.
 
 ## Goal
 
