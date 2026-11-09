@@ -973,14 +973,14 @@ mod tests {
         let (pack, server) = server_for(None, "auto", data.path(), &machine);
         assert_eq!(pack, packs[0]);
         assert!(!server.is_file());
-        // Only the Vulkan build is installed: it is the one used.
-        let vulkan = format!("{}-vulkan", platform());
-        let installed = server_in(&pack_dir(data.path(), &vulkan));
+        // Only the last build of the list (the CPU one) is installed: it is the one used.
+        let last = packs.last().unwrap().clone();
+        let installed = server_in(&pack_dir(data.path(), &last));
         std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
         std::fs::write(&installed, "binary").unwrap();
         assert_eq!(
             server_for(None, "auto", data.path(), &machine),
-            (vulkan, installed)
+            (last, installed)
         );
         let custom = Path::new("/opt/llama-server");
         assert_eq!(
