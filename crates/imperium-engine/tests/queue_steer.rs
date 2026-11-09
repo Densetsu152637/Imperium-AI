@@ -742,12 +742,7 @@ async fn steering_the_root_pauses_its_subagents_and_wakes_it_with_their_status()
         &event.event,
         SessionEvent::TaskFinished { ok: true, report, .. } if report == "resumed done"
     )));
-    let resumed = fake
-        .requests()
-        .into_iter()
-        .filter(is_subagent)
-        .last()
-        .unwrap();
+    let resumed = fake.requests().into_iter().rfind(is_subagent).unwrap();
     let contents: Vec<String> = resumed["messages"]
         .as_array()
         .unwrap()
