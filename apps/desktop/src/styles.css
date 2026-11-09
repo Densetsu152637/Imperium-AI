@@ -2393,9 +2393,20 @@ button.sort:hover:not(:disabled) {
   font-size: 0.8rem;
 }
 
-.model-dialog-footer .error {
+.model-dialog-footer .error,
+.model-dialog-footer .muted {
   margin-right: auto;
+}
+
+.model-dialog-footer .error {
   color: var(--danger);
+}
+
+/* Badges on the selected (accent-filled) model take the button's text colour. */
+.model-dialog button.primary .badge {
+  background: transparent;
+  border-color: currentColor;
+  color: inherit;
 }
 
 .models tr.off .badge.off {

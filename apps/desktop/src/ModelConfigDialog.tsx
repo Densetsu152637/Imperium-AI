@@ -437,9 +437,11 @@ export function ModelConfigDialog({
         </div>
       </div>
       <footer className="model-dialog-footer">
-        <span className="error" role="alert">
-          {error}
-        </span>
+        {error && (
+          <span className="error" role="alert">
+            {error}
+          </span>
+        )}
         {config && <span className="muted">saved to {config.file}</span>}
         <button onClick={onClose}>Cancel</button>
         <button className="primary" onClick={save} disabled={saving || !config || !dirty}>
