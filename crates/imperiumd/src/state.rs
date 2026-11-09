@@ -839,19 +839,6 @@ pub fn summary(session: &Session) -> SessionSummary {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_bundled_workflow_pack_is_found_and_loads() {
-        let pack = bundled_pack().expect("the source tree has policy/agent-custom-workflow");
-        let loaded = Pack::load(&pack).unwrap();
-        assert!(loaded.roles.contains_key("root") && loaded.roles.contains_key("leaf"));
-        assert!(!loaded.candidates.is_empty());
-    }
-}
-
 /// Answers a batch of questions with the agent's own recommendations: an unattended session
 /// (a project agent, a scheduled task) has nobody to ask.
 pub fn answer_with_recommendations(
@@ -864,4 +851,17 @@ pub fn answer_with_recommendations(
         .map(|question| question.recommended.clone())
         .collect();
     let _ = session.answer(request_id, answers);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bundled_workflow_pack_is_found_and_loads() {
+        let pack = bundled_pack().expect("the source tree has policy/agent-custom-workflow");
+        let loaded = Pack::load(&pack).unwrap();
+        assert!(loaded.roles.contains_key("root") && loaded.roles.contains_key("leaf"));
+        assert!(!loaded.candidates.is_empty());
+    }
 }
