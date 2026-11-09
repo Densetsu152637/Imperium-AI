@@ -506,6 +506,9 @@ impl Chat {
                 let state = if ok { "finished" } else { "failed" };
                 println!("\n← {task_id} {state}{cost}");
             }
+            SessionEvent::TaskPaused { task_id, .. } => {
+                println!("\n‖ {task_id} paused; /resume-agent continues it");
+            }
             SessionEvent::TurnCompleted {
                 usage,
                 cost_usd,
@@ -590,7 +593,16 @@ impl Chat {
                     println!("\n{tag}· queued {id}: {first}");
                 }
             }
-            SessionEvent::Steered { id, .. } => println!("\n{tag}· steering {id} delivered"),
+            SessionEvent::Steered { id, paused, .. } => {
+                if paused.is_empty() {
+                    println!("\n{tag}· steering {id} delivered");
+                } else {
+                    println!(
+                        "\n{tag}· steering {id} delivered; paused {}",
+                        paused.join(", ")
+                    );
+                }
+            }
             SessionEvent::ModelSuggestion {
                 id,
                 repo,
@@ -691,6 +703,7 @@ fn describe_agents(agents: &[AgentSummary]) -> String {
             AgentStatus::Idle => "idle",
             AgentStatus::Failed => "failed",
             AgentStatus::Interrupted => "interrupted",
+            AgentStatus::Paused => "paused",
         };
         let resumable = if agent.resumable && agent.status != AgentStatus::Running {
             ", resumable"

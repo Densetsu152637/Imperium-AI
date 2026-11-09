@@ -1,7 +1,9 @@
 //! Queueing and steering: messages sent while a turn runs wait and run in order afterwards (and
 //! can be edited or removed first); a steering message joins the running turn before its next
 //! model call, after the tool round, without breaking tool-call pairs; the root agent steers
-//! and queues messages for its subagents with tools; and a resumed session restores its queue.
+//! and queues messages for its subagents with tools; a resumed session restores its queue; a
+//! queued message can be turned into steering in place; and steering the root pauses its
+//! running subagents, which can then be resumed from their saved state or cancelled.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,7 +12,7 @@ use axum::Router;
 use axum::routing::post;
 use imperium_engine::{QueueError, ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
-use imperium_protocol::session::{AgentEvent, QueuedMessage, SendMode, SessionEvent};
+use imperium_protocol::session::{AgentEvent, AgentStatus, QueuedMessage, SendMode, SessionEvent};
 use imperium_tools::Workspace;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
@@ -19,7 +21,9 @@ use tokio::sync::broadcast;
 /// message. Root agent: `slow` sleeps then answers; `slow tool` sleeps then reads a.txt;
 /// `delegate` spawns a subagent, then steers it, queues a follow-up for it, and awaits it.
 /// Subagent: its brief sleeps then reads a.txt; a follow-up answers `follow-up done`. A
-/// steering message is answered `steered`; anything else `done`.
+/// steering message is answered `steered`; anything else `done`. `delegate long`: the root
+/// spawns `long work` and awaits it; that subagent's first call takes far longer than any test
+/// waits (a pause cancels it), and when resumed it answers `resumed done`.
 #[derive(Default)]
 struct Fake {
     requests: Mutex<Vec<Value>>,
@@ -62,6 +66,23 @@ async fn answer(body: &Value) -> String {
     let pause = || tokio::time::sleep(Duration::from_millis(700));
     if last["role"] == "user" && said.contains("<steering>") {
         return text("steered");
+    }
+    let first_user = body["messages"][1]["content"].as_str().unwrap_or_default();
+    if is_subagent(body) && first_user == "long work" {
+        if said.contains("You were paused") {
+            return text("resumed done");
+        }
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        return text("too late");
+    }
+    if !is_subagent(body) && first_user == "delegate long" {
+        return match last["role"].as_str() {
+            Some("user") => call("spawn", "spawn_agent", json!({"brief": "long work"})),
+            Some("tool") if said.starts_with("started t1") => {
+                call("await", "await_tasks", json!({}))
+            }
+            _ => text("done"),
+        };
     }
     if is_subagent(body) {
         return match (last["role"].as_str(), said) {
@@ -338,6 +359,7 @@ async fn steering_joins_the_running_turn_after_its_tool_round() {
                 == SessionEvent::Steered {
                     id: id.clone(),
                     text: "use b.txt instead".into(),
+                    paused: Vec::new(),
                 }
         })
         .expect("the steering message was delivered");
@@ -543,4 +565,224 @@ async fn a_resumed_session_restores_and_runs_its_queue() {
         .send_message("later".into(), SendMode::Queue, None)
         .unwrap();
     assert_eq!(next, "q4");
+}
+
+#[tokio::test]
+async fn a_queued_message_steers_in_place_and_the_rest_keep_their_order() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha").unwrap();
+    let session = start(&url, dir.path(), false);
+    let mut events = session.subscribe();
+
+    session.send("slow tool".into()).unwrap();
+    until(&mut events, "root", |event| {
+        matches!(event, SessionEvent::TurnStarted { .. })
+    })
+    .await;
+    let a = session
+        .send_message("a".into(), SendMode::Queue, None)
+        .unwrap();
+    let b = session
+        .send_message("b".into(), SendMode::Queue, None)
+        .unwrap();
+    let c = session
+        .send_message("c".into(), SendMode::Queue, None)
+        .unwrap();
+    until(
+        &mut events,
+        "root",
+        |event| matches!(event, SessionEvent::MessageQueued { id, .. } if *id == c),
+    )
+    .await;
+
+    // Steer the middle one while the first model call is still answering.
+    session.steer_queued(None, &b).unwrap();
+    let steered = |message: &QueuedMessage| (message.text.clone(), message.steer);
+    assert_eq!(
+        session
+            .queue(None)
+            .unwrap()
+            .iter()
+            .map(steered)
+            .collect::<Vec<_>>(),
+        [("a".into(), false), ("b".into(), true), ("c".into(), false)]
+    );
+    // A message that is steering can no longer be edited.
+    assert_eq!(
+        session.edit_queued(None, &b, "b, edited".into()),
+        Err(QueueError::Steering(b.clone()))
+    );
+    assert_eq!(
+        session.steer_queued(None, "q99"),
+        Err(QueueError::UnknownMessage("q99".into()))
+    );
+
+    // It joins the running turn after its tool round, exactly once.
+    let turn = until(&mut events, "root", root_turn_ended).await;
+    let delivered: Vec<&SessionEvent> = turn
+        .iter()
+        .map(|event| &event.event)
+        .filter(|event| matches!(event, SessionEvent::Steered { .. }))
+        .collect();
+    assert_eq!(
+        delivered,
+        [&SessionEvent::Steered {
+            id: b.clone(),
+            text: "b".into(),
+            paused: Vec::new(),
+        }]
+    );
+    assert!(started_texts(&turn).is_empty());
+    // The others run afterwards, in their order.
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        seen.extend(until(&mut events, "root", root_turn_ended).await);
+    }
+    assert_eq!(started_texts(&seen), ["a", "c"]);
+    assert!(session.queue(None).unwrap().is_empty());
+    assert_eq!(
+        session.steer_queued(None, &a),
+        Err(QueueError::UnknownMessage(a.clone()))
+    );
+}
+
+/// Starts `delegate long`, waits until the root awaits its subagent, then steers the root.
+/// Returns the events of the root's turn.
+async fn steer_while_awaiting(
+    session: &Session,
+    events: &mut broadcast::Receiver<AgentEvent>,
+) -> Vec<AgentEvent> {
+    session.send("delegate long".into()).unwrap();
+    let mut seen = until(
+        events,
+        "root",
+        |event| matches!(event, SessionEvent::ToolStarted { tool, .. } if tool == "await_tasks"),
+    )
+    .await;
+    // t1 is mid model call; it cannot be cancelled while it works.
+    assert!(session.cancel_agent("t1").is_err());
+    session
+        .send_message("change of plan".into(), SendMode::Steer, None)
+        .unwrap();
+    seen.extend(until(events, "root", root_turn_ended).await);
+    seen
+}
+
+fn agent_status(session: &Session, id: &str) -> AgentStatus {
+    session
+        .agents()
+        .into_iter()
+        .find(|agent| agent.agent_id == id)
+        .unwrap()
+        .status
+}
+
+#[tokio::test]
+async fn steering_the_root_pauses_its_subagents_and_wakes_it_with_their_status() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(&url, dir.path(), false);
+    let mut events = session.subscribe();
+
+    let started = std::time::Instant::now();
+    let turn = steer_while_awaiting(&session, &mut events).await;
+    // The subagent's long model call was cancelled rather than waited for.
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert!(
+        matches!(
+            turn.last().unwrap().event,
+            SessionEvent::TurnCompleted { .. }
+        ),
+        "{:?}",
+        turn.last()
+    );
+    assert!(turn.iter().any(|event| event.agent_id == "t1"
+        && matches!(&event.event, SessionEvent::TaskPaused { task_id, .. } if task_id == "t1")));
+    assert!(
+        !turn
+            .iter()
+            .any(|event| matches!(event.event, SessionEvent::TaskFinished { .. }))
+    );
+    assert!(turn.iter().any(|event| event.agent_id == "root"
+        && matches!(&event.event, SessionEvent::Steered { text, paused, .. }
+            if text == "change of plan" && paused == &["t1".to_string()])));
+    // The root read the message together with the paused subagent's status.
+    let last_root = fake
+        .requests()
+        .into_iter()
+        .rfind(|body| !is_subagent(body))
+        .unwrap();
+    let messages = last_root["messages"].as_array().unwrap();
+    let steering = messages.last().unwrap()["content"].as_str().unwrap();
+    assert!(steering.contains("change of plan"), "{steering}");
+    assert!(steering.contains("- t1 (paused;"), "{steering}");
+    assert!(steering.contains("long work"), "{steering}");
+    // await_tasks stopped waiting for it.
+    let waited = messages[messages.len() - 2]["content"].as_str().unwrap();
+    assert!(
+        waited.contains("Stopped waiting") || waited.contains("(fake:m, paused)"),
+        "{waited}"
+    );
+
+    // The root decided nothing, so t1 stays paused, its state kept to resume from.
+    assert_eq!(agent_status(&session, "t1"), AgentStatus::Paused);
+    let saved = std::fs::read_to_string(dir.path().join(".sessions/s.agents/t1.json")).unwrap();
+    assert!(saved.contains("long work"));
+
+    // Resuming continues from the saved conversation.
+    session.resume_agent("t1", "carry on".into()).unwrap();
+    let finished = until(&mut events, "t1", |event| {
+        matches!(event, SessionEvent::TaskFinished { .. })
+    })
+    .await;
+    assert!(finished.iter().any(|event| matches!(
+        &event.event,
+        SessionEvent::TaskFinished { ok: true, report, .. } if report == "resumed done"
+    )));
+    let resumed = fake
+        .requests()
+        .into_iter()
+        .filter(is_subagent)
+        .last()
+        .unwrap();
+    let contents: Vec<String> = resumed["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message["content"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(contents[1], "long work");
+    assert!(contents.last().unwrap().contains("carry on"));
+    assert_eq!(agent_status(&session, "t1"), AgentStatus::Idle);
+}
+
+#[tokio::test]
+async fn a_paused_subagent_can_be_cancelled() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(&url, dir.path(), false);
+    let mut events = session.subscribe();
+
+    steer_while_awaiting(&session, &mut events).await;
+    assert_eq!(agent_status(&session, "t1"), AgentStatus::Paused);
+    session.cancel_agent("t1").unwrap();
+    let finished = until(&mut events, "t1", |event| {
+        matches!(event, SessionEvent::TaskFinished { .. })
+    })
+    .await;
+    assert!(matches!(
+        &finished.last().unwrap().event,
+        SessionEvent::TaskFinished { ok: false, report, .. } if report.contains("Cancelled")
+    ));
+    assert_eq!(agent_status(&session, "t1"), AgentStatus::Failed);
+    // Its inbox is gone: nothing more reaches it until it is resumed.
+    assert_eq!(
+        session.send_message("x".into(), SendMode::Queue, Some("t1")),
+        Err(QueueError::UnknownAgent("t1".into()))
+    );
+    assert!(session.cancel_agent("root").is_err());
 }
