@@ -156,6 +156,8 @@ mod tests {
             backend: "auto".into(),
             custom_path: None,
             find_existing: true,
+            auto_install: false,
+            update_external: "off".into(),
             idle_unload_s: 900,
             context: context.map_or(imperium_config::ContextLimit::Auto, Into::into),
             parallel: 2,

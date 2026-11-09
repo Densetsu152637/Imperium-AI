@@ -147,6 +147,8 @@ export function SessionModelSelect({
   const [error, setError] = useState<string | null>(null);
   // A llama.cpp model chosen while no runtime is ready, waiting for "Use anyway".
   const [unready, setUnready] = useState<string | null>(null);
+  // A llama.cpp model chosen while its runtime will be installed on first use.
+  const [installInfo, setInstallInfo] = useState(false);
 
   const switchTo = (spec: string) => {
     setSwitching(true);
@@ -188,10 +190,13 @@ export function SessionModelSelect({
       setPending(null);
       return;
     }
+    setInstallInfo(false);
     if (needsRuntime(spec, runtime)) {
       setUnready(spec);
       return;
     }
+    // No runtime yet, but it is fetched on first use: say so, without stopping the switch.
+    if (spec.startsWith("llamacpp:") && runtime != null && !runtime.installed) setInstallInfo(true);
     apply(spec);
   };
 
@@ -234,6 +239,11 @@ export function SessionModelSelect({
       {error && !switching && (
         <span className="model-status error" role="alert" title={error}>
           {error}
+        </span>
+      )}
+      {installInfo && unready === null && (
+        <span className="model-status muted" role="status">
+          {INSTALL_ON_FIRST_USE}
         </span>
       )}
       {unready !== null && (
@@ -281,7 +291,13 @@ export function SessionModelSelect({
 export const NO_RUNTIME =
   "No llama.cpp runtime yet — open Local models → Runtime to install one or choose an existing llama-server.";
 
-/** Whether `spec` is a llama.cpp model and `runtime` says no `llama-server` is there to load it. */
+/** What the session selector says when a llama.cpp model is chosen and the runtime is fetched on first use. */
+export const INSTALL_ON_FIRST_USE = "llama.cpp will be installed on first use.";
+
+/**
+ * Whether `spec` is a llama.cpp model and `runtime` says no `llama-server` is there to load it
+ * and none will be installed by itself (`auto_install` off).
+ */
 export function needsRuntime(spec: string, runtime: RuntimeInfo | null | undefined): boolean {
-  return spec.startsWith("llamacpp:") && runtime != null && !runtime.installed;
+  return spec.startsWith("llamacpp:") && runtime != null && !runtime.installed && !runtime.auto_install;
 }

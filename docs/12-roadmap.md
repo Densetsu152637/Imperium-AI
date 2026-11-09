@@ -33,6 +33,15 @@ Agents panel). Agent state is kept next to the session's files in the daemon's d
 restart cut off are marked interrupted and resumable
 ([03](03-agent-engine.md#agent-state)).
 
+Implemented: **llama.cpp found, installed, and updated by itself.** The daemon finds
+`llama-server` where package managers, LM Studio, and llama.cpp checkouts usually leave it,
+prefers a build on the machine's own GPU backend and then the newest, and installs llama.cpp's
+official build the first time a local model needs one when none usable is there (or only a CPU
+build on a GPU machine). llama.cpp updates with Imperium: a newer pinned release replaces
+Imperium's build lazily with one earlier build kept for rollback, package-manager installs get
+an *Update* (or an automatic upgrade), and checkouts are never modified
+([04](04-models-and-routing.md#llamacpp-updates)).
+
 Implemented: **resource monitor.** A live view of what the machine and the sessions are using:
 CPU, GPU, RAM, and VRAM usage, plus every active external endpoint and every local model in
 use, including models still loaded or cached for active sessions (and which sessions use
@@ -60,11 +69,19 @@ the wait reason in the desktop.
    turns, finished model downloads, and ready updates, with per-kind switches, a background-only
    default, and an internal `notify` entry point for budget alerts
    ([07](07-desktop-ui.md#notifications-implemented)).
-2. **Permission rules.** Allow, ask, and deny rules per tool, command, and path, including
-   read-only or writable access to paths outside environments (global package caches,
-   toolchains), and permission modes (ask every time, accept edits, plan only, full access).
-3. **Budgets and alerts.** Weekly and monthly budgets per environment, globally, and per
-   endpoint; alerts through notifications, with optional pause or block; a usage dashboard.
+2. **Permission rules** (implemented). Allow, ask, and deny rules per tool, command prefix, and
+   path glob, globally and per environment (deny over ask over allow, environment rules
+   overriding global ones of equal specificity), with *Always allow* on approvals; read-only or
+   writable path grants outside environments (global package caches, toolchains) with per-OS
+   presets, carried into the OS sandbox and container mounts
+   ([05](05-tools-and-isolation.md#permissions), [07](07-desktop-ui.md#permissions-implemented)).
+   Permission modes (ask every time, accept edits, plan only, full access) remain to do.
+3. **Budgets and alerts** (implemented). Daily, weekly, and monthly token and cost budgets
+   globally, per environment, per endpoint, and per model (configurable week start and monthly
+   reset day, local time), with usage persisted across restarts; alerts at configurable
+   thresholds (default 50/80/100%) through notifications, and warn, ask before each new turn, or
+   block new turns when used up; Settings → Budgets, a Usage dashboard, and a budget mark beside
+   the context meter ([10](10-configuration.md#budgets), [07](07-desktop-ui.md#budgets-and-usage-implemented)).
 4. **Command palette.** One searchable list of every action, session, environment, and setting.
 5. **Attachments and voice.** Images, PDFs, and files in messages; push-to-talk voice input
    through the transcription layer.

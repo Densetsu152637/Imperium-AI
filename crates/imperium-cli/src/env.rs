@@ -292,6 +292,7 @@ mod tests {
             agent_session_id: None,
             pet: None,
             pinned: false,
+            permissions: Default::default(),
         }
     }
 

@@ -8,6 +8,7 @@ use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::{Endpoint, Pricing};
 use imperium_protocol::session::{AgentEvent, PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
+use imperium_tools::permissions::{PermissionRule, Permissions, RuleAction, SharedRules};
 use tokio::sync::broadcast;
 
 /// A fake endpoint that replays one scripted SSE body per request.
@@ -67,9 +68,13 @@ async fn next(events: &mut broadcast::Receiver<AgentEvent>) -> SessionEvent {
 }
 
 fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
+    start_in(endpoint, dir, Workspace::new(dir).unwrap())
+}
+
+fn start_in(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> Session {
     Session::spawn(SessionConfig {
         id: "test".into(),
-        workspace: Workspace::new(dir).unwrap(),
+        workspace,
         model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint,
@@ -228,6 +233,106 @@ async fn a_denied_command_does_not_run() {
     assert!(!ok);
     assert!(output.contains("denied"));
     assert!(!dir.path().join("ran.txt").exists());
+}
+
+fn rules(list: &[(&str, &str, RuleAction)]) -> SharedRules {
+    SharedRules::new(
+        list.iter()
+            .map(|(tool, pattern, action)| PermissionRule {
+                tool: (*tool).into(),
+                pattern: (*pattern).into(),
+                action: *action,
+            })
+            .collect(),
+    )
+}
+
+#[tokio::test]
+async fn an_allow_rule_runs_a_command_without_asking() {
+    let endpoint = scripted_endpoint(vec![
+        tool_call_body("run_command", r#"{"command":"echo ran > ran.txt"}"#),
+        text_body("Done."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    // `echo` is allowed globally; the redirection into a file is not covered by a pattern,
+    // so the environment allows the whole tool instead.
+    let permissions = Permissions::new(
+        rules(&[("run_command", "echo", RuleAction::Allow)]),
+        rules(&[("run_command", "", RuleAction::Allow)]),
+    );
+    let workspace = Workspace::new(dir.path())
+        .unwrap()
+        .with_permissions(permissions);
+    let session = start_in(endpoint, dir.path(), workspace);
+    let mut events = session.subscribe();
+    session.send("run it".into()).unwrap();
+
+    next(&mut events).await;
+    next(&mut events).await;
+    assert!(matches!(
+        next(&mut events).await,
+        SessionEvent::ToolStarted { .. }
+    ));
+    assert!(matches!(
+        next(&mut events).await,
+        SessionEvent::ToolFinished { ok: true, .. }
+    ));
+    assert!(dir.path().join("ran.txt").exists());
+}
+
+#[tokio::test]
+async fn a_deny_rule_refuses_without_asking_and_an_ask_rule_asks_for_reads() {
+    let endpoint = scripted_endpoint(vec![
+        tool_call_body("write_file", r#"{"path":"secrets/.env","content":"x"}"#),
+        tool_call_body("read_file", r#"{"path":"notes.txt"}"#),
+        text_body("Done."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "private").unwrap();
+    let permissions = Permissions::new(
+        rules(&[("*", ".env", RuleAction::Deny)]),
+        rules(&[("read_file", "notes.txt", RuleAction::Ask)]),
+    );
+    let workspace = Workspace::new(dir.path())
+        .unwrap()
+        .with_permissions(permissions);
+    let session = start_in(endpoint, dir.path(), workspace);
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+
+    next(&mut events).await;
+    next(&mut events).await;
+    let SessionEvent::ToolFinished { ok, output, .. } = next(&mut events).await else {
+        panic!("expected the denied write to finish at once");
+    };
+    assert!(!ok);
+    assert!(output.contains("permission rule denies"), "{output}");
+    assert!(!dir.path().join("secrets").exists());
+
+    // The read asks, because of the environment's ask rule, and offers a rule to always allow.
+    next(&mut events).await;
+    let SessionEvent::PermissionRequested {
+        request_id,
+        tool,
+        suggested_rule,
+        ..
+    } = next(&mut events).await
+    else {
+        panic!("expected the read to ask");
+    };
+    assert_eq!(tool, "read_file");
+    let suggested = suggested_rule.expect("a suggested rule");
+    assert_eq!(suggested.tool, "read_file");
+    assert!(suggested.pattern.ends_with("/**"), "{}", suggested.pattern);
+    session
+        .respond(request_id, PermissionDecision::Allow)
+        .unwrap();
+    assert!(matches!(
+        next(&mut events).await,
+        SessionEvent::ToolStarted { .. }
+    ));
 }
 
 /// A fake endpoint that tells the root agent and subagents apart by their system prompt.

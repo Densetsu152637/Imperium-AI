@@ -4,9 +4,11 @@
 //! exported to `packages/protocol/src/generated/` when the crate's tests run, so TypeScript
 //! clients share the same definitions.
 
+pub mod budgets;
 pub mod discovery;
 pub mod jsonrpc;
 pub mod methods;
+pub mod permissions;
 pub mod session;
 pub mod tools;
 
@@ -14,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// The protocol version this build speaks.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 4 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 7 };
 
 /// Protocol version exchanged in the handshake. Peers are compatible when majors match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

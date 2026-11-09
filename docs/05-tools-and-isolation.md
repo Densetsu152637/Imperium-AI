@@ -36,7 +36,8 @@ tabs, downloads, and a visible pane the user can take over are later work.
 Implemented in phase 1 (`imperium-tools`): paths resolve inside the project folder and may not
 escape it through `..`, absolute paths, or symbolic links (tier 0). Reads and listings run
 without asking; writes, edits, and commands ask the user, who can allow once, allow that tool
-for the rest of the session, or deny. On timeout the shell is killed, but processes it started
+for the rest of the session, or deny. [Path grants and rules](#permissions) open paths outside
+the folders and change what asks. On timeout the shell is killed, but processes it started
 may keep running until the OS sandbox tier adds process-tree cleanup.
 
 All tools are described by JSON Schema and are also exposed over an MCP server endpoint, so
@@ -150,15 +151,103 @@ Planned:
 
 ## Permissions
 
-Each tool call is checked against the effective permission set (config → policy → session →
-user prompt). Modes:
+Without rules, reads and listings run, and writes, edits, commands, and the tools whose
+providers ask (MCP tools, `web_fetch` outside the allowed domains, browser actions, memory
+saves) ask the user, who can allow once, allow the tool for the rest of the session, or deny.
+**Path grants** and **permission rules** (implemented) change that, at two scopes: global
+(`[permissions]` in the user config) and per [environment](14-projects-and-automation.md#environments-implemented)
+(saved with it in `environments.json`). The desktop app edits both
+([permissions](07-desktop-ui.md#permissions-implemented)); the daemon's methods are
+`permissions.get` (the global set and the presets), `permissions.set` (replace the global set),
+`permissions.add_rule` (one rule into an environment, a session's environment, or the global
+set, replacing a rule for the same tool and pattern), and `permissions` on
+`environments.create` / `environments.update`.
 
-- `ask` — prompt the user (default for writes, exec, network, and anything outside the
-  environment).
-- `allow` / `deny` — rules by tool, path glob, command prefix, domain, or MCP server.
-- `auto` — a classifier model approves routine actions and escalates unusual ones.
+```toml
+[permissions]
+grants = [
+  { path = "~/.cargo", mode = "read_write" },
+  { path = "~/.rustup", mode = "read" },
+]
+rules = [
+  { tool = "run_command", pattern = "cargo test", action = "allow" },
+  { tool = "run_command", pattern = "git push", action = "ask" },
+  { tool = "*", pattern = "**/.env", action = "deny" },
+  { tool = "mcp__github__*", action = "allow" },
+]
+```
 
-Decisions are logged in the session journal.
+### Path grants
+
+A grant opens a path outside the environment's folders, `read` (read and list; `write_file` and
+`edit_file` are refused with "read-only") or `read_write` (like a folder), for global package
+caches and toolchains. `~` means the home folder. Where a folder and a grant both cover a path,
+the deepest decides, so a read-only grant inside a folder makes that part read-only. A grant's
+path must exist when a session starts (missing ones are skipped); an environment's grants are
+listed before the global ones, so its mode wins for the same path. Grants apply to sessions
+started after a change, and the agent's system prompt lists them. The app offers one-click
+presets resolved for the daemon's machine: Cargo (`CARGO_HOME` or `~/.cargo`, writable), rustup
+(read-only), the npm, pnpm, Yarn, pip, and uv caches, the Go module cache (`GOMODCACHE`, else
+`GOPATH/pkg/mod`), Maven, Gradle, and NuGet, using `%LOCALAPPDATA%` on Windows, `~/Library` on
+macOS, and the XDG folders elsewhere.
+
+How far grants reach depends on where commands run:
+
+| Where | File tools | Commands |
+| --- | --- | --- |
+| Tier 0 (policy) | Grants and modes enforced | Not limited (the user's own rights) |
+| Tier 1 (OS sandbox) | Enforced | Writable grants are bound writable (bubblewrap `--bind`, Seatbelt `subpath`); everything else is read-only already |
+| Tier 2 / Docker image | Enforced | Every grant is bind-mounted, read-only ones with `:ro`: a POSIX path at the same path, a Windows path at `/grants/<n>` |
+| Docker container, WSL, SSH | Enforced, for the environment's own grants as paths inside the runtime (Windows paths translated for WSL; `~` grants skipped) | Not limited: commands run with the runtime's own rights, and an existing container cannot gain mounts |
+
+Global grants are paths on this machine, so remote runtimes (a running container, WSL, SSH) get
+only their environment's grants.
+
+### Rules
+
+A rule is a tool name (`*` wildcards allowed; `*` alone is every tool), a pattern, and an
+action: `allow` (run without asking), `ask` (ask even where the tool would not), or `deny`
+(refuse at once; the model is told a rule denied it). The pattern depends on the tool:
+
+- **`run_command`:** a command prefix matched word by word (`cargo test` matches
+  `cargo test -p x`, not `cargo testing`); a final `*` word matches the rest (`git *`), and `*`
+  or `?` in a word match within it (`npm run test*`). Leading `NAME=value` assignments are
+  skipped, and the program is compared by its file name without `.exe`, `.cmd`, or `.bat` (and
+  case-insensitively on Windows), so `rm` also matches `/bin/rm` and `RM.EXE`. A line is split at
+  `;`, `&&`, `||`, `|`, `&`, and newlines (quotes are not parsed, which only makes rules
+  stricter), and each command is matched on its own: any command denied denies the line, any
+  asked asks, and the line is allowed only when every command is. Allow rules with a pattern
+  never match a line with command substitution (`` ` ``, `$(`, `<(`, `>(`) or output redirection
+  into a file (`2>&1` and redirection to `/dev/null` or `nul` are fine).
+- **File tools** (`read_file`, `write_file`, `edit_file`, `list_dir`): a path glob. `*` and `?`
+  stay within a path segment, `**` crosses segments, and `dir/**` also matches `dir`. A pattern
+  without `/` matches the file name at any depth (`.env`, `*.pem`); an absolute pattern (or one
+  starting with `~`) matches the absolute path; any other matches the path relative to the
+  working directory. Matching ignores case on Windows.
+- **Other tools** (MCP tools, web and browser tools, memory): only rules without a pattern
+  match.
+
+Evaluation: every matching rule of both scopes is collected; an environment rule overrides the
+global rules of equal specificity (both name the tool exactly or both use a wildcard, and their
+patterns have the same number of literal characters); of what is left, **deny wins over ask,
+and ask over allow**. So a specific allow does not lift a broader deny, while an environment can
+turn a global `deny run_command cargo publish` into an allow with the same rule. With no
+matching rule the tool's default applies. A rule is checked before `tool.before` hooks run; an
+allow rule skips the approval but not the required-context check of
+[workflow enforcement](18-workflow-contract.md).
+*Always this session* still allows a tool for the session, including calls an ask rule would
+ask about. Rules apply to running sessions from their next call.
+
+Approval requests carry a `suggested_rule` (`permission_requested`): the command and its
+subcommand for a simple command line (none for a line of several commands, substitution, or
+redirection), `<folder>/**` for a file tool, the whole tool otherwise. The app's **Always allow**
+adds it to the session's environment with `permissions.add_rule` and allows the request.
+
+Rules are a convenience on top of the folder sandbox and the isolation tiers, not a sandbox of
+their own: a shell can reach a denied program in ways a prefix cannot see (`sh -c`, scripts,
+aliases). Not yet: permission modes (ask every time, accept edits, plan only, full access),
+domain rules for `web_fetch`, an `auto` mode where a classifier approves routine actions, and
+logging decisions in the session journal beyond the events it already records.
 
 ## Isolation tiers
 
@@ -220,7 +309,7 @@ any folders outside git).
 
 | Tier            | Boundary                                                                     | Protects against                                    | Does not protect against                           |
 | --------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |
-| 0 — Policy      | Daemon refuses built-in file tools outside allowed roots                     | Model mistakes with built-in tools                  | Code run through `exec`, which has the user's full rights |
+| 0 — Policy      | Daemon refuses built-in file tools outside allowed roots and grants, and writes under read-only grants | Model mistakes with built-in tools                  | Code run through `exec`, which has the user's full rights |
 | 1 — OS sandbox  | Linux: Landlock + seccomp (bubblewrap); macOS: Seatbelt profile; Windows: AppContainer / restricted token (best effort) | Executed code reaching files outside allowed roots, optional network block | Kernel or sandbox escapes; Windows coverage is partial |
 | 2 — Container   | Docker/Podman container with only the workspace mounted                      | Executed code affecting the host                    | Container escapes; mounted folders are writable    |
 | 3 — Remote      | Separate machine over SSH                                                    | Anything on the local machine                       | The remote machine itself                          |

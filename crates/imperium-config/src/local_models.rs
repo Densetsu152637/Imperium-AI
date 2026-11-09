@@ -390,6 +390,12 @@ impl Settings {
         let llama = &self.runtime.llamacpp;
         check_cache_type("runtime.llamacpp.cache_type", Some(&llama.cache_type))?;
         check_flash_attn(Some(&llama.flash_attn)).map_err(|e| format!("runtime.llamacpp: {e}"))?;
+        if !["off", "ask", "auto"].contains(&llama.update_external.as_str()) {
+            return Err(format!(
+                "runtime.llamacpp.update_external must be off, ask, or auto, not {:?}",
+                llama.update_external
+            ));
+        }
         check_local_model(&LocalModelSettings {
             context: Some(llama.context),
             pool_tokens: llama.pool_tokens,

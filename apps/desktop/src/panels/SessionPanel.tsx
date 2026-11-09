@@ -1,17 +1,21 @@
 // The main session panel: the title and status at the top, then the conversation, the composer,
 // and under it a footer with the model selector at the left and the context meter at the right.
 // The meter opens the context breakdown, session totals, and outputs above the composer; the
-// options button opens Markdown rendering and the usage-limit policy there.
+// options button opens Markdown rendering and the usage-limit policy there. Beside the meter, a
+// small budget mark shows when a budget over the session (its environment, endpoint, or model, or
+// all usage) has passed an alert threshold.
 
-import { ArrowUp, CornerDownRight, ListPlus, SlidersHorizontal, X } from "lucide-react";
+import { ArrowUp, CornerDownRight, Gauge, ListPlus, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type {
+  BudgetStatus,
   LocalModelRow,
   ModelRow,
   PermissionDecision,
+  PermissionRule,
   Plan,
   Question,
   QueuedMessage,
@@ -34,6 +38,8 @@ import {
   type Entry,
   type SessionState,
 } from "../sessions";
+import { describeUsage, formatShare, indicator, modelSpec } from "../budgets";
+import { describeRule } from "../components/PermissionsEditor";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { ToolState } from "../components/ToolState";
@@ -52,6 +58,8 @@ type Props = {
   /** Edits a queued message, or removes it when `text` is null. */
   onChangeQueued: (id: string, text: string | null) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
+  /** Saves `rule` (an allow rule the daemon suggested) and allows the request. */
+  onAlwaysAllow?: (requestId: number, rule: PermissionRule) => void;
   /** One answer per question, in order. */
   onAnswer: (requestId: number, answers: string[]) => void;
   /** Resolves once the daemon accepted the policy. */
@@ -71,6 +79,8 @@ type Props = {
   client?: DaemonClient | null;
   /** Resumes an archived session. */
   onUnarchive?: () => void;
+  /** Where every budget stands (`budgets.get`), for the indicator beside the context meter. */
+  budgets?: BudgetStatus[];
 };
 
 /** What the footer has opened above the composer. */
@@ -82,6 +92,7 @@ export function SessionPanel({
   onSend,
   onChangeQueued,
   onRespond,
+  onAlwaysAllow,
   onAnswer,
   onSetResumePolicy,
   onResumeNow,
@@ -92,6 +103,7 @@ export function SessionPanel({
   onSetModel,
   client = null,
   onUnarchive,
+  budgets = [],
 }: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
@@ -152,7 +164,14 @@ export function SessionPanel({
               onSetModel={(model) => onSetModel(model).catch(() => null)}
             />
           ) : (
-            <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} onAnswer={onAnswer} />
+            <EntryView
+              key={index}
+              entry={entry}
+              rendered={rendered}
+              onRespond={onRespond}
+              onAlwaysAllow={onAlwaysAllow}
+              onAnswer={onAnswer}
+            />
           ),
         )}
         {session.busy && <p className="working">Working…</p>}
@@ -338,6 +357,11 @@ export function SessionPanel({
         >
           <SlidersHorizontal aria-hidden="true" />
         </button>
+        <BudgetMark
+          budgets={budgets}
+          environmentId={session.summary.environment_id ?? null}
+          spec={modelSpec(session.summary.model, models)}
+        />
         <ContextMeter
           session={session}
           promptTokens={sum.prompt}
@@ -399,6 +423,39 @@ function ContextMeter({
       )}
       <span className="context-meter-text">{text}</span>
     </button>
+  );
+}
+
+/**
+ * A small mark when a budget over the session has passed an alert threshold: amber near the
+ * limit, red when used up. Its title lists each such budget.
+ */
+function BudgetMark({
+  budgets,
+  environmentId,
+  spec,
+}: {
+  budgets: BudgetStatus[];
+  environmentId: string | null;
+  spec: string | null;
+}) {
+  const shown = indicator(budgets, environmentId, spec);
+  if (!shown) return null;
+  const lines = shown.all.map(
+    (status) =>
+      `${status.label}: ${formatShare(status.share)} (${describeUsage(status, formatTokens)}), resets ${status.window_end}` +
+      (status.exceeded && status.budget.action !== "warn"
+        ? status.budget.action === "ask"
+          ? "; new turns ask first"
+          : "; new turns are blocked"
+        : ""),
+  );
+  return (
+    <span className={`budget-mark ${shown.level}`} role="status" title={lines.join("\n")}>
+      <Gauge aria-hidden="true" />
+      <span>{formatShare(shown.status.share)}</span>
+      <span className="visually-hidden">of {shown.status.label}</span>
+    </span>
   );
 }
 
@@ -465,11 +522,13 @@ function EntryView({
   entry,
   rendered,
   onRespond,
+  onAlwaysAllow,
   onAnswer,
 }: {
   entry: Entry;
   rendered: boolean;
   onRespond: Props["onRespond"];
+  onAlwaysAllow?: Props["onAlwaysAllow"];
   onAnswer: Props["onAnswer"];
 }) {
   switch (entry.kind) {
@@ -521,6 +580,14 @@ function EntryView({
                 Allow
               </button>
               <button onClick={() => onRespond(entry.requestId, "allow_for_session")}>Always this session</button>
+              {entry.suggestedRule && onAlwaysAllow && (
+                <button
+                  onClick={() => entry.suggestedRule && onAlwaysAllow(entry.requestId, entry.suggestedRule)}
+                  title={`Adds an allow rule to this environment's permissions (Settings → Permissions for global rules): ${describeRule(entry.suggestedRule)}`}
+                >
+                  Always allow {entry.suggestedRule.pattern ? <code>{entry.suggestedRule.pattern}</code> : "this tool"}
+                </button>
+              )}
               <button className="danger" onClick={() => onRespond(entry.requestId, "deny")}>
                 Deny
               </button>

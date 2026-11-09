@@ -95,6 +95,13 @@ impl Environments {
     ) -> Result<EnvironmentInfo, EnvironmentError> {
         let name = valid_name(&params.name)?;
         let runtime = valid_runtime(params.runtime.unwrap_or_default())?;
+        let permissions = params
+            .permissions
+            .as_ref()
+            .map(crate::permissions::checked)
+            .transpose()
+            .map_err(EnvironmentError::Invalid)?
+            .unwrap_or_default();
         let mut checked: Vec<String> = Vec::new();
         for folder in &params.folders {
             let folder = folder_for(&runtime, folder)?;
@@ -116,6 +123,7 @@ impl Environments {
             agent_session_id: None,
             pet: params.pet.filter(|pet| !pet.is_empty()),
             pinned: false,
+            permissions,
         };
         self.change(|list| {
             list.push(env.clone());
@@ -132,6 +140,12 @@ impl Environments {
     ) -> Result<EnvironmentInfo, EnvironmentError> {
         let name = params.name.as_deref().map(valid_name).transpose()?;
         let runtime = params.runtime.map(valid_runtime).transpose()?;
+        let permissions = params
+            .permissions
+            .as_ref()
+            .map(crate::permissions::checked)
+            .transpose()
+            .map_err(EnvironmentError::Invalid)?;
         self.change_one(&params.id, |env| {
             if let Some(name) = name {
                 env.name = name;
@@ -158,6 +172,9 @@ impl Environments {
             }
             if let Some(pet) = params.pet {
                 env.pet = (!pet.is_empty()).then_some(pet);
+            }
+            if let Some(permissions) = permissions {
+                env.permissions = permissions;
             }
             Ok(())
         })

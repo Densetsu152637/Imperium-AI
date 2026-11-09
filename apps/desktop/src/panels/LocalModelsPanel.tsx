@@ -14,6 +14,7 @@ import type {
   ModelUseResult,
   RuntimeInstallJob,
   RuntimeStatusResult,
+  RuntimeUpdateJob,
 } from "@imperium/protocol";
 import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
@@ -201,20 +202,47 @@ function FolderList({
   );
 }
 
+/** How a found `llama-server` was installed, in words. */
+const KIND_NAMES: Record<RuntimeStatusResult["install_kind"], string> = {
+  managed: "Imperium's build",
+  winget: "winget",
+  scoop: "scoop",
+  chocolatey: "Chocolatey",
+  homebrew: "Homebrew",
+  lmstudio: "LM Studio",
+  folder: "a llama.cpp folder",
+  other: "this computer",
+};
+
 /** Where the `llama-server` in use comes from, in words. */
 function runtimeSource(status: RuntimeStatusResult): string {
   switch (status.source) {
     case "custom":
       return "Your llama-server";
     case "detected":
-      return "Found on this computer (used until a runtime is installed)";
+      return `Found on this computer (${KIND_NAMES[status.install_kind]})`;
     default:
-      return status.installed ? `llama.cpp ${status.llama_cpp_ref} (${status.pack})` : "Not installed yet";
+      return status.installed ? `Imperium's build: llama.cpp ${status.llama_cpp_ref} (${status.pack})` : "Not installed yet";
   }
 }
 
+/** Whether the GPU is visible, in words. */
+function gpuVisible(status: RuntimeStatusResult): string {
+  if (status.gpu_visible == null) return "unknown until a model loads";
+  return status.gpu_visible ? "yes" : "no";
+}
+
+/** The `llama-server` path shown for a found candidate: its folder's last parts. */
+function shortPath(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 4 ? `…/${parts.slice(-4).join("/")}` : path;
+}
+
 /**
- * The llama.cpp runtime: whether it runs and sees the GPU, and how to fix it when not.
+ * The llama.cpp runtime: which `llama-server` is used (yours, one found on this computer, or
+ * Imperium's build), its backend and whether it sees the GPU, updates, and how to change it.
+ * Opening it is a first need of a runtime: with none usable the daemon installs the official
+ * build (unless `runtime.llamacpp.auto_install` is off) and its progress shows here.
  * `onChanged` runs once the server in use may have changed, so the model listing follows.
  */
 function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: () => void }) {
@@ -222,6 +250,8 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [install, setInstall] = useState<RuntimeInstallJob | null>(null);
+  const [update, setUpdate] = useState<RuntimeUpdateJob | null>(null);
+  const [candidate, setCandidate] = useState("");
   // The server last reported, so the model listing is refreshed when it changes.
   const usedRef = useRef<string | null>(null);
 
@@ -235,6 +265,7 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
       usedRef.current = used;
       setStatus(next);
       if (next.install) setInstall(next.install);
+      if (next.update_job) setUpdate(next.update_job);
     } catch (failure) {
       setError(message(failure));
     } finally {
@@ -245,10 +276,15 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
   useEffect(() => {
     void check();
     const off = client.onNotification((notification) => {
-      if (notification.method !== "runtime.install_progress") return;
-      const job = notification.params as RuntimeInstallJob;
-      setInstall(job);
-      if (job.state !== "running") void check();
+      if (notification.method === "runtime.install_progress") {
+        const job = notification.params as RuntimeInstallJob;
+        setInstall(job);
+        if (job.state !== "running") void check();
+      } else if (notification.method === "runtime.update_progress") {
+        const job = notification.params as RuntimeUpdateJob;
+        setUpdate(job);
+        if (job.state !== "running") void check();
+      }
     });
     return () => {
       off();
@@ -265,10 +301,22 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
   const startInstall = () => {
     client.call<RuntimeInstallJob>("runtime.install").then(setInstall, (failure) => setError(message(failure)));
   };
+  // Imperium's build is preferred over a found one once installed; over your own only when
+  // the custom path is cleared.
+  const useOfficial = async () => {
+    if (status?.source === "custom") await useServer(null);
+    startInstall();
+  };
+  const startUpdate = () => {
+    client.call<RuntimeUpdateJob>("runtime.update_external").then(setUpdate, (failure) => setError(message(failure)));
+  };
 
   const ready = status?.runs && !status.problem;
   const installing = install?.state === "running";
+  const updating = update?.state === "running";
   const percent = install && install.total_bytes > 0 ? Math.floor((install.done_bytes / install.total_bytes) * 100) : 0;
+  const candidates = status?.candidates ?? [];
+  const picked = candidates.includes(candidate) ? candidate : (candidates[0] ?? "");
   return (
     <section className={`runtime-card${ready ? " ready" : status ? " attention" : ""}`} aria-labelledby="runtime-title">
       <div className="section-head">
@@ -290,43 +338,81 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
           <p className="runtime-path">
             {runtimeSource(status)}: <code title={status.server_path}>{status.server_path}</code>
           </p>
-          {status.version && <p className="muted">{status.version}</p>}
-          <p>{status.summary}</p>
-          {status.problem && (
+          <dl className="runtime-facts">
+            <dt>Backend</dt>
+            <dd>{status.backend}</dd>
+            <dt>GPU visible</dt>
+            <dd>{gpuVisible(status)}</dd>
+            {status.build != null && (
+              <>
+                <dt>Build</dt>
+                <dd>
+                  b{status.build}
+                  {status.pinned_build != null && status.build < status.pinned_build ? ` (Imperium uses b${status.pinned_build})` : ""}
+                </dd>
+              </>
+            )}
+          </dl>
+          {status.installed && <p>{status.summary}</p>}
+          {!status.installed && status.source === "pack" && (
+            <p>
+              {status.auto_install
+                ? `No llama.cpp runtime yet. Imperium downloads llama.cpp ${status.llama_cpp_ref} for this computer (${status.suggested_pack}) from ggml-org/llama.cpp on GitHub, verified against its checksums, the first time a local model is needed.`
+                : "No llama.cpp runtime yet, and automatic installation is off: install the official build, or choose a llama-server you already have."}
+            </p>
+          )}
+          {status.problem && status.installed && (
             <p className="warning" role="alert">
               {status.problem}
             </p>
           )}
-          {status.candidates.length > 0 && !ready && (
-            <ul className="candidates" aria-label="llama-server found on this computer">
-              {status.candidates.map((candidate) => (
-                <li key={candidate}>
-                  <span className="muted">Found</span> <code title={candidate}>{candidate}</code>
-                  <button onClick={() => void useServer(candidate)} disabled={checking}>
-                    Use this
-                  </button>
-                </li>
-              ))}
-            </ul>
+          {status.update && (
+            <div className="runtime-update">
+              <p className={status.update.action === "managed" ? "muted" : "warning"}>{status.update.message}</p>
+              {status.update.action === "package_manager" && (
+                <button onClick={startUpdate} disabled={updating || checking} title={status.update.command ?? undefined}>
+                  <Download aria-hidden="true" /> Update
+                </button>
+              )}
+              {status.update.action === "use_managed" && (
+                <button onClick={() => void useOfficial()} disabled={installing || checking}>
+                  <Download aria-hidden="true" /> Use Imperium's build instead
+                </button>
+              )}
+            </div>
+          )}
+          {candidates.length > 0 && (
+            <div className="runtime-candidates">
+              <label htmlFor="runtime-candidate" className="muted">
+                Use detected…
+              </label>
+              <Select
+                id="runtime-candidate"
+                value={picked}
+                onChange={setCandidate}
+                options={candidates.map((path) => ({ value: path, label: shortPath(path), description: path }))}
+              />
+              <button onClick={() => void useServer(picked)} disabled={checking || !picked}>
+                Use this
+              </button>
+            </div>
           )}
           <div className="models-toolbar">
+            <button
+              className={status.source === "pack" && !status.installed ? "primary" : undefined}
+              onClick={() => void useOfficial()}
+              disabled={installing}
+              title={`Downloads llama.cpp ${status.llama_cpp_ref} for this computer from ggml-org/llama.cpp on GitHub, verified against its checksums`}
+            >
+              <Download aria-hidden="true" /> {status.installed && status.source === "pack" ? "Reinstall" : "Install"} official build (
+              {status.suggested_pack})
+            </button>
             <button onClick={() => void choose()} disabled={checking}>
-              Choose llama-server…
+              Choose file…
             </button>
             {status.source === "custom" && (
               <button onClick={() => void useServer(null)} disabled={checking}>
-                Use the installed runtime instead
-              </button>
-            )}
-            {(!ready || status.source === "detected") && (
-              <button
-                className={status.source === "pack" && !status.installed ? "primary" : undefined}
-                onClick={startInstall}
-                disabled={installing}
-                title={`Downloads llama.cpp ${status.llama_cpp_ref} for this computer from ggml-org/llama.cpp on GitHub, verified against its checksums`}
-              >
-                <Download aria-hidden="true" /> {status.installed && status.source === "pack" ? "Reinstall" : "Install"} llama.cpp{" "}
-                {status.llama_cpp_ref} ({status.suggested_pack})
+                Stop using my llama-server
               </button>
             )}
           </div>
@@ -340,6 +426,18 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
               ? `Installing ${install.pack} failed — ${install.message ?? "no reason given"}`
               : `Installing ${install.pack} — ${percent}%${install.total_bytes > 0 ? ` of ${(install.total_bytes / MIB).toFixed(0)} MiB` : ""}`}
           </p>
+        </div>
+      )}
+      {update && (
+        <div className="runtime-install">
+          <p className={update.state === "failed" ? "error" : "muted"} role={update.state === "failed" ? "alert" : "status"}>
+            {update.state === "running"
+              ? `Updating llama.cpp: ${update.command}`
+              : update.state === "done"
+                ? `Updated llama.cpp with ${update.command}`
+                : `Updating llama.cpp failed (${update.command})`}
+          </p>
+          {update.output && <pre className="runtime-output">{update.output}</pre>}
         </div>
       )}
       {error && (

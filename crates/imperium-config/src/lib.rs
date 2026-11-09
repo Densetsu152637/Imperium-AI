@@ -5,15 +5,21 @@
 //! `.imperium/config.local.toml`, then `IMPERIUM_<SECTION>__<KEY>` environment variables.
 //! Every value remembers which layer set it, for `imperium config explain`.
 
+mod budgets;
 mod endpoints;
 mod layers;
 mod local_models;
 mod mcp_servers;
 mod paths;
+mod permissions;
 mod registry;
 mod secrets;
 mod settings;
 
+pub use budgets::{
+    Budget, BudgetAction, BudgetScope, BudgetSettings, BudgetWindow, DEFAULT_THRESHOLDS, WeekStart,
+    save_budgets,
+};
 pub use endpoints::{save_endpoint, valid_endpoint_id};
 pub use layers::{
     Config, ConfigError, Explained, Layer, Source, load, load_layers, replace_app_layer,
@@ -27,6 +33,7 @@ pub use mcp_servers::{
     MAX_SERVER_NAME, remove_mcp_server, save_mcp_server, set_mcp_server_enabled, valid_server_name,
 };
 pub use paths::{Paths, PathsError};
+pub use permissions::{PermissionSettings, save_permissions};
 pub use registry::{
     SETTINGS, SetError, SettingDef, SettingKind, SettingState, describe, describe_key,
     set_user_setting, setting,

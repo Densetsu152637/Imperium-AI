@@ -25,6 +25,13 @@ backend = "auto"
 # With no runtime installed and no custom_path, use a llama-server already on this machine (on
 # PATH or in a llama.cpp build in the home folder) that starts and takes the flags Imperium passes.
 find_existing = true
+# With no usable llama-server (or only a CPU build on a machine with a GPU), download and verify
+# llama.cpp's official build for this machine the first time a local model is needed.
+auto_install = true
+# Updates of a llama-server installed by a package manager (winget, scoop, Chocolatey, Homebrew)
+# when it is older than the llama.cpp release Imperium pins: off, ask (offer an Update button),
+# or auto (run the package manager's upgrade while no model is loaded from it).
+update_external = "ask"
 # Seconds a loaded model may sit unused before it is unloaded.
 idle_unload_s = 900
 # Most tokens one agent may use on a local model: "auto" (what the model was trained for, capped
@@ -114,6 +121,12 @@ pub struct Settings {
     pub load: LoadSettings,
     #[serde(default)]
     pub sessions: SessionSettings,
+    /// `[permissions]`: path grants and rules for every environment (see docs/05).
+    #[serde(default)]
+    pub permissions: crate::PermissionSettings,
+    /// `[budgets]`: token and cost budgets with alerts (see docs/10, Budgets).
+    #[serde(default)]
+    pub budgets: crate::BudgetSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -137,6 +150,7 @@ impl Settings {
     /// Checks rules that span keys: model table ids are unique, and routing rules name models
     /// that exist in the table.
     pub fn validate(&self) -> Result<(), String> {
+        self.budgets.validate()?;
         for reserved in [LLAMACPP_ENDPOINT, VLLM_ENDPOINT] {
             if self.endpoints.contains_key(reserved) {
                 return Err(format!(
@@ -1026,6 +1040,14 @@ pub struct LlamaCppSettings {
     /// machine.
     #[serde(default = "default_true")]
     pub find_existing: bool,
+    /// With no usable `llama-server` (or only a CPU build on a machine with a GPU), install
+    /// llama.cpp's build for this machine the first time a local model is needed.
+    #[serde(default = "default_true")]
+    pub auto_install: bool,
+    /// `off`, `ask`, or `auto`: updating a `llama-server` a package manager installed when it
+    /// is older than the pinned llama.cpp release.
+    #[serde(default = "default_update_external")]
+    pub update_external: String,
     pub idle_unload_s: u64,
     /// Most tokens one agent may use on a local model: `auto` or a number.
     pub context: ContextLimit,
@@ -1068,6 +1090,10 @@ pub struct LlamaCppSettings {
     /// Extra arguments passed to every `llama-server`.
     #[serde(default)]
     pub extra_args: Vec<String>,
+}
+
+fn default_update_external() -> String {
+    "ask".into()
 }
 
 fn default_flash_attn() -> String {

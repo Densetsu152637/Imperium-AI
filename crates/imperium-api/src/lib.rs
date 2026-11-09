@@ -6,6 +6,7 @@ mod chat;
 mod load;
 mod local;
 pub mod markdown;
+mod permissions;
 mod pricing;
 mod tools;
 
@@ -15,6 +16,7 @@ pub use local::{
     AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence, LocalRequest, LocalWait,
     Priority, holder, holder_session,
 };
+pub use permissions::{PathGrant, PathMode, PermissionRule, RuleAction};
 pub use pricing::Pricing;
 pub use tools::{
     StartFuture, ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,

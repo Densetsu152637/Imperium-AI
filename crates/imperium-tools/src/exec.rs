@@ -50,7 +50,7 @@ pub async fn run_command(
     }
     let child = workspace
         .sandbox()
-        .command(&workspace.roots(), command)?
+        .command(&workspace.roots(), workspace.grants(), command)?
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -2419,6 +2419,48 @@ button.sort:hover:not(:disabled) {
   width: 100%;
 }
 
+.runtime-card .runtime-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: calc(var(--space) * 0.2) var(--space);
+  margin: 0 0 calc(var(--space) * 0.5);
+}
+
+.runtime-card .runtime-facts dt {
+  color: var(--muted);
+}
+
+.runtime-card .runtime-facts dd {
+  margin: 0;
+}
+
+.runtime-card .runtime-update,
+.runtime-card .runtime-candidates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space);
+  margin: 0 0 calc(var(--space) * 0.5);
+}
+
+.runtime-card .runtime-update p {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.runtime-card .runtime-candidates > :nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+
+.runtime-card .runtime-output {
+  max-height: 10rem;
+  overflow: auto;
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
 .local-model-table .model-name {
   white-space: normal;
   min-width: 10rem;
@@ -4983,4 +5025,202 @@ button.select.open .select-chevron {
 
 .badge.worktree {
   border-color: var(--border-strong);
+}
+
+/* Permissions: path grants and rules (Settings → Permissions and the environment window). */
+.permissions-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.permissions-hint {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.permission-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.permission-presets .chip:disabled[aria-pressed="true"] {
+  opacity: 1;
+}
+
+.permission-list li {
+  flex-wrap: wrap;
+}
+
+.permission-rule .permission-tool {
+  flex: 0 1 10rem;
+  min-width: 6rem;
+}
+
+.permission-rule .permission-pattern {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+}
+
+.permissions-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/* Budgets: the editor (Settings → Budgets), the Usage panel, and the mark beside the context meter. */
+.budgets-editor {
+  margin-top: 1rem;
+}
+
+.budget-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+  background: var(--surface-2, transparent);
+}
+
+.budget-card-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.budget-card-row .budget-name,
+.budget-card-row .budget-target {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+}
+
+.budget-limit {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1 1 10rem;
+  font-size: 0.8rem;
+}
+
+.budget-limit input {
+  flex: 1 1 auto;
+  min-width: 5rem;
+}
+
+.budget-number {
+  width: 5rem;
+}
+
+.budget-card-status {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.budget-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.budget-row {
+  display: grid;
+  grid-template-columns: minmax(5rem, 9rem) minmax(3rem, 1fr) 2.75rem;
+  grid-template-areas:
+    "label bar value"
+    "detail detail detail";
+  align-items: center;
+  column-gap: var(--space);
+  row-gap: 0.1rem;
+  width: 100%;
+  padding: 0.3rem 0.35rem;
+  text-align: left;
+  font-size: 0.8rem;
+}
+
+.budget-row[aria-pressed="true"] {
+  background: var(--active);
+}
+
+.budget-row-label {
+  grid-area: label;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.budget-row .meter-bar {
+  grid-area: bar;
+}
+
+.budget-row-detail {
+  grid-area: detail;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage .resource-section h3 {
+  flex-wrap: wrap;
+}
+
+.usage-measure {
+  display: inline-flex;
+  gap: 0.25rem;
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.usage-chart {
+  display: block;
+  width: 100%;
+  height: 6rem;
+}
+
+.usage-chart rect {
+  fill: var(--accent);
+}
+
+.usage-chart rect:hover {
+  fill: var(--text);
+}
+
+.usage-total {
+  margin: 0.25rem 0 0;
+  font-size: 0.72rem;
+}
+
+.budget-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.budget-mark svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.budget-mark.near {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+
+.budget-mark.over {
+  color: var(--danger, var(--warn));
+  background: color-mix(in srgb, var(--danger, var(--warn)) 14%, transparent);
 }

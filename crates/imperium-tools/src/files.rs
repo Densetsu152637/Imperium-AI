@@ -46,7 +46,7 @@ pub async fn write_file(
         let shown = remote_files::write(workspace, path, content.as_bytes()).await?;
         return Ok(format!("wrote {} bytes to {shown}", content.len()));
     }
-    let full = workspace.resolve(path)?;
+    let full = workspace.resolve_writable(path)?;
     if let Some(parent) = full.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -77,7 +77,7 @@ pub async fn edit_file(
         let shown = remote_files::write(workspace, path, replaced.as_bytes()).await?;
         return Ok(format!("edited {shown}"));
     }
-    let full = workspace.resolve(path)?;
+    let full = workspace.resolve_writable(path)?;
     let text = read_text(&full, path).await?;
     let replaced = replace_once(&text, old, new, path)?;
     tokio::fs::write(&full, replaced)
@@ -199,6 +199,84 @@ mod tests {
             Err(ToolError::OutsideWorkspace(_))
         ));
         assert!(!outside.path().join("new.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn read_only_grants_refuse_writes_and_edits() {
+        use crate::permissions::{PathGrant, PathMode};
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let toolchain = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(toolchain.path().join("rustc.txt"), "1.89\n").unwrap();
+        std::fs::create_dir(project.path().join("vendor")).unwrap();
+        std::fs::write(project.path().join("vendor").join("lib.rs"), "old\n").unwrap();
+        let grant = |path: &std::path::Path, mode| PathGrant {
+            path: path.to_string_lossy().to_string(),
+            mode,
+        };
+        let workspace = Workspace::new(project.path()).unwrap().with_grants(&[
+            grant(cache.path(), PathMode::ReadWrite),
+            grant(toolchain.path(), PathMode::Read),
+            // A read-only grant inside a folder makes that part read-only.
+            grant(&project.path().join("vendor"), PathMode::Read),
+            grant(&outside.path().join("missing"), PathMode::Read),
+        ]);
+        assert_eq!(workspace.grants().len(), 3, "a missing path is skipped");
+
+        let file = |dir: &std::path::Path, name: &str| dir.join(name).to_string_lossy().to_string();
+        let read = read_file(&workspace, &file(toolchain.path(), "rustc.txt"), None, None)
+            .await
+            .unwrap();
+        assert!(read.contains("1.89"));
+        assert!(
+            list_dir(&workspace, &toolchain.path().to_string_lossy())
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            write_file(&workspace, &file(toolchain.path(), "rustc.txt"), "x").await,
+            Err(ToolError::ReadOnly(_))
+        ));
+        assert!(matches!(
+            write_file(&workspace, &file(toolchain.path(), "new/file.txt"), "x").await,
+            Err(ToolError::ReadOnly(_))
+        ));
+        assert!(matches!(
+            edit_file(
+                &workspace,
+                &file(toolchain.path(), "rustc.txt"),
+                "1.89",
+                "2"
+            )
+            .await,
+            Err(ToolError::ReadOnly(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(toolchain.path().join("rustc.txt")).unwrap(),
+            "1.89\n"
+        );
+        assert!(matches!(
+            edit_file(&workspace, "vendor/lib.rs", "old", "new").await,
+            Err(ToolError::ReadOnly(_))
+        ));
+        assert!(
+            read_file(&workspace, "vendor/lib.rs", None, None)
+                .await
+                .is_ok()
+        );
+        write_file(&workspace, "src/main.rs", "fn main() {}")
+            .await
+            .unwrap();
+
+        write_file(&workspace, &file(cache.path(), "registry/index"), "x")
+            .await
+            .unwrap();
+        assert!(cache.path().join("registry").join("index").exists());
+        assert!(matches!(
+            read_file(&workspace, &file(outside.path(), "x"), None, None).await,
+            Err(ToolError::OutsideWorkspace(_))
+        ));
     }
 
     #[tokio::test]

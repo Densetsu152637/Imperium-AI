@@ -39,7 +39,7 @@ fn failed(shown: &str, output: &RunOutput) -> ToolError {
 
 pub(crate) async fn read_bytes(workspace: &Workspace, path: &str) -> Result<Vec<u8>, ToolError> {
     let remote = remote(workspace)?;
-    let full = workspace.resolve_remote(path)?;
+    let full = workspace.resolve_remote(path, false)?;
     let output = run(
         remote,
         &format!("cat -- {}", sh_quote(&full)),
@@ -65,7 +65,7 @@ pub(crate) async fn write(
     content: &[u8],
 ) -> Result<String, ToolError> {
     let remote = remote(workspace)?;
-    let full = workspace.resolve_remote(path)?;
+    let full = workspace.resolve_remote(path, true)?;
     let parent = full.rsplit_once('/').map_or("/", |(parent, _)| parent);
     let parent = if parent.is_empty() { "/" } else { parent };
     let script = format!(
@@ -82,7 +82,7 @@ pub(crate) async fn write(
 
 pub(crate) async fn list(workspace: &Workspace, path: &str) -> Result<String, ToolError> {
     let remote = remote(workspace)?;
-    let full = workspace.resolve_remote(path)?;
+    let full = workspace.resolve_remote(path, false)?;
     let output = run(
         remote,
         &format!("ls -1Ap -- {}", sh_quote(&full)),

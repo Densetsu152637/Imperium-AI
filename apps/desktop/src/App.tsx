@@ -14,7 +14,10 @@ import type {
   EnvironmentListResult,
   ApprovalInfo,
   ApprovalListResult,
+  BudgetAlert,
+  BudgetsResult,
   PermissionDecision,
+  PermissionRule,
   ResumePolicy,
   SendMode,
   SessionControlParams,
@@ -40,6 +43,7 @@ import { Columns, type ColumnSpec, type PanelSpec } from "./layout/Columns";
 import { PanelWindow } from "./layout/PanelWindow";
 import { getLayout, resetLayout, updateLayout, type DetachedPanel } from "./layout/state";
 import { downloadNotice, sessionNotice, updateNotice } from "./attention";
+import { budgetNotice, budgetStop } from "./budgets";
 import { focusMainWindow, notify, onNoticeOpened } from "./notify";
 import {
   EnvironmentsPanel,
@@ -58,6 +62,7 @@ import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { ResourcesPanel } from "./panels/ResourcesPanel";
+import { UsagePanel } from "./panels/UsagePanel";
 import { environmentIcon, projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./projectIcons";
 import {
   applyEvent,
@@ -162,6 +167,8 @@ export function App() {
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
   const [mods, setMods] = useState<ModListResult | null>(null);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
+  /** Where each budget stands (`budgets.get`, then `budgets.changed`), for the session's indicator. */
+  const [budgets, setBudgets] = useState<BudgetsResult | null>(null);
   const modBus = useMemo(() => new ModBus(), []);
   // The latest settings and sessions, for the daemon's notification handler (set up once per connection).
   const settingsRef = useRef(settings);
@@ -232,6 +239,14 @@ export function App() {
             void notify({ kind: "approval", title: "Approval needed", body: approval.summary }, settingsRef.current);
           }
           setApprovals((all) => [...all.filter((a) => a.id !== approval.id), approval]);
+          return;
+        }
+        if (notification.method === "budgets.changed") {
+          setBudgets(notification.params as BudgetsResult);
+          return;
+        }
+        if (notification.method === "budgets.alert") {
+          if (!isDetached) void notify(budgetNotice(notification.params as BudgetAlert), settingsRef.current);
           return;
         }
         if (notification.method === "environments.changed") {
@@ -319,6 +334,11 @@ export function App() {
       setLocalModels(await client.call<LocalModelListResult>("models.local"));
       setMods(await client.call<ModListResult>("mods.list"));
       setApprovals((await client.call<ApprovalListResult>("approvals.list")).approvals);
+      // Older daemons have no budgets.
+      client
+        .call<BudgetsResult>("budgets.get", {})
+        .then((result) => attempt === generation.current && setBudgets(result))
+        .catch(() => {});
       const queued = pending;
       pending = null;
       queued.forEach(apply);
@@ -502,7 +522,7 @@ export function App() {
     setEnvId(env.id);
     if (text) {
       const send: SessionSendParams = { session_id: created.session_id, text, mode: "queue" };
-      client.call("session.send", send).catch(report);
+      void sendWithBudget(client, send);
     }
   };
 
@@ -513,7 +533,24 @@ export function App() {
   const send = (text: string, mode: SendMode) => {
     if (!client || !selected) return;
     const params: SessionSendParams = { session_id: selected, text, mode };
-    client.call("session.send", params).catch(report);
+    void sendWithBudget(client, params);
+  };
+
+  /**
+   * Sends a message; when a used-up budget asks first, asks the user and sends it again confirmed,
+   * and when one blocks, says so.
+   */
+  const sendWithBudget = async (daemon: DaemonClient, params: SessionSendParams) => {
+    try {
+      await daemon.call("session.send", params);
+    } catch (error) {
+      const stop = budgetStop(error);
+      if (stop?.action === "ask" && window.confirm(stop.message)) {
+        await daemon.call("session.send", { ...params, confirm_budget: true }).catch(report);
+        return;
+      }
+      if (!stop || stop.action === "block") report(error);
+    }
   };
 
   /** Edits (with text) or removes a queued message; the queue updates from `queue_changed`. */
@@ -540,6 +577,19 @@ export function App() {
     if (!client || !selected) return;
     setSessions((all) => ({ ...all, [selected]: markAnswered(all[selected], requestId) }));
     client.call("session.respond", { session_id: selected, request_id: requestId, decision }).catch(report);
+  };
+
+  /** "Always allow": saves the suggested rule (in the session's environment), then allows the request. */
+  const alwaysAllow = (requestId: number, rule: PermissionRule) => {
+    if (!client || !selected) return;
+    const sessionId = selected;
+    client
+      .call("permissions.add_rule", { session_id: sessionId, rule })
+      .then(() => {
+        setSessions((all) => ({ ...all, [sessionId]: markAnswered(all[sessionId], requestId) }));
+        return client.call("session.respond", { session_id: sessionId, request_id: requestId, decision: "allow" });
+      })
+      .catch(report);
   };
 
   const answer = (requestId: number, answers: string[]) => {
@@ -706,6 +756,7 @@ export function App() {
         onSend={send}
         onChangeQueued={changeQueued}
         onRespond={respond}
+        onAlwaysAllow={alwaysAllow}
         onAnswer={answer}
         onSetResumePolicy={setResumePolicy}
         onResumeNow={resumeNow}
@@ -716,6 +767,7 @@ export function App() {
         onSetModel={setModel}
         client={client}
         onUnarchive={() => setSessionArchived(session.summary.session_id, false)}
+        budgets={budgets?.status ?? []}
       />
     ) : (
       <NewSessionPanel
@@ -750,6 +802,7 @@ export function App() {
     },
     { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
     { id: "resources", title: "Resources", body: <ResourcesPanel client={client} /> },
+    { id: "usage", title: "Usage", body: <UsagePanel client={client} /> },
     { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },
     ...modPanels("right"),
   ];
@@ -927,6 +980,7 @@ const PANELS: { id: string; title: string }[] = [
   { id: "local-models", title: "Local models" },
   { id: "telemetry", title: "Telemetry" },
   { id: "resources", title: "Resources" },
+  { id: "usage", title: "Usage" },
   { id: "browser", title: "Browser" },
 ];
 

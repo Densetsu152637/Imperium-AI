@@ -373,6 +373,7 @@ impl Chat {
                 text,
                 mode: steer.then_some(SendMode::Steer),
                 agent_id: None,
+                confirm_budget: None,
             })
             .await?;
         if !self.busy {

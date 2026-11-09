@@ -79,6 +79,7 @@ read again, so such a save never brings an old value back.
 | `runtime.status` | `imperium runtime status` | See [runtime readiness](#runtime-readiness) |
 | `runtime.set_server` `{path}` | `imperium runtime use [<path>]` | Sets (or with null clears) `runtime.llamacpp.custom_path`; models loaded from then on use it |
 | `runtime.install` | `imperium runtime install` | Installs llama.cpp's own build for this machine from its GitHub release in the background with `runtime.install_progress` notifications, falling back to the next build when one does not run ([runtimes](#runtimes)); new loads use it unless a custom server is set |
+| `runtime.update_external` | — | Runs the package manager's upgrade of the `llama-server` in use (winget, scoop, Chocolatey, Homebrew; the llama.cpp package only) in the background with `runtime.update_progress` notifications; refused while a model is loaded from it ([updates](#llamacpp-updates)) |
 
 `models.default`, `models.folders`, and `runtime.llamacpp.custom_path` set with `config.set`
 (Settings) apply at once in the same way.
@@ -230,16 +231,67 @@ llama.cpp* in the app) installs llama.cpp's own release build from
   `imperium-runtime.json` recording the assets and digests. The first installed build of the
   list above is used.
 
-**Which `llama-server` is used**, in order: `runtime.llamacpp.custom_path`; an installed build;
-otherwise, while `runtime.llamacpp.find_existing` is on (the default), a `llama-server` already
-on this machine (on `PATH`, or in `~/.unsloth/llama.cpp` and `~/llama.cpp` build folders) that
-starts and whose `--help` lists every flag Imperium passes (`--kv-unified-per-slot`,
-`--no-cache-idle-slots`, ...), preferring one that sees the GPU. The daemon looks for one in the
+**Which `llama-server` is used**, in order: `runtime.llamacpp.custom_path`; an installed build
+(of the pinned release, else of the newest earlier release still installed, until the pinned
+one is); otherwise, while `runtime.llamacpp.find_existing` is on (the default), a
+`llama-server` already on this machine that starts and whose `--help` lists every flag Imperium
+passes (`--kv-unified-per-slot`, `--no-cache-idle-slots`, ...). The daemon looks for one in the
 background when it starts and whenever the server is changed; `runtime.status` reports it as
 source `detected` and the app says so on the runtime card. Installing a build replaces it.
-Only when none is found does a load fail, with *No llama.cpp runtime yet — open Local models →
-Runtime to install one or choose an existing llama-server (or run `imperium runtime install`)*,
-and the session model selector warns before a llama.cpp model is chosen.
+
+- **Where it looks**, one folder level deep at most (no disk is scanned): `PATH`; Unsloth's
+  `~/.unsloth/llama.cpp` and a `~/llama.cpp` checkout (`build/bin/Release`, `build/bin`, `bin`);
+  LM Studio's bundled backends (`~/.lmstudio/extensions/backends/llama.cpp-*/`, which ship a
+  `llama-server`); a `llama.cpp*` checkout or unpacked release (`llama-b<N>-bin-*`) directly in
+  the home or Downloads folder; on Windows winget (`%LOCALAPPDATA%\Microsoft\WinGet\Links` and
+  `Packages\ggml.llamacpp*`), scoop (`~/scoop/apps/llama*/current`, its shims, and the global
+  scoop), Chocolatey's `bin`, and `%LOCALAPPDATA%\llama.cpp`; on macOS `/opt/homebrew/bin`,
+  `/usr/local/bin`, and `~/.local/bin`; on Linux `/usr/local/bin`, `/usr/bin`, Linuxbrew,
+  `~/.local/bin`, and `/opt/llama.cpp`. Folders with many builds (LM Studio's) are read newest
+  first, eight at most.
+- **Which one.** Of those that start and take the flags: one that sees the GPU through the
+  backend that suits this machine (CUDA on an NVIDIA GPU, Metal on Apple Silicon), then one that
+  sees another GPU, then one that could not say, then a CPU-only one; among equals the newest
+  build (the number in `--version`), then the first found.
+
+**Installed when first needed.** With `runtime.llamacpp.auto_install` on (the default) and no
+custom path, the daemon installs llama.cpp's build for this machine by itself (as
+`runtime.install` would, with the same progress notifications, verification, and fallback)
+the first time a runtime is needed: when a llama.cpp model is about to load, or when the Local
+models panel opens (`runtime.status`); never when the app starts. It does so when no usable
+`llama-server` is installed or found (the load waits for the install and then goes ahead), and
+in the background when the one found runs on the CPU only although this machine has a GPU a
+build supports (the GPU build is used from the next load; with `backend = "cpu"` it is not).
+An automatic install is tried once per daemon run; after a failure the load fails with *No
+llama.cpp runtime yet — open Local models → Runtime to install one or choose an existing
+llama-server (or run `imperium runtime install`)* and the reason, and *Install official build*
+tries again. With `auto_install` off, a missing runtime fails the load with that message, and
+the session model selector warns before a llama.cpp model is chosen.
+
+### llama.cpp updates
+
+llama.cpp has no updater of its own, so llama.cpp updates with Imperium:
+
+- **Imperium's build.** Builds live under the release ref Imperium pins, so when an update
+  pins a newer release, the earlier build stays in use and the pinned one is installed (as
+  above) the next time a local model is needed. Models already loaded keep the earlier build;
+  new loads use the new one. The new build must start and list every flag Imperium passes, or
+  it is removed and the earlier build stays (a rollback). One earlier release is kept until a
+  model has loaded with the new build; then it is deleted (left for later while a model still
+  holds its files).
+- **Package-manager installs** (winget `ggml.llamacpp`, scoop, Chocolatey, Homebrew): when the
+  build number in `llama-server --version` is older than the pinned release's (or the server
+  lacks a flag Imperium passes), `runtime.status` offers an update (`update`, action
+  `package_manager`, with the command), as set by `runtime.llamacpp.update_external`: `off`,
+  `ask` (the default: an *Update* button), or `auto` (run by itself, in the background, at the
+  first model load of a daemon run). `runtime.update_external` runs `winget upgrade --id
+  ggml.llamacpp --exact`, `scoop update <app>`, `choco upgrade llama.cpp -y`, or `brew upgrade
+  llama.cpp`, only while no model is loaded from that server, and reports the output.
+- **Checkouts and unpacked folders** (`~/.unsloth/llama.cpp`, `~/llama.cpp`, LM Studio's
+  backends, anything else not owned by a package manager) are never modified. When one is older
+  than the pinned release or lacks a flag, `runtime.status` offers *Use Imperium's build
+  instead* (action `use_managed`), which installs the official build; an installed build is
+  preferred over a found one from then on.
 
 The daemon starts one `llama-server` per loaded model on a free
 loopback port with `--parallel` slots over one shared KV pool, waits for `/health`, logs its output to

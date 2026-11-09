@@ -46,6 +46,11 @@ pub enum SessionEvent {
         request_id: u64,
         tool: String,
         summary: String,
+        /// The rule "always allow" would add (`permissions.add_rule`), when there is a sensible
+        /// one: the command and its subcommand, the file's folder, or the whole tool.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        suggested_rule: Option<crate::permissions::PermissionRule>,
     },
     /// A tool call finished, failed, or was denied. `output` is truncated for display.
     ToolFinished {
@@ -495,10 +500,25 @@ mod tests {
             request_id: 3,
             tool: "write_file".into(),
             summary: "write a.txt".into(),
+            suggested_rule: None,
         };
         assert_eq!(
             serde_json::to_value(&event).unwrap(),
             json!({"type":"permission_requested","request_id":3,"tool":"write_file","summary":"write a.txt"})
+        );
+        let suggested = SessionEvent::PermissionRequested {
+            request_id: 4,
+            tool: "run_command".into(),
+            summary: "run `cargo test`".into(),
+            suggested_rule: Some(crate::permissions::PermissionRule {
+                tool: "run_command".into(),
+                pattern: "cargo test".into(),
+                action: crate::permissions::RuleAction::Allow,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&suggested).unwrap()["suggested_rule"],
+            json!({"tool":"run_command","pattern":"cargo test","action":"allow"})
         );
         assert_eq!(
             serde_json::to_value(PermissionDecision::AllowForSession).unwrap(),

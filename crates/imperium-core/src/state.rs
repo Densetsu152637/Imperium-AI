@@ -120,6 +120,8 @@ pub struct DaemonState {
     downloads: Downloads,
     /// The latest llama.cpp runtime pack installation (`runtime.install`).
     pub(crate) runtime_install: Mutex<Option<imperium_protocol::methods::RuntimeInstallJob>>,
+    /// The latest package-manager update of an external `llama-server`.
+    pub(crate) runtime_update: Mutex<Option<imperium_protocol::methods::RuntimeUpdateJob>>,
     /// The Hugging Face Hub to use instead of the one from the environment (for tests).
     hub: OnceLock<imperium_local::hf::Hub>,
     /// Notifications for every connected client, such as schedule runs.
@@ -151,6 +153,11 @@ pub struct DaemonState {
     runner: OnceLock<Arc<dyn Runner>>,
     /// Machine usage for `system.resources` and its watchers.
     resources: Arc<crate::resources::ResourceMonitor>,
+    /// Global and environment permission rules as running sessions see them, and the global
+    /// path grants.
+    permissions: crate::permissions::PermissionStore,
+    /// Budgets and the usage ledger they count.
+    budgets: crate::budgets::BudgetBook,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -187,6 +194,11 @@ impl DaemonState {
         let monitor = Arc::new(LoadMonitor::new(settings.load.clone()));
         let environments = Environments::load(paths.data_dir().join("environments.json"));
         let suggest = settings.models.suggest_downloads;
+        let permissions = crate::permissions::PermissionStore::new(&settings.permissions);
+        let budgets = crate::budgets::BudgetBook::load(
+            paths.data_dir().join("usage.json"),
+            settings.budgets.clone(),
+        );
         let state = Arc::new_cyclic(|me| DaemonState {
             me: me.clone(),
             started: Instant::now(),
@@ -201,6 +213,7 @@ impl DaemonState {
             local: local.map(OnceLock::from).unwrap_or_default(),
             downloads: Downloads::default(),
             runtime_install: Mutex::new(None),
+            runtime_update: Mutex::new(None),
             hub: OnceLock::new(),
             announcements: broadcast::channel(256).0,
             scheduler: OnceLock::new(),
@@ -219,12 +232,15 @@ impl DaemonState {
             suggestions: Suggestions::new(suggest),
             runner: OnceLock::new(),
             resources: Arc::default(),
+            permissions,
+            budgets,
         });
         state.apply_load_view();
-        if let Some(local) = state.local.get()
-            && tokio::runtime::Handle::try_current().is_ok()
-        {
-            state.announce_swaps(local);
+        if let Some(local) = state.local.get() {
+            local.set_runtime_hooks(crate::llama_runtime::Hooks::new(&state));
+            if tokio::runtime::Handle::try_current().is_ok() {
+                state.announce_swaps(local);
+            }
         }
         state
     }
@@ -341,12 +357,40 @@ impl DaemonState {
         let _ = self.runner.set(runner);
     }
 
-    /// The workspace for a session in `project_dir` (plus `folders`) under `runtime`.
+    /// The workspace for a session in `project_dir` (plus `folders`) under `runtime`, with the
+    /// path grants and permission rules of `environment_id` and the global ones. A remote
+    /// runtime gets only the environment's grants, since the global ones are paths on this
+    /// machine.
     fn workspace(
         &self,
         project_dir: &str,
         folders: &[String],
         runtime: &EnvironmentRuntime,
+        environment_id: Option<&str>,
+    ) -> Result<Workspace, CreateError> {
+        let env = environment_id.and_then(|id| self.environments.get(id));
+        let permissions = self.permissions.for_session(
+            env.as_ref()
+                .map(|env| (env.id.as_str(), env.permissions.rules.as_slice())),
+        );
+        let mut grants: Vec<imperium_tools::permissions::PathGrant> = env
+            .iter()
+            .flat_map(|env| &env.permissions.grants)
+            .map(crate::permissions::grant_from_wire)
+            .collect();
+        Ok(self
+            .bare_workspace(project_dir, folders, runtime, &mut grants)?
+            .with_grants(&grants)
+            .with_permissions(permissions))
+    }
+
+    /// The workspace's folders and sandbox; adds the global grants to `grants` for a local one.
+    fn bare_workspace(
+        &self,
+        project_dir: &str,
+        folders: &[String],
+        runtime: &EnvironmentRuntime,
+        grants: &mut Vec<imperium_tools::permissions::PathGrant>,
     ) -> Result<Workspace, CreateError> {
         let remote = match runtime {
             EnvironmentRuntime::Local
@@ -381,6 +425,7 @@ impl DaemonState {
             },
             _ => self.sandbox(),
         };
+        grants.extend(self.permissions.global_grants());
         Ok(Workspace::new(Path::new(project_dir))
             .map_err(|error| CreateError::Project(project_dir.to_string(), error))?
             .with_folders(folders)
@@ -948,6 +993,7 @@ impl DaemonState {
         };
         if self.local.set(started).is_ok() {
             if let Some(local) = self.local.get() {
+                local.set_runtime_hooks(crate::llama_runtime::Hooks::new(self));
                 self.apply_local_settings(local);
                 self.announce_swaps(local);
             }
@@ -1024,6 +1070,9 @@ impl DaemonState {
             Err(error) => return (false, error.to_string(), None),
         };
         let session_id = Some(session.id().to_string());
+        if let Err(stop) = crate::budgets::check(self, session.id(), false) {
+            return (false, stop.message, session_id);
+        }
         if session.send(prompt).is_err() {
             return (
                 false,
@@ -1062,6 +1111,7 @@ impl DaemonState {
                         request_id,
                         tool,
                         summary,
+                        ..
                     } => self.bridge_permission(session, request_id, &tool, summary),
                     SessionEvent::QuestionsAsked {
                         request_id,
@@ -1117,7 +1167,12 @@ impl DaemonState {
         model: Option<&str>,
         options: SessionOptions,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
-        let workspace = self.workspace(project_dir, &options.folders, &options.runtime)?;
+        let workspace = self.workspace(
+            project_dir,
+            &options.folders,
+            &options.runtime,
+            options.environment_id.as_deref(),
+        )?;
         let mut placement = Placement {
             environment_id: options.environment_id.clone(),
             folders: workspace.folders_display(),
@@ -1250,6 +1305,12 @@ impl DaemonState {
         if let Some(me) = self.me.upgrade() {
             crate::suggestions::watch(&me, id.clone(), session.subscribe());
             crate::resources::watch_session(&me, id.clone(), session.subscribe());
+            crate::budgets::watch_session(
+                &me,
+                id.clone(),
+                placement.environment_id.clone(),
+                session.subscribe(),
+            );
         }
         let session = Arc::new(session);
         self.placements
@@ -1401,6 +1462,24 @@ impl DaemonState {
             .map(|env| env.id.clone())
             .collect();
         imperium_protocol::methods::EnvironmentListResult { environments, git }
+    }
+
+    /// The permission rules running sessions check calls against, and the global grants.
+    pub fn budgets(&self) -> &crate::budgets::BudgetBook {
+        &self.budgets
+    }
+
+    pub fn permissions(&self) -> &crate::permissions::PermissionStore {
+        &self.permissions
+    }
+
+    /// Applies environment `id`'s saved rules to its running sessions (its grants apply to
+    /// sessions started from now on) and tells every client.
+    pub fn environment_permissions_changed(&self, id: &str) {
+        if let Some(env) = self.environments.get(id) {
+            self.permissions.set_environment(id, &env.permissions.rules);
+        }
+        self.announce_environments();
     }
 
     /// Tells every client the environments changed.

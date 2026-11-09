@@ -147,6 +147,8 @@ fn supervisor(launcher: Arc<FakeLlama>, vram_gib: u64) -> Arc<Supervisor> {
         backend: "auto".into(),
         custom_path: None,
         find_existing: true,
+        auto_install: false,
+        update_external: "off".into(),
         idle_unload_s: 900,
         context: 4096.into(),
         parallel: 1,

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use base64::Engine;
 use imperium_engine::{QueueError, Session, SwitchError};
+use imperium_protocol::budgets::{BudgetsGet, BudgetsGetParams, BudgetsSet, BudgetsUsage};
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
@@ -22,6 +23,9 @@ use imperium_protocol::methods::{
     SessionDeleteParams, SessionList, SessionListParams, SessionListResult, SessionRespond,
     SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
     SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
+};
+use imperium_protocol::permissions::{
+    PermissionsAddRule, PermissionsGet, PermissionsGetParams, PermissionsSet,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -52,6 +56,7 @@ use imperium_protocol::methods::{
 use imperium_protocol::methods::{
     ModelAddEndpoint, ModelAddEndpointParams, ModelFolderAdd, ModelFolderRemove, ModelTest,
     ModelUse, ModelUseParams, RuntimeInstall, RuntimeSetServer, RuntimeStatus,
+    RuntimeUpdateExternal,
 };
 use imperium_protocol::methods::{
     ModelConfig, ModelConfigParams, ModelSetConfig, ModelSetConfigParams,
@@ -273,6 +278,26 @@ impl Connection {
             McpRemove::NAME => call::<McpRemove>(request.params, |params| {
                 crate::connectors::remove(&self.state, params)
             }),
+            BudgetsGet::NAME => call::<BudgetsGet>(request.params, |_: BudgetsGetParams| {
+                crate::budgets::get(&self.state)
+            }),
+            BudgetsSet::NAME => call::<BudgetsSet>(request.params, |params| {
+                crate::budgets::set(&self.state, params)
+            }),
+            BudgetsUsage::NAME => call::<BudgetsUsage>(request.params, |params| {
+                crate::budgets::usage(&self.state, params)
+            }),
+            PermissionsGet::NAME => {
+                call::<PermissionsGet>(request.params, |_: PermissionsGetParams| {
+                    crate::permissions::get(&self.state)
+                })
+            }
+            PermissionsSet::NAME => call::<PermissionsSet>(request.params, |params| {
+                crate::permissions::set(&self.state, params)
+            }),
+            PermissionsAddRule::NAME => call::<PermissionsAddRule>(request.params, |params| {
+                crate::permissions::add_rule(&self.state, params)
+            }),
             McpTest::NAME => call_later::<McpTest, _>(request.params, &mut later, |params| {
                 crate::connectors::test(Arc::clone(&self.state), params)
             }),
@@ -484,6 +509,11 @@ impl Connection {
                     crate::onboarding::install_runtime(Arc::clone(&self.state))
                 })
             }
+            RuntimeUpdateExternal::NAME => {
+                call_later::<RuntimeUpdateExternal, _>(request.params, &mut later, |_| {
+                    crate::llama_runtime::update_external(Arc::clone(&self.state))
+                })
+            }
             HfFiles::NAME => call_later::<HfFiles, _>(request.params, &mut later, |params| {
                 crate::downloads::files(Arc::clone(&self.state), params)
             }),
@@ -535,6 +565,17 @@ impl Connection {
             SessionSend::NAME => {
                 call::<SessionSend>(request.params, |params: SessionSendParams| {
                     let session = self.session(&params.session_id)?;
+                    // A message that starts a turn waits on the session's budgets; steering
+                    // joins a running turn, which always finishes.
+                    let steering = params.mode == Some(imperium_protocol::session::SendMode::Steer)
+                        && session.status().0 == imperium_protocol::session::SessionStatus::Working;
+                    if !steering {
+                        crate::budgets::check(
+                            &self.state,
+                            &params.session_id,
+                            params.confirm_budget == Some(true),
+                        )?;
+                    }
                     // A person writing to background work wants an answer now: it stops giving
                     // way to the load.
                     if session.is_background() {
@@ -742,7 +783,14 @@ impl Connection {
                 call::<EnvironmentUpdate>(params, |p: EnvironmentUpdateParams| {
                     let id = p.id.clone();
                     let runtime_changed = p.runtime.is_some();
+                    let permissions_changed = p.permissions.is_some();
                     let env = envs.update(p).map_err(failed)?;
+                    if permissions_changed {
+                        // Running sessions follow the new rules from their next call.
+                        self.state
+                            .permissions()
+                            .set_environment(&id, &env.permissions.rules);
+                    }
                     if runtime_changed {
                         // The agent's tools follow the new runtime from its next start.
                         self.restart_environment_agent(&id);

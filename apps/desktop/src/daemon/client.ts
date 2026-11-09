@@ -13,9 +13,12 @@ export type DaemonConnection = { url: string; token: string };
 
 export class RpcError extends Error {
   readonly code: number;
+  /** The error's `data`, such as the budget that stopped a turn (`-32008`). */
+  readonly data: unknown;
   constructor(error: ErrorObject) {
     super(error.message);
     this.code = error.code;
+    this.data = error.data;
   }
 }
 
@@ -49,7 +52,7 @@ export class DaemonClient {
     const client = new DaemonClient(socket);
     const params: HandshakeParams = {
       client: { name: "imperium-desktop", version: "0.1.0" },
-      protocol: { major: 0, minor: 4 },
+      protocol: { major: 0, minor: 7 },
     };
     client.daemon = await client.call<HandshakeResult>("system.handshake", params);
     return client;

@@ -312,6 +312,7 @@ mod tests {
                 request_id: 1,
                 tool: "w".into(),
                 summary: "s".into(),
+                suggested_rule: None,
             },
         });
         assert_eq!(controls.status().0, SessionStatus::NeedsAttention);
