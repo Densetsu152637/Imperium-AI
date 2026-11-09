@@ -1435,6 +1435,7 @@ impl DaemonState {
             persistent: placement.persistent,
             worktrees: placement.worktrees,
             pinned: placement.pinned,
+            created_at: created_at(&self.journal_path(session.id())),
             ..summary(session)
         }
     }
@@ -1664,7 +1665,15 @@ fn summary(session: &Session) -> SessionSummary {
         pinned: false,
         archived: false,
         archived_at: None,
+        created_at: None,
     }
+}
+
+/// When a session was created: its journal is written when the session starts.
+pub(crate) fn created_at(journal: &Path) -> Option<u64> {
+    let created = std::fs::metadata(journal).ok()?.created().ok()?;
+    let since = created.duration_since(std::time::UNIX_EPOCH).ok()?;
+    u64::try_from(since.as_millis()).ok()
 }
 
 #[cfg(test)]

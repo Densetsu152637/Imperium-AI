@@ -16,11 +16,11 @@ export type Bounds = { minX: number; maxX: number; minY: number; maxY: number };
 export const SPEED = 22;
 export const PLAY_SPEED = 50;
 /** The least area a pet needs in the room, in px squared. */
-export const AREA_PER_PET = 11_000;
-export const MIN_ROOM_HEIGHT = 160;
-/** Two pets closer than this (x, y) push each other apart; depth counts for less than width. */
-export const SEP_X = 58;
-export const SEP_Y = 24;
+export const AREA_PER_PET = 9_000;
+export const MIN_ROOM_HEIGHT = 220;
+/** Two pets closer than this (x, y) push each other apart, gently enough that they may overlap; depth counts for less than width. */
+export const SEP_X = 34;
+export const SEP_Y = 14;
 /** How fast overlapping pets move apart, in px per second at full overlap. */
 export const SEP_RATE = 70;
 

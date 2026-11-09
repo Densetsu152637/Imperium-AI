@@ -447,6 +447,7 @@ export function snapshotSessions(sessions: SessionState[], environments: Environ
       environmentId: session.summary.environment_id,
       archived: session.summary.archived,
       pet: environments.find((env) => env.id === session.summary.environment_id)?.pet ?? null,
+      createdAt: session.summary.created_at ?? null,
       agents,
     };
   });

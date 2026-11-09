@@ -48,8 +48,9 @@ Clicking a pet pats it; every pet is also a focusable button, so the keyboard wo
 ## One shared room
 
 Each panel is a single room that fills the panel below its controls. There are no cards or
-cages: pets stand anywhere in it, and a pet lower on screen (nearer) is drawn in front of one
-higher up, with a small shadow on the floor. A pet's label stays under it, the badge of the
+cages: large sprites stand anywhere in it and may overlap, newer pets in front of older ones
+(your pet at the back, then the sessions by when they were created), each with a small shadow on
+the floor. A pet's label stays under it, the badge of the
 session pets and the **×** of an extra pet (shown on hover or focus) travel with it.
 
 - **Roaming.** A free pet picks a spot anywhere in the room, walks there at a steady pace

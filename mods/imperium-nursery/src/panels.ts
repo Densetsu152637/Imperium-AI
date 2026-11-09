@@ -13,7 +13,7 @@ import { CSS, FrameLoop, Room, reducedMotion } from "./view.ts";
 
 const SLEEP_AGENT_MS = 180_000;
 const SLEEP_PERSONAL_MS = 60_000;
-const SIZE = 64;
+const SIZE = 112;
 
 type Resident = { uid: string; petId: string; name: string };
 

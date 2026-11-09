@@ -6,7 +6,7 @@ import type { AgentSnapshot, SessionEvent, SessionSnapshot } from "@imperium/mod
 
 import type { Env } from "../src/arbiter.ts";
 import { isReviewer } from "../src/events.ts";
-import { LEAVE_MS, Nursery, RESIDENT, sessionKey } from "../src/nursery.ts";
+import { FIRST, LEAVE_MS, Nursery, RESIDENT, sessionKey } from "../src/nursery.ts";
 import type { Deps } from "../src/nursery.ts";
 import { MINE, MIX, clip, hash, pickPet, sessionPet } from "../src/pick.ts";
 import { allDrawn } from "../src/pet.ts";
@@ -27,6 +27,7 @@ const session = (sessionId: string, agents: AgentSnapshot[], title = sessionId, 
   environmentId: null,
   archived: false,
   pet: null,
+  createdAt: null,
   agents,
   ...extra,
 });
@@ -175,6 +176,29 @@ test("nursery: your pet is always there, hears every session, and cannot be take
   // Changing it keeps the entry and changes the pet.
   n.setResident("other", "Other", t + 5000);
   expect(n.entries.get(RESIDENT)).toMatchObject({ petId: "other", label: "Other" });
+});
+
+test("nursery: pets are born in session order, your pet first, so older sessions stand behind newer ones", () => {
+  const n = new Nursery("nursery", deps);
+  n.setResident("pet", "Clawd", T0);
+  // Listed newest first, as the daemon may list them; the creation time decides, not the order.
+  n.snapshots(
+    [
+      session("new", [agent("root", "idle")], "New", { createdAt: 3_000 }),
+      session("old", [agent("root", "idle")], "Old", { createdAt: 1_000 }),
+      session("unknown", [agent("root", "idle")], "Unknown"),
+    ],
+    null,
+    T0,
+  );
+  const born = (key: string) => n.entries.get(key)!.born;
+  expect(born(RESIDENT)).toBe(FIRST);
+  expect(born(sessionKey("old"))).toBe(1_000);
+  expect(born(sessionKey("new"))).toBe(3_000);
+  // Without a creation time a session counts from when the nursery first saw it.
+  expect(born(sessionKey("unknown"))).toBe(T0);
+  const depth = [...n.entries.values()].sort((a, b) => a.born - b.born || a.seq - b.seq).map((e) => e.key);
+  expect(depth).toEqual([RESIDENT, sessionKey("old"), sessionKey("new"), sessionKey("unknown")]);
 });
 
 test("nursery: a session pet's kind comes from its environment, then the setting, then your pet", () => {

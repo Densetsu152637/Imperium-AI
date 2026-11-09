@@ -138,7 +138,7 @@ test("a real event ends play for both pets at once", () => {
   const snap: SessionSnapshot = {
     sessionId: "s1",
     title: "S",
-    projectDir: "/p", environmentId: null, archived: false, pet: null,
+    projectDir: "/p", environmentId: null, archived: false, pet: null, createdAt: null,
     status: "idle",
     agents: [
       { agentId: "root", parentId: null, brief: "", status: "idle" },
@@ -173,7 +173,7 @@ test("patting a playing pet ends the play; leaving pets and busy pets never star
   expect(n.playing).toBeNull();
   expect(name(n, "b", t + 100)).toBe("petted");
   const s = new Nursery("session", deps);
-  const base = { sessionId: "s1", title: "S", projectDir: "/p", environmentId: null, archived: false, pet: null, status: "idle" };
+  const base = { sessionId: "s1", title: "S", projectDir: "/p", environmentId: null, archived: false, pet: null, createdAt: null, status: "idle" };
   const root = { agentId: "root", parentId: null, brief: "", status: "idle" as const };
   s.snapshots([{ ...base, agents: [root, { agentId: "t1", parentId: "root", brief: "x", status: "working" }] }], "s1", T0);
   s.snapshots([{ ...base, agents: [root, { agentId: "t1", parentId: "root", brief: "x", status: "finished" }] }], "s1", T0 + 1000);
