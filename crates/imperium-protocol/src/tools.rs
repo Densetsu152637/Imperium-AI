@@ -210,7 +210,7 @@ pub fn web_fetch() -> ToolDefinition {
     }
 }
 
-/// Split a large stored artefact into chunks and process each with a subagent (planned).
+/// Split a large stored artefact into chunks and process each with a subagent.
 pub fn delegate_chunks() -> ToolDefinition {
     ToolDefinition {
         name: "delegate_chunks",
@@ -221,11 +221,11 @@ pub fn delegate_chunks() -> ToolDefinition {
             "brief": {"type": "string", "description": "What each subagent does with its chunk; self-contained"},
             "reduce": {"type": "string", "description": "How to merge the chunk reports into one result"}
         }, "required": ["artefact_id", "chunk_tokens", "brief"]}),
-        status: ToolStatus::Planned,
+        status: ToolStatus::Available,
     }
 }
 
-/// Ask the user one batch of questions (planned).
+/// Ask the user one batch of questions.
 pub fn ask_user() -> ToolDefinition {
     ToolDefinition {
         name: "ask_user",
@@ -237,7 +237,7 @@ pub fn ask_user() -> ToolDefinition {
                 "recommended": {"type": "string", "description": "The answer you suggest, and why in a few words"}
             }, "required": ["question", "recommended"]}}
         }, "required": ["questions"]}),
-        status: ToolStatus::Planned,
+        status: ToolStatus::Available,
     }
 }
 
@@ -294,12 +294,11 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), tools.len());
-        let planned: Vec<_> = tools
-            .iter()
-            .filter(|tool| tool.status == ToolStatus::Planned)
-            .map(|tool| tool.name)
-            .collect();
-        assert_eq!(planned, ["delegate_chunks", "ask_user"]);
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool.status == ToolStatus::Available)
+        );
     }
 
     fn prompt(name: &str) -> String {

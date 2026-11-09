@@ -7,6 +7,7 @@
 
 mod agent;
 mod agents;
+mod artefacts;
 mod breakdown;
 mod compact;
 mod journal;

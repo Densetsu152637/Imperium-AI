@@ -13,6 +13,7 @@ import type {
   ModelRow,
   PermissionDecision,
   Plan,
+  Question,
   QueuedMessage,
   ResumePolicy,
   RuntimeInfo,
@@ -51,6 +52,8 @@ type Props = {
   /** Edits a queued message, or removes it when `text` is null. */
   onChangeQueued: (id: string, text: string | null) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
+  /** One answer per question, in order. */
+  onAnswer: (requestId: number, answers: string[]) => void;
   /** Resolves once the daemon accepted the policy. */
   onSetResumePolicy: (policy: ResumePolicy) => Promise<void>;
   onResumeNow: () => void;
@@ -79,6 +82,7 @@ export function SessionPanel({
   onSend,
   onChangeQueued,
   onRespond,
+  onAnswer,
   onSetResumePolicy,
   onResumeNow,
   models,
@@ -148,7 +152,7 @@ export function SessionPanel({
               onSetModel={(model) => onSetModel(model).catch(() => null)}
             />
           ) : (
-            <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} />
+            <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} onAnswer={onAnswer} />
           ),
         )}
         {session.busy && <p className="working">Working…</p>}
@@ -398,14 +402,75 @@ function ContextMeter({
   );
 }
 
+/** A batch of questions from the agent; each starts at its recommended answer. */
+function QuestionsView({
+  entry,
+  onAnswer,
+}: {
+  entry: Extract<Entry, { kind: "questions" }>;
+  onAnswer: Props["onAnswer"];
+}) {
+  const [answers, setAnswers] = useState<string[]>(() => entry.questions.map((question: Question) => question.recommended));
+  const inputId = `question-${entry.requestId}`;
+  const setAnswer = (index: number, value: string) =>
+    setAnswers((all) => all.map((answer, at) => (at === index ? value : answer)));
+  return (
+    <form
+      className="questions"
+      aria-label="Questions from the agent"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!entry.answered) onAnswer(entry.requestId, answers);
+      }}
+    >
+      {entry.questions.map((question: Question, index: number) => (
+        <div key={index} className="question">
+          <label htmlFor={`${inputId}-${index}`}>{question.question}</label>
+          {question.options.length > 0 && (
+            <span className="buttons">
+              {question.options.map((option) => (
+                <button
+                  type="button"
+                  key={option}
+                  className={answers[index] === option ? "primary" : ""}
+                  disabled={entry.answered}
+                  onClick={() => setAnswer(index, option)}
+                >
+                  {option}
+                </button>
+              ))}
+            </span>
+          )}
+          <input
+            id={`${inputId}-${index}`}
+            value={answers[index] ?? ""}
+            disabled={entry.answered}
+            onChange={(event) => setAnswer(index, event.target.value)}
+          />
+          <span className="muted">Suggested: {question.recommended}</span>
+        </div>
+      ))}
+      {entry.answered ? (
+        <span className="muted">Answered</span>
+      ) : (
+        <button type="submit" className="primary">
+          Send answers
+        </button>
+      )}
+    </form>
+  );
+}
+
 function EntryView({
   entry,
   rendered,
   onRespond,
+  onAnswer,
 }: {
   entry: Entry;
   rendered: boolean;
   onRespond: Props["onRespond"];
+  onAnswer: Props["onAnswer"];
 }) {
   switch (entry.kind) {
     case "user":
@@ -463,6 +528,8 @@ function EntryView({
           )}
         </div>
       );
+    case "questions":
+      return <QuestionsView entry={entry} onAnswer={onAnswer} />;
     case "turn":
       return (
         <p className="turn-summary">

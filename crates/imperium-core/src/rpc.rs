@@ -17,11 +17,11 @@ use imperium_protocol::methods::{
     PhoneRevoke, PhoneRevokeParams, PhoneRevokeResult, Ping, PingParams, PingResult,
     ProjectAgentRow, ProjectList, ProjectListParams, ProjectListResult, ProjectMessage,
     ProjectMessageParams, ProjectMessageResult, ScheduleList, ScheduleListParams,
-    ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionCreate,
-    SessionCreateParams, SessionCreateResult, SessionDelete, SessionDeleteParams, SessionList,
-    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSend,
-    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult, Shutdown,
-    ShutdownParams, ShutdownResult,
+    ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionAnswer,
+    SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult, SessionDelete,
+    SessionDeleteParams, SessionList, SessionListParams, SessionListResult, SessionRespond,
+    SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
+    SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -584,6 +584,14 @@ impl Connection {
                     self.state
                         .delete_session(&params.session_id, params.remove_worktrees)
                         .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                })
+            }
+            SessionAnswer::NAME => {
+                call::<SessionAnswer>(request.params, |params: SessionAnswerParams| {
+                    self.session(&params.session_id)?
+                        .answer(params.request_id, params.answers)
+                        .map_err(stopped)?;
+                    Ok(Accepted {})
                 })
             }
             SessionRespond::NAME => {

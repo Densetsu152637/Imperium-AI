@@ -110,7 +110,7 @@ impl Controls {
                 tracker.paused = false;
                 tracker.hold = None;
             }
-            SessionEvent::PermissionRequested { .. } => {
+            SessionEvent::PermissionRequested { .. } | SessionEvent::QuestionsAsked { .. } => {
                 *tracker.asking.entry(event.agent_id.clone()).or_default() += 1;
             }
             // An agent moving on means its question was answered.

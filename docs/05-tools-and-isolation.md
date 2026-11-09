@@ -10,7 +10,7 @@
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
 | Agents      | `spawn_agent`, `await_tasks`, `send_to_task`, `cancel_task` | See [agent engine](03-agent-engine.md)        |
 | Media       | `media.generate`, `media.transcribe`                      | See [media](09-media-generation.md)              |
-| Interaction | `ask_user`                                                | Pauses the agent until the user answers          |
+| Interaction | `ask_user` (implemented)                                  | Pauses the agent until the user answers          |
 
 Implemented in phase 8 (`imperium-web`): `web_fetch` reads an http(s) page as text (title,
 final URL, scripts and markup removed, long pages in chunks via `offset` and `limit`; non-text
@@ -41,6 +41,25 @@ may keep running until the OS sandbox tier adds process-tree cleanup.
 
 All tools are described by JSON Schema and are also exposed over an MCP server endpoint, so
 external agents can use Imperium's tools.
+
+### `ask_user`
+
+The root calls `ask_user(questions[])` once with every question it has; each has `question`,
+optional `options`, and a `recommended` answer. The session emits `questions_asked`
+(`request_id`, `questions`) and the root waits without model calls, while subagents it already
+spawned keep running. Any client answers with `session.answer` (`session_id`, `request_id`,
+`answers`, one string per question in order); the session then emits `questions_answered` so
+other clients close the prompt. A blank answer means "use the recommendation". If nobody answers within 10 minutes (applied
+whether or not a client is attached), the recommendations are taken and the root is told so. The root gets
+back each question with its answer. The session status is `needs_attention` while a batch is
+pending.
+
+- CLI: `imperium chat` prints each question and its numbered options; Enter takes the
+  recommended answer, a number picks an option, other text is the answer.
+- Desktop: the session shows a form with the options as buttons and the recommendation
+  prefilled; Send answers calls `session.answer`.
+- Unattended sessions (project agents, scheduled tasks) answer with the recommendations
+  immediately, since nobody is watching.
 
 ## MCP
 

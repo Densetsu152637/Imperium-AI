@@ -97,6 +97,39 @@ share the session's permission approvals. Events carry an `agent_id` (`root`, or
 and the session emits `task_spawned` and `task_finished` (status, report, tokens, cost).
 Not yet: `send_to_task`, budgets per task, deeper trees, and cancellation.
 
+### Large inputs and `delegate_chunks`
+
+**Implemented.** An input that would take more than 75 % of the root's context window never enters the
+conversation. The window is that of the root's current model (it can be switched mid-session)
+and is found without taking a slot or loading anything: the model table's `context_window` for
+a hosted model (the server's report when the table has none), the window a local model's launch
+settings plan, and 32,768 tokens when neither is known. This covers user messages, tool results and file reads, estimated at four
+characters (not bytes) a token. The input is stored as a session artefact (`a<run>-<n>`, where `<run>` is four random hex
+digits fixed per daemon run, so a handle from before a restart never matches; kept in memory) and the root sees only a handle message: size, line count, an
+outline (up to 12 headings or file starts, else the first lines), and how to read it. Subagents
+are not guarded; they receive chunks sized by the root.
+
+`delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` splits the artefact and starts one
+subagent per chunk, each with the same `brief` plus its chunk (marked "chunk i of n") in its
+first message. Boundaries, in order of preference:
+
+1. a file start (`diff --git`, `=== path ===`, `<file ...>`) always starts a new chunk;
+2. headings, blank-line paragraphs and fenced code blocks, which stay whole when they fit;
+3. otherwise token windows (`chunk_tokens` x 4 characters), cut at a line break when one falls
+   in the second half of the window.
+
+Budget and limits: `chunk_tokens` is clamped to 60 % of the chunk model's window when known
+(the table's, or a local model's planned window; the result says so); at most 64 chunks per call (the tool errors and asks for larger chunks);
+at most 256 chunk agents per session across all calls (then the tool errors); and four chunk
+subagents running at once, the rest waiting for a free slot (each model call still takes its own
+local slot lease). Chunk subagents use the default routing tier. Chunk and reduce agents announce only a short description in `turn_started`, so
+chunk text never reaches the journal or history. An unknown artefact id is a tool error that
+says artefacts are lost when the daemon restarts. The result lists the task ids; `await_tasks` collects the reports. With
+`reduce`, one more subagent receives that instruction plus the chunk reports (never the chunks)
+once all chunks finish, and its task id is the only one to collect. Each report given to it is capped to its share of
+60 % of the reduce model's window (32,768 tokens when unknown) and marked when truncated. The
+root sees only reports.
+
 Delegation must not burn tokens while subagents work.
 
 - `spawn_agent` (a built-in tool) creates a **Task** and returns immediately with a task ID.
@@ -155,8 +188,8 @@ providers, are outside the contract.
 | `spawn_agent`, `await_tasks`, `update_plan`, `web_search`, `web_fetch` | implemented |
 | `steer_agent`, `queue_agent`, `list_agents`, `resume_agent` ([queueing and steering](#queueing-and-steering), [agent state](#agent-state)) | implemented; root only |
 | `suggest_local_model` ([model download suggestions](04-models-and-routing.md#model-download-suggestions)) | implemented; daemon sessions |
-| `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | planned: definition only, not offered to models |
-| `ask_user(questions[])`: each question has text, optional options, and a recommended answer | planned: definition only, not offered to models |
+| `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | implemented, root only ([large inputs](#large-inputs-and-delegate_chunks)) |
+| `ask_user(questions[])`: each question has text, optional options, and a recommended answer | implemented, root only ([05](05-tools-and-isolation.md#ask_user)) |
 
 **Single-call tasks (implemented):** `spawn_agent` with `single_call: true` (default false) starts
 a subagent that is given the brief and no tools (no files, commands, web, memory or workflow

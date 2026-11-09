@@ -57,7 +57,7 @@ import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { ResourcesPanel } from "./panels/ResourcesPanel";
 import { environmentIcon, projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./projectIcons";
-import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, snapshotSessions, type SessionState } from "./sessions";
+import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, markQuestionsAnswered, newSession, snapshotSessions, type SessionState } from "./sessions";
 import { applySettings, loadSettings, modEnabled, saveSettings, SettingsContext, type AppSettings } from "./settings";
 import { SettingsWindow } from "./SettingsWindow";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
@@ -506,6 +506,12 @@ export function App() {
     client.call("session.respond", { session_id: selected, request_id: requestId, decision }).catch(report);
   };
 
+  const answer = (requestId: number, answers: string[]) => {
+    if (!client || !selected) return;
+    setSessions((all) => ({ ...all, [selected]: markQuestionsAnswered(all[selected], requestId) }));
+    client.call("session.answer", { session_id: selected, request_id: requestId, answers }).catch(report);
+  };
+
   const control = (sessionId: string, params: Partial<Omit<SessionControlParams, "session_id">>) => {
     if (!client) return Promise.reject(new Error("Not connected to imperium-core."));
     const full: SessionControlParams = {
@@ -660,6 +666,7 @@ export function App() {
         onSend={send}
         onChangeQueued={changeQueued}
         onRespond={respond}
+        onAnswer={answer}
         onSetResumePolicy={setResumePolicy}
         onResumeNow={resumeNow}
         models={modelTable?.models ?? []}

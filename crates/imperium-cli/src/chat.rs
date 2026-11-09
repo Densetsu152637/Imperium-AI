@@ -8,13 +8,13 @@ use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
     ContextFit, SessionAgentResume, SessionAgentResumeParams, SessionAgents, SessionAgentsParams,
-    SessionControl, SessionControlParams, SessionCreate, SessionCreateParams, SessionQueue,
-    SessionQueueParams, SessionRespond, SessionRespondParams, SessionSend, SessionSendParams,
-    SessionSuggestionRespond, SuggestionRespondParams,
+    SessionAnswer, SessionAnswerParams, SessionControl, SessionControlParams, SessionCreate,
+    SessionCreateParams, SessionQueue, SessionQueueParams, SessionRespond, SessionRespondParams,
+    SessionSend, SessionSendParams, SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
     AgentEvent, AgentStatus, AgentSummary, ContextCategory, PauseCause, PermissionDecision,
-    QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent, SessionEventParams,
+    Question, QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent, SessionEventParams,
     StepStatus, TokenCountMethod,
 };
 use tokio::sync::mpsc;
@@ -125,6 +125,21 @@ fn read_lines() -> mpsc::UnboundedReceiver<String> {
     receiver
 }
 
+/// Something the agent waits on the user for; typed lines answer it.
+enum Asking {
+    Permission {
+        request_id: u64,
+        summary: String,
+    },
+    /// An `ask_user` batch, answered one question per line.
+    Questions {
+        request_id: u64,
+        tag: String,
+        questions: Vec<Question>,
+        answers: Vec<String>,
+    },
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Flow {
     Continue,
@@ -137,8 +152,9 @@ enum Flow {
 struct Chat {
     context_summary: bool,
     busy: bool,
-    /// Permission requests in the order asked; the next line answers the first.
-    asking: VecDeque<(u64, String)>,
+    /// Permission requests and question batches in the order asked; the next line answers the
+    /// first.
+    asking: VecDeque<Asking>,
     /// The user just sent a message to an idle agent, so its `turn_started` needs no echo.
     sent_while_idle: bool,
     latest: Option<Breakdown>,
@@ -148,10 +164,29 @@ struct Chat {
 
 impl Chat {
     fn prompt(&self) {
-        if let Some((_, summary)) = self.asking.front() {
-            print!("\nAllow: {summary}? [y]es / [a]lways this session / [n]o: ");
-        } else if !self.busy {
-            print!("\n> ");
+        match self.asking.front() {
+            Some(Asking::Permission { summary, .. }) => {
+                print!("\nAllow: {summary}? [y]es / [a]lways this session / [n]o: ");
+            }
+            Some(Asking::Questions {
+                tag,
+                questions,
+                answers,
+                ..
+            }) => {
+                if answers.is_empty() {
+                    println!("\n{tag}The agent has {} question(s):", questions.len());
+                }
+                if let Some(question) = questions.get(answers.len()) {
+                    println!("\n{}. {}", answers.len() + 1, question.question);
+                    for (number, option) in question.options.iter().enumerate() {
+                        println!("   {}) {option}", number + 1);
+                    }
+                    print!("   [Enter = {}]: ", question.recommended);
+                }
+            }
+            None if !self.busy => print!("\n> "),
+            None => {}
         }
         std::io::stdout().flush().ok();
     }
@@ -162,16 +197,44 @@ impl Chat {
         session_id: &str,
         line: String,
     ) -> anyhow::Result<Flow> {
-        if let Some((request_id, _)) = self.asking.pop_front() {
-            client
-                .call::<SessionRespond>(SessionRespondParams {
-                    session_id: session_id.to_string(),
-                    request_id,
-                    decision: permission_answer(&line),
-                })
-                .await?;
-            self.prompt();
-            return Ok(Flow::Continue);
+        match self.asking.front_mut() {
+            Some(Asking::Permission { request_id, .. }) => {
+                let request_id = *request_id;
+                self.asking.pop_front();
+                client
+                    .call::<SessionRespond>(SessionRespondParams {
+                        session_id: session_id.to_string(),
+                        request_id,
+                        decision: permission_answer(&line),
+                    })
+                    .await?;
+                self.prompt();
+                return Ok(Flow::Continue);
+            }
+            Some(Asking::Questions {
+                request_id,
+                questions,
+                answers,
+                ..
+            }) => {
+                if let Some(question) = questions.get(answers.len()) {
+                    answers.push(choose_answer(question, &line));
+                }
+                if answers.len() >= questions.len() {
+                    let (request_id, answers) = (*request_id, std::mem::take(answers));
+                    self.asking.pop_front();
+                    client
+                        .call::<SessionAnswer>(SessionAnswerParams {
+                            session_id: session_id.to_string(),
+                            request_id,
+                            answers,
+                        })
+                        .await?;
+                }
+                self.prompt();
+                return Ok(Flow::Continue);
+            }
+            None => {}
         }
         let text = line.trim();
         if text == "/exit" || (text.is_empty() && !self.busy) {
@@ -364,9 +427,38 @@ impl Chat {
                 summary,
                 ..
             } => {
-                self.asking
-                    .push_back((request_id, format!("{tag}{summary}")));
+                self.asking.push_back(Asking::Permission {
+                    request_id,
+                    summary: format!("{tag}{summary}"),
+                });
                 if self.asking.len() == 1 {
+                    self.prompt();
+                }
+            }
+            SessionEvent::QuestionsAsked {
+                request_id,
+                questions,
+            } => {
+                self.asking.push_back(Asking::Questions {
+                    request_id,
+                    tag,
+                    questions,
+                    answers: Vec::new(),
+                });
+                if self.asking.len() == 1 {
+                    self.prompt();
+                }
+            }
+            // Answered from another client: stop asking.
+            SessionEvent::QuestionsAnswered { request_id } => {
+                let was_first = matches!(
+                    self.asking.front(),
+                    Some(Asking::Questions { request_id: id, .. }) if *id == request_id
+                );
+                self.asking.retain(|asking| {
+                    !matches!(asking, Asking::Questions { request_id: id, .. } if *id == request_id)
+                });
+                if was_first {
                     self.prompt();
                 }
             }
@@ -829,9 +921,38 @@ fn permission_answer(answer: &str) -> PermissionDecision {
     }
 }
 
+/// The answer a typed line gives a question: Enter takes the recommended answer, a number
+/// picks an option, and anything else is the answer itself.
+fn choose_answer(question: &Question, input: &str) -> String {
+    let input = input.trim();
+    if input.is_empty() {
+        return question.recommended.clone();
+    }
+    input
+        .parse::<usize>()
+        .ok()
+        .and_then(|number| question.options.get(number.checked_sub(1)?))
+        .cloned()
+        .unwrap_or_else(|| input.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answers_default_to_the_recommendation_and_numbers_pick_options() {
+        let question = Question {
+            question: "Which database?".into(),
+            options: vec!["sqlite".into(), "postgres".into()],
+            recommended: "sqlite".into(),
+        };
+        assert_eq!(choose_answer(&question, "\n"), "sqlite");
+        assert_eq!(choose_answer(&question, "2\n"), "postgres");
+        assert_eq!(choose_answer(&question, "0"), "0");
+        assert_eq!(choose_answer(&question, "9"), "9");
+        assert_eq!(choose_answer(&question, "duckdb\n"), "duckdb");
+    }
 
     fn breakdown(window: Option<u64>) -> Breakdown {
         let category = |key: &str, label: &str, tokens| ContextCategory {

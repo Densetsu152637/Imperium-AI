@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -13,13 +14,14 @@ use imperium_config::{Location, Tier};
 use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
 use imperium_protocol::session::{
     AgentStatus, ContextItem, ContextPointer, PauseCause, PermissionDecision, Plan, PlanStep,
-    ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
+    Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
 };
 use imperium_protocol::tools as contract;
 use imperium_tools::{Access, Invocation, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use imperium_config::{Enforce, WritePolicy};
@@ -28,6 +30,7 @@ use imperium_memory::{NewEntry, Scope};
 
 use imperium_protocol::methods::{Compaction, ContextFit};
 
+use crate::artefacts::{self, handle_message};
 use crate::breakdown::{
     Call, Category, Measured, Request, Spans, TokenCounter, estimate_tokens, join_parts, tool_texts,
 };
@@ -40,6 +43,19 @@ use crate::{LocalLease, LocalModels, LocalPresence, ResolvedModel, TaskRequest, 
 const EVENT_OUTPUT_CHARS: usize = 2_000;
 /// Longest subagent report handed back to the parent.
 const REPORT_CHARS: usize = 8_000;
+/// Share of the root's context window, in percent, above which an input is stored as an
+/// artefact instead of entering the conversation.
+const ARTEFACT_THRESHOLD_PERCENT: u64 = 75;
+/// Most chunks one `delegate_chunks` call may make; a larger input needs larger chunks.
+const MAX_CHUNKS: usize = 64;
+/// Most chunk agents one session may start across all its `delegate_chunks` calls.
+const MAX_CHUNK_AGENTS: usize = 256;
+/// Share of a chunk model's window, in percent, that one chunk may take.
+const CHUNK_WINDOW_PERCENT: u64 = 60;
+/// The window assumed when none is known, in tokens.
+const DEFAULT_WINDOW_TOKENS: u64 = 32_768;
+/// How long `ask_user` waits for an answer before taking the recommendations.
+const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// What a turn produced, for a parent awaiting a subagent.
 pub struct TurnOutcome {
@@ -56,6 +72,8 @@ enum AgentTool {
     AwaitTasks,
     SteerAgent,
     QueueAgent,
+    DelegateChunks,
+    AskUser,
     LoadSkill,
     MemorySearch,
     MemoryRead,
@@ -105,6 +123,9 @@ pub struct Agent {
     /// While a fit is pending after a switch: the model that read the conversation last, which
     /// writes a compaction's summary when it can.
     previous: Option<ResolvedModel>,
+    /// What the next `turn_started` says instead of the text, for chunk and reduce agents
+    /// whose real brief holds chunk text that must stay out of the journal and history.
+    shown: Option<String>,
 }
 
 impl Agent {
@@ -125,9 +146,12 @@ impl Agent {
                  brief; optionally a tier: basic, standard, strong, frontier), then call \
                  await_tasks to collect the reports; you use no tokens while waiting. To redirect \
                  delegated work in progress, steer_agent adds a message to a task's current \
-                 turn and queue_agent gives it a follow-up turn. Check the results, and finish with a \
-                 short summary of what was done. A message marked <steering> arrived from the \
-                 user while you were working: take it into account and carry on."
+                 turn and queue_agent gives it a follow-up turn. An input too large for your \
+                 context arrives as an artefact handle with an outline; have it read with \
+                 delegate_chunks, which gives each chunk to an agent of its own. Ask the user \
+                 about decisions that are theirs in one ask_user batch. Check the results, and \
+                 finish with a short summary of what was done. A message marked <steering> \
+                 arrived from the user while you were working: take it into account and carry on."
             )
         } else {
             format!(
@@ -189,6 +213,7 @@ impl Agent {
             single_call: false,
             fit_pending: false,
             previous: None,
+            shown: None,
         }
     }
 
@@ -312,6 +337,8 @@ impl Agent {
                 queue_agent_spec(),
                 list_agents_spec(),
                 resume_agent_spec(),
+                delegate_chunks_spec(),
+                ask_user_spec(),
             ]);
         }
         (tools, mcp)
@@ -321,7 +348,14 @@ impl Agent {
     /// `context` (recalled memories) is given to the model before the message but not shown
     /// as part of it.
     pub async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
-        self.emit(SessionEvent::TurnStarted { text: text.clone() });
+        let text = if self.can_delegate {
+            let window = self.window().await;
+            self.guard_input(text, window)
+        } else {
+            text
+        };
+        let shown = self.shown.take().unwrap_or_else(|| text.clone());
+        self.emit(SessionEvent::TurnStarted { text: shown });
         let mut parts = Vec::new();
         if !self.single_call
             && let Some(index) = &self.shared.context
@@ -537,8 +571,15 @@ impl Agent {
                 });
                 return self.outcome(reply, true, total);
             }
+            // Measured again for each round: the session may have switched the model.
+            let window = if self.can_delegate {
+                self.window().await
+            } else {
+                u64::MAX
+            };
             for call in completion.tool_calls {
                 let output = self.run_tool(&call).await;
+                let output = self.guard_input(output, window);
                 self.messages.push(ChatMessage::Tool {
                     tool_call_id: call.id,
                     content: output,
@@ -1045,6 +1086,8 @@ impl Agent {
             "queue_agent" if self.can_delegate => AgentTool::QueueAgent,
             "list_agents" if self.can_delegate => AgentTool::ListAgents,
             "resume_agent" if self.can_delegate => AgentTool::ResumeAgent,
+            "delegate_chunks" if self.can_delegate => AgentTool::DelegateChunks,
+            "ask_user" if self.can_delegate => AgentTool::AskUser,
             "load_skill" if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
             "context_load" if self.shared.context.is_some() => AgentTool::ContextLoad,
             "start_session" if self.can_delegate && self.shared.launcher.is_some() => {
@@ -1070,6 +1113,8 @@ impl Agent {
             AgentTool::QueueAgent => "queue a message for a subagent",
             AgentTool::ListAgents => "list subagents",
             AgentTool::ResumeAgent => "resume a subagent",
+            AgentTool::DelegateChunks => "split an artefact across subagents",
+            AgentTool::AskUser => "ask the user",
             AgentTool::LoadSkill => "load a skill",
             AgentTool::ContextLoad => "load workflow context",
             AgentTool::StartSession => "start a session",
@@ -1090,6 +1135,8 @@ impl Agent {
             AgentTool::QueueAgent => self.message_agent(arguments, false),
             AgentTool::ListAgents => Ok(self.list_agents()),
             AgentTool::ResumeAgent => self.resume_agent(arguments),
+            AgentTool::DelegateChunks => self.delegate_chunks(arguments),
+            AgentTool::AskUser => self.ask_user(arguments).await,
             AgentTool::LoadSkill => self.load_skill(arguments),
             AgentTool::ContextLoad => self.context_load(arguments),
             AgentTool::StartSession => self.start_session(arguments).await,
@@ -1245,6 +1292,279 @@ impl Agent {
         Ok(format!(
             "started {task_id}; call await_tasks to collect its report"
         ))
+    }
+
+    /// Starts a chunk or reduce subagent as its own task. `brief` resolves to the text it
+    /// works from (a reduce step waits for its chunk reports first); `shown` is what events and
+    /// hooks say instead. With a `gate`, the subagent waits for a permit before it starts.
+    fn start_task(
+        &self,
+        brief: impl Future<Output = String> + Send + 'static,
+        shown: String,
+        model: ResolvedModel,
+        gate: Option<Arc<Semaphore>>,
+    ) -> (String, JoinHandle<TaskReport>) {
+        let task_id = self.shared.next_task_id();
+        self.emit(SessionEvent::TaskSpawned {
+            task_id: task_id.clone(),
+            brief: shown.clone(),
+            model: model.spec.clone(),
+        });
+        let mut agent = Agent::new(
+            task_id.clone(),
+            Arc::clone(&self.shared),
+            model,
+            false,
+            "leaf".into(),
+        );
+        let spawned = json!({"task_id": task_id, "brief": &shown, "model": agent.model.spec});
+        agent.shown = Some(shown);
+        let handle = tokio::spawn(async move {
+            let _permit = match gate {
+                Some(gate) => gate.acquire_owned().await.ok(),
+                None => None,
+            };
+            let brief = brief.await;
+            run_subagent(agent, brief, Some(spawned), false).await
+        });
+        (task_id, handle)
+    }
+
+    /// `model`'s context window without loading it: the table's, or for a local model the
+    /// one its launch settings plan.
+    fn known_window(&self, model: &ResolvedModel) -> Option<u64> {
+        model.context_window.or_else(|| {
+            self.shared
+                .local
+                .as_deref()
+                .filter(|_| model.local)
+                .and_then(|local| local.planned_context(&model.model))
+        })
+    }
+
+    /// The window of this agent's current model to guard against: the table's for a hosted
+    /// model; for a local one the window its launch settings plan (no slot is taken and nothing
+    /// is loaded); a hosted model without a table value is asked; else a conservative default.
+    async fn window(&self) -> u64 {
+        let table = self.model.context_window;
+        let reported = if self.model.local {
+            self.local_models()
+                .and_then(|local| local.planned_context(&self.model.model))
+        } else if table.is_none() {
+            // A hosted endpoint holds no lease, so asking it takes nothing from a call.
+            match self
+                .client_for(&self.model, &self.holder(), None, false)
+                .await
+            {
+                Ok((client, _)) => self.shared.tokens.server_window(client.as_ref()).await,
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        effective_window(table, self.model.local, reported)
+    }
+
+    /// Keeps an input that would fill the window out of the conversation: past the threshold
+    /// the agent gets an artefact handle and an outline instead of the text. Only the root,
+    /// which can chunk, is guarded.
+    fn guard_input(&self, text: String, window: u64) -> String {
+        if !self.can_delegate
+            || artefacts::estimate_tokens(&text)
+                <= window.saturating_mul(ARTEFACT_THRESHOLD_PERCENT) / 100
+        {
+            return text;
+        }
+        let id = self.shared.artefacts.store(&text);
+        handle_message(&id, &text)
+    }
+
+    /// Splits an artefact and gives each chunk to its own subagent, within the session's limit
+    /// on parallel chunk agents. With `reduce`, one more subagent merges their reports and is
+    /// the only task the caller collects.
+    fn delegate_chunks(&mut self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            artefact_id: String,
+            chunk_tokens: u64,
+            brief: String,
+            #[serde(default)]
+            reduce: Option<String>,
+        }
+        let args: Args = parse(arguments)?;
+        if args.brief.trim().is_empty() {
+            return Err("brief must not be empty".into());
+        }
+        if args.chunk_tokens == 0 {
+            return Err("chunk_tokens must be at least 1".into());
+        }
+        let Some(text) = self.shared.artefacts.get(&args.artefact_id) else {
+            return Err(format!(
+                "artefact {:?} does not exist (artefacts are lost when the daemon restarts)",
+                args.artefact_id
+            ));
+        };
+        let model = route(
+            &self.shared.catalog,
+            &self.shared.routing,
+            // Only the root delegates, so this is the session's current model.
+            &self.model,
+            TaskRequest {
+                named: None,
+                tier: Tier::default(),
+                location: None,
+                tags: &[],
+                session: Some(&self.shared.session_id),
+            },
+            self.shared.local.as_deref(),
+        );
+        let window = self.known_window(&model);
+        // A chunk must leave the chunk agent room for its brief and its answer.
+        let chunk_tokens = window.map_or(args.chunk_tokens, |window| {
+            args.chunk_tokens
+                .min((window * CHUNK_WINDOW_PERCENT / 100).max(1))
+        });
+        let note = if chunk_tokens < args.chunk_tokens {
+            format!(" (chunk_tokens lowered to {chunk_tokens} to fit the chunk model's window)")
+        } else {
+            String::new()
+        };
+        let chunks = artefacts::split(&text, chunk_tokens);
+        if chunks.len() > MAX_CHUNKS {
+            return Err(format!(
+                "that would make {} chunks and one call allows {MAX_CHUNKS}; raise chunk_tokens",
+                chunks.len()
+            ));
+        }
+        let used = self.shared.chunk_agents.load(Ordering::Relaxed);
+        if used + chunks.len() > MAX_CHUNK_AGENTS {
+            return Err(format!(
+                "this session has started {used} chunk agents and may start {MAX_CHUNK_AGENTS} in \
+                 all; this call would add {}",
+                chunks.len()
+            ));
+        }
+        self.shared
+            .chunk_agents
+            .fetch_add(chunks.len(), Ordering::Relaxed);
+        let total = chunks.len();
+        let artefact = args.artefact_id;
+        let mut started = Vec::new();
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            let number = index + 1;
+            let shown = format!("{} (chunk {number} of {total} of {artefact})", args.brief);
+            let brief = format!(
+                "{}\n\nYou have chunk {number} of {total} of artefact {artefact}; report on this \
+                 chunk only.\n\n--- chunk {number} of {total} ---\n{chunk}\n--- end of chunk ---",
+                args.brief
+            );
+            started.push(self.start_task(
+                std::future::ready(brief),
+                shown,
+                model.clone(),
+                Some(Arc::clone(&self.shared.chunk_gate)),
+            ));
+        }
+        let list = started
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let Some(reduce) = args.reduce.filter(|reduce| !reduce.trim().is_empty()) else {
+            self.tasks.extend(started);
+            return Ok(format!(
+                "started {list}, one per chunk of {artefact} ({total} chunks){note}; call \
+                 await_tasks to collect the reports"
+            ));
+        };
+        let shown = format!("{reduce} (merge the reports on {artefact})");
+        let intro = format!(
+            "{reduce}\n\nThe reports below come from {total} subagents that each read one chunk \
+             of artefact {artefact}."
+        );
+        // The merge agent reads every report, so each gets an equal share of sixty percent of
+        // its window (four characters a token).
+        let share = window.unwrap_or(DEFAULT_WINDOW_TOKENS) * 12 / 5;
+        let cap = usize::try_from(share / u64::try_from(total).unwrap_or(1))
+            .unwrap_or(usize::MAX)
+            .max(200);
+        let brief = async move {
+            let mut reports = vec![intro];
+            for (id, handle) in started {
+                reports.push(match handle.await {
+                    Ok(task) => format!(
+                        "## {} ({})\n{}",
+                        task.task_id,
+                        if task.ok { "finished" } else { "failed" },
+                        clip(&task.report, cap)
+                    ),
+                    Err(error) => format!("## {id}\nthe subagent crashed: {error}"),
+                });
+            }
+            reports.join("\n\n")
+        };
+        let (reduce_id, handle) = self.start_task(brief, shown, model, None);
+        self.tasks.insert(reduce_id.clone(), handle);
+        Ok(format!(
+            "started {list}, one per chunk of {artefact} ({total} chunks), and {reduce_id}, which \
+             merges their reports{note}; call await_tasks with task_ids [\"{reduce_id}\"]"
+        ))
+    }
+
+    /// Pauses the agent, with no model calls, until the user answers the batch from any client.
+    async fn ask_user(&self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            questions: Vec<Question>,
+        }
+        let args: Args = parse(arguments)?;
+        if args.questions.is_empty() {
+            return Err("ask at least one question".into());
+        }
+        // Asleep until answered: the local runtime may swap this agent's model out meanwhile.
+        let _waiting = self
+            .local_models()
+            .map(|local| local.waiting(&self.model.model, &self.holder()));
+        let (request_id, answer) = self.shared.questions.request();
+        self.emit(SessionEvent::QuestionsAsked {
+            request_id,
+            questions: args.questions.clone(),
+        });
+        let (answers, timed_out) = match tokio::time::timeout(ASK_TIMEOUT, answer).await {
+            Ok(Ok(answers)) => (answers, false),
+            Ok(Err(_)) => return Err("nobody can answer: the session is closing".into()),
+            Err(_) => {
+                self.shared.questions.cancel(request_id);
+                (Vec::new(), true)
+            }
+        };
+        self.emit(SessionEvent::QuestionsAnswered { request_id });
+        let mut lines = Vec::new();
+        for (index, question) in args.questions.iter().enumerate() {
+            let number = index + 1;
+            let given = answers.get(index).map_or("", |answer| answer.trim());
+            let answer = if given.is_empty() {
+                format!(
+                    "no answer; go with your recommendation: {}",
+                    question.recommended
+                )
+            } else {
+                given.to_string()
+            };
+            lines.push(format!(
+                "Q{number}: {}\nA{number}: {answer}",
+                question.question
+            ));
+        }
+        let lines = lines.join("\n\n");
+        Ok(if timed_out {
+            format!(
+                "Nobody answered within {} minutes, so your recommended answers were used.\n\n{lines}",
+                ASK_TIMEOUT.as_secs() / 60
+            )
+        } else {
+            lines
+        })
     }
 
     /// `list_agents`: the session's subagents with their status and latest report.
@@ -1918,6 +2238,32 @@ fn resume_agent_spec() -> ToolSpec {
     tool_spec(contract::resume_agent())
 }
 
+fn delegate_chunks_spec() -> ToolSpec {
+    tool_spec(contract::delegate_chunks())
+}
+
+fn ask_user_spec() -> ToolSpec {
+    tool_spec(contract::ask_user())
+}
+
+/// The window to plan with: a hosted model's table value; a local model's planned value; the
+/// default when neither is known.
+fn effective_window(table: Option<u64>, local: bool, reported: Option<u64>) -> u64 {
+    match table {
+        Some(window) if !local => window,
+        _ => reported.or(table).unwrap_or(DEFAULT_WINDOW_TOKENS),
+    }
+}
+
+/// `text` cut to `max` characters, with a marker when anything was dropped.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max).collect();
+    format!("{kept}\n[report truncated to fit the merge window]")
+}
+
 /// Runs a subagent's turn on `text`, then any messages queued for it, and reports. A new task
 /// runs `agent.spawn` hooks first (`spawned` is their payload); a resumed one is fitted to its
 /// model's context window first, compacting a long conversation.
@@ -2128,6 +2474,21 @@ mod tests {
         assert_eq!(recorded, None);
     }
 
+    #[test]
+    fn the_window_falls_back_to_the_reported_one_then_to_the_default() {
+        assert_eq!(effective_window(Some(8_000), false, Some(4_096)), 8_000);
+        assert_eq!(effective_window(Some(8_000), true, Some(4_096)), 4_096);
+        assert_eq!(effective_window(None, false, Some(16_384)), 16_384);
+        assert_eq!(effective_window(None, false, None), DEFAULT_WINDOW_TOKENS);
+        assert_eq!(effective_window(Some(8_000), true, None), 8_000);
+    }
+
+    #[test]
+    fn clipped_reports_say_so() {
+        assert_eq!(clip("short", 10), "short");
+        assert!(clip(&"x".repeat(50), 10).ends_with("truncated to fit the merge window]"));
+    }
+
     /// The delegation and planning tools sent to models are the protocol's exported definitions.
     #[test]
     fn specs_are_the_protocol_definitions() {
@@ -2139,6 +2500,8 @@ mod tests {
             (queue_agent_spec(), contract::queue_agent()),
             (list_agents_spec(), contract::list_agents()),
             (resume_agent_spec(), contract::resume_agent()),
+            (delegate_chunks_spec(), contract::delegate_chunks()),
+            (ask_user_spec(), contract::ask_user()),
         ] {
             assert_eq!(spec.name, definition.name);
             assert_eq!(spec.description, definition.description);

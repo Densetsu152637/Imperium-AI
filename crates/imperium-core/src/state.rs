@@ -1063,6 +1063,10 @@ impl DaemonState {
                         tool,
                         summary,
                     } => self.bridge_permission(session, request_id, &tool, summary),
+                    SessionEvent::QuestionsAsked {
+                        request_id,
+                        questions,
+                    } => answer_with_recommendations(session, request_id, &questions),
                     SessionEvent::TextDelta { text } if root => reply.push_str(&text),
                     SessionEvent::TurnCompleted { .. } if root => return Ok(()),
                     SessionEvent::TurnFailed { message } if root => return Err(message),
@@ -1717,6 +1721,20 @@ pub(crate) fn created_at(journal: &Path) -> Option<u64> {
     let created = std::fs::metadata(journal).ok()?.created().ok()?;
     let since = created.duration_since(std::time::UNIX_EPOCH).ok()?;
     u64::try_from(since.as_millis()).ok()
+}
+
+/// Answers a batch of questions with the agent's own recommendations: an unattended session
+/// (a project agent, a scheduled task) has nobody to ask.
+pub fn answer_with_recommendations(
+    session: &Session,
+    request_id: u64,
+    questions: &[imperium_protocol::session::Question],
+) {
+    let answers = questions
+        .iter()
+        .map(|question| question.recommended.clone())
+        .collect();
+    let _ = session.answer(request_id, answers);
 }
 
 #[cfg(test)]
