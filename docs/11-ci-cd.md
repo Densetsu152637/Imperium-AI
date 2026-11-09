@@ -50,12 +50,33 @@ is newer than the last. `release.yml` ignores `-experimental` tags.
 
 ### Desktop updates
 
-The desktop app updates itself. It checks at startup and every six hours, downloads a newer
-build in the background, and installs it when the app quits; the title bar offers
-**Restart to update** to install it at once. **Settings → Updates** (also opened by the version
-button in the title bar) shows the installed version, chooses the channel (main or
-experimental), and has **Check and install updates**, which checks now and, when a newer build
-exists, downloads it, installs it, and restarts. A build follows the channel it was released on
+The desktop app updates itself. It checks on a schedule, downloads a newer build in the
+background, and installs it when the app quits; the title bar offers **Restart to update** to
+install it at once. **Settings → Updates** (also opened by the version button in the title bar)
+shows the installed version, when it last checked and when it checks next, and has two buttons:
+**Check for updates** (checks now; a newer build downloads and waits for a restart) and **Check
+and install** (checks now and, when a newer build exists, downloads it, installs it, and
+restarts). It also chooses the channel (main or experimental) and the schedule:
+
+- **Check automatically:** every day (the default), every 7 days, or every 28 days. The interval
+  runs from the last *successful* check, whose time is saved (`update.json` in the app's config
+  folder), so it holds across restarts: an app opened after the interval has passed checks about
+  20 seconds after it starts. A failed check is retried after an hour. Waits are measured against
+  the clock in steps of at most 15 minutes, so time the computer spent asleep counts.
+- **Check for updates when the computer starts:** registers Imperium to start when the user signs
+  in, with `--background-update`. Started that way the app opens no window and does not start
+  the daemon: it checks the channel once, installs a newer build if there is one (stopping the
+  bundled daemon first, and without starting the new version), and exits. The login entry is
+  made with [`tauri-plugin-autostart`](https://crates.io/crates/tauri-plugin-autostart) (2.5,
+  for Tauri 2): a per-user `Run` registry value on Windows, a LaunchAgent on macOS, an XDG
+  autostart entry on Linux, the same mechanisms `imperium daemon autostart` uses. It is named
+  "Imperium update check", so it never replaces the `Imperium` entry that command makes for the
+  daemon. Development builds neither register nor check on their own.
+
+Both are app settings, kept in the interface's `settings` document (`updateIntervalDays`,
+`checkUpdatesAtLogin`); the interface passes changes to the native side
+(`update_set_schedule`), and the app reads the document again at every start, before any
+window opens, and adds or removes the login entry to match. A build follows the channel it was released on
 until the user changes it; switching from experimental to main moves to the next main release newer than the
 installed build (the updater never downgrades).
 

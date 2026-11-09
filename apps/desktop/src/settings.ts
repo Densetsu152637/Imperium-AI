@@ -1,4 +1,4 @@
-// The desktop app's own settings: appearance, chat, notifications, and startup. They are kept in
+// The desktop app's own settings: appearance, chat, notifications, startup, and updates. They are kept in
 // the local `settings` document (store.ts), so they persist across versions; fields a newer
 // version added are filled from the defaults, and fields an older one does not know are kept.
 // Daemon settings (models, runtimes, tools) live in the daemon's config file instead.
@@ -8,7 +8,21 @@ import { createContext, useContext } from "react";
 import { getDoc, setDoc, takeLegacy } from "./store";
 
 export type Density = "compact" | "comfortable" | "spacious";
-export type Accent = "cyan" | "silver" | "amber" | "violet" | "green" | "rose";
+export type Accent =
+  | "cyan"
+  | "teal"
+  | "green"
+  | "lime"
+  | "amber"
+  | "orange"
+  | "rose"
+  | "magenta"
+  | "violet"
+  | "indigo"
+  | "blue"
+  | "silver";
+/** Days between automatic update checks. */
+export type UpdateInterval = 1 | 7 | 28;
 export type ProseFont = "sans" | "serif" | "mono";
 export type SendKey = "enter" | "mod-enter";
 
@@ -34,6 +48,9 @@ export type AppSettings = {
   // Startup
   restoreSession: boolean;
   autoStartDaemon: boolean;
+  // Updates (read by the native side at startup too; see src-tauri/src/update.rs)
+  updateIntervalDays: UpdateInterval;
+  checkUpdatesAtLogin: boolean;
 };
 
 /** The settings each display control used to be called. */
@@ -57,6 +74,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   titleBadge: true,
   restoreSession: true,
   autoStartDaemon: true,
+  updateIntervalDays: 1,
+  checkUpdatesAtLogin: false,
 };
 
 /** The saved document: the settings plus a version for future migrations. */
@@ -81,14 +100,23 @@ export function saveSettings(settings: AppSettings): void {
 
 const DENSITY_SPACE: Record<Density, number> = { compact: 0.7, comfortable: 1, spacious: 1.35 };
 
-/** Accent colours: the base, a brighter variant for hover, and a translucent wash. */
+/**
+ * Accent colours, in hue order for the swatch grid: the base, a brighter variant for hover, and
+ * (computed) a translucent wash. Each is light enough to read on the dark surfaces.
+ */
 export const ACCENTS: Record<Accent, { label: string; base: string; strong: string }> = {
   cyan: { label: "Cyan", base: "#1fb2c8", strong: "#45c6d8" },
-  silver: { label: "Silver", base: "#b9b3a7", strong: "#d9d4ca" },
-  amber: { label: "Amber", base: "#e0a33a", strong: "#f0bd5f" },
-  violet: { label: "Violet", base: "#9b7cf0", strong: "#b49cf5" },
+  teal: { label: "Teal", base: "#22b39a", strong: "#4ccab4" },
   green: { label: "Green", base: "#3fbf7f", strong: "#62d39a" },
+  lime: { label: "Lime", base: "#9cc43a", strong: "#b5d965" },
+  amber: { label: "Amber", base: "#e0a33a", strong: "#f0bd5f" },
+  orange: { label: "Orange", base: "#e57a3c", strong: "#f09763" },
   rose: { label: "Rose", base: "#e0607e", strong: "#ec8399" },
+  magenta: { label: "Magenta", base: "#cf62c4", strong: "#de86d5" },
+  violet: { label: "Violet", base: "#9b7cf0", strong: "#b49cf5" },
+  indigo: { label: "Indigo", base: "#6f7bea", strong: "#939cf2" },
+  blue: { label: "Blue", base: "#3d8fe0", strong: "#66a9ec" },
+  silver: { label: "Silver", base: "#b9b3a7", strong: "#d9d4ca" },
 };
 
 const PROSE_FONTS: Record<ProseFont, string> = {

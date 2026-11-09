@@ -2,12 +2,21 @@
 //! to a running daemon or starts that one, and lets the user see, start, stop, and restart it, read
 //! its log, and choose whether it keeps running after the app closes. Before an update replaces
 //! the bundled daemon, the app stops it.
+//!
+//! The app owns the bundled daemon: it starts it as its own child process (so Task Manager shows
+//! it under Imperium), and a bundled daemon it finds running that it did not start (left by an
+//! earlier run) is restarted as its child. By default the daemon exits with the app; sessions are
+//! saved and resume when it starts again. On Windows the child is also put in a job object that
+//! ends it if the app goes away without stopping it (a crash, or being ended from Task Manager).
+//! With "Keep running after Imperium closes" on, the daemon outlives the app instead: the job no
+//! longer ends it, and a daemon left running is adopted as it is when the app opens again.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -48,6 +57,8 @@ pub struct DaemonStatus {
     url: Option<String>,
     /// Whether the running daemon is the one installed with this app.
     bundled: bool,
+    /// Whether this app started the running daemon, as its own child process.
+    child: bool,
     /// Whether this install has a daemon it can start.
     can_start: bool,
     /// The user stopped it here; the app does not start it again until asked.
@@ -56,22 +67,80 @@ pub struct DaemonStatus {
     log_path: Option<String>,
 }
 
-/// The saved choice of whether the daemon outlives the window.
-#[derive(Serialize, Deserialize)]
+/// The saved choice of whether the daemon outlives the window. By default it does not: the
+/// daemon exits with the app, and its sessions resume when the app starts it again.
+#[derive(Default, Serialize, Deserialize)]
 struct Preferences {
     keep_running: bool,
 }
 
-impl Default for Preferences {
-    fn default() -> Self {
-        Self { keep_running: true }
-    }
-}
-
-/// Native state: whether the user has stopped the daemon from this app.
+/// Native state: whether the user has stopped the daemon from this app, and the daemon process
+/// this app started.
 #[derive(Default)]
 pub struct DaemonControl {
     stopped_by_user: AtomicBool,
+    child: Mutex<Option<Child>>,
+    #[cfg(windows)]
+    job: std::sync::OnceLock<Option<win32job::Job>>,
+}
+
+impl DaemonControl {
+    /// The process id of the daemon this app started, while it is still running.
+    fn child_pid(&self) -> Option<u32> {
+        let mut child = self
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let running = child
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)));
+        if !running {
+            *child = None;
+        }
+        child.as_ref().map(Child::id)
+    }
+
+    /// Keeps the started daemon as this app's child, tied to the app unless it keeps running.
+    fn adopt(&self, child: Child, keep_running: bool) {
+        #[cfg(windows)]
+        if let Some(job) = self.job() {
+            use std::os::windows::io::AsRawHandle;
+            // The handle is only lent to the job; the process stays owned by `child`.
+            let handle = child.as_raw_handle() as isize;
+            if let Err(error) = job.assign_process(handle) {
+                eprintln!("imperium-core could not be tied to the app: {error}");
+            }
+        }
+        self.tie(keep_running);
+        *self
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(child);
+    }
+
+    /// Whether the daemon ends when the app goes away: the job's kill-on-close limit, which can
+    /// be changed while the daemon runs.
+    fn tie(&self, keep_running: bool) {
+        #[cfg(windows)]
+        if let Some(job) = self.job() {
+            let mut limits = win32job::ExtendedLimitInfo::new();
+            if !keep_running {
+                limits.limit_kill_on_job_close();
+            }
+            if let Err(error) = job.set_extended_limit_info(&limits) {
+                eprintln!("could not update imperium-core's job limits: {error}");
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = keep_running;
+    }
+
+    #[cfg(windows)]
+    fn job(&self) -> Option<&win32job::Job> {
+        self.job
+            .get_or_init(|| win32job::Job::create().ok())
+            .as_ref()
+    }
 }
 
 /// The running daemon's endpoint, starting the bundled daemon first when none answers (unless
@@ -85,10 +154,12 @@ pub async fn daemon_endpoint<R: Runtime>(
     let endpoint_file = endpoint_file()?;
     let may_start = !control.stopped_by_user.load(Ordering::Relaxed) && autostart != Some(false);
     if let Some(endpoint) = live_endpoint(&endpoint_file) {
-        if !(may_start && bundled_daemon().is_some() && runs_legacy(endpoint.pid)) {
+        let replace =
+            may_start && bundled_daemon().is_some() && should_replace(&app, &control, endpoint.pid);
+        if !replace {
             return Ok(connection(endpoint));
         }
-        // The previous version's `imperiumd` is still running: replace it with this app's.
+        // A bundled daemon this app did not start: restart it as the app's own child.
         stop(app.package_info().version.to_string(), true).await?;
     }
     if control.stopped_by_user.load(Ordering::Relaxed) {
@@ -105,9 +176,19 @@ pub async fn daemon_endpoint<R: Runtime>(
             |error| error.to_string(),
         ));
     };
-    start_and_wait(&app, &daemon, &endpoint_file)
+    start_and_wait(&app, &control, &daemon, &endpoint_file)
         .await
         .map(connection)
+}
+
+/// Whether the running daemon `pid` is one the app should restart as its own child: the previous
+/// version's `imperiumd`, or this install's daemon left by an earlier run, unless the user keeps
+/// the daemon running after the app closes (then it is used as it is).
+fn should_replace<R: Runtime>(app: &AppHandle<R>, control: &DaemonControl, pid: u32) -> bool {
+    if runs_legacy(pid) {
+        return true;
+    }
+    !preferences(app).keep_running && control.child_pid() != Some(pid) && runs_bundled(pid)
 }
 
 #[tauri::command]
@@ -129,7 +210,7 @@ pub async fn daemon_start<R: Runtime>(
     if live_endpoint(&endpoint_file).is_none() {
         let daemon = bundled_daemon()
             .ok_or("This install has no imperium-core to start; run `imperium-core` yourself.")?;
-        start_and_wait(&app, &daemon, &endpoint_file).await?;
+        start_and_wait(&app, &control, &daemon, &endpoint_file).await?;
     }
     status(&app, &control)
 }
@@ -155,7 +236,7 @@ pub async fn daemon_restart<R: Runtime>(
         .ok_or("This install has no imperium-core to start; restart it where you started it.")?;
     stop(app.package_info().version.to_string(), false).await?;
     control.stopped_by_user.store(false, Ordering::Relaxed);
-    start_and_wait(&app, &daemon, &endpoint_file()?).await?;
+    start_and_wait(&app, &control, &daemon, &endpoint_file()?).await?;
     status(&app, &control)
 }
 
@@ -197,6 +278,7 @@ pub fn daemon_set_keep_running<R: Runtime>(
     let bytes =
         serde_json::to_vec(&Preferences { keep_running }).map_err(|error| error.to_string())?;
     std::fs::write(file, bytes).map_err(|error| error.to_string())?;
+    control.tie(keep_running);
     status(&app, &control)
 }
 
@@ -228,6 +310,9 @@ fn status<R: Runtime>(app: &AppHandle<R>, control: &DaemonControl) -> Result<Dae
         bundled: endpoint
             .as_ref()
             .is_some_and(|endpoint| runs_bundled(endpoint.pid)),
+        child: endpoint
+            .as_ref()
+            .is_some_and(|endpoint| control.child_pid() == Some(endpoint.pid)),
         url: endpoint.map(|endpoint| endpoint.url),
         can_start: bundled.is_some(),
         stopped_by_user: control.stopped_by_user.load(Ordering::Relaxed),
@@ -386,10 +471,12 @@ fn preferences<R: Runtime>(app: &AppHandle<R>) -> Preferences {
 /// Starts the bundled daemon and waits until it accepts connections.
 async fn start_and_wait<R: Runtime>(
     app: &AppHandle<R>,
+    control: &DaemonControl,
     daemon: &Path,
     endpoint_file: &Path,
 ) -> Result<DaemonEndpoint, String> {
-    start(app, daemon)?;
+    let child = start(app, daemon)?;
+    control.adopt(child, preferences(app).keep_running);
     let deadline = Instant::now() + START_TIMEOUT;
     while Instant::now() < deadline {
         tokio::time::sleep(POLL).await;
@@ -404,8 +491,9 @@ async fn start_and_wait<R: Runtime>(
     ))
 }
 
-/// Starts the bundled daemon in the background; its output goes to the app's log folder.
-fn start<R: Runtime>(app: &AppHandle<R>, daemon: &Path) -> Result<(), String> {
+/// Starts the bundled daemon in the background as the app's child; its output goes to the app's
+/// log folder.
+fn start<R: Runtime>(app: &AppHandle<R>, daemon: &Path) -> Result<Child, String> {
     let log = log_file(app).and_then(|log| {
         std::fs::create_dir_all(log.parent()?).ok()?;
         File::options().create(true).append(true).open(log).ok()
@@ -425,6 +513,5 @@ fn start<R: Runtime>(app: &AppHandle<R>, daemon: &Path) -> Result<(), String> {
     }
     command
         .spawn()
-        .map(drop)
         .map_err(|error| format!("could not start {}: {error}", daemon.display()))
 }
