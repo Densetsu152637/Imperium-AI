@@ -340,7 +340,7 @@ pub(crate) fn assemble(inputs: &Inputs<'_>) -> ResourceSnapshot {
     ResourceSnapshot {
         taken_at_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| millis(since)),
+            .map_or(0, millis),
         cpu: CpuUsage {
             total_percent: sample.cpu_percent,
             per_core: sample.per_core.clone(),
@@ -524,7 +524,7 @@ mod tests {
             spec: spec.into(),
             prompt_tokens: 100,
             completion_tokens: 10,
-            duration_ms: u64::try_from(ago.as_secs()).unwrap(),
+            duration_ms: ago.as_secs(),
             error: error.map(str::to_string),
         }
     }
