@@ -1364,13 +1364,27 @@ impl DaemonState {
         &self.environments
     }
 
+    /// The environments, with which of them can start sessions on git worktrees.
+    pub fn environment_list(&self) -> imperium_protocol::methods::EnvironmentListResult {
+        let environments = self.environments.list();
+        let git = environments
+            .iter()
+            .filter(|env| env.runtime == imperium_protocol::methods::EnvironmentRuntime::Local)
+            .filter(|env| {
+                env.folders
+                    .iter()
+                    .any(|folder| crate::worktrees::in_repository(Path::new(folder)))
+            })
+            .map(|env| env.id.clone())
+            .collect();
+        imperium_protocol::methods::EnvironmentListResult { environments, git }
+    }
+
     /// Tells every client the environments changed.
     pub fn announce_environments(&self) {
         self.announce(
             imperium_protocol::methods::ENVIRONMENTS_CHANGED,
-            imperium_protocol::methods::EnvironmentListResult {
-                environments: self.environments.list(),
-            },
+            self.environment_list(),
         );
     }
 

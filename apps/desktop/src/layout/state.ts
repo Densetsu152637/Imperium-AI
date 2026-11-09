@@ -9,6 +9,8 @@ export type Layout = {
   sizes: Record<string, number[]>;
   /** Panels the user closed. */
   hidden: string[];
+  /** Stacked panels folded to their header; the others in the column take their room. */
+  collapsed: string[];
   /** The selected environment's id: new sessions start there. */
   environment: string | null;
   session: string | null;
@@ -38,6 +40,7 @@ export type DetachedPanel = {
 const EMPTY: Layout = {
   sizes: {},
   hidden: ["pet"],
+  collapsed: [],
   environment: null,
   session: null,
   projectView: false,
@@ -94,7 +97,7 @@ export function updateLayout(patch: Partial<Layout>): void {
   setDoc("layout", layout);
 }
 
-/** Forgets sizes, closed panels, and detached windows (back to the defaults); the selection and folders stay. */
+/** Forgets sizes, closed and collapsed panels, and detached windows (back to the defaults); the selection and folders stay. */
 export function resetLayout(): void {
-  updateLayout({ sizes: {}, hidden: [...CLOSED_BY_DEFAULT], detached: {} });
+  updateLayout({ sizes: {}, hidden: [...CLOSED_BY_DEFAULT], collapsed: [], detached: {} });
 }
