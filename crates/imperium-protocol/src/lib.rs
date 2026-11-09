@@ -8,6 +8,7 @@ pub mod discovery;
 pub mod jsonrpc;
 pub mod methods;
 pub mod session;
+pub mod tools;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

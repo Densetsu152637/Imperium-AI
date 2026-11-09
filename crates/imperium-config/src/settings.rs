@@ -1191,7 +1191,7 @@ impl std::str::FromStr for Location {
 }
 
 /// How subagents are assigned to models.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RoutingSettings {
     /// Tie-breaker among suitable models: the cheapest, or local or cloud models first.
     #[serde(default)]
@@ -1199,6 +1199,56 @@ pub struct RoutingSettings {
     /// Checked in order; the first rule matching a task decides its candidates.
     #[serde(default)]
     pub rules: Vec<RoutingRule>,
+    /// Whether the built-in task-class rules apply after `rules` (see
+    /// [`RoutingSettings::builtin_rules`]). Default true.
+    #[serde(default = "default_true")]
+    pub builtin_rules: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for RoutingSettings {
+    fn default() -> Self {
+        RoutingSettings {
+            prefer: Preference::default(),
+            rules: Vec::new(),
+            builtin_rules: true,
+        }
+    }
+}
+
+/// Task tags the built-in rules send to small local models.
+pub const MENIAL_TAGS: [&str; 5] = ["refactor", "tests", "ui", "format", "docs"];
+
+/// Task tags the built-in rules send to cloud frontier models.
+pub const HARD_TAGS: [&str; 5] = ["architecture", "math", "proof", "algorithm", "design"];
+
+impl RoutingSettings {
+    /// The built-in task-class rules, hard classes first so a task tagged with both a hard
+    /// and a menial class counts as hard. Hard tags prefer cloud `frontier` models; menial
+    /// tags prefer local models and keep the task's own tier. They are checked only when no
+    /// entry of `rules` matched, and their location and tier floor are preferences: when no
+    /// model fits, the tier floor is tried in every location, then the normal router chooses
+    /// from every location at the task's own tier.
+    pub fn builtin_rules() -> Vec<RoutingRule> {
+        let class = |tag: &str, location, tier| RoutingRule {
+            when_tag: Some(tag.to_string()),
+            location: Some(location),
+            tier,
+            ..RoutingRule::default()
+        };
+        HARD_TAGS
+            .iter()
+            .map(|tag| class(tag, Location::Cloud, Some(Tier::Frontier)))
+            .chain(
+                MENIAL_TAGS
+                    .iter()
+                    .map(|tag| class(tag, Location::Local, None)),
+            )
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -1232,6 +1282,9 @@ pub struct RoutingRule {
     /// Restricts matching tasks to local or cloud models.
     #[serde(default)]
     pub location: Option<Location>,
+    /// Raises the task's minimum tier to at least this one.
+    #[serde(default)]
+    pub tier: Option<Tier>,
     /// Model table ids to use, in order of preference.
     #[serde(default, rename = "use")]
     pub use_models: Vec<String>,

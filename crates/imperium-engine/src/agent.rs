@@ -15,6 +15,7 @@ use imperium_protocol::session::{
     AgentStatus, ContextItem, ContextPointer, PauseCause, PermissionDecision, Plan, PlanStep,
     ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
 };
+use imperium_protocol::tools as contract;
 use imperium_tools::{Access, Invocation, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
@@ -95,6 +96,8 @@ pub struct Agent {
     /// The latest model call that reported its prompt size: the messages it read, and that
     /// size, so measurements without a tokenizer can be calibrated.
     last_reported: Option<(usize, u64)>,
+    /// A single-call task: no tools, no recalled context, and exactly one model call.
+    single_call: bool,
 }
 
 impl Agent {
@@ -176,6 +179,7 @@ impl Agent {
             unloaded: Mutex::new(Vec::new()),
             last_call: None,
             last_reported: None,
+            single_call: false,
         }
     }
 
@@ -198,6 +202,18 @@ impl Agent {
             self.spans.insert(self.messages.len(), spans);
             self.messages.push(ChatMessage::User { content });
         }
+    }
+
+    /// Makes this a single-call agent: it is given the brief and no tools, makes exactly one
+    /// model call, and that reply is its report.
+    pub fn single_call(mut self) -> Self {
+        let root = self.shared.workspace.root_display();
+        let system = single_call_prompt(&root);
+        let (system, spans) = join_parts(vec![(Category::SystemBase, system)]);
+        self.messages = vec![ChatMessage::System { content: system }];
+        self.spans = HashMap::from([(0, spans)]);
+        self.single_call = true;
+        self
     }
 
     /// The conversation so far.
@@ -251,6 +267,9 @@ impl Agent {
 
     /// The tools offered to the model, and where the MCP tools sit among them.
     fn tool_specs(&self) -> (Vec<ToolSpec>, Range<usize>) {
+        if self.single_call {
+            return (Vec::new(), 0..0);
+        }
         let mut tools = specs();
         let mcp_start = tools.len();
         for provider in self.providers(ToolGroup::External) {
@@ -295,7 +314,9 @@ impl Agent {
     pub async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
         self.emit(SessionEvent::TurnStarted { text: text.clone() });
         let mut parts = Vec::new();
-        if let Some(index) = &self.shared.context {
+        if !self.single_call
+            && let Some(index) = &self.shared.context
+        {
             let manifest = index.resolve(&self.role, &text);
             if !manifest.is_empty() {
                 *lock(&self.unloaded) = manifest.required().map(str::to_string).collect();
@@ -469,9 +490,16 @@ impl Agent {
             if !completion.text.is_empty() {
                 reply = completion.text.clone();
             }
+            // A single-call agent runs no tools, so stray calls are dropped from the transcript
+            // rather than left without results.
+            let tool_calls = if self.single_call {
+                Vec::new()
+            } else {
+                completion.tool_calls.clone()
+            };
             self.messages.push(ChatMessage::Assistant {
                 content: Some(completion.text).filter(|text| !text.is_empty()),
-                tool_calls: completion.tool_calls.clone(),
+                tool_calls,
             });
             if self.model.local && completion.usage.is_some() {
                 self.last_call = Some((
@@ -479,11 +507,19 @@ impl Agent {
                     self.messages.len(),
                 ));
             }
-            // Steering that arrived during the final answer keeps the turn going.
-            if completion.tool_calls.is_empty() && self.inbox.has_steering() {
+            if self.single_call && reply.trim().is_empty() {
+                let message = "the model returned no reply to a single-call task".to_string();
+                self.emit(SessionEvent::TurnFailed {
+                    message: message.clone(),
+                });
+                return self.outcome(message, false, total);
+            }
+            // Steering that arrived during the final answer keeps the turn going (a single-call
+            // task makes exactly one call, so it does not).
+            if !self.single_call && completion.tool_calls.is_empty() && self.inbox.has_steering() {
                 continue;
             }
-            if completion.tool_calls.is_empty() {
+            if completion.tool_calls.is_empty() || self.single_call {
                 self.checkpoint();
                 self.emit(SessionEvent::TurnCompleted {
                     usage: token_usage(&total),
@@ -1109,24 +1145,18 @@ impl Agent {
         struct Args {
             #[serde(default)]
             goal: String,
-            steps: Vec<StepArgs>,
-        }
-        #[derive(Deserialize)]
-        struct StepArgs {
-            title: String,
-            status: StepStatus,
+            steps: Vec<PlanStep>,
+            #[serde(default)]
+            assumptions: Vec<String>,
+            #[serde(default)]
+            open_questions: Vec<String>,
         }
         let args: Args = parse(arguments)?;
         let plan = Plan {
             goal: args.goal,
-            steps: args
-                .steps
-                .into_iter()
-                .map(|step| PlanStep {
-                    title: step.title,
-                    status: step.status,
-                })
-                .collect(),
+            steps: args.steps,
+            assumptions: args.assumptions,
+            open_questions: args.open_questions,
         };
         let done = plan
             .steps
@@ -1152,6 +1182,8 @@ impl Agent {
             tags: Vec<String>,
             #[serde(default)]
             role: Option<String>,
+            #[serde(default)]
+            single_call: bool,
         }
         let args: Args = parse(arguments)?;
         if args.brief.trim().is_empty() {
@@ -1187,13 +1219,16 @@ impl Agent {
             model: model.spec.clone(),
         });
         let role = args.role.unwrap_or_else(|| "leaf".into());
-        let agent = Agent::new(
+        let mut agent = Agent::new(
             task_id.clone(),
             Arc::clone(&self.shared),
             model,
             false,
             role,
         );
+        if args.single_call {
+            agent = agent.single_call();
+        }
         let spawned = json!({"task_id": task_id, "brief": args.brief, "model": agent.model.spec});
         // Each subagent is its own task, so subagents run in parallel across the runtime's threads.
         let handle = tokio::spawn(run_subagent(agent, args.brief, Some(spawned), false));
@@ -1347,6 +1382,19 @@ impl Agent {
         }
         Ok(reports.join("\n\n"))
     }
+}
+
+/// The system prompt of a single-call agent.
+fn single_call_prompt(root: &str) -> String {
+    format!(
+        concat!(
+            "You are an Imperium subagent for the project at {root}. You have no tools and cannot ",
+            "look anything up: the brief contains everything you need. Answer it completely in one ",
+            "reply. Your reply is returned unchanged as your report to the agent that delegated to ",
+            "you, so give the finished answer, not a plan or questions."
+        ),
+        root = root
+    )
 }
 
 /// Tool arguments as JSON for hooks, or the raw text when they do not parse.
@@ -1749,83 +1797,41 @@ fn load_skill_spec() -> ToolSpec {
     }
 }
 
-fn update_plan_spec() -> ToolSpec {
+/// A protocol tool definition as the spec sent to the model.
+fn tool_spec(definition: contract::ToolDefinition) -> ToolSpec {
     ToolSpec {
-        name: "update_plan".into(),
-        description: "Replace your plan: a goal and its steps with statuses. Keep exactly one step in_progress while working.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "goal": {"type": "string"},
-            "steps": {"type": "array", "items": {"type": "object", "properties": {
-                "title": {"type": "string"},
-                "status": {"type": "string", "enum": ["pending", "in_progress", "done", "blocked", "skipped"]}
-            }, "required": ["title", "status"]}}
-        }, "required": ["steps"]}),
+        name: definition.name.into(),
+        description: definition.description.into(),
+        parameters: definition.parameters,
     }
+}
+
+fn update_plan_spec() -> ToolSpec {
+    tool_spec(contract::update_plan())
 }
 
 fn spawn_agent_spec() -> ToolSpec {
-    ToolSpec {
-        name: "spawn_agent".into(),
-        description: "Delegate an independent task to a subagent that runs in parallel. The brief must be self-contained. Returns a task id; collect the report with await_tasks.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "brief": {"type": "string"},
-            "tier": {"type": "string", "enum": ["basic", "standard", "strong", "frontier"], "description": "Minimum model capability; the cheapest suitable model is chosen. Default standard."},
-            "model": {"type": "string", "description": "A model table id (or <endpoint>:<model>) to use"},
-            "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},
-            "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match"}
-        }, "required": ["brief"]}),
-    }
+    tool_spec(contract::spawn_agent())
 }
 
 fn await_tasks_spec() -> ToolSpec {
-    ToolSpec {
-        name: "await_tasks".into(),
-        description: "Wait for subagents to finish and return their reports. Omit task_ids to wait for all running tasks. Uses no tokens while waiting.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "task_ids": {"type": "array", "items": {"type": "string"}}
-        }}),
-    }
+    tool_spec(contract::await_tasks())
 }
 
 fn steer_agent_spec() -> ToolSpec {
-    ToolSpec {
-        name: "steer_agent".into(),
-        description: "Send a running subagent a message that joins its current turn: it reads it before its next model call and carries on. Use to correct or redirect work in progress.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
-            "text": {"type": "string"}
-        }, "required": ["agent_id", "text"]}),
-    }
+    tool_spec(contract::steer_agent())
 }
 
 fn queue_agent_spec() -> ToolSpec {
-    ToolSpec {
-        name: "queue_agent".into(),
-        description: "Give a running subagent a follow-up message that runs as a new turn after its current one, before it reports. Its report then covers the follow-up.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
-            "text": {"type": "string"}
-        }, "required": ["agent_id", "text"]}),
-    }
+    tool_spec(contract::queue_agent())
 }
 
 fn list_agents_spec() -> ToolSpec {
-    ToolSpec {
-        name: "list_agents".into(),
-        description: "List this session's subagents: status (running, idle, failed, interrupted), model, turns, brief, and latest report. Finished subagents keep their conversation and can be given a follow-up with resume_agent.".into(),
-        parameters: json!({"type": "object", "properties": {}}),
-    }
+    tool_spec(contract::list_agents())
 }
 
 fn resume_agent_spec() -> ToolSpec {
-    ToolSpec {
-        name: "resume_agent".into(),
-        description: "Give a finished subagent a follow-up. It continues with its full earlier conversation (what it read, found, and did), so prefer it to spawn_agent for follow-ups on the same area. Collect its report with await_tasks.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
-            "text": {"type": "string", "description": "The follow-up"}
-        }, "required": ["agent_id", "text"]}),
-    }
+    tool_spec(contract::resume_agent())
 }
 
 /// Runs a subagent's turn on `text`, then any messages queued for it, and reports. A new task
@@ -2036,5 +2042,35 @@ mod tests {
         let (shown, recorded) = generation_speed(30, Duration::from_secs(3), None);
         assert_eq!(shown, Some(10.0));
         assert_eq!(recorded, None);
+    }
+
+    /// The delegation and planning tools sent to models are the protocol's exported definitions.
+    #[test]
+    fn specs_are_the_protocol_definitions() {
+        for (spec, definition) in [
+            (update_plan_spec(), contract::update_plan()),
+            (spawn_agent_spec(), contract::spawn_agent()),
+            (await_tasks_spec(), contract::await_tasks()),
+            (steer_agent_spec(), contract::steer_agent()),
+            (queue_agent_spec(), contract::queue_agent()),
+            (list_agents_spec(), contract::list_agents()),
+            (resume_agent_spec(), contract::resume_agent()),
+        ] {
+            assert_eq!(spec.name, definition.name);
+            assert_eq!(spec.description, definition.description);
+            assert_eq!(spec.parameters, definition.parameters);
+        }
+    }
+}
+
+#[cfg(test)]
+mod single_call_tests {
+    use super::single_call_prompt;
+
+    #[test]
+    fn the_single_call_prompt_has_no_runs_of_spaces() {
+        let prompt = single_call_prompt("/work");
+        assert!(!prompt.contains("  "), "{prompt}");
+        assert!(prompt.contains("/work") && prompt.contains("subagent"));
     }
 }

@@ -20,7 +20,6 @@ use imperium_protocol::methods::{
     SuggestionRespondResult,
 };
 use imperium_protocol::session::{AgentEvent, ROOT_AGENT, SessionEvent};
-use serde_json::json;
 use tokio::sync::broadcast;
 
 use crate::DaemonState;
@@ -466,22 +465,12 @@ fn strongest(needs: &[String]) -> Option<Need> {
 
 impl ToolProvider for SuggestTool {
     fn specs(&self) -> Vec<ToolSpec> {
+        // The definition lives in the protocol's model-facing tool contract.
+        let definition = imperium_protocol::tools::suggest_local_model();
         vec![ToolSpec {
-            name: TOOL.into(),
-            description: "Propose downloading a local model from Hugging Face that suits this task better than the models available (for example one that reads images, writes code, calls tools reliably, or reads a longer context). The user is asked and decides; nothing downloads without their consent, and you carry on with the current model meanwhile. Use sparingly: at most once per need.".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "task": {"type": "string", "description": "What the model is needed for, in a few words."},
-                    "needs": {
-                        "type": "array",
-                        "items": {"type": "string", "enum": ["chat", "code", "vision", "tools", "context"]},
-                        "description": "What the model must be good at."
-                    },
-                    "context_tokens": {"type": "integer", "description": "For context: the tokens it must read."}
-                },
-                "required": ["task", "needs"]
-            }),
+            name: definition.name.into(),
+            description: definition.description.into(),
+            parameters: definition.parameters,
         }]
     }
 
@@ -561,5 +550,21 @@ mod tests {
         assert_eq!(strongest(&needs(&["chat", "vision"])), Some(Need::Vision));
         assert_eq!(strongest(&needs(&["tools", "code"])), Some(Need::Code));
         assert_eq!(strongest(&needs(&["nonsense"])), None);
+    }
+
+    /// The tool offered to models is the protocol's definition, and handled under its name.
+    #[test]
+    fn the_tool_is_the_protocol_definition() {
+        let definition = imperium_protocol::tools::suggest_local_model();
+        assert_eq!(TOOL, definition.name);
+        let needs = definition.parameters["properties"]["needs"]["items"]["enum"]
+            .as_array()
+            .expect("needs enum");
+        for need in needs {
+            assert!(
+                Need::parse(need.as_str().unwrap_or_default()).is_some(),
+                "{need}"
+            );
+        }
     }
 }

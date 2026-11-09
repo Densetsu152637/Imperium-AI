@@ -19,3 +19,13 @@ if ! git diff --quiet -- "$generated" || [ -n "$untracked" ]; then
   done
   exit 1
 fi
+
+# The same for the tool schemas the protocol crate exports; the prompts next to them are
+# hand-written files, so this also catches stray or modified files there.
+contract=crates/imperium-protocol/schemas
+untracked="$(git ls-files --others --exclude-standard -- "$contract")"
+if ! git diff --quiet -- "$contract" || [ -n "$untracked" ]; then
+  echo "Exported tool schemas are out of date. Run cargo test and commit $contract:" >&2
+  git status --short -- "$contract" >&2
+  exit 1
+fi

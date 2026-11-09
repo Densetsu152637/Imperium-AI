@@ -756,6 +756,27 @@ max_wait_s = 9",
     }
 
     #[test]
+    fn routing_reads_the_builtin_switch_and_rule_tiers() {
+        let defaults = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        assert!(defaults.routing.builtin_rules);
+        let table = r#"
+            [routing]
+            builtin_rules = false
+
+            [[routing.rules]]
+            when_tag = "proof"
+            tier = "frontier"
+        "#;
+        let settings =
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), table)])
+                .settings()
+                .unwrap();
+        assert!(!settings.routing.builtin_rules);
+        assert_eq!(settings.routing.rules[0].tier, Some(crate::Tier::Frontier));
+        assert!(settings.routing.rules[0].use_models.is_empty());
+    }
+
+    #[test]
     fn local_model_settings_have_defaults() {
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
         let llamacpp = &settings.runtime.llamacpp;

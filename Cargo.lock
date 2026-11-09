@@ -2507,6 +2507,7 @@ dependencies = [
  "axum",
  "futures-util",
  "imperium-api",
+ "imperium-protocol",
  "reqwest",
  "serde",
  "serde_json",

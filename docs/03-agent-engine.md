@@ -131,6 +131,67 @@ root ──spawn A──spawn B──await────────────�
 The router ([04](04-models-and-routing.md#routing)) resolves `requirements` to a concrete
 model; the parent model never needs to name one, though it may express a preference.
 
+## Dispatch contract
+
+**Tool contract (implemented, [D25](13-decisions.md)):** every built-in model-facing tool is
+defined once in `imperium-protocol` (`crates/imperium-protocol/src/tools.rs`): its name,
+description and JSON Schema parameters. `imperium-engine` (delegation, steering, agent state and
+planning), `imperium-core` (`suggest_local_model`) and `imperium-web` build the tools they send
+to models from those definitions, and `cargo test` exports each one to
+[`crates/imperium-protocol/schemas/tools/<name>.json`](../crates/imperium-protocol/schemas/tools/)
+with an `index.json` listing names and status (`available` or `planned`). `scripts/check-rust.sh`
+fails when the checked-in files differ from what the tests write, the same drift check as the
+generated TypeScript. The Emperor training repository vendors that folder at a pinned Imperium
+commit. A test rejects credential-like property names (key, secret, token, password, bearer,
+auth, scope, header, base URL, endpoint; `url`, `chunk_tokens` and `context_tokens` are
+allowed), so no schema has such a field. Descriptions are not checked. `spawn_agent` keeps its
+current `brief`, `tier`, `location`, `tags` and `model` parameters and adds the optional
+`single_call` (below); `requirements`, `budget` and `result` are not there yet. File, command,
+memory, skill and workflow-context tools, and tools from MCP servers, connectors and extension
+providers, are outside the contract.
+
+| Tool | Status |
+| --- | --- |
+| `spawn_agent`, `await_tasks`, `update_plan`, `web_search`, `web_fetch` | implemented |
+| `steer_agent`, `queue_agent`, `list_agents`, `resume_agent` ([queueing and steering](#queueing-and-steering), [agent state](#agent-state)) | implemented; root only |
+| `suggest_local_model` ([model download suggestions](04-models-and-routing.md#model-download-suggestions)) | implemented; daemon sessions |
+| `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | planned: definition only, not offered to models |
+| `ask_user(questions[])`: each question has text, optional options, and a recommended answer | planned: definition only, not offered to models |
+
+**Single-call tasks (implemented):** `spawn_agent` with `single_call: true` (default false) starts
+a subagent that is given the brief and no tools (no files, commands, web, memory or workflow
+context), makes exactly one model call, and returns that reply as its report. It is meant for
+hard, self-contained questions routed to a cloud frontier model
+([task classes](04-models-and-routing.md#task-classes)); an empty reply fails the task. Emperor's
+root prompt tells it to set `single_call: true` for frontier work.
+
+**Templates and root prompt (implemented):** hand-written files checked in under
+[`crates/imperium-protocol/schemas/prompts/`](../crates/imperium-protocol/schemas/prompts/) and
+next to the exported schemas (not generated).
+
+- [`brief.md`](../crates/imperium-protocol/schemas/prompts/brief.md): the shape of a
+  `spawn_agent` brief: goal, context, constraints, acceptance, output format; at most 2,000
+  tokens.
+- [`plan.md`](../crates/imperium-protocol/schemas/prompts/plan.md): the plan kept with
+  `update_plan`: `goal`; `steps` with `title`, `status`, `depends_on` (titles of earlier
+  steps), `owner` and `acceptance`; `assumptions`; `open_questions`. Everything after `status`
+  is optional, so plans saved before these fields existed still load.
+- [`questions.md`](../crates/imperium-protocol/schemas/prompts/questions.md): one batch of
+  questions, each with options and a recommended answer; only decisions that are the user's or
+  cannot be researched.
+- [`emperor-root.md`](../crates/imperium-protocol/schemas/prompts/emperor-root.md): the root
+  system prompt Emperor is trained with. It names the steering and agent-state tools for
+  correcting and following up delegated work, and says where work runs: menial, well-bounded
+  work is tagged for small local models (`tier` basic or standard, tags such as `refactor`);
+  large, hard reasoning is tagged for cloud models (`tier: "frontier"`, tags such as `math`) in
+  one self-contained, single-call brief; everything else uses `tier: "standard"` and the router
+  chooses. `location` is set only when it must be a requirement.
+
+**Context-budget line:** the root prompt is followed by a line of exactly the form
+`context budget: <N>K tokens` (for example `context budget: 64K tokens`) naming the active
+context size. The model delegates and chunks earlier on small budgets. Engine support for
+adding the line is planned; the form is fixed now so training data matches.
+
 ## Budgets and limits
 
 - Budgets are hierarchical: a child's budget is carved from its parent's.

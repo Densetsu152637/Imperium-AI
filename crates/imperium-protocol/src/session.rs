@@ -404,13 +404,32 @@ pub struct AgentSummary {
 pub struct Plan {
     pub goal: String,
     pub steps: Vec<PlanStep>,
+    /// Gaps the agent filled itself, each with the value it chose.
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    /// Decisions left to the user, or that cannot be researched.
+    #[serde(default)]
+    pub open_questions: Vec<String>,
 }
 
+/// One stage of a plan. Everything after `status` is optional so plans saved before those
+/// fields existed still load.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PlanStep {
     pub title: String,
     pub status: StepStatus,
+    /// Titles of the steps that must finish first.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// Who does the step: the agent itself, or a subagent and its tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub owner: Option<String>,
+    /// The check that shows the step is done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub acceptance: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -455,6 +474,46 @@ mod tests {
             serde_json::to_value(PermissionDecision::AllowForSession).unwrap(),
             json!("allow_for_session")
         );
+    }
+
+    #[test]
+    fn plans_round_trip_with_their_stage_details() {
+        let plan = Plan {
+            goal: "ship".into(),
+            steps: vec![
+                PlanStep {
+                    title: "research".into(),
+                    status: StepStatus::Done,
+                    depends_on: vec![],
+                    owner: Some("subagent, standard".into()),
+                    acceptance: Some("three sources cited".into()),
+                },
+                PlanStep {
+                    title: "build".into(),
+                    status: StepStatus::InProgress,
+                    depends_on: vec!["research".into()],
+                    owner: None,
+                    acceptance: None,
+                },
+            ],
+            assumptions: vec!["Rust 1.80".into()],
+            open_questions: vec!["Which licence?".into()],
+        };
+        let value = serde_json::to_value(&plan).unwrap();
+        assert_eq!(value["steps"][1]["depends_on"], json!(["research"]));
+        assert!(value["steps"][1].get("owner").is_none());
+        assert_eq!(serde_json::from_value::<Plan>(value).unwrap(), plan);
+    }
+
+    #[test]
+    fn plans_saved_without_stage_details_still_load() {
+        let plan: Plan = serde_json::from_value(
+            json!({"goal": "g", "steps": [{"title": "t", "status": "pending"}]}),
+        )
+        .unwrap();
+        assert!(plan.assumptions.is_empty() && plan.open_questions.is_empty());
+        let step = &plan.steps[0];
+        assert!(step.depends_on.is_empty() && step.owner.is_none() && step.acceptance.is_none());
     }
 
     #[test]

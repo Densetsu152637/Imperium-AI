@@ -609,17 +609,45 @@ A subagent's model is chosen as follows:
 1. A model the agent named (`spawn_agent`'s `model`, by id or spec), if it is in the table.
 2. The first rule whose `when_tier` (exact) and `when_tag` match the task: its `use` ids are
    tried in order (tier is not checked for an explicit choice; the location restriction is),
-   then its `location` restricts the remaining choice.
+   then its `location` restricts the remaining choice, and its optional `tier` raises the
+   task's minimum tier to at least that one. If none of your rules matched, the first matching
+   [built-in task-class rule](#task-classes) applies instead, but its location and tier are
+   preferences rather than restrictions.
 3. The suitable rows (at or above the requested tier, default `standard`, and in the requested
    or rule location) ranked by `prefer`, then by input plus output price, with unpriced rows
    counted as free. Rows pinned to the [CPU lane](#runtimes) (`placement = "cpu"`) are left
    out: they are for work that can wait, chosen by name or by a rule.
 4. The session's own model.
 
-Agents pass `tier`, `location`, `tags`, and `model` to `spawn_agent`. Ids must be unique and
+Agents pass `tier`, `location`, `tags`, `model`, and `single_call` to `spawn_agent`. Ids must be unique and
 rules may only name ids in the table; the daemon refuses to start otherwise. Rows whose
 endpoint is unknown or whose key is missing are skipped with a warning. `models.list` returns
 the table, and the desktop app shows it in a searchable, sortable Models panel.
+
+### Task classes
+
+**Implemented (stage 2e):** menial work defaults to small local models and hard work to cloud
+frontier models, from the tags an agent puts on `spawn_agent`. These built-in rules come after
+your `[[routing.rules]]` and apply only when none of yours matched, so a rule of yours for the
+same tag (or a catch-all) replaces them:
+
+| Tags (checked in this order) | Location | Tier |
+| --- | --- | --- |
+| `architecture`, `math`, `proof`, `algorithm`, `design` | `cloud` | at least `frontier` |
+| `refactor`, `tests`, `ui`, `format`, `docs` | `local` | the task's own (not raised) |
+
+A task with tags from both rows counts as hard. A built-in rule's location and tier floor are
+preferences, not restrictions: the router first looks for a row in that location at the floor,
+then (for a hard task with no cloud `frontier` row) for a `frontier` row in any location, and
+when there is none (no local row, memory is short, or no `frontier` row at all) it ranks the
+rows of every location at the task's own tier by the usual steps. Each of these passes leaves
+out CPU-lane rows, as the ranking does. An explicit `location` on the
+call, and a `location` or `tier` in a rule of yours, remain requirements. Set
+`routing.builtin_rules = false` to turn the built-ins off.
+
+A task for a frontier model can be sent with `single_call: true`: the subagent gets the brief
+and no tools, makes exactly one model call, and its reply is the report. The brief must carry
+everything needed (see the [dispatch contract](03-agent-engine.md#dispatch-contract)).
 
 **Implemented (phase 4):** rows with spec `llamacpp:<id>` (location must be `local`) are
 placed by the memory planner. A local row is considered only while it can run: loaded, fitting
