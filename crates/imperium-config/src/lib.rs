@@ -7,7 +7,9 @@
 
 mod layers;
 mod local_models;
+mod mcp_servers;
 mod paths;
+mod registry;
 mod secrets;
 mod settings;
 
@@ -18,7 +20,14 @@ pub use local_models::{
     CACHE_TYPES, CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS, DEFAULT_SLOTS, LaneRow, LocalModelSettings,
     MAX_SLOTS, ModelLaunch, TableOverride, check_launch, check_local_model,
 };
+pub use mcp_servers::{
+    MAX_SERVER_NAME, remove_mcp_server, save_mcp_server, set_mcp_server_enabled, valid_server_name,
+};
 pub use paths::{Paths, PathsError};
+pub use registry::{
+    SETTINGS, SetError, SettingDef, SettingKind, SettingState, describe, describe_key,
+    set_user_setting, setting,
+};
 pub use secrets::{
     KeychainSecrets, MemorySecrets, SecretError, SecretName, SecretStore, delete_secret,
     load_secret, store_secret,
@@ -30,6 +39,7 @@ pub use settings::{
     LlamaCppSettings, LoadSettings, Location, McpServerSettings, McpSettings, MediaServiceSettings,
     MediaSettings, MemorySettings, MemoryWrite, ModelPlacement, ModelSettings, PetSettings,
     PhoneSettings, Preference, ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings,
-    RuntimeSettings, ScheduleSettings, SecretRef, Settings, Tier, TriggerSettings, VLLM_ENDPOINT,
-    VllmSettings, WebSettings, WorkflowSettings, WritePolicy,
+    RuntimeSettings, ScheduleSettings, SecretRef, SessionSettings, Settings, Tier, TriggerSettings,
+    VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings, WritePolicy,
 };
+pub use settings::{SuggestionCandidate, default_suggestions};

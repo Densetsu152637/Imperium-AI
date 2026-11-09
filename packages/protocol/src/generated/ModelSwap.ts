@@ -17,7 +17,7 @@ bytes: number,
  */
 slots: number, 
 /**
- * Out: `room` (another model needed the memory), `idle`, or `config` (its settings
- * changed). In: `swap` (it replaced a model) or `restore` (it came back with saved slots).
+ * Out: `room` (another model needed the memory), `idle`, `config` (its settings
+ * changed), or `request` (`models.unload`). In: `swap` (it replaced a model) or `restore` (it came back with saved slots).
  */
 reason: string, };

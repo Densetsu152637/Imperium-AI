@@ -178,6 +178,11 @@ pub trait Server: Send + Sync {
     /// OpenAI-compatible base URL, ending in `/v1`.
     fn base_url(&self) -> &str;
 
+    /// The server's process id, for the resource monitor; `None` for in-process servers.
+    fn pid(&self) -> Option<u32> {
+        None
+    }
+
     /// Saves `slot`'s cached prompt to `file` in the server's [`LaunchSpec::slot_save_path`].
     fn save_slot<'a>(&'a self, _slot: u32, _file: &'a str) -> SlotFuture<'a> {
         Box::pin(async { Err("this runtime cannot save slots".to_string()) })
@@ -265,14 +270,26 @@ pub struct Runtimes {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedStatus {
     pub model_id: String,
+    /// The runtime serving it (`llamacpp`, `vllm`, ...).
+    pub runtime: String,
     pub base_url: String,
+    /// The server's process id, when it runs as a process.
+    pub pid: Option<u32>,
     pub slots: u32,
     pub slots_in_use: u32,
     /// Calls waiting for a slot.
     pub queued: u32,
     pub gpu_layers: u32,
+    pub all_layers_on_gpu: bool,
     pub vram_bytes: u64,
     pub ram_bytes: u64,
+    /// How long it has been unused (no slot in use, no call queued, no agent mid-turn on it);
+    /// `None` while it is in use.
+    pub idle_for: Option<Duration>,
+    /// When it will be unloaded if it stays idle; `None` while it is in use.
+    pub unload_in: Option<Duration>,
+    /// An agent is mid-turn on it (between its calls): it is not unloaded until the turn ends.
+    pub claimed: bool,
     /// Pinned to the CPU lane.
     pub cpu_pinned: bool,
     /// Tokens one session may use.
@@ -283,6 +300,19 @@ pub struct LoadedStatus {
     pub pool_reserved_tokens: u32,
     /// Started with settings that have changed since; it restarts once nothing is using it.
     pub stale: bool,
+}
+
+/// Why [`Supervisor::unload`] did not unload a model.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum UnloadError {
+    #[error("{0} is not loaded")]
+    NotLoaded(String),
+    #[error("{0} is in use by {1} slot(s); it unloads once they are released")]
+    InUse(String, u32),
+    #[error("{0} has calls queued for a slot; it unloads once they are served")]
+    Queued(String),
+    #[error("an agent is mid-turn on {0}; it unloads once the turn ends")]
+    Claimed(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,7 +332,8 @@ pub struct SwapEvent {
     pub bytes: u64,
     /// Out: slots saved. In: saved slots its agents will get back.
     pub slots: u32,
-    /// Out: `room`, `idle`, or `config` (its settings changed). In: `swap` (it replaced a
+    /// Out: `room`, `idle`, `config` (its settings changed), or `request` (`models.unload`).
+    /// In: `swap` (it replaced a
     /// model) or `restore` (it came back to saved slots).
     pub reason: &'static str,
 }
@@ -564,6 +595,8 @@ impl Drop for Queued {
 struct Loaded {
     /// Held so the server keeps running; dropping the last reference stops it.
     server: Arc<dyn Server>,
+    /// The runtime serving it (`llamacpp`, `vllm`, ...).
+    runtime: String,
     pool: Arc<SlotPool>,
     /// Memory it holds, its prompt cache included.
     placement: Placement,
@@ -1230,27 +1263,77 @@ impl Supervisor {
     }
 
     pub fn loaded(&self) -> Vec<LoadedStatus> {
-        let mut loaded: Vec<_> = lock(&self.state)
+        let idle_unload = Duration::from_secs(self.settings.idle_unload_s);
+        let state = lock(&self.state);
+        let users = lock(&self.presence.users);
+        let mut loaded: Vec<_> = state
             .loaded
             .iter()
-            .map(|(id, loaded)| LoadedStatus {
-                model_id: id.clone(),
-                base_url: loaded.pool.base_url.clone(),
-                slots: loaded.pool.slots,
-                slots_in_use: loaded.in_use(),
-                queued: loaded.pool.waiting.load(Ordering::SeqCst),
-                gpu_layers: loaded.placement.gpu_layers,
-                vram_bytes: loaded.placement.vram_bytes,
-                ram_bytes: loaded.placement.ram_bytes,
-                cpu_pinned: loaded.cpu_pinned,
-                context: loaded.pool.context,
-                pool_tokens: loaded.pool.pool_tokens,
-                pool_reserved_tokens: loaded.pool.reserved_tokens(),
-                stale: loaded.stale,
+            .map(|(id, loaded)| {
+                let claimed = Presence::claims(&users, id, &loaded.batch, None) != Claim::None;
+                let idle_for =
+                    (!loaded.busy() && !claimed).then(|| lock(&loaded.pool.last_used).elapsed());
+                LoadedStatus {
+                    model_id: id.clone(),
+                    runtime: loaded.runtime.clone(),
+                    base_url: loaded.pool.base_url.clone(),
+                    pid: loaded.server.pid(),
+                    slots: loaded.pool.slots,
+                    slots_in_use: loaded.in_use(),
+                    queued: loaded.pool.waiting.load(Ordering::SeqCst),
+                    gpu_layers: loaded.placement.gpu_layers,
+                    all_layers_on_gpu: loaded.placement.all_layers_on_gpu,
+                    vram_bytes: loaded.placement.vram_bytes,
+                    ram_bytes: loaded.placement.ram_bytes,
+                    idle_for,
+                    unload_in: idle_for.map(|idle| idle_unload.saturating_sub(idle)),
+                    claimed,
+                    cpu_pinned: loaded.cpu_pinned,
+                    context: loaded.pool.context,
+                    pool_tokens: loaded.pool.pool_tokens,
+                    pool_reserved_tokens: loaded.pool.reserved_tokens(),
+                    stale: loaded.stale,
+                }
             })
             .collect();
         loaded.sort_by(|a, b| a.model_id.cmp(&b.model_id));
         loaded
+    }
+
+    /// Unloads `id` now, saving its slots, if nothing is using it: no slot in use, no call
+    /// queued for one, and no agent mid-turn on it (between its calls). Waits its turn behind
+    /// a load or unload in flight.
+    pub async fn unload(&self, id: &str) -> Result<(), UnloadError> {
+        let swapping = Arc::clone(&self.swapping).lock_owned().await;
+        let victim = {
+            let mut state = lock(&self.state);
+            let users = lock(&self.presence.users);
+            let entry = state
+                .loaded
+                .get(id)
+                .ok_or_else(|| UnloadError::NotLoaded(id.to_string()))?;
+            let in_use = entry.in_use();
+            if in_use > 0 {
+                return Err(UnloadError::InUse(id.to_string(), in_use));
+            }
+            if entry.busy() {
+                return Err(UnloadError::Queued(id.to_string()));
+            }
+            if Presence::claims(&users, id, &entry.batch, None) != Claim::None {
+                return Err(UnloadError::Claimed(id.to_string()));
+            }
+            state
+                .loaded
+                .remove_entry(id)
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        tracing::info!(model = %id, "unloading model on request");
+        if let Err(error) = self.swap_out_detached(victim, "request", swapping).await {
+            tracing::warn!(%error, model = %id, "could not unload a model");
+        }
+        self.changed.notify_waiters();
+        Ok(())
     }
 
     fn model(&self, id: &str) -> Option<LocalModel> {
@@ -1781,6 +1864,7 @@ impl Supervisor {
                 model.id.clone(),
                 Loaded {
                     server: Arc::clone(&server),
+                    runtime: backend.id().to_string(),
                     pool,
                     placement,
                     cache_bytes,
@@ -2448,6 +2532,43 @@ mod tests {
         drop(first);
         assert!(waiter.await.unwrap() >= Duration::from_millis(20));
         drop(second);
+    }
+
+    #[tokio::test]
+    async fn status_reports_idle_countdown_and_unload_spares_models_in_use() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = supervisor(Arc::clone(&launcher));
+        let lease = supervisor.acquire("a", "session-a/root").await.unwrap();
+        let status = &supervisor.loaded()[0];
+        assert_eq!(status.runtime, "llamacpp");
+        assert_eq!(status.slots_in_use, 1);
+        assert_eq!((status.idle_for, status.unload_in), (None, None));
+        assert_eq!(status.pid, None);
+        assert_eq!(
+            supervisor.unload("a").await,
+            Err(UnloadError::InUse("a".into(), 1))
+        );
+        drop(lease);
+        // An agent mid-turn on it, between its calls, keeps it too.
+        let attached = supervisor.attach("a", "session-a/root");
+        let status = &supervisor.loaded()[0];
+        assert!(status.claimed);
+        assert_eq!(status.idle_for, None);
+        assert_eq!(
+            supervisor.unload("a").await,
+            Err(UnloadError::Claimed("a".into()))
+        );
+        drop(attached);
+        let status = &supervisor.loaded()[0];
+        assert!(!status.claimed);
+        assert!(status.idle_for.is_some());
+        assert!(status.unload_in.unwrap() <= Duration::from_secs(900));
+        assert_eq!(supervisor.unload("a").await, Ok(()));
+        assert_eq!(launcher.running.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            supervisor.unload("a").await,
+            Err(UnloadError::NotLoaded("a".into()))
+        );
     }
 
     #[test]

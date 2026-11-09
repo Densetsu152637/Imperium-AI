@@ -1,0 +1,43 @@
+[package]
+name = "imperium-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Imperium sessions and the agent loop"
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+getrandom = "0.4.3"
+imperium-api = { version = "0.1.0", path = "../imperium-api" }
+imperium-config = { version = "0.1.0", path = "../imperium-config" }
+imperium-extensions = { version = "0.1.0", path = "../imperium-extensions" }
+imperium-memory = { version = "0.1.0", path = "../imperium-memory" }
+imperium-models = { version = "0.1.0", path = "../imperium-models" }
+imperium-protocol = { version = "0.1.0", path = "../imperium-protocol" }
+imperium-tools = { version = "0.1.0", path = "../imperium-tools" }
+imperium-workflow = { version = "0.1.0", path = "../imperium-workflow" }
+reqwest = "0.13.5"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt", "sync", "macros", "time"] }
+tracing = "0.1.44"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+axum = "0.8.9"
+base64 = "0.23.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+imperium-config = { path = "../imperium-config" }
+imperium-extensions = { path = "../imperium-extensions" }
+imperium-mcp = { path = "../imperium-mcp" }
+imperium-media = { path = "../imperium-media" }
+imperium-memory = { path = "../imperium-memory" }
+imperium-web = { path = "../imperium-web" }
+imperium-workflow = { path = "../imperium-workflow" }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "test-util"] }

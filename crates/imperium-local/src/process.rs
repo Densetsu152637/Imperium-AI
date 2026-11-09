@@ -88,6 +88,7 @@ impl ProcessLauncher {
         let ready = tokio::time::timeout(LOAD_TIMEOUT, self.wait_ready(&base, &mut child)).await;
         match ready {
             Ok(Ok(())) => Ok(Box::new(ProcessServer {
+                pid: child.id(),
                 child: Mutex::new(Some(child)),
                 base_url: format!("{base}/v1"),
                 root: base,
@@ -131,6 +132,8 @@ impl Launcher for ProcessLauncher {
 struct ProcessServer {
     /// Killed on drop if [`Server::stop`] has not taken it.
     child: Mutex<Option<Child>>,
+    /// The process id, for resource readings; kept after [`Server::stop`] takes the child.
+    pid: Option<u32>,
     base_url: String,
     /// The server's address without `/v1`, where llama.cpp's `/slots` endpoints are.
     root: String,
@@ -203,6 +206,10 @@ impl Server for ProcessServer {
                 tracing::warn!(%error, "could not stop a model server");
             }
         })
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.pid
     }
 }
 

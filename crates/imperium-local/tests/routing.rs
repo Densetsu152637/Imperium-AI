@@ -10,7 +10,7 @@ use axum::Router;
 use axum::routing::post;
 use futures_util::StreamExt;
 use imperium_config::{LlamaCppSettings, Location, Preference, RoutingSettings, Tier};
-use imperium_core::{CatalogModel, LocalModels, ResolvedModel, Session, SessionConfig};
+use imperium_engine::{CatalogModel, LocalModels, ResolvedModel, Session, SessionConfig};
 use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
 use imperium_local::scan::LocalModel;
@@ -226,7 +226,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
     let session = Session::spawn(SessionConfig {
         id: "routing".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: hosted("cloud:root"),
+        model: Some(hosted("cloud:root")),
         catalog,
         clients: Default::default(),
         routing: RoutingSettings {
@@ -243,10 +243,11 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 10,
         background: None,
+        auto_compact: false,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

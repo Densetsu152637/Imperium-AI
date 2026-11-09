@@ -4,6 +4,7 @@ import type { ContextItem } from "./ContextItem";
 import type { ContextPointer } from "./ContextPointer";
 import type { PauseCause } from "./PauseCause";
 import type { Plan } from "./Plan";
+import type { QueuedMessage } from "./QueuedMessage";
 import type { SessionStatus } from "./SessionStatus";
 import type { TokenCountMethod } from "./TokenCountMethod";
 import type { TokenUsage } from "./TokenUsage";
@@ -58,4 +59,63 @@ steps: number, } | { "type": "turn_failed", message: string, } | { "type": "noti
 /**
  * Why it waits; older journals have no cause and mean a usage limit.
  */
-cause: PauseCause, } | { "type": "resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, };
+cause: PauseCause, } | { "type": "resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "context_compacted", 
+/**
+ * The model whose window the conversation was fitted to.
+ */
+model: string, 
+/**
+ * The conversation's size for `model` before and after, counted by `method`.
+ */
+before_tokens: number, after_tokens: number, 
+/**
+ * Messages replaced by the summary.
+ */
+summarised_messages: number, 
+/**
+ * The tokens the conversation may use: the window less room for the reply.
+ */
+budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, } | { "type": "model_suggestion", 
+/**
+ * Names the suggestion in `session.suggestion_respond` and `model_suggestion_update`.
+ */
+id: string, 
+/**
+ * `local` (a general local model), `vision`, `tools`, `code`, or `context`.
+ */
+need: string, 
+/**
+ * The Hugging Face repository, `owner/name`.
+ */
+repo: string, 
+/**
+ * The GGUF quantisation chosen to fit this machine.
+ */
+quant: string, 
+/**
+ * What the session can switch to once it is downloaded, such as `llamacpp:Qwen3-4B-Q4_K_M`.
+ */
+model: string, 
+/**
+ * The download's size, a vision projector included.
+ */
+size_bytes: number, 
+/**
+ * How it would load here: `gpu`, `partial` (split with system memory), or `cpu`.
+ */
+fit: "gpu" | "partial" | "cpu", 
+/**
+ * Why it is suggested, in words for the user.
+ */
+reason: string, 
+/**
+ * The multimodal projector is downloaded too.
+ */
+mmproj: boolean, } | { "type": "model_suggestion_update", id: string, 
+/**
+ * `downloading` (with `job_id`; follow `models.download_progress`), `ready` (with
+ * `model`; switch with `session.control` `set_model`), `failed` or `cancelled` (with
+ * `message`), `dismissed` (not now), or `disabled` (don't ask again: suggestions are
+ * off).
+ */
+state: "downloading" | "ready" | "failed" | "cancelled" | "dismissed" | "disabled", job_id: string | null, model: string | null, message: string | null, };

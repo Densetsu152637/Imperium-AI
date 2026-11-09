@@ -1,4 +1,4 @@
-// JSON-RPC client for imperiumd over a WebSocket. Browsers cannot set an Authorization header
+// JSON-RPC client for imperium-core over a WebSocket. Browsers cannot set an Authorization header
 // on WebSocket requests, so the token travels as the `imperium.token.<token>` subprotocol.
 
 import type {
@@ -32,7 +32,7 @@ export class DaemonClient {
     this.socket = socket;
     socket.addEventListener("message", (event) => this.receive(String(event.data)));
     socket.addEventListener("close", () => {
-      for (const { reject } of this.pending.values()) reject(new Error("imperiumd closed the connection"));
+      for (const { reject } of this.pending.values()) reject(new Error("imperium-core closed the connection"));
       this.pending.clear();
     });
   }

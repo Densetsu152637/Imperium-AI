@@ -21,6 +21,19 @@ pub enum Source {
     Environment(String),
 }
 
+impl Source {
+    /// The layer's kind without its location: `default`, `user`, `app`, `project`, or `env`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Source::Default => "default",
+            Source::User(_) => "user",
+            Source::App(_) => "app",
+            Source::Project(_) => "project",
+            Source::Environment(_) => "env",
+        }
+    }
+}
+
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -484,6 +497,31 @@ mod tests {
     fn defaults_parse_into_settings() {
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
         assert_eq!(settings.daemon.port, 0);
+        assert!(settings.models.suggest_downloads);
+        assert!(!settings.models.suggestions.is_empty());
+    }
+
+    #[test]
+    fn model_suggestions_can_be_turned_off_and_replaced() {
+        let config = Config::from_layers([
+            Layer::defaults(),
+            layer(
+                Source::User("u".into()),
+                r#"
+                [models]
+                suggest_downloads = false
+                [[models.suggestions]]
+                repo = "acme/tiny-GGUF"
+                capabilities = ["chat"]
+                context = 4096
+                "#,
+            ),
+        ]);
+        let models = config.settings().unwrap().models;
+        assert!(!models.suggest_downloads);
+        assert_eq!(models.suggestions.len(), 1);
+        assert_eq!(models.suggestions[0].size, "small");
+        assert!(!models.suggestions[0].mmproj);
     }
 
     #[test]

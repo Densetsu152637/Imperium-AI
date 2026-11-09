@@ -36,9 +36,21 @@ pub async fn run_command(
     command: &str,
     timeout: Duration,
 ) -> Result<String, ToolError> {
+    if workspace.runtime().is_some() {
+        let output = crate::remote_files::command(workspace, command, timeout).await?;
+        let status = match output.code {
+            Some(code) => format!("exit code {code}"),
+            None => "terminated by a signal".into(),
+        };
+        return Ok(format!(
+            "{status}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            tail(&String::from_utf8_lossy(&output.stdout)),
+            tail(&String::from_utf8_lossy(&output.stderr)),
+        ));
+    }
     let child = workspace
         .sandbox()
-        .command(workspace.root(), command)?
+        .command(&workspace.roots(), command)?
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

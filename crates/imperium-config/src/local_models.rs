@@ -1,7 +1,7 @@
 //! Per-model llama.cpp settings, the overrides the app may apply to model-table rows, and how a
 //! local model's effective launch settings are resolved from them.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::settings::{
     CatalogEntry, LLAMACPP_ENDPOINT, LlamaCppSettings, ModelPlacement, Settings, Tier,
@@ -57,7 +57,7 @@ const OWNED_FLAGS: [&str; 28] = [
 
 /// `[runtime.llamacpp.models."<local model id>"]`: settings of one local model. Unset keys take
 /// the defaults under `[runtime.llamacpp]`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LocalModelSettings {
     /// Tokens one session may use.
@@ -80,7 +80,7 @@ pub struct LocalModelSettings {
 }
 
 /// `[models.overrides."<catalog id>"]`: what the app changes on a model-table row.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TableOverride {
     pub enabled: Option<bool>,

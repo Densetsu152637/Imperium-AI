@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use imperium_api::Pricing;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::SecretName;
 use crate::local_models::{LocalModelSettings, TableOverride};
@@ -65,7 +65,7 @@ max_wait_s = 600
 
 /// Typed view of the merged configuration. Keys this build does not know are ignored, so a
 /// config written for a newer version still loads.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Settings {
     pub daemon: DaemonSettings,
     pub agents: AgentSettings,
@@ -104,6 +104,8 @@ pub struct Settings {
     /// How busy the machine must be before autonomous work yields (see docs/14).
     #[serde(default)]
     pub load: LoadSettings,
+    #[serde(default)]
+    pub sessions: SessionSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -291,7 +293,7 @@ impl Settings {
 }
 
 /// GitHub watching and auto-fix (see docs/14-projects-and-automation.md#github-auto-fix).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GithubSettings {
     #[serde(default)]
     pub watch: Vec<GithubWatch>,
@@ -300,7 +302,7 @@ pub struct GithubSettings {
 }
 
 /// One `[[github.watch]]` entry: a repository and the local clone fixes are made from.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GithubWatch {
     /// `owner/name`.
     pub repo: String,
@@ -308,7 +310,7 @@ pub struct GithubWatch {
     pub project: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AutofixSettings {
     pub enabled: bool,
@@ -332,8 +334,33 @@ impl Default for AutofixSettings {
     }
 }
 
+/// `[sessions]`: how sessions are started, and when they are archived on their own (see
+/// docs/14-projects-and-automation.md#archiving-sessions). An archived session stops running but
+/// keeps its journal; unarchiving resumes it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SessionSettings {
+    /// Where sessions started on a git worktree put it: `<worktree_dir>/<repo>/<branch>`. When
+    /// unset, worktrees go in `<repo>/.worktrees/<branch>` (excluded from git).
+    pub worktree_dir: Option<PathBuf>,
+    /// Archive an idle session after this many days without activity; 0 turns it off.
+    pub auto_archive_after_days: u32,
+    /// Archive a session once the pull request it watches is merged or closed.
+    pub auto_archive_on_pr_close: bool,
+}
+
+impl Default for SessionSettings {
+    fn default() -> Self {
+        SessionSettings {
+            worktree_dir: None,
+            auto_archive_after_days: 0,
+            auto_archive_on_pr_close: true,
+        }
+    }
+}
+
 /// How sessions wait when a provider's usage or rate limit is hit (each session can override).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ResumeSettings {
     /// `wait_for_reset`, `at_time`, `retry_every`, or `stop`.
@@ -356,7 +383,7 @@ impl Default for ResumeSettings {
 }
 
 /// The phone listener (see docs/15-mobile-and-remote.md). Off unless `bind` is set.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PhoneSettings {
     /// Address to serve phones on, such as a Tailscale address `100.101.102.103:7681`. It adds
     /// no encryption of its own, so use a private overlay network or a trusted LAN.
@@ -365,7 +392,7 @@ pub struct PhoneSettings {
 }
 
 /// Media tools (see docs/09-media-generation.md).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct MediaSettings {
     #[serde(default)]
     pub image: Option<ImageSettings>,
@@ -376,7 +403,7 @@ pub struct MediaSettings {
 }
 
 /// Image generation through an `[endpoints]` entry's OpenAI-compatible images API, or ComfyUI.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ImageSettings {
     /// `openai` (an images API) or `comfyui`.
     pub backend: String,
@@ -392,7 +419,7 @@ pub struct ImageSettings {
 }
 
 /// An OpenAI-compatible speech or transcription service from `[endpoints]`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct MediaServiceSettings {
     pub endpoint: String,
     pub model: String,
@@ -402,7 +429,7 @@ pub struct MediaServiceSettings {
 }
 
 /// Pets (see docs/16-pets.md).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct PetSettings {
     pub enabled: bool,
@@ -427,7 +454,7 @@ impl Default for PetSettings {
 }
 
 /// Web tools (see docs/05-tools-and-isolation.md#built-in-tools).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct WebSettings {
     /// Offer `web_fetch` (and `web_search` with a provider) to agents.
@@ -464,7 +491,7 @@ impl Default for WebSettings {
 }
 
 /// Where agents' commands run (see docs/05-tools-and-isolation.md#isolation-tiers).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct IsolationSettings {
     /// `policy` (tier 0), `os` (tier 1), or `container` (tier 2).
@@ -488,7 +515,7 @@ impl Default for IsolationSettings {
 
 /// When the machine counts as `quiet`, `busy`, or `saturated` for autonomous work: sessions a
 /// schedule or a project agent started defer to the user's own sessions (see docs/14).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LoadSettings {
     /// How often (seconds) the daemon looks at the machine.
@@ -529,7 +556,7 @@ impl Default for LoadSettings {
 }
 
 /// One `[[projects]]` entry.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ProjectSettings {
     pub path: PathBuf,
     /// Run a project agent for this project while the daemon runs (off by default).
@@ -563,7 +590,7 @@ fn default_max_sessions_per_day() -> u32 {
 }
 
 /// One `[[schedules]]` entry.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ScheduleSettings {
     pub id: String,
     #[serde(default = "enabled")]
@@ -592,7 +619,7 @@ pub struct ScheduleSettings {
 }
 
 /// What must be true for a scheduled run to start.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ConditionSettings {
     /// Wait for a quiet machine however long it takes (unlike `prefer_quiet`, which gives up
     /// after `max_defer`). A person can still start the run from a client.
@@ -601,7 +628,7 @@ pub struct ConditionSettings {
 }
 
 /// Exactly one of `cron` (five fields, local time), `every` (`30m`), or `at` (a local time).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TriggerSettings {
     #[serde(default)]
     pub cron: Option<String>,
@@ -612,7 +639,7 @@ pub struct TriggerSettings {
 }
 
 /// A prompt for a new session in `project`, or a shell command run there.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ActionSettings {
     pub project: PathBuf,
     #[serde(default)]
@@ -631,7 +658,7 @@ pub struct ActionSettings {
 }
 
 /// Workflow packs and context retrieval (see docs/18-workflow-contract.md).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct WorkflowSettings {
     /// Off turns off workflow packs and project instruction files entirely.
@@ -655,7 +682,7 @@ impl Default for WorkflowSettings {
 }
 
 /// Whether agents must load their required context before writing or running anything.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Enforce {
     RequiredBeforeAction,
@@ -664,7 +691,7 @@ pub enum Enforce {
 }
 
 /// Global and project memory (see docs/17-memory.md).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct MemorySettings {
     pub enabled: bool,
@@ -688,7 +715,7 @@ impl Default for MemorySettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct MemoryWrite {
     pub global: WritePolicy,
@@ -706,7 +733,7 @@ impl Default for MemoryWrite {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WritePolicy {
     Auto,
@@ -715,14 +742,17 @@ pub enum WritePolicy {
 }
 
 /// Where plugins are loaded from, besides `<config>/plugins`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ExtensionSettings {
     /// Plugin folders, or folders of plugins, in the Claude Code layout.
     #[serde(default)]
     pub plugin_dirs: Vec<PathBuf>,
+    /// Plugins, by name, that are found but not loaded.
+    #[serde(default)]
+    pub disabled_plugins: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct HookSettings {
     /// `session.start`, `prompt.submit`, `tool.before`, `tool.after`, `agent.spawn`, or
     /// `agent.complete` (Claude Code names such as `PreToolUse` also work).
@@ -736,7 +766,7 @@ pub struct HookSettings {
 }
 
 /// MCP servers available to every session.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct McpSettings {
     #[serde(default)]
     pub servers: BTreeMap<String, McpServerSettings>,
@@ -747,7 +777,7 @@ pub struct McpSettings {
 }
 
 /// One `[mcp.servers.<name>]` entry: a local command or a streamable-HTTP URL.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct McpServerSettings {
     #[serde(default)]
     pub command: Option<String>,
@@ -755,6 +785,10 @@ pub struct McpServerSettings {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Environment variables read from the keychain, such as API tokens:
+    /// `secret_env = { GITHUB_TOKEN = { secret = "github" } }`.
+    #[serde(default)]
+    pub secret_env: BTreeMap<String, SecretRef>,
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
@@ -769,24 +803,45 @@ pub struct McpServerSettings {
     pub enabled: bool,
     #[serde(default)]
     pub timeout_s: Option<u64>,
+    /// The connector catalogue entry it was added from, if any.
+    #[serde(default)]
+    pub catalog: Option<String>,
+}
+
+impl Default for McpServerSettings {
+    fn default() -> Self {
+        McpServerSettings {
+            command: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            secret_env: BTreeMap::new(),
+            url: None,
+            headers: BTreeMap::new(),
+            bearer_token: None,
+            allow: Vec::new(),
+            enabled: true,
+            timeout_s: None,
+            catalog: None,
+        }
+    }
 }
 
 fn enabled() -> bool {
     true
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct DaemonSettings {
     pub port: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AgentSettings {
     pub max_steps: u32,
     pub resume_days: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ModelSettings {
     /// Model for new sessions, as `<endpoint>:<model>`, for example `openrouter:qwen/qwen3-coder`.
     #[serde(default)]
@@ -803,6 +858,110 @@ pub struct ModelSettings {
     /// `[models.overrides."<id>"]`: what the app changes on model-table rows.
     #[serde(default)]
     pub overrides: BTreeMap<String, TableOverride>,
+    /// Sessions may offer to download a suitable local model from Hugging Face when the best
+    /// model available is poor for the task (see docs/04-models-and-routing.md). Nothing is
+    /// downloaded without the user's consent.
+    #[serde(default = "enabled")]
+    pub suggest_downloads: bool,
+    /// `[[models.suggestions]]`: the repositories suggestions choose from. Setting it replaces
+    /// the built-in list ([`default_suggestions`]).
+    #[serde(default = "default_suggestions")]
+    pub suggestions: Vec<SuggestionCandidate>,
+}
+
+impl Default for ModelSettings {
+    fn default() -> Self {
+        ModelSettings {
+            default: None,
+            catalog: Vec::new(),
+            folders: Vec::new(),
+            download_dir: None,
+            overrides: BTreeMap::new(),
+            suggest_downloads: true,
+            suggestions: default_suggestions(),
+        }
+    }
+}
+
+/// A Hugging Face GGUF repository that model suggestions may offer, written as
+/// `[[models.suggestions]]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SuggestionCandidate {
+    /// `owner/name` of a GGUF repository.
+    pub repo: String,
+    /// What it is good for: `chat`, `code`, `tools` (reliable tool calling), `vision` (needs
+    /// `mmproj`).
+    pub capabilities: Vec<String>,
+    /// `small`, `medium`, or `large`: among choices that fit equally well, larger is preferred.
+    #[serde(default = "default_size_class")]
+    pub size: String,
+    /// The context length the model supports, in tokens.
+    pub context: u32,
+    /// Download the multimodal projector too (vision models).
+    #[serde(default)]
+    pub mmproj: bool,
+}
+
+fn default_size_class() -> String {
+    "small".into()
+}
+
+/// The built-in suggestion list: well-known GGUF repositories for general chat (small and
+/// medium), code, and vision.
+pub fn default_suggestions() -> Vec<SuggestionCandidate> {
+    let row = |repo: &str, capabilities: &[&str], size: &str, context: u32, mmproj: bool| {
+        SuggestionCandidate {
+            repo: repo.into(),
+            capabilities: capabilities.iter().map(|c| c.to_string()).collect(),
+            size: size.into(),
+            context,
+            mmproj,
+        }
+    };
+    vec![
+        row(
+            "Qwen/Qwen3-4B-GGUF",
+            &["chat", "tools"],
+            "small",
+            32_768,
+            false,
+        ),
+        row(
+            "Qwen/Qwen3-14B-GGUF",
+            &["chat", "tools"],
+            "medium",
+            32_768,
+            false,
+        ),
+        row(
+            "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+            &["code", "chat", "tools"],
+            "small",
+            32_768,
+            false,
+        ),
+        row(
+            "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+            &["code", "chat", "tools"],
+            "medium",
+            262_144,
+            false,
+        ),
+        row(
+            "unsloth/gemma-3-4b-it-GGUF",
+            &["vision", "chat"],
+            "small",
+            131_072,
+            true,
+        ),
+        row(
+            "unsloth/gemma-3-12b-it-GGUF",
+            &["vision", "chat"],
+            "medium",
+            131_072,
+            true,
+        ),
+    ]
 }
 
 impl ModelSettings {
@@ -817,7 +976,7 @@ impl ModelSettings {
 }
 
 /// Inference runtimes the daemon supervises.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeSettings {
     pub llamacpp: LlamaCppSettings,
     #[serde(default)]
@@ -825,7 +984,7 @@ pub struct RuntimeSettings {
 }
 
 /// vLLM serves Hugging Face model folders (Linux, WSL2, or a remote host).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct VllmSettings {
     /// The `vllm` executable (from a managed environment, or on `PATH`).
@@ -845,7 +1004,7 @@ impl Default for VllmSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct LlamaCppSettings {
     pub backend: String,
     /// A `llama-server` executable to use instead of a runtime pack.
@@ -903,7 +1062,7 @@ fn default_max_output_tokens() -> u32 {
 
 /// Overrides for the hardware probe, for machines it cannot read (or to plan as if memory were
 /// smaller). Values are in MiB.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct HardwareSettings {
     #[serde(default)]
     pub vram_mb: Option<u64>,
@@ -912,7 +1071,7 @@ pub struct HardwareSettings {
 }
 
 /// One row of the model table, written as `[[models.catalog]]`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CatalogEntry {
     /// Short, unique name that delegation rules and agents use to refer to the model.
     pub id: String,
@@ -979,7 +1138,7 @@ impl CatalogEntry {
 }
 
 /// Where a local model is placed in memory.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelPlacement {
     /// The memory planner decides: the GPU when it fits, otherwise split with system memory.
@@ -999,7 +1158,7 @@ impl ModelPlacement {
 }
 
 /// Where a model runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Location {
     Local,
@@ -1028,7 +1187,7 @@ impl std::str::FromStr for Location {
 }
 
 /// How subagents are assigned to models.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RoutingSettings {
     /// Tie-breaker among suitable models: the cheapest, or local or cloud models first.
     #[serde(default)]
@@ -1038,7 +1197,7 @@ pub struct RoutingSettings {
     pub rules: Vec<RoutingRule>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Preference {
     #[default]
@@ -1058,7 +1217,7 @@ impl Preference {
 }
 
 /// A delegation rule, written as `[[routing.rules]]`. Absent conditions match every task.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RoutingRule {
     /// Matches tasks asking for exactly this tier.
     #[serde(default)]
@@ -1075,7 +1234,7 @@ pub struct RoutingRule {
 }
 
 /// How capable a model is; tasks ask for a minimum tier.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tier {
     Basic,
@@ -1112,7 +1271,7 @@ impl std::str::FromStr for Tier {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct EndpointSettings {
     /// Base URL ending before `/chat/completions`, for example `https://openrouter.ai/api/v1`.
     pub base_url: String,
@@ -1133,7 +1292,7 @@ fn default_endpoint_kind() -> String {
 }
 
 /// A reference to a keychain secret by name.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SecretRef {
     pub secret: SecretName,
 }

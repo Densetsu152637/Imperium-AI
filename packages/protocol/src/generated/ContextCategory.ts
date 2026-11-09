@@ -6,8 +6,9 @@
 export type ContextCategory = { 
 /**
  * A stable id: `system_base`, `system_skills`, `system_memory`, `system_citations`,
- * `system_project`, `tools_builtin`, `tools_mcp`, `manifest`, `memories`, `user`,
- * `assistant`, `tool_results`, or `overhead`. Clients show unknown keys by their label.
+ * `system_project`, `tools_builtin`, `tools_mcp`, `summary` (a compacted conversation's
+ * summary), `manifest`, `memories`, `user`, `assistant`, `tool_results`, or `overhead`.
+ * Clients show unknown keys by their label.
  */
 key: string, label: string, 
 /**

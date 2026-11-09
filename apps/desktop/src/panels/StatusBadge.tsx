@@ -9,6 +9,7 @@ const STATUS: Record<SessionStatus, { mark: string; label: string }> = {
   working: { mark: "●", label: "Working" },
   needs_attention: { mark: "!", label: "Needs attention" },
   paused: { mark: "⏸", label: "Paused" },
+  needs_model: { mark: "?", label: "Needs a model" },
   watching: { mark: "◉", label: "Watching" },
   merged: { mark: "✓", label: "Merged" },
 };

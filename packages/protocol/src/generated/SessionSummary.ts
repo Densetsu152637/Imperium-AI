@@ -2,8 +2,26 @@
 import type { ResumePolicy } from "./ResumePolicy";
 import type { SessionHold } from "./SessionHold";
 import type { SessionStatus } from "./SessionStatus";
+import type { SessionWorktree } from "./SessionWorktree";
 
-export type SessionSummary = { session_id: string, project_dir: string, model: string, 
+export type SessionSummary = { session_id: string, 
+/**
+ * The session's working directory: its environment's first folder.
+ */
+project_dir: string, 
+/**
+ * The environment the session works in, when it has one (sessions a schedule, a project
+ * agent, or auto-fix start work in a bare folder).
+ */
+environment_id: string | null, 
+/**
+ * Every folder the session's tools may use, the working directory first.
+ */
+folders: Array<string>, 
+/**
+ * The root agent's model spec; `None` while the session waits for one to be chosen.
+ */
+model: string | null, 
 /**
  * Where the session's commands run, such as `tier 0 · folder policy`.
  */
@@ -24,4 +42,26 @@ background: boolean,
  * Why background work is waiting (deferred before it started, or paused at a step
  * boundary), until the machine is quiet or the user runs it now.
  */
-hold: SessionHold | null, };
+hold: SessionHold | null, 
+/**
+ * True for an environment's persistent agent session, which is always running, resumes
+ * after restarts, and is listed first among its environment's sessions.
+ */
+persistent: boolean, 
+/**
+ * Git worktrees the session works in instead of its environment's folders.
+ */
+worktrees: Array<SessionWorktree>, 
+/**
+ * Pinned sessions are listed first; set with `session.control` `set_pinned`.
+ */
+pinned: boolean, 
+/**
+ * Archived: the session no longer runs or resumes, but its journal is kept and
+ * `session.subscribe` still returns its history. `session.control` `unarchive` resumes it.
+ */
+archived: boolean, 
+/**
+ * When it was archived, in milliseconds since the Unix epoch.
+ */
+archived_at: number | null, };

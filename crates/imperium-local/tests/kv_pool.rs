@@ -13,7 +13,7 @@ use axum::Router;
 use axum::routing::post;
 use imperium_api::{LocalModels, LocalRequest};
 use imperium_config::{LlamaCppSettings, LocalModelSettings, RoutingSettings};
-use imperium_core::{ResolvedModel, Session, SessionConfig};
+use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
 use imperium_local::scan::{Format, LocalModel};
@@ -655,7 +655,7 @@ async fn a_session_parked_on_an_approval_holds_no_claim() {
     let session = Session::spawn(SessionConfig {
         id: "parked".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: local_model("emperor"),
+        model: Some(local_model("emperor")),
         catalog: Vec::new(),
         clients: Default::default(),
         routing: RoutingSettings::default(),
@@ -669,10 +669,11 @@ async fn a_session_parked_on_an_approval_holds_no_claim() {
         pre_approved: Vec::new(),
         launcher: None,
         resume: false,
-        resume_policy: imperium_core::default_resume_policy(),
+        resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 10,
         background: None,
+        auto_compact: false,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();
