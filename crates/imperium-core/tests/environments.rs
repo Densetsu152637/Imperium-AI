@@ -199,3 +199,96 @@ async fn a_bare_project_folder_becomes_an_environment() {
     let envs = call(&mut connection, 4, "environments.list", json!({}));
     assert_eq!(envs["environments"].as_array().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn pins_on_environments_and_sessions_survive_a_restart() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let handshake =
+        json!({"client": {"name": "test", "version": "0"}, "protocol": {"major": 0, "minor": 2}});
+    let state = daemon(home.path(), "http://127.0.0.1:9/v1");
+    let mut connection = Connection::new(Arc::clone(&state));
+    call(&mut connection, 1, "system.handshake", handshake.clone());
+    let env = call(
+        &mut connection,
+        2,
+        "environments.create",
+        json!({"name": "Pinned", "folders": [folder.path()]}),
+    );
+    assert_eq!(env["pinned"], false);
+    let env_id = env["id"].as_str().unwrap().to_string();
+    let pinned = call(
+        &mut connection,
+        3,
+        "environments.update",
+        json!({"id": env_id, "pinned": true}),
+    );
+    assert_eq!(pinned["pinned"], true);
+    // Updating something else leaves the pin alone.
+    let renamed = call(
+        &mut connection,
+        4,
+        "environments.update",
+        json!({"id": env_id, "name": "Still pinned"}),
+    );
+    assert_eq!(renamed["pinned"], true);
+
+    let created = call(
+        &mut connection,
+        5,
+        "session.create",
+        json!({"environment_id": env_id}),
+    );
+    let session_id = created["session_id"].as_str().unwrap().to_string();
+    let listed = call(&mut connection, 6, "session.list", json!({}));
+    assert_eq!(listed["sessions"][0]["pinned"], false);
+    let mut announcements = state.announcements();
+    let control = |pinned: Option<bool>| {
+        let mut params = json!({"session_id": session_id, "action": "set_pinned"});
+        if let Some(pinned) = pinned {
+            params["pinned"] = json!(pinned);
+        }
+        json!({"jsonrpc": "2.0", "id": 7, "method": "session.control", "params": params})
+            .to_string()
+    };
+    let handled = connection.handle_text(&control(Some(true)));
+    let response = handled.deferred.expect("a deferred reply").await;
+    assert!(
+        matches!(response.outcome, Outcome::Result(_)),
+        "{response:?}"
+    );
+    let updated = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let notice = announcements.recv().await.unwrap();
+            if notice.method == "session.updated" {
+                break notice.params;
+            }
+        }
+    })
+    .await
+    .expect("session.updated is announced");
+    assert_eq!(updated["pinned"], true);
+    let listed = call(&mut connection, 8, "session.list", json!({}));
+    assert_eq!(listed["sessions"][0]["pinned"], true);
+    // set_pinned needs `pinned`.
+    let handled = connection.handle_text(&control(None));
+    let response = handled.deferred.expect("a deferred reply").await;
+    assert!(
+        matches!(response.outcome, Outcome::Error(_)),
+        "{response:?}"
+    );
+
+    // After a restart both are still pinned.
+    drop(announcements);
+    drop(connection);
+    drop(state);
+    let state = daemon(home.path(), "http://127.0.0.1:9/v1");
+    assert_eq!(state.resume_sessions(), 1);
+    let mut connection = Connection::new(Arc::clone(&state));
+    call(&mut connection, 1, "system.handshake", handshake);
+    let envs = call(&mut connection, 2, "environments.list", json!({}));
+    assert_eq!(envs["environments"][0]["pinned"], true);
+    let listed = call(&mut connection, 3, "session.list", json!({}));
+    assert_eq!(listed["sessions"][0]["session_id"], session_id.as_str());
+    assert_eq!(listed["sessions"][0]["pinned"], true);
+}
