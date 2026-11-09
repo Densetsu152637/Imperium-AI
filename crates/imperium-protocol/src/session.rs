@@ -112,6 +112,15 @@ pub enum SessionEvent {
         usage: TokenUsage,
         cost_usd: Option<f64>,
     },
+    /// A subagent stopped at its next safe point because the user steered the root agent (an
+    /// in-flight tool call finished first; an in-flight model request was cancelled). Its
+    /// conversation is saved up to that point, so `resume_agent` / `session.agent_resume`
+    /// continues it, and `resume_agent` with `cancel` / `session.agent_cancel` ends it.
+    TaskPaused {
+        task_id: String,
+        /// What it had done so far, and any messages queued for it that were not delivered.
+        progress: String,
+    },
     /// A finished subagent was given a follow-up (`resume_agent`, or `session.agent_resume`)
     /// and works again with its earlier conversation; `task_finished` follows as for a new
     /// task. Emitted by the agent that resumed it (`root`).
@@ -175,6 +184,15 @@ pub enum SessionEvent {
     },
     /// The wait ended and the turn continues.
     Resumed {},
+    /// The user stopped the session (`session.control` `stop`): the root and every subagent
+    /// halt at their next safe point (a tool call in flight finishes, a model request in
+    /// flight is cancelled and is sent again on resume), their state is kept, local models may
+    /// release their slots, and queued messages wait. The status is `paused` until
+    /// `work_resumed`; a restart keeps it stopped. Emitted by the root.
+    WorkStopped {},
+    /// The user resumed a stopped session (`session.control` `resume`): every agent goes on
+    /// from where it halted, and queued messages run. Emitted by the root.
+    WorkResumed {},
     /// The session's status changed. `detail` names what it watches, such as `owner/repo#12`.
     StatusChanged {
         status: SessionStatus,
@@ -228,8 +246,15 @@ pub enum SessionEvent {
     /// running turn. The latest one is the queue; a resumed session restores it.
     QueueChanged { messages: Vec<QueuedMessage> },
     /// A steering message joined the running turn: the model reads it, as a user message
-    /// marked as steering, on its next call. The turn goes on; nothing was cancelled.
-    Steered { id: String, text: String },
+    /// marked as steering, on its next call. The turn goes on. Subagents the root agent was
+    /// running were paused for it (`task_paused`), and `paused` lists them; the root reads
+    /// their status with the message and decides whether to resume, re-brief, or cancel them.
+    Steered {
+        id: String,
+        text: String,
+        #[serde(default)]
+        paused: Vec<String>,
+    },
     /// The daemon offers to download a local model better suited to what the session needs.
     /// Nothing is downloaded unless the user accepts with `session.suggestion_respond`.
     ModelSuggestion {
@@ -393,6 +418,9 @@ pub enum AgentStatus {
     Failed,
     /// The daemon stopped while it was working; it can be resumed from where it was saved.
     Interrupted,
+    /// Paused at a safe point for a steering message to the root agent; it can be resumed
+    /// from where it was saved, or cancelled.
+    Paused,
 }
 
 /// An agent of a session and its kept state, from `session.agents`.

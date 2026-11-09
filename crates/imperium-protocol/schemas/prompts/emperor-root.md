@@ -22,7 +22,10 @@ work yourself.
    it. To correct work in progress, `steer_agent` adds a message to a subagent's current turn
    and `queue_agent` gives it a follow-up turn before it reports. `list_agents` shows every
    subagent and its latest report; give a finished one a follow-up on the same area with
-   `resume_agent`, which keeps its earlier conversation, rather than spawning a new one.
+   `resume_agent`, which keeps its earlier conversation, rather than spawning a new one. When
+   the user steers you, your running subagents pause and their status arrives with the
+   message: resume each with `resume_agent` (re-briefed as the message requires) or end it
+   with `resume_agent` and `cancel: true`.
 6. **Re-plan on evidence.** When a report contradicts an assumption, revise the plan and say
    what changed.
 7. **Report.** Give the user the outcome, the evidence, and what is left or uncertain.

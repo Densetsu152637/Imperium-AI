@@ -55,7 +55,11 @@ cached_tokens: number, } | { "type": "plan_updated", plan: Plan, } | { "type": "
 /**
  * The subagent's final reply, truncated for display.
  */
-report: string, usage: TokenUsage, cost_usd: number | null, } | { "type": "task_resumed", task_id: string, 
+report: string, usage: TokenUsage, cost_usd: number | null, } | { "type": "task_paused", task_id: string, 
+/**
+ * What it had done so far, and any messages queued for it that were not delivered.
+ */
+progress: string, } | { "type": "task_resumed", task_id: string, 
 /**
  * The follow-up message.
  */
@@ -71,7 +75,7 @@ steps: number, } | { "type": "turn_failed", message: string, } | { "type": "noti
 /**
  * Why it waits; older journals have no cause and mean a usage limit.
  */
-cause: PauseCause, } | { "type": "local_model_waiting", agent_id: string, model: string, reason: LocalWaitReason, } | { "type": "resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "context_compacted", 
+cause: PauseCause, } | { "type": "local_model_waiting", agent_id: string, model: string, reason: LocalWaitReason, } | { "type": "resumed", } | { "type": "work_stopped", } | { "type": "work_resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "context_compacted", 
 /**
  * The model whose window the conversation was fitted to.
  */
@@ -87,7 +91,7 @@ summarised_messages: number,
 /**
  * The tokens the conversation may use: the window less room for the reply.
  */
-budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, } | { "type": "model_suggestion", 
+budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, paused: Array<string>, } | { "type": "model_suggestion", 
 /**
  * Names the suggestion in `session.suggestion_respond` and `model_suggestion_update`.
  */

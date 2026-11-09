@@ -1,6 +1,6 @@
 //! One agent's conversation and its turn loop, including planning and delegation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -22,7 +22,7 @@ use imperium_tools::{Access, Invocation, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
 
 use imperium_config::{Enforce, WritePolicy};
@@ -31,6 +31,7 @@ use imperium_memory::{NewEntry, Scope};
 
 use imperium_protocol::methods::{Compaction, ContextFit};
 
+use crate::agents::task_number;
 use crate::artefacts::{self, handle_message};
 use crate::breakdown::{
     Call, Category, Measured, Request, Spans, TokenCounter, estimate_tokens, join_parts, tool_texts,
@@ -80,6 +81,9 @@ fn wait_reason(reason: crate::LocalWait) -> imperium_protocol::session::LocalWai
 pub struct TurnOutcome {
     pub text: String,
     pub ok: bool,
+    /// The turn stopped early because the user steered the root agent; `text` says how far
+    /// it got.
+    pub paused: bool,
     pub usage: Usage,
     pub cost_usd: Option<f64>,
 }
@@ -107,7 +111,28 @@ pub(crate) struct TaskReport {
     task_id: String,
     model: String,
     ok: bool,
+    /// Paused for a steering message to the root: `report` is its progress so far.
+    paused: bool,
     report: String,
+}
+
+impl TaskReport {
+    /// The report as its parent reads it.
+    fn render(&self, cap: usize) -> String {
+        let state = if self.paused {
+            "paused"
+        } else if self.ok {
+            "finished"
+        } else {
+            "failed"
+        };
+        format!(
+            "## {} ({}, {state})\n{}",
+            self.task_id,
+            self.model,
+            clip(&self.report, cap)
+        )
+    }
 }
 
 pub struct Agent {
@@ -123,6 +148,12 @@ pub struct Agent {
     /// Messages waiting for this agent: steering ones join its running turn.
     inbox: Arc<Inbox>,
     tasks: HashMap<String, JoinHandle<TaskReport>>,
+    /// Tasks in `tasks` that pause when the user steers this (root) agent: subagents it
+    /// spawned or resumed, not chunk and reduce agents.
+    pausable_tasks: HashSet<String>,
+    /// For a subagent that pauses when the user steers the root agent: the root's steering
+    /// signal, as it was when this subagent started.
+    pause: Option<watch::Receiver<u64>>,
     /// The workflow role whose files this agent loads: `root`, or what the delegator asked.
     role: String,
     /// Required references from the latest manifest that are not loaded yet.
@@ -239,6 +270,8 @@ impl Agent {
             spans: HashMap::from([(0, spans)]),
             can_delegate,
             tasks: HashMap::new(),
+            pausable_tasks: HashSet::new(),
+            pause: None,
             role,
             unloaded: Mutex::new(Vec::new()),
             last_call: None,
@@ -262,12 +295,187 @@ impl Agent {
 
     /// Adds the steering messages that arrived since the last model call to the conversation,
     /// as user messages marked as steering. Called only between complete tool rounds, so tool
-    /// calls and their results stay together.
-    fn take_steering(&mut self) {
-        for message in self.inbox.take_steering() {
-            let (content, spans) = join_parts(vec![(Category::User, steering_text(&message.text))]);
+    /// calls and their results stay together. For the root, the subagents it was running pause
+    /// for the message first; the first message carries their status, so the root decides
+    /// whether to resume, re-brief, or cancel them.
+    async fn take_steering(&mut self) {
+        let steering = self.inbox.take_steering();
+        if steering.is_empty() {
+            return;
+        }
+        let stopped = if self.can_delegate {
+            self.collect_paused().await
+        } else {
+            Vec::new()
+        };
+        if self.can_delegate {
+            self.ensure_resident().await;
+        }
+        let paused: Vec<String> = stopped
+            .iter()
+            .filter(|report| report.paused)
+            .map(|report| report.task_id.clone())
+            .collect();
+        let status = self.stopped_status(&stopped);
+        for (index, message) in steering.into_iter().enumerate() {
+            let mut text = steering_text(&message.text);
+            let mut listed = Vec::new();
+            if index == 0 && !stopped.is_empty() {
+                text.push_str(&status);
+                listed = paused.clone();
+            }
+            self.emit(SessionEvent::Steered {
+                id: message.id,
+                text: message.text,
+                paused: listed,
+            });
+            let (content, spans) = join_parts(vec![(Category::User, text)]);
             self.spans.insert(self.messages.len(), spans);
             self.messages.push(ChatMessage::User { content });
+        }
+    }
+
+    /// Waits for the subagents this agent spawned or resumed to pause for a steering message
+    /// (each at its next safe point: an in-flight tool call finishes, an in-flight model
+    /// request is cancelled) and collects them. One that finished meanwhile is collected with
+    /// its report, so nothing is lost.
+    async fn collect_paused(&mut self) -> Vec<TaskReport> {
+        let mut ids: Vec<String> = self
+            .tasks
+            .keys()
+            .filter(|id| self.pausable_tasks.contains(*id))
+            .cloned()
+            .collect();
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        ids.sort_by_key(|id| task_number(id));
+        // Asleep while they stop: the local runtime may swap this agent's model out meanwhile.
+        let _waiting = self
+            .local_models()
+            .map(|local| local.waiting(&self.model.model, &self.holder()));
+        let mut reports = Vec::new();
+        for id in ids {
+            self.pausable_tasks.remove(&id);
+            let Some(handle) = self.tasks.remove(&id) else {
+                continue;
+            };
+            reports.push(match handle.await {
+                Ok(report) => report,
+                Err(error) => TaskReport {
+                    task_id: id,
+                    model: String::new(),
+                    ok: false,
+                    paused: false,
+                    report: format!("the subagent crashed: {error}"),
+                },
+            });
+        }
+        reports
+    }
+
+    /// Makes sure the root agent is ready to work again after waiting on subagents: its model
+    /// loaded and its context restored.
+    ///
+    /// INTEGRATION POINT: the local runtime is gaining an explicit "restore root slot" call
+    /// (slot-level KV residency); wire it in here once it lands. Until then nothing extra is
+    /// needed: the next model call's `acquire` loads the model if it was swapped out and gives
+    /// this agent back its saved slot, and a hosted model keeps no state between calls.
+    async fn ensure_resident(&self) {}
+
+    /// What the root reads, after a steering message, about the subagents that stopped for it.
+    fn stopped_status(&self, stopped: &[TaskReport]) -> String {
+        if stopped.is_empty() {
+            return String::new();
+        }
+        let agents = self.shared.agents.list();
+        let title = |id: &str| {
+            agents
+                .iter()
+                .find(|agent| agent.agent_id == id)
+                .map(|agent| agent.title.clone())
+                .unwrap_or_default()
+        };
+        let lines: Vec<String> = stopped
+            .iter()
+            .map(|report| {
+                let state = if report.paused {
+                    "paused"
+                } else if report.ok {
+                    "finished"
+                } else {
+                    "failed"
+                };
+                format!(
+                    "- {} ({state}; {}): {}\n  {}",
+                    report.task_id,
+                    report.model,
+                    title(&report.task_id),
+                    truncate(&report.report, REPORT_CHARS).replace('\n', "\n  ")
+                )
+            })
+            .collect();
+        format!(
+            "\n\nThe subagents you were running stopped for this message:\n{}\n\nA paused \
+             subagent keeps its conversation. resume_agent continues it (its text can re-brief \
+             it in light of this message), and resume_agent with cancel: true ends it. If you \
+             decide nothing, paused subagents stay paused for the user.",
+            lines.join("\n")
+        )
+    }
+
+    /// While the user has the session stopped: waits here, at a safe point, holding no
+    /// local-model slot (asleep to the runtime, which may swap the model out and save the slot),
+    /// then takes the model back and goes on.
+    async fn hold_while_stopped(&self, attached: &mut Option<LocalPresence>, holder: &str) {
+        let mut stop = self.shared.controls.stop_signal();
+        if !*stop.borrow_and_update() {
+            return;
+        }
+        *attached = None;
+        let asleep = self
+            .local_models()
+            .map(|local| local.waiting(&self.model.model, holder));
+        // INTEGRATION POINT: an explicit slot release / save from the local runtime goes here
+        // (and its restore in `ensure_resident`); `waiting` already lets it reclaim the slot.
+        let _ = stop.wait_for(|stopped| !*stopped).await;
+        drop(asleep);
+        *attached = self
+            .local_models()
+            .map(|local| local.attach(&self.model.model, holder));
+    }
+
+    /// Makes this subagent pause when the user steers the root agent from now on.
+    fn pausable(mut self) -> Self {
+        self.pause = Some(self.shared.inboxes.open(ROOT_AGENT).steering_signal());
+        self
+    }
+
+    /// Whether the user steered the root agent since this (pausable) subagent started.
+    fn pause_requested(&self) -> bool {
+        self.pause
+            .as_ref()
+            .is_some_and(|pause| pause.has_changed().unwrap_or(false))
+    }
+
+    /// Ends a turn early for a pause: the conversation is saved as it stands (every tool call
+    /// has its result), and the outcome says how far the turn got.
+    fn pause_turn(&self, usage: Usage, calls: u32, reply: &str) -> TurnOutcome {
+        self.checkpoint();
+        let text = if reply.trim().is_empty() {
+            format!("Paused after {calls} model calls in its current turn, before it replied.")
+        } else {
+            format!(
+                "Paused after {calls} model calls in its current turn. Its latest words: {}",
+                truncate(reply, 600)
+            )
+        };
+        TurnOutcome {
+            text,
+            ok: false,
+            paused: true,
+            cost_usd: self.cost(&usage),
+            usage,
         }
     }
 
@@ -421,8 +629,13 @@ impl Agent {
             // A background session gives way here, between model calls, holding no slot.
             self.yield_to_user(&mut attached, &holder).await;
             // The safe point for steering: the last model response's tool calls all have
-            // their results.
-            self.take_steering();
+            // their results. A subagent stops here when the user steered the root.
+            // A session the user stopped halts here, holding no slot, until resumed.
+            self.hold_while_stopped(&mut attached, &holder).await;
+            if self.pause_requested() {
+                return self.pause_turn(total, step - 1, &reply);
+            }
+            self.take_steering().await;
             let mut waits = 0;
             let mut waited = std::time::Duration::ZERO;
             // A reply cut short by its reservation is retried once without a cap.
@@ -466,8 +679,27 @@ impl Agent {
                         },
                     );
                 };
-                let result = client.stream(request, &mut on_text).await;
+                // The request is cancelled when the user stops the session (it is sent again on
+                // resume) or, for a pausable subagent, steers the root.
+                let mut stop = self.shared.controls.stop_signal();
+                let streamed = tokio::select! {
+                    result = client.stream(request, &mut on_text) => Streamed::Done(result),
+                    () = maybe_signalled(self.pause.as_mut()) => Streamed::Paused,
+                    Ok(_) = stop.wait_for(|stopped| *stopped) => Streamed::Stopped,
+                };
                 drop(lease);
+                let result = match streamed {
+                    Streamed::Done(result) => result,
+                    Streamed::Paused => return self.pause_turn(total, step - 1, &reply),
+                    Streamed::Stopped => {
+                        self.emit(SessionEvent::Notice {
+                            message: "the model call was cancelled because the session was                                       stopped; it is sent again on resume"
+                                .into(),
+                        });
+                        self.hold_while_stopped(&mut attached, &holder).await;
+                        continue;
+                    }
+                };
                 // A capped local reply that hit its reservation (or overflowed the KV pool) starts
                 // again with the whole context; one sent uncapped would only fail the same way.
                 if self.model.local && !uncapped && capped {
@@ -1115,6 +1347,7 @@ impl Agent {
         TurnOutcome {
             text,
             ok,
+            paused: false,
             cost_usd: self.cost(&usage),
             usage,
         }
@@ -1386,10 +1619,12 @@ impl Agent {
         if args.single_call {
             agent = agent.single_call();
         }
+        let agent = agent.pausable();
         let spawned = json!({"task_id": task_id, "brief": args.brief, "model": agent.model.spec});
         // Each subagent is its own task, so subagents run in parallel across the runtime's threads.
         let handle = tokio::spawn(run_subagent(agent, args.brief, Some(spawned), false));
         self.tasks.insert(task_id.clone(), handle);
+        self.pausable_tasks.insert(task_id.clone());
         Ok(format!(
             "started {task_id}; call await_tasks to collect its report"
         ))
@@ -1688,6 +1923,7 @@ impl Agent {
                     AgentStatus::Idle => "idle",
                     AgentStatus::Failed => "failed",
                     AgentStatus::Interrupted => "interrupted",
+                    AgentStatus::Paused => "paused",
                 };
                 let resumable = if agent.resumable && agent.status != AgentStatus::Running {
                     ", resumable"
@@ -1708,13 +1944,17 @@ impl Agent {
             .join("\n")
     }
 
-    /// `resume_agent`: a follow-up for a finished subagent, which continues with its earlier
-    /// conversation. Collected with `await_tasks` like a new task.
+    /// `resume_agent`: a follow-up for a finished or paused subagent, which continues with its
+    /// earlier conversation. Collected with `await_tasks` like a new task. With `cancel`, ends
+    /// a paused subagent instead.
     fn resume_agent(&mut self, arguments: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Args {
             agent_id: String,
+            #[serde(default)]
             text: String,
+            #[serde(default)]
+            cancel: bool,
         }
         let args: Args = parse(arguments)?;
         if self.tasks.contains_key(&args.agent_id) {
@@ -1724,8 +1964,16 @@ impl Agent {
                 args.agent_id
             ));
         }
+        if args.cancel {
+            cancel_subagent(&self.shared, &args.agent_id)?;
+            return Ok(format!(
+                "cancelled {}; its conversation is kept, so it can still be resumed later",
+                args.agent_id
+            ));
+        }
         let (handle, model) = resume_subagent(&self.shared, &args.agent_id, args.text)?;
         self.tasks.insert(args.agent_id.clone(), handle);
+        self.pausable_tasks.insert(args.agent_id.clone());
         Ok(format!(
             "resumed {} on {model} with its earlier conversation; call await_tasks to collect \
              its report",
@@ -1794,21 +2042,45 @@ impl Agent {
             return Ok("no tasks are running".into());
         }
         let mut reports = Vec::new();
+        // A steering message from the user ends the wait: the root reads it next, with the
+        // status of the subagents that paused for it.
+        let mut steering = self.inbox.steering_signal();
+        let mut not_collected = Vec::new();
         for id in ids {
-            let Some(handle) = self.tasks.remove(&id) else {
+            if !not_collected.is_empty() || self.inbox.has_steering() {
+                if self.tasks.contains_key(&id) {
+                    not_collected.push(id);
+                }
+                continue;
+            }
+            let Some(mut handle) = self.tasks.remove(&id) else {
                 reports.push(format!("## {id}\nunknown or already collected"));
                 continue;
             };
-            reports.push(match handle.await {
-                Ok(task) => format!(
-                    "## {} ({}, {})\n{}",
-                    task.task_id,
-                    task.model,
-                    if task.ok { "finished" } else { "failed" },
-                    task.report
-                ),
+            let joined = tokio::select! {
+                joined = &mut handle => Some(joined),
+                () = signalled(&mut steering) => None,
+            };
+            let Some(joined) = joined else {
+                self.tasks.insert(id.clone(), handle);
+                not_collected.push(id);
+                continue;
+            };
+            if let Ok(task) = &joined
+                && task.paused
+            {
+                self.pausable_tasks.remove(&id);
+            }
+            reports.push(match joined {
+                Ok(task) => task.render(usize::MAX),
                 Err(error) => format!("## {id}\nthe subagent crashed: {error}"),
             });
+        }
+        if !not_collected.is_empty() {
+            reports.push(format!(
+                "Stopped waiting: the user sent a message, which follows. Not collected yet: {}.",
+                not_collected.join(", ")
+            ));
         }
         Ok(reports.join("\n\n"))
     }
@@ -2392,13 +2664,47 @@ async fn run_subagent(
     let mut outcome = agent.run_turn(text, None).await;
     // Messages queued for the subagent run as further turns before it reports; the
     // report is the last turn's reply, with every turn's usage.
-    while let Some(message) = agent.inbox().pop_or_close() {
+    while !outcome.paused
+        && let Some(message) = agent.inbox().pop_or_close()
+    {
         let next = agent.run_turn(message.text, None).await;
         outcome = TurnOutcome {
             text: next.text,
             ok: next.ok,
+            paused: next.paused,
             usage: add_usage(&outcome.usage, &next.usage),
             cost_usd: add_cost(outcome.cost_usd, next.cost_usd),
+        };
+    }
+    if outcome.paused {
+        // Paused for the user's steering message to the root: what still waited for it goes
+        // back to the root in its status, and its state is kept to resume from.
+        let waiting = agent.inbox().close_and_drain();
+        if !waiting.is_empty() {
+            outcome
+                .text
+                .push_str("\nMessages for it that were not delivered:");
+            for message in waiting {
+                outcome
+                    .text
+                    .push_str(&format!("\n- {}", truncate(&message.text, 300)));
+            }
+        }
+        shared.inboxes.close(&id);
+        agent.checkpoint();
+        shared.emitter.emit(
+            &id,
+            SessionEvent::TaskPaused {
+                task_id: id.clone(),
+                progress: truncate(&outcome.text, EVENT_OUTPUT_CHARS),
+            },
+        );
+        return TaskReport {
+            task_id: id,
+            model: spec,
+            ok: false,
+            paused: true,
+            report: truncate(&outcome.text, REPORT_CHARS),
         };
     }
     shared.inboxes.close(&id);
@@ -2425,8 +2731,51 @@ async fn run_subagent(
         task_id: id,
         model: spec,
         ok: outcome.ok,
+        paused: false,
         report: truncate(&outcome.text, REPORT_CHARS),
     }
+}
+
+/// How a model request ended.
+enum Streamed<T> {
+    Done(T),
+    /// The user steered the root: a pausable subagent stops its turn.
+    Paused,
+    /// The user stopped the session: the request is sent again on resume.
+    Stopped,
+}
+
+/// [`signalled`] for an agent that may have no pause signal (then never).
+async fn maybe_signalled(signal: Option<&mut watch::Receiver<u64>>) {
+    match signal {
+        Some(signal) => signalled(signal).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Resolves when `signal` changes (the user steered the root agent); never when its sender
+/// is gone.
+async fn signalled(signal: &mut watch::Receiver<u64>) {
+    if signal.changed().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Ends a paused (or otherwise finished) subagent without resuming it: it reports as cancelled
+/// and is no longer listed as paused. Its conversation stays, so it can still be resumed.
+pub(crate) fn cancel_subagent(shared: &Arc<Shared>, agent_id: &str) -> Result<(), String> {
+    shared.agents.cancel(agent_id)?;
+    shared.emitter.emit(
+        agent_id,
+        SessionEvent::TaskFinished {
+            task_id: agent_id.to_string(),
+            ok: false,
+            report: "Cancelled before it finished.".into(),
+            usage: TokenUsage::default(),
+            cost_usd: None,
+        },
+    );
+    Ok(())
 }
 
 /// Resumes a finished subagent with `text` as a new turn after its kept conversation, on the
@@ -2465,6 +2814,7 @@ pub(crate) fn resume_subagent(
         before.role.clone(),
     );
     agent.restore(shared.agents.conversation(agent_id));
+    let agent = agent.pausable();
     shared.emitter.emit(
         ROOT_AGENT,
         SessionEvent::TaskResumed {
@@ -2473,14 +2823,18 @@ pub(crate) fn resume_subagent(
             model: spec.clone(),
         },
     );
-    let text = if before.status == AgentStatus::Interrupted {
-        format!(
+    let text = match before.status {
+        AgentStatus::Interrupted => format!(
             "<note>The daemon stopped while you were working on the previous message, so that \
              turn did not finish. Check what was already done, finish it, and then handle this \
              message.</note>\n\n{text}"
-        )
-    } else {
-        text
+        ),
+        AgentStatus::Paused => format!(
+            "<note>You were paused while working on the previous message because the user \
+             redirected the work. Check what was already done, then carry on as this message \
+             says.</note>\n\n{text}"
+        ),
+        _ => text,
     };
     Ok((tokio::spawn(run_subagent(agent, text, None, true)), spec))
 }

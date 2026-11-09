@@ -121,21 +121,22 @@ pub fn queue_agent() -> ToolDefinition {
 pub fn list_agents() -> ToolDefinition {
     ToolDefinition {
         name: "list_agents",
-        description: "List this session's subagents: status (running, idle, failed, interrupted), model, turns, brief, and latest report. Finished subagents keep their conversation and can be given a follow-up with resume_agent.",
+        description: "List this session's subagents: status (running, idle, failed, interrupted, paused), model, turns, brief, and latest report. Finished subagents keep their conversation and can be given a follow-up with resume_agent.",
         parameters: json!({"type": "object", "properties": {}}),
         status: ToolStatus::Available,
     }
 }
 
-/// Give a finished subagent a follow-up.
+/// Give a finished or paused subagent a follow-up, or cancel a paused one.
 pub fn resume_agent() -> ToolDefinition {
     ToolDefinition {
         name: "resume_agent",
-        description: "Give a finished subagent a follow-up. It continues with its full earlier conversation (what it read, found, and did), so prefer it to spawn_agent for follow-ups on the same area. Collect its report with await_tasks.",
+        description: "Give a finished or paused subagent a follow-up. It continues with its full earlier conversation (what it read, found, and did), so prefer it to spawn_agent for follow-ups on the same area; for a subagent paused by the user's steering, the text can re-brief it. Collect its report with await_tasks. With cancel: true (and no text), end a paused subagent instead of resuming it.",
         parameters: json!({"type": "object", "properties": {
             "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
-            "text": {"type": "string", "description": "The follow-up"}
-        }, "required": ["agent_id", "text"]}),
+            "text": {"type": "string", "description": "The follow-up; required unless cancelling"},
+            "cancel": {"type": "boolean", "description": "End the paused subagent instead of resuming it"}
+        }, "required": ["agent_id"]}),
         status: ToolStatus::Available,
     }
 }

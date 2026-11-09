@@ -347,6 +347,28 @@ impl Session {
         self.controls.resume_now();
     }
 
+    /// Stops all of the session's work: the root and every subagent halt at their next safe
+    /// point (a tool call in flight finishes; a model request in flight is cancelled and sent
+    /// again on resume), holding no local-model slot, and queued messages wait. The stop is
+    /// journalled, so it survives a restart. Stopping a stopped session changes nothing.
+    pub fn stop(&self) {
+        if !self.controls.is_stopped() {
+            self.emitter.emit(ROOT_AGENT, SessionEvent::WorkStopped {});
+        }
+    }
+
+    /// Resumes a stopped session: every agent goes on from where it halted.
+    pub fn resume_work(&self) {
+        if self.controls.is_stopped() {
+            self.emitter.emit(ROOT_AGENT, SessionEvent::WorkResumed {});
+        }
+    }
+
+    /// Whether the user stopped the session.
+    pub fn is_stopped(&self) -> bool {
+        self.controls.is_stopped()
+    }
+
     /// Marks the session as watching something (a pull request), as merged, or neither.
     pub fn set_watch(&self, overlay: Option<(SessionStatus, String)>) {
         if let Some(event) = self.controls.set_overlay(overlay) {
@@ -438,6 +460,13 @@ impl Session {
         self.inboxes.remove(agent_id.unwrap_or(ROOT_AGENT), id)
     }
 
+    /// Turns a queued message into steering for the running turn, in place: the agent reads
+    /// it at its next safe point, or it runs as the next turn (ahead of the rest of the queue)
+    /// when the turn ends first. Steering a message for the root pauses its running subagents.
+    pub fn steer_queued(&self, agent_id: Option<&str>, id: &str) -> Result<(), QueueError> {
+        self.inboxes.steer(agent_id.unwrap_or(ROOT_AGENT), id)
+    }
+
     /// Every agent of the session with its kept state: the root first, then subagents in the
     /// order they started.
     pub fn agents(&self) -> Vec<AgentSummary> {
@@ -458,6 +487,16 @@ impl Session {
         // Nobody awaits a subagent the user resumed: its report is its `task_finished`.
         let (_handle, model) = crate::agent::resume_subagent(shared, agent_id, text)?;
         Ok(model)
+    }
+
+    /// Ends a paused (or otherwise finished) subagent without resuming it.
+    pub fn cancel_agent(&self, agent_id: &str) -> Result<(), String> {
+        let shared = self
+            .shared
+            .0
+            .get()
+            .ok_or("the session is still starting; try again in a moment")?;
+        crate::agent::cancel_subagent(shared, agent_id)
     }
 
     /// Answers a permission request. Answers to unknown or already-answered requests are
@@ -661,11 +700,23 @@ async fn run(
     }
     let queue = shared.inboxes.open(ROOT_AGENT);
     let auto_compact = config.auto_compact;
+    let mut stop = shared.controls.stop_signal();
     loop {
-        // Messages that waited for the last turn run first, in order.
-        let text = match queue.pop() {
+        // Messages that waited for the last turn run first, in order; while the user has the
+        // session stopped they keep waiting, and new ones join them.
+        let stopped = *stop.borrow_and_update();
+        let next = if stopped { None } else { queue.pop() };
+        let text = match next {
             Some(message) => message.text,
-            None => match commands.recv().await {
+            None => match tokio::select! {
+                // Resumed: the queue runs.
+                _ = stop.changed(), if stopped => continue,
+                command = commands.recv() => command,
+            } {
+                Some(Command::Message(message)) if stopped => {
+                    shared.inboxes.queue_for_root(message);
+                    continue;
+                }
                 Some(Command::Message(message)) => message.text,
                 // Subagents still running after their parent's turn may be waiting for this.
                 Some(Command::Respond {
@@ -769,6 +820,9 @@ async fn run(
                         Some(Command::SetModel { reply, .. } | Command::Compact { reply }) => {
                             let _ = reply.send(Err(SwitchError::Busy));
                         }
+                        // Every handle is gone and the session is stopped: its agents would
+                        // wait forever, so the turn is dropped (a restart reports it as cut off).
+                        None if shared.controls.is_stopped() => return,
                         // Every handle is gone: nobody can answer, so deny what is pending.
                         None => {
                             handles_open = false;

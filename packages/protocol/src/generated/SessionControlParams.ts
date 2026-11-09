@@ -7,10 +7,13 @@ export type SessionControlParams = { session_id: string,
  * `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
  * for `models.default`; refused while a turn runs), `compact` (summarise older turns
  * now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
- * `archive` (stop the session and keep its journal; announced with `session.updated`), or
- * `unarchive` (resume an archived session).
+ * `archive` (stop the session and keep its journal; announced with `session.updated`),
+ * `unarchive` (resume an archived session), `stop` (halt the root and every subagent at
+ * their next safe point; queued messages wait; kept across restarts; see `work_stopped`),
+ * or `resume` (continue a stopped session; not to be confused with `resume_now`, which ends
+ * a usage-limit wait).
  */
-action: "set_resume_policy" | "resume_now" | "watch" | "unwatch" | "set_model" | "compact" | "set_pinned" | "archive" | "unarchive", resume_policy: ResumePolicy | null, repo: string | null, pull_request: number | null, 
+action: "set_resume_policy" | "resume_now" | "watch" | "unwatch" | "set_model" | "compact" | "set_pinned" | "archive" | "unarchive" | "stop" | "resume", resume_policy: ResumePolicy | null, repo: string | null, pull_request: number | null, 
 /**
  * For `set_model`: a model table id or an `<endpoint>:<model>` spec.
  */

@@ -2,10 +2,13 @@
 
 export type SessionQueueParams = { session_id: string, 
 /**
- * `list`, `edit` (with `id` and `text`), or `remove` (with `id`). Editing or removing a
- * message that was already delivered fails.
+ * `list`, `edit` (with `id` and `text`), `remove` (with `id`), or `steer` (with `id`).
+ * `steer` turns a queued message into steering for the running turn, in place: it leaves
+ * the queue when the agent reads it at its next safe point (or runs as the next turn,
+ * ahead of the other queued messages, when the turn ended first). Editing or removing a
+ * message that was already delivered fails, and editing one that is steering fails.
  */
-action: "list" | "edit" | "remove", 
+action: "list" | "edit" | "remove" | "steer", 
 /**
  * A running subagent's task id; the root agent when absent.
  */

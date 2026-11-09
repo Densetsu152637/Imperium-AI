@@ -415,15 +415,42 @@ wait, or join the running turn when the user asks.
   The agent takes it at the next safe point: after the current model response and all of its
   tool calls have their results, before the next model call. It is added as a user message
   wrapped in `<steering>` (with a line saying it arrived while the agent was working and
-  nothing was cancelled), the agent emits `steered` (`id`, `text`), and the turn goes on. A
-  steering message that arrives while the model writes its final answer keeps the turn going
-  for one more call instead of letting it end. Steering never lands between a tool call and
-  its result. With no turn running, steering is an ordinary send.
+  nothing was cancelled), the agent emits `steered` (`id`, `text`, `paused`), and the turn
+  goes on. A steering message that arrives while the model writes its final answer keeps the
+  turn going for one more call instead of letting it end. Steering never lands between a tool
+  call and its result. With no turn running, steering is an ordinary send.
+- **Steering a queued message:** `session.queue` with `action: "steer"` (`id`) turns a queued
+  message into steering in place, under the queue's lock: it is never both waiting as a turn
+  and delivered as steering, and never lost. It leaves the queue when the agent takes it at
+  its next safe point; if the turn ends first, it runs as the next turn, ahead of the other
+  queued messages, which keep their order. Steering one that already steers changes nothing.
 - **Editing the queue:** `session.queue` (a method of its own, since it answers with the
-  queue) with `action` `list`, `edit` (`id`, `text`), or `remove` (`id`), returning the queue
-  after the action. A message already delivered (or a steering message already taken) can no
-  longer be changed (`-32602`). Steering messages wait in the same queue until taken, so they
-  can be edited or removed too; one still waiting when the turn ends runs as the next turn.
+  queue) with `action` `list`, `edit` (`id`, `text`), `remove` (`id`), or `steer` (`id`),
+  returning the queue after the action. A message already delivered (or a steering message
+  already taken) can no longer be changed (`-32602`). Steering messages wait in the same
+  queue until taken; they can be removed, but editing one fails (`-32602`, "is steering the
+  running turn"), since the agent may be reading it.
+- **Steering pauses the root's subagents:** a steering message for the root (sent with
+  `mode: "steer"` or steered from the queue) also pauses the subagents it spawned or resumed
+  (not `delegate_chunks` agents), so the message is acted on now rather than after they
+  report. Each stops at its next safe point: a tool call in flight finishes, a model request
+  in flight is cancelled, its conversation is saved, messages queued for it are handed back,
+  and it emits `task_paused` (`task_id`, `progress`) and gets the status `paused`. A root
+  blocked in `await_tasks` stops waiting (the tool result lists what it collected and what it
+  did not). At its next safe point the root collects the paused subagents (one that finished
+  meanwhile is collected with its report, so nothing is lost), makes sure it is resident again
+  (its model loaded and context restored; see below), and reads the steering message followed
+  by each stopped subagent's id, model, title, state, and progress, with how to resume or
+  cancel it; `steered` lists the paused ids in `paused`. The root resumes a paused subagent
+  with `resume_agent` (the text can re-brief it) or ends it with `resume_agent` and
+  `cancel: true`; subagents it leaves undecided stay paused for the user
+  (`session.agent_resume`, `session.agent_cancel`). Steering a subagent itself (`steer_agent`,
+  or `session.send` with its `agent_id`) pauses nothing.
+- **The root's residency on wake:** while it waits on subagents, the root is asleep to the
+  local runtime (`waiting`), so its model may be swapped out and its slot saved. Its next model
+  call's `acquire` loads the model and gives the slot back; the wake path calls
+  `ensure_resident` first, the single place an explicit slot restore from the local runtime
+  is wired in. A hosted model keeps no state between calls.
 - **Subagents:** `session.send` and `session.queue` take an optional `agent_id` (a task id
   such as `t1`) to reach a running subagent; its events carry that agent id. A queued message
   runs as a further turn of the subagent before it reports, and its report (what
@@ -444,6 +471,38 @@ wait, or join the running turn when the user asks.
 steers, and `/queue` lists the queue. The desktop composer stays enabled while the agent works
 ([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
+## Stopping a session
+
+**Implemented:** the user can stop all of a session's work and resume it later.
+
+- **Stop:** `session.control` with `action: "stop"` emits `work_stopped` from the root. The
+  root and every subagent (including `delegate_chunks` agents) halt at their next safe point,
+  before their next model call. A tool call in flight finishes first. A model request in
+  flight is cancelled (a notice says so) and sent again on resume. While halted, an agent
+  holds no local-model slot: it is asleep to the runtime (`waiting`), which may swap the model
+  out and save the slot. `hold_while_stopped` in the engine is the single place where an
+  explicit slot release from the local runtime will be wired in, and `ensure_resident` is
+  where the restore goes. State is kept: a subagent's conversation is saved at each safe
+  point, and the root's after its turn.
+- **Queue:** queued messages do not start while the session is stopped, and messages sent
+  meanwhile (to an idle root too) join the queue. Steering a stopped session takes effect on
+  resume.
+- **Status:** `paused`, with the detail `stopped` (unlike a usage-limit wait, which has no
+  detail). Subagents keep the status `running` in `session.agents`; clients show them as
+  paused while the session is stopped.
+- **Resume:** `session.control` with `action: "resume"` emits `work_resumed`. Every agent
+  goes on from where it halted, and the queue runs in order. `resume_now` is different: it
+  ends a usage-limit wait. Stopping a stopped session, or resuming a running one, changes
+  nothing.
+- **Restarts:** the stop is journalled, so a resumed session starts stopped and does not
+  resume on its own; its queue waits for `resume`. As with any restart, a turn the restart
+  cut off is reported failed, and subagents that were working are marked interrupted
+  ([agent state](#agent-state)). If every handle to a stopped session is dropped mid-turn,
+  that turn is abandoned rather than left waiting forever.
+- **Archiving:** a stopped session is not idle-done. It is never archived when its pull
+  request closes, and the inactivity check archives it only after
+  `sessions.auto_archive_after_days`, like an idle one (still not with queued messages).
+
 ## Agent state
 
 **Implemented:** every agent of a session (the root and each subagent) keeps its state, so a
@@ -460,7 +519,10 @@ already explored it.
   tool calls all have results) so an interrupted subagent loses at most its current step. The
   root's conversation stays in `<id>.messages.json`.
 - **Statuses.** `running`, `idle` (finished; for subagents, reported), `failed` (its last turn
-  or task failed; still resumable), and `interrupted` (the daemon stopped while it worked).
+  or task failed, or it was cancelled; still resumable), `interrupted` (the daemon stopped
+  while it worked), and `paused` (stopped for a steering message to the root; see
+  [queueing and steering](#queueing-and-steering)). A paused subagent stays paused across a
+  restart.
   Records follow the session's events (`task_spawned`, `task_resumed`, `turn_started`,
   `model_call_completed`, `plan_updated`, `task_finished`, ...), so replaying a journal
   rebuilds the agent tree.
@@ -471,7 +533,9 @@ already explored it.
   and after a restart they are listed from the journal but not resumable. Project-agent
   sessions keep it in memory only, as they start afresh with the daemon.
 - **Resuming.** The root agent has `list_agents` (each subagent's status, model, turns,
-  message count, brief, and latest report) and `resume_agent` (`agent_id`, `text`). Resuming
+  message count, brief, and latest report) and `resume_agent` (`agent_id`, `text`; or
+  `cancel: true` to end a paused subagent instead, which emits `task_finished`, not ok,
+  "Cancelled", and keeps its conversation). Resuming
   rebuilds the subagent under the current instructions with its kept conversation, on the
   model it last ran on (in the catalog after a restart; the session's model when it is no
   longer available), emits `task_resumed` (`task_id`, `text`, `model`) from the root, and runs
@@ -487,6 +551,8 @@ already explored it.
   (`AgentSummary`: the fields above, `resumable`, and `updated_at_ms`), the root first, and
   `session.agent_resume` (`session_id`, `agent_id`, `text`) resumes a subagent for the user,
   returning the model it runs on; nobody awaits it, so its report is its `task_finished`.
+  `session.agent_cancel` (`session_id`, `agent_id`) ends a paused (or otherwise finished)
+  subagent; it fails while the subagent runs.
   `session.send` with its `agent_id` steers or queues for it while it works. Phones may read
   `session.agents`. `imperium chat` has `/agents` and `/resume-agent <id> <text>`; the desktop
   has *Continue with…* in the Agents panel ([07](07-desktop-ui.md#agents-panel-implemented)).
@@ -494,7 +560,8 @@ already explored it.
   resumable; task ids continue after the highest kept one. A subagent that was working when the
   daemon stopped gets a `task_finished` (not ok, saying the daemon stopped) and the status
   `interrupted`; resuming it continues from its last saved point, with a note telling it the
-  earlier turn did not finish before the follow-up.
+  earlier turn did not finish before the follow-up. A paused subagent resumes the same way,
+  with a note that it was paused because the user redirected the work.
 - **Retention.** Agent state is kept while the session exists, including while it is archived
   (unarchiving resumes it with its agents), and `session.delete` deletes the session's
   `.agents` folder.

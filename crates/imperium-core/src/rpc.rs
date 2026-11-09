@@ -66,8 +66,9 @@ use imperium_protocol::methods::{
     SystemResourcesSubscribe, SystemResourcesSubscribeParams, SystemResourcesSubscribeResult,
 };
 use imperium_protocol::methods::{
-    SessionAgentResume, SessionAgentResumeParams, SessionAgentResumeResult, SessionAgents,
-    SessionAgentsParams, SessionAgentsResult,
+    SessionAgentCancel, SessionAgentCancelParams, SessionAgentCancelResult, SessionAgentResume,
+    SessionAgentResumeParams, SessionAgentResumeResult, SessionAgents, SessionAgentsParams,
+    SessionAgentsResult,
 };
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 use imperium_protocol::methods::{
@@ -615,6 +616,14 @@ impl Connection {
                     })
                 })
             }
+            SessionAgentCancel::NAME => {
+                call::<SessionAgentCancel>(request.params, |params: SessionAgentCancelParams| {
+                    self.session(&params.session_id)?
+                        .cancel_agent(&params.agent_id)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+                    Ok(SessionAgentCancelResult {})
+                })
+            }
             SessionSuggestionRespond::NAME => {
                 call_later::<SessionSuggestionRespond, _>(request.params, &mut later, |params| {
                     crate::suggestions::respond(Arc::clone(&self.state), params)
@@ -867,6 +876,14 @@ impl Connection {
                     session.set_resume_policy(params.resume_policy);
                     None
                 }
+                "stop" => {
+                    session.stop();
+                    None
+                }
+                "resume" => {
+                    session.resume_work();
+                    None
+                }
                 "resume_now" => {
                     session.resume_now();
                     if session.run_now().released() {
@@ -930,7 +947,7 @@ impl Connection {
         }
     }
 
-    /// `session.queue`: lists, edits, or removes an agent's queued messages.
+    /// `session.queue`: lists, edits, removes, or steers an agent's queued messages.
     fn queue(&self, params: SessionQueueParams) -> Result<SessionQueueResult, ErrorObject> {
         let session = self.session(&params.session_id)?;
         let agent = params.agent_id.as_deref();
@@ -943,6 +960,7 @@ impl Connection {
         match params.action.as_str() {
             "list" => {}
             "remove" => session.remove_queued(agent, id()?).map_err(queue_error)?,
+            "steer" => session.steer_queued(agent, id()?).map_err(queue_error)?,
             "edit" => {
                 let text = params
                     .text
@@ -955,7 +973,7 @@ impl Connection {
             other => {
                 return Err(ErrorObject::new(
                     codes::INVALID_PARAMS,
-                    format!("unknown queue action {other:?}; use list, edit, or remove"),
+                    format!("unknown queue action {other:?}; use list, edit, remove, or steer"),
                 ));
             }
         }
@@ -986,9 +1004,10 @@ fn stopped(error: imperium_engine::SessionClosed) -> ErrorObject {
 fn queue_error(error: QueueError) -> ErrorObject {
     let code = match error {
         QueueError::Closed => codes::INTERNAL_ERROR,
-        QueueError::UnknownAgent(_) | QueueError::UnknownMessage(_) | QueueError::Empty => {
-            codes::INVALID_PARAMS
-        }
+        QueueError::UnknownAgent(_)
+        | QueueError::UnknownMessage(_)
+        | QueueError::Empty
+        | QueueError::Steering(_) => codes::INVALID_PARAMS,
     };
     ErrorObject::new(code, error.to_string())
 }
