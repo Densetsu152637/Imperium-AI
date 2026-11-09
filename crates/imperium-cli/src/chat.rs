@@ -681,15 +681,24 @@ fn describe_fit(switched: bool, model: &str, fit: Option<&ContextFit>) -> String
             compaction.summary_model
         ),
         None => match fit.budget {
-            Some(budget) => format!(
-                "{head}; the conversation ({} tokens) fits its budget of {} tokens{}.",
+            // A switch is estimated: the model is loaded and the conversation fitted to it when
+            // the next message is sent.
+            Some(budget) if switched && fit.tokens > budget => format!(
+                "{head}; the conversation (about {} tokens) is over its budget of {} tokens, so \
+                 older turns are compacted when you send the next message.",
                 tokens(fit.tokens),
-                tokens(budget),
-                if switched {
-                    ""
-                } else {
-                    "; nothing older to compact"
-                }
+                tokens(budget)
+            ),
+            Some(budget) if switched => format!(
+                "{head}; the conversation (about {} tokens) fits its budget of {} tokens.",
+                tokens(fit.tokens),
+                tokens(budget)
+            ),
+            Some(budget) => format!(
+                "{head}; the conversation ({} tokens) fits its budget of {} tokens; nothing \
+                 older to compact.",
+                tokens(fit.tokens),
+                tokens(budget)
             ),
             None => format!(
                 "{head}; its context window is unknown, so the conversation ({} tokens) was \

@@ -588,50 +588,79 @@ impl TokenCounter {
         request: &Request<'_>,
         scale: Option<f64>,
     ) -> Measured {
-        let indexed = request.indexed_segments();
-        let segments: Vec<(Category, &str)> = indexed
+        let segments: Vec<(Category, &str)> = request
+            .indexed_segments()
             .iter()
             .map(|(_, category, text)| (*category, *text))
             .collect();
         let tokenized = self.tokenize(client, model, &segments, request.tools).await;
-        let (counts, method) = match tokenized.counts {
-            Some(counts) => (counts, TokenCountMethod::Exact),
-            None => {
-                let factor = scale.unwrap_or(1.0);
-                let counts = segments
-                    .iter()
-                    .map(|(_, text)| (estimate_tokens(text) as f64 * factor).ceil() as u64)
-                    .collect();
-                let method = if scale.is_some() {
-                    TokenCountMethod::Calibrated
-                } else {
-                    TokenCountMethod::Estimated
-                };
-                (counts, method)
-            }
-        };
-        let mut messages: Vec<u64> = request.messages.iter().map(message_formatting).collect();
-        let mut tools = [0u64; 2];
-        for ((index, category, _), count) in indexed.iter().zip(&counts) {
-            match index {
-                Some(index) => messages[*index] += count,
-                None if *category == Category::ToolsMcp => tools[1] += count,
-                None => tools[0] += count,
-            }
-        }
-        if method == TokenCountMethod::Exact
-            && let Some((builtin, mcp)) = tokenized.rendered_tools
-        {
-            tools = [builtin, mcp];
-        }
-        Measured {
-            messages,
-            fixed: tools[0] + tools[1] + request.fixed_formatting(),
-            method,
-            window: tokenized.window.or(model.context_window),
-        }
+        let window = tokenized.window.or(model.context_window);
+        assemble(request, tokenized, scale, window)
     }
 
+    /// Estimates `request` for a model without asking anything of its server (which may not be
+    /// running): the heuristic's counts, against `window` (what the model is expected to offer).
+    pub(crate) fn estimate(request: &Request<'_>, window: Option<u64>) -> Measured {
+        let tokenized = Tokenized {
+            counts: None,
+            rendered_tools: None,
+            window: None,
+        };
+        assemble(request, tokenized, None, window)
+    }
+}
+
+/// A measurement from what the tokenizer said (or the heuristic, scaled by `scale` when given).
+fn assemble(
+    request: &Request<'_>,
+    tokenized: Tokenized,
+    scale: Option<f64>,
+    window: Option<u64>,
+) -> Measured {
+    let indexed = request.indexed_segments();
+    let segments: Vec<(Category, &str)> = indexed
+        .iter()
+        .map(|(_, category, text)| (*category, *text))
+        .collect();
+    let (counts, method) = match tokenized.counts {
+        Some(counts) => (counts, TokenCountMethod::Exact),
+        None => {
+            let factor = scale.unwrap_or(1.0);
+            let counts = segments
+                .iter()
+                .map(|(_, text)| (estimate_tokens(text) as f64 * factor).ceil() as u64)
+                .collect();
+            let method = if scale.is_some() {
+                TokenCountMethod::Calibrated
+            } else {
+                TokenCountMethod::Estimated
+            };
+            (counts, method)
+        }
+    };
+    let mut messages: Vec<u64> = request.messages.iter().map(message_formatting).collect();
+    let mut tools = [0u64; 2];
+    for ((index, category, _), count) in indexed.iter().zip(&counts) {
+        match index {
+            Some(index) => messages[*index] += count,
+            None if *category == Category::ToolsMcp => tools[1] += count,
+            None => tools[0] += count,
+        }
+    }
+    if method == TokenCountMethod::Exact
+        && let Some((builtin, mcp)) = tokenized.rendered_tools
+    {
+        tools = [builtin, mcp];
+    }
+    Measured {
+        messages,
+        fixed: tools[0] + tools[1] + request.fixed_formatting(),
+        method,
+        window,
+    }
+}
+
+impl TokenCounter {
     /// Every segment's count from the tokenizer, asking the server only for text it has not
     /// counted before.
     async fn count_all(

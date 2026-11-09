@@ -29,7 +29,7 @@ use imperium_memory::{NewEntry, Scope};
 use imperium_protocol::methods::{Compaction, ContextFit};
 
 use crate::breakdown::{
-    Call, Category, Measured, Request, Spans, estimate_tokens, join_parts, tool_texts,
+    Call, Category, Measured, Request, Spans, TokenCounter, estimate_tokens, join_parts, tool_texts,
 };
 use crate::compact::{self, SwitchError};
 use crate::queue::{Inbox, QueueError, steering_text};
@@ -98,6 +98,13 @@ pub struct Agent {
     last_reported: Option<(usize, u64)>,
     /// A single-call task: no tools, no recalled context, and exactly one model call.
     single_call: bool,
+    /// Set when the model was switched (or first given) and the conversation has not been
+    /// measured against it yet: that happens when the next turn starts, so selecting a model
+    /// never loads it.
+    fit_pending: bool,
+    /// While a fit is pending after a switch: the model that read the conversation last, which
+    /// writes a compaction's summary when it can.
+    previous: Option<ResolvedModel>,
 }
 
 impl Agent {
@@ -180,6 +187,8 @@ impl Agent {
             last_call: None,
             last_reported: None,
             single_call: false,
+            fit_pending: false,
+            previous: None,
         }
     }
 
@@ -1400,11 +1409,12 @@ fn single_call_prompt(root: &str) -> String {
 /// Tool arguments as JSON for hooks, or the raw text when they do not parse.
 /// Switching models and compacting the conversation; see [`compact`](crate::compact).
 impl Agent {
-    /// Switches this agent to `target` from its next turn. When the conversation does not fit
-    /// the target's context window it is compacted first; when it cannot be made to fit, the
-    /// agent keeps its model and conversation.
-    pub async fn switch_model(&mut self, target: ResolvedModel) -> Result<ContextFit, SwitchError> {
-        let fit = self.fit_to(&target, false).await?;
+    /// Switches this agent to `target` from its next turn, without loading or calling it: the
+    /// switch is journalled now, and the conversation is measured against the target (and
+    /// compacted if it does not fit) when the next turn starts ([`Agent::settle_model`]).
+    /// Returns an estimate of the conversation against the window the target is expected to
+    /// have.
+    pub fn select_model(&mut self, target: ResolvedModel) -> ContextFit {
         let from = std::mem::replace(&mut self.model, target);
         self.shared
             .agents
@@ -1413,39 +1423,111 @@ impl Agent {
         // the next local reservation starts from was the old model's.
         self.last_reported = None;
         self.last_call = None;
+        match self.previous.take() {
+            // Switched again before a turn: the model that last read the conversation stays
+            // the one that summarises it, and going back to it leaves nothing to fit.
+            Some(previous) if self.fit_pending => {
+                if previous.spec == self.model.spec {
+                    self.fit_pending = false;
+                } else {
+                    self.previous = Some(previous);
+                }
+            }
+            _ => {
+                self.previous = Some(from.clone());
+                self.fit_pending = true;
+            }
+        }
         self.emit(SessionEvent::ModelChanged {
             from: from.spec,
             to: self.model.spec.clone(),
-            compacted: fit.compaction.is_some(),
+            compacted: false,
         });
-        Ok(fit)
+        self.estimate_fit()
     }
 
-    /// Takes up the model a session without one was just given: checks the (empty)
-    /// conversation fits it and journals the change from no model.
-    pub(crate) async fn adopt_first_model(&mut self) -> Result<ContextFit, SwitchError> {
-        let model = self.model.clone();
-        let fit = self.fit_to(&model, false).await?;
+    /// Takes up the model a session without one was just given, without loading it: journals
+    /// the change from no model; the conversation is fitted when the first turn starts.
+    pub(crate) fn adopt_first_model(&mut self) -> ContextFit {
+        self.fit_pending = true;
+        self.previous = None;
         self.emit(SessionEvent::ModelChanged {
             from: String::new(),
-            to: model.spec,
-            compacted: fit.compaction.is_some(),
+            to: self.model.spec.clone(),
+            compacted: false,
         });
-        Ok(fit)
+        self.estimate_fit()
+    }
+
+    /// Marks the conversation as not yet measured against this agent's model, so the next turn
+    /// fits it first (a session resumed after a switch that no turn followed).
+    pub(crate) fn mark_unfitted(&mut self) {
+        self.fit_pending = true;
+    }
+
+    /// Whether the conversation still has to be fitted to a model switched to.
+    pub(crate) fn fit_pending(&self) -> bool {
+        self.fit_pending
+    }
+
+    /// Fits the conversation to the model it was switched to, when a fit is pending: measures
+    /// it with the model's own tokenizer and window (loading a local model) and compacts it if
+    /// it does not fit. Called when a turn starts. On an error the fit stays pending, so the
+    /// next turn tries again, or another model can be picked.
+    pub(crate) async fn settle_model(&mut self) -> Result<Option<ContextFit>, SwitchError> {
+        if !self.fit_pending {
+            return Ok(None);
+        }
+        let model = self.model.clone();
+        let fit = self.fit_to(&model, false).await?;
+        self.fit_pending = false;
+        self.previous = None;
+        Ok(Some(fit))
+    }
+
+    /// The conversation estimated against the window this agent's model is expected to have,
+    /// without asking its server anything: the model table's window, else (for a local model)
+    /// what the runtime would start it with.
+    fn estimate_fit(&self) -> ContextFit {
+        let (specs, mcp) = self.tool_specs();
+        let tools = tool_texts(&specs, mcp);
+        let window = self.model.context_window.or_else(|| {
+            self.local_models()
+                .and_then(|local| local.planned_context(&self.model.model))
+        });
+        let request = Request {
+            messages: &self.messages,
+            spans: &self.spans,
+            tools: &tools,
+        };
+        let measured = TokenCounter::estimate(&request, window);
+        ContextFit {
+            tokens: measured.total(),
+            context_window: window,
+            budget: window.map(compact::budget),
+            method: measured.method,
+            compaction: None,
+        }
     }
 
     /// Compacts the conversation now for this agent's own model, keeping the last
     /// [`KEEP_TURNS`](compact::KEEP_TURNS) turns verbatim (fewer if they do not fit).
     pub async fn compact_now(&mut self) -> Result<ContextFit, SwitchError> {
         let model = self.model.clone();
-        self.fit_to(&model, true).await
+        let fit = self.fit_to(&model, true).await?;
+        self.fit_pending = false;
+        self.previous = None;
+        Ok(fit)
     }
 
     /// Compacts the conversation only when it no longer fits this agent's own model's budget
     /// (nothing happens when the model's context window is unknown).
     pub async fn fit_current(&mut self) -> Result<ContextFit, SwitchError> {
         let model = self.model.clone();
-        self.fit_to(&model, false).await
+        let fit = self.fit_to(&model, false).await?;
+        self.fit_pending = false;
+        self.previous = None;
+        Ok(fit)
     }
 
     /// Measures the conversation for `target` and, when it does not fit the target's budget
@@ -1590,8 +1672,8 @@ impl Agent {
     }
 
     /// Summarises the messages before `cut` (after the system prompt) in about `allowance`
-    /// tokens. The agent's current model writes it, as it has read the whole conversation; if
-    /// it cannot be reached, the target model does. Returns the summary and the model's spec.
+    /// tokens. The model that last read the whole conversation writes it (the one switched from,
+    /// while a switch's fit is pending); if it cannot be reached, the target model does. Returns the summary and the model's spec.
     async fn summarise(
         &self,
         target: &ResolvedModel,
@@ -1599,8 +1681,10 @@ impl Agent {
         allowance: u64,
     ) -> Result<(String, String), SwitchError> {
         let request = compact::summary_request(&self.messages[1..cut], allowance * 3 / 4);
-        let mut candidates = vec![&self.model];
-        if target.spec != self.model.spec {
+        // After a switch, the model the conversation was last read by.
+        let first = self.previous.as_ref().unwrap_or(&self.model);
+        let mut candidates = vec![first];
+        if target.spec != first.spec {
             candidates.push(target);
         }
         let mut failures = Vec::new();

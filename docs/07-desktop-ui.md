@@ -408,11 +408,15 @@ colour. Choosing one switches the session with `session.control` `set_model`, al
 waiting for a model, whose queued messages then run. While a turn runs the choice is held and
 marked *After this turn* (with a button to keep the current model), and applied when the turn
 ends, since switches apply between turns ([03](03-agent-engine.md#switching-models-and-compaction)).
-When the new model's context window is smaller than the conversation needs, the daemon compacts
-it first: the footer notes `Compacted 30.1k → 9.2k tokens`, and the transcript gets a notice
-naming the target, the token counts, how many messages were summarised, and by which model,
-followed by *Switched model from x to y*. A refused switch (nothing fits, a missing key, a turn
-that started meanwhile) shows its error beside the list and leaves the model as it was.
+Choosing never loads the model ([04](04-models-and-routing.md#when-models-load)): the transcript
+gets *Switched model from x to y* at once, and when the estimate says the conversation is over the
+new model's budget the footer notes that older turns are compacted when you send. The next
+message loads the model and, when its context window is smaller than the conversation needs,
+compacts it first: the transcript gets a notice naming the target, the token counts, how many
+messages were summarised, and by which model. A refused switch (a missing key, a local model
+the folders no longer have, a turn that started meanwhile) shows its error beside the list and
+leaves the model as it was; a model that cannot load, or a conversation nothing fits, fails that
+message's turn with the reason, and another model can be picked.
 Breakdowns of a compacted conversation list the summary as its own category, *Conversation
 summary*. (Before this, the picker sat among the header pills as a borderless native select
 that read like plain text, listed only the table, and fell back to plain text when the table

@@ -1,6 +1,7 @@
 //! `session.control` `set_model`: a model table id switches the session (no window is known,
 //! so nothing is compacted), unknown models and actions are refused, and a session resumed
-//! after a restart keeps the model it switched to.
+//! after a restart keeps the model it switched to. A local model is checked against the model
+//! folders but not loaded when it is selected; the first message loads it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -145,4 +146,108 @@ async fn set_model_switches_by_table_id_and_survives_a_restart() {
         restarted.session(&session_id).unwrap().model().as_deref(),
         Some("b:new")
     );
+}
+
+/// The smallest GGUF the scanner accepts: a version 3 header with no tensors or keys.
+fn gguf() -> Vec<u8> {
+    let mut bytes = b"GGUF".to_vec();
+    bytes.extend(3u32.to_le_bytes());
+    bytes.extend(0u64.to_le_bytes());
+    bytes.extend(0u64.to_le_bytes());
+    bytes
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_model_is_checked_but_not_loaded_until_the_session_sends_to_it() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let models = tempfile::tempdir().unwrap();
+    let repo = models.path().join("unsloth").join("Tiny-GGUF");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("tiny-Q4_K_M.gguf"), gguf()).unwrap();
+    // A server that does not exist: any load fails.
+    let server = home.path().join("no-such-llama-server");
+    let config = format!(
+        "[models]\ndefault = \"a:old\"\nfolders = ['{}']\n\
+         [endpoints.a]\nbase_url = \"http://127.0.0.1:9/v1\"\n\
+         [runtime.llamacpp]\ncustom_path = '{}'\n\
+         [hardware]\nvram_mb = 0\nram_mb = 16384\n\
+         [workflow]\nenabled = false",
+        models.path().display(),
+        server.display()
+    );
+    let settings = imperium_config::Config::from_layers([
+        imperium_config::Layer::defaults(),
+        imperium_config::Layer::new(
+            imperium_config::Source::User("test".into()),
+            config.parse().unwrap(),
+        ),
+    ])
+    .settings()
+    .unwrap();
+    let paths = imperium_config::Paths::under(home.path());
+    let local = imperium_core::LocalRuntime::start(&paths, &settings).expect("a model folder");
+    let state = DaemonState::new(paths, settings, Some(local));
+    let id = state.local_models().models[0].id.clone();
+    let (session, _) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    let session_id = session.id().to_string();
+    let mut connection = Connection::new(Arc::clone(&state));
+    let handshake = json!({"client": {"name": "test", "version": "0"},
+                           "protocol": {"major": 0, "minor": 2}});
+    result(call(&mut connection, 1, "system.handshake", handshake).await);
+    let control =
+        |model: &str| json!({"session_id": session_id, "action": "set_model", "model": model});
+
+    // Selecting the local model succeeds without starting its server.
+    let spec = format!("llamacpp:{id}");
+    let switched: SessionControlResult = serde_json::from_value(result(
+        call(&mut connection, 2, "session.control", control(&spec)).await,
+    ))
+    .unwrap();
+    assert_eq!(switched.model.as_deref(), Some(spec.as_str()));
+    let context = switched.context.expect("an estimate");
+    assert_eq!(
+        context.method,
+        imperium_protocol::session::TokenCountMethod::Estimated
+    );
+    assert!(context.context_window.is_some(), "the planned context");
+    assert!(state.loaded_local_models().is_empty());
+
+    // A local model the folders do not have is refused at once.
+    let missing = call(
+        &mut connection,
+        3,
+        "session.control",
+        control("llamacpp:no-such-model"),
+    )
+    .await;
+    assert_eq!(error_code(missing), codes::MODEL_UNAVAILABLE);
+    assert_eq!(session.model().as_deref(), Some(spec.as_str()));
+
+    // Sending loads it, and the load failure fails that turn with the reason.
+    let mut events = session.subscribe();
+    session.send("hello".into()).unwrap();
+    let failure = loop {
+        let event = tokio::time::timeout(Duration::from_secs(30), events.recv())
+            .await
+            .expect("an event within 30 s")
+            .unwrap()
+            .event;
+        if let SessionEvent::TurnFailed { message } = event {
+            break message;
+        }
+    };
+    assert!(
+        failure.contains(&format!("could not load local model {id}")),
+        "{failure}"
+    );
+
+    // The session can switch to another model afterwards.
+    let back: SessionControlResult = serde_json::from_value(result(
+        call(&mut connection, 4, "session.control", control("a:old")).await,
+    ))
+    .unwrap();
+    assert_eq!(back.model.as_deref(), Some("a:old"));
 }

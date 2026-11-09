@@ -259,7 +259,7 @@ turn. The desktop shows it in the session's *Context and outputs* section
 
 - Planned: per-agent context windows track usage and, near the limit during a turn, the engine
   compacts automatically with the [same compaction](#switching-models-and-compaction) a model
-  switch uses (today it runs on a switch or when asked).
+  switch uses (today it runs at the first turn after a switch, or when asked).
 - Large tool outputs are stored as artefacts; the model receives a truncated view plus a
   handle it can page through.
 
@@ -274,9 +274,11 @@ task holds it:
   `queue_changed`), and the status becomes `needs_model` (`status_changed`), which clients show
   with a prompt to pick a model. Before any message waits, the session is `idle`.
 - `session.control` `set_model` (the session's model picker) gives it a model: the root agent is
-  made on it, `model_changed` is journalled with an empty `from`, the status returns to `idle`,
-  and the waiting messages run as turns in order. A model that cannot be resolved is refused
-  (`-32004`) and the session keeps waiting. `compact` is refused while there is no model.
+  made on it (nothing is loaded: the first turn [loads it](#switching-models-and-compaction)),
+  `model_changed` is journalled with an empty `from`, the status returns to `idle`, and the
+  waiting messages run as turns in order. A model that cannot be resolved, or a local model the
+  model folders do not have, is refused (`-32004`) and the session keeps waiting. `compact` is
+  refused while there is no model.
 - The session's record keeps `model: null`, so after a daemon restart it resumes still waiting
   (with any queued messages) unless `models.default` has been set meanwhile, which it then uses.
 
@@ -289,30 +291,44 @@ fail to start without one.
 and keep its conversation (`Session::set_model`; `session.control` with `set_model` and a model
 table id or `<endpoint>:<model>` spec, or none for `models.default`). The daemon resolves the
 model as `session.create` does, so an unknown endpoint or a missing key is refused with
-`-32004` before anything changes.
+`-32004` before anything changes; a local model must also be among those the local runtime found
+in the model folders (`-32004` otherwise, or when no local runtime is set up).
 
+- **Selecting never loads.** Picking a model (the new-session composer, `session.create` with a
+  model, or the session's model picker) records it and returns at once: no server is started,
+  no slot is leased, and nothing is sent to the model. Everything that needs the model happens
+  when the session next sends it a message ([when models load](04-models-and-routing.md#when-models-load)).
 - **When it applies:** between turns only. The switch is handled by the session's task when no
   turn is running and takes effect from the next turn; while a turn runs (including one paused
   for a usage limit or waiting on a permission) it is refused with `-32006` ("a turn is
   running"), never applied mid-stream. Messages sent meanwhile [queue](#queueing-and-steering) as usual. Running
   subagents keep their own models; subagents spawned later fall back to the new model.
-- **Measuring:** the conversation the target would read (system prompt, every message, and
-  the tool definitions) is counted with the target's client, by the [context
+- **At selection, an estimate:** `session.control` answers with the conversation estimated by
+  the heuristic (`method` `estimated`) against the window the target is expected to have: the
+  model table's `context_window`, else for a local model the context its launch settings give
+  a session (the loaded server's own when it is loaded). Clients label it as an estimate; the
+  desktop's model picker notes when it is over the budget and will be compacted on send.
+- **At the first turn, measuring:** before the first turn on the new model adds its message,
+  the conversation the target will read (system prompt, every message, and the tool
+  definitions) is counted with the target's client, by the [context
   breakdown](#context-management) machinery: exactly with its tokenizer when it has one (a
-  local llama.cpp model is loaded for this, as its next turn would), else with the heuristic
-  scaled by how far it was off on the latest call that reported its prompt size
-  (`calibrated`), else the heuristic alone (`estimated`). The chat template's formatting is
-  estimated. The window is the server's (`/props`), else the model table's `context_window`;
-  when neither is known the conversation is not checked and the switch goes ahead.
+  local llama.cpp model is loaded now, inside the turn, as its call would load it anyway), else
+  with the heuristic scaled by how far it was off on the latest call that reported its prompt
+  size (`calibrated`), else the heuristic alone (`estimated`). The chat template's formatting
+  is estimated. The window is the server's (`/props`), else the model table's
+  `context_window`; when neither is known the conversation is not checked. A session resumed
+  after a switch that no turn followed measures on its first turn too.
 - **Budget:** the window less 15% for the reply (no per-model output limit is configured, so
-  a fixed share stands in for one). A conversation within it switches unchanged.
-- **Compaction:** otherwise older messages are replaced by a summary. The system prompt is
+  a fixed share stands in for one). A conversation within it goes on unchanged.
+- **Compaction:** otherwise older messages are replaced by a summary, still before the turn's
+  message is added. The system prompt is
   always kept; the most recent messages are kept verbatim, as many as fit in 60% of the budget
   (so the conversation can go on) after the system prompt, tools, and room for the summary (a
   third of what is left, 32 to 2,048 tokens). The kept part starts at a user turn when one
   fits, else at an assistant message within the last turn; it never starts at a tool result,
-  so every kept tool call keeps its result. The **current** model writes the summary, since it
-  has been reading the conversation and its window holds it; if it cannot be reached (an
+  so every kept tool call keeps its result. The model **switched from** writes the summary,
+  since it has been reading the conversation and its window holds it (switching several times
+  between turns keeps the one that last ran a turn); if it cannot be reached (an
   endpoint that is down, a local model that will not load), the target model writes it. The
   summarisation prompt asks it to keep the user's goals and constraints, decisions and their
   reasons, file paths, commands, identifiers, and versions, what the important tool results
@@ -322,24 +338,31 @@ model as `session.create` does, so an unknown endpoint or a missing key is refus
   `summary`), or in a user message of its own when the kept part starts mid-turn. The result
   is measured again: a summary too long is shortened, and if the kept messages are still too
   many, fewer are kept and the summary rewritten, up to six attempts.
-- **Refusal:** when the system prompt and tools alone (plus a minimal summary) exceed the
-  budget, or compaction cannot get under it, the switch is refused with `-32007` and the
-  session keeps its model and conversation untouched. A summary no model could write is
-  refused with `-32004`.
-- **Events and results:** compaction emits `context_compacted` (the target, tokens before and
-  after, messages summarised, budget, window, counting method, and the summarising model), then
-  the switch emits `model_changed` (`from`, `to`, `compacted`); the session summary's `model`
-  follows. `session.control` returns `model` and `context` (`tokens`, `context_window`,
-  `budget`, `method`, and `compaction` with the token counts and summarised messages).
+- **Failure at the first turn:** when the model cannot be reached or loaded (no runtime, the
+  server missing, not enough memory), when the system prompt and tools alone (plus a minimal
+  summary) exceed the budget, when compaction cannot get under it, or when no model could
+  write the summary, the turn fails (`turn_started`, then `turn_failed` naming the model and
+  the reason) without the message reaching any model and with the conversation untouched. The
+  session stays on the selected model and usable: sending again retries, and picking another
+  model (going back to the one switched from leaves nothing to fit) makes the next turn use it.
+- **Events and results:** selecting emits `model_changed` (`from`, `to`, `compacted` false); the
+  session summary's `model` follows. Compaction at the first turn emits `context_compacted`
+  (the target, tokens before and after, messages summarised, budget, window, counting method,
+  and the summarising model). `session.control` returns `model` and `context` (`tokens`,
+  `context_window`, `budget`, `method`, and for `compact`, `compaction` with the token counts
+  and summarised messages).
 - **Persistence:** `model_changed` is journalled, and a resumed session starts with the model
-  the journal last switched to (the daemon resolves its spec again); the compacted
-  conversation is saved to `<id>.messages.json` straight away.
+  the journal last switched to (the daemon resolves its spec again); a compacted conversation
+  is saved to `<id>.messages.json` straight away.
 - **Compact now:** `session.control` with `compact` runs the same compaction for the
-  session's own model, keeping the last two turns verbatim (fewer if they do not fit), and
-  does nothing when there is nothing older. It needs a known context window.
+  session's own model at once (it is an explicit request, so it may load the model), keeping
+  the last two turns verbatim (fewer if they do not fit), and does nothing when there is
+  nothing older. It needs a known context window.
 
-`imperium chat` switches with `/model <id>` and compacts with `/compact`, printing what
-happened (`Switched to x; compacted 30.1k -> 9.2k tokens (12 messages summarised by y).`). The
+`imperium chat` switches with `/model <id>`, printing the estimate (`Switched to x; the
+conversation (about 30.1k tokens) is over its budget of 13.9k tokens, so older turns are
+compacted when you send the next message.`), and compacts with `/compact`, printing what
+happened (`Context of x; compacted 30.1k -> 9.2k tokens (12 messages summarised by y).`). The
 desktop has a model picker in the session header ([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
 ## Queueing and steering

@@ -1,7 +1,8 @@
-//! Hot-swapping a session's model: the next turn goes to the new endpoint with the same
-//! conversation; a smaller context window compacts older turns first (summarised by the current
-//! model), keeping the latest turn and its tool calls verbatim; a window nothing fits is
-//! refused; and a resumed session keeps the model it switched to.
+//! Hot-swapping a session's model: selecting it only records the switch (nothing is called);
+//! the next turn goes to the new endpoint with the same conversation; a smaller context window
+//! compacts older turns when that turn starts (summarised by the model switched from), keeping
+//! the latest turn and its tool calls verbatim; a window nothing fits fails that turn and the
+//! session can switch again; and a resumed session keeps the model it switched to.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,7 +11,7 @@ use axum::Router;
 use axum::routing::post;
 use imperium_engine::{ResolvedModel, Session, SessionConfig, SwitchError, journalled_model};
 use imperium_models::Endpoint;
-use imperium_protocol::session::{AgentEvent, SessionEvent, SessionStatus};
+use imperium_protocol::session::{AgentEvent, SessionEvent, SessionStatus, TokenCountMethod};
 use imperium_tools::Workspace;
 use serde_json::{Value, json};
 
@@ -216,6 +217,7 @@ async fn a_large_window_switches_without_compacting_and_the_next_turn_uses_it() 
         .unwrap();
     assert!(fit.compaction.is_none());
     assert_eq!(fit.context_window, Some(1_000_000));
+    assert_eq!(fit.method, TokenCountMethod::Estimated);
     assert!(fit.tokens > 0 && fit.tokens <= fit.budget.unwrap());
     assert_eq!(session.model().as_deref(), Some("b:new"));
     assert!(history(&session).contains(&SessionEvent::ModelChanged {
@@ -270,33 +272,57 @@ async fn a_small_window_compacts_older_turns_and_keeps_the_latest_verbatim() {
         .set_model(model("b:small", &url_b, Some(window)))
         .await
         .unwrap();
-    let compaction = fit
-        .compaction
-        .clone()
-        .expect("the conversation was compacted");
-    assert!(compaction.before_tokens > fit.budget.unwrap());
-    assert!(compaction.after_tokens <= fit.budget.unwrap());
-    assert_eq!(fit.tokens, compaction.after_tokens);
-    // The two report turns (user and reply each) were summarised, by the current model.
-    assert_eq!(compaction.summarised_messages, 4);
-    assert_eq!(compaction.summary_model, "a:old");
+    // Selecting the model only estimates: the conversation is over the budget, and nothing
+    // is summarised or sent yet.
+    assert!(fit.compaction.is_none());
+    assert_eq!(fit.method, TokenCountMethod::Estimated);
+    assert!(fit.tokens > fit.budget.unwrap());
+    assert!(a.summaries().is_empty() && b.requests().is_empty());
+    let events = history(&session);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::ContextCompacted { .. }))
+    );
+    assert!(events.contains(&SessionEvent::ModelChanged {
+        from: "a:old".into(),
+        to: "b:small".into(),
+        compacted: false,
+    }));
+
+    // The next message compacts first: the two report turns (user and reply each) are
+    // summarised, by the model switched from.
+    let next = turn(&session, "anything else?").await;
+    let (before, after, budget, summary_model) = next
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::ContextCompacted {
+                model,
+                before_tokens,
+                after_tokens,
+                summarised_messages: 4,
+                budget,
+                summary_model,
+                ..
+            } if model == "b:small" => Some((
+                *before_tokens,
+                *after_tokens,
+                *budget,
+                summary_model.clone(),
+            )),
+            _ => None,
+        })
+        .expect("the conversation was compacted when the turn started");
+    assert!(before > budget && after <= budget);
+    assert_eq!(summary_model, "a:old");
     let summaries = a.summaries();
     assert_eq!(summaries.len(), 1);
     assert!(contents(&summaries[0])[1].contains("first report: alpha"));
     assert!(b.summaries().is_empty());
-    let events = history(&session);
-    assert!(events.iter().any(|event| matches!(event,
-        SessionEvent::ContextCompacted { model, summarised_messages: 4, .. } if model == "b:small")));
-    assert!(events.contains(&SessionEvent::ModelChanged {
-        from: "a:old".into(),
-        to: "b:small".into(),
-        compacted: true,
-    }));
     // The compacted conversation is saved for a restart.
     let saved = std::fs::read_to_string(dir.path().join(".sessions/s.messages.json")).unwrap();
     assert!(saved.contains(SUMMARY) && !saved.contains("first report"));
 
-    turn(&session, "anything else?").await;
     let sent = b.turns();
     assert_eq!(sent.len(), 1);
     let messages = sent[0]["messages"].as_array().unwrap().clone();
@@ -316,27 +342,54 @@ async fn a_small_window_compacts_older_turns_and_keeps_the_latest_verbatim() {
 }
 
 #[tokio::test]
-async fn a_window_nothing_fits_is_refused_and_the_old_model_stays() {
+async fn a_window_nothing_fits_fails_the_next_turn_and_another_model_can_be_picked() {
     let (a, b) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
     let (url_a, url_b) = (serve(Arc::clone(&a)).await, serve(Arc::clone(&b)).await);
     let dir = tempfile::tempdir().unwrap();
     let session = start(model("a:old", &url_a, None), dir.path(), false);
     turn(&session, "hello").await;
 
-    let refused = session.set_model(model("b:tiny", &url_b, Some(200))).await;
+    // Selecting it is accepted: nothing is measured with the model yet.
+    let fit = session
+        .set_model(model("b:tiny", &url_b, Some(200)))
+        .await
+        .unwrap();
+    assert_eq!(fit.budget, Some(170));
+    assert_eq!(session.model().as_deref(), Some("b:tiny"));
+
+    // The next message fails with the reason, and reaches no model.
+    let mut events = session.subscribe();
+    session.send("too big?".into()).unwrap();
+    let failure = loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap()
+            .event;
+        if let SessionEvent::TurnFailed { message } = event {
+            break message;
+        }
+    };
     assert!(
-        matches!(refused, Err(SwitchError::TooLarge { budget: 170, .. })),
-        "{refused:?}"
+        failure.contains("b:tiny") && failure.contains("cannot fit"),
+        "{failure}"
     );
-    assert_eq!(session.model().as_deref(), Some("a:old"));
-    assert!(!history(&session).iter().any(|event| matches!(
-        event,
-        SessionEvent::ModelChanged { .. } | SessionEvent::ContextCompacted { .. }
-    )));
+    assert!(b.requests().is_empty());
+    assert!(a.summaries().is_empty());
+
+    // The session stays usable: back on the old model, the conversation goes on.
+    session
+        .set_model(model("a:old", &url_a, None))
+        .await
+        .unwrap();
     turn(&session, "still there?").await;
     assert_eq!(a.turns().len(), 2);
     assert!(b.requests().is_empty());
-    assert!(a.summaries().is_empty());
+    assert!(
+        !history(&session)
+            .iter()
+            .any(|event| matches!(event, SessionEvent::ContextCompacted { .. }))
+    );
 }
 
 #[tokio::test]

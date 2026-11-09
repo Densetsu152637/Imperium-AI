@@ -238,6 +238,30 @@ It also lists `llama-server` executables already on the machine (on `PATH`, and 
 loaded from then on, without a restart; a model already loaded keeps its server until it
 unloads.
 
+### When models load
+
+**Implemented:** a local model is loaded only when something actually calls it. Choosing it
+never does:
+
+- **Selecting a model for a session** (the new-session composer, `session.create` with a model,
+  the session's model picker → `session.control` `set_model`) only checks it without loading:
+  the spec resolves, and a local model is among those the runtime found in the model folders
+  (otherwise `-32004` at once). The switch is journalled and the answer is an estimate
+  ([03](03-agent-engine.md#switching-models-and-compaction)) against the context the model's
+  launch settings give a session. No server starts and no slot is leased.
+- **The first message** sent to the session loads it: the turn's first step measures the
+  conversation with the model's tokenizer and window (compacting it if it does not fit), then
+  makes the call, through the supervisor as any call does. A model that cannot load (the
+  runtime missing, not enough memory, the server failing to start) fails that turn with the
+  reason; the session keeps working, and another model can be picked.
+- **Listings and status never load:** `models.list`, `models.local`, `models.config`, the
+  session footer's model select, its context meter (which shows the breakdowns turns already
+  produced), onboarding's model lists, `runtime.status`, and the resource monitor only read
+  what the supervisor knows.
+- **Loading on purpose:** `models.test` (the *Test* button in onboarding and the local models
+  panel) loads the model to send it one prompt, and `session.control` `compact` asks the
+  session's model for a summary at once.
+
 **Implemented (stage 2c):** one loaded local model serves many sessions at once. The daemon has
 one supervisor, loaded models are keyed by id, and every session that asks for `llamacpp:<id>`
 reuses the same `llama-server`. What changed is how long a slot is held:

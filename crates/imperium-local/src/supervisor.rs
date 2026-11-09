@@ -2244,6 +2244,23 @@ impl LocalModels for Supervisor {
         self.availability_of(id, Some(session))
     }
 
+    fn has_model(&self, id: &str) -> bool {
+        lock(&self.models).iter().any(|model| model.id == id)
+    }
+
+    fn planned_context(&self, id: &str) -> Option<u64> {
+        if !self.has_model(id) {
+            return None;
+        }
+        // A loaded server's context, else what the model would be started with.
+        let context = self
+            .loaded()
+            .into_iter()
+            .find(|loaded| loaded.model_id == id)
+            .map_or_else(|| self.launch(id).context, |loaded| loaded.context);
+        (context > 0).then_some(u64::from(context))
+    }
+
     fn acquire<'a>(&'a self, id: &'a str, holder: &'a str) -> AcquireFuture<'a> {
         self.acquire_with(id, holder, LocalRequest::default())
     }
