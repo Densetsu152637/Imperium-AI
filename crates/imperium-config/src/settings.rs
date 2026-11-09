@@ -248,6 +248,9 @@ pub struct SessionSettings {
     pub auto_archive_after_days: u32,
     /// Archive a session once the pull request it watches is merged or closed.
     pub auto_archive_on_pr_close: bool,
+    /// Keep every agent's state (a subagent's conversation, plan, and usage) in
+    /// `<data>/sessions/<id>.agents/`, so finished subagents can be resumed after a restart.
+    pub agent_state_keep: bool,
 }
 
 impl Default for SessionSettings {
@@ -256,6 +259,7 @@ impl Default for SessionSettings {
             worktree_dir: None,
             auto_archive_after_days: 0,
             auto_archive_on_pr_close: true,
+            agent_state_keep: true,
         }
     }
 }

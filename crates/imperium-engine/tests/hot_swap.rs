@@ -138,6 +138,7 @@ fn start_with(
         instructions: None,
         max_steps: 5,
         auto_compact,
+        keep_agent_state: true,
         journal_path: dir.join(".sessions/s.jsonl"),
     })
     .unwrap()

@@ -127,6 +127,59 @@ impl Method for SessionQueue {
     type Result = SessionQueueResult;
 }
 
+/// `session.agents`: a session's agents (the root and every subagent) with their kept state.
+#[derive(Debug)]
+pub struct SessionAgents;
+
+impl Method for SessionAgents {
+    const NAME: &'static str = "session.agents";
+    type Params = SessionAgentsParams;
+    type Result = SessionAgentsResult;
+}
+
+/// `session.agent_resume`: gives a finished (idle, failed, or interrupted) subagent a
+/// follow-up. It works again with its earlier conversation, emitting `task_resumed` and then
+/// `task_finished`; while it runs, `session.send` with its `agent_id` steers or queues for it.
+#[derive(Debug)]
+pub struct SessionAgentResume;
+
+impl Method for SessionAgentResume {
+    const NAME: &'static str = "session.agent_resume";
+    type Params = SessionAgentResumeParams;
+    type Result = SessionAgentResumeResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentsParams {
+    pub session_id: String,
+}
+
+/// The root first, then subagents in the order they were started.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentsResult {
+    pub agents: Vec<crate::session::AgentSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentResumeParams {
+    pub session_id: String,
+    /// A subagent's task id, such as `t1`.
+    pub agent_id: String,
+    /// The follow-up message.
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentResumeResult {
+    pub agent_id: String,
+    /// The model it runs on.
+    pub model: String,
+}
+
 /// `session.respond`: answers a `permission_requested` event.
 #[derive(Debug)]
 pub struct SessionRespond;

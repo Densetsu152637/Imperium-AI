@@ -113,6 +113,7 @@ async fn a_session_calls_the_client_registered_for_its_endpoint_kind() {
         instructions: None,
         max_steps: 3,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();
@@ -189,6 +190,7 @@ async fn an_unknown_endpoint_kind_fails_the_turn() {
         instructions: None,
         max_steps: 3,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

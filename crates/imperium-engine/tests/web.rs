@@ -138,6 +138,7 @@ async fn agents_research_and_cite_sources() {
         })],
         max_steps: 8,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();
@@ -273,6 +274,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
         })],
         max_steps: 8,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

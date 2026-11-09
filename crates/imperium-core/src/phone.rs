@@ -36,6 +36,7 @@ const READ_METHODS: &[&str] = &[
     "system.ping",
     "session.list",
     "session.subscribe",
+    "session.agents",
     "schedules.list",
     "approvals.list",
     "pet.list",

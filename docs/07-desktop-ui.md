@@ -31,6 +31,20 @@
   detached window follows the main window's selected project and session. In a plain browser
   the window is a popup and cannot be pinned.
 
+### Agents panel (implemented)
+
+The Agents panel lists the subagents of the selected session: each row shows the task id, its
+status (`running`, `finished`, or `failed`), model, cost, brief, the messages it was given and
+its tool calls, and its latest report. Subagents keep their state when they finish
+([agent state](03-agent-engine.md#agent-state)), so a finished or failed row's ⋯ menu has
+**Continue with…**: it opens a follow-up box under the row (Ctrl+Enter sends, Escape
+cancels), and the follow-up is sent with `session.agent_resume`. The subagent works again with
+its earlier conversation: its row goes back to `running`, the transcript notes
+"Continued t1 on …", and its new report replaces the old one when it finishes (the cost shown
+adds up across runs). While it runs, the menu item is disabled; archived sessions show no menu.
+Subagents a daemon restart cut off are shown as failed with a report saying so, and can be
+continued the same way.
+
 ### Resources panel (implemented)
 
 The Resources panel (in Settings → Panels, closable and detachable like the others) shows what

@@ -23,11 +23,15 @@ local models.
 | 11 | Mobile (first stage merged: pairing, scoped phone access, phone web app; native app, relay, and push later) | Phone app, pairing, relay, notifications | Paired phone approves a queued action away from the LAN |
 | 1.0 | Release (in progress: sessions survive restarts; clients follow sessions started anywhere; desktop self-update on main and experimental channels) | Hardening, docs, signed installers, updater | [Success criteria](01-vision.md#success-criteria-for-10) met |
 
-Planned next: **agent state management.** Agents and subagents from a session keep their state
-(conversation context, plan, tool results, model and lease) so they can be resumed and reused
-later with that context instead of starting fresh, for example handing a follow-up to the
-subagent that already explored a module. Agent state is cached next to the session's files in
-the daemon's data folder, so it survives daemon restarts and moves with the session.
+Implemented: **agent state management.** Agents and subagents from a session keep their state
+(conversation context, plan, tool results, model, and usage), so a finished subagent becomes
+idle and can be resumed with a follow-up and its earlier context instead of starting fresh,
+for example handing more work to the subagent that already explored a module (`resume_agent`
+for the root, `session.agent_resume`, `/resume-agent`, and *Continue with…* in the desktop's
+Agents panel). Agent state is kept next to the session's files in the daemon's data folder
+(`<id>.agents/`), so it survives daemon restarts and moves with the session; subagents a
+restart cut off are marked interrupted and resumable
+([03](03-agent-engine.md#agent-state)).
 
 Implemented: **resource monitor.** A live view of what the machine and the sessions are using:
 CPU, GPU, RAM, and VRAM usage, plus every active external endpoint and every local model in

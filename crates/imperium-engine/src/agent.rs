@@ -12,8 +12,8 @@ use imperium_api::{
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
 use imperium_protocol::session::{
-    ContextItem, ContextPointer, PermissionDecision, Plan, PlanStep, SessionEvent, StepStatus,
-    TokenUsage,
+    AgentStatus, ContextItem, ContextPointer, PermissionDecision, Plan, PlanStep, ROOT_AGENT,
+    SessionEvent, StepStatus, TokenUsage,
 };
 use imperium_tools::{Access, Invocation, specs};
 use imperium_workflow::LoadManifest;
@@ -59,9 +59,11 @@ enum AgentTool {
     MemoryRemember,
     ContextLoad,
     StartSession,
+    ListAgents,
+    ResumeAgent,
 }
 
-struct TaskReport {
+pub(crate) struct TaskReport {
     task_id: String,
     model: String,
     ok: bool,
@@ -155,6 +157,7 @@ impl Agent {
         }
         let (system, spans) = join_parts(parts);
         let inbox = shared.inboxes.open(&id);
+        shared.agents.register(&id, &role, &model);
         Agent {
             id,
             inbox,
@@ -212,6 +215,16 @@ impl Agent {
         self.shared.emitter.emit(&self.id, event);
     }
 
+    /// Saves a subagent's conversation, so it can be resumed later (after a restart too). The
+    /// root's conversation is saved by its session after every turn.
+    fn checkpoint(&self) {
+        if !self.can_delegate {
+            self.shared
+                .agents
+                .save_conversation(&self.id, &self.messages);
+        }
+    }
+
     /// The tool providers in `group`, in the order they were given.
     fn providers(&self, group: ToolGroup) -> impl Iterator<Item = &Arc<dyn ToolProvider>> {
         self.shared
@@ -262,6 +275,8 @@ impl Agent {
                 await_tasks_spec(),
                 steer_agent_spec(),
                 queue_agent_spec(),
+                list_agents_spec(),
+                resume_agent_spec(),
             ]);
         }
         (tools, mcp)
@@ -286,6 +301,7 @@ impl Agent {
         let (content, spans) = join_parts(parts);
         self.spans.insert(self.messages.len(), spans);
         self.messages.push(ChatMessage::User { content });
+        self.checkpoint();
         let (tools, mcp) = self.tool_specs();
         let tool_texts = tool_texts(&tools, mcp);
         let mut total = Usage::default();
@@ -399,6 +415,7 @@ impl Agent {
                 continue;
             }
             if completion.tool_calls.is_empty() {
+                self.checkpoint();
                 self.emit(SessionEvent::TurnCompleted {
                     usage: token_usage(&total),
                     cost_usd: self.cost(&total),
@@ -413,6 +430,8 @@ impl Agent {
                     content: output,
                 });
             }
+            // A safe point: every tool call has its result.
+            self.checkpoint();
         }
         let message = format!("stopped after {max_steps} model calls (agents.max_steps)");
         self.emit(SessionEvent::TurnFailed {
@@ -806,6 +825,8 @@ impl Agent {
             "await_tasks" if self.can_delegate => AgentTool::AwaitTasks,
             "steer_agent" if self.can_delegate => AgentTool::SteerAgent,
             "queue_agent" if self.can_delegate => AgentTool::QueueAgent,
+            "list_agents" if self.can_delegate => AgentTool::ListAgents,
+            "resume_agent" if self.can_delegate => AgentTool::ResumeAgent,
             "load_skill" if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
             "context_load" if self.shared.context.is_some() => AgentTool::ContextLoad,
             "start_session" if self.can_delegate && self.shared.launcher.is_some() => {
@@ -829,6 +850,8 @@ impl Agent {
             AgentTool::AwaitTasks => "wait for subagents",
             AgentTool::SteerAgent => "steer a subagent",
             AgentTool::QueueAgent => "queue a message for a subagent",
+            AgentTool::ListAgents => "list subagents",
+            AgentTool::ResumeAgent => "resume a subagent",
             AgentTool::LoadSkill => "load a skill",
             AgentTool::ContextLoad => "load workflow context",
             AgentTool::StartSession => "start a session",
@@ -847,6 +870,8 @@ impl Agent {
             AgentTool::AwaitTasks => self.await_tasks(arguments).await,
             AgentTool::SteerAgent => self.message_agent(arguments, true),
             AgentTool::QueueAgent => self.message_agent(arguments, false),
+            AgentTool::ListAgents => Ok(self.list_agents()),
+            AgentTool::ResumeAgent => self.resume_agent(arguments),
             AgentTool::LoadSkill => self.load_skill(arguments),
             AgentTool::ContextLoad => self.context_load(arguments),
             AgentTool::StartSession => self.start_session(arguments).await,
@@ -987,60 +1012,85 @@ impl Agent {
             brief: args.brief.clone(),
             model: model.spec.clone(),
         });
-        let shared = Arc::clone(&self.shared);
-        let id = task_id.clone();
-        let spec = model.spec.clone();
+        let role = args.role.unwrap_or_else(|| "leaf".into());
+        let agent = Agent::new(
+            task_id.clone(),
+            Arc::clone(&self.shared),
+            model,
+            false,
+            role,
+        );
+        let spawned = json!({"task_id": task_id, "brief": args.brief, "model": agent.model.spec});
         // Each subagent is its own task, so subagents run in parallel across the runtime's threads.
-        let handle = tokio::spawn(async move {
-            shared
-                .hook(
-                    HookEvent::AgentSpawn,
-                    None,
-                    json!({"task_id": id, "brief": args.brief, "model": spec}),
-                )
-                .await;
-            let role = args.role.unwrap_or_else(|| "leaf".into());
-            let mut agent = Agent::new(id.clone(), Arc::clone(&shared), model, false, role);
-            let mut outcome = agent.run_turn(args.brief, None).await;
-            // Messages queued for the subagent run as further turns before it reports; the
-            // report is the last turn's reply, with every turn's usage.
-            while let Some(message) = agent.inbox().pop_or_close() {
-                let next = agent.run_turn(message.text, None).await;
-                outcome = TurnOutcome {
-                    text: next.text,
-                    ok: next.ok,
-                    usage: add_usage(&outcome.usage, &next.usage),
-                    cost_usd: add_cost(outcome.cost_usd, next.cost_usd),
-                };
-            }
-            shared.inboxes.close(&id);
-            shared
-                .hook(
-                    HookEvent::AgentComplete,
-                    None,
-                    json!({"task_id": id, "ok": outcome.ok, "report": truncate(&outcome.text, REPORT_CHARS)}),
-                )
-                .await;
-            shared.emitter.emit(
-                &id,
-                SessionEvent::TaskFinished {
-                    task_id: id.clone(),
-                    ok: outcome.ok,
-                    report: truncate(&outcome.text, EVENT_OUTPUT_CHARS),
-                    usage: token_usage(&outcome.usage),
-                    cost_usd: outcome.cost_usd,
-                },
-            );
-            TaskReport {
-                task_id: id,
-                model: spec,
-                ok: outcome.ok,
-                report: truncate(&outcome.text, REPORT_CHARS),
-            }
-        });
+        let handle = tokio::spawn(run_subagent(agent, args.brief, Some(spawned), false));
         self.tasks.insert(task_id.clone(), handle);
         Ok(format!(
             "started {task_id}; call await_tasks to collect its report"
+        ))
+    }
+
+    /// `list_agents`: the session's subagents with their status and latest report.
+    fn list_agents(&self) -> String {
+        let agents: Vec<_> = self
+            .shared
+            .agents
+            .list()
+            .into_iter()
+            .filter(|agent| agent.agent_id != ROOT_AGENT)
+            .collect();
+        if agents.is_empty() {
+            return "No subagents yet.".into();
+        }
+        agents
+            .iter()
+            .map(|agent| {
+                let status = match agent.status {
+                    AgentStatus::Running => "running",
+                    AgentStatus::Idle => "idle",
+                    AgentStatus::Failed => "failed",
+                    AgentStatus::Interrupted => "interrupted",
+                };
+                let resumable = if agent.resumable && agent.status != AgentStatus::Running {
+                    ", resumable"
+                } else {
+                    ""
+                };
+                let mut line = format!(
+                    "- {} ({status}{resumable}; {}; {} turns, {} messages): {}",
+                    agent.agent_id, agent.model, agent.turns, agent.messages, agent.title
+                );
+                if let Some(report) = &agent.last_report {
+                    let report = truncate(report.lines().next().unwrap_or_default(), 200);
+                    line.push_str(&format!("\n  last report: {report}"));
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `resume_agent`: a follow-up for a finished subagent, which continues with its earlier
+    /// conversation. Collected with `await_tasks` like a new task.
+    fn resume_agent(&mut self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            agent_id: String,
+            text: String,
+        }
+        let args: Args = parse(arguments)?;
+        if self.tasks.contains_key(&args.agent_id) {
+            return Err(format!(
+                "{} has not been collected yet; call await_tasks first, or steer_agent / \
+                 queue_agent while it works",
+                args.agent_id
+            ));
+        }
+        let (handle, model) = resume_subagent(&self.shared, &args.agent_id, args.text)?;
+        self.tasks.insert(args.agent_id.clone(), handle);
+        Ok(format!(
+            "resumed {} on {model} with its earlier conversation; call await_tasks to collect \
+             its report",
+            args.agent_id
         ))
     }
 
@@ -1129,6 +1179,9 @@ impl Agent {
     pub async fn switch_model(&mut self, target: ResolvedModel) -> Result<ContextFit, SwitchError> {
         let fit = self.fit_to(&target, false).await?;
         let from = std::mem::replace(&mut self.model, target);
+        self.shared
+            .agents
+            .register(&self.id, &self.role, &self.model);
         // The calibration related the heuristic to the old model's counts.
         self.last_reported = None;
         self.emit(SessionEvent::ModelChanged {
@@ -1568,6 +1621,145 @@ fn queue_agent_spec() -> ToolSpec {
             "text": {"type": "string"}
         }, "required": ["agent_id", "text"]}),
     }
+}
+
+fn list_agents_spec() -> ToolSpec {
+    ToolSpec {
+        name: "list_agents".into(),
+        description: "List this session's subagents: status (running, idle, failed, interrupted), model, turns, brief, and latest report. Finished subagents keep their conversation and can be given a follow-up with resume_agent.".into(),
+        parameters: json!({"type": "object", "properties": {}}),
+    }
+}
+
+fn resume_agent_spec() -> ToolSpec {
+    ToolSpec {
+        name: "resume_agent".into(),
+        description: "Give a finished subagent a follow-up. It continues with its full earlier conversation (what it read, found, and did), so prefer it to spawn_agent for follow-ups on the same area. Collect its report with await_tasks.".into(),
+        parameters: json!({"type": "object", "properties": {
+            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
+            "text": {"type": "string", "description": "The follow-up"}
+        }, "required": ["agent_id", "text"]}),
+    }
+}
+
+/// Runs a subagent's turn on `text`, then any messages queued for it, and reports. A new task
+/// runs `agent.spawn` hooks first (`spawned` is their payload); a resumed one is fitted to its
+/// model's context window first, compacting a long conversation.
+async fn run_subagent(
+    mut agent: Agent,
+    text: String,
+    spawned: Option<serde_json::Value>,
+    resumed: bool,
+) -> TaskReport {
+    let shared = Arc::clone(&agent.shared);
+    let id = agent.id.clone();
+    let spec = agent.model.spec.clone();
+    if let Some(payload) = spawned {
+        shared.hook(HookEvent::AgentSpawn, None, payload).await;
+    }
+    if resumed {
+        match agent.fit_current().await {
+            Ok(fit) if fit.compaction.is_some() => agent.checkpoint(),
+            Ok(_) => {}
+            Err(error) => agent.emit(SessionEvent::Notice {
+                message: format!("{id}'s conversation could not be compacted: {error}"),
+            }),
+        }
+    }
+    let mut outcome = agent.run_turn(text, None).await;
+    // Messages queued for the subagent run as further turns before it reports; the
+    // report is the last turn's reply, with every turn's usage.
+    while let Some(message) = agent.inbox().pop_or_close() {
+        let next = agent.run_turn(message.text, None).await;
+        outcome = TurnOutcome {
+            text: next.text,
+            ok: next.ok,
+            usage: add_usage(&outcome.usage, &next.usage),
+            cost_usd: add_cost(outcome.cost_usd, next.cost_usd),
+        };
+    }
+    shared.inboxes.close(&id);
+    agent.checkpoint();
+    shared
+        .hook(
+            HookEvent::AgentComplete,
+            None,
+            json!({"task_id": id, "ok": outcome.ok, "report": truncate(&outcome.text, REPORT_CHARS)}),
+        )
+        .await;
+    // Finishing makes the subagent idle (or failed): its state stays, so it can be resumed.
+    shared.emitter.emit(
+        &id,
+        SessionEvent::TaskFinished {
+            task_id: id.clone(),
+            ok: outcome.ok,
+            report: truncate(&outcome.text, EVENT_OUTPUT_CHARS),
+            usage: token_usage(&outcome.usage),
+            cost_usd: outcome.cost_usd,
+        },
+    );
+    TaskReport {
+        task_id: id,
+        model: spec,
+        ok: outcome.ok,
+        report: truncate(&outcome.text, REPORT_CHARS),
+    }
+}
+
+/// Resumes a finished subagent with `text` as a new turn after its kept conversation, on the
+/// model it last ran on (found by spec after a restart; the session's model when it is gone).
+/// Returns its task and the model's spec.
+pub(crate) fn resume_subagent(
+    shared: &Arc<Shared>,
+    agent_id: &str,
+    text: String,
+) -> Result<(JoinHandle<TaskReport>, String), String> {
+    if text.trim().is_empty() {
+        return Err("the follow-up must not be empty".into());
+    }
+    let before = shared.agents.claim(agent_id)?;
+    let model = shared
+        .agents
+        .model(agent_id)
+        .or_else(|| {
+            shared
+                .catalog
+                .iter()
+                .find(|entry| entry.model.spec == before.model)
+                .map(|entry| entry.model.clone())
+        })
+        .or_else(|| shared.agents.model(ROOT_AGENT));
+    let Some(model) = model else {
+        shared.agents.release(agent_id, before.status);
+        return Err("the session has no model to run the subagent on".into());
+    };
+    let spec = model.spec.clone();
+    let mut agent = Agent::new(
+        agent_id.to_string(),
+        Arc::clone(shared),
+        model,
+        false,
+        before.role.clone(),
+    );
+    agent.restore(shared.agents.conversation(agent_id));
+    shared.emitter.emit(
+        ROOT_AGENT,
+        SessionEvent::TaskResumed {
+            task_id: agent_id.to_string(),
+            text: text.clone(),
+            model: spec.clone(),
+        },
+    );
+    let text = if before.status == AgentStatus::Interrupted {
+        format!(
+            "<note>The daemon stopped while you were working on the previous message, so that \
+             turn did not finish. Check what was already done, finish it, and then handle this \
+             message.</note>\n\n{text}"
+        )
+    } else {
+        text
+    };
+    Ok((tokio::spawn(run_subagent(agent, text, None, true)), spec))
 }
 
 fn add_usage(a: &Usage, b: &Usage) -> Usage {
