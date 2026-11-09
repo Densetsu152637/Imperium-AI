@@ -204,6 +204,14 @@ impl Server for ProcessServer {
             }
         })
     }
+
+    fn pid(&self) -> Option<u32> {
+        self.child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .and_then(Child::id)
+    }
 }
 
 /// Asks the OS for a free port. Another process could take it before the server binds; the

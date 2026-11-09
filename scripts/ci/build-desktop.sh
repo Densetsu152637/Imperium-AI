@@ -22,8 +22,9 @@ done
 pnpm --filter @imperium/protocol run generate
 
 # The installer carries the daemon and CLI beside the app, which starts the daemon itself.
-# Tauri expects them as binaries/<name>-<target>[.exe]; the universal macOS build merges both
-# architectures.
+# Tauri expects them as binaries/<name>-<target>[.exe]. A universal macOS build compiles the app
+# once per architecture and checks each one's sidecars, so it needs the per-architecture binaries
+# as well as the merged universal one.
 ext=""
 if [[ "$target" == *windows* ]]; then ext=".exe"; fi
 rust_targets=("$target")
@@ -31,15 +32,18 @@ if [ "$target" = universal-apple-darwin ]; then
   rust_targets=(aarch64-apple-darwin x86_64-apple-darwin)
 fi
 for t in "${rust_targets[@]}"; do
-  cargo build --release --locked -p imperium-cli -p imperiumd --target "$t"
+  cargo build --release --locked -p imperium-cli -p imperium-core --target "$t"
 done
 sidecars=apps/desktop/src-tauri/binaries
 mkdir -p "$sidecars"
-for bin in imperium imperiumd; do
+for bin in imperium imperium-core; do
   out="$sidecars/$bin-$target$ext"
   if [ "${#rust_targets[@]}" -gt 1 ]; then
     inputs=()
-    for t in "${rust_targets[@]}"; do inputs+=("target/$t/release/$bin"); done
+    for t in "${rust_targets[@]}"; do
+      inputs+=("target/$t/release/$bin")
+      cp "target/$t/release/$bin" "$sidecars/$bin-$t"
+    done
     lipo -create -output "$out" "${inputs[@]}"
   else
     cp "target/$target/release/$bin$ext" "$out"
@@ -50,7 +54,7 @@ done
 updater=false
 if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then updater=true; fi
 
-bundle="{\"createUpdaterArtifacts\":$updater,\"externalBin\":[\"binaries/imperiumd\",\"binaries/imperium\"]}"
+bundle="{\"createUpdaterArtifacts\":$updater,\"externalBin\":[\"binaries/imperium-core\",\"binaries/imperium\"]}"
 pnpm --filter @imperium/desktop exec tauri build --target "$target" --bundles "$bundles" \
   --config "{\"version\":\"$version\",\"bundle\":$bundle}"
 

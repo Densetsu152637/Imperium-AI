@@ -6,12 +6,21 @@
 //! Every value remembers which layer set it, for `imperium config explain`.
 
 mod layers;
+mod mcp_servers;
 mod paths;
+mod registry;
 mod secrets;
 mod settings;
 
 pub use layers::{Config, ConfigError, Explained, Layer, Source, load};
+pub use mcp_servers::{
+    MAX_SERVER_NAME, remove_mcp_server, save_mcp_server, set_mcp_server_enabled, valid_server_name,
+};
 pub use paths::{Paths, PathsError};
+pub use registry::{
+    SETTINGS, SetError, SettingDef, SettingKind, SettingState, describe, describe_key,
+    set_user_setting, setting,
+};
 pub use secrets::{
     KeychainSecrets, MemorySecrets, SecretError, SecretName, SecretStore, delete_secret,
     load_secret, store_secret,
@@ -23,6 +32,7 @@ pub use settings::{
     McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings, MemorySettings,
     MemoryWrite, ModelSettings, PetSettings, PhoneSettings, Preference, ProjectSettings,
     ResumeSettings, RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef,
-    Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings,
-    WritePolicy,
+    SessionSettings, Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings,
+    WorkflowSettings, WritePolicy,
 };
+pub use settings::{SuggestionCandidate, default_suggestions};

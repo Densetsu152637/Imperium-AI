@@ -1,3 +1,3 @@
 //! Client side of the daemon protocol, used by the `imperium` command.
 
-pub mod client;
+pub use imperium_client as client;

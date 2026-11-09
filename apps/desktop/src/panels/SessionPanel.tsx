@@ -1,38 +1,87 @@
-// The main session panel: a header with title and status, environment, usage-limit controls,
-// and the folded context and outputs sections; then the conversation and the composer.
+// The main session panel: a header with title and status, environment (with the model picker),
+// usage-limit controls, and the folded context and outputs sections; then the conversation and
+// the composer.
 
+import { ArrowUp, CornerDownRight, ListPlus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { PermissionDecision, Plan, ResumePolicy } from "@imperium/protocol";
+import type {
+  ModelRow,
+  PermissionDecision,
+  Plan,
+  QueuedMessage,
+  ResumePolicy,
+  SendMode,
+  SessionControlResult,
+} from "@imperium/protocol";
 
 import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
-import { ROOT, describeUse, formatCost, formatCount, sessionTitle, totals, type Entry, type SessionState } from "../sessions";
+import {
+  ROOT,
+  describeUse,
+  formatCost,
+  formatCount,
+  formatTokens,
+  sessionTitle,
+  totals,
+  type Entry,
+  type SessionState,
+} from "../sessions";
+import { ToolState } from "../components/ToolState";
+import type { DaemonClient } from "../daemon/client";
 import { ContextBreakdownView } from "./ContextBreakdown";
+import { ModelSuggestionCard } from "./ModelSuggestionCard";
 import { StatusBadge } from "./StatusBadge";
+import { useSettings } from "../settings";
 
 type Props = {
   session: SessionState | null;
   icons: ProjectIcons;
-  onSend: (text: string) => void;
+  /** Sends a message: `queue` starts a turn, or waits while one runs; `steer` joins the running turn. */
+  onSend: (text: string, mode: SendMode) => void;
+  /** Edits a queued message, or removes it when `text` is null. */
+  onChangeQueued: (id: string, text: string | null) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
   /** Resolves once the daemon accepted the policy. */
   onSetResumePolicy: (policy: ResumePolicy) => Promise<void>;
   onResumeNow: () => void;
+  /** The model table (`models.list`), offered in the model picker. */
+  models: ModelRow[];
+  /** Switches the session's model; resolves with the daemon's answer, or null when it failed. */
+  onSetModel: (model: string) => Promise<SessionControlResult | null>;
+  /** For answering model download suggestions and following their downloads. */
+  client?: DaemonClient | null;
+  /** Resumes an archived session. */
+  onUnarchive?: () => void;
 };
 
-export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePolicy, onResumeNow }: Props) {
+export function SessionPanel({
+  session,
+  icons,
+  onSend,
+  onChangeQueued,
+  onRespond,
+  onSetResumePolicy,
+  onResumeNow,
+  models,
+  onSetModel,
+  client = null,
+  onUnarchive,
+}: Props) {
+  const settings = useSettings();
   const [draft, setDraft] = useState("");
-  const [rendered, setRendered] = useState(true);
+  const [rendered, setRendered] = useState(settings.renderMarkdown);
+  useEffect(() => setRendered(settings.renderMarkdown), [settings.renderMarkdown]);
   const end = useRef<HTMLDivElement>(null);
   const entryCount = session?.entries.length ?? 0;
   const lastLength = session?.entries.at(-1) && "text" in session.entries.at(-1)! ? (session.entries.at(-1) as { text: string }).text.length : 0;
 
   // Block body: newer browsers return a promise from scrollIntoView, which an effect must not return.
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end" });
-  }, [entryCount, lastLength]);
+    if (settings.autoScroll) end.current?.scrollIntoView({ block: "end" });
+  }, [entryCount, lastLength, settings.autoScroll]);
 
   if (!session) {
     return (
@@ -44,10 +93,12 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
   const sum = totals(session.calls);
   const rootContext = session.breakdowns[ROOT];
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
-  const send = () => {
+  // While the agent works the composer stays open: Enter queues the message for after the turn,
+  // and Steer (Ctrl+Shift+Enter) adds it to the running turn.
+  const send = (mode: SendMode = "queue") => {
     const text = draft.trim();
     if (!text) return;
-    onSend(text);
+    onSend(text, mode);
     setDraft("");
   };
 
@@ -69,7 +120,13 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
 
         <div className="session-env">
           <span title={session.summary.project_dir}>{projectName(session.summary.project_dir)}</span>
-          <span title="Model">{session.summary.model}</span>
+          <ModelPicker
+            key={session.summary.session_id}
+            current={session.summary.model}
+            models={models}
+            busy={session.busy}
+            onSwitch={onSetModel}
+          />
           <span title="Isolation tier">{session.summary.isolation}</span>
           <span title="Session cost">{formatCost(sum.costUsd)}</span>
           <label className="toggle">
@@ -134,14 +191,47 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
 
       <div className="conversation" aria-live="polite">
         {session.entries.map((entry, index) => (
-          <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} />
+          entry.kind === "suggestion" ? (
+            <ModelSuggestionCard
+              key={index}
+              entry={entry}
+              sessionId={session.summary.session_id}
+              client={client}
+              onSetModel={onSetModel}
+            />
+          ) : (
+            <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} />
+          )
         ))}
         {session.busy && <p className="working">Working…</p>}
         <div ref={end} />
       </div>
 
+      {session.summary.archived && (
+        <div className="archived-note" role="status">
+          <span>This session is archived: it is not running and keeps its history. Unarchive it to continue.</span>
+          {onUnarchive && (
+            <button className="primary" onClick={onUnarchive}>
+              Unarchive
+            </button>
+          )}
+        </div>
+      )}
+
+      {session.summary.model === null && !session.summary.archived && (
+        <p className="needs-model" role="status">
+          This session has no model yet. Pick one in the model list above (or set a default under Settings → Models);
+          {session.status === "needs_model"
+            ? " your messages are waiting and run as soon as it has one."
+            : " messages you send wait until then."}
+        </p>
+      )}
+
+      {session.queue.length > 0 && <QueueView queue={session.queue} onChange={onChangeQueued} />}
+
       <form
         className="composer"
+        hidden={session.summary.archived}
         onSubmit={(event) => {
           event.preventDefault();
           send();
@@ -149,20 +239,43 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
       >
         <textarea
           value={draft}
-          placeholder="Message the agent (Enter to send, Shift+Enter for a new line)"
+          placeholder={composerHint(settings.sendKey === "enter", session.busy)}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (event.key !== "Enter") return;
+            const modified = event.ctrlKey || event.metaKey;
+            if (modified && event.shiftKey) {
+              event.preventDefault();
+              send("steer");
+              return;
+            }
+            const sends = settings.sendKey === "enter" ? !event.shiftKey && !modified : modified;
+            if (sends) {
               event.preventDefault();
               send();
             }
           }}
           rows={1}
         />
-        <button type="submit" className="send" disabled={!draft.trim()} aria-label="Send" title="Send (Enter)">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 19V5M5 12l7-7 7 7" />
-          </svg>
+        {session.busy && (
+          <button
+            type="button"
+            className="steer"
+            disabled={!draft.trim()}
+            onClick={() => send("steer")}
+            title="Add this message to the running turn; the agent reads it after its current step (Ctrl+Shift+Enter)"
+          >
+            <CornerDownRight aria-hidden="true" /> Steer
+          </button>
+        )}
+        <button
+          type="submit"
+          className="send"
+          disabled={!draft.trim()}
+          aria-label={session.busy ? "Queue" : "Send"}
+          title={session.busy ? "Queue for after this turn (Enter)" : "Send (Enter)"}
+        >
+          {session.busy ? <ListPlus aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}
         </button>
       </form>
     </div>
@@ -181,6 +294,13 @@ function EntryView({
   switch (entry.kind) {
     case "user":
       return <div className="message user prose">{entry.text}</div>;
+    case "steer":
+      return (
+        <div className="message user steer prose" title="Steering: joined the running turn">
+          <span className="steer-label">Steering</span>
+          {entry.text}
+        </div>
+      );
     case "assistant":
       return (
         <div className="message assistant prose">
@@ -191,7 +311,10 @@ function EntryView({
       return (
         <details className={`tool ${entry.ok === false ? "failed" : ""}`}>
           <summary>
-            <span className="tool-state">{entry.ok === null ? "…" : entry.ok ? "✓" : "✗"}</span> {entry.summary}
+            <span className="tool-state">
+              <ToolState ok={entry.ok} />
+            </span>{" "}
+            {entry.summary}
           </summary>
           {entry.output && <pre>{entry.output}</pre>}
         </details>
@@ -235,7 +358,129 @@ function EntryView({
       return <p className="error">Turn failed: {entry.message}</p>;
     case "notice":
       return <p className="notice">{entry.message}</p>;
+    case "suggestion":
+      return null;
   }
+}
+
+/** The composer's placeholder: what Enter does now, and how to steer while a turn runs. */
+function composerHint(enterSends: boolean, busy: boolean): string {
+  const key = enterSends ? "Enter" : "Ctrl+Enter";
+  const newline = enterSends ? "Shift+Enter" : "Enter";
+  return busy
+    ? `${key} queues for after this turn · Ctrl+Shift+Enter steers the running turn`
+    : `Message the agent (${key} to send, ${newline} for a new line)`;
+}
+
+/** Messages waiting for the agent, above the composer; each can be edited or removed until delivered. */
+function QueueView({ queue, onChange }: { queue: QueuedMessage[]; onChange: Props["onChangeQueued"] }) {
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  const save = () => {
+    if (!editing) return;
+    const text = editing.text.trim();
+    if (text) onChange(editing.id, text);
+    setEditing(null);
+  };
+  return (
+    <ol className="queue" aria-label="Queued messages">
+      {queue.map((message) => (
+        <li key={message.id} className={message.steer ? "steer" : undefined}>
+          <span className="queue-kind">{message.steer ? "Steering" : "Queued"}</span>
+          {editing?.id === message.id ? (
+            <input
+              aria-label="Edit queued message"
+              autoFocus
+              value={editing.text}
+              onChange={(event) => setEditing({ id: message.id, text: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") save();
+                if (event.key === "Escape") setEditing(null);
+              }}
+              onBlur={save}
+            />
+          ) : (
+            <span className="queue-text" title={message.text}>
+              {message.text}
+            </span>
+          )}
+          <span className="buttons">
+            {editing?.id !== message.id && (
+              <button onClick={() => setEditing({ id: message.id, text: message.text })}>Edit</button>
+            )}
+            <button className="danger" onClick={() => onChange(message.id, null)} aria-label="Remove queued message">
+              Remove
+            </button>
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/**
+ * The session's model, switchable to any row of the model table between turns. A smaller
+ * context window makes the daemon summarise older turns first; the result is noted beside it.
+ */
+function ModelPicker({
+  current,
+  models,
+  busy,
+  onSwitch,
+}: {
+  /** `null` while the session has no model yet. */
+  current: string | null;
+  models: ModelRow[];
+  busy: boolean;
+  onSwitch: Props["onSetModel"];
+}) {
+  const [switching, setSwitching] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  if (models.length === 0) return <span title="Model">{current ?? "no model"}</span>;
+  const listed = current === null || models.some((row) => row.spec === current);
+  const switchTo = (spec: string) => {
+    if (spec === current) return;
+    setSwitching(true);
+    setNote(null);
+    onSwitch(spec)
+      .then((result) => {
+        const compaction = result?.context?.compaction;
+        if (compaction) {
+          setNote(
+            `compacted ${formatTokens(compaction.before_tokens)} → ${formatTokens(compaction.after_tokens)} tokens`,
+          );
+        }
+      })
+      .finally(() => setSwitching(false));
+  };
+  return (
+    <span className="model-picker">
+      <select
+        aria-label="Model"
+        title={
+          busy
+            ? "Switch models when the turn finishes"
+            : "Switch the session's model; older turns are summarised if its context window is smaller"
+        }
+        value={current ?? ""}
+        disabled={busy || switching}
+        onChange={(event) => switchTo(event.target.value)}
+      >
+        {current === null && (
+          <option value="" disabled>
+            Pick a model…
+          </option>
+        )}
+        {!listed && current !== null && <option value={current}>{current}</option>}
+        {models.map((row) => (
+          <option key={row.id} value={row.spec} disabled={!row.endpoint_configured}>
+            {row.id === row.spec ? row.spec : `${row.id} · ${row.spec}`}
+          </option>
+        ))}
+      </select>
+      {switching && <span className="muted">Switching…</span>}
+      {note && !switching && <span className="model-note">{note}</span>}
+    </span>
+  );
 }
 
 const RESUME_MODES: Record<ResumePolicy["mode"], string> = {

@@ -64,7 +64,7 @@ support.
 checklist in the desktop app and the CLI. Not yet: the automatic plan phase, approval modes,
 progress checks, and re-planning described below.
 
-Planning is built into the runtime (`imperium-core`), not left to prompts, so every agent —
+Planning is built into the runtime (`imperium-engine`), not left to prompts, so every agent —
 whatever model it runs on — works toward an explicit, tracked goal.
 
 - **Plan object.** Each agent can hold a plan: a goal, acceptance criteria, and ordered steps
@@ -158,6 +158,7 @@ they are wrapped in.
 | --- | --- |
 | `system_base`, `system_skills`, `system_memory`, `system_citations`, `system_project` | The system prompt's parts |
 | `tools_builtin`, `tools_mcp` | Tool definitions |
+| `summary` | A [compacted](#switching-models-and-compaction) conversation's summary of its older turns |
 | `manifest`, `memories` | Workflow context manifest and recalled memories, from user-message preambles |
 | `user`, `assistant`, `tool_results` | The conversation |
 | `overhead` | Chat template and formatting: roles, call ids, separators, template markup |
@@ -193,12 +194,136 @@ never delay streaming, and they never fail a turn.
 `imperium chat` prints the root agent's latest breakdown with `/context` (a used/free bar and a
 table with each category's share of the window); `--context` adds a one-line summary after each
 turn. The desktop shows it in the session's *Context and outputs* section
-([07](07-desktop-ui.md#projects-and-sessions-implemented)).
+([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
-- Per-agent context windows track usage; near the limit, the engine compacts older turns
-  into a summary using a cheap model, keeping tool results referenced by ID.
+- Planned: per-agent context windows track usage and, near the limit during a turn, the engine
+  compacts automatically with the [same compaction](#switching-models-and-compaction) a model
+  switch uses (today it runs on a switch or when asked).
 - Large tool outputs are stored as artefacts; the model receives a truncated view plus a
   handle it can page through.
+
+## Sessions waiting for a model
+
+**Implemented:** a session can start with no model. When `session.create` names none and
+`models.default` is not set, the session is still created and listed, with `model: null`
+(`SessionCreateResult` and `SessionSummary`). Its root agent does not exist yet; the session's
+task holds it:
+
+- Messages sent to it are not refused: they wait in the root's queue (`message_queued`,
+  `queue_changed`), and the status becomes `needs_model` (`status_changed`), which clients show
+  with a prompt to pick a model. Before any message waits, the session is `idle`.
+- `session.control` `set_model` (the session's model picker) gives it a model: the root agent is
+  made on it, `model_changed` is journalled with an empty `from`, the status returns to `idle`,
+  and the waiting messages run as turns in order. A model that cannot be resolved is refused
+  (`-32004`) and the session keeps waiting. `compact` is refused while there is no model.
+- The session's record keeps `model: null`, so after a daemon restart it resumes still waiting
+  (with any queued messages) unless `models.default` has been set meanwhile, which it then uses.
+
+Sessions the daemon starts itself (schedules, auto-fix, project agents) still need a model and
+fail to start without one.
+
+## Switching models and compaction
+
+**Implemented:** a session's root agent can switch to another model or endpoint mid-session
+and keep its conversation (`Session::set_model`; `session.control` with `set_model` and a model
+table id or `<endpoint>:<model>` spec, or none for `models.default`). The daemon resolves the
+model as `session.create` does, so an unknown endpoint or a missing key is refused with
+`-32004` before anything changes.
+
+- **When it applies:** between turns only. The switch is handled by the session's task when no
+  turn is running and takes effect from the next turn; while a turn runs (including one paused
+  for a usage limit or waiting on a permission) it is refused with `-32006` ("a turn is
+  running"), never applied mid-stream. Messages sent meanwhile [queue](#queueing-and-steering) as usual. Running
+  subagents keep their own models; subagents spawned later fall back to the new model.
+- **Measuring:** the conversation the target would read (system prompt, every message, and
+  the tool definitions) is counted with the target's client, by the [context
+  breakdown](#context-management) machinery: exactly with its tokenizer when it has one (a
+  local llama.cpp model is loaded for this, as its next turn would), else with the heuristic
+  scaled by how far it was off on the latest call that reported its prompt size
+  (`calibrated`), else the heuristic alone (`estimated`). The chat template's formatting is
+  estimated. The window is the server's (`/props`), else the model table's `context_window`;
+  when neither is known the conversation is not checked and the switch goes ahead.
+- **Budget:** the window less 15% for the reply (no per-model output limit is configured, so
+  a fixed share stands in for one). A conversation within it switches unchanged.
+- **Compaction:** otherwise older messages are replaced by a summary. The system prompt is
+  always kept; the most recent messages are kept verbatim, as many as fit in 60% of the budget
+  (so the conversation can go on) after the system prompt, tools, and room for the summary (a
+  third of what is left, 32 to 2,048 tokens). The kept part starts at a user turn when one
+  fits, else at an assistant message within the last turn; it never starts at a tool result,
+  so every kept tool call keeps its result. The **current** model writes the summary, since it
+  has been reading the conversation and its window holds it; if it cannot be reached (an
+  endpoint that is down, a local model that will not load), the target model writes it. The
+  summarisation prompt asks it to keep the user's goals and constraints, decisions and their
+  reasons, file paths, commands, identifiers, and versions, what the important tool results
+  showed, and open tasks and next steps, folding in any earlier summary (tool results over
+  2,000 characters are cut in what it reads). The summary goes before the first kept user
+  message, tagged `<conversation-summary>` (so roles still alternate, and breakdowns count it as
+  `summary`), or in a user message of its own when the kept part starts mid-turn. The result
+  is measured again: a summary too long is shortened, and if the kept messages are still too
+  many, fewer are kept and the summary rewritten, up to six attempts.
+- **Refusal:** when the system prompt and tools alone (plus a minimal summary) exceed the
+  budget, or compaction cannot get under it, the switch is refused with `-32007` and the
+  session keeps its model and conversation untouched. A summary no model could write is
+  refused with `-32004`.
+- **Events and results:** compaction emits `context_compacted` (the target, tokens before and
+  after, messages summarised, budget, window, counting method, and the summarising model), then
+  the switch emits `model_changed` (`from`, `to`, `compacted`); the session summary's `model`
+  follows. `session.control` returns `model` and `context` (`tokens`, `context_window`,
+  `budget`, `method`, and `compaction` with the token counts and summarised messages).
+- **Persistence:** `model_changed` is journalled, and a resumed session starts with the model
+  the journal last switched to (the daemon resolves its spec again); the compacted
+  conversation is saved to `<id>.messages.json` straight away.
+- **Compact now:** `session.control` with `compact` runs the same compaction for the
+  session's own model, keeping the last two turns verbatim (fewer if they do not fit), and
+  does nothing when there is nothing older. It needs a known context window.
+
+`imperium chat` switches with `/model <id>` and compacts with `/compact`, printing what
+happened (`Switched to x; compacted 30.1k -> 9.2k tokens (12 messages summarised by y).`). The
+desktop has a model picker in the session header ([07](07-desktop-ui.md#environments-and-sessions-implemented)).
+
+## Queueing and steering
+
+**Implemented:** messages sent while an agent is busy are never rejected or interleaved; they
+wait, or join the running turn when the user asks.
+
+- **Busy:** the root agent is busy from `turn_started` until `turn_completed` or `turn_failed`,
+  including while it is paused for a usage limit or waiting for a permission answer. A
+  subagent is busy until it reports.
+- **Queue (the default):** `session.send` to an idle root starts a turn at once, as before.
+  While it is busy the message is queued: `message_queued` (`id`, `text`, `steer`) and then
+  `queue_changed` (the whole queue) are emitted, and when the turn ends the queue is delivered
+  in order, one new turn per message (a failed turn does not drop it). Every message gets an
+  id (`q1`, `q2`, ... unique in the session) that `session.send` returns.
+- **Steer:** `session.send` with `mode: "steer"` puts the message into the **running** turn.
+  The agent takes it at the next safe point: after the current model response and all of its
+  tool calls have their results, before the next model call. It is added as a user message
+  wrapped in `<steering>` (with a line saying it arrived while the agent was working and
+  nothing was cancelled), the agent emits `steered` (`id`, `text`), and the turn goes on. A
+  steering message that arrives while the model writes its final answer keeps the turn going
+  for one more call instead of letting it end. Steering never lands between a tool call and
+  its result. With no turn running, steering is an ordinary send.
+- **Editing the queue:** `session.queue` (a method of its own, since it answers with the
+  queue) with `action` `list`, `edit` (`id`, `text`), or `remove` (`id`), returning the queue
+  after the action. A message already delivered (or a steering message already taken) can no
+  longer be changed (`-32602`). Steering messages wait in the same queue until taken, so they
+  can be edited or removed too; one still waiting when the turn ends runs as the next turn.
+- **Subagents:** `session.send` and `session.queue` take an optional `agent_id` (a task id
+  such as `t1`) to reach a running subagent; its events carry that agent id. A queued message
+  runs as a further turn of the subagent before it reports, and its report (what
+  `await_tasks` returns) is the last turn's reply with every turn's usage. A subagent that
+  has reported takes no more messages (`-32602`).
+- **Root over subagents:** the root agent has `steer_agent` and `queue_agent`
+  (`agent_id`, `text`) beside `spawn_agent` and `await_tasks`, for subagents it started and
+  has not collected. Like the other delegation tools they run without a permission prompt and
+  show as tool calls in the transcript.
+- **Persistence:** queue events are journalled. A resumed session restores the root agent's
+  queue from the latest `queue_changed` and delivers it (after reporting a turn the restart cut
+  off as failed); ids continue from the highest journalled one. Subagents are not resumed, so
+  neither are their queues.
+
+`imperium chat` reads input while a turn runs: a line typed then is queued, `/steer <text>`
+steers, and `/queue` lists the queue. The desktop composer stays enabled while the agent works
+([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
 ## Persistence
 

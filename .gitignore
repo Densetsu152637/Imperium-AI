@@ -4,3 +4,6 @@ packages/protocol/src/index.ts
 apps/desktop/dist/
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/binaries/
+
+# Built mod bundles
+/mods/*/index.js

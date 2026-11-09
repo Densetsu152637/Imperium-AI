@@ -1,5 +1,7 @@
 //! Typed method definitions. Each method names its wire string and its params/result types.
 
+use std::collections::BTreeMap;
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -32,6 +34,28 @@ impl Method for Ping {
     const NAME: &'static str = "system.ping";
     type Params = PingParams;
     type Result = PingResult;
+}
+
+/// `system.shutdown`: stops the daemon gracefully. It replies first, then stops serving; clients
+/// see their connection close.
+#[derive(Debug)]
+pub struct Shutdown;
+
+impl Method for Shutdown {
+    const NAME: &'static str = "system.shutdown";
+    type Params = ShutdownParams;
+    type Result = ShutdownResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ShutdownParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ShutdownResult {
+    /// The daemon's process id, so a caller can wait for it to exit.
+    pub pid: u32,
 }
 
 /// Names and versions a program, such as the CLI or the daemon.
@@ -79,14 +103,28 @@ impl Method for SessionCreate {
     type Result = SessionCreateResult;
 }
 
-/// `session.send`: sends a user message. Messages sent during a turn run after it finishes.
+/// `session.send`: sends a user message to the root agent or one of its running subagents.
+/// While the agent is busy (a turn running, paused on a usage limit, or waiting for a
+/// permission answer) the message is queued and runs as a new turn after the current one; with
+/// `mode: "steer"` it joins the running turn instead. See `message_queued` and `steered`.
 #[derive(Debug)]
 pub struct SessionSend;
 
 impl Method for SessionSend {
     const NAME: &'static str = "session.send";
     type Params = SessionSendParams;
-    type Result = Accepted;
+    type Result = SessionSendResult;
+}
+
+/// `session.queue`: list, edit, or remove an agent's queued messages before they are
+/// delivered.
+#[derive(Debug)]
+pub struct SessionQueue;
+
+impl Method for SessionQueue {
+    const NAME: &'static str = "session.queue";
+    type Params = SessionQueueParams;
+    type Result = SessionQueueResult;
 }
 
 /// `session.respond`: answers a `permission_requested` event.
@@ -133,8 +171,17 @@ pub struct SessionListResult {
 #[ts(export)]
 pub struct SessionSummary {
     pub session_id: String,
+    /// The session's working directory: its environment's first folder.
     pub project_dir: String,
-    pub model: String,
+    /// The environment the session works in, when it has one (sessions a schedule, a project
+    /// agent, or auto-fix start work in a bare folder).
+    #[serde(default)]
+    pub environment_id: Option<String>,
+    /// Every folder the session's tools may use, the working directory first.
+    #[serde(default)]
+    pub folders: Vec<String>,
+    /// The root agent's model spec; `None` while the session waits for one to be chosen.
+    pub model: Option<String>,
     /// Where the session's commands run, such as `tier 0 · folder policy`.
     pub isolation: String,
     /// The session's first message, for lists.
@@ -143,7 +190,72 @@ pub struct SessionSummary {
     /// What it watches, when watching or merged.
     pub status_detail: Option<String>,
     pub resume_policy: crate::session::ResumePolicy,
+    /// True for an environment's persistent agent session, which is always running, resumes
+    /// after restarts, and is listed first among its environment's sessions.
+    #[serde(default)]
+    pub persistent: bool,
+    /// Git worktrees the session works in instead of its environment's folders.
+    #[serde(default)]
+    pub worktrees: Vec<SessionWorktree>,
+    /// Pinned sessions are listed first; set with `session.control` `set_pinned`.
+    #[serde(default)]
+    pub pinned: bool,
+    /// Archived: the session no longer runs or resumes, but its journal is kept and
+    /// `session.subscribe` still returns its history. `session.control` `unarchive` resumes it.
+    #[serde(default)]
+    pub archived: bool,
+    /// When it was archived, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub archived_at: Option<u64>,
 }
+
+/// A git worktree a session was started on: its tools use `path` instead of `folder`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionWorktree {
+    /// The environment folder it stands in for.
+    pub folder: String,
+    /// The worktree's folder.
+    pub path: String,
+    /// The new branch it is on, such as `imperium/3fa2c1d0`.
+    pub branch: String,
+    /// The repository it belongs to.
+    pub repo: String,
+}
+
+/// `session.delete`: stops a session and forgets it, so it does not continue after a restart.
+/// With `remove_worktrees`, its git worktrees are removed too (their branches are kept). An
+/// environment's persistent agent is turned off with `environments.update` instead.
+#[derive(Debug)]
+pub struct SessionDelete;
+
+impl Method for SessionDelete {
+    const NAME: &'static str = "session.delete";
+    type Params = SessionDeleteParams;
+    type Result = SessionDeleteResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionDeleteParams {
+    pub session_id: String,
+    #[serde(default)]
+    pub remove_worktrees: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionDeleteResult {
+    /// Worktree folders removed.
+    pub removed_worktrees: Vec<String>,
+    /// Worktrees that could not be removed, with why.
+    pub failed: Vec<String>,
+}
+
+/// Notification sent to every client when a session is deleted; the payload is
+/// [`SessionDeleteParams`] (without `remove_worktrees`' effect).
+pub const SESSION_DELETED: &str = "session.deleted";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -158,30 +270,332 @@ pub struct SessionSubscribeResult {
     pub history: Vec<crate::session::AgentEvent>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionCreateParams {
-    /// Absolute path of the project folder the session works in.
-    pub project_dir: String,
-    /// `<endpoint>:<model>`; defaults to `models.default` from the configuration.
+    /// The environment the session works in: its folders are the sandbox, the first is the
+    /// working directory. Give this or `project_dir`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub environment_id: Option<String>,
+    /// Absolute path of a folder to work in, for clients that predate environments. It maps to
+    /// the environment whose first folder it is, created (named after the folder) if needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub project_dir: Option<String>,
+    /// A model table id or `<endpoint>:<model>`; defaults to `models.default` from the
+    /// configuration. With neither, the session is still created, without a model: messages
+    /// sent to it wait (status `needs_model`) until `session.control` `set_model` gives it one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
+    /// Start on git worktrees: every folder of the environment that is in a git repository is
+    /// replaced by a new worktree on a new branch (`imperium/<session id>` unless
+    /// `worktree_branch` names one). Other folders are used as they are. Local folders only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub worktree: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub worktree_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionCreateResult {
     pub session_id: String,
-    pub model: String,
+    /// `None` when no model was given and `models.default` is not set.
+    pub model: Option<String>,
     pub isolation: String,
+    /// The environment the session works in.
+    #[serde(default)]
+    pub environment_id: Option<String>,
+    /// The session's folders, the working directory first.
+    #[serde(default)]
+    pub folders: Vec<String>,
+    /// The worktrees it was started on.
+    #[serde(default)]
+    pub worktrees: Vec<SessionWorktree>,
 }
+
+/// An environment: a named set of folders sessions work in. The folders are the sandbox the
+/// agent's tools may use; the first is the working directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentInfo {
+    pub id: String,
+    pub name: String,
+    /// A glyph name for the interface's icon, such as `code`; the interface picks one if unset.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// The icon's tile colour, such as `#2f6fdb`.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Absolute folder paths, the working directory first. For a remote runtime they are paths
+    /// inside it.
+    pub folders: Vec<String>,
+    /// Pinned environments are listed first.
+    #[serde(default)]
+    pub pinned: bool,
+    /// Where the environment's file and command tools run.
+    #[serde(default)]
+    pub runtime: EnvironmentRuntime,
+    /// Whether the environment keeps a persistent agent session (off unless turned on).
+    #[serde(default)]
+    pub persistent_agent: bool,
+    /// The persistent agent's session id, once it has started; kept when the agent is turned
+    /// off so turning it on again continues the same conversation.
+    #[serde(default)]
+    pub agent_session_id: Option<String>,
+}
+
+/// Where an environment's tools run. `local` is this machine (under the configured isolation
+/// tier); the others run them inside a Docker container, a WSL distribution, or over SSH, and the
+/// environment's folders are paths there.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum EnvironmentRuntime {
+    #[default]
+    Local,
+    /// With `container`, commands run in that running container (`docker exec`) and folders are
+    /// paths inside it. Without, each command runs in a fresh container from `image` with the
+    /// environment's (local) folders mounted, as the container isolation tier does.
+    Docker {
+        image: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        container: Option<String>,
+    },
+    /// A WSL distribution (Windows only); Windows folder paths become `/mnt/<drive>/…`.
+    Wsl { distro: String },
+    /// A host reached with the system `ssh` client: an alias from the SSH config, or
+    /// `user@host[:port]`. Authentication uses the user's keys and agent.
+    Ssh { host: String },
+}
+
+impl EnvironmentRuntime {
+    /// Whether the environment's folders are paths inside the runtime rather than on this
+    /// machine.
+    pub fn is_remote(&self) -> bool {
+        match self {
+            EnvironmentRuntime::Local => false,
+            EnvironmentRuntime::Docker { container, .. } => container.is_some(),
+            EnvironmentRuntime::Wsl { .. } | EnvironmentRuntime::Ssh { .. } => true,
+        }
+    }
+}
+
+/// `environments.list`: every environment, in the order they were created.
+#[derive(Debug)]
+pub struct EnvironmentList;
+
+impl Method for EnvironmentList {
+    const NAME: &'static str = "environments.list";
+    type Params = EnvironmentListParams;
+    type Result = EnvironmentListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentListResult {
+    pub environments: Vec<EnvironmentInfo>,
+}
+
+/// `environments.create`: a new environment, optionally with its first folders.
+#[derive(Debug)]
+pub struct EnvironmentCreate;
+
+impl Method for EnvironmentCreate {
+    const NAME: &'static str = "environments.create";
+    type Params = EnvironmentCreateParams;
+    type Result = EnvironmentInfo;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentCreateParams {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub color: Option<String>,
+    /// Existing folders to start with (may be empty); paths inside the runtime when it is
+    /// remote.
+    #[serde(default)]
+    pub folders: Vec<String>,
+    /// Where tools run; `local` when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub runtime: Option<EnvironmentRuntime>,
+    /// Start a persistent agent session for the environment (off when left out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub persistent_agent: Option<bool>,
+}
+
+/// `environments.update`: rename an environment, change its icon, its runtime, or turn its
+/// persistent agent on or off. Fields left out keep their value; an empty `icon` or `color`
+/// clears it.
+#[derive(Debug)]
+pub struct EnvironmentUpdate;
+
+impl Method for EnvironmentUpdate {
+    const NAME: &'static str = "environments.update";
+    type Params = EnvironmentUpdateParams;
+    type Result = EnvironmentInfo;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentUpdateParams {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pinned: Option<bool>,
+    /// A new runtime. Folders are kept as they are (Windows paths are translated for WSL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub runtime: Option<EnvironmentRuntime>,
+    /// Turns the persistent agent session on (started at once) or off (stopped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub persistent_agent: Option<bool>,
+}
+
+/// `environments.test_runtime`: checks that an environment's runtime can be reached: Docker is
+/// running and has the image (or the container is running), the WSL distribution exists, or
+/// SSH connects without asking for anything.
+#[derive(Debug)]
+pub struct EnvironmentTestRuntime;
+
+impl Method for EnvironmentTestRuntime {
+    const NAME: &'static str = "environments.test_runtime";
+    type Params = EnvironmentRef;
+    type Result = RuntimeTestResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeTestResult {
+    pub ok: bool,
+    /// What was found, or what to fix, in a sentence.
+    pub message: String,
+}
+
+/// `environments.delete`: forget an environment. Its folders and running sessions are left
+/// alone.
+#[derive(Debug)]
+pub struct EnvironmentDelete;
+
+impl Method for EnvironmentDelete {
+    const NAME: &'static str = "environments.delete";
+    type Params = EnvironmentRef;
+    type Result = Accepted;
+}
+
+/// Names one environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentRef {
+    pub id: String,
+}
+
+/// `environments.add_folder`: add an existing folder to an environment. Sessions started from
+/// then on may use it.
+#[derive(Debug)]
+pub struct EnvironmentAddFolder;
+
+impl Method for EnvironmentAddFolder {
+    const NAME: &'static str = "environments.add_folder";
+    type Params = EnvironmentFolderParams;
+    type Result = EnvironmentInfo;
+}
+
+/// `environments.remove_folder`: remove a folder from an environment.
+#[derive(Debug)]
+pub struct EnvironmentRemoveFolder;
+
+impl Method for EnvironmentRemoveFolder {
+    const NAME: &'static str = "environments.remove_folder";
+    type Params = EnvironmentFolderParams;
+    type Result = EnvironmentInfo;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentFolderParams {
+    pub id: String,
+    /// An absolute folder path.
+    pub folder: String,
+}
+
+/// Notification sent to every client when environments change; the payload is an
+/// [`EnvironmentListResult`].
+pub const ENVIRONMENTS_CHANGED: &str = "environments.changed";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionSendParams {
     pub session_id: String,
     pub text: String,
+    /// `queue` (the default) or `steer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mode: Option<crate::session::SendMode>,
+    /// A running subagent's task id (`t1`, ...); the root agent when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSendResult {
+    /// The message's id; when it waits, `message_queued` carries the same id.
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionQueueParams {
+    pub session_id: String,
+    /// `list`, `edit` (with `id` and `text`), or `remove` (with `id`). Editing or removing a
+    /// message that was already delivered fails.
+    #[ts(type = "\"list\" | \"edit\" | \"remove\"")]
+    pub action: String,
+    /// A running subagent's task id; the root agent when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub text: Option<String>,
+}
+
+/// The agent's queue after the action, in delivery order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionQueueResult {
+    pub messages: Vec<crate::session::QueuedMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -581,9 +995,11 @@ pub struct ModInfo {
     pub id: String,
     pub name: String,
     pub version: String,
-    /// `telemetry:read`, `sessions:read`; the desktop app forwards only what is granted.
+    /// `telemetry:read`, `sessions:read`, `pets:read`, `storage`; the desktop app grants only these.
     pub permissions: Vec<String>,
     pub panels: Vec<ModPanel>,
+    /// Shipped with Imperium (opt-in in the desktop app) rather than installed by the user.
+    pub bundled: bool,
     /// The entry ES module's source.
     pub source: String,
 }
@@ -593,6 +1009,9 @@ pub struct ModInfo {
 pub struct ModPanel {
     pub id: String,
     pub title: String,
+    /// Where the panel docks: `sidebar.left` or `sidebar.right` (the default).
+    #[serde(default)]
+    pub slot: Option<String>,
 }
 
 /// `schedules.list`: configured schedules with their next and last runs.
@@ -797,7 +1216,8 @@ pub struct ProjectMessageResult {
     pub delivered: bool,
 }
 
-/// `pet.list`: installed pets, the selected one, and its current state.
+/// `pet.list`: installed pets, the selected one, and its current state. Installed pets are
+/// listed even when `pets.enabled` is false; `selected` and `state` are then null.
 #[derive(Debug)]
 pub struct PetList;
 
@@ -830,6 +1250,10 @@ pub struct PetInfo {
     pub license: String,
     pub cell_width: u32,
     pub cell_height: u32,
+    /// Animations the pet draws (a strip exists for each).
+    pub drawn: Vec<String>,
+    /// The package's `pet.json`, unparsed.
+    pub pet_json: String,
 }
 
 /// Notification sent to every client when the pet's animation changes.
@@ -850,7 +1274,8 @@ pub struct PetStateInfo {
     pub hidden: bool,
 }
 
-/// `pet.strip`: the selected pet's strip image for an animation.
+/// `pet.strip`: a pet's strip image for an animation. Works without the pet engine, but then
+/// `pet_id` is required (there is no selected pet).
 #[derive(Debug)]
 pub struct PetStrip;
 
@@ -864,6 +1289,9 @@ impl Method for PetStrip {
 #[ts(export)]
 pub struct PetStripParams {
     pub animation: String,
+    /// The pet to draw; the selected pet when absent.
+    #[serde(default)]
+    pub pet_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -976,12 +1404,46 @@ pub struct PhoneRevokeResult {
     pub found: bool,
 }
 
+/// `session.suggestion_respond`: answers a `model_suggestion` event. `download` starts the
+/// download (as `models.download` would) and returns its job; `dismiss` says not now (the
+/// session does not suggest for that need again); `never` turns `models.suggest_downloads` off
+/// in the user config file. Each is followed by a `model_suggestion_update` event.
+#[derive(Debug)]
+pub struct SessionSuggestionRespond;
+
+impl Method for SessionSuggestionRespond {
+    const NAME: &'static str = "session.suggestion_respond";
+    type Params = SuggestionRespondParams;
+    type Result = SuggestionRespondResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SuggestionRespondParams {
+    pub session_id: String,
+    pub suggestion_id: String,
+    #[ts(type = "\"download\" | \"dismiss\" | \"never\"")]
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SuggestionRespondResult {
+    /// For `download`: the job, whose progress `models.download_progress` reports.
+    #[serde(default)]
+    pub job: Option<DownloadJob>,
+}
+
 /// Notification sent to every client when a session starts, whoever started it (a client, a
 /// schedule, a project agent, or auto-fix). The payload is a [`SessionSummary`].
 pub const SESSION_CREATED: &str = "session.created";
 
-/// `session.control`: change how a session waits for usage resets, resume it now, or set what
-/// pull request it watches.
+/// Notification sent to every client when a session's listing changes outside its event
+/// stream (such as being pinned). The payload is a [`SessionSummary`].
+pub const SESSION_UPDATED: &str = "session.updated";
+
+/// `session.control`: change how a session waits for usage resets, resume it now, set what
+/// pull request it watches, switch its model, compact its conversation, or pin it.
 #[derive(Debug)]
 pub struct SessionControl;
 
@@ -996,8 +1458,14 @@ impl Method for SessionControl {
 pub struct SessionControlParams {
     pub session_id: String,
     /// `set_resume_policy` (with `resume_policy`, or none to use the default), `resume_now`,
-    /// `watch` (with `repo` and `pull_request`), or `unwatch`.
-    #[ts(type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\"")]
+    /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
+    /// for `models.default`; refused while a turn runs), `compact` (summarise older turns
+    /// now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
+    /// `archive` (stop the session and keep its journal; announced with `session.updated`), or
+    /// `unarchive` (resume an archived session).
+    #[ts(
+        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\" | \"archive\" | \"unarchive\""
+    )]
     pub action: String,
     #[serde(default)]
     pub resume_policy: Option<crate::session::ResumePolicy>,
@@ -1006,8 +1474,648 @@ pub struct SessionControlParams {
     #[serde(default)]
     #[ts(type = "number | null")]
     pub pull_request: Option<u64>,
+    /// For `set_model`: a model table id or an `<endpoint>:<model>` spec.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// For `set_pinned`: whether the session is pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pinned: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct SessionControlResult {}
+pub struct SessionControlResult {
+    /// For `set_model` and `compact`: the session's model afterwards.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// For `set_model` and `compact`: the conversation measured for that model's window.
+    #[serde(default)]
+    pub context: Option<ContextFit>,
+}
+
+/// A conversation measured against a model's context window, and any compaction it needed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ContextFit {
+    /// The conversation's size as the model will read it (after any compaction).
+    #[ts(type = "number")]
+    pub tokens: u64,
+    /// Absent when the window is unknown; the conversation was then not checked.
+    #[ts(type = "number | null")]
+    pub context_window: Option<u64>,
+    /// The tokens the conversation may use: the window less room for the reply.
+    #[ts(type = "number | null")]
+    pub budget: Option<u64>,
+    pub method: crate::session::TokenCountMethod,
+    /// Present when older turns were summarised to fit.
+    pub compaction: Option<Compaction>,
+}
+
+/// What compacting a conversation did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Compaction {
+    #[ts(type = "number")]
+    pub before_tokens: u64,
+    #[ts(type = "number")]
+    pub after_tokens: u64,
+    pub summarised_messages: u32,
+    /// The model that wrote the summary.
+    pub summary_model: String,
+}
+
+/// `config.describe`: the settings an app may show and change, with their effective values.
+/// Structured lists and maps (endpoints, the model table, routing rules, MCP servers, projects,
+/// schedules, hooks) are not included; they are edited in the config file.
+#[derive(Debug)]
+pub struct ConfigDescribe;
+
+impl Method for ConfigDescribe {
+    const NAME: &'static str = "config.describe";
+    type Params = ConfigDescribeParams;
+    type Result = ConfigDescribeResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ConfigDescribeParams {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ConfigDescribeResult {
+    pub entries: Vec<ConfigEntry>,
+    /// The user config file that `config.set` writes.
+    pub user_file: String,
+}
+
+/// One setting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ConfigEntry {
+    /// Dotted path, such as `runtime.llamacpp.context`.
+    pub key: String,
+    /// The top-level table, for grouping.
+    pub section: String,
+    pub label: String,
+    pub description: String,
+    #[ts(
+        type = "\"bool\" | \"integer\" | \"number\" | \"string\" | \"path\" | \"path_list\" | \"string_list\" | \"enum\" | \"secret_ref\""
+    )]
+    pub kind: String,
+    /// Allowed values of an `enum`; empty otherwise.
+    pub options: Vec<String>,
+    /// The built-in default; null when unset by default.
+    #[ts(type = "unknown")]
+    pub default: serde_json::Value,
+    /// The effective value. A `secret_ref` shows the secret's name, never its value.
+    #[ts(type = "unknown")]
+    pub value: serde_json::Value,
+    /// The layer that set `value`.
+    #[ts(type = "\"default\" | \"user\" | \"project\" | \"env\"")]
+    pub source: String,
+    /// Whether the daemon must restart before a change applies.
+    pub restart: bool,
+}
+
+/// `config.set`: writes one setting to the user config file (never a project's), or removes it
+/// with a null value so the default applies. The whole configuration is validated first; an
+/// invalid change is not saved.
+#[derive(Debug)]
+pub struct ConfigSet;
+
+impl Method for ConfigSet {
+    const NAME: &'static str = "config.set";
+    type Params = ConfigSetParams;
+    type Result = ConfigSetResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ConfigSetParams {
+    pub key: String,
+    /// The new value, matching the entry's kind; null removes the key from the user file.
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ConfigSetResult {
+    /// The setting after the change, as the daemon will load it at its next start.
+    pub entry: ConfigEntry,
+    /// Restart the daemon to apply the change.
+    pub restart: bool,
+    /// An environment variable (or project file) sets this key, so the saved value does not
+    /// take effect while it does.
+    pub overridden: bool,
+}
+
+// ---- Connectors: MCP servers, plugins, and skills ----
+
+/// `mcp.list`: the MCP servers in the user config with their last known status, plus the
+/// plugins and skills found in the user's folders.
+#[derive(Debug)]
+pub struct McpList;
+
+impl Method for McpList {
+    const NAME: &'static str = "mcp.list";
+    type Params = McpListParams;
+    type Result = McpListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpListResult {
+    pub servers: Vec<McpServerInfo>,
+    pub plugins: Vec<PluginInfo>,
+    pub skills: Vec<SkillInfo>,
+    /// The user config file servers are written to.
+    pub user_file: String,
+    /// Problems found while reading the config, plugins, and skills.
+    pub problems: Vec<String>,
+}
+
+/// One `[mcp.servers.<name>]` entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpServerInfo {
+    pub name: String,
+    pub config: McpServerConfig,
+    pub status: McpStatus,
+}
+
+/// A server's settings as written in the config. Secrets appear only as secret names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpServerConfig {
+    /// A local command speaking MCP on stdio; exactly one of `command` and `url` is set.
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Environment variables read from the secret store: variable name to secret name.
+    #[serde(default)]
+    pub secret_env: BTreeMap<String, String>,
+    /// A streamable-HTTP endpoint.
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// The secret sent as `Authorization: Bearer` to an HTTP server.
+    #[serde(default)]
+    pub bearer_secret: Option<String>,
+    /// Tools that run without asking, or `*` for all.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub timeout_s: Option<u64>,
+    /// The catalogue entry it was added from.
+    #[serde(default)]
+    pub catalog: Option<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// What the daemon last learned about a server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpStatus {
+    #[ts(type = "\"untested\" | \"connected\" | \"error\" | \"disabled\"")]
+    pub state: String,
+    /// The server's tools, from the last successful connection.
+    pub tools: Vec<String>,
+    pub error: Option<String>,
+    /// When the status was learned, in Unix milliseconds.
+    #[ts(type = "number | null")]
+    pub checked_at: Option<u64>,
+    /// Secrets the server refers to that are not in the secret store.
+    pub missing_secrets: Vec<String>,
+}
+
+/// A plugin folder (Claude Code layout).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PluginInfo {
+    pub name: String,
+    pub root: String,
+    /// False when listed in `extensions.disabled_plugins`.
+    pub enabled: bool,
+    pub skills: u32,
+    pub commands: u32,
+    pub hooks: u32,
+    /// MCP servers the plugin declares.
+    pub servers: Vec<String>,
+}
+
+/// A skill in the user's skills folder or a plugin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+    /// `user` or `plugin:<name>`.
+    pub origin: String,
+    pub dir: String,
+}
+
+/// `mcp.save`: adds or replaces `[mcp.servers.<name>]` in the user config. Secret values in
+/// `secrets` are stored in the secret store first, under their names; they are never written
+/// to the config or returned. New sessions use the change; running sessions keep their servers.
+#[derive(Debug)]
+pub struct McpSave;
+
+impl Method for McpSave {
+    const NAME: &'static str = "mcp.save";
+    type Params = McpSaveParams;
+    type Result = McpSaveResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpSaveParams {
+    pub name: String,
+    pub config: McpServerConfig,
+    /// Secret name to value.
+    #[serde(default)]
+    pub secrets: BTreeMap<String, String>,
+    /// Refuse to replace an existing server of the same name.
+    #[serde(default)]
+    pub create: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpSaveResult {
+    pub server: McpServerInfo,
+}
+
+/// `mcp.install`: adds a server from the connector catalogue, filling its settings from
+/// `values` (field id to value). Secret fields go to the secret store as `mcp.<name>.<field>`.
+#[derive(Debug)]
+pub struct McpInstall;
+
+impl Method for McpInstall {
+    const NAME: &'static str = "mcp.install";
+    type Params = McpInstallParams;
+    type Result = McpSaveResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpInstallParams {
+    pub catalog_id: String,
+    /// The server's name; the catalogue id when empty.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
+}
+
+/// `mcp.remove`: removes a server from the user config.
+#[derive(Debug)]
+pub struct McpRemove;
+
+impl Method for McpRemove {
+    const NAME: &'static str = "mcp.remove";
+    type Params = McpRemoveParams;
+    type Result = McpRemoveResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpRemoveParams {
+    pub name: String,
+    /// Also delete the secrets the server referred to.
+    #[serde(default)]
+    pub forget_secrets: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpRemoveResult {
+    pub removed: bool,
+}
+
+/// `mcp.set_enabled`: turns a server on or off without removing it.
+#[derive(Debug)]
+pub struct McpSetEnabled;
+
+impl Method for McpSetEnabled {
+    const NAME: &'static str = "mcp.set_enabled";
+    type Params = McpSetEnabledParams;
+    type Result = McpSaveResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpSetEnabledParams {
+    pub name: String,
+    pub enabled: bool,
+}
+
+/// `mcp.test`: starts a server, lists its tools, and stops it. The result is also what
+/// `mcp.list` shows until the next test.
+#[derive(Debug)]
+pub struct McpTest;
+
+impl Method for McpTest {
+    const NAME: &'static str = "mcp.test";
+    type Params = McpTestParams;
+    type Result = McpStatus;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpTestParams {
+    pub name: String,
+}
+
+/// `mcp.catalog`: the connector catalogue, built in and extended or overridden by
+/// `<config>/connectors.json`.
+#[derive(Debug)]
+pub struct McpCatalog;
+
+impl Method for McpCatalog {
+    const NAME: &'static str = "mcp.catalog";
+    type Params = McpCatalogParams;
+    type Result = McpCatalogResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpCatalogParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct McpCatalogResult {
+    pub entries: Vec<CatalogServer>,
+    /// The file that extends the built-in catalogue (it may not exist).
+    pub override_file: String,
+    /// Problems reading the override file.
+    pub problems: Vec<String>,
+}
+
+/// A connector in the catalogue. `{{field}}` in `args`, `env` values, `url`, and `headers`
+/// values is replaced by that field's value; an argument that is exactly `{{field}}` becomes
+/// one argument per line of a `path_list` field, and is left out when the field is empty.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CatalogServer {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub category: String,
+    /// A Lucide icon name, such as `database`.
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub homepage: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// A secret field sent as `Authorization: Bearer`, written `{{field}}`.
+    #[serde(default)]
+    pub bearer: Option<String>,
+    #[serde(default)]
+    pub fields: Vec<CatalogField>,
+}
+
+/// A setting the user fills in when adding a catalogue connector.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CatalogField {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    /// `secret` values go to the secret store and may only fill a whole `env` value or `bearer`.
+    #[ts(type = "\"text\" | \"secret\" | \"path\" | \"path_list\" | \"url\"")]
+    pub kind: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    #[serde(default)]
+    pub default: Option<String>,
+}
+
+/// `system.resources`: what the machine and the sessions are using right now.
+#[derive(Debug)]
+pub struct SystemResources;
+
+impl Method for SystemResources {
+    const NAME: &'static str = "system.resources";
+    type Params = SystemResourcesParams;
+    type Result = ResourceSnapshot;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SystemResourcesParams {}
+
+/// `system.resources_subscribe`: start (`on: true`) or stop `system.resources_changed`
+/// notifications on this connection. The daemon samples only while a connection is subscribed;
+/// closing the connection unsubscribes it.
+#[derive(Debug)]
+pub struct SystemResourcesSubscribe;
+
+impl Method for SystemResourcesSubscribe {
+    const NAME: &'static str = "system.resources_subscribe";
+    type Params = SystemResourcesSubscribeParams;
+    type Result = SystemResourcesSubscribeResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SystemResourcesSubscribeParams {
+    pub on: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SystemResourcesSubscribeResult {
+    pub on: bool,
+    /// How often snapshots arrive while subscribed.
+    pub interval_ms: u32,
+}
+
+/// Notification carrying a [`ResourceSnapshot`], sent about every two seconds to connections
+/// subscribed with `system.resources_subscribe`.
+pub const RESOURCES_CHANGED: &str = "system.resources_changed";
+
+/// What the machine and the sessions are using.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ResourceSnapshot {
+    /// When it was taken, in milliseconds since the Unix epoch.
+    #[ts(type = "number")]
+    pub taken_at_ms: u64,
+    pub cpu: CpuUsage,
+    pub memory: MemoryUsage,
+    /// Empty when no supported GPU (NVIDIA, through its driver) is present.
+    pub gpus: Vec<GpuUsage>,
+    /// The daemon itself, then each model server it runs.
+    pub processes: Vec<ProcessUsage>,
+    /// Local models loaded now, in use or idle (cached until they unload).
+    pub local_models: Vec<ActiveLocalModel>,
+    /// Hosted endpoints that live sessions use, with their last 15 minutes of calls.
+    pub endpoints: Vec<ActiveEndpoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CpuUsage {
+    /// Busy share of every core together, 0 to 100.
+    pub total_percent: f32,
+    /// Busy share of each logical core, 0 to 100.
+    pub per_core: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MemoryUsage {
+    #[ts(type = "number")]
+    pub ram_used_bytes: u64,
+    #[ts(type = "number")]
+    pub ram_total_bytes: u64,
+    #[ts(type = "number")]
+    pub swap_used_bytes: u64,
+    #[ts(type = "number")]
+    pub swap_total_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GpuUsage {
+    pub index: u32,
+    pub name: String,
+    pub vendor: String,
+    /// Busy share, 0 to 100; absent when the driver does not report it.
+    pub utilization_percent: Option<f32>,
+    #[ts(type = "number")]
+    pub vram_used_bytes: u64,
+    #[ts(type = "number")]
+    pub vram_total_bytes: u64,
+    pub temperature_c: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProcessUsage {
+    pub pid: u32,
+    pub name: String,
+    /// `daemon` for imperium-core, otherwise the runtime serving `model` (`llamacpp`, `vllm`).
+    pub role: String,
+    pub model: Option<String>,
+    /// Share of the whole machine (every core), 0 to 100.
+    pub cpu_percent: f32,
+    #[ts(type = "number")]
+    pub ram_bytes: u64,
+    /// Absent when the driver does not report GPU memory per process.
+    #[ts(type = "number | null")]
+    pub vram_bytes: Option<u64>,
+}
+
+/// A local model loaded by the supervisor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActiveLocalModel {
+    pub model: String,
+    /// The runtime serving it: `llamacpp` or `vllm`.
+    pub runtime: String,
+    /// `gpu`, `partial` (layers split between GPU and RAM), or `cpu`.
+    #[ts(type = "\"gpu\" | \"partial\" | \"cpu\"")]
+    pub placement: String,
+    pub gpu_layers: u32,
+    /// Total context the server was started with (every slot together).
+    pub context: u32,
+    /// Memory planned for it.
+    #[ts(type = "number")]
+    pub vram_bytes: u64,
+    #[ts(type = "number")]
+    pub ram_bytes: u64,
+    pub slots: u32,
+    pub slots_in_use: u32,
+    /// Live sessions on this model: as their model, or with calls on it in the last 15 minutes.
+    pub sessions: Vec<String>,
+    pub pid: Option<u32>,
+    /// How long it has been idle; absent while a slot is in use.
+    #[ts(type = "number | null")]
+    pub idle_ms: Option<u64>,
+    /// When it unloads if it stays idle; absent while a slot is in use.
+    #[ts(type = "number | null")]
+    pub unload_in_ms: Option<u64>,
+    /// `models.unload` can release it now (no slot is in use).
+    pub can_unload: bool,
+}
+
+/// A hosted model live sessions use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActiveEndpoint {
+    /// The `[endpoints.<id>]` it is served from.
+    pub endpoint: String,
+    /// The endpoint's host, from its base URL.
+    pub host: Option<String>,
+    pub model: String,
+    /// `<endpoint>:<model>`.
+    pub spec: String,
+    pub sessions: Vec<String>,
+    /// Model calls in the last 15 minutes.
+    pub requests: u32,
+    #[ts(type = "number")]
+    pub prompt_tokens: u64,
+    #[ts(type = "number")]
+    pub completion_tokens: u64,
+    /// How long the latest call took.
+    #[ts(type = "number | null")]
+    pub last_latency_ms: Option<u64>,
+    /// Failed turns on this model in the last 15 minutes, and the latest message.
+    pub errors: u32,
+    pub last_error: Option<String>,
+}
+
+/// `models.unload`: unload an idle local model now, freeing its memory.
+#[derive(Debug)]
+pub struct ModelUnload;
+
+impl Method for ModelUnload {
+    const NAME: &'static str = "models.unload";
+    type Params = ModelUnloadParams;
+    type Result = ModelUnloadResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelUnloadParams {
+    /// The local model id, as `local_models[].model` names it.
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelUnloadResult {
+    pub unloaded: bool,
+}

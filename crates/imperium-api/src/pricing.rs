@@ -1,9 +1,9 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Usage;
 
 /// Prices in US dollars per million tokens.
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub struct Pricing {
     pub input_usd_per_mtok: f64,
     pub output_usd_per_mtok: f64,

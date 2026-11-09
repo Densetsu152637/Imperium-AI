@@ -3,4 +3,4 @@
 /**
  * What a session is doing, as clients show it.
  */
-export type SessionStatus = "idle" | "working" | "needs_attention" | "paused" | "watching" | "merged";
+export type SessionStatus = "idle" | "working" | "needs_attention" | "paused" | "needs_model" | "watching" | "merged";

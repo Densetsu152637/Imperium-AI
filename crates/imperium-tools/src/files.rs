@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::{ToolError, Workspace};
+use crate::{ToolError, Workspace, remote_files};
 
 /// Largest text returned to the model from one read, in characters.
 const MAX_READ_CHARS: usize = 100_000;
@@ -11,8 +11,12 @@ pub async fn read_file(
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<String, ToolError> {
-    let full = workspace.resolve(path)?;
-    let text = read_text(&full, path).await?;
+    let text = if workspace.runtime().is_some() {
+        remote_files::read_text(workspace, path).await?
+    } else {
+        let full = workspace.resolve(path)?;
+        read_text(&full, path).await?
+    };
     let start = offset.unwrap_or(1).max(1) - 1;
     let lines: Vec<&str> = text
         .lines()
@@ -38,6 +42,10 @@ pub async fn write_file(
     path: &str,
     content: &str,
 ) -> Result<String, ToolError> {
+    if workspace.runtime().is_some() {
+        let shown = remote_files::write(workspace, path, content.as_bytes()).await?;
+        return Ok(format!("wrote {} bytes to {shown}", content.len()));
+    }
     let full = workspace.resolve(path)?;
     if let Some(parent) = full.parent() {
         tokio::fs::create_dir_all(parent)
@@ -63,18 +71,28 @@ pub async fn edit_file(
     if old.is_empty() {
         return Err(ToolError::Invalid("old_string must not be empty".into()));
     }
+    if workspace.runtime().is_some() {
+        let text = remote_files::read_text(workspace, path).await?;
+        let replaced = replace_once(&text, old, new, path)?;
+        let shown = remote_files::write(workspace, path, replaced.as_bytes()).await?;
+        return Ok(format!("edited {shown}"));
+    }
     let full = workspace.resolve(path)?;
     let text = read_text(&full, path).await?;
+    let replaced = replace_once(&text, old, new, path)?;
+    tokio::fs::write(&full, replaced)
+        .await
+        .map_err(|error| ToolError::Io(format!("{path}: {error}")))?;
+    Ok(format!("edited {}", workspace.display(&full)))
+}
+
+/// `text` with its one occurrence of `old` replaced; none or several is an error.
+fn replace_once(text: &str, old: &str, new: &str, path: &str) -> Result<String, ToolError> {
     match text.matches(old).count() {
         0 => Err(ToolError::Invalid(format!(
             "old_string not found in {path}"
         ))),
-        1 => {
-            tokio::fs::write(&full, text.replacen(old, new, 1))
-                .await
-                .map_err(|error| ToolError::Io(format!("{path}: {error}")))?;
-            Ok(format!("edited {}", workspace.display(&full)))
-        }
+        1 => Ok(text.replacen(old, new, 1)),
         n => Err(ToolError::Invalid(format!(
             "old_string occurs {n} times in {path}; include more context so it is unique"
         ))),
@@ -82,6 +100,9 @@ pub async fn edit_file(
 }
 
 pub async fn list_dir(workspace: &Workspace, path: &str) -> Result<String, ToolError> {
+    if workspace.runtime().is_some() {
+        return remote_files::list(workspace, path).await;
+    }
     let full = workspace.resolve(path)?;
     let mut reader = tokio::fs::read_dir(&full)
         .await
@@ -135,6 +156,49 @@ mod tests {
 
         assert_eq!(list_dir(&workspace, ".").await.unwrap(), "src/");
         assert_eq!(list_dir(&workspace, "src").await.unwrap(), "lib.rs");
+    }
+
+    #[tokio::test]
+    async fn tools_use_every_folder_of_the_environment_and_nothing_else() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(second.path().join("notes.txt"), "from the second folder\n").unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "no").unwrap();
+        let workspace = Workspace::new(first.path())
+            .unwrap()
+            .with_folders([second.path()])
+            .unwrap();
+
+        let notes = second
+            .path()
+            .join("notes.txt")
+            .to_string_lossy()
+            .to_string();
+        let read = read_file(&workspace, &notes, None, None).await.unwrap();
+        assert!(read.contains("from the second folder"), "{read}");
+        let written = second.path().join("out.txt").to_string_lossy().to_string();
+        write_file(&workspace, &written, "made").await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(second.path().join("out.txt")).unwrap(),
+            "made"
+        );
+
+        let secret = outside
+            .path()
+            .join("secret.txt")
+            .to_string_lossy()
+            .to_string();
+        assert!(matches!(
+            read_file(&workspace, &secret, None, None).await,
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        let planted = outside.path().join("new.txt").to_string_lossy().to_string();
+        assert!(matches!(
+            write_file(&workspace, &planted, "x").await,
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        assert!(!outside.path().join("new.txt").exists());
     }
 
     #[tokio::test]
