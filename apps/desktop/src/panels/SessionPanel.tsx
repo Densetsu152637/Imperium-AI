@@ -53,6 +53,8 @@ type Props = {
   onSetModel: (model: string) => Promise<SessionControlResult | null>;
   /** For answering model download suggestions and following their downloads. */
   client?: DaemonClient | null;
+  /** Resumes an archived session. */
+  onUnarchive?: () => void;
 };
 
 export function SessionPanel({
@@ -66,6 +68,7 @@ export function SessionPanel({
   models,
   onSetModel,
   client = null,
+  onUnarchive,
 }: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
@@ -204,10 +207,31 @@ export function SessionPanel({
         <div ref={end} />
       </div>
 
+      {session.summary.archived && (
+        <div className="archived-note" role="status">
+          <span>This session is archived: it is not running and keeps its history. Unarchive it to continue.</span>
+          {onUnarchive && (
+            <button className="primary" onClick={onUnarchive}>
+              Unarchive
+            </button>
+          )}
+        </div>
+      )}
+
+      {session.summary.model === null && !session.summary.archived && (
+        <p className="needs-model" role="status">
+          This session has no model yet. Pick one in the model list above (or set a default under Settings → Models);
+          {session.status === "needs_model"
+            ? " your messages are waiting and run as soon as it has one."
+            : " messages you send wait until then."}
+        </p>
+      )}
+
       {session.queue.length > 0 && <QueueView queue={session.queue} onChange={onChangeQueued} />}
 
       <form
         className="composer"
+        hidden={session.summary.archived}
         onSubmit={(event) => {
           event.preventDefault();
           send();
@@ -403,15 +427,16 @@ function ModelPicker({
   busy,
   onSwitch,
 }: {
-  current: string;
+  /** `null` while the session has no model yet. */
+  current: string | null;
   models: ModelRow[];
   busy: boolean;
   onSwitch: Props["onSetModel"];
 }) {
   const [switching, setSwitching] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  if (models.length === 0) return <span title="Model">{current}</span>;
-  const listed = models.some((row) => row.spec === current);
+  if (models.length === 0) return <span title="Model">{current ?? "no model"}</span>;
+  const listed = current === null || models.some((row) => row.spec === current);
   const switchTo = (spec: string) => {
     if (spec === current) return;
     setSwitching(true);
@@ -436,11 +461,16 @@ function ModelPicker({
             ? "Switch models when the turn finishes"
             : "Switch the session's model; older turns are summarised if its context window is smaller"
         }
-        value={current}
+        value={current ?? ""}
         disabled={busy || switching}
         onChange={(event) => switchTo(event.target.value)}
       >
-        {!listed && <option value={current}>{current}</option>}
+        {current === null && (
+          <option value="" disabled>
+            Pick a model…
+          </option>
+        )}
+        {!listed && current !== null && <option value={current}>{current}</option>}
         {models.map((row) => (
           <option key={row.id} value={row.spec} disabled={!row.endpoint_configured}>
             {row.id === row.spec ? row.spec : `${row.id} · ${row.spec}`}

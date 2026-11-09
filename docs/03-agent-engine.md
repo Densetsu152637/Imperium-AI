@@ -202,6 +202,26 @@ turn. The desktop shows it in the session's *Context and outputs* section
 - Large tool outputs are stored as artefacts; the model receives a truncated view plus a
   handle it can page through.
 
+## Sessions waiting for a model
+
+**Implemented:** a session can start with no model. When `session.create` names none and
+`models.default` is not set, the session is still created and listed, with `model: null`
+(`SessionCreateResult` and `SessionSummary`). Its root agent does not exist yet; the session's
+task holds it:
+
+- Messages sent to it are not refused: they wait in the root's queue (`message_queued`,
+  `queue_changed`), and the status becomes `needs_model` (`status_changed`), which clients show
+  with a prompt to pick a model. Before any message waits, the session is `idle`.
+- `session.control` `set_model` (the session's model picker) gives it a model: the root agent is
+  made on it, `model_changed` is journalled with an empty `from`, the status returns to `idle`,
+  and the waiting messages run as turns in order. A model that cannot be resolved is refused
+  (`-32004`) and the session keeps waiting. `compact` is refused while there is no model.
+- The session's record keeps `model: null`, so after a daemon restart it resumes still waiting
+  (with any queued messages) unless `models.default` has been set meanwhile, which it then uses.
+
+Sessions the daemon starts itself (schedules, auto-fix, project agents) still need a model and
+fail to start without one.
+
 ## Switching models and compaction
 
 **Implemented:** a session's root agent can switch to another model or endpoint mid-session

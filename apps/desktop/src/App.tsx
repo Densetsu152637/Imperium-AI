@@ -415,6 +415,12 @@ export function App() {
     );
   };
 
+  /** Archives a session, or resumes an archived one (which this window then follows afresh). */
+  const setSessionArchived = (sessionId: string, archived: boolean) => {
+    if (!archived) known.current.delete(sessionId);
+    control(sessionId, { action: archived ? "archive" : "unarchive" }).catch(report);
+  };
+
   const showEnvironment = (id: string) => {
     setEnvId(id);
     setEnvView(true);
@@ -443,6 +449,8 @@ export function App() {
         status_detail: null,
         resume_policy: DEFAULT_RESUME_POLICY,
         persistent: false,
+        archived: false,
+        archived_at: null,
         worktrees: created.worktrees,
         pinned: false,
       };
@@ -640,6 +648,7 @@ export function App() {
           onSort={setSessionSort}
           onSelect={selectSession}
           onSetPinned={setSessionPinned}
+          onSetArchived={setSessionArchived}
           onShowEnvironment={showEnvironment}
           onShowAll={() => setEnvView(false)}
         />
@@ -678,6 +687,7 @@ export function App() {
         models={modelTable?.models ?? []}
         onSetModel={setModel}
         client={client}
+        onUnarchive={session ? () => setSessionArchived(session.summary.session_id, false) : undefined}
       />
     ),
   };

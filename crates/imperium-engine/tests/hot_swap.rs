@@ -10,7 +10,7 @@ use axum::Router;
 use axum::routing::post;
 use imperium_engine::{ResolvedModel, Session, SessionConfig, SwitchError, journalled_model};
 use imperium_models::Endpoint;
-use imperium_protocol::session::{AgentEvent, SessionEvent};
+use imperium_protocol::session::{AgentEvent, SessionEvent, SessionStatus};
 use imperium_tools::Workspace;
 use serde_json::{Value, json};
 
@@ -108,11 +108,11 @@ fn model(spec: &str, url: &str, context_window: Option<u64>) -> ResolvedModel {
 }
 
 fn start(model: ResolvedModel, dir: &std::path::Path, resume: bool) -> Session {
-    start_with(model, dir, resume, false)
+    start_with(Some(model), dir, resume, false)
 }
 
 fn start_with(
-    model: ResolvedModel,
+    model: Option<ResolvedModel>,
     dir: &std::path::Path,
     resume: bool,
     auto_compact: bool,
@@ -206,7 +206,7 @@ async fn a_large_window_switches_without_compacting_and_the_next_turn_uses_it() 
         events.recv().await.unwrap().event,
         SessionEvent::TurnCompleted { .. }
     ) {}
-    assert_eq!(session.model(), "a:old");
+    assert_eq!(session.model().as_deref(), Some("a:old"));
 
     let fit = session
         .set_model(model("b:new", &url_b, Some(1_000_000)))
@@ -215,7 +215,7 @@ async fn a_large_window_switches_without_compacting_and_the_next_turn_uses_it() 
     assert!(fit.compaction.is_none());
     assert_eq!(fit.context_window, Some(1_000_000));
     assert!(fit.tokens > 0 && fit.tokens <= fit.budget.unwrap());
-    assert_eq!(session.model(), "b:new");
+    assert_eq!(session.model().as_deref(), Some("b:new"));
     assert!(history(&session).contains(&SessionEvent::ModelChanged {
         from: "a:old".into(),
         to: "b:new".into(),
@@ -326,7 +326,7 @@ async fn a_window_nothing_fits_is_refused_and_the_old_model_stays() {
         matches!(refused, Err(SwitchError::TooLarge { budget: 170, .. })),
         "{refused:?}"
     );
-    assert_eq!(session.model(), "a:old");
+    assert_eq!(session.model().as_deref(), Some("a:old"));
     assert!(!history(&session).iter().any(|event| matches!(
         event,
         SessionEvent::ModelChanged { .. } | SessionEvent::ContextCompacted { .. }
@@ -356,7 +356,7 @@ async fn a_resumed_session_keeps_the_model_it_switched_to() {
     // The daemon resumes with the model the journal names (resolving the spec it records).
     assert_eq!(journalled_model(&journal).as_deref(), Some("b:new"));
     let resumed = start(model("b:new", &url_b, None), dir.path(), true);
-    assert_eq!(resumed.model(), "b:new");
+    assert_eq!(resumed.model().as_deref(), Some("b:new"));
     assert!(history(&resumed).contains(&SessionEvent::ModelChanged {
         from: "a:old".into(),
         to: "b:new".into(),
@@ -393,6 +393,87 @@ async fn compacting_now_keeps_the_last_turns() {
     assert_eq!(said[2..], ["done", "three", "done", "four"]);
 }
 
+#[tokio::test]
+async fn a_session_without_a_model_holds_messages_until_one_is_set() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start_with(None, dir.path(), false, false);
+    assert_eq!(session.model(), None);
+    assert_eq!(session.status().0, SessionStatus::Idle);
+    // Compacting needs a model.
+    assert_eq!(session.compact().await, Err(SwitchError::NoModel));
+
+    let mut events = session.subscribe();
+    session.send("first".into()).unwrap();
+    session.send("second".into()).unwrap();
+    // The messages wait, and the status says a model is needed; nothing reaches an endpoint.
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap()
+            .event;
+        if event
+            == (SessionEvent::StatusChanged {
+                status: SessionStatus::NeedsModel,
+                detail: None,
+            })
+        {
+            break;
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(session.status().0, SessionStatus::NeedsModel);
+    assert_eq!(session.queue(None).unwrap().len(), 2);
+    assert!(fake.requests().is_empty());
+
+    // Once it has a model, both run in order.
+    session
+        .set_model(model("a:new", &url, Some(1_000_000)))
+        .await
+        .unwrap();
+    assert_eq!(session.model().as_deref(), Some("a:new"));
+    let mut completed = 0;
+    while completed < 2 {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap()
+            .event;
+        assert!(
+            !matches!(event, SessionEvent::TurnFailed { .. }),
+            "{event:?}"
+        );
+        if matches!(event, SessionEvent::TurnCompleted { .. }) {
+            completed += 1;
+        }
+    }
+    let turns = fake.turns();
+    assert_eq!(turns.len(), 2);
+    assert!(
+        contents(&turns[0])
+            .iter()
+            .any(|text| text.ends_with("first"))
+    );
+    assert!(
+        contents(&turns[1])
+            .iter()
+            .any(|text| text.ends_with("second"))
+    );
+    assert!(history(&session).contains(&SessionEvent::ModelChanged {
+        from: String::new(),
+        to: "a:new".into(),
+        compacted: false,
+    }));
+    assert_eq!(session.status().0, SessionStatus::Idle);
+    // The journal remembers the model, so a resumed session keeps it.
+    assert_eq!(
+        journalled_model(&dir.path().join(".sessions/s.jsonl")).as_deref(),
+        Some("a:new")
+    );
+}
+
 /// What the instructions and tools take, from a turn's first context breakdown.
 fn fixed_tokens(events: &[SessionEvent]) -> u64 {
     let base: i64 = events
@@ -427,7 +508,12 @@ async fn a_long_lived_session_compacts_itself_when_a_turn_starts_over_budget() {
 
     // After a restart, with a window the reports no longer fit, the next turn compacts first.
     let window = (base + 3_000) * 2;
-    let session = start_with(model("a:m", &url, Some(window)), dir.path(), true, true);
+    let session = start_with(
+        Some(model("a:m", &url, Some(window))),
+        dir.path(),
+        true,
+        true,
+    );
     turn(&session, "anything new?").await;
     assert_eq!(fake.summaries().len(), 1);
     assert!(history(&session).iter().any(|event| matches!(

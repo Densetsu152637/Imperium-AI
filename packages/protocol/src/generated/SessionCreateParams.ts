@@ -13,7 +13,8 @@ environment_id?: string,
 project_dir?: string, 
 /**
  * A model table id or `<endpoint>:<model>`; defaults to `models.default` from the
- * configuration.
+ * configuration. With neither, the session is still created, without a model: messages
+ * sent to it wait (status `needs_model`) until `session.control` `set_model` gives it one.
  */
 model?: string, 
 /**

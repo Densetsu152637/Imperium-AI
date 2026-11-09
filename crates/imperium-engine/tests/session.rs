@@ -70,7 +70,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
     Session::spawn(SessionConfig {
         id: "test".into(),
         workspace: Workspace::new(dir).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint,
             model: "model".into(),
@@ -82,7 +82,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
                 output_usd_per_mtok: 2.0,
                 cached_input_usd_per_mtok: None,
             }),
-        },
+        }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),

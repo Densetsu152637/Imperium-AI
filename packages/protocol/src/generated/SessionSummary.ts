@@ -16,7 +16,11 @@ environment_id: string | null,
 /**
  * Every folder the session's tools may use, the working directory first.
  */
-folders: Array<string>, model: string, 
+folders: Array<string>, 
+/**
+ * The root agent's model spec; `None` while the session waits for one to be chosen.
+ */
+model: string | null, 
 /**
  * Where the session's commands run, such as `tier 0 · folder policy`.
  */
@@ -41,4 +45,13 @@ worktrees: Array<SessionWorktree>,
 /**
  * Pinned sessions are listed first; set with `session.control` `set_pinned`.
  */
-pinned: boolean, };
+pinned: boolean, 
+/**
+ * Archived: the session no longer runs or resumes, but its journal is kept and
+ * `session.subscribe` still returns its history. `session.control` `unarchive` resumes it.
+ */
+archived: boolean, 
+/**
+ * When it was archived, in milliseconds since the Unix epoch.
+ */
+archived_at: number | null, };

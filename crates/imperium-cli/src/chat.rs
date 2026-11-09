@@ -64,7 +64,10 @@ pub fn run(
         println!(
             "Session {} with {} in {}",
             session.session_id,
-            session.model,
+            session
+                .model
+                .as_deref()
+                .unwrap_or("no model yet (pick one with /model <id>)"),
             session.folders.join(", ")
         );
         println!(

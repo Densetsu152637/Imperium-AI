@@ -9,6 +9,7 @@ mod project;
 mod pull;
 mod remote;
 mod schedule;
+mod session;
 mod workflow;
 
 use std::io::{IsTerminal, Read};
@@ -233,6 +234,16 @@ enum RemoteCommand {
 
 #[derive(Debug, Subcommand)]
 enum SessionCommand {
+    /// List running sessions (with --archived, the archived ones).
+    List {
+        /// Show archived sessions instead.
+        #[arg(long)]
+        archived: bool,
+    },
+    /// Archive a session: it stops, keeps its history, and does not resume after a restart.
+    Archive { session_id: String },
+    /// Resume an archived session.
+    Unarchive { session_id: String },
     /// Stop and forget a session so it does not continue after a restart.
     Delete {
         session_id: String,
@@ -413,13 +424,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             context,
             worktree.map(|branch| (!branch.is_empty()).then_some(branch)),
         ),
-        Command::Session {
-            command:
-                SessionCommand::Delete {
-                    session_id,
-                    remove_worktrees,
-                },
-        } => env::delete_session(session_id, remove_worktrees),
+        Command::Session { command } => match command {
+            SessionCommand::List { archived } => session::list(archived),
+            SessionCommand::Archive { session_id } => session::set_archived(session_id, true),
+            SessionCommand::Unarchive { session_id } => session::set_archived(session_id, false),
+            SessionCommand::Delete {
+                session_id,
+                remove_worktrees,
+            } => env::delete_session(session_id, remove_worktrees),
+        },
         Command::Env { command } => match command {
             EnvCommand::List => env::list(),
             EnvCommand::Create { name, folders } => env::create(name, folders),

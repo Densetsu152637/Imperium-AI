@@ -187,6 +187,8 @@ pub static SETTINGS: &[SettingDef] = &[
     def("resume.at_time", "Resume at", STRING, "Local HH:MM time to resume, for at_time."),
     def("resume.retry_every_minutes", "Retry every (minutes)", Integer, "Retry interval, for retry_every."),
     def("resume.max_wait_hours", "Longest wait (hours)", Integer, "Longest a session waits in one turn."),
+    def("sessions.auto_archive_after_days", "Archive idle sessions after (days)", Integer, "Archive a session after this many days without activity; 0 never does. Working, waiting, pinned, and project-agent sessions are never archived."),
+    def("sessions.auto_archive_on_pr_close", "Archive when the pull request closes", Bool, "Archive a session once the pull request it watches is merged or closed."),
 ];
 
 /// The setting with this dotted key.

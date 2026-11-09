@@ -5,6 +5,7 @@
 // persist across versions.
 
 import {
+  Archive,
   Bell,
   Bot,
   Brain,
@@ -36,12 +37,13 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import type { ConfigDescribeResult, ConfigEntry, ConfigSetResult, ModListResult } from "@imperium/protocol";
 
 import { Select } from "./components/Select";
+import { Row } from "./components/SettingsRow";
 import { Switch as Toggle } from "./components/Switch";
 import type { DaemonClient } from "./daemon/client";
 import { type Daemon, DaemonSettings } from "./DaemonControl";
@@ -74,6 +76,7 @@ type Props = {
 type Control =
   | { type: "toggle" }
   | { type: "select"; options: { value: string; label: string }[] }
+  | { type: "swatches"; options: { value: string; label: string; color: string }[] }
   | { type: "slider"; min: number; max: number; step: number; format: (value: number) => string };
 
 type Field = { key: keyof AppSettings; section: string; label: string; description: string; control: Control };
@@ -103,7 +106,7 @@ const FIELDS: Field[] = [
     section: "appearance",
     label: "Accent colour",
     description: "Buttons, highlights, and the connection light.",
-    control: { type: "select", options: Object.entries(ACCENTS).map(([value, { label }]) => ({ value, label })) },
+    control: { type: "swatches", options: Object.entries(ACCENTS).map(([value, { label, base }]) => ({ value, label, color: base })) },
   },
   {
     key: "uiScale",
@@ -226,6 +229,7 @@ const CONFIG_SECTIONS: Record<string, string> = {
   pets: "Pets",
   phone: "Phone",
   resume: "Resuming",
+  sessions: "Sessions",
   daemon: "Network",
 };
 
@@ -277,6 +281,7 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
   "config:pets": PawPrint,
   "config:phone": Smartphone,
   "config:resume": Clock,
+  "config:sessions": Archive,
   "config:daemon": Network,
 };
 
@@ -421,7 +426,7 @@ export function SettingsWindow(props: Props) {
         );
       case "updates":
         return props.updates ? (
-          <UpdateSettings updates={props.updates} />
+          <UpdateSettings updates={props.updates} settings={settings} onChange={onChange} />
         ) : (
           <p className="muted">Updates are available in the desktop app.</p>
         );
@@ -538,20 +543,6 @@ export function SettingsWindow(props: Props) {
   );
 }
 
-function Row({ label, description, children, badge }: { label: string; description?: string; children: ReactNode; badge?: ReactNode }) {
-  return (
-    <div className="settings-row">
-      <div className="settings-row-text">
-        <span className="settings-row-label">
-          {label} {badge}
-        </span>
-        {description && <span className="settings-row-description">{description}</span>}
-      </div>
-      <div className="settings-row-control">{children}</div>
-    </div>
-  );
-}
-
 function FieldRow({
   field,
   value,
@@ -580,6 +571,23 @@ function FieldRow({
           onChange={(next) => onChange(field.key, next as never)}
           aria-label={field.label}
         />
+      )}
+      {control.type === "swatches" && (
+        <div className="swatches" role="radiogroup" aria-label={field.label}>
+          {control.options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={value === option.value}
+              aria-label={option.label}
+              title={option.label}
+              className={`swatch${value === option.value ? " selected" : ""}`}
+              style={{ "--swatch": option.color } as CSSProperties}
+              onClick={() => onChange(field.key, option.value as never)}
+            />
+          ))}
+        </div>
       )}
       {control.type === "slider" && (
         <label className="slider">

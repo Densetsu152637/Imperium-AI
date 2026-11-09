@@ -6,6 +6,8 @@ import { Play, RefreshCw, RotateCw, ScrollText, Square } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+import { Row, RowNote } from "./components/SettingsRow";
+import { Switch } from "./components/Switch";
 import { insideTauri } from "./daemon/connection";
 
 export type DaemonStatus = {
@@ -14,6 +16,8 @@ export type DaemonStatus = {
   url: string | null;
   /** Whether the running daemon is the one installed with this app. */
   bundled: boolean;
+  /** Whether this app started the running daemon, as its own child process. */
+  child: boolean;
   /** Whether this install has a daemon it can start. */
   can_start: boolean;
   stopped_by_user: boolean;
@@ -82,11 +86,15 @@ const BUSY: Record<Action, string> = { start: "Starting…", stop: "Stopping…"
 
 function describe(status: DaemonStatus): string {
   if (!status.running) return status.stopped_by_user ? "Stopped" : "Not running";
-  const owner = status.bundled ? "installed with Imperium" : "started outside the app";
+  const owner = status.child
+    ? "started by Imperium"
+    : status.bundled
+      ? "installed with Imperium, left from an earlier run"
+      : "started outside the app";
   return `Running · process ${status.pid} · ${owner}`;
 }
 
-/** The Daemon section of the settings menu. */
+/** The Daemon section of Settings, as rows like every other section. */
 export function DaemonSettings({ daemon }: { daemon: Daemon }) {
   const { status, busy } = daemon;
   const [log, setLog] = useState<string | null>(null);
@@ -96,54 +104,74 @@ export function DaemonSettings({ daemon }: { daemon: Daemon }) {
       .catch((reason: unknown) => setLog(String(reason)));
 
   return (
-    <fieldset className="setting daemon-settings">
-      <legend>Daemon</legend>
-      <p className="muted daemon-state" data-running={status.running}>
-        <span className="daemon-dot" aria-hidden="true" />
-        {busy ? BUSY[busy] : describe(status)}
-      </p>
-      {daemon.error && <p className="error">{daemon.error}</p>}
-      <div className="daemon-actions">
-        {status.running ? (
-          <>
-            <button onClick={() => daemon.run("stop")} disabled={busy !== null}>
-              <Square aria-hidden="true" /> Stop
+    <>
+      <Row
+        label="imperium-core"
+        description={
+          <span className="daemon-state" data-running={status.running}>
+            <span className="daemon-dot" aria-hidden="true" />
+            {busy ? BUSY[busy] : describe(status)}
+          </span>
+        }
+      >
+        <div className="row-actions">
+          {status.running ? (
+            <>
+              <button onClick={() => daemon.run("stop")} disabled={busy !== null}>
+                <Square aria-hidden="true" /> Stop
+              </button>
+              <button onClick={() => daemon.run("restart")} disabled={busy !== null || !status.can_start}>
+                <RotateCw aria-hidden="true" /> Restart
+              </button>
+            </>
+          ) : (
+            <button className="primary" onClick={() => daemon.run("start")} disabled={busy !== null || !status.can_start}>
+              <Play aria-hidden="true" /> Start
             </button>
-            <button onClick={() => daemon.run("restart")} disabled={busy !== null || !status.can_start}>
-              <RotateCw aria-hidden="true" /> Restart
-            </button>
-          </>
-        ) : (
-          <button className="primary" onClick={() => daemon.run("start")} disabled={busy !== null || !status.can_start}>
-            <Play aria-hidden="true" /> Start
-          </button>
-        )}
+          )}
+        </div>
+      </Row>
+      {(daemon.error || !status.can_start) && (
+        <RowNote sub>
+          {daemon.error && <p className="error">{daemon.error}</p>}
+          {!status.can_start && (
+            <p className="muted">This build has no bundled imperium-core; start and stop it where you run it.</p>
+          )}
+        </RowNote>
+      )}
+      <Row
+        label="Keep running after Imperium closes"
+        description={
+          status.keep_running
+            ? "imperium-core outlives the window, so schedules and auto-fix keep working; once Imperium closes it shows as its own process in Task Manager."
+            : "Off: imperium-core runs as part of Imperium and exits with it. Sessions are saved and resume when Imperium opens again."
+        }
+      >
+        <Switch
+          checked={status.keep_running}
+          onChange={daemon.setKeepRunning}
+          label="Keep running after Imperium closes"
+          disabled={!status.can_start}
+        />
+      </Row>
+      <Row label="Log" description={status.log_path ?? "The daemon's output."}>
         <button className="ghost" onClick={() => (log === null ? void loadLog() : setLog(null))} aria-expanded={log !== null}>
           <ScrollText aria-hidden="true" /> {log === null ? "Show log" : "Hide log"}
         </button>
-      </div>
-      <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={status.keep_running}
-          onChange={(event) => daemon.setKeepRunning(event.target.checked)}
-        />
-        Keep running after Imperium closes
-      </label>
-      {!status.can_start && (
-        <p className="muted">This build has no bundled imperium-core; start and stop it where you run it.</p>
-      )}
+      </Row>
       {log !== null && (
-        <div className="daemon-log">
-          <div className="daemon-log-bar">
-            <span className="muted">{status.log_path}</span>
-            <button className="ghost" onClick={() => void loadLog()}>
-              <RefreshCw aria-hidden="true" /> Refresh
-            </button>
+        <RowNote sub>
+          <div className="daemon-log">
+            <div className="daemon-log-bar">
+              <span className="muted">The last 64 KB</span>
+              <button className="ghost" onClick={() => void loadLog()}>
+                <RefreshCw aria-hidden="true" /> Refresh
+              </button>
+            </div>
+            <pre>{log}</pre>
           </div>
-          <pre>{log}</pre>
-        </div>
+        </RowNote>
       )}
-    </fieldset>
+    </>
   );
 }

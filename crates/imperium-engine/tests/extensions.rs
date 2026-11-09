@@ -90,7 +90,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
     let session = Session::spawn(SessionConfig {
         id: "ext".into(),
         workspace: Workspace::new(project.path()).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint: Endpoint {
                 base_url: model(Arc::clone(&system)).await,
@@ -101,7 +101,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
             local: false,
             context_window: None,
             kind: "openai".into(),
-        },
+        }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),

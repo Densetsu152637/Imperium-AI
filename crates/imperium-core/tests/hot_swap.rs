@@ -66,7 +66,7 @@ async fn set_model_switches_by_table_id_and_survives_a_restart() {
         .create_session(&project.path().display().to_string(), None)
         .unwrap();
     let session_id = session.id().to_string();
-    assert_eq!(session.model(), "a:old");
+    assert_eq!(session.model().as_deref(), Some("a:old"));
 
     let mut connection = Connection::new(Arc::clone(&state));
     let handshake = json!({"client": {"name": "test", "version": "0"},
@@ -89,7 +89,7 @@ async fn set_model_switches_by_table_id_and_survives_a_restart() {
     // The model table gives no window, so the conversation was not checked or compacted.
     assert_eq!((context.context_window, context.budget), (None, None));
     assert!(context.compaction.is_none());
-    assert_eq!(session.model(), "b:new");
+    assert_eq!(session.model().as_deref(), Some("b:new"));
     // session.list shows the new model.
     let listed = result(call(&mut connection, 7, "session.list", json!({})).await);
     assert_eq!(listed["sessions"][0]["model"], "b:new");
@@ -132,7 +132,7 @@ async fn set_model_switches_by_table_id_and_survives_a_restart() {
         .await,
     );
     assert_eq!(resumed, json!({"model": null, "context": null}));
-    assert_eq!(session.model(), "b:new");
+    assert_eq!(session.model().as_deref(), Some("b:new"));
 
     // After a restart, the session continues on the model it switched to.
     drop(connection);
@@ -141,5 +141,8 @@ async fn set_model_switches_by_table_id_and_survives_a_restart() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     let restarted = daemon(home.path());
     assert_eq!(restarted.resume_sessions(), 1);
-    assert_eq!(restarted.session(&session_id).unwrap().model(), "b:new");
+    assert_eq!(
+        restarted.session(&session_id).unwrap().model().as_deref(),
+        Some("b:new")
+    );
 }

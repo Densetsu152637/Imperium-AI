@@ -162,7 +162,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
     let session = Session::spawn(SessionConfig {
         id: "wf".into(),
         workspace: Workspace::new(project.path()).unwrap(),
-        model: model("cloud:root", &root_model().await),
+        model: Some(model("cloud:root", &root_model().await)),
         catalog,
         clients: Default::default(),
         routing: RoutingSettings::default(),

@@ -171,7 +171,7 @@ fn need_now(
     prompt_tokens: Option<u64>,
 ) -> Option<Detected> {
     let session = state.session(session_id)?;
-    let model = session.model();
+    let model = session.model().unwrap_or_default();
     let (prefer_local, local) = state.suggestion_inputs();
     let session_local = model.starts_with("llamacpp:") || model.starts_with("vllm:");
     let signals = Signals {

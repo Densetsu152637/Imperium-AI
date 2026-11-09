@@ -92,7 +92,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
     let session = Session::spawn(SessionConfig {
         id: "mcp".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint: Endpoint {
                 base_url: model(Arc::clone(&offered)).await,
@@ -103,7 +103,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
             local: false,
             context_window: None,
             kind: "openai".into(),
-        },
+        }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),

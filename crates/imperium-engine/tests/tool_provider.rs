@@ -115,7 +115,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
     let session = Session::spawn(SessionConfig {
         id: "provider".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint: Endpoint {
                 base_url,
@@ -126,7 +126,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
             local: false,
             context_window: None,
             kind: "openai".into(),
-        },
+        }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),

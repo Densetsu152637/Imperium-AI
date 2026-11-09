@@ -35,6 +35,9 @@ use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
 use crate::suggestions::{SuggestTool, Suggestions};
 
+mod archive;
+pub use archive::ArchiveError;
+
 /// Options for [`DaemonState::create_session_with`].
 #[derive(Debug, Default)]
 pub struct SessionOptions {
@@ -48,6 +51,9 @@ pub struct SessionOptions {
     pub environment_id: Option<String>,
     /// Folders the session may use besides its working directory.
     pub folders: Vec<String>,
+    /// Start without a model when none was given and `models.default` is not set: messages
+    /// wait until one is chosen. Otherwise a missing model fails the creation.
+    pub may_wait_for_model: bool,
     /// Where the session's tools run (its environment's runtime).
     pub runtime: EnvironmentRuntime,
     /// The environment's persistent agent session.
@@ -73,6 +79,9 @@ struct Placement {
     worktrees: Vec<SessionWorktree>,
     /// Listed first; recorded in the session's meta file so it survives a restart.
     pinned: bool,
+    /// A project agent: like an environment's persistent agent, it runs while the daemon does
+    /// and is never archived.
+    project_agent: bool,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -104,6 +113,8 @@ pub struct DaemonState {
     phone_address: OnceLock<std::net::SocketAddr>,
     /// Pull requests sessions watch: session id to (repo, number).
     watches: Mutex<HashMap<String, (String, u64)>>,
+    /// Archived sessions, which no longer run, as lists show them, by session id.
+    archived: Mutex<HashMap<String, SessionSummary>>,
     /// Signalled when a client asks the daemon to stop.
     shutdown: tokio::sync::Notify,
     /// What `mcp.test` last learned about each connector.
@@ -167,6 +178,7 @@ impl DaemonState {
             devices,
             phone_address: OnceLock::new(),
             watches: Mutex::new(HashMap::new()),
+            archived: Mutex::new(HashMap::new()),
             shutdown: tokio::sync::Notify::new(),
             connectors: crate::connectors::StatusCache::default(),
             suggestions: Suggestions::new(suggest),
@@ -513,19 +525,44 @@ impl DaemonState {
             let meta: Option<serde_json::Value> = std::fs::read_to_string(&path)
                 .ok()
                 .and_then(|text| serde_json::from_str(&text).ok());
+            // Archived sessions stay listed, however old, but do not run.
+            if let Some(meta) = meta.as_ref().filter(|meta| meta["archived"] == true) {
+                self.remember_archived(&id, meta, &journal);
+                continue;
+            }
             let (Some(meta), true) = (meta, recent) else {
                 continue;
             };
+            match self.resume_from_meta(&id, &meta, &journal) {
+                Ok(_) => resumed += 1,
+                Err(error) => tracing::warn!(session = %id, %error, "could not resume the session"),
+            }
+        }
+        resumed
+    }
+
+    /// Continues one recorded session from its meta file and journal.
+    fn resume_from_meta(
+        &self,
+        id: &str,
+        meta: &serde_json::Value,
+        journal: &Path,
+    ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
+        let id = id.to_string();
+        {
+            let journal = journal.to_path_buf();
             let project = meta["project_dir"].as_str().unwrap_or_default();
             // A model the session switched to is in its journal; else the one it started with.
             let switched = imperium_engine::journalled_model(&journal);
             let model = switched.as_deref().or(meta["model"].as_str());
             let options = SessionOptions {
                 resume_id: Some(id.clone()),
+                // A session that never had a model keeps waiting for one.
+                may_wait_for_model: model.is_none(),
                 worktrees: serde_json::from_value(meta["worktrees"].clone()).unwrap_or_default(),
                 ..SessionOptions::default()
             };
-            let resumed_session = match meta["environment_id"].as_str() {
+            match meta["environment_id"].as_str() {
                 // Its environment as it is now, if it still exists.
                 Some(env) if self.environments.get(env).is_some() => {
                     self.create_in_environment(env, model, options)
@@ -552,13 +589,8 @@ impl DaemonState {
                     Ok(env) => self.create_in_environment(&env.id, model, options),
                     Err(_) => self.create_session_with(project, model, options),
                 },
-            };
-            match resumed_session {
-                Ok(_) => resumed += 1,
-                Err(error) => tracing::warn!(session = %id, %error, "could not resume the session"),
             }
         }
-        resumed
     }
 
     /// The configured resume policy for usage limits.
@@ -784,6 +816,7 @@ impl DaemonState {
             persistent: options.persistent,
             worktrees: options.worktrees.clone(),
             pinned: false,
+            project_agent: options.launcher.is_some(),
         };
         // A remote runtime's folders are not on this machine: project files (instructions,
         // skills, project memory) are not read from them.
@@ -795,7 +828,11 @@ impl DaemonState {
         };
         let project_dir_path = local_project.as_path();
         // A model table id or a spec, as the model pickers offer them.
-        let model = self.resolve_model(model)?;
+        let model = match self.resolve_model(model) {
+            Ok(model) => Some(model),
+            Err(ModelError::NoDefault) if options.may_wait_for_model => None,
+            Err(error) => return Err(error.into()),
+        };
         let catalog = self.catalog();
         // Connectors added or changed in the app since the daemon started apply to new sessions.
         let fresh = crate::connectors::saved_settings(&self.paths);
@@ -838,7 +875,7 @@ impl DaemonState {
                 session_id: id.clone(),
             }));
         }
-        let model_spec = model.spec.clone();
+        let model_spec = model.as_ref().map(|model| model.spec.clone());
         let session = Session::spawn(SessionConfig {
             journal_path: self
                 .paths
@@ -986,7 +1023,14 @@ impl DaemonState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
-            .cloned();
+            .cloned()
+            // An archived session is deleted the same way, from its record.
+            .or_else(|| {
+                self.take_archived(id).map(|summary| Placement {
+                    worktrees: summary.worktrees,
+                    ..Placement::default()
+                })
+            });
         let Some(placement) = placement else {
             return Err(format!("no session {id}"));
         };
@@ -1279,7 +1323,7 @@ fn summary(session: &Session) -> SessionSummary {
         project_dir: session.project_dir().to_string(),
         environment_id: None,
         folders: vec![session.project_dir().to_string()],
-        model: session.model().to_string(),
+        model: session.model(),
         isolation: session.isolation().to_string(),
         title: session.title(),
         status,
@@ -1288,6 +1332,8 @@ fn summary(session: &Session) -> SessionSummary {
         persistent: false,
         worktrees: Vec::new(),
         pinned: false,
+        archived: false,
+        archived_at: None,
     }
 }
 

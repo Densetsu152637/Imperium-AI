@@ -180,7 +180,8 @@ pub struct SessionSummary {
     /// Every folder the session's tools may use, the working directory first.
     #[serde(default)]
     pub folders: Vec<String>,
-    pub model: String,
+    /// The root agent's model spec; `None` while the session waits for one to be chosen.
+    pub model: Option<String>,
     /// Where the session's commands run, such as `tier 0 · folder policy`.
     pub isolation: String,
     /// The session's first message, for lists.
@@ -199,6 +200,14 @@ pub struct SessionSummary {
     /// Pinned sessions are listed first; set with `session.control` `set_pinned`.
     #[serde(default)]
     pub pinned: bool,
+    /// Archived: the session no longer runs or resumes, but its journal is kept and
+    /// `session.subscribe` still returns its history. `session.control` `unarchive` resumes it.
+    #[serde(default)]
+    pub archived: bool,
+    /// When it was archived, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub archived_at: Option<u64>,
 }
 
 /// A git worktree a session was started on: its tools use `path` instead of `folder`.
@@ -275,7 +284,8 @@ pub struct SessionCreateParams {
     #[ts(optional)]
     pub project_dir: Option<String>,
     /// A model table id or `<endpoint>:<model>`; defaults to `models.default` from the
-    /// configuration.
+    /// configuration. With neither, the session is still created, without a model: messages
+    /// sent to it wait (status `needs_model`) until `session.control` `set_model` gives it one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
@@ -294,7 +304,8 @@ pub struct SessionCreateParams {
 #[ts(export)]
 pub struct SessionCreateResult {
     pub session_id: String,
-    pub model: String,
+    /// `None` when no model was given and `models.default` is not set.
+    pub model: Option<String>,
     pub isolation: String,
     /// The environment the session works in.
     #[serde(default)]
@@ -1423,9 +1434,11 @@ pub struct SessionControlParams {
     /// `set_resume_policy` (with `resume_policy`, or none to use the default), `resume_now`,
     /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
     /// for `models.default`; refused while a turn runs), `compact` (summarise older turns
-    /// now; refused while a turn runs), or `set_pinned` (with `pinned`; kept across restarts).
+    /// now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
+    /// `archive` (stop the session and keep its journal; announced with `session.updated`), or
+    /// `unarchive` (resume an archived session).
     #[ts(
-        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\""
+        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\" | \"archive\" | \"unarchive\""
     )]
     pub action: String,
     #[serde(default)]

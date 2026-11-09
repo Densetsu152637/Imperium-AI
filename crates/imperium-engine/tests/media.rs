@@ -88,7 +88,7 @@ async fn agents_generate_images_and_audio() {
     let session = Session::spawn(SessionConfig {
         id: "media".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint: Endpoint {
                 base_url: format!("{model}/v1"),
@@ -99,7 +99,7 @@ async fn agents_generate_images_and_audio() {
             local: false,
             context_window: None,
             kind: "openai".into(),
-        },
+        }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),

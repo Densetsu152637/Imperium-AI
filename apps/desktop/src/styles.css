@@ -1540,28 +1540,12 @@ button.danger:hover:not(:disabled) {
   color: var(--muted);
 }
 
-.update-settings,
-.daemon-settings {
-  padding-top: calc(var(--space) * 1.5);
-  border-top: 1px solid var(--border);
-}
-
-.update-settings legend,
-.daemon-settings legend {
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
-
 /* Daemon: a status line with a light, the actions, and an optional log tail. */
 .daemon-state {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 0.45rem;
   margin: 0;
-  font-size: 0.85rem;
 }
 
 .daemon-dot {
@@ -1574,18 +1558,6 @@ button.danger:hover:not(:disabled) {
 .daemon-state[data-running="true"] .daemon-dot {
   background: var(--ok);
   box-shadow: 0 0 6px var(--ok);
-}
-
-.daemon-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space);
-}
-
-.daemon-settings .checkbox {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
 }
 
 .daemon-log pre {
@@ -1610,46 +1582,9 @@ button.danger:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
-.update-channels {
-  display: flex;
-  gap: calc(var(--space) * 2);
-}
-
 .update-state {
   margin: 0;
   font-size: 0.85rem;
-}
-
-.setting {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  border: none;
-  padding: 0;
-  margin: 0;
-  font-size: 0.85rem;
-}
-
-.setting span {
-  display: flex;
-  justify-content: space-between;
-}
-
-.setting output {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.setting legend {
-  padding: 0;
-  margin-bottom: 0.3rem;
-}
-
-.radio {
-  display: inline-flex;
-  gap: 0.3rem;
-  margin-right: var(--space);
-  text-transform: capitalize;
 }
 
 /* Connect screen: one metal card in the middle of the window */
@@ -2324,6 +2259,45 @@ button.sort:hover:not(:disabled) {
   opacity: 0.8;
 }
 
+/* Archived sessions: a collapsed group at the bottom of the list. */
+.archived-sessions {
+  margin-top: var(--space);
+  border-top: 1px solid var(--border);
+  padding-top: calc(var(--space) * 0.5);
+}
+
+.archived-sessions > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.archived-sessions > summary::-webkit-details-marker {
+  display: none;
+}
+
+.archived-sessions > summary .lucide {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.archived-sessions .row-main {
+  opacity: 0.75;
+}
+
+/* An archived session's transcript: what it is, and the way back. */
+.archived-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space);
+  margin: 0 var(--space) var(--space);
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed var(--border-strong, var(--border));
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 /* The environment window: a narrower sheet like Settings. */
 .environment-window {
   display: flex;
@@ -2643,6 +2617,23 @@ button.colour-choice[aria-checked="true"]::after {
   font-weight: 600;
 }
 
+.badge.status.needs_model {
+  border-color: var(--accent);
+  border-style: dashed;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* A session without a model: says what to do before its messages can run. */
+.needs-model {
+  margin: 0 var(--space) var(--space);
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: 0.85rem;
+}
+
 .badge.status.paused {
   border-style: dashed;
   border-color: var(--accent);
@@ -2914,11 +2905,77 @@ button.colour-choice[aria-checked="true"]::after {
   border-bottom: 1px solid var(--border);
 }
 
+/* Every row: the title block left-justified on the left, the control aligned right. */
 .settings-row-text {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 0.2rem;
   min-width: 0;
+  text-align: left;
+}
+
+/* A sub-setting, and full-width content under a setting, step in by the same indent. */
+.settings-rows {
+  --settings-indent: 1.5rem;
+}
+
+.settings-row.sub,
+.settings-row-note.sub {
+  margin-left: var(--settings-indent);
+  padding-left: 0.85rem;
+  border-left: 2px solid var(--border);
+}
+
+.settings-row-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.6rem 0 0.85rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.settings-row-note > p {
+  margin: 0;
+}
+
+.settings-row-note .daemon-log {
+  align-self: stretch;
+}
+
+/* Accent colours as a grid of swatches; the chosen one is ringed. */
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(6, 1.7rem);
+  gap: 0.5rem;
+}
+
+.swatches .swatch {
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--swatch) 60%, black);
+  background: var(--swatch);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.25);
+}
+
+.swatches .swatch:hover:not(:disabled) {
+  background: var(--swatch);
+  border-color: var(--fg);
+}
+
+.swatches .swatch.selected {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
+.swatches .swatch:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 3px;
 }
 
 .settings-row-label {
@@ -2941,13 +2998,6 @@ button.colour-choice[aria-checked="true"]::after {
 .settings-row-control select {
   width: 16rem;
   max-width: 100%;
-}
-
-.settings-row-control .daemon-settings,
-.settings-rows > .daemon-settings,
-.settings-rows > .update-settings {
-  border-top: none;
-  padding-top: 0.6rem;
 }
 
 .settings-row .slider {

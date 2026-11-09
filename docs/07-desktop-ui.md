@@ -51,6 +51,26 @@ running `imperium-core` or starts the one installed beside the app (see
 the updater ([desktop updates](11-ci-cd.md#desktop-updates)). All application logic goes through the daemon protocol, so the web UI could also
 be served to a browser for remote use.
 
+### The bundled daemon belongs to the app (implemented)
+
+The app starts the bundled `imperium-core` as its own child process, so Windows Task Manager
+shows it under Imperium rather than as a separate background process. When the app opens and
+finds a bundled daemon it did not start (left by an earlier run, or the previous version's
+`imperiumd`), it asks it to stop (`system.shutdown`) and starts it again as its child. A daemon
+started some other way (from a terminal, or installed elsewhere) is used as it is. In a
+development build the "bundled" daemon is the `imperium-core` next to the app in `target/`, so a
+daemon started by hand from there is restarted too; turn on keep running to keep it.
+
+**Lifetime:** by default the daemon exits with the app (**Settings → Daemon → Keep running after
+Imperium closes** is off). Sessions are saved as they go and resume when the app starts the
+daemon again. On Windows the child is also placed in a job object with kill-on-close, so even a
+crash or an app ended from Task Manager never leaves it orphaned. With keep running on, the job
+no longer ends it: the daemon outlives the app (schedules, project agents, and auto-fix keep
+working) and then shows as its own process; when the app opens again it uses that daemon as it
+is. The choice can be changed while the daemon runs. (On macOS and Linux the app stops the daemon
+as it quits; there is no job object.) Settings → Daemon says whether the running daemon was
+started by Imperium, left from an earlier run, or started outside the app.
+
 ## Panels
 
 The whole interface is made of **panels**. There is no fixed main screen: the window is a
@@ -233,8 +253,16 @@ every setting:
   reduce motion), Chat (send key, Markdown, code wrapping, following new output),
   Notifications (sounds for approvals and finished sessions, a title badge), Panels (show or
   hide each panel, reset the layout), Keyboard, Daemon (start, stop, restart, log, keep
-  running), Updates (channel, check and install), and Connectors (opens the Connectors
+  running), Updates (installed version with **Check for updates** and **Check and install**,
+  channel, how often to check, and checking when the computer starts; see
+  [desktop updates](11-ci-cd.md#desktop-updates)), and Connectors (opens the Connectors
   window, with the MCP and plugin settings).
+- **Accent colours:** twelve, shown as a grid of swatches in hue order (cyan, teal, green, lime,
+  amber, orange, rose, magenta, violet, indigo, blue, silver); the chosen one is ringed.
+- **Layout:** every section uses the same rows: the setting's title and description
+  left-justified on the left, its control aligned right. A setting that depends on the one above
+  it (such as checking at startup under the update schedule), and status lines or logs under a
+  setting, are indented one step with a rule on the left.
 - **Agent and daemon:** every setting the daemon exposes through `config.describe`, grouped by
   section (models, local runtime, memory, workflow, web, media, isolation, GitHub, pets, phone,
   resuming, network). Changes go to the user config file through `config.set` and apply when
@@ -290,8 +318,13 @@ repositories ([worktrees](14-projects-and-automation.md#worktrees)).
 
 The Sessions panel lists every session across environments, each with its environment's icon
 to the left of its title and a status badge (idle, working, needs attention, paused with its
-resume time, watching with its pull request, merged), and a *⋯* menu with *Pin*/*Unpin* and
-*Show* its environment. A sort control above the list orders it *Recent* (the default: most
+resume time, watching with its pull request, merged), and a *⋯* menu with *Pin*/*Unpin*,
+*Archive*, and *Show* its environment. Archived sessions (archived by hand, or on their own once
+their pull request closes or after the inactivity set in Settings → Sessions; see
+[archiving sessions](14-projects-and-automation.md#archiving-sessions)) leave the list and are
+kept in a collapsed *Archived* group at the bottom, most recently archived first, with
+*Unarchive* in their menu. Opening one shows its history with a note that it is archived and an
+*Unarchive* button in place of the composer. A sort control above the list orders it *Recent* (the default: most
 recently active first), *By environment* (grouped under environment headings, pinned
 environments first), or *By status* (groups *Waiting for approval*, *Active* — working or
 watching —, *Paused*, *Idle*, *Merged*); pinned sessions stay on top within each group, and the

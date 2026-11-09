@@ -187,7 +187,7 @@ fn start(dir: &std::path::Path, base_url: String, local: bool) -> Session {
     Session::spawn(SessionConfig {
         id: "context".into(),
         workspace: Workspace::new(dir).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: if local { "llamacpp:q" } else { "hosted:big" }.into(),
             endpoint: Endpoint {
                 base_url: if local { String::new() } else { base_url },
@@ -198,7 +198,7 @@ fn start(dir: &std::path::Path, base_url: String, local: bool) -> Session {
             local,
             context_window: Some(16_384),
             kind: if local { "llamacpp" } else { "openai" }.into(),
-        },
+        }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),

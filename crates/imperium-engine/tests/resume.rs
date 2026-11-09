@@ -40,7 +40,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
     Session::spawn(SessionConfig {
         id: "s".into(),
         workspace: Workspace::new(dir).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint: Endpoint {
                 base_url: url.into(),
@@ -51,7 +51,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
             local: false,
             context_window: None,
             kind: "openai".into(),
-        },
+        }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),

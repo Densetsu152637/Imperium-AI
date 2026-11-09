@@ -178,7 +178,8 @@ pub enum SessionEvent {
         summary_model: String,
     },
     /// The session's model changed; turns from now on use `to`. `compacted` says whether the
-    /// conversation was compacted first (a `context_compacted` event precedes this one).
+    /// conversation was compacted first (a `context_compacted` event precedes this one). `from`
+    /// is empty when the session had no model before.
     ModelChanged {
         from: String,
         to: String,
@@ -420,6 +421,8 @@ pub enum SessionStatus {
     NeedsAttention,
     /// Waiting for a usage limit to reset.
     Paused,
+    /// A message is waiting, but the session has no model yet; it runs once one is set.
+    NeedsModel,
     /// Idle, watching a pull request's checks so failures are fixed reactively.
     Watching,
     /// Its pull request merged.
