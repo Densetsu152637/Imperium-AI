@@ -75,8 +75,10 @@ import {
   snapshotSessions,
   type SessionState,
 } from "./sessions";
-import { applySettings, loadSettings, modEnabled, saveSettings, SettingsContext, type AppSettings } from "./settings";
-import { SettingsWindow } from "./SettingsWindow";
+import { applySettings, loadSettings, modEnabled, resolvedTheme, saveSettings, SettingsContext, type AppSettings } from "./settings";
+import { SETTINGS_SECTIONS, SettingsWindow } from "./SettingsWindow";
+import { appCommands } from "./commands/appCommands";
+import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
 import { ConnectorsWindow } from "./ConnectorsWindow";
 import { EnvironmentWindow } from "./EnvironmentWindow";
@@ -161,6 +163,8 @@ export function App() {
   // Panels whose windows this session has opened, so each opens once.
   const opened = useRef(new Set<string>());
   const [showSettings, setShowSettings] = useState(false);
+  /** The Settings section the command palette asked for. */
+  const [settingsRequest, setSettingsRequest] = useState<{ section: string } | null>(null);
   const [modelDialog, setModelDialog] = useState<ModelDialogTarget | null>(null);
   const [showConnectors, setShowConnectors] = useState(false);
   const updates = useUpdates();
@@ -852,6 +856,72 @@ export function App() {
     forget(id);
   };
 
+  // The command palette's commands, run with the handlers above. A panel window's own copy of
+  // the layout state goes stale, so it reads where panels are from the shared layout.
+  useRegisterCommands("app", () => {
+    const layout = isDetached ? getLayout() : { hidden, detached };
+    return appCommands({
+      connected: !!client,
+      sessions: allSessions.map((s) => ({
+        id: s.summary.session_id,
+        title: sessionTitle(s),
+        environment: environmentOf(s, environments)?.name ?? null,
+        archived: s.summary.archived,
+        pinned: s.summary.pinned,
+      })),
+      current: session && {
+        id: session.summary.session_id,
+        title: sessionTitle(session),
+        model: session.summary.model,
+        archived: session.summary.archived,
+        pinned: session.summary.pinned,
+      },
+      environments,
+      models: modelTable?.models ?? [],
+      localModels: localModels?.models ?? [],
+      panels: [...PANELS.filter((p) => p.id !== "approvals" || approvals.length > 0), { id: "session", title: "Session" }, ...[...leftPanels, ...rightPanels].filter((p) => p.id.startsWith("mod:"))].map((p) => ({
+        id: p.id,
+        title: p.title,
+        state: layout.detached[p.id] ? "detached" : layout.hidden.includes(p.id) ? "closed" : "docked",
+        closable: p.id !== "session",
+      })),
+      settingsSections: SETTINGS_SECTIONS,
+      theme: resolvedTheme(settings.theme),
+      canCheckUpdates: !!updates,
+      newSession: (environmentId) => {
+        if (environmentId) setEnvId(environmentId);
+        newSessionView();
+      },
+      newEnvironment: () => setEnvWindow({ id: null }),
+      showEnvironment: (id) => {
+        showEnvironment(id);
+        setSelected(null);
+      },
+      editEnvironment: envActions.onEdit,
+      selectSession,
+      setPinned: setSessionPinned,
+      setArchived: setSessionArchived,
+      compact: (id) => void control(id, { action: "compact" }).catch(report),
+      setModel: (spec) => void setModel(spec).catch(report),
+      openSettings: (section) => {
+        setSettingsRequest(section ? { section } : null);
+        setShowSettings(true);
+      },
+      openConnectors: () => setShowConnectors(true),
+      configureModels: () => setModelDialog({ tab: "local" }),
+      openPanel: (id) => {
+        const spec = findPanel(id);
+        if (detached[id] && spec) void openPanelWindow(id, spec.title, detached[id], () => forget(id));
+        else togglePanel(id, true);
+      },
+      closePanel,
+      detachPanel: detach,
+      dockPanel: dock,
+      toggleTheme: () => updateSettings({ ...settings, theme: resolvedTheme(settings.theme) === "dark" ? "light" : "dark" }),
+      checkUpdates: () => updates?.check(),
+    });
+  });
+
   // Open the windows of detached panels: at startup, once their panel exists, and on detaching.
   useEffect(() => {
     if (isDetached) return;
@@ -886,6 +956,7 @@ export function App() {
         <div className="app app-panel">
           {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={null} />}
           <PanelWindow id={detachedId} panel={findPanel(detachedId) ?? null} />
+          <CommandPalette detached />
         </div>
       </SettingsContext.Provider>
     );
@@ -957,8 +1028,10 @@ export function App() {
             window.location.reload();
           }}
           onClose={() => setShowSettings(false)}
+          request={settingsRequest}
         />
       )}
+      <CommandPalette detached={false} />
       {modelDialog && (
         <ModelConfigDialog client={client} target={modelDialog} onClose={() => setModelDialog(null)} onSaved={refreshModels} />
       )}
