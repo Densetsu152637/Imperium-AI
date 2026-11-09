@@ -13,7 +13,7 @@ import { PLAY_SPEED, SPEED, boundsOf, clampTo, edgeTarget, newRoamer, playTarget
 import type { Body, Bounds, Metrics, Pos, Roamer } from "./space.ts";
 
 /** Width of a pet's box (the label's width) and the height of its label line, in px. */
-const LABEL_W = 96;
+const LABEL_W = 112;
 const LABEL_H = 18;
 /** How long a finished pet takes to fade out before it is removed, in ms. */
 const FADE_MS = 2500;
@@ -86,6 +86,8 @@ type Cell = {
   state: string;
   xform: string;
   z: string;
+  /** Stacking order by age: older pets behind newer ones. */
+  depth: number;
   fade: string;
 };
 
@@ -232,6 +234,7 @@ export class Room {
       state: "",
       xform: "",
       z: "",
+      depth: 0,
       fade: "",
     };
   }
@@ -250,6 +253,10 @@ export class Room {
       return cell && entry ? [{ key, cell, entry }] : [];
     });
     if (this.width > 0) this.place(live, b, reduced, now);
+    // Pets may overlap; the older ones stand behind the newer ones.
+    [...live]
+      .sort((x, y) => x.entry.born - y.entry.born || x.entry.seq - y.entry.seq)
+      .forEach(({ cell }, i) => (cell.depth = i + 1));
     const moved = new Map<string, Moved>();
     const bodies: Body[] = [];
     const group = this.nursery.playing ? `${this.nursery.playing.keys[0]}|${this.nursery.playing.keys[1]}` : null;
@@ -352,7 +359,7 @@ export class Room {
     }
   }
 
-  /** Puts the pet's box at its spot: nearer pets (larger y) in front, and a finished pet fading out. */
+  /** Puts the pet's box at its spot, newer pets in front of older ones, and a finished pet fading out. */
   private stand(cell: Cell, entry: Entry, now: number): void {
     if (!cell.placed) return;
     const xform = `translate(${(cell.r.x - LABEL_W / 2).toFixed(1)}px, ${(cell.r.y - this.opts.size).toFixed(1)}px)`;
@@ -360,7 +367,7 @@ export class Room {
       cell.xform = xform;
       cell.el.style.transform = xform;
     }
-    const z = String(Math.round(cell.r.y));
+    const z = String(cell.depth);
     if (z !== cell.z) {
       cell.z = z;
       cell.el.style.zIndex = z;

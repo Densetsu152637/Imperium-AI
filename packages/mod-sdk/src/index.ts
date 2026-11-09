@@ -42,6 +42,8 @@ export type SessionSnapshot = {
   archived: boolean;
   /** The environment's default pet (an installed pet id), or null when the nursery decides. */
   pet: string | null;
+  /** When the session was created, in ms since the Unix epoch; null when unknown. */
+  createdAt: number | null;
   /** The root agent first, then subagents in the order they were spawned. */
   agents: AgentSnapshot[];
 };

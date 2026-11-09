@@ -50,7 +50,8 @@
 - **Handshake (implemented):** every connection's first call must be `system.handshake`
   (client name/version and protocol version). Other calls before it fail with `-32002`. The
   daemon refuses a different protocol major with `-32001`. `system.ping` returns uptime.
-- **Sessions (implemented):** `session.create` (the caller is subscribed), `session.list`,
+- **Sessions (implemented):** `session.create` (the caller is subscribed), `session.list`
+  (each summary carries `created_at`, from when the session's journal was started),
   `session.subscribe` (returns the session's full event history so far, then streams new
   events with no gap or duplicate), `session.send`, and `session.respond`. Events arrive as
   `session.event` notifications. `session.send` takes an optional `mode` (`queue`, the

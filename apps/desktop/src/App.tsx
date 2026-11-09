@@ -457,6 +457,7 @@ export function App() {
       persistent: false,
       archived: false,
       archived_at: null,
+      created_at: Date.now(),
       worktrees: created.worktrees,
       pinned: false,
     };

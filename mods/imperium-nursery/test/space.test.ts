@@ -3,6 +3,8 @@
 import { test } from "node:test";
 
 import {
+  AREA_PER_PET,
+  MIN_ROOM_HEIGHT,
   PLAY_SPEED,
   SPEED,
   boundsOf,
@@ -48,10 +50,10 @@ test("bounds keep the whole pet (feet, sprite above, label below) inside the roo
 });
 
 test("the room grows with the crowd: a minimum area per pet", () => {
-  expect(roomHeight(1, 500)).toBe(160);
-  expect(roomHeight(20, 500)).toBe(440);
-  expect(roomHeight(20, 1000)).toBeLessThan(roomHeight(20, 500));
-  expect(roomHeight(5, 0)).toBe(160);
+  expect(roomHeight(1, 500)).toBe(MIN_ROOM_HEIGHT);
+  expect(roomHeight(40, 500)).toBe(Math.ceil((40 * AREA_PER_PET) / 500));
+  expect(roomHeight(40, 1000)).toBeLessThan(roomHeight(40, 500));
+  expect(roomHeight(5, 0)).toBe(MIN_ROOM_HEIGHT);
 });
 
 test("wander targets lie anywhere in the room and are not next to where the pet stands", () => {

@@ -51,7 +51,7 @@ fn read_meta(path: &Path) -> Option<Value> {
 }
 
 impl DaemonState {
-    fn journal_path(&self, id: &str) -> std::path::PathBuf {
+    pub(super) fn journal_path(&self, id: &str) -> std::path::PathBuf {
         self.paths
             .data_dir()
             .join("sessions")
@@ -102,6 +102,7 @@ impl DaemonState {
             worktrees: serde_json::from_value(meta["worktrees"].clone()).unwrap_or_default(),
             archived: true,
             archived_at: meta["archived_at"].as_u64(),
+            created_at: super::created_at(journal),
         };
         self.archived_map().insert(id.to_string(), summary);
     }

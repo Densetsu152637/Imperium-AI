@@ -268,6 +268,10 @@ pub struct SessionSummary {
     #[serde(default)]
     #[ts(type = "number | null")]
     pub archived_at: Option<u64>,
+    /// When the session was created, in milliseconds since the Unix epoch; none when unknown.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub created_at: Option<u64>,
 }
 
 /// A background session that is waiting for a quiet machine.

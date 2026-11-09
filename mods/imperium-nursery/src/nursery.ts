@@ -39,6 +39,11 @@ export type Entry = {
   overlayEnds: Record<string, number>;
   /** Display order within the nursery. */
   order: number;
+  /** When the pet arrived, for depth: older pets stand behind newer ones. A session pet's is the
+   * session's creation time; your pet is the oldest of all. */
+  born: number;
+  /** Creation order here, to break ties in `born`. */
+  seq: number;
   cache: { cur: Current; wake: number | null; from: number } | null;
 };
 
@@ -49,7 +54,20 @@ export type Deps = {
   assign(who: { key: string; sessionId: string; root: boolean; envPet: string | null }): string | null;
 };
 
-type Init = { sessionId: string; agentId: string; root: boolean; label: string; petId?: string | null; kind?: Kind; envPet?: string | null };
+type Init = {
+  sessionId: string;
+  agentId: string;
+  root: boolean;
+  label: string;
+  petId?: string | null;
+  kind?: Kind;
+  envPet?: string | null;
+  /** When it arrived (default: now). */
+  born?: number;
+};
+
+/** Before anything else: your pet and a session's own pet stand behind every newer one. */
+export const FIRST = Number.NEGATIVE_INFINITY;
 
 /** The key of your pet, and of a session's pet, in the nursery. */
 export const RESIDENT = "resident";
@@ -125,7 +143,9 @@ export class Nursery {
       removeAt: null,
       review: {},
       overlayEnds: {},
-      order: this.serial++,
+      order: this.serial,
+      born: init.born ?? now,
+      seq: this.serial++,
       cache: null,
     };
     entry.arbiter = dispatch(entry.arbiter, { type: "start" }, now, this.deps.envFor(petId, kind));
@@ -230,7 +250,8 @@ export class Nursery {
     live.forEach((s, i) => {
       const key = sessionKey(s.sessionId);
       let entry = this.entries.get(key);
-      if (!entry) entry = this.create(key, { sessionId: s.sessionId, agentId: ROOT, root: true, label: s.title, kind: "session", envPet: s.pet }, now);
+      if (!entry) entry = this.create(key, { sessionId: s.sessionId, agentId: ROOT, root: true, label: s.title, kind: "session", envPet: s.pet, born: s.createdAt ?? now }, now);
+      if (s.createdAt !== null) entry.born = s.createdAt;
       entry.removeAt = null;
       entry.label = s.title;
       entry.order = i;
@@ -276,7 +297,7 @@ export class Nursery {
       let entry = this.entries.get(key);
       if (!entry) {
         if (over) return;
-        entry = this.create(key, { sessionId: session.sessionId, agentId: ag.agentId, root, label: root ? session.title : clip(ag.brief || ag.agentId, 60) }, now);
+        entry = this.create(key, { sessionId: session.sessionId, agentId: ag.agentId, root, label: root ? session.title : clip(ag.brief || ag.agentId, 60), born: root ? FIRST : now }, now);
       }
       seen.add(key);
       entry.order = i;
@@ -312,7 +333,7 @@ export class Nursery {
     const entry = this.entries.get(RESIDENT);
     if (!entry) {
       if (petId === null) return;
-      const created = this.create(RESIDENT, { sessionId: "", agentId: RESIDENT, root: false, label, petId, kind: "resident" }, now);
+      const created = this.create(RESIDENT, { sessionId: "", agentId: RESIDENT, root: false, label, petId, kind: "resident", born: FIRST }, now);
       created.order = -1;
     } else {
       entry.petId = petId;

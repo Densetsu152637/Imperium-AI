@@ -64,4 +64,8 @@ archived: boolean,
 /**
  * When it was archived, in milliseconds since the Unix epoch.
  */
-archived_at: number | null, };
+archived_at: number | null, 
+/**
+ * When the session was created, in milliseconds since the Unix epoch; none when unknown.
+ */
+created_at: number | null, };
