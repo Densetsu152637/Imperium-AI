@@ -133,9 +133,13 @@ export function SessionModelSelect({
     setError(null);
     onSwitch(spec)
       .then((result) => {
-        const compaction = result.context?.compaction;
+        // The model is not loaded until the next message; the fit is an estimate until then.
+        const context = result.context;
+        const compaction = context?.compaction;
         if (compaction) {
           setNote(`Compacted ${formatTokens(compaction.before_tokens)} → ${formatTokens(compaction.after_tokens)} tokens`);
+        } else if (context && context.budget !== null && context.tokens > context.budget) {
+          setNote(`About ${formatTokens(context.tokens)} tokens (estimated) for a ${formatTokens(context.budget)} budget: older turns are compacted when you send`);
         }
       })
       .catch((reason: unknown) => setError(message(reason)))

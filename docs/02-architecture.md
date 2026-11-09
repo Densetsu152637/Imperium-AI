@@ -60,10 +60,11 @@
   removes queued messages ([03](03-agent-engine.md#queueing-and-steering)). `session.agents`
   lists a session's agents with their kept state and `session.agent_resume` gives a finished
   subagent a follow-up ([03](03-agent-engine.md#agent-state)). `session.control` changes a running session between turns:
-  its usage-limit policy, what it watches, its model (compacting the conversation to fit,
-  [03](03-agent-engine.md#switching-models-and-compaction)), or compaction now, and pins it
-  (`set_pinned`, kept across restarts and announced as `session.updated`); model switches and
-  compaction are refused with `-32006` while a turn runs and with `-32007` when the conversation cannot fit.
+  its usage-limit policy, what it watches, its model (without loading it; the next turn
+  compacts the conversation to fit, [03](03-agent-engine.md#switching-models-and-compaction)),
+  or compaction now, and pins it (`set_pinned`, kept across restarts and announced as
+  `session.updated`); model switches and compaction are refused with `-32006` while a turn runs,
+  and compaction with `-32007` when the conversation cannot fit.
 - Schema defined in Rust (`imperium-protocol`) and exported to TypeScript with `ts-rs` into
   `packages/protocol/src/generated/` whenever `cargo test` runs. `scripts/check-rust.sh` (run
   by CI) fails if the checked-in files differ. The pnpm package `@imperium/protocol`

@@ -642,6 +642,14 @@ impl Connection {
         params: SessionCreateParams,
     ) -> Result<(SessionCreateResult, broadcast::Receiver<AgentEvent>), ErrorObject> {
         let model = params.model.as_deref();
+        // A model picked for the session is checked without loading it; its first turn loads it.
+        if model.is_some()
+            && let Ok(resolved) = self.state.resolve_model(model)
+        {
+            self.state
+                .check_selectable(&resolved)
+                .map_err(|error| ErrorObject::new(codes::MODEL_UNAVAILABLE, error))?;
+        }
         // Without a model (and no models.default) the session still starts; it waits for one.
         let options = || SessionOptions {
             may_wait_for_model: true,
@@ -830,6 +838,10 @@ impl Connection {
                         .map_err(|error| {
                             ErrorObject::new(codes::MODEL_UNAVAILABLE, error.to_string())
                         })?;
+                    // Checked, not loaded: the session's next turn loads it.
+                    state
+                        .check_selectable(&model)
+                        .map_err(|error| ErrorObject::new(codes::MODEL_UNAVAILABLE, error))?;
                     Some(session.set_model(model).await.map_err(switch_error)?)
                 }
                 "compact" => Some(session.compact().await.map_err(switch_error)?),

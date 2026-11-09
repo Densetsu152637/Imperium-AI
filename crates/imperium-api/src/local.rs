@@ -151,6 +151,17 @@ pub type AcquireFuture<'a> = Pin<Box<dyn Future<Output = Result<LocalLease, Stri
 pub trait LocalModels: Send + Sync + fmt::Debug {
     /// Where the model with this id stands, without loading anything.
     fn availability(&self, model: &str) -> Availability;
+    /// Whether the runtime has a model with this id (found in the model folders), without
+    /// loading anything. A runtime that cannot tell says yes; loading it then reports the error.
+    fn has_model(&self, _model: &str) -> bool {
+        true
+    }
+    /// The context window a session would get on the model once it is loaded, from its launch
+    /// settings and file metadata, without loading it; `None` when unknown. Only an estimate:
+    /// the loaded server's own report replaces it.
+    fn planned_context(&self, _model: &str) -> Option<u64> {
+        None
+    }
     /// Takes a slot on the model for one call, loading the model first if needed (waiting for
     /// room while the models in the way are in use, up to a limit the runtime sets) and queueing
     /// first-come, first-served while every slot is busy. `holder` names the agent asking, so the model can give it back the

@@ -237,11 +237,14 @@ impl Session {
         lock(&self.model).clone()
     }
 
-    /// Switches the session to `model` from its next turn, keeping the conversation. When the
-    /// conversation does not fit the new model's context window it is compacted first (older
-    /// turns summarised); when it cannot fit, or a turn is running, the session keeps its
-    /// model. The switch is journalled (`model_changed`), so a resumed session keeps it. A
-    /// session started without a model takes this one, and messages that waited for it run.
+    /// Switches the session to `model` from its next turn, keeping the conversation, without
+    /// loading or calling the model: the answer is an estimate against the window the model is
+    /// expected to have. The next turn measures the conversation with the model (loading a
+    /// local one) and compacts it first when it does not fit (older turns summarised); when that
+    /// fails (the model cannot load, or nothing fits) the turn fails with the reason and the
+    /// session stays usable, so another model can be picked. Refused while a turn runs. The
+    /// switch is journalled (`model_changed`), so a resumed session keeps it. A session started
+    /// without a model takes this one, and messages that waited for it run.
     pub async fn set_model(&self, model: ResolvedModel) -> Result<ContextFit, SwitchError> {
         let (reply, answer) = oneshot::channel();
         self.commands
@@ -594,6 +597,10 @@ async fn run(
         {
             root.restore(messages);
         }
+        // A switch the restart came between and no turn followed is fitted by the next turn.
+        if shared.emitter.switched_since_last_turn() {
+            root.mark_unfitted();
+        }
         // A turn the restart cut off never finished; say so, so clients stop waiting for it.
         if shared.emitter.turn_was_running() {
             shared.emitter.emit(
@@ -638,17 +645,15 @@ async fn run(
                     shared.broker.resolve(request_id, decision);
                     continue;
                 }
-                // Between turns: the switch applies from the next one.
+                // Between turns: the switch applies from the next one, which loads the model
+                // and fits the conversation to it; nothing is loaded now.
                 Some(Command::SetModel {
                     model: target,
                     reply,
                 }) => {
-                    let result = root.switch_model(*target).await;
-                    if result.is_ok() {
-                        *lock(&model) = Some(root.model().spec.clone());
-                        save_messages(&shared, &messages_path, root.messages());
-                    }
-                    let _ = reply.send(result);
+                    let fit = root.select_model(*target);
+                    *lock(&model) = Some(root.model().spec.clone());
+                    let _ = reply.send(Ok(fit));
                     continue;
                 }
                 Some(Command::Compact { reply }) => {
@@ -665,7 +670,32 @@ async fn run(
         let Some(text) = shared.prepare_prompt(text).await else {
             continue;
         };
-        if auto_compact {
+        if root.fit_pending() {
+            // The first turn on a model switched to: measure the conversation with it (loading
+            // a local model) and compact it if it does not fit, before the message is added.
+            match root.settle_model().await {
+                Ok(Some(fit)) if fit.compaction.is_some() => {
+                    save_messages(&shared, &messages_path, root.messages());
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    let spec = root.model().spec.clone();
+                    shared
+                        .emitter
+                        .emit(ROOT_AGENT, SessionEvent::TurnStarted { text });
+                    shared.emitter.emit(
+                        ROOT_AGENT,
+                        SessionEvent::TurnFailed {
+                            message: format!(
+                                "{spec} could not take this message: {error}. Send it again, \
+                                 or pick another model."
+                            ),
+                        },
+                    );
+                    continue;
+                }
+            }
+        } else if auto_compact {
             // Over the budget, older turns are summarised before the new message is added.
             match root.fit_current().await {
                 Ok(fit) if fit.compaction.is_some() => {
@@ -747,6 +777,8 @@ async fn wait_for_model(
                 model: target,
                 reply,
             } => {
+                // Nothing is loaded now: the first turn loads the model and fits the
+                // conversation to it.
                 let spec = target.spec.clone();
                 let mut root = Agent::new(
                     ROOT_AGENT.into(),
@@ -755,17 +787,11 @@ async fn wait_for_model(
                     true,
                     "root".into(),
                 );
-                match root.adopt_first_model().await {
-                    Ok(fit) => {
-                        *lock(model) = Some(spec);
-                        needs_model(false);
-                        let _ = reply.send(Ok(fit));
-                        return Some(root);
-                    }
-                    Err(error) => {
-                        let _ = reply.send(Err(error));
-                    }
-                }
+                let fit = root.adopt_first_model();
+                *lock(model) = Some(spec);
+                needs_model(false);
+                let _ = reply.send(Ok(fit));
+                return Some(root);
             }
             Command::Compact { reply } => {
                 let _ = reply.send(Err(SwitchError::NoModel));
@@ -994,6 +1020,21 @@ fn save_messages(
 }
 
 impl Emitter {
+    /// Whether the root's model was switched after its last turn started (or with no turn yet).
+    fn switched_since_last_turn(&self) -> bool {
+        self.history
+            .lock()
+            .iter()
+            .rev()
+            .filter(|event| event.agent_id == ROOT_AGENT)
+            .find_map(|event| match event.event {
+                SessionEvent::ModelChanged { .. } => Some(true),
+                SessionEvent::TurnStarted { .. } => Some(false),
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
+
     /// Whether the root's last recorded turn started without finishing.
     fn turn_was_running(&self) -> bool {
         self.history

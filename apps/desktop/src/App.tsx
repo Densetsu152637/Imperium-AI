@@ -537,7 +537,8 @@ export function App() {
     if (selected) control(selected, { action: "resume_now" }).catch(report);
   };
 
-  /** Switches the selected session's model; the daemon compacts the conversation if needed.
+  /** Switches the selected session's model without loading it; the next message loads it and
+   * compacts the conversation first if it does not fit.
    * Rejects with the daemon's reason, which the model selector shows beside itself. */
   const setModel = async (model: string): Promise<SessionControlResult> => {
     if (!selected) throw new Error("No session is open.");

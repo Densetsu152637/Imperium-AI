@@ -7,6 +7,9 @@ export type SessionControlResult = {
  */
 model: string | null, 
 /**
- * For `set_model` and `compact`: the conversation measured for that model's window.
+ * For `set_model` and `compact`: the conversation measured for that model's window. For
+ * `set_model` it is an estimate (`method` `estimated`) against the window the model is
+ * expected to have, as the model is not loaded or called until the session's next turn,
+ * which measures it exactly and compacts the conversation then if it does not fit.
  */
 context: ContextFit | null, };

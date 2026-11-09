@@ -1521,6 +1521,30 @@ impl DaemonState {
         resolve_model(&settings, spec, |name| self.secrets.load(name))
     }
 
+    /// Checks, without loading or starting anything, that a model a client picked for a session
+    /// can be asked for: a local model needs the local runtime and must be among the models it
+    /// found. Whether it loads (its server, the memory it needs) is found out when the session
+    /// first sends it a message.
+    pub fn check_selectable(&self, model: &ResolvedModel) -> Result<(), String> {
+        if !model.local {
+            return Ok(());
+        }
+        let Some(local) = self.local.get() else {
+            return Err(format!(
+                "{} is a local model, but no local models are set up; add a model folder in \
+                 Settings → Models",
+                model.spec
+            ));
+        };
+        if !LocalModels::has_model(&*local.supervisor, &model.model) {
+            return Err(format!(
+                "{} was not found in the model folders; rescan them, or pick another model",
+                model.spec
+            ));
+        }
+        Ok(())
+    }
+
     /// Resolves `[[models.catalog]]` for routing subagents. Entries that cannot be used (an
     /// unknown endpoint, a missing key) are skipped with a warning rather than failing the session.
     fn catalog(&self) -> Vec<CatalogModel> {
