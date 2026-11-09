@@ -110,7 +110,7 @@ this machine (or `runtime.llamacpp.backend`) from the `runtime-llama.cpp-<ref>` 
 checks it against the release's `SHA256SUMS`, and unpacks it under
 `<data>/runtimes/llama.cpp/<ref>/`. `runtime.llamacpp.custom_path` points at your own
 `llama-server` instead. The daemon starts one `llama-server` per loaded model on a free
-loopback port with `--parallel` slots, waits for `/health`, logs its output to
+loopback port with `--parallel` slots over one shared KV pool, waits for `/health`, logs its output to
 `<data>/logs/llama-<id>.log`, and stops it when it has been idle for `idle_unload_s` or the
 daemon exits. vLLM is later work.
 
@@ -124,8 +124,24 @@ reuses the same `llama-server`. What changed is how long a slot is held:
   `await_tasks` leave the slots to the sessions that are working, even on a model with a single
   slot. The model is loaded on the first call, and stays loaded within `idle_unload_s` of the last
   call that used it. Hosted endpoints are unaffected.
-- **A queue.** Calls that find every slot busy wait first-come, first-served, for at most
-  `max_wait_s` (stage 2d; default 600 s), after which the call fails. `models.local`,
+- **A token reservation.** A llama.cpp lease also reserves tokens from the model's KV pool, which
+  is budgeted in tokens. The agent estimates the call's prompt: after its first call, the last
+  call's exact prompt and completion tokens plus the messages added since (estimated with a 1.25
+  margin and 8 tokens of chat-template overhead each); on its first call, every message and the
+  tool specs the same way, plus 64 tokens for the template's frame. The supervisor reserves
+  `min(prompt + max_output_tokens, context)` tokens (the whole `context` when `max_output_tokens`
+  is 0, when the prompt is unknown, or on a retry) before the call, and the lease tells the agent
+  to send the rest as `max_tokens`, so the server cannot generate past the reservation. When the
+  prompt estimate already fills the context there is no room to cap, and the request is sent with
+  no `max_tokens`, so the server's own over-context error surfaces. A reply that stops with
+  `finish_reason = "length"` (or fails with "Context size has been exceeded.") is retried once,
+  without a cap and with the whole context reserved, after a `Notice`; only the retry's reply is
+  kept in the conversation. vLLM manages its own paged KV cache, so a vLLM lease reserves no
+  tokens and carries no `max_tokens`.
+- **A queue.** Calls that find every slot busy, or too few tokens left in the pool, wait
+  first-come, first-served, for at most `max_wait_s` (stage 2d; default 600 s), after which the
+  call fails. A call is never rejected for lack of slots or pool: it queues in Imperium, per
+  model. `models.local`,
   `imperium models local`, and the desktop's Local models panel show each loaded model's slots in
   use and `queued` (calls waiting), and each `model_call_completed` event carries `queue_wait_ms`,
   the time that call waited for a slot or for room to load its model, not counting the load, a
@@ -156,9 +172,23 @@ memory arbiter for every session (`crates/imperium-local/src/arbiter.rs` holds t
 
 - **Who may be swapped out.** A model with a slot in use, or a call queued for one, is never
   unloaded. Agents tell the runtime what they are doing: an agent is attached to its model for
-  its turn, and marked waiting while it is in `await_tasks`. A loaded model is *free* when none
-  of the agents that took a slot on it since it was loaded is mid-turn (all are waiting or done),
-  and *claimed* otherwise.
+  its turn, and marked waiting while it is in `await_tasks`, while a permission request waits for
+  your answer, and while a usage-limit pause runs. A loaded model is *free* when none of the
+  agents that took a slot on it since it was loaded is mid-turn (all are waiting or done), and
+  *claimed* otherwise. A model claimed by an agent of another session than the one asking is
+  treated like one in use: **a load for one session never evicts, restarts or interrupts a model
+  another session is using**, and neither does the idle timeout or a settings change; the load
+  waits (up to `max_wait_s`) and goes ahead once that model's agents finish their turns or sleep.
+  A claim exists from the agent's first call on the loaded model, so a load may swap a model out
+  between a turn's start and its first call (or after a reload and before the returning agent's
+  first call): nothing is in flight then, and the agent's first call reloads it with its saved
+  slot. A model claimed only by the asking session's own agents is waited for and may be swapped
+  out as described below. An orchestrator asleep in `await_tasks` may be swapped out for any
+  session's load, as before: two orchestrators each awaiting a subagent that needs the memory the
+  other's model holds would otherwise wait for each other. The wait for a blocking model is
+  bounded by the remaining turns of the agents already in its batch (each at most
+  `agents.max_steps` calls, each call bounded by its reservation), because newcomers do not join
+  while a load waits.
 - **When.** A model that fits beside the loaded models loads beside them. Free models are
   swapped out, least recently used first and as few as needed, only when the newcomer does not
   fit beside them, or gets more than `swap_gain` times the GPU memory once they are gone than it
@@ -183,7 +213,7 @@ memory arbiter for every session (`crates/imperium-local/src/arbiter.rs` holds t
   that can still come back (mid-turn, or waiting for its subagents) is saved with `POST /slots/{id}?action=save` into `<data>/swap`, which `llama-server` is started
   with as `--slot-save-path`. Files are keyed by the agent and by the model: its id, the file's
   path, size, and modification time (not a hash of the contents, which would read gigabytes on
-  every load), the per-slot context, and the cache type, so a stale file is never restored. When
+  every load), the context, the pool size, and the K and V cache types, so a stale file is never restored. When
   the model loads again, each saved agent gets its old slot back while it is free, and its file
   is restored with `action=restore` into the slot it leased before its next request is sent; a
   failed restore only means the prompt is read again. The slots of agents whose turn is over,
@@ -214,8 +244,8 @@ memory arbiter for every session (`crates/imperium-local/src/arbiter.rs` holds t
   back without its cache, so after one restart both stay loaded with smaller caches instead of
   taking turns.
 - **Visibility.** Every client receives `model.swapped_out` and `model.swapped_in` notifications
-  (`ModelSwap`: `model_id`, `seconds`, `bytes`, `slots`, and a `reason`: `room` or `idle` out,
-  `swap` or `restore` in). Out counts the slot bytes written and the time to save and stop; in
+  (`ModelSwap`: `model_id`, `seconds`, `bytes`, `slots`, and a `reason`: `room`, `idle` or `config`
+  out, `swap` or `restore` in). Out counts the slot bytes written and the time to save and stop; in
   counts the memory taken and the time to start, and `slots` is how many saved slots wait for
   their agents.
 
@@ -236,12 +266,27 @@ needs a restart of its server (only free models give their cache up, by being sw
 longest wait per session; swap events in the desktop's Models panel; and the measured run on a
 16 GB GPU.
 
-**Slots × context (stage 2c, partly open).** `--ctx-size` is the per-slot context times the
-slots (`runtime.llamacpp.context` × `runtime.llamacpp.parallel`), and the memory planner counts
-the KV cache for all of it, so more slots or a bigger window both cost memory. There is no
-setting yet that picks the largest window that still allows N slots for a given amount of free
-memory, or that prefers more slots over a bigger window; that belongs with the context tiers of
-the Emperor plan.
+**One KV pool, slots, and no global cap.** Each llama.cpp model is started with
+`--ctx-size <pool_tokens> --kv-unified --parallel <slots> --no-cache-idle-slots`, plus
+`--kv-unified-per-slot <context>` when `context < pool_tokens`. `context` is what one session may
+use; `pool_tokens` is the KV cache all slots share, and the memory planner counts the KV cache
+once, for the pool (`kv_bytes_per_token × pool_tokens`), whatever the slot count, so slots no
+longer multiply memory. `--no-cache-idle-slots` keeps an idle slot's cells until the pool runs
+short, so the swap-out save still finds the slots of agents asleep in `await_tasks`; under pool
+pressure llama-server purges idle slots anyway, and an agent whose slot was purged reads its
+prompt again on return (the pinned-slot switch above is a separate path and still works). There
+is **no global cap** on sessions using local models: the per-model `slots` (default the larger of
+8 and `runtime.llamacpp.parallel`) is how many calls one server decodes at once, not an admission
+limit, and calls beyond it queue in Imperium, first come, first served. `parallel` only sizes the
+default pool, `pool_tokens = context × parallel`. Every setting can be set per model, in
+`[runtime.llamacpp.models."<id>"]` or from the desktop's model settings dialog
+([10](10-configuration.md#layers)): context, pool, slots, K and V cache types, flash attention, a
+cap on GPU layers, the wait cap, `max_output_tokens`, and extra arguments. Changing the settings
+of a loaded model restarts it once it is free (swap reason `config`); a newcomer waits for the new
+shape while the model's batch carries on. A custom `llama-server` (`runtime.llamacpp.custom_path`)
+must be llama.cpp b12180 or later: it needs `--kv-unified`, `--kv-unified-per-slot` and
+`--no-cache-idle-slots`. This is not probed; an older binary exits at once, its log names the
+unknown argument, and the usual quick-failure error surfaces that.
 
 **Implemented (stage 2f): the CPU lane.** Some work needs accuracy, not speed: critiquing a plan,
 reviewing a design, checking a proof. On a machine with plenty of system RAM, a larger model can
@@ -257,7 +302,7 @@ tier = "strong"
 tags = ["critique", "review"]
 placement = "cpu"                         # auto (default) | cpu
 # parallel = 1                            # slots; default 1 for a CPU-pinned row
-# context = 32768                         # tokens per slot; default runtime.llamacpp.context
+# context = 32768                         # tokens per session; default runtime.llamacpp.context
 # max_wait_s = 3600                       # longest a call waits for a slot or for room; default
 #                                         # 3600, or runtime.llamacpp.max_wait_s if longer
 ```
@@ -270,14 +315,16 @@ placement = "cpu"                         # auto (default) | cpu
   off the GPU without relying on it following `--device`. What is guaranteed is exactly that:
   Imperium plans zero VRAM for the model, passes those flags, and never counts it against the
   VRAM budget. The planner places it with
-  `place_on_cpu`: weights, KV cache for `context x parallel`, and the runtime overhead all count
-  against RAM, so loading it leaves the GPU models' placements as they were. Nothing here has
+  `place_on_cpu`: weights, the KV pool (`context x parallel` unless the model's settings say
+  otherwise), and the runtime overhead all count against RAM, so loading it leaves the GPU models' placements as they were. Nothing here has
   been measured on hardware (a driver may still hold a little memory for the process). The
   existing "partial" placement is different: it splits a model that does not fit the GPU, and
   still prefers the GPU. `placement = "cpu"` is validated at startup: it needs
   `location = "local"` and a `llamacpp:<id>` spec (a cloud row, another endpoint, or a vLLM
-  folder is refused with the row's id); `parallel`, `context`, and `max_wait_s` are only valid
-  with it and must be at least 1; and rows naming the same model must agree on `placement` and
+  folder is refused with the row's id); `parallel`, `context`, and `max_wait_s` are now per-model
+  settings (`slots`, `context`, `max_wait_s` under `[runtime.llamacpp.models."<id>"]`), still
+  accepted on the row, only valid with `placement = "cpu"` there, and at least 1 (a row and a
+  model table that set the same key to different values are refused, naming both); and rows naming the same model must agree on `placement` and
   on those three, because the model is served once.
 - **One RAM budget.** Everything that lives in RAM is counted together against free RAM less
   `runtime.llamacpp.ram_headroom_mb`: the CPU lane's weights and KV, every server's
@@ -359,8 +406,8 @@ CPU, which suits critiques that can wait. Use only models whose licence you have
 in `models.folders` are discovered as `vllm:<folder name>`, their shape read from `config.json`
 (including `text_config` for multimodal models). They are planned GPU-only (vLLM does not
 offload to system memory) and served by a supervised `vllm serve <folder>
---served-model-name <id>` on a free loopback port, with `--max-model-len` (the per-slot
-context), `--max-num-seqs` (the slots), and a `--gpu-memory-utilization` sized to the model's
+--served-model-name <id>` on a free loopback port, with `--max-model-len` (the per-session
+context), `--max-num-seqs` (the slots; no token pool), and a `--gpu-memory-utilization` sized to the model's
 share of free VRAM plus 5%, capped by `runtime.vllm.max_gpu_memory_utilization`. vLLM is
 available on Linux (including WSL2) through `runtime.vllm.command` (default `vllm` on `PATH`);
 elsewhere such models are listed but unavailable, so routing falls back. Managed `uv`
@@ -380,8 +427,9 @@ and passing it to `Supervisor::with_backends`.
 - **vLLM:** installed into a managed `uv` environment on Linux/WSL2, or run from the official
   Docker image, or used on a remote host. Imperium never bundles vLLM.
 - Each loaded model is a supervised process with a port, health check, idle timeout, and
-  memory reservation. Multiple slots (`--parallel`) let one loaded model serve several
-  agents concurrently; an agent holds a slot only while a model call runs.
+  memory reservation. Multiple slots (`--parallel`) over one KV pool (`--kv-unified`) let one
+  loaded model serve several agents concurrently; an agent holds a slot and a token reservation
+  only while a model call runs.
 
 ## Hardware awareness
 
@@ -404,12 +452,15 @@ The daemon maintains a live **resource map**:
 **Memory planner** for a candidate local model:
 
 ```text
-required = weights + kv_bytes_per_token × context × parallel_slots + runtime_overhead
+required = weights + kv_bytes_per_token × pool_tokens + runtime_overhead
 fits     = required ≤ free_vram (full offload)  or  partial offload within RAM headroom
 ```
 
-In the implementation, `context` is per slot, so llama.cpp is started with
-`--ctx-size context × parallel`. When a model does not fit on the GPU, as many whole layers as
+In the implementation, the KV cache is one pool of `pool_tokens` shared by every slot (by
+default `context × parallel`), so llama.cpp is started with `--ctx-size pool_tokens
+--kv-unified`; the key and value caches may have different types, each counted at its size.
+`max_gpu_layers` caps the layers offloaded, with the memory split recomputed for the capped
+count. When a model does not fit on the GPU, as many whole layers as
 fit (after the overhead) are offloaded and the rest must fit in the RAM budget; otherwise the
 model does not fit.
 

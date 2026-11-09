@@ -6,20 +6,31 @@ Later layers override earlier ones, key by key:
 
 1. Built-in defaults
 2. User config: `<config>/config.toml`
+   (2a. App settings: `<config>/models.toml`, written by the desktop app; see below)
 3. Host config (SSH host's own `config.toml`)
 4. Project config: `<project>/.imperium/config.toml` (shareable) and
    `<project>/.imperium/config.local.toml` (git-ignored)
 5. Session overrides
 6. Environment variables (`IMPERIUM_*`) and CLI flags
 
-Implemented so far (phase 0): defaults, user config, project config, and environment
-variables. Host config, session overrides, and CLI flags arrive with the features that need
+Implemented so far (phase 0): defaults, user config, project config, app settings, and
+environment variables. Host config, session overrides, and CLI flags arrive with the features that need
 them.
 
 - **Environment variables** use `IMPERIUM_<SECTION>__<KEY>` with a double underscore between
   levels, for example `IMPERIUM_DAEMON__PORT=8080` sets `daemon.port`. Values are read as TOML
   (`8080`, `true`, `["a"]`) and otherwise as plain strings. Only nested keys can be set this
   way; `IMPERIUM_HOME` is not configuration (it relocates all data directories).
+- **The app layer** (`<config>/models.toml`, shown as `app settings <path>` by `config explain`)
+  holds the model settings saved from the desktop's model settings dialog
+  (`runtime.llamacpp.models."<id>"` and `models.overrides."<id>"`). It is loaded after the user
+  file and project files and before environment variables, so what is saved in the app wins over
+  `config.toml`, key by key; your hand-written `config.toml` is never rewritten, and the same
+  keys written there work too and show as effective when the app saved nothing. The app
+  refuses invalid values when saving and writes nothing; when the daemon or the CLI loads, an
+  entry of the file that does not validate is dropped with a warning (logged by the daemon, listed
+  by the loader), and a file that is not valid TOML is ignored with a warning, so a bad
+  `models.toml` never stops the daemon.
 - **Unknown keys are ignored**, so a config written for a newer version still loads; a known
   key with the wrong type is an error naming the problem.
 - `imperium config explain <key> [--project <dir>]` shows the effective value and the layer
@@ -49,9 +60,15 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `models.download_dir` | first of `models.folders`, else `<data>/models` | Where [Hugging Face downloads](04-models-and-routing.md#downloading-from-hugging-face) go, as `<owner>/<repo>/` below it; must be absolute; scanned with `models.folders` |
 | `runtime.llamacpp.backend` | `auto` | Runtime pack: `auto`, `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` |
 | `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of a pack |
-| `runtime.llamacpp.context` | `8192` | Context per slot each loaded model is started with |
-| `runtime.llamacpp.parallel` | `2` | Slots per loaded model (model calls served at once; an agent holds a slot only during a call, so more sessions than slots share a model by queueing) |
-| `runtime.llamacpp.cache_type` | `f16` | KV cache type: `f16`, `q8_0`, or `q4_0` |
+| `runtime.llamacpp.context` | `8192` | Tokens one session may use on a local model (`--kv-unified-per-slot` when below the pool) |
+| `runtime.llamacpp.parallel` | `2` | Deprecated: only sizes the default KV pool, `pool_tokens = context × parallel`. It no longer caps anything: sessions beyond a model's slots queue |
+| `runtime.llamacpp.slots` | the larger of `8` and `parallel` | Default `--parallel` of each model: calls one server decodes at once, `1`-`256`. A CPU-pinned model defaults to `1` |
+| `runtime.llamacpp.pool_tokens` | `context × parallel` | Default tokens of KV cache all slots of a model share (`--ctx-size` with `--kv-unified`); at least `context`. The planner counts the KV cache once, for the pool |
+| `runtime.llamacpp.cache_type` | `f16` | Default KV cache type of keys and values: `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0`, or `q5_1` |
+| `runtime.llamacpp.flash_attn` | `auto` | `--flash-attn`: `auto`, `on`, or `off`; a quantised V cache type needs `on` or `auto` |
+| `runtime.llamacpp.max_output_tokens` | `8192` | Most tokens one local reply may generate before it is retried once without a cap; `0` = uncapped (the call reserves the whole context). See [runtimes](04-models-and-routing.md#runtimes) |
+| `runtime.llamacpp.models."<id>".*` | none | Settings of one local model, overriding the defaults above: `context`, `pool_tokens` (at least `context`), `slots`, `cache_type_k`, `cache_type_v`, `flash_attn`, `max_gpu_layers` (cap on the layers placed on the GPU), `max_wait_s`, `max_output_tokens`, and `extra_args` (added after `runtime.llamacpp.extra_args`; may not contain a flag Imperium sets, such as `--ctx-size`, with or without `=value`). A CPU-lane row's `parallel`, `context` and `max_wait_s` count too; a row and this table setting different values are refused. Changing a loaded model's settings restarts it once nothing is using it. Model ids may contain dots: write them as quoted keys |
+| `models.overrides."<id>".*` | none | What the app changes on a model-table row: `enabled`, `tier`, `tags`, `context_window`, and both `input_usd_per_mtok` and `output_usd_per_mtok` (the endpoint price for that model). An id that names no row is ignored. `enabled` is also accepted on `[[models.catalog]]` rows; `false` leaves the row out of routing |
 | `runtime.llamacpp.idle_unload_s` | `900` | Seconds an unused model stays loaded |
 | `runtime.llamacpp.ram_headroom_mb` | `2048` | System memory kept free when placing models; the one RAM budget is free RAM less this, shared by GPU models' RAM share, every server's `--cache-ram`, and models pinned to the CPU lane (their weights and KV) |
 | `runtime.llamacpp.cache_ram_mb` | `8192` | Host memory (MiB) for llama.cpp's prompt cache (`--cache-ram`), which restores the prompt of an agent that lost its slot to another instead of reading it again; capped to the RAM left in the budget after the model and the models that stay loaded beside it (and room for a model swapped out only because of a cache), counted as RAM held by the model, `0` turns it off |
@@ -147,6 +164,19 @@ base_url = "http://192.168.1.20:8000/v1"
 backend = "auto"          # auto | cpu | cuda | vulkan | rocm | metal | custom
 custom_path = ""
 idle_unload_s = 900
+context = 8192            # tokens one session may use
+slots = 8                 # calls one server decodes at once; no cap on sessions
+pool_tokens = 65536       # KV cache all slots share
+
+# What the desktop's model settings dialog writes to <config>/models.toml:
+[runtime.llamacpp.models."Qwen3-8B-Q4_K_M"]
+context = 32768
+slots = 4
+cache_type_k = "q8_0"
+cache_type_v = "q8_0"
+
+[models.overrides.coder]
+enabled = false
 
 [routing]
 prefer_local = true
