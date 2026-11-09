@@ -538,15 +538,24 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   (*Stop scanning this folder*; nothing in it is deleted), the download folder when it is separate,
   and *Add folder*. *Rescan* scans again.
 - **Runtime.** A *llama.cpp runtime* card runs `runtime.status` when the panel opens: which
-  `llama-server` is used (yours, the installed llama.cpp build, or one *Found on this computer*
-  that is used until a runtime is installed), its version, the devices it sees, and a
-  verdict (*ready*, *check*, *not ready*) with the problem and what to do in words, such as
-  *llama-server can't see your GPU — the CUDA runtime is missing or the NVIDIA driver is too old
-  for this build*. `llama-server` executables found on this computer are offered with *Use this*;
-  *Choose llama-server…* opens the native file picker; *Install llama.cpp <ref>* downloads
-  llama.cpp's build for this machine with a progress bar (`runtime.install_progress`), falling
-  back to the next build when one does not run; *Use the installed runtime instead* drops a
-  custom server. When the server in use changes, the model listing is read again.
+  `llama-server` is used and where it comes from (*Your llama-server*, *Found on this computer*
+  with how it was installed, such as winget or LM Studio, or *Imperium's build* with its
+  release), its path, backend (*CUDA 13*, *Vulkan*, *CPU*, ...), whether the GPU is visible,
+  its build number (with the release Imperium uses when it is older), and a verdict (*ready*,
+  *check*, *not ready*) with the problem and what to do in words, such as *llama-server can't
+  see your GPU — the CUDA runtime is missing or the NVIDIA driver is too old for this build*.
+  With no runtime it says Imperium downloads the official build the first time a local model is
+  needed (opening the panel counts, so the install usually starts there, with a progress bar
+  from `runtime.install_progress`), or, with `runtime.llamacpp.auto_install` off, that it must
+  be installed or chosen. *Use detected…* is a choice list of the other `llama-server`
+  executables found on this computer, with *Use this*; *Install official build* installs
+  llama.cpp's build for this machine (falling back to the next build when one does not run);
+  *Choose file…* opens the native file picker for your own; *Stop using my llama-server* drops
+  a custom server. When an update is available
+  ([llama.cpp updates](04-models-and-routing.md#llamacpp-updates)) the card says so: *Update*
+  runs the package manager's upgrade and shows its output (`runtime.update_progress`); *Use
+  Imperium's build instead* installs the official build for a folder Imperium does not modify.
+  When the server in use changes, the model listing is read again.
 - **Choosing a local model without a runtime.** When no `llama-server` is there
   (`models.local` reports the runtime not installed), choosing a llama.cpp model in a session's
   model selector first says *No llama.cpp runtime yet — open Local models → Runtime to install
@@ -561,7 +570,9 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   that cannot run here say why under the row. Items left out of the scan (image models,
   diffusers pipelines, unreadable files) are listed, with the reason, in a collapsed section.
 - **Settings.** `models.default`, `models.folders`, and `runtime.llamacpp.custom_path` changed in
-  Settings apply at once too.
+  Settings apply at once too; *Install llama.cpp automatically* (`runtime.llamacpp.auto_install`)
+  and *Update a package-manager llama.cpp* (`runtime.llamacpp.update_external`) are there as
+  well.
 
 **Composer, queue, and steering (implemented):** the composer stays enabled while the agent
 works. Its send key (Enter, or Ctrl+Enter, as set in Settings) queues the message for after the

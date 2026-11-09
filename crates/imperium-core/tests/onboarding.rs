@@ -32,8 +32,10 @@ fn gguf() -> Vec<u8> {
 async fn start_daemon(home: &Path, config: &str) -> (Socket, Arc<imperium_core::DaemonState>) {
     let paths = Paths::under(home);
     std::fs::create_dir_all(paths.config_dir()).unwrap();
-    // A llama-server installed on the machine running the tests is not looked for.
-    let config = format!("{config}\n[runtime.llamacpp]\nfind_existing = false\n");
+    // A llama-server installed on the machine running the tests is not looked for, and none is
+    // downloaded.
+    let config =
+        format!("{config}\n[runtime.llamacpp]\nfind_existing = false\nauto_install = false\n");
     std::fs::write(paths.user_config_file(), config).unwrap();
     let loaded = imperium_config::load(&paths, None, []).unwrap();
     // Secrets stay in memory, away from the machine's keychain.

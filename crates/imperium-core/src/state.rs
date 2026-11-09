@@ -120,6 +120,8 @@ pub struct DaemonState {
     downloads: Downloads,
     /// The latest llama.cpp runtime pack installation (`runtime.install`).
     pub(crate) runtime_install: Mutex<Option<imperium_protocol::methods::RuntimeInstallJob>>,
+    /// The latest package-manager update of an external `llama-server`.
+    pub(crate) runtime_update: Mutex<Option<imperium_protocol::methods::RuntimeUpdateJob>>,
     /// The Hugging Face Hub to use instead of the one from the environment (for tests).
     hub: OnceLock<imperium_local::hf::Hub>,
     /// Notifications for every connected client, such as schedule runs.
@@ -211,6 +213,7 @@ impl DaemonState {
             local: local.map(OnceLock::from).unwrap_or_default(),
             downloads: Downloads::default(),
             runtime_install: Mutex::new(None),
+            runtime_update: Mutex::new(None),
             hub: OnceLock::new(),
             announcements: broadcast::channel(256).0,
             scheduler: OnceLock::new(),
@@ -233,10 +236,11 @@ impl DaemonState {
             budgets,
         });
         state.apply_load_view();
-        if let Some(local) = state.local.get()
-            && tokio::runtime::Handle::try_current().is_ok()
-        {
-            state.announce_swaps(local);
+        if let Some(local) = state.local.get() {
+            local.set_runtime_hooks(crate::llama_runtime::Hooks::new(&state));
+            if tokio::runtime::Handle::try_current().is_ok() {
+                state.announce_swaps(local);
+            }
         }
         state
     }
@@ -989,6 +993,7 @@ impl DaemonState {
         };
         if self.local.set(started).is_ok() {
             if let Some(local) = self.local.get() {
+                local.set_runtime_hooks(crate::llama_runtime::Hooks::new(self));
                 self.apply_local_settings(local);
                 self.announce_swaps(local);
             }

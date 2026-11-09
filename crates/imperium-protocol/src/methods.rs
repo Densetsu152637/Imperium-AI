@@ -1126,7 +1126,82 @@ pub struct RuntimeStatusResult {
     pub candidates: Vec<String>,
     /// The latest runtime pack installation since the daemon started.
     pub install: Option<RuntimeInstallJob>,
+    /// The backend models run on, in words: `CUDA 13`, `CUDA`, `Vulkan`, `Metal`, `ROCm`, or
+    /// `CPU` (an installed build's, else the GPUs the server lists).
+    pub backend: String,
+    /// `runtime.llamacpp.auto_install`: the official build is installed by itself the first
+    /// time a local model needs one and none usable is there.
+    pub auto_install: bool,
+    /// The llama.cpp build number of the server in use (from `--version`), when known.
+    #[ts(type = "number | null")]
+    pub build: Option<u64>,
+    /// The build number of the release Imperium pins (`llama_cpp_ref`).
+    #[ts(type = "number | null")]
+    pub pinned_build: Option<u64>,
+    /// How the server in use was installed: `managed` (Imperium's build), `winget`, `scoop`,
+    /// `chocolatey`, `homebrew`, `lmstudio`, `folder` (a checkout or unpacked archive), or
+    /// `other`.
+    #[ts(
+        type = "\"managed\" | \"winget\" | \"scoop\" | \"chocolatey\" | \"homebrew\" | \"lmstudio\" | \"folder\" | \"other\""
+    )]
+    pub install_kind: String,
+    /// An update the server in use can have, when it is older than the pinned release or
+    /// lacks a flag Imperium passes.
+    pub update: Option<RuntimeUpdateOffer>,
+    /// The latest package-manager update since the daemon started.
+    pub update_job: Option<RuntimeUpdateJob>,
 }
+
+/// How the `llama-server` in use can be brought up to date.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeUpdateOffer {
+    /// `package_manager`: `runtime.update_external` runs `command` (with
+    /// `update_external = "auto"` the daemon runs it by itself while no model is loaded from
+    /// the server); `use_managed`: a checkout or folder Imperium never modifies, so
+    /// `runtime.install` installs Imperium's build, which is preferred from then on;
+    /// `managed`: Imperium's build is installing the pinned release.
+    #[ts(type = "\"package_manager\" | \"use_managed\" | \"managed\"")]
+    pub action: String,
+    /// The package manager's upgrade, such as `winget upgrade --id ggml.llamacpp ...`.
+    pub command: Option<String>,
+    /// Why, in a sentence.
+    pub message: String,
+}
+
+/// `runtime.update_external`: runs the package manager's upgrade of the `llama-server` in use
+/// (winget, scoop, Chocolatey, or Homebrew; that package only) in the background, reporting
+/// `runtime.update_progress`. Refused while a model is loaded from it or for an install no
+/// package manager owns.
+#[derive(Debug)]
+pub struct RuntimeUpdateExternal;
+
+impl Method for RuntimeUpdateExternal {
+    const NAME: &'static str = "runtime.update_external";
+    type Params = RuntimeUpdateExternalParams;
+    type Result = RuntimeUpdateJob;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeUpdateExternalParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeUpdateJob {
+    /// The `llama-server` being updated.
+    pub server_path: String,
+    /// The command run.
+    pub command: String,
+    #[ts(type = "\"running\" | \"done\" | \"failed\"")]
+    pub state: String,
+    /// What the package manager printed (the last lines), or why it could not run.
+    pub output: String,
+}
+
+/// Notification sent to every client when a package-manager update starts and ends. The
+/// payload is a [`RuntimeUpdateJob`].
+pub const RUNTIME_UPDATE_PROGRESS: &str = "runtime.update_progress";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
