@@ -13,10 +13,103 @@ pub const CPU_LANE_SLOTS: u32 = 1;
 /// Longest a call waits for a slot on a CPU-lane model unless a setting says otherwise (or the
 /// global `max_wait_s` is longer): calls queue behind tasks that take minutes.
 pub const CPU_LANE_MAX_WAIT_S: u64 = 3600;
-/// Slots a model gets unless a setting says otherwise, when `parallel` is not larger.
-pub const DEFAULT_SLOTS: u32 = 8;
+/// Slots (calls decoded at once) a model gets unless a setting says otherwise, when `parallel` is
+/// not larger. Slots reserve no KV cache of their own (they share one pool), so the ceiling is
+/// high.
+pub const DEFAULT_SLOTS: u32 = 16;
 /// Most slots one server can have (`LLAMA_MAX_SEQ`).
 pub const MAX_SLOTS: u32 = 256;
+/// Tokens of KV cache a model is started with unless a setting fixes the pool: the pool grows
+/// from here, on demand, up to the model's context ceiling.
+pub const INITIAL_POOL_TOKENS: u32 = 16_384;
+/// [`ModelLaunch::context`] when the context is `auto`: no limit of its own, so the ceiling is
+/// what the model was trained for and what fits in memory.
+pub const NO_CONTEXT_LIMIT: u32 = u32::MAX;
+
+/// How much context one agent may use on a local model: `auto` (the most the model was trained
+/// for that fits in memory) or a number of tokens. Written as `"auto"` or an integer; a string
+/// holding an integer reads as that integer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ContextLimit {
+    #[default]
+    Auto,
+    Tokens(u32),
+}
+
+impl ContextLimit {
+    /// The tokens it fixes, or `None` for `auto`.
+    pub fn tokens(self) -> Option<u32> {
+        match self {
+            ContextLimit::Auto => None,
+            ContextLimit::Tokens(tokens) => Some(tokens),
+        }
+    }
+
+    /// Reads `auto` or a whole number of tokens.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        if text.eq_ignore_ascii_case("auto") {
+            return Ok(ContextLimit::Auto);
+        }
+        text.parse()
+            .map(ContextLimit::Tokens)
+            .map_err(|_| format!("context must be \"auto\" or a number of tokens, not {text:?}"))
+    }
+}
+
+impl From<u32> for ContextLimit {
+    fn from(tokens: u32) -> Self {
+        ContextLimit::Tokens(tokens)
+    }
+}
+
+impl std::fmt::Display for ContextLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ContextLimit::Auto => f.write_str("auto"),
+            ContextLimit::Tokens(tokens) => write!(f, "{tokens}"),
+        }
+    }
+}
+
+impl Serialize for ContextLimit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ContextLimit::Auto => serializer.serialize_str("auto"),
+            ContextLimit::Tokens(tokens) => serializer.serialize_u32(*tokens),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ContextLimit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = ContextLimit;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("\"auto\" or a number of tokens")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<ContextLimit, E> {
+                u32::try_from(value)
+                    .map(ContextLimit::Tokens)
+                    .map_err(|_| E::custom("context is too large"))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<ContextLimit, E> {
+                u64::try_from(value)
+                    .map_err(|_| E::custom("context cannot be negative"))
+                    .and_then(|value| self.visit_u64(value))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<ContextLimit, E> {
+                ContextLimit::parse(value).map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
 /// KV cache types `llama-server` accepts for `--cache-type-k` and `--cache-type-v`.
 pub const CACHE_TYPES: [&str; 9] = [
     "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
@@ -60,11 +153,14 @@ const OWNED_FLAGS: [&str; 28] = [
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LocalModelSettings {
-    /// Tokens one session may use.
-    pub context: Option<u32>,
-    /// Tokens of KV cache all slots share; at least `context`.
+    /// Most tokens one agent may use: `auto` or a number.
+    pub context: Option<ContextLimit>,
+    /// Fixes the tokens of KV cache all slots share (at least `context`); unset, the pool
+    /// starts small and grows on demand.
     pub pool_tokens: Option<u32>,
-    /// Calls the server runs at once (`--parallel`).
+    /// Most calls the server runs at once (`--parallel`); also written `max_slots`. Slots share
+    /// one KV pool and reserve none of their own.
+    #[serde(alias = "max_slots")]
     pub slots: Option<u32>,
     pub cache_type_k: Option<String>,
     pub cache_type_v: Option<String>,
@@ -102,10 +198,25 @@ pub struct LaneRow {
 /// The settings a local model is started with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelLaunch {
-    /// Tokens one session may use.
+    /// Most tokens one agent may use. From the settings alone it is the configured limit, or
+    /// [`NO_CONTEXT_LIMIT`] for `auto`; the supervisor caps it to what the model was trained for
+    /// and what fits in memory.
     pub context: u32,
-    /// Tokens of KV cache shared by every slot.
+    /// The context is `auto`.
+    pub context_auto: bool,
+    /// Tokens of KV cache shared by every slot (`--ctx-size`): the fixed pool, or the pool the
+    /// model starts with and grows from.
     pub pool_tokens: u32,
+    /// A setting fixes `pool_tokens`, so the pool never grows.
+    pub pool_fixed: bool,
+    /// Most tokens the pool may grow to when several agents fill it: what fits in memory beside
+    /// the weights, at most every slot at the full context. From the settings alone it is
+    /// `pool_tokens`; the supervisor sizes it.
+    pub pool_max: u32,
+    /// The fixed pool did not fit beside the weights on the GPU, so the supervisor cut
+    /// `pool_tokens` to what fits rather than moving layers to the CPU. Always false from the
+    /// settings alone.
+    pub pool_clamped: bool,
     pub slots: u32,
     pub cache_type_k: String,
     pub cache_type_v: String,
@@ -147,7 +258,10 @@ impl LlamaCppSettings {
         let own = own.cloned().unwrap_or_default();
         let row = lane.unwrap_or_default();
         let on_lane = lane.is_some();
-        let context = own.context.or(row.context).unwrap_or(self.context);
+        let limit = own
+            .context
+            .or(row.context.map(ContextLimit::Tokens))
+            .unwrap_or(self.context);
         let slots = if on_lane {
             own.slots.or(row.slots).unwrap_or(CPU_LANE_SLOTS)
         } else {
@@ -155,9 +269,18 @@ impl LlamaCppSettings {
                 .or(self.slots)
                 .unwrap_or_else(|| DEFAULT_SLOTS.max(self.parallel))
         };
-        let derived = context
-            .saturating_mul(if on_lane { slots } else { self.parallel })
-            .max(context);
+        // The pool starts small and grows on demand; a small fixed context times the calls
+        // that may share it is smaller still.
+        let (context, derived) = match limit {
+            ContextLimit::Auto => (NO_CONTEXT_LIMIT, INITIAL_POOL_TOKENS),
+            ContextLimit::Tokens(context) => (
+                context,
+                context
+                    .saturating_mul(if on_lane { slots } else { self.parallel })
+                    .clamp(1, INITIAL_POOL_TOKENS),
+            ),
+        };
+        let fixed_pool = own.pool_tokens.or(self.pool_tokens);
         let default_wait = if on_lane {
             CPU_LANE_MAX_WAIT_S.max(self.max_wait_s)
         } else {
@@ -167,7 +290,11 @@ impl LlamaCppSettings {
         extra_args.extend(own.extra_args.unwrap_or_default());
         ModelLaunch {
             context,
-            pool_tokens: own.pool_tokens.or(self.pool_tokens).unwrap_or(derived),
+            context_auto: limit == ContextLimit::Auto,
+            pool_tokens: fixed_pool.unwrap_or(derived),
+            pool_fixed: fixed_pool.is_some(),
+            pool_clamped: false,
+            pool_max: fixed_pool.unwrap_or(derived),
             slots,
             cache_type_k: own.cache_type_k.unwrap_or_else(|| self.cache_type.clone()),
             cache_type_v: own.cache_type_v.unwrap_or_else(|| self.cache_type.clone()),
@@ -188,7 +315,13 @@ impl LlamaCppSettings {
 /// Checks one local model's settings on their own; the message names the problem, not the model.
 pub fn check_local_model(settings: &LocalModelSettings) -> Result<(), String> {
     for (key, value) in [
-        ("context", settings.context.map(u64::from)),
+        (
+            "context",
+            settings
+                .context
+                .and_then(ContextLimit::tokens)
+                .map(u64::from),
+        ),
         ("pool_tokens", settings.pool_tokens.map(u64::from)),
         ("slots", settings.slots.map(u64::from)),
         ("max_wait_s", settings.max_wait_s),
@@ -235,7 +368,8 @@ fn check_flash_attn(value: Option<&str>) -> Result<(), String> {
 
 /// Checks a launch resolved from the settings.
 pub fn check_launch(launch: &ModelLaunch) -> Result<(), String> {
-    if launch.pool_tokens < launch.context {
+    // Only a fixed pool must hold a fixed context; a pool that grows does so up to the context.
+    if launch.pool_fixed && !launch.context_auto && launch.pool_tokens < launch.context {
         return Err(format!(
             "pool_tokens ({}) must be at least context ({})",
             launch.pool_tokens, launch.context
@@ -279,7 +413,7 @@ impl Settings {
                         "context",
                         "context",
                         row.context.map(u64::from),
-                        own.context.map(u64::from),
+                        own.context.and_then(ContextLimit::tokens).map(u64::from),
                     ),
                     ("max_wait_s", "max_wait_s", row.max_wait_s, own.max_wait_s),
                 ];
@@ -376,6 +510,7 @@ impl Settings {
 
 #[cfg(test)]
 mod tests {
+    use super::{INITIAL_POOL_TOKENS, NO_CONTEXT_LIMIT, check_launch};
     use crate::{Config, Layer, Paths, Source, Tier, load};
     use std::path::PathBuf;
 
@@ -399,13 +534,16 @@ mod tests {
 
     #[test]
     fn per_model_settings_resolve_over_the_defaults() {
-        // 1. Nothing set: the globals, with the default slots the larger of 8 and `parallel`.
+        // 1. Nothing set: the globals, with the default slots the larger of 8 and `parallel`;
+        // the context is `auto` (no limit of its own) and the pool starts small and grows.
         let settings = config(&[]).settings().unwrap();
         let launch = settings.launch_of("any");
         assert_eq!(
             (launch.context, launch.pool_tokens, launch.slots),
-            (8192, 16384, 8)
+            (NO_CONTEXT_LIMIT, INITIAL_POOL_TOKENS, 16)
         );
+        assert!(launch.context_auto && !launch.pool_fixed);
+        assert_eq!(check_launch(&launch), Ok(()));
         assert_eq!(
             (launch.cache_type_k.as_str(), launch.flash_attn.as_str()),
             ("f16", "auto")
@@ -414,11 +552,36 @@ mod tests {
             (launch.max_output_tokens, launch.max_gpu_layers),
             (8192, None)
         );
-        let wide = config(&[(user(), "[runtime.llamacpp]\nparallel = 12\n")])
+        let wide = config(&[(user(), "[runtime.llamacpp]\nparallel = 20\n")])
             .settings()
             .unwrap();
-        assert_eq!(wide.launch_of("any").slots, 12);
-        assert_eq!(wide.launch_of("any").pool_tokens, 8192 * 12);
+        assert_eq!(wide.launch_of("any").slots, 20);
+        assert_eq!(wide.launch_of("any").pool_tokens, INITIAL_POOL_TOKENS);
+        // A fixed context starts the pool at context x parallel, at most the initial pool, and
+        // the pool may start below the context because it grows.
+        let fixed = |text: &str| {
+            config(&[(user(), &format!("[runtime.llamacpp]\n{text}\n"))])
+                .settings()
+                .unwrap()
+                .launch_of("any")
+        };
+        let small = fixed("context = 4096");
+        assert_eq!((small.context, small.pool_tokens), (4096, 8192));
+        assert!(!small.context_auto);
+        let large = fixed("context = 131072");
+        assert_eq!(
+            (large.context, large.pool_tokens),
+            (131072, INITIAL_POOL_TOKENS)
+        );
+        assert_eq!(check_launch(&large), Ok(()));
+        assert_eq!(fixed("context = \"65536\"").context, 65536);
+        assert!(fixed("context = \"auto\"").context_auto);
+        // A fixed pool must still hold a fixed context.
+        let short = config(&[(
+            user(),
+            "[runtime.llamacpp]\ncontext = 32768\npool_tokens = 16384\n",
+        )]);
+        assert!(short.settings().is_err());
         let slots = config(&[(
             user(),
             "[runtime.llamacpp]\nslots = 3\npool_tokens = 9000\n",
@@ -468,7 +631,7 @@ extra_args = ["--n-cpu-moe", "8"]
         assert_eq!(launch.extra_args, ["--global", "--n-cpu-moe", "8"]);
         assert_eq!(
             own.launch_of("other").slots,
-            8,
+            16,
             "other models keep the defaults"
         );
 
@@ -482,7 +645,7 @@ extra_args = ["--n-cpu-moe", "8"]
         let launch = lane.launch_of("critic");
         assert_eq!(
             (launch.slots, launch.pool_tokens, launch.max_wait_s),
-            (1, 8192, 3600)
+            (1, INITIAL_POOL_TOKENS, 3600)
         );
         let lane = config(&[(user(), &row("parallel = 2\ncontext = 1024\n"))])
             .settings()
@@ -646,7 +809,7 @@ enabled = false
         assert_eq!(settings.launch_of("good").slots, 4);
         assert_eq!(
             settings.launch_of("zero").slots,
-            8,
+            16,
             "dropped, so the default"
         );
         assert_eq!(settings.runtime.llamacpp.models.len(), 1);

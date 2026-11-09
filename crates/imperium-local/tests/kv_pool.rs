@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use axum::Router;
 use axum::routing::post;
 use imperium_api::{LocalModels, LocalRequest};
-use imperium_config::{LlamaCppSettings, LocalModelSettings, RoutingSettings};
+use imperium_config::{ContextLimit, LlamaCppSettings, LocalModelSettings, RoutingSettings};
 use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
@@ -156,7 +156,7 @@ fn settings() -> LlamaCppSettings {
         custom_path: None,
         find_existing: true,
         idle_unload_s: 900,
-        context: 4096,
+        context: 4096.into(),
         parallel: 2,
         cache_type: "f16".into(),
         slots: None,
@@ -234,7 +234,7 @@ async fn per_model_settings_reach_the_launch_arguments() {
     supervisor.set_model_settings(only(
         "a",
         LocalModelSettings {
-            context: Some(2048),
+            context: Some(2048.into()),
             pool_tokens: Some(16384),
             slots: Some(4),
             cache_type_k: Some("q8_0".into()),
@@ -268,7 +268,7 @@ async fn per_model_settings_reach_the_launch_arguments() {
     let args = log.args("b");
     assert!(
         args.contains(
-            "--ctx-size 8192 --kv-unified --kv-unified-per-slot 4096 --parallel 8 \
+            "--ctx-size 8192 --kv-unified --kv-unified-per-slot 4096 --parallel 16 \
              --no-cache-idle-slots"
         ),
         "{args}"
@@ -374,7 +374,7 @@ async fn settings_changed_during_a_load_restart_the_model_once_it_is_free() {
     let lease = loading.await.unwrap().unwrap();
     // It started with the shape the load planned, arguments included, and is stale.
     let args = log.args("a");
-    assert!(args.contains("--parallel 8"), "{args}");
+    assert!(args.contains("--parallel 16"), "{args}");
     assert!(!args.contains("--n-cpu-moe"), "{args}");
     assert!(supervisor.loaded()[0].stale);
     drop(lease);
@@ -408,7 +408,7 @@ async fn settings_changed_during_a_load_restart_the_model_once_it_is_free() {
 
 #[tokio::test]
 async fn more_sessions_than_the_old_parallel_value_run_at_once() {
-    // `parallel = 2` no longer caps anything: the default is 8 slots, and six small calls
+    // `parallel = 2` no longer caps anything: the default is 16 slots, and six small calls
     // fit the pool together.
     let (supervisor, _) = start(settings());
     let mut leases = Vec::new();
@@ -429,7 +429,7 @@ async fn more_sessions_than_the_old_parallel_value_run_at_once() {
         leases.push(lease);
     }
     let loaded = supervisor.loaded();
-    assert_eq!((loaded[0].slots, loaded[0].slots_in_use), (8, 6));
+    assert_eq!((loaded[0].slots, loaded[0].slots_in_use), (16, 6));
     assert_eq!(loaded[0].queued, 0);
 }
 
@@ -505,6 +505,8 @@ async fn a_full_pool_makes_calls_wait_not_fail() {
             "a".to_string(),
             LocalModelSettings {
                 max_output_tokens: Some(3000),
+                // Fixed, so it fills instead of growing.
+                pool_tokens: Some(8192),
                 ..LocalModelSettings::default()
             },
         ),
@@ -727,4 +729,419 @@ async fn a_session_parked_on_an_approval_holds_no_claim() {
         }
     }
     assert_eq!(log.launches("emperor"), 3, "reloaded after each park");
+}
+
+/// A model trained for 256k tokens with an `auto` context, 1 GiB of weights, on a GPU of
+/// `vram_gib`.
+fn start_auto(vram_gib: u64) -> (Arc<Supervisor>, Arc<Log>) {
+    let mut settings = settings();
+    settings.context = ContextLimit::Auto;
+    settings.max_output_tokens = 1000;
+    let mut a = model("a", Format::Gguf);
+    a.size_bytes = GIB;
+    a.info.context_length = Some(262_144);
+    start_with(vec![a], settings, vram_gib, Runtimes::default())
+}
+
+#[tokio::test]
+async fn an_auto_context_is_what_the_model_was_trained_for_that_fits() {
+    // Everything fits: an agent may use the whole trained context.
+    let (supervisor, _) = start_auto(64);
+    assert_eq!(supervisor.planned_context("a"), Some(262_144));
+    // 2 GiB of VRAM leave about 0.5 GiB for the KV cache, 64k tokens at 8 KiB each: the
+    // ceiling keeps every layer on the GPU.
+    let (supervisor, _) = start_auto(2);
+    let ceiling = supervisor.planned_context("a").unwrap();
+    assert!((63_000..=65_536).contains(&ceiling), "{ceiling}");
+    // A configured limit below it wins.
+    supervisor.set_model_settings(only(
+        "a",
+        LocalModelSettings {
+            context: Some(20_000.into()),
+            ..LocalModelSettings::default()
+        },
+    ));
+    assert_eq!(supervisor.planned_context("a"), Some(20_000));
+}
+
+#[tokio::test]
+async fn the_kv_pool_grows_on_demand_and_starts_small_again_after_an_unload() {
+    let (supervisor, log) = start_auto(64);
+    let mut swaps = supervisor.swap_events();
+    // Two agents mid-turn on the model, each with a small prompt: the pool starts small, and
+    // one agent may use all of it (no per-slot cap).
+    let first = supervisor.attach("a", "s/root");
+    let second = supervisor.attach("a", "t/root");
+    drop(
+        supervisor
+            .acquire_with("a", "s/root", small(100))
+            .await
+            .unwrap(),
+    );
+    drop(
+        supervisor
+            .acquire_with("a", "t/root", small(100))
+            .await
+            .unwrap(),
+    );
+    let args = log.args("a");
+    assert!(
+        args.contains("--ctx-size 16384 --kv-unified --parallel 16"),
+        "{args}"
+    );
+
+    // A prompt beyond the pool restarts the model between calls with the pool doubled, though
+    // both agents are mid-turn.
+    let lease = tokio::time::timeout(
+        Duration::from_secs(5),
+        supervisor.acquire_with("a", "s/root", small(20_000)),
+    )
+    .await
+    .expect("the model restarts with a larger pool")
+    .unwrap();
+    assert_eq!(log.launches("a"), 2);
+    let args = log.args("a");
+    assert!(
+        args.contains("--ctx-size 32768 --kv-unified --parallel 16"),
+        "{args}"
+    );
+    let loaded = supervisor.loaded();
+    assert_eq!(
+        (loaded[0].context, loaded[0].pool_tokens),
+        (262_144, 32_768)
+    );
+    let event = tokio::time::timeout(Duration::from_secs(5), swaps.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (event.direction, event.reason),
+        (SwapDirection::Out, "grow")
+    );
+    drop(lease);
+    // A prompt that fits the grown pool takes no restart.
+    drop(
+        supervisor
+            .acquire_with("a", "t/root", small(30_000))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(log.launches("a"), 2);
+
+    // Once the sessions are done and the model is unloaded, it starts small again ...
+    drop((first, second));
+    supervisor.unload_idle_now(Duration::ZERO).await;
+    assert!(supervisor.loaded().is_empty());
+    drop(
+        supervisor
+            .acquire_with("a", "s/root", small(100))
+            .await
+            .unwrap(),
+    );
+    assert!(log.args("a").contains("--ctx-size 16384 "));
+    // ... and a first call with a long prompt loads it with the pool it needs at once.
+    supervisor.unload_idle_now(Duration::ZERO).await;
+    drop(
+        supervisor
+            .acquire_with("a", "s/root", small(100_000))
+            .await
+            .unwrap(),
+    );
+    assert!(log.args("a").contains("--ctx-size 131072 "));
+    assert_eq!(log.launches("a"), 4);
+}
+
+/// A 16 GB card with 8 GB free (other apps hold the rest) and 32 GB of RAM.
+fn half_used_16gb_card(
+    models: Vec<LocalModel>,
+    settings: LlamaCppSettings,
+) -> (Arc<Supervisor>, Arc<Log>) {
+    let log = Arc::new(Log::default());
+    let hardware = Hardware {
+        gpus: vec![Gpu {
+            name: "RTX 5080".into(),
+            vendor: "nvidia".into(),
+            vram_total_bytes: 16 * GIB,
+            vram_free_bytes: 8 * GIB,
+            driver: None,
+        }],
+        ram_total_bytes: 32 * GIB,
+        ram_available_bytes: 32 * GIB,
+        cpu_cores: 16,
+        unified_memory: false,
+        overridden: true,
+    };
+    let launcher = Arc::new(FakeLauncher {
+        log: Arc::clone(&log),
+        calls: Arc::new(AtomicUsize::new(0)),
+    });
+    let supervisor = Supervisor::start(models, settings, Runtimes::default(), &hardware, launcher);
+    (supervisor, log)
+}
+
+/// Qwen3-4B-Instruct-2507 Q4_K_M: 36 layers, 8 KV heads of 128, about 2.5 GB.
+fn qwen3_4b() -> LocalModel {
+    let mut qwen = model("qwen3-4b", Format::Gguf);
+    qwen.size_bytes = 2_500_000_000;
+    qwen.info = GgufInfo {
+        block_count: Some(36),
+        embedding_length: Some(2560),
+        head_count: Some(32),
+        head_count_kv: Some(8),
+        key_length: Some(128),
+        value_length: Some(128),
+        context_length: Some(262_144),
+        ..GgufInfo::default()
+    };
+    qwen
+}
+
+/// The pinned shape of the report: 8 slots x 40960 tokens in one pool, q4_0 keys and values.
+fn pinned_pool(settings: &mut LlamaCppSettings, id: &str) {
+    settings.models = only(
+        id,
+        LocalModelSettings {
+            context: Some(40_960.into()),
+            pool_tokens: Some(8 * 40_960),
+            slots: Some(8),
+            cache_type_k: Some("q4_0".into()),
+            cache_type_v: Some("q4_0".into()),
+            ..LocalModelSettings::default()
+        },
+    );
+}
+
+#[tokio::test]
+async fn weights_stay_on_the_gpu_and_the_kv_pool_shrinks_to_the_vram_left() {
+    // 327680 tokens of q4_0 KV (about 13.6 GB) beside 2.5 GB of weights do not fit 8 GB free:
+    // every layer stays on the GPU, and the pool is cut to the 5.2 GiB left (about 133k tokens).
+    let mut pinned = settings();
+    pinned_pool(&mut pinned, "qwen3-4b");
+    let (supervisor, log) = half_used_16gb_card(vec![qwen3_4b()], pinned);
+    let launch = supervisor.launch("qwen3-4b");
+    assert!(launch.pool_clamped);
+    assert!(
+        (130_000..=133_904).contains(&launch.pool_tokens),
+        "{}",
+        launch.pool_tokens
+    );
+    assert_eq!(launch.context, 40_960);
+    let placement = supervisor.placement_when_idle(&qwen3_4b()).unwrap();
+    assert!(placement.all_layers_on_gpu, "{placement:?}");
+    drop(supervisor.acquire("qwen3-4b", "s/root").await.unwrap());
+    let args = log.args("qwen3-4b");
+    let pool = format!(
+        "--ctx-size {} --kv-unified --kv-unified-per-slot 40960 --parallel 8",
+        launch.pool_tokens
+    );
+    assert!(args.contains(&pool), "{args}");
+    assert!(args.contains("--n-gpu-layers 999"), "{args}");
+    assert!(
+        args.contains("--cache-type-k q4_0 --cache-type-v q4_0"),
+        "{args}"
+    );
+    let loaded = supervisor.loaded();
+    assert!(loaded[0].all_layers_on_gpu);
+    assert_eq!(loaded[0].pool_tokens, launch.pool_tokens);
+
+    // Without the pin the pool starts small and the agent may still use 40960 tokens.
+    let mut unpinned = settings();
+    unpinned.models = only(
+        "qwen3-4b",
+        LocalModelSettings {
+            context: Some(40_960.into()),
+            slots: Some(8),
+            cache_type_k: Some("q4_0".into()),
+            cache_type_v: Some("q4_0".into()),
+            ..LocalModelSettings::default()
+        },
+    );
+    let (supervisor, _) = half_used_16gb_card(vec![qwen3_4b()], unpinned);
+    let launch = supervisor.launch("qwen3-4b");
+    assert_eq!(
+        (launch.context, launch.pool_tokens, launch.pool_clamped),
+        (40_960, 16_384, false)
+    );
+}
+
+#[tokio::test]
+async fn a_model_whose_weights_do_not_fit_the_gpu_still_offloads_part_of_its_layers() {
+    // 12 GB of weights cannot fit 8 GB free: layers are split between GPU and RAM as before.
+    let mut big = qwen3_4b();
+    big.id = "big".into();
+    big.path = PathBuf::from("big.gguf");
+    big.size_bytes = 12 * GIB;
+    let mut settings = settings();
+    pinned_pool(&mut settings, "big");
+    let (supervisor, log) = half_used_16gb_card(vec![big.clone()], settings);
+    let placement = supervisor.placement_when_idle(&big).unwrap();
+    assert!(!placement.all_layers_on_gpu);
+    assert!((1..36).contains(&placement.gpu_layers), "{placement:?}");
+    drop(supervisor.acquire("big", "s/root").await.unwrap());
+    let args = log.args("big");
+    assert!(
+        args.contains(&format!("--n-gpu-layers {}", placement.gpu_layers)),
+        "{args}"
+    );
+    assert!(!supervisor.loaded()[0].all_layers_on_gpu);
+}
+
+#[tokio::test]
+async fn slots_reserve_nothing_so_the_slot_ceiling_is_high() {
+    // The report's model with no pinned pool or slots: 16 slots, every layer on the GPU, and
+    // the pool sized by demand and by the VRAM left, never by slots x context.
+    let mut unpinned = settings();
+    unpinned.slots = None;
+    unpinned.context = ContextLimit::Tokens(40_960);
+    unpinned.cache_type = "q4_0".into();
+    let (supervisor, log) = half_used_16gb_card(vec![qwen3_4b()], unpinned);
+    let launch = supervisor.launch("qwen3-4b");
+    assert!(launch.slots >= 8, "{}", launch.slots);
+    assert_eq!((launch.context, launch.pool_tokens), (40_960, 16_384));
+    assert!(
+        (130_000..=133_904).contains(&launch.pool_max),
+        "{}",
+        launch.pool_max
+    );
+    drop(supervisor.acquire("qwen3-4b", "s/root").await.unwrap());
+    let args = log.args("qwen3-4b");
+    assert!(
+        args.contains("--ctx-size 16384 --kv-unified --parallel 16"),
+        "{args}"
+    );
+    assert!(args.contains("--n-gpu-layers 999"), "{args}");
+}
+
+#[tokio::test]
+async fn the_pool_grows_when_agents_fill_it_together() {
+    let (supervisor, log) = start_auto(64);
+    let mut swaps = supervisor.swap_events();
+    // One agent's call fits the 16k pool on its own ...
+    let first = supervisor
+        .acquire_with("a", "s/root", small(10_000))
+        .await
+        .unwrap();
+    // ... a second one would overfill it: the pool grows once the first call is done,
+    // rather than the second waiting for the first every time.
+    let second = {
+        let supervisor = Arc::clone(&supervisor);
+        tokio::spawn(async move { supervisor.acquire_with("a", "t/root", small(10_000)).await })
+    };
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!second.is_finished(), "the running call finishes first");
+    assert_eq!(log.launches("a"), 1);
+    assert_eq!(
+        supervisor.wait_reason("t/root"),
+        Some(imperium_api::LocalWait::GrowingPool)
+    );
+    drop(first);
+    let second = tokio::time::timeout(Duration::from_secs(5), second)
+        .await
+        .expect("it runs on the grown pool")
+        .unwrap()
+        .unwrap();
+    assert_eq!(log.launches("a"), 2);
+    assert!(log.args("a").contains("--ctx-size 32768 "));
+    let event = tokio::time::timeout(Duration::from_secs(5), swaps.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.reason, "grow");
+    // Now both fit at once, with no restart.
+    let third = supervisor
+        .acquire_with("a", "s/root", small(10_000))
+        .await
+        .unwrap();
+    assert_eq!(log.launches("a"), 2);
+    drop((second, third));
+}
+
+#[tokio::test]
+async fn a_second_model_keeps_its_layers_on_the_gpu_with_a_smaller_pool() {
+    // The 4B model is busy with a 64k pool on a card with 8 GiB free; a 1 GiB model whose
+    // first call wants a 64k pool too gets every layer on the GPU and the KV left beside it.
+    let mut small_model = qwen3_4b();
+    small_model.id = "small".into();
+    small_model.path = PathBuf::from("small.gguf");
+    small_model.size_bytes = GIB;
+    let mut both = settings();
+    both.context = ContextLimit::Auto;
+    both.cache_type = "q4_0".into();
+    both.max_output_tokens = 1000;
+    let (supervisor, log) = half_used_16gb_card(vec![qwen3_4b(), small_model], both);
+    let busy = supervisor
+        .acquire_with("qwen3-4b", "s/root", small(60_000))
+        .await
+        .unwrap();
+    assert!(log.args("qwen3-4b").contains("--ctx-size 65536 "));
+    let lease = tokio::time::timeout(
+        Duration::from_secs(5),
+        supervisor.acquire_with("small", "t/root", small(60_000)),
+    )
+    .await
+    .expect("it loads beside the busy model")
+    .unwrap();
+    let loaded = supervisor.loaded();
+    assert_eq!(loaded.len(), 2, "nothing was swapped out");
+    let small_status = loaded.iter().find(|m| m.model_id == "small").unwrap();
+    assert!(small_status.all_layers_on_gpu);
+    assert!(
+        (8192..65_536).contains(&small_status.pool_tokens),
+        "{}",
+        small_status.pool_tokens
+    );
+    // One agent may use all of the smaller pool, and compaction plans against it.
+    assert_eq!(small_status.context, small_status.pool_tokens);
+    assert_eq!(
+        supervisor.planned_context("small"),
+        Some(u64::from(small_status.pool_tokens))
+    );
+    let args = log.args("small");
+    assert!(args.contains("--n-gpu-layers 999"), "{args}");
+    assert!(
+        args.contains(&format!("--ctx-size {} ", small_status.pool_tokens)),
+        "{args}"
+    );
+    drop((busy, lease));
+}
+
+#[tokio::test]
+async fn the_listed_estimate_is_the_plan_the_model_is_loaded_with() {
+    // The small model with a 64k pool of its own, beside the busy 4B model: what the listing
+    // estimates (the loader's own placer) is what it is then started with.
+    let mut small_model = qwen3_4b();
+    small_model.id = "small".into();
+    small_model.path = PathBuf::from("small.gguf");
+    small_model.size_bytes = GIB;
+    let mut both = settings();
+    both.context = ContextLimit::Auto;
+    both.cache_type = "q4_0".into();
+    both.max_output_tokens = 1000;
+    both.models = only(
+        "small",
+        LocalModelSettings {
+            pool_tokens: Some(65_536),
+            ..LocalModelSettings::default()
+        },
+    );
+    let (supervisor, log) = half_used_16gb_card(vec![qwen3_4b(), small_model.clone()], both);
+    let busy = supervisor
+        .acquire_with("qwen3-4b", "s/root", small(60_000))
+        .await
+        .unwrap();
+    let (estimate, pool) = supervisor.estimate(&small_model).unwrap();
+    assert!(estimate.all_layers_on_gpu);
+    assert!(pool < 65_536, "{pool}");
+    let lease = supervisor
+        .acquire_with("small", "t/root", small(100))
+        .await
+        .unwrap();
+    let loaded = supervisor.loaded();
+    let status = loaded.iter().find(|m| m.model_id == "small").unwrap();
+    assert_eq!(
+        (status.pool_tokens, status.vram_bytes, status.gpu_layers),
+        (pool, estimate.vram_bytes, estimate.gpu_layers)
+    );
+    assert!(log.args("small").contains(&format!("--ctx-size {pool} ")));
+    drop((busy, lease));
 }

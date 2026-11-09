@@ -5,7 +5,7 @@ use imperium_api::Pricing;
 use serde::{Deserialize, Serialize};
 
 use crate::SecretName;
-use crate::local_models::{LocalModelSettings, TableOverride};
+use crate::local_models::{ContextLimit, LocalModelSettings, TableOverride};
 
 /// Built-in defaults: the first configuration layer.
 pub(crate) const DEFAULTS: &str = r#"
@@ -27,13 +27,18 @@ backend = "auto"
 find_existing = true
 # Seconds a loaded model may sit unused before it is unloaded.
 idle_unload_s = 900
-# Tokens one session may use on a local model (per-model override: [runtime.llamacpp.models."<id>"]).
-context = 8192
-# Deprecated: only sizes the default KV pool, pool_tokens = context x parallel. Slots are set by
-# `slots` (default: the larger of 8 and parallel), and no number of sessions is capped.
+# Most tokens one agent may use on a local model: "auto" (what the model was trained for, capped
+# to what fits in free memory beside its weights) or a number of tokens (per-model override:
+# [runtime.llamacpp.models."<id>"]). The KV pool starts small and grows on demand up to it.
+context = "auto"
+# Deprecated: with a fixed context, the starting KV pool is context x parallel (at most 16384).
+# Slots (calls decoded at once; also written max_slots) are set by `slots` (default: the larger
+# of 16 and parallel). They share one KV pool and reserve none of their own; no number of sessions is
+# capped.
 parallel = 2
-# slots = 8
-# Tokens of KV cache all slots of a model share (default: context x parallel).
+# slots = 16
+# Fixes the tokens of KV cache all slots of a model share, so it never grows (default: start at
+# 16384 and grow on demand).
 # pool_tokens = 65536
 # KV cache type of keys and values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, or q5_1.
 cache_type = "f16"
@@ -1022,11 +1027,13 @@ pub struct LlamaCppSettings {
     #[serde(default = "default_true")]
     pub find_existing: bool,
     pub idle_unload_s: u64,
-    /// Tokens one session may use on a local model.
-    pub context: u32,
-    /// Deprecated: only sizes the default KV pool (`context × parallel`).
+    /// Most tokens one agent may use on a local model: `auto` or a number.
+    pub context: ContextLimit,
+    /// Deprecated: with a fixed context, sizes the starting KV pool (`context × parallel`).
     pub parallel: u32,
-    /// Default `--parallel` of each model; unset takes the larger of 8 and `parallel`.
+    /// Default `--parallel` of each model (also written `max_slots`); unset takes the larger of
+    /// 16 and `parallel`.
+    #[serde(alias = "max_slots")]
     #[serde(default)]
     pub slots: Option<u32>,
     /// Default tokens of KV cache all slots of a model share.

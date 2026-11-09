@@ -49,7 +49,7 @@ const num = (value: number | null): string => (value === null ? "" : String(valu
 
 function localDraft(saved: LocalLaunchSettings): LocalDraft {
   return {
-    context: num(saved.context),
+    context: saved.context_auto ? "auto" : num(saved.context),
     pool_tokens: num(saved.pool_tokens),
     slots: num(saved.slots),
     cache_type_k: saved.cache_type_k ?? "",
@@ -75,6 +75,7 @@ function tableDraft(saved: TableModelSettings): TableDraft {
 
 const EMPTY_LOCAL: LocalDraft = localDraft({
   context: null,
+  context_auto: false,
   pool_tokens: null,
   slots: null,
   cache_type_k: null,
@@ -115,7 +116,8 @@ function price(text: string, label: string): number | null {
 
 /** Form to settings; throws the first client-side validation message (the server is authoritative). */
 function localSettings(draft: LocalDraft, config: LocalModelConfig): LocalLaunchSettings {
-  const context = integer(draft.context, "Context", 1);
+  const contextAuto = draft.context.trim().toLowerCase() === "auto";
+  const context = contextAuto ? null : integer(draft.context, "Max context (a number or auto)", 1);
   const pool = integer(draft.pool_tokens, "KV pool", 1);
   const slots = integer(draft.slots, "Slots", 1);
   if (slots !== null && slots > 256) throw new Error("Slots must be at most 256");
@@ -126,6 +128,7 @@ function localSettings(draft: LocalDraft, config: LocalModelConfig): LocalLaunch
   const vllm = config.runtime === "vllm";
   const settings: LocalLaunchSettings = {
     context,
+    context_auto: contextAuto,
     pool_tokens: pool,
     slots,
     cache_type_k: vllm ? null : draft.cache_type_k || null,
@@ -136,8 +139,11 @@ function localSettings(draft: LocalDraft, config: LocalModelConfig): LocalLaunch
     max_output_tokens: integer(draft.max_output_tokens, "Max output tokens", 0),
     extra_args: args.length > 0 ? args : null,
   };
-  const effectiveContext = context ?? config.effective.context;
-  if (pool !== null && pool < effectiveContext) throw new Error("KV pool must be at least the context");
+  // A fixed pool must hold a fixed context; an `auto` context is capped to the pool instead.
+  const fixedContext = contextAuto ? null : (context ?? (config.effective.context_auto ? null : config.effective.context));
+  if (pool !== null && fixedContext !== null && pool < fixedContext) {
+    throw new Error("A fixed KV pool must be at least the max context");
+  }
   const v = settings.cache_type_v ?? config.effective.cache_type_v;
   const flash = settings.flash_attn ?? config.effective.flash_attn;
   if (!vllm && !FULL_PRECISION_V.includes(v) && flash === "off") {
@@ -226,6 +232,7 @@ export function ModelConfigDialog({
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [applied, setApplied] = useState(false);
 
   useEffect(() => {
     const element = dialog.current;
@@ -314,8 +321,13 @@ export function ModelConfigDialog({
     };
   }, [client, selectedLocal, selectedTable, selectedLocalDraft, selectedTableDraft]);
 
-  const save = async () => {
-    if (!client) return;
+  /**
+   * Saves the changed models. With `close`, closes the dialog after; without (Apply), keeps it
+   * open, shows what is now in effect (such as a pool cut to fit or the layers on the GPU), and
+   * says so briefly. Closing after an Apply keeps what was applied.
+   */
+  const save = async (close: boolean) => {
+    if (!client || saving) return;
     setError(null);
     let params: ModelSetConfigParams;
     try {
@@ -325,20 +337,34 @@ export function ModelConfigDialog({
       return;
     }
     if (params.local.length === 0 && params.table.length === 0) {
-      onClose();
+      if (close) onClose();
       return;
     }
     setSaving(true);
     try {
-      await client.call<ModelConfigResult>("models.set_config", params);
+      const result = await client.call<ModelConfigResult>("models.set_config", params);
       onSaved();
-      onClose();
+      if (close) {
+        onClose();
+        return;
+      }
+      setConfig(result);
+      setLocalDrafts({});
+      setTableDrafts({});
+      setApplied(true);
     } catch (e) {
       setError(message(e));
     } finally {
       setSaving(false);
     }
   };
+
+  // The "Saved" note after an Apply fades after a moment.
+  useEffect(() => {
+    if (!applied) return;
+    const timer = setTimeout(() => setApplied(false), 2500);
+    return () => clearTimeout(timer);
+  }, [applied]);
 
   const changed = (id: string, kind: "local" | "table"): boolean => {
     try {
@@ -370,6 +396,13 @@ export function ModelConfigDialog({
       aria-labelledby="model-dialog-title"
       onCancel={onClose}
       onClick={(e) => e.target === dialog.current && onClose()}
+      onKeyDown={(e) => {
+        // Ctrl+S (Cmd+S on macOS) applies without closing.
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+          e.preventDefault();
+          if (dirty) void save(false);
+        }
+      }}
     >
       <h2 id="model-dialog-title">Models</h2>
       <div className="model-tabs" role="tablist">
@@ -443,8 +476,20 @@ export function ModelConfigDialog({
           </span>
         )}
         {config && <span className="muted">saved to {config.file}</span>}
-        <button onClick={onClose}>Cancel</button>
-        <button className="primary" onClick={save} disabled={saving || !config || !dirty}>
+        {applied && (
+          <span className="muted" role="status">
+            Saved
+          </span>
+        )}
+        <button onClick={onClose}>{applied || !dirty ? "Close" : "Cancel"}</button>
+        <button
+          onClick={() => void save(false)}
+          disabled={saving || !config || !dirty}
+          title="Save without closing (Ctrl+S)"
+        >
+          Apply
+        </button>
+        <button className="primary" onClick={() => void save(true)} disabled={saving || !config || !dirty}>
           {saving ? "Saving…" : "Save"}
         </button>
       </footer>
@@ -516,6 +561,7 @@ function LocalForm({
           {model.runtime}
           {model.cpu_lane ? " · CPU lane" : ""}
           {model.context_length ? ` · trained for ${model.context_length.toLocaleString()} tokens` : ""}
+          {` · up to ${estimate.effective.context.toLocaleString()} per agent${estimate.effective.context_auto ? " (auto)" : ""}`}
         </span>
         <span>
           needs {gib(estimate.required_bytes)} · KV pool {gib(estimate.kv_pool_bytes)} · {estimate.placement}
@@ -523,9 +569,38 @@ function LocalForm({
         {model.reload_pending && (
           <span className="warning">Loaded with other settings; the new ones apply once no session uses it.</span>
         )}
+        {estimate.effective.pool_clamped && (
+          <span className="warning">
+            The KV pool does not fit beside the weights on the GPU; it is cut to {estimate.effective.pool_tokens.toLocaleString()} tokens so
+            every layer stays on the GPU.
+          </span>
+        )}
+        {estimate.placement === "partial" && !vllm && (
+          <span className="warning">The weights do not fit on the GPU: some layers run on the CPU, which is much slower.</span>
+        )}
       </div>
-      {text("context", "Context per session (tokens)", eff.context)}
-      {text("pool_tokens", "KV pool (tokens)", eff.pool_tokens, { hint: "Shared by every slot; at least the context." })}
+      <Field
+        label="Max context per agent (tokens)"
+        hint="A number, or auto: what the model was trained for, capped to what fits in memory beside it."
+        filled={draft.context !== ""}
+        onReset={() => onChange({ context: "" })}
+      >
+        <input
+          type="text"
+          list="model-context-choices"
+          value={draft.context}
+          placeholder={eff.context_auto ? `auto (${eff.context})` : String(eff.context)}
+          onChange={(e) => onChange({ context: e.target.value })}
+        />
+        <datalist id="model-context-choices">
+          <option value="auto" />
+        </datalist>
+      </Field>
+      {text("pool_tokens", "KV pool (tokens)", eff.pool_fixed ? eff.pool_tokens : null, {
+        hint: eff.pool_fixed
+          ? "Fixed: shared by every slot, at least the context."
+          : `Empty: starts at ${eff.pool_tokens} and grows on demand up to the max context. A number fixes it.`,
+      })}
       {text("slots", "Slots", eff.slots, { hint: "1 to 256 calls at once." })}
       {select("cache_type_k", "K cache type", cacheTypes, defaults.cache_type_k)}
       {select("cache_type_v", "V cache type", cacheTypes, defaults.cache_type_v)}

@@ -28,29 +28,42 @@ export function sizeShort(bytes: number): string {
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
-const FIT: Record<LocalModelRow["placement"], string> = {
-  gpu: "fits GPU",
-  partial: "GPU + RAM",
-  cpu: "CPU",
-  none: "too large",
-};
+/**
+ * Where a local model runs, from the daemon's plan for it under its settings (live values while
+ * it is loaded): "36/36 layers GPU · 3.1 GB VRAM + 0.4 GB RAM", "22/48 layers GPU · 9.8 GB VRAM +
+ * 11.2 GB RAM" when it would split, "CPU · 6.2 GB RAM" on the CPU lane, "too large" when it does
+ * not fit this machine.
+ */
+export function memoryPlan(row: LocalModelRow): string {
+  if (row.problem) return "cannot run here";
+  if (!row.loaded && row.placement === "none") return "too large";
+  const memory = [row.vram_bytes > 0 ? `${sizeShort(row.vram_bytes)} VRAM` : null, row.ram_bytes > 0 ? `${sizeShort(row.ram_bytes)} RAM` : null]
+    .filter(Boolean)
+    .join(" + ");
+  const onGpu = row.gpu_layers ?? 0;
+  if (row.cpu_lane || (onGpu === 0 && row.vram_bytes === 0)) return ["CPU", memory].filter(Boolean).join(" · ");
+  const layers = row.layers != null ? `${Math.min(onGpu, row.layers)}/${row.layers} layers GPU` : "GPU";
+  return [layers, memory].filter(Boolean).join(" · ");
+}
 
 /**
- * A local model in a line: quantisation, context (the trained length, and the per-session
- * context it is started with when different), size on disk, and how it fits this machine —
- * such as "Q4_K_M · 256k ctx (32k per session) · 2.3 GB · fits GPU · llama.cpp".
+ * A local model in a line: quantisation, context (the trained length, the most one agent may
+ * use, and the KV cache reserved, now while loaded or at first, when it is less), the daemon's
+ * memory plan for it ([`memoryPlan`]), and the runtime — such as "Q4_K_M · 256k ctx · up to
+ * 128k/agent (auto) · 16k reserved · 36/36 layers GPU · 3.1 GB VRAM · loaded · llama.cpp".
  */
 export function localDescription(row: LocalModelRow): string {
   const parts: string[] = [];
   parts.push(row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?"));
-  if (row.context_length) {
-    const configured = row.context > 0 && row.context !== row.context_length ? ` (${tokensShort(row.context)} per session)` : "";
-    parts.push(`${tokensShort(row.context_length)} ctx${configured}`);
-  } else if (row.context > 0) {
-    parts.push(`${tokensShort(row.context)} ctx`);
+  if (row.context_length) parts.push(`${tokensShort(row.context_length)} ctx`);
+  if (row.context > 0) {
+    parts.push(`up to ${tokensShort(row.context)}/agent${row.context_auto ? " (auto)" : ""}`);
+    if (row.runtime === "llamacpp" && row.pool_tokens > 0 && row.pool_tokens < row.context) {
+      parts.push(`${tokensShort(row.pool_tokens)} reserved`);
+    }
   }
-  parts.push(sizeShort(row.size_bytes));
-  parts.push(row.problem ? "cannot run here" : row.loaded ? "loaded" : FIT[row.placement]);
+  parts.push(memoryPlan(row));
+  if (row.loaded) parts.push("loaded");
   parts.push(RUNTIMES[row.runtime]);
   return parts.join(" · ");
 }

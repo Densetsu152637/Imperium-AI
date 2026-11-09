@@ -19,31 +19,30 @@ import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
 import { pickFile } from "../daemon/connection";
 import { addModelFolder, ModelSetup } from "./ModelSetup";
-import { localDescription, localSpec } from "./ModelSelect";
+import { localDescription, localSpec, memoryPlan } from "./ModelSelect";
 
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;
 
 const gib = (bytes: number): string => `${(bytes / GIB).toFixed(1)} GiB`;
 
+/**
+ * How the model runs, from the daemon's plan under its settings (live values while loaded):
+ * layers on the GPU and the memory it takes, with a warning when layers would run on the CPU.
+ */
 function placement(row: LocalModelRow): string {
   if (row.problem) return "cannot run here";
+  if (!row.loaded && row.placement === "none") return "too large for this machine";
+  const clamped = row.pool_clamped ? " · KV pool cut to fit the GPU" : "";
+  const plan = memoryPlan(row);
+  const split = !row.cpu_lane && row.layers != null && (row.gpu_layers ?? 0) > 0 && (row.gpu_layers ?? 0) < row.layers;
+  const warning = split ? " · the rest of the layers run on the CPU" : "";
   if (row.loaded) {
     const queue = row.queued > 0 ? ` · ${row.queued} waiting` : "";
     const lane = row.cpu_lane ? "CPU lane · " : "";
-    return `${lane}loaded · ${row.slots_in_use}/${row.slots} busy${queue}`;
+    return `${lane}loaded · ${row.slots_in_use}/${row.slots} busy${queue} · ${plan}${warning}${clamped}`;
   }
-  if (row.cpu_lane && row.placement === "cpu") return "CPU lane (RAM only)";
-  switch (row.placement) {
-    case "gpu":
-      return "fits on GPU";
-    case "partial":
-      return `GPU + RAM · ${row.gpu_layers ?? 0} layers on GPU`;
-    case "cpu":
-      return "fits in RAM (CPU)";
-    case "none":
-      return "too large for this machine";
-  }
+  return `${row.cpu_lane ? "CPU lane · " : ""}${plan}${warning}${clamped}`;
 }
 
 /** Whether a download would fit, in words: the hint never relies on colour. */
@@ -482,9 +481,15 @@ function ModelRows({
         </td>
         <td>{row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?")}</td>
         <td>{gib(row.size_bytes)}</td>
-        <td title={row.context > 0 && row.context !== row.context_length ? `Trained for ${context(row.context_length)} tokens; each session gets ${context(row.context)}` : undefined}>
+        <td
+          title={
+            row.context > 0
+              ? `Trained for ${context(row.context_length)} tokens; one agent may use up to ${context(row.context)}${row.context_auto ? " (auto: what fits in memory)" : ""}. The KV cache reserves ${context(row.pool_tokens)} now and grows on demand.`
+              : undefined
+          }
+        >
           {context(row.context_length)}
-          {row.context > 0 && row.context !== row.context_length && <span className="muted"> · {context(row.context)}/session</span>}
+          {row.context > 0 && row.context !== row.context_length && <span className="muted"> · {context(row.context)}/agent</span>}
         </td>
         <td>
           <span className={`badge ${row.loaded ? "local" : ""}`} title={row.problem ?? `needs ${gib(row.required_bytes)}`}>

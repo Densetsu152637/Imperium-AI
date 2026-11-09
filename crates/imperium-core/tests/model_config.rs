@@ -110,8 +110,8 @@ async fn set_config_saves_reloads_and_applies() {
     let tiny = &config["local"][0];
     assert_eq!(tiny["id"], "tiny");
     assert_eq!(tiny["saved"]["slots"], Value::Null);
-    assert_eq!(tiny["effective"]["slots"], 8);
-    assert_eq!(config["defaults"]["slots"], 8);
+    assert_eq!(tiny["effective"]["slots"], 16);
+    assert_eq!(config["defaults"]["slots"], 16);
     assert_eq!(config["table"][0]["effective"]["enabled"], true);
 
     // A dry run computes the result and writes nothing.
@@ -181,7 +181,7 @@ async fn set_config_saves_reloads_and_applies() {
     let reset = json!({"local": [{"id": "tiny", "settings": {}}]});
     let result = call(&mut socket, "models.set_config", reset).await.unwrap();
     assert_eq!(result["local"][0]["saved"]["slots"], Value::Null);
-    assert_eq!(result["local"][0]["effective"]["slots"], 8);
+    assert_eq!(result["local"][0]["effective"]["slots"], 16);
     let saved = std::fs::read_to_string(&file).unwrap();
     assert!(!saved.contains("tiny"), "{saved}");
     assert!(
@@ -211,11 +211,11 @@ slots = 5
         .unwrap();
     assert_eq!(result["table"][0]["effective"]["enabled"], false);
     assert_eq!(result["table"][0]["effective"]["tier"], "basic");
-    assert_eq!(result["local"][0]["effective"]["slots"], 8);
+    assert_eq!(result["local"][0]["effective"]["slots"], 16);
     let live = daemon.settings();
     assert_eq!(live.models.catalog[0].tier.as_str(), "basic");
     assert!(!live.models.catalog[0].enabled);
-    assert_eq!(live.launch_of("tiny").slots, 8);
+    assert_eq!(live.launch_of("tiny").slots, 16);
 }
 
 #[tokio::test]

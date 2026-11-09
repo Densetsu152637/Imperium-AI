@@ -131,7 +131,7 @@ pub static SETTINGS: &[SettingDef] = &[
     choice("runtime.llamacpp.backend", "llama.cpp backend", &["auto", "cpu", "vulkan", "cuda12", "cuda13", "rocm", "metal"], "Runtime pack used to run local GGUF models."),
     live(def("runtime.llamacpp.custom_path", "Custom llama-server", PathKind, "Your own llama-server executable, used instead of an installed runtime for models loaded from then on.")),
     def("runtime.llamacpp.find_existing", "Use a llama-server found here", Bool, "With no runtime installed and no custom llama-server, use one already on this computer (on PATH or in a llama.cpp build in your home folder) that starts and supports the flags Imperium passes."),
-    def("runtime.llamacpp.context", "Context per slot", Integer, "Context length each loaded model is started with, per slot."),
+    def("runtime.llamacpp.context", "Max context per agent", STRING, "Most tokens one agent may use on a local model: auto (what the model was trained for, capped to what fits in memory) or a number of tokens. The KV cache starts small and grows on demand up to it."),
     def("runtime.llamacpp.parallel", "Parallel slots", Integer, "Slots per loaded model (agents served at once)."),
     choice("runtime.llamacpp.cache_type", "KV cache type", &["f16", "q8_0", "q4_0"], "Precision of the KV cache."),
     def("runtime.llamacpp.idle_unload_s", "Idle unload (seconds)", Integer, "Seconds an unused model stays loaded."),
@@ -409,6 +409,22 @@ fn to_toml(def: &SettingDef, value: &Json) -> Result<toml_edit::Value, String> {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(toml_edit::Array::from_iter(items).into())
     };
+    if def.key == "runtime.llamacpp.context" {
+        // `auto` or a whole number, written as the number.
+        let limit = match value {
+            Json::String(text) => crate::ContextLimit::parse(text)?,
+            _ => crate::ContextLimit::Tokens(
+                value
+                    .as_u64()
+                    .and_then(|tokens| u32::try_from(tokens).ok())
+                    .ok_or_else(|| expected("\"auto\" or a number of tokens"))?,
+            ),
+        };
+        return Ok(match limit {
+            crate::ContextLimit::Auto => "auto".into(),
+            crate::ContextLimit::Tokens(tokens) => i64::from(tokens).into(),
+        });
+    }
     Ok(match def.kind {
         SettingKind::Bool => value
             .as_bool()
@@ -582,7 +598,7 @@ mod tests {
         assert_eq!(port.def.section(), "daemon");
 
         let context = get("runtime.llamacpp.context");
-        assert_eq!(context.default, Json::from(8192));
+        assert_eq!(context.default, Json::from("auto"));
         assert_eq!(context.def.section(), "runtime");
 
         let pets = get("pets.enabled");

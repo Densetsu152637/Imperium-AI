@@ -6,8 +6,8 @@ use std::path::Path;
 use std::sync::PoisonError;
 
 use imperium_config::{
-    CACHE_TYPES, Config, LocalModelSettings, ModelLaunch, Settings, TableOverride,
-    check_local_model, load_layers, replace_app_layer,
+    CACHE_TYPES, Config, ContextLimit, LocalModelSettings, ModelLaunch, NO_CONTEXT_LIMIT, Settings,
+    TableOverride, check_local_model, load_layers, replace_app_layer,
 };
 use imperium_protocol::methods::{
     LocalLaunchEffective, LocalLaunchSettings, LocalModelConfig, ModelConfigResult,
@@ -208,7 +208,11 @@ fn local_table(settings: &LocalLaunchSettings) -> Table {
             table.insert(key.to_string(), value);
         }
     };
-    put("context", settings.context.map(integer));
+    if settings.context_auto {
+        put("context", Some(Value::String("auto".into())));
+    } else {
+        put("context", settings.context.map(integer));
+    }
     put("pool_tokens", settings.pool_tokens.map(integer));
     put("slots", settings.slots.map(integer));
     put(
@@ -256,7 +260,11 @@ fn table_table(settings: &TableModelSettings) -> Table {
 
 fn to_local(settings: &LocalLaunchSettings) -> LocalModelSettings {
     LocalModelSettings {
-        context: settings.context,
+        context: if settings.context_auto {
+            Some(ContextLimit::Auto)
+        } else {
+            settings.context.map(ContextLimit::Tokens)
+        },
         pool_tokens: settings.pool_tokens,
         slots: settings.slots,
         cache_type_k: settings.cache_type_k.clone(),
@@ -271,7 +279,8 @@ fn to_local(settings: &LocalLaunchSettings) -> LocalModelSettings {
 
 fn from_local(settings: LocalModelSettings) -> LocalLaunchSettings {
     LocalLaunchSettings {
-        context: settings.context,
+        context: settings.context.and_then(ContextLimit::tokens),
+        context_auto: settings.context == Some(ContextLimit::Auto),
         pool_tokens: settings.pool_tokens,
         slots: settings.slots,
         cache_type_k: settings.cache_type_k,
@@ -286,8 +295,16 @@ fn from_local(settings: LocalModelSettings) -> LocalLaunchSettings {
 
 fn effective(launch: &ModelLaunch) -> LocalLaunchEffective {
     LocalLaunchEffective {
-        context: launch.context,
+        // Unsized `auto` (the defaults) has no number of its own.
+        context: if launch.context == NO_CONTEXT_LIMIT {
+            0
+        } else {
+            launch.context
+        },
+        context_auto: launch.context_auto,
         pool_tokens: launch.pool_tokens,
+        pool_fixed: launch.pool_fixed,
+        pool_clamped: launch.pool_clamped,
         slots: launch.slots,
         cache_type_k: launch.cache_type_k.clone(),
         cache_type_v: launch.cache_type_v.clone(),
@@ -323,7 +340,9 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
         models
             .iter()
             .map(|model| {
-                let launch = settings.launch_of(&model.id);
+                // Sized for the model like the supervisor sizes it: the context ceiling, and
+                // the pool it starts with (or has grown to).
+                let launch = supervisor.sized(model, &settings.launch_of(&model.id));
                 let (footprint, placement) = supervisor.plan_with(model, &launch);
                 let cpu_lane = settings.cpu_row(&model.id).is_some();
                 let vllm = model.format == imperium_local::scan::Format::Safetensors;

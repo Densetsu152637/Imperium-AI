@@ -13,9 +13,9 @@ use imperium_protocol::methods::{
     SessionSend, SessionSendParams, SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
-    AgentEvent, AgentStatus, AgentSummary, ContextCategory, PauseCause, PermissionDecision,
-    Question, QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent, SessionEventParams,
-    StepStatus, TokenCountMethod,
+    AgentEvent, AgentStatus, AgentSummary, ContextCategory, LocalWaitReason, PauseCause,
+    PermissionDecision, Question, QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent,
+    SessionEventParams, StepStatus, TokenCountMethod,
 };
 use tokio::sync::mpsc;
 
@@ -572,6 +572,16 @@ impl Chat {
                 println!("\n{tag}· usage limit; waiting until {until} ({reason})");
             }
             SessionEvent::Resumed {} => println!("\n{tag}· resuming"),
+            SessionEvent::LocalModelWaiting { model, reason, .. } => {
+                let why = match reason {
+                    LocalWaitReason::Loading => "loading it",
+                    LocalWaitReason::GrowingPool => "growing its KV cache",
+                    LocalWaitReason::KvRoom => "waiting for room in its KV cache",
+                    LocalWaitReason::Slot => "waiting for a free slot",
+                    LocalWaitReason::OtherModel => "waiting for another model",
+                };
+                println!("\n{tag}· {model}: {why}");
+            }
             SessionEvent::StatusChanged { .. } => {}
             SessionEvent::MediaCreated { path, kind, .. } => {
                 println!("\n{tag}· created {kind}: {path}");

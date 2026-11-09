@@ -135,6 +135,21 @@ impl Default for LocalRequest {
     }
 }
 
+/// Why a call for a local model is waiting, while it waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalWait {
+    /// The model is being loaded (or restarted) for it.
+    Loading,
+    /// The model restarts with a larger KV pool once the calls running on it are done.
+    GrowingPool,
+    /// The model's KV pool is full of other calls' reservations.
+    KvRoom,
+    /// Every slot of the model is busy.
+    Slot,
+    /// Another model is in the way: its calls come first, or it must unload to make room.
+    OtherModel,
+}
+
 /// The agent id of a holder, `<session id>/<agent id>`.
 pub fn holder(session: &str, agent: &str) -> String {
     format!("{session}/{agent}")
@@ -160,6 +175,11 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     /// settings and file metadata, without loading it; `None` when unknown. Only an estimate:
     /// the loaded server's own report replaces it.
     fn planned_context(&self, _model: &str) -> Option<u64> {
+        None
+    }
+    /// Why `holder`'s call for a model waits, while it waits in [`LocalModels::acquire`];
+    /// `None` when it does not wait or the runtime does not say.
+    fn wait_reason(&self, _holder: &str) -> Option<LocalWait> {
         None
     }
     /// Takes a slot on the model for one call, loading the model first if needed (waiting for

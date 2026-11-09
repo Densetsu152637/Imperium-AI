@@ -835,7 +835,24 @@ pub struct LocalModelRow {
     /// How the model would load on this machine when nothing else is loaded.
     #[ts(type = "\"gpu\" | \"partial\" | \"cpu\" | \"none\"")]
     pub placement: String,
+    /// Layers on the GPU: the loaded server's, else what loading it now would give (the
+    /// planner's estimate under its settings, beside the models loaded).
     pub gpu_layers: Option<u32>,
+    /// VRAM it holds (loaded) or would take if loaded now, weights and KV pool included.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub vram_bytes: u64,
+    /// System RAM it holds (loaded, prompt cache included) or would take if loaded now.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub ram_bytes: u64,
+    /// Layers the model has, when its header says.
+    #[serde(default)]
+    pub layers: Option<u32>,
+    /// A fixed `pool_tokens` did not fit beside the weights on the GPU, so the pool was cut to
+    /// what fits (`pool_tokens`) to keep the layers on the GPU.
+    #[serde(default)]
+    pub pool_clamped: bool,
     pub loaded: bool,
     pub slots: u32,
     pub slots_in_use: u32,
@@ -849,10 +866,15 @@ pub struct LocalModelRow {
     /// before a call finished since the daemon started.
     #[serde(default)]
     pub tokens_per_s: Option<f64>,
-    /// Tokens one session may use.
+    /// Most tokens one agent may use: what the model was trained for, its configured limit,
+    /// and what fits in memory, whichever is least. Compaction is planned against it.
     #[serde(default)]
     pub context: u32,
-    /// Tokens of KV cache shared by the model's slots.
+    /// `context` is sized automatically (the `auto` setting) rather than configured.
+    #[serde(default)]
+    pub context_auto: bool,
+    /// Tokens of KV cache shared by the model's slots: what the server reserves (or would
+    /// start with). It starts small and grows on demand up to `context`.
     #[serde(default)]
     pub pool_tokens: u32,
     /// Of those, tokens reserved by calls running now.
@@ -1377,10 +1399,16 @@ pub struct LocalModelConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LocalLaunchSettings {
-    /// Tokens one session may use (`--kv-unified-per-slot`; vLLM `--max-model-len`).
+    /// Most tokens one agent may use (vLLM `--max-model-len`), capped to what the model was
+    /// trained for and what fits in memory. Ignored when `context_auto` is true.
     #[serde(default)]
     pub context: Option<u32>,
-    /// Tokens of KV cache shared by every slot (`--ctx-size`); at least `context`.
+    /// Size the context automatically (`context = "auto"`): the most the model was trained for
+    /// that fits in memory. False with a null `context` takes the default.
+    #[serde(default)]
+    pub context_auto: bool,
+    /// Fixes the tokens of KV cache shared by every slot (`--ctx-size`), at least `context`;
+    /// null lets the pool start small and grow on demand.
     #[serde(default)]
     pub pool_tokens: Option<u32>,
     /// Calls the server runs at once (`--parallel`; vLLM `--max-num-seqs`).
@@ -1415,8 +1443,21 @@ pub struct LocalLaunchSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LocalLaunchEffective {
+    /// Most tokens one agent may use; 0 in `defaults` when the default is `auto`, which is
+    /// sized per model.
     pub context: u32,
+    /// The context is sized automatically.
+    #[serde(default)]
+    pub context_auto: bool,
+    /// The KV pool the model starts with (or is running with), or the fixed pool.
     pub pool_tokens: u32,
+    /// A setting fixes the pool, so it never grows.
+    #[serde(default)]
+    pub pool_fixed: bool,
+    /// The fixed pool did not fit beside the weights on the GPU and was cut to `pool_tokens`,
+    /// so the layers stay on the GPU.
+    #[serde(default)]
+    pub pool_clamped: bool,
     pub slots: u32,
     pub cache_type_k: String,
     pub cache_type_v: String,

@@ -115,7 +115,7 @@ fn settings(cache_ram_mb: u64) -> LlamaCppSettings {
         custom_path: None,
         find_existing: true,
         idle_unload_s: 900,
-        context: 4096,
+        context: 4096.into(),
         parallel: 2,
         cache_type: "f16".into(),
         slots: Some(2),

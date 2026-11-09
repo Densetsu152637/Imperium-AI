@@ -259,6 +259,18 @@ impl LocalRuntime {
                 let placement = self.supervisor.placement_when_idle(model);
                 let status = loaded.iter().find(|l| l.model_id == model.id);
                 let cpu_lane = self.supervisor.cpu_slots(&model.id).is_some();
+                let estimate = if status.is_some() {
+                    None
+                } else {
+                    self.supervisor.estimate(model)
+                };
+                // A pool cut to fit beside the loaded models is all one agent could use.
+                let planned_pool = estimate.map_or(launch.pool_tokens, |(_, pool)| pool);
+                let planned_context = if planned_pool < launch.pool_tokens {
+                    launch.context.min(planned_pool)
+                } else {
+                    launch.context
+                };
                 LocalModelRow {
                     id: model.id.clone(),
                     runtime: match model.format {
@@ -280,16 +292,31 @@ impl LocalRuntime {
                     context_length: model.info.context_length,
                     required_bytes: footprint.required_bytes(),
                     placement: self.placement_label(placement.as_ref(), cpu_lane).into(),
-                    gpu_layers: placement
-                        .map(|p| p.gpu_layers.min(footprint.layers.unwrap_or(999))),
+                    // While loaded, the layers its server was started with; else the loader's
+                    // own estimate of loading it now.
+                    gpu_layers: status
+                        .map(|s| s.gpu_layers)
+                        .or(estimate.map(|(p, _)| p.gpu_layers))
+                        .map(|layers| layers.min(footprint.layers.unwrap_or(999))),
+                    vram_bytes: status
+                        .map(|s| s.vram_bytes)
+                        .or(estimate.map(|(p, _)| p.vram_bytes))
+                        .unwrap_or(0),
+                    ram_bytes: status
+                        .map(|s| s.ram_bytes)
+                        .or(estimate.map(|(p, _)| p.ram_bytes))
+                        .unwrap_or(0),
+                    layers: footprint.layers,
+                    pool_clamped: launch.pool_clamped,
                     loaded: status.is_some(),
                     slots: status.map_or(launch.slots, |s| s.slots),
                     slots_in_use: status.map_or(0, |s| s.slots_in_use),
                     queued: status.map_or(0, |s| s.queued),
                     cpu_lane,
                     tokens_per_s: self.supervisor.tokens_per_s(&model.id),
-                    context: status.map_or(launch.context, |s| s.context),
-                    pool_tokens: status.map_or(launch.pool_tokens, |s| s.pool_tokens),
+                    context: status.map_or(planned_context, |s| s.context),
+                    context_auto: launch.context_auto,
+                    pool_tokens: status.map_or(planned_pool, |s| s.pool_tokens),
                     pool_reserved_tokens: status.map_or(0, |s| s.pool_reserved_tokens),
                 }
             })
@@ -547,10 +574,13 @@ mod tests {
             settings.runtime.llamacpp.default_launch().slots,
             "a model without settings gets the default slots, not `parallel`"
         );
+        // The default context is `auto`: a model whose header does not say what it was trained
+        // for gets a modest ceiling, and the pool starts small.
+        assert!(coder.context_auto);
         assert_eq!(
             (coder.context, coder.pool_tokens, coder.pool_reserved_tokens),
             (
-                settings.runtime.llamacpp.context,
+                imperium_local::context::UNKNOWN_TRAINED_CONTEXT,
                 settings.runtime.llamacpp.default_launch().pool_tokens,
                 0
             )

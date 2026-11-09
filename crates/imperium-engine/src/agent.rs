@@ -56,6 +56,21 @@ const CHUNK_WINDOW_PERCENT: u64 = 60;
 const DEFAULT_WINDOW_TOKENS: u64 = 32_768;
 /// How long `ask_user` waits for an answer before taking the recommendations.
 const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+/// How often a call waiting for a local model looks at why it waits.
+const WAIT_REASON_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// A local runtime's wait reason as the protocol says it.
+fn wait_reason(reason: crate::LocalWait) -> imperium_protocol::session::LocalWaitReason {
+    use crate::LocalWait as Wait;
+    use imperium_protocol::session::LocalWaitReason as Reason;
+    match reason {
+        Wait::Loading => Reason::Loading,
+        Wait::GrowingPool => Reason::GrowingPool,
+        Wait::KvRoom => Reason::KvRoom,
+        Wait::Slot => Reason::Slot,
+        Wait::OtherModel => Reason::OtherModel,
+    }
+}
 
 /// What a turn produced, for a parent awaiting a subagent.
 pub struct TurnOutcome {
@@ -1011,18 +1026,37 @@ impl Agent {
             } else {
                 Priority::Interactive
             };
-        let lease = local
-            .acquire_with(
-                &model.model,
-                holder,
-                LocalRequest {
-                    priority,
-                    prompt_tokens,
-                    uncapped,
-                },
-            )
-            .await
-            .map_err(|error| format!("could not load local model {}: {error}", model.model))?;
+        let acquire = local.acquire_with(
+            &model.model,
+            holder,
+            LocalRequest {
+                priority,
+                prompt_tokens,
+                uncapped,
+            },
+        );
+        tokio::pin!(acquire);
+        // Says why the call waits, each time the reason changes, so clients can show it.
+        let mut told = None;
+        let lease = loop {
+            tokio::select! {
+                lease = &mut acquire => break lease,
+                () = tokio::time::sleep(WAIT_REASON_POLL) => {
+                    let reason = local.wait_reason(holder);
+                    if reason != told {
+                        if let Some(reason) = reason {
+                            self.emit(SessionEvent::LocalModelWaiting {
+                                agent_id: self.id.clone(),
+                                model: model.model.clone(),
+                                reason: wait_reason(reason),
+                            });
+                        }
+                        told = reason;
+                    }
+                }
+            }
+        }
+        .map_err(|error| format!("could not load local model {}: {error}", model.model))?;
         let endpoint = Endpoint {
             base_url: lease.base_url.clone(),
             api_key: None,
