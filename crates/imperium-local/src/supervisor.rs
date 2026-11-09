@@ -2520,7 +2520,9 @@ mod tests {
         // in this order, then the layers, the cache types, flash attention, and the prompt cache.
         assert_eq!(
             spec.args().join(" "),
-            "--model m.gguf --host 127.0.0.1 --ctx-size 32768 --kv-unified              --kv-unified-per-slot 8192 --parallel 4 --no-cache-idle-slots --n-gpu-layers 20              --cache-type-k q8_0 --cache-type-v q4_0 --flash-attn on --cache-ram 1024 --jinja"
+            "--model m.gguf --host 127.0.0.1 --ctx-size 32768 --kv-unified \
+             --kv-unified-per-slot 8192 --parallel 4 --no-cache-idle-slots --n-gpu-layers 20 \
+             --cache-type-k q8_0 --cache-type-v q4_0 --flash-attn on --cache-ram 1024 --jinja"
         );
         // With the whole pool as the context the cap cannot bind, so it is left out.
         let whole = LaunchSpec {
