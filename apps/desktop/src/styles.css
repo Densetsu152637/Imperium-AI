@@ -2131,6 +2131,53 @@ button.danger:hover:not(:disabled) {
   opacity: 0.55;
 }
 
+/* Favourite and hide toggles (panels/ModelMarks.tsx); hidden models sit dimmed in their own group. */
+.model-marks {
+  display: inline-flex;
+  gap: 0.1rem;
+  white-space: nowrap;
+}
+
+.model-marks button.model-mark {
+  padding: 0.15rem 0.3rem;
+  color: var(--muted);
+}
+
+.model-marks button.model-mark.on {
+  color: var(--accent);
+}
+
+.model-marks button.model-mark svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+tr.model-hidden {
+  opacity: 0.5;
+}
+
+tr.model-hidden.unusable {
+  opacity: 0.35;
+}
+
+tr.model-hidden-group td {
+  padding-top: 0.4rem;
+}
+
+tr.model-hidden-group button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  padding: 0.15rem 0.4rem;
+}
+
+tr.model-hidden-group svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
 button.sort {
   background: none;
   border: none;
@@ -4348,6 +4395,20 @@ button.select.open .select-chevron {
 
 .select-option[aria-disabled="true"] {
   opacity: 0.45;
+  cursor: default;
+}
+
+.select-option.dimmed {
+  opacity: 0.6;
+}
+
+.select-group {
+  padding: 0.45rem 0.7rem 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
   cursor: default;
 }
 

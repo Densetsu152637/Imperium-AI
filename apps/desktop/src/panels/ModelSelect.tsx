@@ -8,7 +8,9 @@ import { useEffect, useState } from "react";
 import type { LocalModelRow, ModelRow, RuntimeInfo, SessionControlResult } from "@imperium/protocol";
 
 import { Select, type SelectOption } from "../components/Select";
+import { chooserModels, type ModelGroup, type ModelMarks } from "../modelPrefs";
 import { formatTokens } from "../sessions";
+import { useSettings } from "../settings";
 
 const RUNTIMES: Record<LocalModelRow["runtime"], string> = { llamacpp: "llama.cpp", vllm: "vLLM" };
 
@@ -70,10 +72,28 @@ export function localDescription(row: LocalModelRow): string {
 
 /**
  * The models a session can use, by spec: table rows first (rows whose endpoint is not configured
- * are listed but cannot be chosen), then local models the table does not already list. A
- * `current` model outside both is listed as is, so the list always shows it.
+ * are listed but cannot be chosen), then local models the table does not already list. With
+ * `marks` ([`chooserModels`]), favourites come first under "Favourites" and hidden models are
+ * left out unless one is `current`. A `current` model outside both is listed as is, so the list
+ * always shows it.
  */
-export function modelOptions(models: ModelRow[], local: LocalModelRow[], current: string | null): SelectOption[] {
+export function modelOptions(models: ModelRow[], local: LocalModelRow[], current: string | null, marks?: ModelMarks): SelectOption[] {
+  const all = allModelOptions(models, local);
+  const chosen = chooserModels(all, (option) => option.value, marks, current);
+  const grouped = chosen.some((entry) => entry.group !== "normal");
+  const options: SelectOption[] = chosen.map(({ item, group }) =>
+    grouped ? { ...item, group: GROUP_LABELS[group], dimmed: group === "hidden" } : item,
+  );
+  if (current && !options.some((option) => option.value === current)) {
+    options.unshift({ value: current, label: current });
+  }
+  return options;
+}
+
+const GROUP_LABELS: Record<ModelGroup, string> = { favourite: "Favourites", normal: "Models", hidden: "Hidden" };
+
+/** Every model a session could use, in the table's order, before favourites and hidden models apply. */
+function allModelOptions(models: ModelRow[], local: LocalModelRow[]): SelectOption[] {
   const options: SelectOption[] = models.map((row) => {
     // A table row that names a local model also says what that model is.
     const localRow = local.find((candidate) => localSpec(candidate) === row.spec);
@@ -97,9 +117,6 @@ export function modelOptions(models: ModelRow[], local: LocalModelRow[], current
       description: localDescription(row),
       disabled: row.problem != null,
     });
-  }
-  if (current && !options.some((option) => option.value === current)) {
-    options.unshift({ value: current, label: current });
   }
   return options;
 }
@@ -141,6 +158,7 @@ export function SessionModelSelect({
   /** Switches the model; rejects with the daemon's reason. */
   onSwitch: (model: string) => Promise<SessionControlResult>;
 }) {
+  const settings = useSettings();
   const [pending, setPending] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -207,7 +225,7 @@ export function SessionModelSelect({
         aria-label="Model"
         className="model-select-button"
         value={value}
-        options={modelOptions(models, local, current)}
+        options={modelOptions(models, local, current, settings.modelMarks)}
         placeholder="No model"
         disabled={disabled || switching}
         onChange={choose}

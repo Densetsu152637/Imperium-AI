@@ -278,7 +278,8 @@ search box over:
   their own; choosing one opens it.
 - **Environments:** show one (its sessions and new sessions there), or edit it.
 - **Models:** switch the open session's model to any usable model-table row or local model
-  (`session.control` `set_model`, as the model selector does).
+  (`session.control` `set_model`, as the model selector does); favourites first, hidden models
+  left out ([favourite and hidden models](#environments-and-sessions-implemented)).
 - **Panels:** open a closed panel, close or detach a docked one, show or dock a detached one
   (the Usage and Local models panels among them; mod panels too).
 - **Settings:** every section by name (*Settings: Budgets*, *Settings: Keyboard*, …), opened
@@ -572,6 +573,22 @@ ceiling, not near the current reservation. The Local models panel shows the laye
 (*36/36 layers on GPU*), says when the rest run on the CPU, and when a fixed KV pool was cut to
 fit the GPU. A local model that cannot run here (a vLLM folder off Linux) is
 listed but cannot be chosen. The new-session composer's model list is the same.
+
+**Favourite and hidden models (implemented):** every row of the Models panel (the model table,
+hosted and local) and of the Local models panel has a star (favourite) and an eye (hide). A
+model has one mark at most, so favouriting a hidden model shows it again. Marks are kept by the
+spec a session uses (`<runtime>:<id>` for a local model, the row's spec for a table row), so a
+local model marked in either panel is marked in both; they are app settings, saved in the
+`settings` document in `desktop/` ([persistence](#settings-and-persistence-implemented)), and
+survive updates and reinstalls. In the model panels favourites come first, then the other
+models in the panel's own order, then the hidden ones in a collapsed *Hidden (n)* group at the
+end, dimmed, each with its eye to show it again. The model configuration dialog's list follows
+the same order with *favourite* and *hidden* badges. The session's model selector, the
+new-session composer's model list, and the command palette's *Use …* commands list favourites
+first (under *Favourites*, the rest under *Models*, when any model is marked) and leave hidden
+models out; the session's current model stays listed, dimmed under *Hidden*, while it is
+hidden, so the selector still shows what is selected. Hiding a model only affects these lists:
+delegation and routing still see it in the model table.
 
 ### Session search (implemented)
 

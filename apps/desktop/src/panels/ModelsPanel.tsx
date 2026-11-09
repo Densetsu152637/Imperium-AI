@@ -1,9 +1,14 @@
-// The model table: every model delegation can use, searchable and sortable.
+// The model table: every model delegation can use, searchable and sortable. Favourites come
+// first and hidden models last, in a collapsed group (modelPrefs.ts).
 
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import type { ModelListResult, ModelRow } from "@imperium/protocol";
+
+import { arrangeModels, markOf } from "../modelPrefs";
+import { useModelMarks } from "../settings";
+import { HiddenGroupRow, ModelMarkButtons } from "./ModelMarks";
 
 type SortKey = "id" | "location" | "tier" | "price";
 
@@ -32,6 +37,8 @@ const formatPrice = (row: ModelRow): string =>
 export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | null; onConfigure: () => void }) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; descending: boolean }>({ key: "id", descending: false });
+  const [showHidden, setShowHidden] = useState(false);
+  const { marks, toggle } = useModelMarks();
 
   const rows = useMemo(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -40,8 +47,8 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
       return words.every((word) => text.includes(word));
     });
     const sorted = [...matching].sort((a, b) => compare(a, b, sort.key));
-    return sort.descending ? sorted.reverse() : sorted;
-  }, [table, query, sort]);
+    return arrangeModels(sort.descending ? sorted.reverse() : sorted, (row) => row.spec, marks);
+  }, [table, query, sort, marks]);
 
   if (!table || table.models.length === 0) {
     return (
@@ -62,6 +69,28 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
           (sort.descending ? <ChevronDown aria-hidden="true" /> : <ChevronUp aria-hidden="true" />)}
       </button>
     </th>
+  );
+
+  const modelRow = (row: ModelRow, hidden: boolean) => (
+    <tr
+      key={row.id}
+      className={[row.endpoint_configured && row.enabled ? null : "unusable", hidden ? "model-hidden" : null].filter(Boolean).join(" ") || undefined}
+      title={row.spec}
+    >
+      <td>
+        {row.id}
+        {!row.enabled && <span className="badge off">off</span>}
+      </td>
+      <td>
+        <span className={`badge ${row.location}`}>{row.location}</span>
+      </td>
+      <td>{row.tier}</td>
+      <td>{formatPrice(row)}</td>
+      <td>{row.tags.join(", ")}</td>
+      <td>
+        <ModelMarkButtons name={row.id} mark={markOf(marks, row.spec)} onToggle={(mark) => toggle(row.spec, mark)} />
+      </td>
+    </tr>
   );
 
   return (
@@ -87,23 +116,17 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
             {header("tier", "Tier")}
             {header("price", "$/Mtok in/out")}
             <th>Tags</th>
+            <th>
+              <span className="visually-hidden">Favourite or hide</span>
+            </th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.id} className={row.endpoint_configured && row.enabled ? undefined : "unusable"} title={row.spec}>
-              <td>
-                {row.id}
-                {!row.enabled && <span className="badge off">off</span>}
-              </td>
-              <td>
-                <span className={`badge ${row.location}`}>{row.location}</span>
-              </td>
-              <td>{row.tier}</td>
-              <td>{formatPrice(row)}</td>
-              <td>{row.tags.join(", ")}</td>
-            </tr>
-          ))}
+          {[...rows.favourites, ...rows.normal].map((row) => modelRow(row, false))}
+          {rows.hidden.length > 0 && (
+            <HiddenGroupRow count={rows.hidden.length} open={showHidden} colSpan={6} onToggle={() => setShowHidden((open) => !open)} />
+          )}
+          {showHidden && rows.hidden.map((row) => modelRow(row, true))}
         </tbody>
       </table>
     </div>
