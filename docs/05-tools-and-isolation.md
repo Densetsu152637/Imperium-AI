@@ -49,7 +49,8 @@ optional `options`, and a `recommended` answer. The session emits `questions_ask
 (`request_id`, `questions`) and the root waits without model calls, while subagents it already
 spawned keep running. Any client answers with `session.answer` (`session_id`, `request_id`,
 `answers`, one string per question in order); the session then emits `questions_answered` so
-other clients close the prompt. A blank answer means "use the recommendation". The root gets
+other clients close the prompt. A blank answer means "use the recommendation". If nobody answers within 10 minutes (applied
+whether or not a client is attached), the recommendations are taken and the root is told so. The root gets
 back each question with its answer. The session status is `needs_attention` while a batch is
 pending.
 

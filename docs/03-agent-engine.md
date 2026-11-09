@@ -99,11 +99,12 @@ Not yet: `send_to_task`, budgets per task, deeper trees, and cancellation.
 
 ### Large inputs and `delegate_chunks`
 
-**Implemented.** An input that would take more than 75 % of the root's context window
-(`context_window` from the model table; no guard when it is unknown) never enters the
-conversation. This covers user messages, tool results and file reads, estimated at four
-characters a token. The input is stored as a session artefact (`a1`, `a2`, ..., in memory, for
-the life of the daemon's session) and the root sees only a handle message: size, line count, an
+**Implemented.** An input that would take more than 75 % of the root's context window never enters the
+conversation. The window is the model table's `context_window` for a hosted model, the
+server-reported window for a local model (or when the table has none), and 32,768 tokens when
+neither is known. This covers user messages, tool results and file reads, estimated at four
+characters (not bytes) a token. The input is stored as a session artefact (`a<run>-<n>`, where `<run>` is four random hex
+digits fixed per daemon run, so a handle from before a restart never matches; kept in memory) and the root sees only a handle message: size, line count, an
 outline (up to 12 headings or file starts, else the first lines), and how to read it. Subagents
 are not guarded; they receive chunks sized by the root.
 
@@ -116,11 +117,17 @@ first message. Boundaries, in order of preference:
 3. otherwise token windows (`chunk_tokens` x 4 characters), cut at a line break when one falls
    in the second half of the window.
 
-Limits: at most 64 chunks per call (the tool errors and asks for larger chunks) and four chunk
-subagents running at once per session; the rest wait for a free slot. Chunk subagents use the
-default routing tier. The result lists the task ids; `await_tasks` collects the reports. With
+Budget and limits: `chunk_tokens` is clamped to 60 % of the chunk model's window when known
+(the result says so); at most 64 chunks per call (the tool errors and asks for larger chunks);
+at most 256 chunk agents per session across all calls (then the tool errors); and four chunk
+subagents running at once, the rest waiting for a free slot. Chunk subagents use the default
+routing tier. Chunk and reduce agents announce only a short description in `turn_started`, so
+chunk text never reaches the journal or history. An unknown artefact id is a tool error that
+says artefacts are lost when the daemon restarts. The result lists the task ids; `await_tasks` collects the reports. With
 `reduce`, one more subagent receives that instruction plus the chunk reports (never the chunks)
-once all chunks finish, and its task id is the only one to collect. The root sees only reports.
+once all chunks finish, and its task id is the only one to collect. Each report given to it is capped to its share of
+60 % of the reduce model's window (32,768 tokens when unknown) and marked when truncated. The
+root sees only reports.
 
 Delegation must not burn tokens while subagents work.
 
