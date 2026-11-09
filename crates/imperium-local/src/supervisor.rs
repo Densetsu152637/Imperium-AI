@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence};
 use imperium_config::{LlamaCppSettings, VllmSettings};
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, broadcast};
+use tokio::sync::{Notify, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore, broadcast};
 
 use crate::arbiter::{self, Decision, Outlook, Policy, Resident, Swaps, Use};
 use crate::backend::{self, RuntimeBackend};
@@ -257,13 +257,19 @@ impl SlotTable {
     }
 
     /// The free slot `holder` used last, if nobody has used it since; otherwise the one that
-    /// has been free the longest, so the prompts most recently used survive the longest.
+    /// has been free the longest, so the prompts most recently used survive the longest, and
+    /// one kept for another holder's saved prompt only when no other is free.
     fn take(&mut self, holder: &str) -> Option<u32> {
         let own = self
             .free
             .iter()
             .position(|&slot| self.last_holder[slot as usize].as_deref() == Some(holder));
-        let slot = self.free.remove(own.unwrap_or(0))?;
+        let unreserved = || {
+            self.free
+                .iter()
+                .position(|&slot| !self.reserved[slot as usize])
+        };
+        let slot = self.free.remove(own.or_else(unreserved).unwrap_or(0))?;
         self.reserved[slot as usize] = false;
         Some(slot)
     }
@@ -612,11 +618,14 @@ pub struct Supervisor {
     /// Raised whenever a slot, a call, an agent's presence, or the loaded models change.
     changed: Arc<Notify>,
     /// Loads and unloads happen one at a time: they contend for the disk and the PCIe bus, and
-    /// two agents asking for the same model load it once.
-    swapping: tokio::sync::Mutex<()>,
+    /// two agents asking for the same model load it once. A swap-out holds it until its
+    /// servers have exited, even when the call that started it was cancelled.
+    swapping: Arc<tokio::sync::Mutex<()>>,
     /// Saved slots; `None` when slots are not saved.
     slot_files: Option<Mutex<SlotFiles>>,
     events: broadcast::Sender<SwapEvent>,
+    /// Itself, for swap-outs that run in a task of their own.
+    me: Weak<Supervisor>,
 }
 
 impl fmt::Debug for Supervisor {
@@ -672,7 +681,7 @@ impl Supervisor {
                     }
                 },
             );
-        let supervisor = Arc::new(Supervisor {
+        let supervisor = Arc::new_cyclic(|me| Supervisor {
             models: Mutex::new(models),
             settings,
             backends,
@@ -681,9 +690,10 @@ impl Supervisor {
             state: Mutex::new(State::default()),
             presence: Arc::default(),
             changed: Arc::new(Notify::new()),
-            swapping: tokio::sync::Mutex::new(()),
+            swapping: Arc::default(),
             slot_files,
             events: broadcast::channel(64).0,
+            me: Weak::clone(me),
         });
         let weak = Arc::downgrade(&supervisor);
         tokio::spawn(unload_idle(weak));
@@ -862,7 +872,8 @@ impl Supervisor {
                     continue;
                 }
                 Step::Load => {
-                    let swapping = tokio::time::timeout_at(deadline, self.swapping.lock())
+                    let swapping = Arc::clone(&self.swapping).lock_owned();
+                    let swapping = tokio::time::timeout_at(deadline, swapping)
                         .await
                         .map_err(|_| too_long())?;
                     match self.plan(&model, &ticket)? {
@@ -993,7 +1004,7 @@ impl Supervisor {
         model: &LocalModel,
         holder: &str,
         load: Load,
-        swapping: tokio::sync::MutexGuard<'_, ()>,
+        swapping: OwnedMutexGuard<()>,
     ) -> Result<LocalLease, String> {
         let Load {
             backend,
@@ -1003,7 +1014,7 @@ impl Supervisor {
             call,
         } = load;
         let replaced = !victims.is_empty();
-        self.swap_out(victims, "room").await;
+        let swapping = self.swap_out_detached(victims, "room", swapping).await?;
         // The prompt cache takes what the setting asks of the RAM left after the model, and
         // counts against the budget like the model does.
         let cache_ram_mb = if backend.slot_aware() {
@@ -1112,6 +1123,32 @@ impl Supervisor {
         u32::try_from(reserved).unwrap_or(u32::MAX)
     }
 
+    /// Swaps out `victims` in a task of its own that holds loads (`swapping`) until their
+    /// servers have exited, then hands loads back. A caller cancelled meanwhile does not cut it
+    /// short: the slots are still saved and the servers still stopped, and the next load waits
+    /// for them rather than starting while their memory is held.
+    async fn swap_out_detached(
+        &self,
+        victims: Vec<(String, Loaded)>,
+        reason: &'static str,
+        swapping: OwnedMutexGuard<()>,
+    ) -> Result<OwnedMutexGuard<()>, String> {
+        if victims.is_empty() {
+            return Ok(swapping);
+        }
+        // Whoever calls holds an `Arc` to it, so it is always there.
+        let Some(supervisor) = self.me.upgrade() else {
+            self.swap_out(victims, reason).await;
+            return Ok(swapping);
+        };
+        tokio::spawn(async move {
+            supervisor.swap_out(victims, reason).await;
+            swapping
+        })
+        .await
+        .map_err(|error| format!("could not swap out a model: {error}"))
+    }
+
     /// Saves the occupied slots of models taken out of the loaded set, then stops them.
     async fn swap_out(&self, victims: Vec<(String, Loaded)>, reason: &'static str) {
         if victims.is_empty() {
@@ -1153,18 +1190,26 @@ impl Supervisor {
         let (mut bytes, mut slots) = (0, 0);
         for (slot, holder) in occupied {
             let file = SlotFiles::file_name(key, &holder);
+            // Until it is recorded, a file the save wrote is removed if the save fails or is
+            // cut short, so nothing on disk escapes `swap_cache_mb`.
+            let unrecorded = Forget {
+                files,
+                holder: &holder,
+                key,
+            };
             match loaded.server.save_slot(slot, &file).await {
                 Ok(saved) => {
                     bytes += saved.bytes;
                     slots += 1;
                     let saved = Saved {
-                        holder,
+                        holder: holder.clone(),
                         key,
                         slot,
                         file,
                         bytes: saved.bytes,
                     };
                     lock(files).record(saved, |holder| present.contains(holder));
+                    unrecorded.keep();
                 }
                 Err(error) => {
                     tracing::warn!(%holder, slot, %error, "could not save a slot before unloading its model");
@@ -1181,10 +1226,12 @@ impl Supervisor {
         else {
             return lease;
         };
-        let Some(saved) = lock(files).take(holder, key) else {
+        let Some(saved) = lock(files).find(holder, key) else {
             return lease;
         };
-        let path = lock(files).path(&saved);
+        // It stays recorded while it is read, and is forgotten with its file once read, failed,
+        // or cancelled, so no file is left on disk outside the index.
+        let _forget = Forget { files, holder, key };
         match restore.server.restore_slot(slot, &saved.file).await {
             Ok(restored) => {
                 tracing::info!(%holder, slot, tokens = restored.tokens, bytes = restored.bytes, "restored a saved slot");
@@ -1193,7 +1240,6 @@ impl Supervisor {
                 tracing::warn!(%holder, slot, %error, "could not restore a saved slot; its prompt will be read again");
             }
         }
-        slot_files::remove(&path);
         lease
     }
 
@@ -1205,7 +1251,7 @@ impl Supervisor {
     /// Unloads models nobody has used for `idle_for`, saving their slots.
     async fn unload_idle_now(&self, idle_for: Duration) {
         // A swap in progress has the models' memory in hand; look again next time.
-        let Ok(_swapping) = self.swapping.try_lock() else {
+        let Ok(swapping) = Arc::clone(&self.swapping).try_lock_owned() else {
             return;
         };
         let victims: Vec<_> = {
@@ -1222,7 +1268,28 @@ impl Supervisor {
                 .filter_map(|id| state.loaded.remove_entry(id))
                 .collect()
         };
-        self.swap_out(victims, "idle").await;
+        if let Err(error) = self.swap_out_detached(victims, "idle", swapping).await {
+            tracing::warn!(%error, "could not unload idle models");
+        }
+    }
+}
+
+/// Removes a holder's saved slot from the index and the disk when dropped, unless kept.
+struct Forget<'a> {
+    files: &'a Mutex<SlotFiles>,
+    holder: &'a str,
+    key: u64,
+}
+
+impl Forget<'_> {
+    fn keep(self) {
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for Forget<'_> {
+    fn drop(&mut self) {
+        lock(self.files).forget(self.holder, self.key);
     }
 }
 

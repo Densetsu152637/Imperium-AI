@@ -163,7 +163,8 @@ memory arbiter for every session (`crates/imperium-local/src/arbiter.rs` holds t
   fit beside them, or gets more than `swap_gain` times the GPU memory once they are gone than it
   would beside them. The default, 2.0, keeps a subagent model from running mostly from RAM next
   to a sleeping orchestrator while not swapping for a small gain; 1.0 swaps whenever the
-  newcomer would get more GPU memory alone, so subagents run fully on the GPU (as G14 measures). If
+  newcomer would get more GPU memory alone, so subagents run fully on the GPU (as G14 measures);
+  values below 1.0 are rejected. If
   only a claimed model is in the way, it waits for that model's agent to start waiting or finish
   its turn (an orchestrator that spawns a subagent usually starts waiting moments later), for up
   to `min_residency_s`. After that it loads beside the claimed model if it fits at all, and swaps

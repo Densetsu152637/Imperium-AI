@@ -447,6 +447,20 @@ api_key = { secret = 'Bad Name' }",
     }
 
     #[test]
+    fn the_swap_gain_must_be_a_number_of_at_least_one() {
+        let with_gain = |gain: &str| {
+            let toml = format!("[runtime.llamacpp]\nswap_gain = {gain}");
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), &toml)])
+                .settings()
+        };
+        assert_eq!(with_gain("1.0").unwrap().runtime.llamacpp.swap_gain, 1.0);
+        for bad in ["0.5", "nan", "inf"] {
+            let error = with_gain(bad).unwrap_err();
+            assert!(error.to_string().contains("swap_gain"), "{bad}: {error}");
+        }
+    }
+
+    #[test]
     fn downloads_go_to_the_configured_folder_or_the_first_model_folder() {
         let data = std::path::Path::new("/data");
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
