@@ -12,7 +12,6 @@ updates.
 | `build.yml`         | Called by release workflows only                     | Builds desktop bundles and CLI archives       |
 | `release.yml`       | Tags `v*` (for example `v0.4.0`, `v0.5.0-beta.1`)    | Main-channel GitHub Release                   |
 | `experimental.yml`  | Pushes to `experimental`, manual run on it           | Experimental-channel GitHub pre-release       |
-| `runtime-packs.yml` | Changes to `runtimes/`, manual                       | Self-built llama.cpp packs (unused by the app; see [runtime packs](#runtime-packs)) |
 
 ### Checks (`ci.yml`)
 
@@ -124,28 +123,8 @@ SHA-256 digests GitHub publishes for each asset
 ([04](04-models-and-routing.md#runtimes)); raising `LLAMA_CPP_REF` is all a llama.cpp update
 needs on the release side, once the new ref's builds are checked locally.
 
-`runtime-packs.yml` builds `llama-server` and its libraries from the same ref, one pack per
-platform and backend, and would publish them to a `runtime-llama.cpp-<ref>` release. **The app
-no longer downloads these packs**, and no run has published one yet: Windows CUDA fails because
-the CUDA 12.9 compiler rejects the runner's Visual Studio version (and `cudafe++` crashes), and
-the macOS packs fail to build. It is kept, unused, for building packs llama.cpp does not
-publish; fix it before relying on it.
-
-| Pack                | OS / arch       | Backend                         |
-| ------------------- | --------------- | ------------------------------- |
-| `linux-x64-cpu`     | Linux x86_64    | CPU                             |
-| `linux-x64-vulkan`  | Linux x86_64    | Vulkan (NVIDIA, AMD, Intel)     |
-| `linux-x64-cuda12`  | Linux x86_64    | CUDA 12.9 (Pascal and newer)    |
-| `linux-x64-cuda13`  | Linux x86_64    | CUDA 13 (Turing and newer)      |
-| `linux-x64-rocm`    | Linux x86_64    | ROCm / HIP (RDNA2+, CDNA)       |
-| `linux-arm64-cpu`   | Linux aarch64   | CPU                             |
-| `windows-x64-cpu`   | Windows x86_64  | CPU                             |
-| `windows-x64-vulkan`| Windows x86_64  | Vulkan                          |
-| `windows-x64-cuda12`| Windows x86_64  | CUDA 12.9                       |
-| `windows-x64-cuda13`| Windows x86_64  | CUDA 13                         |
-| `windows-arm64-cpu` | Windows arm64   | CPU                             |
-| `macos-arm64-metal` | macOS arm64     | Metal                           |
-| `macos-x64-cpu`     | macOS x86_64    | CPU                             |
+There is no runtime-pack pipeline of our own: an earlier `runtime-packs.yml` never built
+Windows CUDA or macOS packs and was removed once the app switched to llama.cpp's own builds.
 
 Each pack contains a `manifest.json` (pack id, backend, OS, arch, llama.cpp ref, build
 flags) and, for CUDA packs, the redistributable CUDA runtime libraries. vLLM is never packaged
