@@ -263,6 +263,12 @@ impl Settings {
                 dir.display().to_string()
             ));
         }
+        let swap_gain = self.runtime.llamacpp.swap_gain;
+        if !swap_gain.is_finite() || swap_gain < 1.0 {
+            return Err(format!(
+                "runtime.llamacpp.swap_gain must be a number of at least 1.0, not {swap_gain}"
+            ));
+        }
         for (name, server) in &self.mcp.servers {
             if server.command.is_some() == server.url.is_some() {
                 return Err(format!(

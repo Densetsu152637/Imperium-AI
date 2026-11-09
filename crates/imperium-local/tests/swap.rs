@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use imperium_api::{Availability, LocalModels};
@@ -20,6 +20,7 @@ use imperium_local::supervisor::{
     LaunchError, LaunchFuture, LaunchSpec, Launcher, Runtimes, Server, SlotFuture, SlotTransfer,
     StopFuture, Supervisor, SwapDirection, SwapEvent,
 };
+use tokio::sync::Notify;
 
 const GIB: u64 = 1024 * 1024 * 1024;
 /// How long a fake server takes to start.
@@ -43,6 +44,16 @@ struct Log {
     launch_failures: AtomicU32,
     /// Launches that time out before the next one succeeds.
     launch_timeouts: AtomicU32,
+    /// The folder slots are saved to, as llama-server writes them.
+    dir: OnceLock<PathBuf>,
+    /// How long a save takes, in milliseconds.
+    save_ms: AtomicU64,
+    /// Raised when a save starts.
+    saving: Notify,
+    /// Restores never finish.
+    hang_restores: AtomicBool,
+    /// Raised when a restore starts.
+    restoring: Notify,
 }
 
 impl Log {
@@ -56,6 +67,17 @@ impl Log {
             .iter()
             .map(|op| op.split(' ').take(3).collect::<Vec<_>>().join(" "))
             .collect()
+    }
+
+    /// The slot files on disk.
+    fn files(&self) -> Vec<String> {
+        let mut files: Vec<String> = std::fs::read_dir(self.dir.get().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".slot"))
+            .collect();
+        files.sort();
+        files
     }
 
     fn file(&self, prefix: &str) -> String {
@@ -87,6 +109,10 @@ impl Server for FakeServer {
 
     fn save_slot<'a>(&'a self, slot: u32, file: &'a str) -> SlotFuture<'a> {
         Box::pin(async move {
+            self.log.saving.notify_one();
+            let save_ms = self.log.save_ms.load(Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(save_ms)).await;
+            std::fs::write(self.log.dir.get().unwrap().join(file), b"kv").unwrap();
             self.log.push(format!("save {} {slot} {file}", self.model));
             Ok(SlotTransfer {
                 tokens: 1000,
@@ -113,6 +139,13 @@ impl Server for FakeServer {
 
     fn restore_slot<'a>(&'a self, slot: u32, file: &'a str) -> SlotFuture<'a> {
         Box::pin(async move {
+            self.log.restoring.notify_one();
+            if self.log.hang_restores.load(Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            if !self.log.dir.get().unwrap().join(file).exists() {
+                return Err(format!("no file {file}"));
+            }
             self.log
                 .push(format!("restore {} {slot} {file}", self.model));
             Ok(SlotTransfer {
@@ -198,9 +231,11 @@ fn settings() -> LlamaCppSettings {
 /// A 10 GiB GPU and no spare RAM: one of the two 6 GiB models at a time.
 fn start(settings: LlamaCppSettings) -> (Arc<Supervisor>, Arc<Log>) {
     let log = Arc::new(Log::default());
+    let slots = tempfile::tempdir().unwrap();
+    log.dir.set(slots.path().to_path_buf()).unwrap();
     let launcher = Arc::new(FakeLauncher {
         log: Arc::clone(&log),
-        slots: tempfile::tempdir().unwrap(),
+        slots,
     });
     let hardware = Hardware {
         gpus: vec![Gpu {
@@ -407,8 +442,13 @@ async fn swap_reloads_a_model_evicted_between_calls() {
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(supervisor.loaded()[0].model_id, "worker");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while supervisor.loaded().first().map(|m| m.model_id.clone()) != Some("worker".into()) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the worker is loaded");
     // The agent's next call waits for room and reloads its model rather than failing.
     let reloaded = supervisor.acquire("emperor", agent).await;
     assert!(reloaded.is_ok(), "{reloaded:?}");
@@ -645,4 +685,113 @@ async fn swap_parallel_sessions_batch_by_model() {
         "longest wait {longest:?}, bound {bound:?} (batches {emperor_batch:?}, \
          {worker_batch:?})"
     );
+}
+
+#[tokio::test]
+async fn swap_out_finishes_when_the_call_that_started_it_is_cancelled() {
+    let (supervisor, log) = start(LlamaCppSettings {
+        min_residency_s: 0,
+        ..settings()
+    });
+    let root = "s/root";
+    let _turn = supervisor.attach("emperor", root);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    let waiting = supervisor.waiting("emperor", root);
+    // The subagent's call is cancelled while the orchestrator's slot is being saved.
+    log.save_ms.store(100, Ordering::SeqCst);
+    let saving = log.saving.notified();
+    let cancelled = {
+        let supervisor = Arc::clone(&supervisor);
+        tokio::spawn(async move { supervisor.acquire("worker", "s/t1").await.map(drop) })
+    };
+    saving.await;
+    cancelled.abort();
+    assert!(cancelled.await.unwrap_err().is_cancelled());
+    // The next call for the worker loads it only once the orchestrator's server has exited.
+    call(&supervisor, &log, "worker", "s/t1", Duration::ZERO).await;
+    assert_eq!(
+        log.steps(),
+        [
+            "launch emperor",
+            "save emperor 0",
+            "stop emperor",
+            "launch worker"
+        ]
+    );
+    // The save was recorded, so the orchestrator gets its slot back and the file is gone.
+    assert_eq!(log.files().len(), 1);
+    drop(waiting);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert_eq!(
+        log.steps().last().map(String::as_str),
+        Some("restore emperor 0")
+    );
+    assert_eq!(log.files(), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn swap_cancelled_restore_leaves_no_file_behind() {
+    let (supervisor, log) = start(LlamaCppSettings {
+        min_residency_s: 0,
+        ..settings()
+    });
+    let root = "s/root";
+    let _turn = supervisor.attach("emperor", root);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    let waiting = supervisor.waiting("emperor", root);
+    call(&supervisor, &log, "worker", "s/t1", Duration::ZERO).await;
+    assert_eq!(log.files().len(), 1, "the orchestrator's slot is saved");
+    drop(waiting);
+    // The orchestrator's call is cancelled while its slot is being restored.
+    log.hang_restores.store(true, Ordering::SeqCst);
+    let restoring = log.restoring.notified();
+    let cancelled = {
+        let supervisor = Arc::clone(&supervisor);
+        tokio::spawn(async move { supervisor.acquire("emperor", root).await.map(drop) })
+    };
+    restoring.await;
+    cancelled.abort();
+    assert!(cancelled.await.unwrap_err().is_cancelled());
+    assert_eq!(log.files(), Vec::<String>::new(), "the file is removed");
+    // It is forgotten too: the next call reads its prompt again instead of restoring.
+    log.hang_restores.store(false, Ordering::SeqCst);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert!(
+        !log.steps().iter().any(|step| step.starts_with("restore")),
+        "{:?}",
+        log.steps()
+    );
+}
+
+#[tokio::test]
+async fn swap_restores_a_saved_slot_only_into_its_own_agent() {
+    // One slot, so another agent can only take the one kept for the orchestrator.
+    let (supervisor, log) = start(LlamaCppSettings {
+        min_residency_s: 0,
+        parallel: 1,
+        ..settings()
+    });
+    let root = "s/root";
+    let _turn = supervisor.attach("emperor", root);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    let waiting = supervisor.waiting("emperor", root);
+    call(&supervisor, &log, "worker", "s/t1", Duration::ZERO).await;
+    // Another session's agent brings the model back and takes the slot kept for the
+    // orchestrator: the orchestrator's saved prompt is not loaded into it.
+    let (_, slot) = call(&supervisor, &log, "emperor", "x/root", Duration::ZERO).await;
+    assert_eq!(slot, Some(0));
+    assert!(
+        !log.steps().iter().any(|step| step.starts_with("restore")),
+        "{:?}",
+        log.steps()
+    );
+    // The orchestrator gets its own prompt back when it calls.
+    drop(waiting);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert_eq!(
+        log.steps().last().map(String::as_str),
+        Some("restore emperor 0")
+    );
+    assert_eq!(log.file("save emperor"), log.file("restore emperor"));
+    assert_eq!(log.files(), Vec::<String>::new());
 }

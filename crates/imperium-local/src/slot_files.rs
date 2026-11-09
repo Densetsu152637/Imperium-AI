@@ -77,23 +77,27 @@ impl SlotFiles {
         self.trim(present);
     }
 
-    /// Takes `holder`'s saved slot on the model with `key`, to restore it; the caller removes
-    /// the file once it is read.
-    pub fn take(&mut self, holder: &str, key: u64) -> Option<Saved> {
-        let at = self
-            .saved
+    /// `holder`'s saved slot on the model with `key`, to restore it; it stays recorded until
+    /// [`SlotFiles::forget`] removes it once read.
+    pub fn find(&self, holder: &str, key: u64) -> Option<Saved> {
+        self.saved
             .iter()
-            .position(|saved| saved.holder == holder && saved.key == key)?;
-        Some(self.saved.remove(at))
+            .find(|saved| saved.holder == holder && saved.key == key)
+            .cloned()
+    }
+
+    /// Removes `holder`'s saved slot on the model with `key` from the index and its file from
+    /// the folder, whether or not it was recorded: a save that failed or was cut short may have
+    /// left a partial file behind.
+    pub fn forget(&mut self, holder: &str, key: u64) {
+        self.saved
+            .retain(|saved| !(saved.holder == holder && saved.key == key));
+        remove(&self.dir.join(Self::file_name(key, holder)));
     }
 
     /// The slots saved from the model with `key`, to give their agents back on reload.
     pub fn saved_for(&self, key: u64) -> impl Iterator<Item = &Saved> {
         self.saved.iter().filter(move |saved| saved.key == key)
-    }
-
-    pub fn path(&self, saved: &Saved) -> PathBuf {
-        self.dir.join(&saved.file)
     }
 
     /// Removes files until the folder fits: those of holders that cannot come back first, oldest
@@ -186,16 +190,20 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_save_replaces_the_agents_older_one_and_is_taken_once() {
+    fn a_newer_save_replaces_the_agents_older_one_and_is_forgotten_with_its_file() {
         let dir = tempfile::tempdir().unwrap();
         let mut files = SlotFiles::open(dir.path().to_path_buf(), u64::MAX).unwrap();
         files.record(saved("s/root", 1, 10), |_| true);
         files.record(saved("s/root", 1, 20), |_| true);
         files.record(saved("s/root", 2, 30), |_| true);
         assert_eq!(files.saved_for(1).count(), 1);
-        assert_eq!(files.take("s/root", 1).unwrap().bytes, 20);
-        assert_eq!(files.take("s/root", 1), None);
-        assert!(files.take("s/root", 2).is_some());
+        let file = dir.path().join(SlotFiles::file_name(1, "s/root"));
+        std::fs::write(&file, b"kv").unwrap();
+        assert_eq!(files.find("s/root", 1).unwrap().bytes, 20);
+        files.forget("s/root", 1);
+        assert_eq!(files.find("s/root", 1), None);
+        assert!(!file.exists());
+        assert!(files.find("s/root", 2).is_some());
     }
 
     #[test]
