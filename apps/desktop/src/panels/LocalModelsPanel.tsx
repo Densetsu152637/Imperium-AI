@@ -24,7 +24,7 @@ function placement(row: LocalModelRow): string {
   if (row.loaded) {
     const queue = row.queued > 0 ? ` · ${row.queued} waiting` : "";
     const lane = row.cpu_lane ? "CPU lane · " : "";
-    return `${lane}loaded · ${row.slots_in_use}/${row.slots} busy${queue}`;
+    return `${lane}loaded · ${row.slots_in_use}/${row.slots} busy${queue} · pool ${row.pool_reserved_tokens}/${row.pool_tokens}`;
   }
   if (row.cpu_lane && row.placement === "cpu") return "CPU lane (RAM only)";
   switch (row.placement) {
@@ -59,10 +59,12 @@ export function LocalModelsPanel({
   listing,
   onRefresh,
   client,
+  onConfigure,
 }: {
   listing: LocalModelListResult | null;
   onRefresh: () => void;
   client: DaemonClient | null;
+  onConfigure: () => void;
 }) {
   const download = <HfDownload client={client} onDone={onRefresh} />;
   if (!listing || !listing.enabled) {
@@ -87,6 +89,7 @@ export function LocalModelsPanel({
           </span>
         )}
         <button onClick={onRefresh}>Refresh</button>
+        <button onClick={onConfigure}>Configure</button>
       </div>
       {runtime && !runtime.installed && (
         <p className="warning">
