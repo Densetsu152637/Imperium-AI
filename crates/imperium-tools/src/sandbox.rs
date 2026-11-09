@@ -3,10 +3,17 @@
 //! on Linux, Seatbelt on macOS); the container tier runs them in a container with only the
 //! workspace mounted. A tier that is not available fails the command rather than silently
 //! running it with less isolation.
+//!
+//! Path grants carry over where the tier can express them: the OS sandbox makes writable grants
+//! writable (everything is readable there already), and the container tier bind-mounts every
+//! grant, read-only ones with `:ro`. Tier 0 runs commands with the user's own rights, so grants
+//! (and their read-only mode) bind only the file tools there.
 
 use std::path::Path;
 
 use tokio::process::Command;
+
+use crate::GrantedPath;
 
 use crate::ToolError;
 use crate::exec::shell;
@@ -44,8 +51,14 @@ impl Sandbox {
     }
 
     /// The process that runs `command` under this tier, in the first of `roots` (the workspace's
-    /// folders). The OS sandbox lets it write in every folder; the container mounts them all.
-    pub fn command(&self, roots: &[&Path], command: &str) -> Result<Command, ToolError> {
+    /// folders). The OS sandbox lets it write in every folder and writable grant; the container
+    /// mounts them all and the grants.
+    pub fn command(
+        &self,
+        roots: &[&Path],
+        grants: &[GrantedPath],
+        command: &str,
+    ) -> Result<Command, ToolError> {
         let Some(root) = roots.first() else {
             return Err(ToolError::Io("the workspace has no folder".into()));
         };
@@ -55,14 +68,23 @@ impl Sandbox {
                 process.current_dir(root);
                 Ok(process)
             }
-            Sandbox::Os { network } => os_command(roots, command, *network),
+            Sandbox::Os { network } => {
+                let mut writable: Vec<&Path> = roots.to_vec();
+                writable.extend(
+                    grants
+                        .iter()
+                        .filter(|grant| grant.writable)
+                        .map(|grant| grant.path.as_path()),
+                );
+                os_command(&writable, command, *network)
+            }
             Sandbox::Container {
                 runtime,
                 image,
                 network,
             } => {
                 let mut process = Command::new(runtime);
-                process.args(container_args(roots, image, *network, command));
+                process.args(container_args(roots, grants, image, *network, command));
                 Ok(process)
             }
         }
@@ -70,8 +92,15 @@ impl Sandbox {
 }
 
 /// The first folder is mounted at `/workspace` (the working directory) and the others at
-/// `/folders/2`, `/folders/3`, … in order.
-fn container_args(roots: &[&Path], image: &str, network: bool, command: &str) -> Vec<String> {
+/// `/folders/2`, `/folders/3`, … in order. Grants are mounted at their own path when it is a
+/// POSIX path, else (a Windows path) at `/grants/1`, `/grants/2`, …; read-only ones with `:ro`.
+fn container_args(
+    roots: &[&Path],
+    grants: &[GrantedPath],
+    image: &str,
+    network: bool,
+    command: &str,
+) -> Vec<String> {
     let mut args = vec!["run".into(), "--rm".into(), "-i".into()];
     if !network {
         args.extend(["--network".into(), "none".into()]);
@@ -83,6 +112,16 @@ fn container_args(roots: &[&Path], image: &str, network: bool, command: &str) ->
             format!("/folders/{}", index + 1)
         };
         args.extend(["-v".into(), format!("{}:{target}", root.display())]);
+    }
+    for (index, grant) in grants.iter().enumerate() {
+        let source = grant.display_path();
+        let target = if source.starts_with('/') {
+            source.clone()
+        } else {
+            format!("/grants/{}", index + 1)
+        };
+        let mode = if grant.writable { "" } else { ":ro" };
+        args.extend(["-v".into(), format!("{source}:{target}{mode}")]);
     }
     args.extend([
         "-w".into(),
@@ -185,6 +224,7 @@ mod tests {
     fn container_commands_mount_only_the_workspace() {
         let args = container_args(
             &[Path::new("/home/me/project")],
+            &[],
             "ubuntu:24.04",
             false,
             "make test",
@@ -193,13 +233,42 @@ mod tests {
             args.join(" "),
             "run --rm -i --network none -v /home/me/project:/workspace -w /workspace ubuntu:24.04 sh -c make test"
         );
-        let networked = container_args(&[Path::new("/p")], "img", true, "x");
+        let networked = container_args(&[Path::new("/p")], &[], "img", true, "x");
         assert!(!networked.contains(&"--network".to_string()));
-        let both = container_args(&[Path::new("/p"), Path::new("/q")], "img", true, "x").join(" ");
+        let both =
+            container_args(&[Path::new("/p"), Path::new("/q")], &[], "img", true, "x").join(" ");
         assert!(
             both.contains("-v /p:/workspace -v /q:/folders/2 -w /workspace"),
             "{both}"
         );
+    }
+
+    #[test]
+    fn containers_mount_grants_read_only_or_writable() {
+        let grants = [
+            GrantedPath {
+                path: "/home/me/.cargo".into(),
+                writable: true,
+            },
+            GrantedPath {
+                path: "/home/me/.rustup".into(),
+                writable: false,
+            },
+            GrantedPath {
+                path: r"C:\Users\me\.npm".into(),
+                writable: false,
+            },
+        ];
+        let args = container_args(&[Path::new("/p")], &grants, "img", true, "x").join(" ");
+        assert!(
+            args.contains("-v /home/me/.cargo:/home/me/.cargo -v"),
+            "{args}"
+        );
+        assert!(
+            args.contains("-v /home/me/.rustup:/home/me/.rustup:ro"),
+            "{args}"
+        );
+        assert!(args.contains(r"-v C:\Users\me\.npm:/grants/3:ro"), "{args}");
     }
 
     #[test]
@@ -255,6 +324,7 @@ mod tests {
         let output = sandbox
             .command(
                 &[dir.path()],
+                &[],
                 "cat inside.txt && echo made > out.txt && pwd",
             )
             .unwrap()

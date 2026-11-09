@@ -29,6 +29,7 @@ import {
   Search,
   Server,
   Shield,
+  ShieldCheck,
   SlidersHorizontal,
   Smartphone,
   Boxes,
@@ -40,8 +41,16 @@ import {
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import type { ConfigDescribeResult, ConfigEntry, ConfigSetResult, ModListResult } from "@imperium/protocol";
+import type {
+  ConfigDescribeResult,
+  ConfigEntry,
+  ConfigSetResult,
+  ModListResult,
+  PermissionSet,
+  PermissionsResult,
+} from "@imperium/protocol";
 
+import { PermissionsEditor, samePermissions } from "./components/PermissionsEditor";
 import { Select } from "./components/Select";
 import { Row } from "./components/SettingsRow";
 import { Switch as Toggle } from "./components/Switch";
@@ -298,6 +307,7 @@ const APP_SECTIONS: Section[] = [
   { id: "updates", label: "Updates", group: "Imperium" },
   { id: "connectors", label: "Connectors", group: "Imperium" },
 ];
+const PERMISSIONS_SECTION: Section = { id: "permissions", label: "Permissions", group: "Agent and daemon" };
 const TAIL_SECTIONS: Section[] = [
   { id: "data", label: "Data and storage", group: "About" },
   { id: "about", label: "About", group: "About" },
@@ -315,6 +325,7 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
   updates: Download,
   connectors: Plug,
   data: HardDrive,
+  permissions: ShieldCheck,
   about: Info,
   "config:agents": Bot,
   "config:models": Boxes,
@@ -379,7 +390,7 @@ export function SettingsWindow(props: Props) {
       .filter(([id]) => present.has(id) || !config)
       .map(([id, label]) => ({ id: `config:${id}`, label, group: "Agent and daemon" }));
   }, [config]);
-  const sections = [...APP_SECTIONS, ...configSections, ...TAIL_SECTIONS];
+  const sections = [...APP_SECTIONS, ...configSections, PERMISSIONS_SECTION, ...TAIL_SECTIONS];
 
   const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => onChange({ ...settings, [key]: value });
 
@@ -509,6 +520,8 @@ export function SettingsWindow(props: Props) {
             {config && configRows(config.entries.filter((entry) => entry.section === "mcp" || entry.section === "extensions"))}
           </>
         );
+      case "permissions":
+        return client ? <PermissionsSection client={client} /> : <p className="muted">Connect to imperium-core to change permissions.</p>;
       case "data":
         return <DataSection userFile={config?.user_file ?? null} settings={settings} onChange={onChange} onResetLayout={props.onResetLayout} />;
       case "about":
@@ -826,6 +839,76 @@ function humanize(option: string): string {
   if (/[0-9.]/.test(option) || option.length <= 3) return option;
   const words = option.replace(/[_-]+/g, " ");
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Global path grants and permission rules (`permissions.get` / `permissions.set`), saved to the config file. */
+function PermissionsSection({ client }: { client: DaemonClient }) {
+  const [saved, setSaved] = useState<PermissionsResult | null>(null);
+  const [draft, setDraft] = useState<PermissionSet>({ grants: [], rules: [] });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    client
+      .call<PermissionsResult>("permissions.get", {})
+      .then((result) => {
+        if (!live) return;
+        setSaved(result);
+        setDraft(result.global);
+      })
+      .catch((failure: unknown) => live && setError(String(failure instanceof Error ? failure.message : failure)));
+    return () => {
+      live = false;
+    };
+  }, [client]);
+
+  if (!saved) return error ? <p className="error">{error}</p> : <p className="muted">Loading…</p>;
+  const changed = !samePermissions(draft, saved.global);
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await client.call<PermissionsResult>("permissions.set", {
+        grants: draft.grants,
+        rules: draft.rules.filter((rule) => rule.tool.trim()),
+      });
+      setSaved(result);
+      setDraft(result.global);
+      setNotice("Saved. Rules apply to running sessions from their next tool call; paths apply to sessions started from now on.");
+    } catch (failure) {
+      setError(String(failure instanceof Error ? failure.message : failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <Row
+        label="Every environment"
+        description="Paths and rules here apply to every session, beside its environment's own (edit an environment to add those). Environments in a container, WSL, or over SSH get only their own paths, since these are paths on this computer."
+      />
+      <PermissionsEditor value={draft} onChange={setDraft} presets={saved.presets} disabled={busy} />
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      {notice && !changed && <p className="muted">{notice}</p>}
+      <div className="permissions-actions">
+        <button onClick={() => setDraft(saved.global)} disabled={busy || !changed}>
+          Revert
+        </button>
+        <button className="primary" onClick={() => void save()} disabled={busy || !changed}>
+          Save
+        </button>
+      </div>
+    </>
+  );
 }
 
 function DataSection({

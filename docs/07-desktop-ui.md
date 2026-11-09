@@ -10,7 +10,8 @@
   ([folding](#columns-spanning-and-stacking)).
 - Session panel: the title and status at the top, conversation with assistant replies rendered
   as Markdown (GitHub-flavoured, raw HTML disabled; an option shows the raw text), inline
-  permission prompts (allow, always this session, deny), a floating composer, and under it a
+  permission prompts (allow, always this session, always allow by a rule, deny; see
+  [permissions](#permissions-implemented)), a floating composer, and under it a
   footer with the model selector and the context meter
   ([session footer](#environments-and-sessions-implemented)).
 - Telemetry panel: per-call tokens, time to first token, tokens per second, and cost, with
@@ -309,6 +310,8 @@ every setting:
   section (models, local runtime, memory, workflow, web, media, isolation, GitHub, pets, phone,
   resuming, network). Changes go to the user config file through `config.set` and apply when
   the daemon restarts; the window offers the restart.
+- **Permissions** (under Agent and daemon): the global path grants and permission rules; see
+  [permissions](#permissions-implemented).
 - **Data and storage** shows where everything is kept and resets app settings or the layout.
 
 App settings, the layout (panel sizes, closed panels, the selected environment and session),
@@ -316,6 +319,35 @@ and the last-known sessions are files in `desktop/` inside Imperium's config fol
 daemon's `config.toml`, so they persist across updates and reinstalls. The workspace is always
 shown: while the daemon is away, a bar above it offers to start or reach it and the lists show
 the sessions as last seen.
+
+## Permissions (implemented)
+
+**Settings → Permissions** edits the global [path grants and rules](05-tools-and-isolation.md#permissions)
+(`permissions.get` / `permissions.set`, saved to `[permissions]` in the user config), and the
+**environment window** has a *Permissions* section with the same editor for that environment
+(saved in the environment with *Create* or *Save*). The editor (`PermissionsEditor`) has two
+parts, styled like the environment's folder list:
+
+- **Paths outside the folders:** each grant's path with a *Read-only* / *Read and write* select
+  and *×*; *Add folder* (the folder picker) or a typed path (`~` allowed) with its mode; and one
+  chip per **preset** for common caches and toolchains (Cargo, rustup, npm, pnpm, Yarn, pip, uv,
+  Go modules, Maven, Gradle, NuGet). The daemon resolves the presets for its own operating
+  system and environment variables (`CARGO_HOME`, `GOMODCACHE`, `%LOCALAPPDATA%`, …), writes
+  paths in the home folder with `~`, marks missing ones *(not found)*, and suggests read and
+  write for caches and read-only for toolchains. For a remote runtime, presets are hidden and
+  paths are typed as paths inside it.
+- **Rules:** each rule's action (*Allow*, *Ask*, *Deny*), tool (suggestions such as
+  `run_command`, `write_file`, `*`; wildcards like `mcp__github__*` work), and pattern, whose
+  placeholder says what it matches for that tool; *Add rule* and *×*.
+
+Settings saves with *Save* (and *Revert* drops the draft). Rules reach running sessions at their
+next tool call; paths reach sessions started afterwards.
+
+A permission prompt in a session offers **Always allow** beside *Always this session* when the
+daemon suggests a rule (the event's `suggested_rule`: the command and its subcommand, such as
+`cargo test`; the file's folder, such as `/home/me/project/src/**`; or the whole tool for other
+tools). It adds that allow rule to the session's environment (`permissions.add_rule` with the
+session id; global for a session without one) and allows the request.
 
 ## Notifications (implemented)
 
@@ -363,7 +395,8 @@ Settings (Escape or a click outside closes it): the name; the icon, picked from 
 of every icon the app uses (`icons.ts`, the shared registry — Settings sections, Connectors, the
 titlebar, and project glyphs; older saved names still resolve); the tile colour, picked from a
 row of rounded-square swatches; and the folders, the first marked as the working directory, with
-*Add folder* (the native folder picker) and *×* to remove one. A new environment is created with
+*Add folder* (the native folder picker) and *×* to remove one. Its *Permissions* section holds the
+environment's path grants and rules ([permissions](#permissions-implemented)). A new environment is created with
 all of it at once; for an existing one, folder changes apply at once and the name, icon and
 colour with *Save*. *Delete environment* asks once more (folders on disk are untouched); *Delete*
 in a row's menu opens the window at that question. Icons and colours are stored with the

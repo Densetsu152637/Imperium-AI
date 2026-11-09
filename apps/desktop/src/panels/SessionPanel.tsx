@@ -12,6 +12,7 @@ import type {
   LocalModelRow,
   ModelRow,
   PermissionDecision,
+  PermissionRule,
   Plan,
   Question,
   QueuedMessage,
@@ -34,6 +35,7 @@ import {
   type Entry,
   type SessionState,
 } from "../sessions";
+import { describeRule } from "../components/PermissionsEditor";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { ToolState } from "../components/ToolState";
@@ -52,6 +54,8 @@ type Props = {
   /** Edits a queued message, or removes it when `text` is null. */
   onChangeQueued: (id: string, text: string | null) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
+  /** Saves `rule` (an allow rule the daemon suggested) and allows the request. */
+  onAlwaysAllow?: (requestId: number, rule: PermissionRule) => void;
   /** One answer per question, in order. */
   onAnswer: (requestId: number, answers: string[]) => void;
   /** Resolves once the daemon accepted the policy. */
@@ -82,6 +86,7 @@ export function SessionPanel({
   onSend,
   onChangeQueued,
   onRespond,
+  onAlwaysAllow,
   onAnswer,
   onSetResumePolicy,
   onResumeNow,
@@ -152,7 +157,14 @@ export function SessionPanel({
               onSetModel={(model) => onSetModel(model).catch(() => null)}
             />
           ) : (
-            <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} onAnswer={onAnswer} />
+            <EntryView
+              key={index}
+              entry={entry}
+              rendered={rendered}
+              onRespond={onRespond}
+              onAlwaysAllow={onAlwaysAllow}
+              onAnswer={onAnswer}
+            />
           ),
         )}
         {session.busy && <p className="working">Working…</p>}
@@ -465,11 +477,13 @@ function EntryView({
   entry,
   rendered,
   onRespond,
+  onAlwaysAllow,
   onAnswer,
 }: {
   entry: Entry;
   rendered: boolean;
   onRespond: Props["onRespond"];
+  onAlwaysAllow?: Props["onAlwaysAllow"];
   onAnswer: Props["onAnswer"];
 }) {
   switch (entry.kind) {
@@ -521,6 +535,14 @@ function EntryView({
                 Allow
               </button>
               <button onClick={() => onRespond(entry.requestId, "allow_for_session")}>Always this session</button>
+              {entry.suggestedRule && onAlwaysAllow && (
+                <button
+                  onClick={() => entry.suggestedRule && onAlwaysAllow(entry.requestId, entry.suggestedRule)}
+                  title={`Adds an allow rule to this environment's permissions (Settings → Permissions for global rules): ${describeRule(entry.suggestedRule)}`}
+                >
+                  Always allow {entry.suggestedRule.pattern ? <code>{entry.suggestedRule.pattern}</code> : "this tool"}
+                </button>
+              )}
               <button className="danger" onClick={() => onRespond(entry.requestId, "deny")}>
                 Deny
               </button>

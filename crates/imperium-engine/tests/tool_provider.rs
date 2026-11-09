@@ -164,6 +164,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
                 request_id,
                 tool,
                 summary,
+                ..
             } => {
                 assert_eq!(tool, "note_add");
                 // The first note is refused, the second allowed.

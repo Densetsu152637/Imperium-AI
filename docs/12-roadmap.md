@@ -45,9 +45,13 @@ them), in the desktop's Resources panel and `imperium resources [--watch]`
    turns, finished model downloads, and ready updates, with per-kind switches, a background-only
    default, and an internal `notify` entry point for budget alerts
    ([07](07-desktop-ui.md#notifications-implemented)).
-2. **Permission rules.** Allow, ask, and deny rules per tool, command, and path, including
-   read-only or writable access to paths outside environments (global package caches,
-   toolchains), and permission modes (ask every time, accept edits, plan only, full access).
+2. **Permission rules** (implemented). Allow, ask, and deny rules per tool, command prefix, and
+   path glob, globally and per environment (deny over ask over allow, environment rules
+   overriding global ones of equal specificity), with *Always allow* on approvals; read-only or
+   writable path grants outside environments (global package caches, toolchains) with per-OS
+   presets, carried into the OS sandbox and container mounts
+   ([05](05-tools-and-isolation.md#permissions), [07](07-desktop-ui.md#permissions-implemented)).
+   Permission modes (ask every time, accept edits, plan only, full access) remain to do.
 3. **Budgets and alerts.** Weekly and monthly budgets per environment, globally, and per
    endpoint; alerts through notifications, with optional pause or block; a usage dashboard.
 4. **Command palette.** One searchable list of every action, session, environment, and setting.

@@ -4984,3 +4984,46 @@ button.select.open .select-chevron {
 .badge.worktree {
   border-color: var(--border-strong);
 }
+
+/* Permissions: path grants and rules (Settings → Permissions and the environment window). */
+.permissions-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.permissions-hint {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.permission-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.permission-presets .chip:disabled[aria-pressed="true"] {
+  opacity: 1;
+}
+
+.permission-list li {
+  flex-wrap: wrap;
+}
+
+.permission-rule .permission-tool {
+  flex: 0 1 10rem;
+  min-width: 6rem;
+}
+
+.permission-rule .permission-pattern {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+}
+
+.permissions-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}

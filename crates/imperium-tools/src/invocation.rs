@@ -15,6 +15,8 @@ pub enum ToolError {
     Invalid(String),
     #[error("{0} is outside the workspace")]
     OutsideWorkspace(String),
+    #[error("{0} is read-only: a path grant allows reading it, not writing")]
+    ReadOnly(String),
     #[error("{0}")]
     Io(String),
     #[error("timed out after {0} s")]

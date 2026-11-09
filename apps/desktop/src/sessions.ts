@@ -6,6 +6,7 @@ import type {
   EnvironmentInfo,
   ContextCategory,
   PauseCause,
+  PermissionRule,
   Plan,
   QueuedMessage,
   Question,
@@ -25,7 +26,16 @@ export type Entry =
   | { kind: "steer"; text: string }
   | { kind: "assistant"; text: string }
   | { kind: "tool"; callId: string; summary: string; ok: boolean | null; output: string }
-  | { kind: "permission"; agentId: string; requestId: number; tool: string; summary: string; answered: boolean }
+  | {
+      kind: "permission";
+      agentId: string;
+      requestId: number;
+      tool: string;
+      summary: string;
+      /** The rule "Always allow" adds, when the daemon suggests one. */
+      suggestedRule?: PermissionRule;
+      answered: boolean;
+    }
   | { kind: "questions"; requestId: number; questions: Question[]; answered: boolean }
   | { kind: "task"; taskId: string; brief: string; model: string }
   | { kind: "turn"; usage: TokenUsage; costUsd: number | null; steps: number }
@@ -294,7 +304,15 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
   if (event.type === "permission_requested") {
     entries = [
       ...entries,
-      { kind: "permission", agentId, requestId: event.request_id, tool: event.tool, summary: event.summary, answered: false },
+      {
+        kind: "permission",
+        agentId,
+        requestId: event.request_id,
+        tool: event.tool,
+        summary: event.summary,
+        suggestedRule: event.suggested_rule,
+        answered: false,
+      },
     ];
   }
 

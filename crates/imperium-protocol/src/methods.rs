@@ -433,6 +433,10 @@ pub struct EnvironmentInfo {
     /// off so turning it on again continues the same conversation.
     #[serde(default)]
     pub agent_session_id: Option<String>,
+    /// Paths outside the folders the tools may use, and allow / ask / deny rules, for this
+    /// environment's sessions (on top of the global ones).
+    #[serde(default)]
+    pub permissions: crate::permissions::PermissionSet,
 }
 
 /// Where an environment's tools run. `local` is this machine (under the configured isolation
@@ -532,6 +536,10 @@ pub struct EnvironmentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub pet: Option<String>,
+    /// Path grants and permission rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub permissions: Option<crate::permissions::PermissionSet>,
 }
 
 /// `environments.update`: rename an environment, change its icon, its runtime, or turn its
@@ -574,6 +582,11 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub pet: Option<String>,
+    /// Replaces the path grants and permission rules. Rules apply to running sessions from
+    /// their next call; grants to sessions started afterwards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub permissions: Option<crate::permissions::PermissionSet>,
 }
 
 /// `environments.test_runtime`: checks that an environment's runtime can be reached: Docker is

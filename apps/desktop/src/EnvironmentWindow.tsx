@@ -6,13 +6,23 @@
 // tools run (for a remote runtime, folders are paths typed in, inside it) and turns its
 // persistent agent on or off; both apply with Save. The Pet field picks the environment's
 // default pet for the nursery (its sessions' pets are this kind unless the nursery says otherwise).
+// The Permissions section edits the environment's path grants and allow / ask / deny rules, on top
+// of the global ones; they apply with Save.
 
 import { FolderPlus, Search, Trash, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import type { EnvironmentInfo, PetListResult, RuntimeTestResult } from "@imperium/protocol";
+import type {
+  EnvironmentInfo,
+  PathPreset,
+  PermissionSet,
+  PermissionsResult,
+  PetListResult,
+  RuntimeTestResult,
+} from "@imperium/protocol";
 
+import { PermissionsEditor, samePermissions } from "./components/PermissionsEditor";
 import { Select } from "./components/Select";
 import type { DaemonClient } from "./daemon/client";
 import { pickFolder } from "./daemon/connection";
@@ -34,6 +44,12 @@ type Props = {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/** The set as saved: rules without a tool name are dropped. */
+const cleaned = (set: PermissionSet): PermissionSet => ({
+  grants: set.grants,
+  rules: set.rules.filter((rule) => rule.tool.trim()),
+});
+
 export function EnvironmentWindow({ environment, client, confirmDelete = false, onSaved, onDeleted, onClose }: Props) {
   const creating = environment === null;
   // A new environment's default icon comes from a fresh seed, as an existing one's does from its id.
@@ -49,6 +65,10 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
   const [typedFolder, setTypedFolder] = useState("");
   const [pet, setPet] = useState(environment?.pet ?? "");
   const [installedPets, setInstalledPets] = useState<{ id: string; name: string }[]>([]);
+  const savedPermissions: PermissionSet = environment?.permissions ?? { grants: [], rules: [] };
+  const [permissions, setPermissions] = useState<PermissionSet>(savedPermissions);
+  const [presets, setPresets] = useState<PathPreset[]>([]);
+  const permissionsChanged = !samePermissions(permissions, savedPermissions);
   const runtimeChanged = !creating && !sameRuntime(environment.runtime, runtime);
   const [deleting, setDeleting] = useState(confirmDelete);
   const [busy, setBusy] = useState(false);
@@ -70,6 +90,10 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
     client
       ?.call<PetListResult>("pet.list")
       .then((list) => live && setInstalledPets(list.pets.map((p) => ({ id: p.id, name: p.display_name || p.id }))))
+      .catch(() => {});
+    client
+      ?.call<PermissionsResult>("permissions.get", {})
+      .then((result) => live && setPresets(result.presets))
       .catch(() => {});
     return () => {
       live = false;
@@ -143,6 +167,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             runtime: chosen,
             persistent_agent: persistentAgent,
             ...(pet ? { pet } : {}),
+            permissions: cleaned(permissions),
           })
         : c.call<EnvironmentInfo>("environments.update", {
             id: environment.id,
@@ -152,6 +177,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             ...(runtimeChanged ? { runtime: chosen } : {}),
             ...(persistentAgent !== (environment.persistent_agent ?? false) ? { persistent_agent: persistentAgent } : {}),
             ...(pet !== (environment.pet ?? "") ? { pet } : {}),
+            ...(permissionsChanged ? { permissions: cleaned(permissions) } : {}),
           }),
     );
     if (env) {
@@ -333,6 +359,21 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
                 <li className="muted">No folders yet. Add one to start sessions here; the first is the working directory.</li>
               )}
             </ul>
+          </section>
+
+          <section className="environment-section" aria-label="Permissions">
+            <span className="environment-label">Permissions</span>
+            <p className="muted permissions-hint">
+              Added to the global permissions in Settings → Permissions; applied with Save. Rules reach running sessions at
+              their next tool call, paths reach sessions started afterwards.
+            </p>
+            <PermissionsEditor
+              value={permissions}
+              onChange={setPermissions}
+              presets={presets}
+              remote={isRemote(runtime)}
+              disabled={busy || !client}
+            />
           </section>
 
           <EnvironmentRuntimeFields

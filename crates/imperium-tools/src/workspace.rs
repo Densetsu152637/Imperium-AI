@@ -1,6 +1,7 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use crate::permissions::{PathGrant, PathMode, Permissions, Target, expand_home};
 use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
 use crate::{Sandbox, ToolError};
 
@@ -8,6 +9,10 @@ use crate::{Sandbox, ToolError};
 /// directory (the root). Relative paths given to tools resolve against the root; absolute paths
 /// may name anything inside any of the folders. Nothing may escape them, including through `..`
 /// or symbolic links.
+///
+/// Path grants open further paths outside the folders, read-only or writable (global package
+/// caches and toolchains, for example). Where a folder and a grant both cover a path, the
+/// deepest one decides, so a read-only grant inside a folder makes that part read-only.
 ///
 /// A remote workspace's folders are paths inside a runtime ([`Remote`]); its tools run there
 /// through a [`Runner`], and paths are checked as written (after resolving `.` and `..`), since
@@ -17,8 +22,36 @@ pub struct Workspace {
     root: PathBuf,
     /// Further folders the agent may use, canonical and distinct from the root and each other.
     extra: Vec<PathBuf>,
+    /// Paths outside the folders the tools may also use.
+    grants: Vec<GrantedPath>,
     sandbox: Sandbox,
     remote: Option<RemoteFolders>,
+    /// The permission rules the session's calls are checked against.
+    permissions: Permissions,
+}
+
+/// A path outside the workspace's folders that the tools may use: canonical on this machine,
+/// or an absolute POSIX path inside a remote runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantedPath {
+    pub path: PathBuf,
+    pub writable: bool,
+}
+
+impl GrantedPath {
+    /// The path as people write it, without Windows' verbatim prefix.
+    pub fn display_path(&self) -> String {
+        plain(&self.path)
+    }
+
+    /// The grant as people read it, such as `/home/me/.cargo (read-only)`.
+    pub fn describe(&self) -> String {
+        format!(
+            "{}{}",
+            plain(&self.path),
+            if self.writable { "" } else { " (read-only)" }
+        )
+    }
 }
 
 /// A remote workspace's runtime and folders (POSIX paths inside it, the root first).
@@ -44,8 +77,10 @@ impl Workspace {
         Ok(Workspace {
             root,
             extra: Vec::new(),
+            grants: Vec::new(),
             sandbox: Sandbox::Policy,
             remote: None,
+            permissions: Permissions::default(),
         })
     }
 
@@ -78,12 +113,14 @@ impl Workspace {
         Ok(Workspace {
             root: PathBuf::from(first),
             extra: Vec::new(),
+            grants: Vec::new(),
             sandbox: Sandbox::Policy,
             remote: Some(RemoteFolders {
                 target,
                 folders: checked,
                 runner,
             }),
+            permissions: Permissions::default(),
         })
     }
 
@@ -116,10 +153,42 @@ impl Workspace {
 
     /// Resolves a path for a remote workspace (relative to the root, or absolute inside any
     /// folder) to an absolute POSIX path inside the runtime.
-    pub(crate) fn resolve_remote(&self, path: &str) -> Result<String, ToolError> {
+    /// `write` refuses a path covered by a read-only grant.
+    pub(crate) fn resolve_remote(&self, path: &str, write: bool) -> Result<String, ToolError> {
         let Some(remote) = &self.remote else {
             return Err(ToolError::Io("not a remote workspace".into()));
         };
+        let resolved = self
+            .locate_remote(path)
+            .ok_or_else(|| ToolError::OutsideWorkspace(path.into()))?;
+        let inside = |folder: &str| {
+            folder == "/"
+                || resolved == folder
+                || resolved
+                    .strip_prefix(folder)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        };
+        // The deepest folder or grant containing the path decides whether it is writable.
+        let covering =
+            remote
+                .folders
+                .iter()
+                .map(|folder| (folder.as_str(), true, false))
+                .chain(self.grants.iter().filter_map(|grant| {
+                    grant.path.to_str().map(|path| (path, grant.writable, true))
+                }))
+                .filter(|(folder, _, _)| inside(folder))
+                .max_by_key(|(folder, _, grant)| (folder.len(), *grant));
+        match covering {
+            None => Err(ToolError::OutsideWorkspace(path.into())),
+            Some((_, false, _)) if write => Err(ToolError::ReadOnly(path.into())),
+            Some(_) => Ok(resolved),
+        }
+    }
+
+    /// A remote path as an absolute POSIX path inside the runtime, unchecked.
+    fn locate_remote(&self, path: &str) -> Option<String> {
+        let remote = self.remote.as_ref()?;
         let written = match remote.target {
             Remote::Wsl { .. } => wsl_path(path),
             _ => path.trim().to_string(),
@@ -129,19 +198,7 @@ impl Workspace {
         } else {
             format!("{}/{written}", remote.folders[0])
         };
-        let resolved =
-            normalize_posix(&joined).ok_or_else(|| ToolError::OutsideWorkspace(path.into()))?;
-        let inside = remote.folders.iter().any(|folder| {
-            folder == "/"
-                || resolved == *folder
-                || resolved
-                    .strip_prefix(folder.as_str())
-                    .is_some_and(|rest| rest.starts_with('/'))
-        });
-        if !inside {
-            return Err(ToolError::OutsideWorkspace(path.into()));
-        }
-        Ok(resolved)
+        normalize_posix(&joined)
     }
 
     /// A remote path for display: relative to the root, else in full.
@@ -174,9 +231,93 @@ impl Workspace {
         Ok(self)
     }
 
+    /// The same workspace with paths outside its folders opened by `grants`. `~` means the home
+    /// folder on this machine. A grant whose path does not exist, or one already given, is
+    /// skipped (so list the environment's grants before the global ones to let them win). For a
+    /// remote workspace, grants are absolute paths inside the runtime (Windows paths are
+    /// translated for WSL); `~` cannot be expanded there, so such grants are skipped.
+    pub fn with_grants(mut self, grants: &[PathGrant]) -> Self {
+        for grant in grants {
+            let writable = grant.mode == PathMode::ReadWrite;
+            let path = match &self.remote {
+                Some(remote) => {
+                    if grant.path.trim().starts_with('~') {
+                        continue;
+                    }
+                    let written = match remote.target {
+                        Remote::Wsl { .. } => wsl_path(&grant.path),
+                        _ => grant.path.trim().to_string(),
+                    };
+                    match normalize_posix(&written) {
+                        Some(path) => PathBuf::from(path),
+                        None => continue,
+                    }
+                }
+                None => match Path::new(&expand_home(&grant.path)).canonicalize() {
+                    Ok(path) => path,
+                    Err(_) => continue,
+                },
+            };
+            if !self.grants.iter().any(|known| known.path == path) {
+                self.grants.push(GrantedPath { path, writable });
+            }
+        }
+        self
+    }
+
     /// The same workspace with commands run under `sandbox`.
     pub fn with_sandbox(self, sandbox: Sandbox) -> Self {
         Workspace { sandbox, ..self }
+    }
+
+    /// The same workspace with calls checked against `permissions`.
+    pub fn with_permissions(self, permissions: Permissions) -> Self {
+        Workspace {
+            permissions,
+            ..self
+        }
+    }
+
+    /// The permission rules calls in this workspace are checked against.
+    pub fn permissions(&self) -> &Permissions {
+        &self.permissions
+    }
+
+    /// The paths outside the folders the tools may also use.
+    pub fn grants(&self) -> &[GrantedPath] {
+        &self.grants
+    }
+
+    /// What a file tool's `path` names, for matching rule patterns: the absolute path (with
+    /// `/` separators) and, inside the working directory, the relative one. The path need not
+    /// be inside the workspace.
+    pub fn rule_target(&self, path: &str) -> Target {
+        if self.remote.is_some() {
+            let absolute = self
+                .locate_remote(path)
+                .unwrap_or_else(|| path.trim().to_string());
+            let root = self.root_display();
+            let relative = if absolute == root {
+                Some(".".to_string())
+            } else {
+                absolute
+                    .strip_prefix(root.as_str())
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .map(str::to_string)
+            };
+            return Target::Path { absolute, relative };
+        }
+        let full = self
+            .locate(path)
+            .unwrap_or_else(|| self.root.join(path.trim()));
+        let relative = full.strip_prefix(&self.root).ok().map(|rest| {
+            let shown = rest.to_string_lossy().replace('\\', "/");
+            if shown.is_empty() { ".".into() } else { shown }
+        });
+        Target::Path {
+            absolute: plain(&full).replace('\\', "/"),
+            relative,
+        }
     }
 
     /// The working directory: the first folder.
@@ -203,41 +344,81 @@ impl Workspace {
         &self.sandbox
     }
 
-    /// Resolves a path (relative to the root, or absolute inside any folder) to an absolute path
-    /// inside the workspace. The path itself need not exist yet; its nearest existing ancestor
-    /// must lie inside one of the folders after resolving symbolic links.
+    /// Resolves a path to read (relative to the root, or absolute inside any folder or grant) to
+    /// an absolute path inside the workspace. The path itself need not exist yet; its nearest
+    /// existing ancestor must lie inside one of the folders or grants after resolving symbolic
+    /// links.
     pub fn resolve(&self, path: &str) -> Result<PathBuf, ToolError> {
+        self.resolve_for(path, false)
+    }
+
+    /// Like [`Workspace::resolve`], for a path to write, edit, or delete: a path a read-only
+    /// grant covers is refused.
+    pub fn resolve_writable(&self, path: &str) -> Result<PathBuf, ToolError> {
+        self.resolve_for(path, true)
+    }
+
+    fn resolve_for(&self, path: &str, write: bool) -> Result<PathBuf, ToolError> {
         if self.remote.is_some() {
-            return self.resolve_remote(path).map(PathBuf::from);
+            return self.resolve_remote(path, write).map(PathBuf::from);
         }
+        let resolved = self
+            .locate_checked(path)?
+            .ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+        match self.writable(&resolved) {
+            None => Err(ToolError::OutsideWorkspace(path.to_string())),
+            Some(false) if write => Err(ToolError::ReadOnly(path.to_string())),
+            Some(_) => Ok(resolved),
+        }
+    }
+
+    /// Whether a canonical path may be written: `None` outside every folder and grant. The
+    /// deepest folder or grant containing it decides (a grant wins over a folder at the same
+    /// depth).
+    fn writable(&self, resolved: &Path) -> Option<bool> {
+        self.roots()
+            .into_iter()
+            .map(|root| (root, true, false))
+            .chain(
+                self.grants
+                    .iter()
+                    .map(|grant| (grant.path.as_path(), grant.writable, true)),
+            )
+            .filter(|(base, _, _)| resolved.starts_with(base))
+            .max_by_key(|(base, _, grant)| (base.components().count(), *grant))
+            .map(|(_, writable, _)| writable)
+    }
+
+    /// The absolute path `path` names on this machine (symbolic links resolved for the part
+    /// that exists), wherever it is; `None` when it cannot be worked out.
+    fn locate(&self, path: &str) -> Option<PathBuf> {
+        self.locate_checked(path).ok().flatten()
+    }
+
+    fn locate_checked(&self, path: &str) -> Result<Option<PathBuf>, ToolError> {
         let candidate = self.root.join(path);
         let mut existing = candidate.as_path();
         let mut missing = Vec::new();
         while !existing.exists() {
-            let name = existing
-                .file_name()
-                .ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+            let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+                return Ok(None);
+            };
             missing.push(name.to_owned());
-            existing = existing
-                .parent()
-                .ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+            existing = parent;
         }
         let mut resolved = existing
             .canonicalize()
             .map_err(|error| ToolError::Io(format!("{path}: {error}")))?;
-        if !self.roots().iter().any(|root| resolved.starts_with(root)) {
-            return Err(ToolError::OutsideWorkspace(path.to_string()));
-        }
         for name in missing.into_iter().rev() {
             if Path::new(&name)
                 .components()
                 .any(|c| !matches!(c, Component::Normal(_)))
             {
-                return Err(ToolError::OutsideWorkspace(path.to_string()));
+                return Ok(None);
             }
             resolved.push(name);
         }
-        Ok(resolved)
+        Ok(Some(resolved))
     }
 
     /// The root as people write it: without Windows' `\\?\` verbatim prefix on drive paths.
@@ -313,6 +494,57 @@ mod tests {
             workspace.resolve(&absolute),
             Err(ToolError::OutsideWorkspace(_))
         ));
+    }
+
+    #[test]
+    fn remote_grants_are_paths_inside_the_runtime() {
+        use crate::permissions::{PathGrant, PathMode};
+        let workspace = Workspace::remote(
+            Remote::Ssh { host: "box".into() },
+            &["/home/me/project".to_string()],
+            Arc::new(crate::ProcessRunner),
+        )
+        .unwrap()
+        .with_grants(&[
+            PathGrant {
+                path: "/home/me/.cargo".into(),
+                mode: PathMode::ReadWrite,
+            },
+            PathGrant {
+                path: "/opt/toolchains".into(),
+                mode: PathMode::Read,
+            },
+            PathGrant {
+                path: "~/.npm".into(),
+                mode: PathMode::Read,
+            },
+        ]);
+        assert_eq!(workspace.grants().len(), 2, "~ cannot be expanded remotely");
+        assert!(
+            workspace
+                .resolve_remote("/home/me/.cargo/registry", true)
+                .is_ok()
+        );
+        assert!(
+            workspace
+                .resolve_remote("/opt/toolchains/bin/go", false)
+                .is_ok()
+        );
+        assert!(matches!(
+            workspace.resolve_remote("/opt/toolchains/bin/go", true),
+            Err(ToolError::ReadOnly(_))
+        ));
+        assert!(matches!(
+            workspace.resolve_remote("/etc/passwd", false),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        assert_eq!(
+            workspace.rule_target("src/main.rs"),
+            Target::Path {
+                absolute: "/home/me/project/src/main.rs".into(),
+                relative: Some("src/main.rs".into()),
+            }
+        );
     }
 
     #[test]

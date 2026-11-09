@@ -15,6 +15,7 @@ import type {
   ApprovalInfo,
   ApprovalListResult,
   PermissionDecision,
+  PermissionRule,
   ResumePolicy,
   SendMode,
   SessionControlParams,
@@ -542,6 +543,19 @@ export function App() {
     client.call("session.respond", { session_id: selected, request_id: requestId, decision }).catch(report);
   };
 
+  /** "Always allow": saves the suggested rule (in the session's environment), then allows the request. */
+  const alwaysAllow = (requestId: number, rule: PermissionRule) => {
+    if (!client || !selected) return;
+    const sessionId = selected;
+    client
+      .call("permissions.add_rule", { session_id: sessionId, rule })
+      .then(() => {
+        setSessions((all) => ({ ...all, [sessionId]: markAnswered(all[sessionId], requestId) }));
+        return client.call("session.respond", { session_id: sessionId, request_id: requestId, decision: "allow" });
+      })
+      .catch(report);
+  };
+
   const answer = (requestId: number, answers: string[]) => {
     if (!client || !selected) return;
     setSessions((all) => ({ ...all, [selected]: markQuestionsAnswered(all[selected], requestId) }));
@@ -706,6 +720,7 @@ export function App() {
         onSend={send}
         onChangeQueued={changeQueued}
         onRespond={respond}
+        onAlwaysAllow={alwaysAllow}
         onAnswer={answer}
         onSetResumePolicy={setResumePolicy}
         onResumeNow={resumeNow}

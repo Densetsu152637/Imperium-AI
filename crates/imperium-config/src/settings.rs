@@ -109,6 +109,9 @@ pub struct Settings {
     pub load: LoadSettings,
     #[serde(default)]
     pub sessions: SessionSettings,
+    /// `[permissions]`: path grants and rules for every environment (see docs/05).
+    #[serde(default)]
+    pub permissions: crate::PermissionSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,

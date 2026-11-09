@@ -14,6 +14,7 @@ mod mcp;
 mod model_config;
 mod mods;
 mod onboarding;
+mod permissions;
 mod pets;
 mod phone;
 mod project_agent;
