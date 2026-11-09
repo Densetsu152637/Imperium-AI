@@ -176,8 +176,8 @@ workflow, so it does not depend on the agent's own model.
     { "ref": "learning/flaky-windows-file-locks.md", "reason": "similar to request (0.82)", "required": false, "tokens": 300 }
   ],
   "documentation": [
-    { "ref": "docs/11-ci-cd.md#runtime-packs", "reason": "mentions scripts/ci/build-llama-runtime.sh (being edited)",
-      "summary": "Which llama.cpp packs CI builds and how they are published" }
+    { "ref": "docs/11-ci-cd.md#platform-bundles", "reason": "mentions scripts/ci/build-desktop.sh (being edited)",
+      "summary": "Which desktop bundles CI builds for each platform" }
   ],
   "memories": [{ "ref": "memory:project/prefers-pnpm", "reason": "similar to request (0.77)" }]
 }

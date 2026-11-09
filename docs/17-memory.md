@@ -91,10 +91,10 @@ documentation that bears on it, instead of rediscovering or contradicting it.
   embeddings, see [18](18-workflow-contract.md#context-retrieval)).
 - **Triggers, not just similarity:** a chunk that mentions a path the agent is about to edit, a
   command it is about to run, or a config key it is changing is served even when the request's
-  wording differs. For example, an agent editing `scripts/ci/build-llama-runtime.sh` is pointed
-  at the CI/CD document's runtime-pack section.
+  wording differs. For example, an agent editing `scripts/ci/build-desktop.sh` is pointed
+  at the CI/CD document's platform-bundles section.
 - **Pointers, then loading:** the retriever serves references with a reason and a summary
-  (`docs/11-ci-cd.md#runtime-packs`: "describes the packs this script builds"); the agent loads
+  (`docs/11-ci-cd.md#platform-bundles`: "describes the bundles this script builds"); the agent loads
   the ones it needs with `context.load`. Documentation is served as data, not instructions.
 - **Freshness:** the index updates when files change (a file watcher, and after each commit or
   pull). Chunks whose mentioned paths no longer exist are flagged as possibly stale, and the
