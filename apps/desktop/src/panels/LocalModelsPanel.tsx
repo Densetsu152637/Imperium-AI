@@ -90,7 +90,7 @@ export function LocalModelsPanel({
     return (
       <div className="models local-models">
         <ModelSetup client={client} onChanged={onRefresh} onDownload={showDownload} />
-        {client && <RuntimeCard client={client} />}
+        {client && <RuntimeCard client={client} onChanged={onRefresh} />}
         {download}
       </div>
     );
@@ -113,7 +113,7 @@ export function LocalModelsPanel({
         </button>
       </div>
       <FolderList client={client} listing={listing} onChanged={onRefresh} />
-      {client && <RuntimeCard client={client} />}
+      {client && <RuntimeCard client={client} onChanged={onRefresh} />}
       <ModelTable listing={listing} client={client} onChanged={onRefresh} onConfigure={onConfigure} />
       {listing.skipped.length > 0 && (
         <details className="skipped">
@@ -202,18 +202,38 @@ function FolderList({
   );
 }
 
-/** The llama.cpp runtime: whether it runs and sees the GPU, and how to fix it when not. */
-function RuntimeCard({ client }: { client: DaemonClient }) {
+/** Where the `llama-server` in use comes from, in words. */
+function runtimeSource(status: RuntimeStatusResult): string {
+  switch (status.source) {
+    case "custom":
+      return "Your llama-server";
+    case "detected":
+      return "Found on this computer (used until a runtime is installed)";
+    default:
+      return status.installed ? `llama.cpp ${status.llama_cpp_ref} (${status.pack})` : "Not installed yet";
+  }
+}
+
+/**
+ * The llama.cpp runtime: whether it runs and sees the GPU, and how to fix it when not.
+ * `onChanged` runs once the server in use may have changed, so the model listing follows.
+ */
+function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: () => void }) {
   const [status, setStatus] = useState<RuntimeStatusResult | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [install, setInstall] = useState<RuntimeInstallJob | null>(null);
+  // The server last reported, so the model listing is refreshed when it changes.
+  const usedRef = useRef<string | null>(null);
 
   const check = async (work?: () => Promise<RuntimeStatusResult>) => {
     setChecking(true);
     setError(null);
     try {
       const next = await (work ? work() : client.call<RuntimeStatusResult>("runtime.status"));
+      const used = `${next.source}:${next.server_path}:${next.installed}`;
+      if (usedRef.current !== null && usedRef.current !== used) onChanged?.();
+      usedRef.current = used;
       setStatus(next);
       if (next.install) setInstall(next.install);
     } catch (failure) {
@@ -269,8 +289,7 @@ function RuntimeCard({ client }: { client: DaemonClient }) {
       {status && (
         <>
           <p className="runtime-path">
-            {status.source === "custom" ? "Your llama-server" : `Runtime pack ${status.pack}`}:{" "}
-            <code title={status.server_path}>{status.server_path}</code>
+            {runtimeSource(status)}: <code title={status.server_path}>{status.server_path}</code>
           </p>
           {status.version && <p className="muted">{status.version}</p>}
           <p>{status.summary}</p>
@@ -297,13 +316,18 @@ function RuntimeCard({ client }: { client: DaemonClient }) {
             </button>
             {status.source === "custom" && (
               <button onClick={() => void useServer(null)} disabled={checking}>
-                Use the runtime pack instead
+                Use the installed runtime instead
               </button>
             )}
-            {!ready && (
-              <button className={status.source === "pack" && !status.installed ? "primary" : undefined} onClick={startInstall} disabled={installing}>
-                <Download aria-hidden="true" /> {status.installed && status.source === "pack" ? "Reinstall" : "Install"} runtime pack (
-                {status.suggested_pack})
+            {(!ready || status.source === "detected") && (
+              <button
+                className={status.source === "pack" && !status.installed ? "primary" : undefined}
+                onClick={startInstall}
+                disabled={installing}
+                title={`Downloads llama.cpp ${status.llama_cpp_ref} for this computer from ggml-org/llama.cpp on GitHub, verified against its checksums`}
+              >
+                <Download aria-hidden="true" /> {status.installed && status.source === "pack" ? "Reinstall" : "Install"} llama.cpp{" "}
+                {status.llama_cpp_ref} ({status.suggested_pack})
               </button>
             )}
           </div>

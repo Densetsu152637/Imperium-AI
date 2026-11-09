@@ -5,7 +5,7 @@
 import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import type { LocalModelRow, ModelRow, SessionControlResult } from "@imperium/protocol";
+import type { LocalModelRow, ModelRow, RuntimeInfo, SessionControlResult } from "@imperium/protocol";
 
 import { Select, type SelectOption } from "../components/Select";
 import { formatTokens } from "../sessions";
@@ -111,6 +111,8 @@ export function SessionModelSelect({
   disabled,
   models,
   local,
+  runtime,
+  onOpenLocalModels,
   onSwitch,
 }: {
   /** `null` while the session has no model yet. */
@@ -119,6 +121,10 @@ export function SessionModelSelect({
   disabled?: boolean;
   models: ModelRow[];
   local: LocalModelRow[];
+  /** The llama.cpp runtime (`models.local`); a llama.cpp model is chosen after a warning when it is missing. */
+  runtime?: RuntimeInfo | null;
+  /** Opens the Local models panel, where the runtime is installed or chosen. */
+  onOpenLocalModels?: () => void;
   /** Switches the model; rejects with the daemon's reason. */
   onSwitch: (model: string) => Promise<SessionControlResult>;
 }) {
@@ -126,6 +132,8 @@ export function SessionModelSelect({
   const [switching, setSwitching] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A llama.cpp model chosen while no runtime is ready, waiting for "Use anyway".
+  const [unready, setUnready] = useState<string | null>(null);
 
   const switchTo = (spec: string) => {
     setSwitching(true);
@@ -151,14 +159,23 @@ export function SessionModelSelect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, pending]);
 
+  const apply = (spec: string) => {
+    if (busy) setPending(spec);
+    else switchTo(spec);
+  };
+
   const choose = (spec: string) => {
     setError(null);
+    setUnready(null);
     if (spec === current) {
       setPending(null);
       return;
     }
-    if (busy) setPending(spec);
-    else switchTo(spec);
+    if (needsRuntime(spec, runtime)) {
+      setUnready(spec);
+      return;
+    }
+    apply(spec);
   };
 
   const value = pending ?? current ?? "";
@@ -202,6 +219,52 @@ export function SessionModelSelect({
           {error}
         </span>
       )}
+      {unready !== null && (
+        <span className="model-status model-runtime-warning" role="alert">
+          {NO_RUNTIME}
+          {onOpenLocalModels && (
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                setUnready(null);
+                onOpenLocalModels();
+              }}
+            >
+              Open Local models
+            </button>
+          )}
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              const spec = unready;
+              setUnready(null);
+              apply(spec);
+            }}
+          >
+            Use anyway
+          </button>
+          <button
+            type="button"
+            className="ghost icon-only model-status-cancel"
+            onClick={() => setUnready(null)}
+            aria-label="Keep the current model"
+            title="Keep the current model"
+          >
+            <X aria-hidden="true" />
+          </button>
+        </span>
+      )}
     </span>
   );
+}
+
+/** What the session selector says before a llama.cpp model is chosen without a runtime. */
+export const NO_RUNTIME =
+  "No llama.cpp runtime yet — open Local models → Runtime to install one or choose an existing llama-server.";
+
+/** Whether `spec` is a llama.cpp model and `runtime` says no `llama-server` is there to load it. */
+export function needsRuntime(spec: string, runtime: RuntimeInfo | null | undefined): boolean {
+  return spec.startsWith("llamacpp:") && runtime != null && !runtime.installed;
 }

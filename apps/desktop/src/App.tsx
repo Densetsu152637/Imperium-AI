@@ -663,6 +663,8 @@ export function App() {
         onResumeNow={resumeNow}
         models={modelTable?.models ?? []}
         localModels={localModels?.models ?? []}
+        localRuntime={localModels?.runtime ?? null}
+        onOpenLocalModels={() => togglePanel("local-models", true)}
         onSetModel={setModel}
         client={client}
         onUnarchive={() => setSessionArchived(session.summary.session_id, false)}

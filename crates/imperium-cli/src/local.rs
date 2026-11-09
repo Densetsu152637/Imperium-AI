@@ -5,7 +5,9 @@ use std::path::Path;
 use anyhow::Context;
 use imperium_config::Paths;
 use imperium_local::hardware::probe;
-use imperium_local::runtime::{RELEASES_URL, install, pack_for};
+use imperium_local::runtime::{
+    GITHUB_API, LLAMA_CPP_REPOSITORY, install, llama_cpp_ref, packs_for,
+};
 use imperium_protocol::methods::{
     LocalModelList, LocalModelListParams, LocalModelListResult, ModelFolderAdd, ModelFolderParams,
     ModelFolderRemove, ModelTest, ModelTestParams, ModelUse, ModelUseParams, RuntimeSetServer,
@@ -114,10 +116,12 @@ pub fn test_model(model: String, prompt: Option<String>) -> anyhow::Result<()> {
 }
 
 fn print_runtime(status: &RuntimeStatusResult) {
-    let source = if status.source == "custom" {
-        "your llama-server".to_string()
-    } else {
-        format!("runtime pack {}", status.pack)
+    let source = match status.source.as_str() {
+        "custom" => "your llama-server".to_string(),
+        "detected" => {
+            "llama-server found on this machine, used until a runtime is installed".into()
+        }
+        _ => format!("{} build {}", status.llama_cpp_ref, status.pack),
     };
     println!("llama.cpp ({source}): {}", status.server_path);
     if let Some(version) = &status.version {
@@ -203,13 +207,13 @@ pub fn list() -> anyhow::Result<()> {
         }
         if let Some(runtime) = &listing.runtime {
             println!(
-                "llama.cpp {} pack {}: {}",
+                "llama.cpp {} ({}): {}",
                 runtime.llama_cpp_ref,
                 runtime.pack,
                 if runtime.installed {
                     runtime.server_path.clone()
                 } else {
-                    "not installed; run `imperium runtime install`, or use your own with \
+                    "no runtime yet; run `imperium runtime install`, or use your own with \
                      `imperium runtime use <path to llama-server>`"
                         .into()
                 }
@@ -288,32 +292,58 @@ pub fn list() -> anyhow::Result<()> {
 pub fn install_runtime(pack: Option<String>) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
-    let pack = match pack {
-        Some(pack) => pack,
-        None => pack_for(
-            &settings.runtime.llamacpp.backend,
-            &probe(&settings.hardware),
-        ),
+    let hardware = probe(&settings.hardware);
+    let packs = match pack {
+        Some(pack) => vec![pack],
+        None => packs_for(&settings.runtime.llamacpp.backend, &hardware),
     };
-    println!("installing llama.cpp runtime pack {pack}");
+    println!(
+        "installing llama.cpp {} from {LLAMA_CPP_REPOSITORY} (trying {})",
+        llama_cpp_ref(),
+        packs.join(", ")
+    );
+    // Whole percents, printed as they change.
+    let shown = std::sync::Mutex::new((String::new(), u64::MAX));
+    let progress = |pack: &str, done: u64, total: u64| {
+        let percent = (done * 100).checked_div(total).unwrap_or(0);
+        let mut shown = shown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if shown.0 == pack && (shown.1 == percent || percent % 10 != 0) {
+            return;
+        }
+        if shown.0 != pack {
+            println!("{pack}: {:.0} MiB", total as f64 / MIB);
+        }
+        *shown = (pack.to_string(), percent);
+        println!("  {percent}%");
+    };
     block_on(async {
-        let server = install(
+        let installed = install(
             &reqwest::Client::new(),
-            RELEASES_URL,
+            GITHUB_API,
             paths.data_dir(),
-            &pack,
+            &packs,
+            &hardware,
+            &progress,
         )
         .await
-        .with_context(|| format!("could not install {pack}"))?;
+        .with_context(|| format!("could not install {}", packs.join(" or ")))?;
+        for skipped in &installed.skipped {
+            println!("passed over {skipped}");
+        }
         println!(
-            "installed {} ({:.0} MiB)",
-            server.display(),
-            size(&server) / MIB
+            "installed {} ({})",
+            installed.pack,
+            installed.server.display()
         );
+        // A running daemon picks the new runtime up when asked for its status.
+        if let Ok((mut client, _)) = connect().await
+            && let Ok(status) = client.call::<RuntimeStatus>(RuntimeStatusParams {}).await
+        {
+            println!();
+            print_runtime(&status);
+        }
         Ok(())
     })
-}
-
-fn size(path: &std::path::Path) -> f64 {
-    std::fs::metadata(path).map_or(0.0, |meta| meta.len() as f64)
 }

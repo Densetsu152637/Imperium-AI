@@ -4,15 +4,17 @@ import type { RuntimeInstallJob } from "./RuntimeInstallJob";
 
 export type RuntimeStatusResult = { 
 /**
- * `custom` (your own `llama-server`) or `pack` (a runtime pack).
+ * `custom` (your own `llama-server`), `pack` (llama.cpp's build installed by
+ * `runtime.install`, or the one it would install when `installed` is false), or
+ * `detected` (a `llama-server` found on this machine, used while none is installed).
  */
-source: "custom" | "pack", 
+source: "custom" | "pack" | "detected", 
 /**
- * The pack used when `source` is `pack`, such as `windows-x64-cuda13`.
+ * The installed build when `source` is `pack`, such as `windows-x64-cuda13`.
  */
 pack: string, 
 /**
- * The pack that suits this machine, which `runtime.install` installs.
+ * The build that suits this machine best, which `runtime.install` tries first.
  */
 suggested_pack: string, server_path: string, 
 /**

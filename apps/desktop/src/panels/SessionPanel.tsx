@@ -15,6 +15,7 @@ import type {
   Plan,
   QueuedMessage,
   ResumePolicy,
+  RuntimeInfo,
   SendMode,
   SessionControlResult,
 } from "@imperium/protocol";
@@ -57,6 +58,10 @@ type Props = {
   models: ModelRow[];
   /** Local models found in the model folders (`models.local`), offered after the table. */
   localModels: LocalModelRow[];
+  /** The llama.cpp runtime (`models.local`), so choosing a llama.cpp model without one warns first. */
+  localRuntime?: RuntimeInfo | null;
+  /** Opens the Local models panel. */
+  onOpenLocalModels?: () => void;
   /** Switches the session's model; resolves with the daemon's answer, rejects with its reason. */
   onSetModel: (model: string) => Promise<SessionControlResult>;
   /** For answering model download suggestions and following their downloads. */
@@ -78,6 +83,8 @@ export function SessionPanel({
   onResumeNow,
   models,
   localModels,
+  localRuntime = null,
+  onOpenLocalModels,
   onSetModel,
   client = null,
   onUnarchive,
@@ -306,6 +313,8 @@ export function SessionPanel({
           disabled={archived}
           models={models}
           local={localModels}
+          runtime={localRuntime}
+          onOpenLocalModels={onOpenLocalModels}
           onSwitch={onSetModel}
         />
         <span className="session-footer-spacer" />

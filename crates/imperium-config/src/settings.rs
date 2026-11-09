@@ -22,6 +22,9 @@ resume_days = 7
 [runtime.llamacpp]
 # Runtime pack: auto, cpu, vulkan, cuda12, cuda13, rocm, or metal. custom_path overrides it.
 backend = "auto"
+# With no runtime installed and no custom_path, use a llama-server already on this machine (on
+# PATH or in a llama.cpp build in the home folder) that starts and takes the flags Imperium passes.
+find_existing = true
 # Seconds a loaded model may sit unused before it is unloaded.
 idle_unload_s = 900
 # Tokens one session may use on a local model (per-model override: [runtime.llamacpp.models."<id>"]).
@@ -1014,6 +1017,10 @@ pub struct LlamaCppSettings {
     /// A `llama-server` executable to use instead of a runtime pack.
     #[serde(default)]
     pub custom_path: Option<PathBuf>,
+    /// With no runtime installed and no `custom_path`, use a `llama-server` found on this
+    /// machine.
+    #[serde(default = "default_true")]
+    pub find_existing: bool,
     pub idle_unload_s: u64,
     /// Tokens one session may use on a local model.
     pub context: u32,

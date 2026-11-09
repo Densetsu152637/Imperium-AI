@@ -9,7 +9,10 @@ use imperium_local::hardware::{Hardware, probe};
 use imperium_local::hf::Weights;
 use imperium_local::planner::{Budget, Placement};
 use imperium_local::process::ProcessLauncher;
-use imperium_local::runtime::{llama_cpp_ref, server_path};
+use imperium_local::runtime::{
+    SOURCE_CUSTOM, SOURCE_DETECTED, llama_cpp_ref, resolve, server_path,
+};
+use imperium_local::runtime_check::home_dir;
 use imperium_local::scan::{Format, Skipped, scan};
 use imperium_local::supervisor::{CPU_LANE_SLOTS, CpuLane, Runtimes, Supervisor};
 use imperium_protocol::methods::{
@@ -27,9 +30,22 @@ pub struct LocalRuntime {
     hardware: Hardware,
     /// The runtime pack (or `custom`) and the `llama-server` models are loaded with; they
     /// change when the user picks another server or installs a pack.
-    server: Mutex<(String, PathBuf)>,
+    server: Arc<Mutex<(String, PathBuf)>>,
     /// Starts the servers; `None` in tests that use a fake.
     launcher: Option<Arc<ProcessLauncher>>,
+}
+
+fn set_server(
+    slot: &Mutex<(String, PathBuf)>,
+    launcher: Option<&ProcessLauncher>,
+    label: String,
+    server: PathBuf,
+) {
+    tracing::info!(source = %label, server = %server.display(), "llama-server for new model loads");
+    if let Some(launcher) = launcher {
+        launcher.set_program(imperium_local::backend::LLAMA_CPP, server.clone());
+    }
+    *slot.lock().unwrap_or_else(PoisonError::into_inner) = (label, server);
 }
 
 /// Folders to scan: `models.folders`, plus the download folder when it exists and is not
@@ -107,13 +123,15 @@ impl LocalRuntime {
             Arc::clone(&launcher) as Arc<dyn imperium_local::supervisor::Launcher>,
         );
         supervisor.set_cpu_pinned(cpu_pins(settings));
-        Some(LocalRuntime {
+        let local = LocalRuntime {
             supervisor,
             scanned: Mutex::new((folders, found.skipped)),
             hardware,
-            server: Mutex::new((pack, server)),
+            server: Arc::new(Mutex::new((pack, server))),
             launcher: Some(launcher),
-        })
+        };
+        local.detect_if_missing(paths, settings);
+        Some(local)
     }
 
     /// The hardware the models are planned against.
@@ -134,11 +152,51 @@ impl LocalRuntime {
     pub fn use_server(&self, paths: &Paths, settings: &Settings) {
         let (pack, server) =
             server_path(&settings.runtime.llamacpp, paths.data_dir(), &self.hardware);
-        tracing::info!(%pack, server = %server.display(), "llama-server for new model loads");
-        if let Some(launcher) = &self.launcher {
-            launcher.set_program(imperium_local::backend::LLAMA_CPP, server.clone());
+        self.set_server(pack, server);
+        self.detect_if_missing(paths, settings);
+    }
+
+    /// Loads models from now on with `server`, labelled `label` (a build, `custom`, or
+    /// `detected`).
+    pub fn set_server(&self, label: String, server: PathBuf) {
+        set_server(&self.server, self.launcher.as_deref(), label, server);
+    }
+
+    /// When neither a custom `llama-server` nor an installed build is there, looks for a
+    /// `llama-server` already on this machine in the background ([`resolve`]) and uses the best
+    /// one found, unless the server was changed meanwhile.
+    fn detect_if_missing(&self, paths: &Paths, settings: &Settings) {
+        let current = self.server();
+        if current.0 == SOURCE_CUSTOM
+            || current.1.is_file()
+            || tokio::runtime::Handle::try_current().is_err()
+        {
+            return;
         }
-        *self.server.lock().unwrap_or_else(PoisonError::into_inner) = (pack, server);
+        let slot = Arc::clone(&self.server);
+        let launcher = self.launcher.clone();
+        let hardware = self.hardware.clone();
+        let llamacpp = settings.runtime.llamacpp.clone();
+        let data_dir = paths.data_dir().to_path_buf();
+        tokio::spawn(async move {
+            let resolved = resolve(&llamacpp, &data_dir, &hardware, home_dir().as_deref()).await;
+            if resolved.source != SOURCE_DETECTED {
+                tracing::info!(
+                    looked_for = %current.1.display(),
+                    "no llama.cpp runtime installed and no usable llama-server found"
+                );
+                return;
+            }
+            let unchanged = *slot.lock().unwrap_or_else(PoisonError::into_inner) == current;
+            if unchanged {
+                set_server(
+                    &slot,
+                    launcher.as_deref(),
+                    resolved.label(),
+                    resolved.server,
+                );
+            }
+        });
     }
 
     /// Scans the folders again, such as after a download, so new models can be used. The caller
@@ -462,7 +520,7 @@ mod tests {
             supervisor: Arc::clone(&supervisor),
             scanned: Mutex::new((Vec::new(), Vec::new())),
             hardware,
-            server: Mutex::new(("cpu".into(), PathBuf::from("llama-server"))),
+            server: Arc::new(Mutex::new(("cpu".into(), PathBuf::from("llama-server")))),
             launcher: None,
         };
         let row = |listing: &LocalModelListResult, id: &str| {

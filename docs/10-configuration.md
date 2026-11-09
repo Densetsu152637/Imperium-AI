@@ -91,8 +91,9 @@ listed; edit them in the file.
 | `models.suggest_downloads` | `true` | Sessions may offer to download a suitable local model from Hugging Face when the best available one is poor for the task ([model download suggestions](04-models-and-routing.md#model-download-suggestions)); applies without a restart, and a suggestion's "Don't ask again" sets it to `false` in the user file |
 | `models.suggestions` | six well-known GGUF repositories (Qwen3 4B and 14B, Qwen2.5-Coder 7B, Qwen3-Coder 30B-A3B, Gemma 3 4B and 12B) | `[[models.suggestions]]` rows suggestions choose from: `repo`, `capabilities` (`chat`, `code`, `tools`, `vision`), `size` (`small`, `medium`, `large`; default `small`), `context` (tokens), and `mmproj` (download the vision projector too); setting any row replaces the built-in list |
 | `models.download_dir` | first of `models.folders`, else `<data>/models` | Where [Hugging Face downloads](04-models-and-routing.md#downloading-from-hugging-face) go, as `<owner>/<repo>/` below it; must be absolute; scanned with `models.folders` |
-| `runtime.llamacpp.backend` | `auto` | Runtime pack: `auto`, `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` |
-| `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of a pack; applies to models loaded from then on, without a restart (*Choose llama-server…* in the app, `imperium runtime use`) |
+| `runtime.llamacpp.backend` | `auto` | llama.cpp build to install and use: `auto` (the best that runs here: CUDA 13, CUDA 12, Vulkan, CPU; Metal on Apple Silicon), `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` ([runtimes](04-models-and-routing.md#runtimes)) |
+| `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of an installed build; applies to models loaded from then on, without a restart (*Choose llama-server…* in the app, `imperium runtime use`) |
+| `runtime.llamacpp.find_existing` | `true` | With no build installed and no `custom_path`, use a `llama-server` already on this machine (on `PATH`, or in `~/.unsloth/llama.cpp` or `~/llama.cpp`) that starts and supports the flags Imperium passes, preferring one that sees the GPU |
 | `runtime.llamacpp.context` | `8192` | Tokens one session may use on a local model (`--kv-unified-per-slot` when below the pool) |
 | `runtime.llamacpp.parallel` | `2` | Deprecated: only sizes the default KV pool, `pool_tokens = context × parallel`. It no longer caps anything: sessions beyond a model's slots queue |
 | `runtime.llamacpp.slots` | the larger of `8` and `parallel` | Default `--parallel` of each model: calls one server decodes at once, `1`-`256`. A CPU-pinned model defaults to `1` |
@@ -194,8 +195,9 @@ kind = "openai"
 base_url = "http://192.168.1.20:8000/v1"
 
 [runtime.llamacpp]
-backend = "auto"          # auto | cpu | cuda | vulkan | rocm | metal | custom
+backend = "auto"          # auto | cpu | cuda12 | cuda13 | vulkan | rocm | metal
 custom_path = ""
+find_existing = true      # use a llama-server already on this machine until one is installed
 idle_unload_s = 900
 context = 8192            # tokens one session may use
 slots = 8                 # calls one server decodes at once; no cap on sessions

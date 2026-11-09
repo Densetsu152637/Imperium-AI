@@ -32,6 +32,8 @@ fn gguf() -> Vec<u8> {
 async fn start_daemon(home: &Path, config: &str) -> (Socket, Arc<imperium_core::DaemonState>) {
     let paths = Paths::under(home);
     std::fs::create_dir_all(paths.config_dir()).unwrap();
+    // A llama-server installed on the machine running the tests is not looked for.
+    let config = format!("{config}\n[runtime.llamacpp]\nfind_existing = false\n");
     std::fs::write(paths.user_config_file(), config).unwrap();
     let loaded = imperium_config::load(&paths, None, []).unwrap();
     // Secrets stay in memory, away from the machine's keychain.
@@ -300,7 +302,9 @@ async fn test_reports_the_reply_and_speed_or_why_it_failed() {
         .unwrap();
     assert_eq!(tested["ok"], false);
     let message = tested["message"].as_str().unwrap();
-    assert!(message.contains("llama-server not found"), "{message}");
+    assert!(message.contains("No llama.cpp runtime yet"), "{message}");
+    assert!(message.contains("Local models → Runtime"), "{message}");
+    assert!(message.contains("imperium runtime install"), "{message}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -318,7 +322,7 @@ async fn runtime_status_explains_a_missing_server_and_set_server_saves_the_path(
         status["problem"]
             .as_str()
             .unwrap()
-            .contains("No llama-server")
+            .contains("No llama.cpp runtime yet")
     );
 
     let error = call(

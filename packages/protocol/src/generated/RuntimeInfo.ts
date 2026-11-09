@@ -2,6 +2,7 @@
 
 export type RuntimeInfo = { 
 /**
- * The runtime pack in use, such as `windows-x64-cuda13`, or `custom`.
+ * The llama.cpp build in use, such as `windows-x64-cuda13`; `custom` for your own
+ * `llama-server`, `detected` for one found on this machine.
  */
 pack: string, server_path: string, installed: boolean, llama_cpp_ref: string, };

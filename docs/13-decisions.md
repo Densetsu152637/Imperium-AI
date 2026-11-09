@@ -9,7 +9,7 @@
 | D3 | OpenAI-compatible HTTP as the internal model interface | Every runtime and most hosts speak it | Per-vendor native clients only | A required capability can't be expressed |
 | D4 | Isolation tiers with an always-visible indicator | Path checks alone cannot contain executed code | Claiming folder sandboxing as security | — |
 | D5 | vLLM supported on Linux, WSL2, Docker, or remote — never bundled | No native Windows/macOS support | Bundling vLLM | Upstream adds native support |
-| D6 | Runtime packs built in CI and downloaded on demand | Keeps installers small; per-backend builds | Bundling all backends; relying on upstream binaries | Upstream ships stable per-backend artefacts |
+| D6 | llama.cpp's own release builds (per backend, with their CUDA runtime) downloaded on demand at a pinned ref, verified by GitHub's SHA-256 asset digests; a `llama-server` already on the machine is used until one is installed | Keeps installers small; upstream publishes every backend we need, while our own CI packs never built for Windows CUDA and macOS | Bundling all backends; building packs in CI (kept, unused, in `runtime-packs.yml`) | Upstream stops publishing a backend, or its builds lack a flag we pass |
 | D7 | Secrets only in the OS keychain | No plaintext keys on disk | Config-file keys | — |
 | D8 | Media models via ComfyUI and a Python sidecar | Ecosystem is Python; ComfyUI covers image/video | Reimplementing pipelines in Rust | — |
 | D9 | Agent-Custom-Workflow is the default, overridable policy pack | User's own workflow; open and forkable | Hard-coded prompts | — |

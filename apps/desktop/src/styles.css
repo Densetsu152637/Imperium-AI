@@ -823,6 +823,16 @@ pre {
   color: var(--warn);
 }
 
+/* "No llama.cpp runtime yet" before a local model is chosen: wraps instead of being cut off. */
+.model-status.model-runtime-warning {
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  max-width: 34rem;
+  margin: 0;
+  color: var(--warn);
+  white-space: normal;
+}
+
 .session-footer button.icon-only,
 .model-status button.icon-only {
   width: 1.7rem;

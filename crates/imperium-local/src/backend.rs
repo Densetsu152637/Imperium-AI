@@ -22,6 +22,16 @@ pub const LLAMA_CPP: &str = "llamacpp";
 /// The id of the vLLM runtime ([`Vllm`]).
 pub const VLLM: &str = "vllm";
 
+/// Why a llama.cpp model cannot load when `program` (the `llama-server` looked for) is missing,
+/// with what to do in the app and on the command line.
+pub fn missing_runtime(program: &Path) -> String {
+    format!(
+        "No llama.cpp runtime yet — open Local models → Runtime to install one or choose an \
+         existing llama-server (or run `imperium runtime install`). Looked for {}.",
+        program.display()
+    )
+}
+
 /// A local inference runtime serving an OpenAI-compatible API.
 pub trait RuntimeBackend: Send + Sync + fmt::Debug {
     /// Short, stable name; [`ProcessLauncher`](crate::process::ProcessLauncher) finds the
@@ -187,11 +197,7 @@ impl RuntimeBackend for LlamaCpp {
         if program.is_file() {
             return Ok(());
         }
-        Err(format!(
-            "llama-server not found at {}; install a runtime pack or choose your own \
-             llama-server (Local models → Runtime in the app, or `imperium runtime install`)",
-            program.display()
-        ))
+        Err(missing_runtime(program))
     }
 }
 
