@@ -198,8 +198,15 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
         .map(|tool| tool["function"]["name"].as_str().unwrap())
         .collect();
     assert_eq!(
-        names[names.len() - 4..],
-        ["update_plan", "note_add", "spawn_agent", "await_tasks"]
+        names[names.len() - 6..],
+        [
+            "update_plan",
+            "note_add",
+            "spawn_agent",
+            "await_tasks",
+            "delegate_chunks",
+            "ask_user"
+        ]
     );
     let system = first["messages"][0]["content"].as_str().unwrap();
     assert!(system.ends_with("Keep notes with note_add."), "{system}");

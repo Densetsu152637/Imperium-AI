@@ -22,11 +22,11 @@
     },
     {
       "name": "delegate_chunks",
-      "status": "planned"
+      "status": "available"
     },
     {
       "name": "ask_user",
-      "status": "planned"
+      "status": "available"
     }
   ]
 }

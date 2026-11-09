@@ -17,10 +17,10 @@ use imperium_protocol::methods::{
     PhoneRevoke, PhoneRevokeParams, PhoneRevokeResult, Ping, PingParams, PingResult,
     ProjectAgentRow, ProjectList, ProjectListParams, ProjectListResult, ProjectMessage,
     ProjectMessageParams, ProjectMessageResult, ScheduleList, ScheduleListParams,
-    ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionCreate,
-    SessionCreateParams, SessionCreateResult, SessionList, SessionListParams, SessionListResult,
-    SessionRespond, SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe,
-    SessionSubscribeParams, SessionSubscribeResult,
+    ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionAnswer,
+    SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult, SessionList,
+    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSend,
+    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult,
 };
 use imperium_protocol::session::AgentEvent;
 use imperium_protocol::{PROTOCOL_VERSION, ProtocolVersion};
@@ -359,6 +359,14 @@ impl Connection {
                 call::<SessionSend>(request.params, |params: SessionSendParams| {
                     self.session(&params.session_id)?
                         .send(params.text)
+                        .map_err(stopped)?;
+                    Ok(Accepted {})
+                })
+            }
+            SessionAnswer::NAME => {
+                call::<SessionAnswer>(request.params, |params: SessionAnswerParams| {
+                    self.session(&params.session_id)?
+                        .answer(params.request_id, params.answers)
                         .map_err(stopped)?;
                     Ok(Accepted {})
                 })

@@ -12,20 +12,22 @@ use imperium_api::{
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
 use imperium_protocol::session::{
-    ContextItem, ContextPointer, PermissionDecision, Plan, PlanStep, SessionEvent, StepStatus,
-    TokenUsage,
+    ContextItem, ContextPointer, PermissionDecision, Plan, PlanStep, Question, SessionEvent,
+    StepStatus, TokenUsage,
 };
 use imperium_protocol::tools as contract;
 use imperium_tools::{Access, Invocation, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 
 use imperium_config::{Enforce, WritePolicy};
 use imperium_extensions::{HookEvent, Verdict};
 use imperium_memory::{NewEntry, Scope};
 
+use crate::artefacts::{self, estimate_tokens, handle_message};
 use crate::breakdown::{Call, Category, Request, Spans, join_parts, tool_texts};
 use crate::session::{SessionMemory, Shared, lock};
 use crate::{LocalLease, ResolvedModel, TaskRequest, route};
@@ -34,6 +36,11 @@ use crate::{LocalLease, ResolvedModel, TaskRequest, route};
 const EVENT_OUTPUT_CHARS: usize = 2_000;
 /// Longest subagent report handed back to the parent.
 const REPORT_CHARS: usize = 8_000;
+/// Share of the root's context window, in percent, above which an input is stored as an
+/// artefact instead of entering the conversation.
+const ARTEFACT_THRESHOLD_PERCENT: u64 = 75;
+/// Most chunks one `delegate_chunks` call may make; a larger input needs larger chunks.
+const MAX_CHUNKS: usize = 64;
 
 /// What a turn produced, for a parent awaiting a subagent.
 pub struct TurnOutcome {
@@ -48,6 +55,8 @@ enum AgentTool {
     UpdatePlan,
     SpawnAgent,
     AwaitTasks,
+    DelegateChunks,
+    AskUser,
     LoadSkill,
     MemorySearch,
     MemoryRead,
@@ -96,7 +105,10 @@ impl Agent {
                  project folder. For multi-step work, keep a checklist with update_plan. For \
                  independent pieces of a larger task, delegate with spawn_agent (a self-contained \
                  brief; optionally a tier: basic, standard, strong, frontier), then call \
-                 await_tasks to collect the reports; you use no tokens while waiting. Check the \
+                 await_tasks to collect the reports; you use no tokens while waiting. An input too \
+                 large for your context arrives as an artefact handle with an outline; have it \
+                 read with delegate_chunks, which gives each chunk to an agent of its own. Ask the \
+                 user about decisions that are theirs in one ask_user batch. Check the \
                  results, and finish with a short summary of what was done."
             )
         } else {
@@ -209,7 +221,12 @@ impl Agent {
             }
         }
         if self.can_delegate {
-            tools.extend([spawn_agent_spec(), await_tasks_spec()]);
+            tools.extend([
+                spawn_agent_spec(),
+                await_tasks_spec(),
+                delegate_chunks_spec(),
+                ask_user_spec(),
+            ]);
         }
         (tools, mcp)
     }
@@ -218,6 +235,7 @@ impl Agent {
     /// `context` (recalled memories) is given to the model before the message but not shown
     /// as part of it.
     pub async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
+        let text = self.guard_input(text);
         self.emit(SessionEvent::TurnStarted { text: text.clone() });
         let mut parts = Vec::new();
         if let Some(index) = &self.shared.context {
@@ -345,6 +363,7 @@ impl Agent {
             }
             for call in completion.tool_calls {
                 let output = self.run_tool(&call).await;
+                let output = self.guard_input(output);
                 self.messages.push(ChatMessage::Tool {
                     tool_call_id: call.id,
                     content: output,
@@ -730,6 +749,8 @@ impl Agent {
             "update_plan" => AgentTool::UpdatePlan,
             "spawn_agent" if self.can_delegate => AgentTool::SpawnAgent,
             "await_tasks" if self.can_delegate => AgentTool::AwaitTasks,
+            "delegate_chunks" if self.can_delegate => AgentTool::DelegateChunks,
+            "ask_user" if self.can_delegate => AgentTool::AskUser,
             "load_skill" if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
             "context_load" if self.shared.context.is_some() => AgentTool::ContextLoad,
             "start_session" if self.can_delegate && self.shared.launcher.is_some() => {
@@ -751,6 +772,8 @@ impl Agent {
             AgentTool::UpdatePlan => "update the plan",
             AgentTool::SpawnAgent => "delegate a task",
             AgentTool::AwaitTasks => "wait for subagents",
+            AgentTool::DelegateChunks => "split an artefact across subagents",
+            AgentTool::AskUser => "ask the user",
             AgentTool::LoadSkill => "load a skill",
             AgentTool::ContextLoad => "load workflow context",
             AgentTool::StartSession => "start a session",
@@ -767,6 +790,8 @@ impl Agent {
             AgentTool::UpdatePlan => self.update_plan(arguments),
             AgentTool::SpawnAgent => self.spawn_agent(arguments),
             AgentTool::AwaitTasks => self.await_tasks(arguments).await,
+            AgentTool::DelegateChunks => self.delegate_chunks(arguments),
+            AgentTool::AskUser => self.ask_user(arguments).await,
             AgentTool::LoadSkill => self.load_skill(arguments),
             AgentTool::ContextLoad => self.context_load(arguments),
             AgentTool::StartSession => self.start_session(arguments).await,
@@ -894,10 +919,31 @@ impl Agent {
             },
             self.shared.local.as_deref(),
         );
+        let role = args.role.unwrap_or_else(|| "leaf".into());
+        let brief = args.brief;
+        let (task_id, handle) =
+            self.start_task(std::future::ready(brief.clone()), brief, model, role, None);
+        self.tasks.insert(task_id.clone(), handle);
+        Ok(format!(
+            "started {task_id}; call await_tasks to collect its report"
+        ))
+    }
+
+    /// Starts a subagent as its own task. `brief` resolves to the text it works from (a
+    /// reduce step waits for its chunk reports first); `shown` is what events and hooks say
+    /// instead. With a `gate`, the subagent waits for a permit before it starts.
+    fn start_task(
+        &self,
+        brief: impl Future<Output = String> + Send + 'static,
+        shown: String,
+        model: ResolvedModel,
+        role: String,
+        gate: Option<Arc<Semaphore>>,
+    ) -> (String, JoinHandle<TaskReport>) {
         let task_id = self.shared.next_task_id();
         self.emit(SessionEvent::TaskSpawned {
             task_id: task_id.clone(),
-            brief: args.brief.clone(),
+            brief: shown.clone(),
             model: model.spec.clone(),
         });
         let shared = Arc::clone(&self.shared);
@@ -905,16 +951,20 @@ impl Agent {
         let spec = model.spec.clone();
         // Each subagent is its own task, so subagents run in parallel across the runtime's threads.
         let handle = tokio::spawn(async move {
+            let _permit = match gate {
+                Some(gate) => gate.acquire_owned().await.ok(),
+                None => None,
+            };
+            let brief = brief.await;
             shared
                 .hook(
                     HookEvent::AgentSpawn,
                     None,
-                    json!({"task_id": id, "brief": args.brief, "model": spec}),
+                    json!({"task_id": id, "brief": shown, "model": spec}),
                 )
                 .await;
-            let role = args.role.unwrap_or_else(|| "leaf".into());
             let mut agent = Agent::new(id.clone(), Arc::clone(&shared), model, false, role);
-            let outcome = agent.run_turn(args.brief, None).await;
+            let outcome = agent.run_turn(brief, None).await;
             shared
                 .hook(
                     HookEvent::AgentComplete,
@@ -939,10 +989,160 @@ impl Agent {
                 report: truncate(&outcome.text, REPORT_CHARS),
             }
         });
-        self.tasks.insert(task_id.clone(), handle);
+        (task_id, handle)
+    }
+
+    /// Keeps an input that would fill the window out of the conversation: past the threshold
+    /// the agent gets an artefact handle and an outline instead of the text. Only the root,
+    /// which can chunk, is guarded, and only when its window is known.
+    fn guard_input(&self, text: String) -> String {
+        let Some(window) = self.model.context_window.filter(|_| self.can_delegate) else {
+            return text;
+        };
+        if estimate_tokens(&text) <= window.saturating_mul(ARTEFACT_THRESHOLD_PERCENT) / 100 {
+            return text;
+        }
+        let id = self.shared.artefacts.store(&text);
+        handle_message(&id, &text)
+    }
+
+    /// Splits an artefact and gives each chunk to its own subagent, within the session's limit
+    /// on parallel chunk agents. With `reduce`, one more subagent merges their reports and is
+    /// the only task the caller collects.
+    fn delegate_chunks(&mut self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            artefact_id: String,
+            chunk_tokens: u64,
+            brief: String,
+            #[serde(default)]
+            reduce: Option<String>,
+        }
+        let args: Args = parse(arguments)?;
+        if args.brief.trim().is_empty() {
+            return Err("brief must not be empty".into());
+        }
+        if args.chunk_tokens == 0 {
+            return Err("chunk_tokens must be at least 1".into());
+        }
+        let Some(text) = self.shared.artefacts.get(&args.artefact_id) else {
+            return Err(format!("unknown artefact {:?}", args.artefact_id));
+        };
+        let chunks = artefacts::split(&text, args.chunk_tokens);
+        if chunks.len() > MAX_CHUNKS {
+            return Err(format!(
+                "that would make {} chunks and one call allows {MAX_CHUNKS}; raise chunk_tokens",
+                chunks.len()
+            ));
+        }
+        let model = route(
+            &self.shared.catalog,
+            &self.shared.routing,
+            &self.shared.fallback_model,
+            TaskRequest {
+                named: None,
+                tier: Tier::default(),
+                location: None,
+                tags: &[],
+            },
+            self.shared.local.as_deref(),
+        );
+        let total = chunks.len();
+        let artefact = args.artefact_id;
+        let mut started = Vec::new();
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            let number = index + 1;
+            let shown = format!("{} (chunk {number} of {total} of {artefact})", args.brief);
+            let brief = format!(
+                "{}\n\nYou have chunk {number} of {total} of artefact {artefact}; report on this \
+                 chunk only.\n\n--- chunk {number} of {total} ---\n{chunk}\n--- end of chunk ---",
+                args.brief
+            );
+            started.push(self.start_task(
+                std::future::ready(brief),
+                shown,
+                model.clone(),
+                "leaf".into(),
+                Some(Arc::clone(&self.shared.chunk_gate)),
+            ));
+        }
+        let list = started
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let Some(reduce) = args.reduce.filter(|reduce| !reduce.trim().is_empty()) else {
+            self.tasks.extend(started);
+            return Ok(format!(
+                "started {list}, one per chunk of {artefact} ({total} chunks); call await_tasks \
+                 to collect the reports"
+            ));
+        };
+        let shown = format!("{reduce} (merge the reports on {artefact})");
+        let intro = format!(
+            "{reduce}\n\nThe reports below come from {total} subagents that each read one chunk \
+             of artefact {artefact}."
+        );
+        let brief = async move {
+            let mut reports = vec![intro];
+            for (id, handle) in started {
+                reports.push(match handle.await {
+                    Ok(task) => format!(
+                        "## {} ({})\n{}",
+                        task.task_id,
+                        if task.ok { "finished" } else { "failed" },
+                        task.report
+                    ),
+                    Err(error) => format!("## {id}\nthe subagent crashed: {error}"),
+                });
+            }
+            reports.join("\n\n")
+        };
+        let (reduce_id, handle) = self.start_task(brief, shown, model, "leaf".into(), None);
+        self.tasks.insert(reduce_id.clone(), handle);
         Ok(format!(
-            "started {task_id}; call await_tasks to collect its report"
+            "started {list}, one per chunk of {artefact} ({total} chunks), and {reduce_id}, which \
+             merges their reports; call await_tasks with task_ids [\"{reduce_id}\"]"
         ))
+    }
+
+    /// Pauses the agent, with no model calls, until the user answers the batch from any client.
+    async fn ask_user(&self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            questions: Vec<Question>,
+        }
+        let args: Args = parse(arguments)?;
+        if args.questions.is_empty() {
+            return Err("ask at least one question".into());
+        }
+        let (request_id, answer) = self.shared.questions.request();
+        self.emit(SessionEvent::QuestionsAsked {
+            request_id,
+            questions: args.questions.clone(),
+        });
+        let answers = answer
+            .await
+            .map_err(|_| "nobody can answer: the session is closing".to_string())?;
+        self.emit(SessionEvent::QuestionsAnswered { request_id });
+        let mut lines = Vec::new();
+        for (index, question) in args.questions.iter().enumerate() {
+            let number = index + 1;
+            let given = answers.get(index).map_or("", |answer| answer.trim());
+            let answer = if given.is_empty() {
+                format!(
+                    "no answer; go with your recommendation: {}",
+                    question.recommended
+                )
+            } else {
+                given.to_string()
+            };
+            lines.push(format!(
+                "Q{number}: {}\nA{number}: {answer}",
+                question.question
+            ));
+        }
+        Ok(lines.join("\n\n"))
     }
 
     /// Waits for subagents without calling the model, then returns their reports.
@@ -1123,6 +1323,14 @@ fn await_tasks_spec() -> ToolSpec {
     tool_spec(contract::await_tasks())
 }
 
+fn delegate_chunks_spec() -> ToolSpec {
+    tool_spec(contract::delegate_chunks())
+}
+
+fn ask_user_spec() -> ToolSpec {
+    tool_spec(contract::ask_user())
+}
+
 fn token_usage(usage: &Usage) -> TokenUsage {
     TokenUsage {
         prompt_tokens: usage.prompt_tokens,
@@ -1165,6 +1373,8 @@ mod tests {
             (update_plan_spec(), contract::update_plan()),
             (spawn_agent_spec(), contract::spawn_agent()),
             (await_tasks_spec(), contract::await_tasks()),
+            (delegate_chunks_spec(), contract::delegate_chunks()),
+            (ask_user_spec(), contract::ask_user()),
         ] {
             assert_eq!(spec.name, definition.name);
             assert_eq!(spec.description, definition.description);

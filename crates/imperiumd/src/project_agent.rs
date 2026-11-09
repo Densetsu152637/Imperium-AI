@@ -126,6 +126,12 @@ async fn answer_permissions(
                 return;
             };
             daemon.bridge_permission(&session, request_id, &tool, summary);
+        } else if let SessionEvent::QuestionsAsked {
+            request_id,
+            questions,
+        } = event.event
+        {
+            crate::state::answer_with_recommendations(&session, request_id, &questions);
         }
     }
 }

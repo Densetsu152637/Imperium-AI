@@ -512,6 +512,10 @@ impl DaemonState {
                         tool,
                         summary,
                     } => self.bridge_permission(session, request_id, &tool, summary),
+                    SessionEvent::QuestionsAsked {
+                        request_id,
+                        questions,
+                    } => answer_with_recommendations(session, request_id, &questions),
                     SessionEvent::TextDelta { text } if root => reply.push_str(&text),
                     SessionEvent::TurnCompleted { .. } if root => return Ok(()),
                     SessionEvent::TurnFailed { message } if root => return Err(message),
@@ -846,4 +850,18 @@ mod tests {
         assert!(loaded.roles.contains_key("root") && loaded.roles.contains_key("leaf"));
         assert!(!loaded.candidates.is_empty());
     }
+}
+
+/// Answers a batch of questions with the agent's own recommendations: an unattended session
+/// (a project agent, a scheduled task) has nobody to ask.
+pub fn answer_with_recommendations(
+    session: &Session,
+    request_id: u64,
+    questions: &[imperium_protocol::session::Question],
+) {
+    let answers = questions
+        .iter()
+        .map(|question| question.recommended.clone())
+        .collect();
+    let _ = session.answer(request_id, answers);
 }

@@ -156,6 +156,28 @@ pub enum SessionEvent {
         kind: String,
         prompt: String,
     },
+    /// The agent paused to ask the user a batch of questions; answer with `session.answer`.
+    /// Subagents already running keep going meanwhile.
+    QuestionsAsked {
+        #[ts(type = "number")]
+        request_id: u64,
+        questions: Vec<Question>,
+    },
+    /// A batch of questions was answered, from any client, so the rest can close it.
+    QuestionsAnswered {
+        #[ts(type = "number")]
+        request_id: u64,
+    },
+}
+
+/// One question for the user, with the answer the agent suggests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Question {
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    pub recommended: String,
 }
 
 /// An instruction file or section in a context manifest.

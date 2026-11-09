@@ -99,6 +99,16 @@ impl Method for SessionRespond {
     type Result = Accepted;
 }
 
+/// `session.answer`: answers a `questions_asked` event, one answer per question in order.
+#[derive(Debug)]
+pub struct SessionAnswer;
+
+impl Method for SessionAnswer {
+    const NAME: &'static str = "session.answer";
+    type Params = SessionAnswerParams;
+    type Result = Accepted;
+}
+
 /// `session.list`: the sessions running in this daemon.
 #[derive(Debug)]
 pub struct SessionList;
@@ -191,6 +201,15 @@ pub struct SessionRespondParams {
     #[ts(type = "number")]
     pub request_id: u64,
     pub decision: PermissionDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAnswerParams {
+    pub session_id: String,
+    #[ts(type = "number")]
+    pub request_id: u64,
+    pub answers: Vec<String>,
 }
 
 /// An empty acknowledgement.

@@ -9,7 +9,7 @@ use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
 };
 use imperium_tools::Workspace;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use imperium_config::{Enforce, MemorySettings, WritePolicy};
@@ -20,11 +20,14 @@ use imperium_workflow::ContextIndex;
 use serde_json::json;
 
 use crate::agent::Agent;
+use crate::artefacts::Artefacts;
 use crate::breakdown::TokenCounter;
 use crate::journal::Journal;
 use crate::status::Controls;
 use crate::{CatalogModel, LocalModels, ResolvedModel, SessionLauncher};
 
+/// Chunk subagents of `delegate_chunks` that run at once in a session; the rest wait.
+const MAX_PARALLEL_CHUNKS: usize = 4;
 /// Events kept for slow subscribers before they start missing some.
 const EVENT_BUFFER: usize = 1024;
 
@@ -74,6 +77,10 @@ enum Command {
     Respond {
         request_id: u64,
         decision: PermissionDecision,
+    },
+    Answer {
+        request_id: u64,
+        answers: Vec<String>,
     },
 }
 
@@ -239,6 +246,17 @@ impl Session {
             })
             .map_err(|_| SessionClosed)
     }
+
+    /// Answers a batch of questions from `ask_user`, one answer per question in order. Answers
+    /// to unknown or already-answered requests are ignored.
+    pub fn answer(&self, request_id: u64, answers: Vec<String>) -> Result<(), SessionClosed> {
+        self.commands
+            .send(Command::Answer {
+                request_id,
+                answers,
+            })
+            .map_err(|_| SessionClosed)
+    }
 }
 
 /// State shared by every agent in a session.
@@ -267,6 +285,12 @@ pub(crate) struct Shared {
     pub instructions: Option<String>,
     /// Token counts for context breakdowns, shared so agents on one model count text once.
     pub tokens: TokenCounter,
+    /// Large inputs kept out of agents' contexts.
+    pub artefacts: Artefacts,
+    /// Pending `ask_user` batches.
+    pub questions: QuestionBroker,
+    /// Limits how many chunk subagents of `delegate_chunks` run at once.
+    pub chunk_gate: Arc<Semaphore>,
     next_task: AtomicU32,
 }
 
@@ -315,6 +339,9 @@ async fn run(
         launcher: config.launcher,
         instructions: config.instructions,
         tokens: TokenCounter::default(),
+        artefacts: Artefacts::default(),
+        questions: QuestionBroker::default(),
+        chunk_gate: Arc::new(Semaphore::new(MAX_PARALLEL_CHUNKS)),
         next_task: AtomicU32::new(0),
     });
     shared
@@ -363,6 +390,13 @@ async fn run(
                     shared.broker.resolve(request_id, decision);
                     continue;
                 }
+                Some(Command::Answer {
+                    request_id,
+                    answers,
+                }) => {
+                    shared.questions.resolve(request_id, answers);
+                    continue;
+                }
                 None => return,
             },
         };
@@ -381,11 +415,15 @@ async fn run(
                         Some(Command::Respond { request_id, decision }) => {
                             shared.broker.resolve(request_id, decision);
                         }
+                        Some(Command::Answer { request_id, answers }) => {
+                            shared.questions.resolve(request_id, answers);
+                        }
                         Some(Command::Message(text)) => queued.push_back(text),
                         // Every handle is gone: nobody can answer, so deny what is pending.
                         None => {
                             handles_open = false;
                             shared.broker.deny_all();
+                            shared.questions.close();
                         }
                     },
                 }
@@ -478,6 +516,41 @@ impl PermissionBroker {
         for (_, answer) in pending.drain() {
             let _ = answer.send(PermissionDecision::Deny);
         }
+    }
+}
+
+/// Pending `ask_user` batches, answered by the user through the session.
+#[derive(Default)]
+pub(crate) struct QuestionBroker {
+    next_id: AtomicU64,
+    closed: AtomicBool,
+    pending: Mutex<HashMap<u64, oneshot::Sender<Vec<String>>>>,
+}
+
+impl QuestionBroker {
+    /// Registers a batch; the receiver resolves with the answers, or errors when nobody can
+    /// answer any more.
+    pub fn request(&self) -> (u64, oneshot::Receiver<Vec<String>>) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let (answer, receiver) = oneshot::channel();
+        let mut pending = lock(&self.pending);
+        if !self.closed.load(Ordering::Relaxed) {
+            pending.insert(id, answer);
+        }
+        (id, receiver)
+    }
+
+    fn resolve(&self, id: u64, answers: Vec<String>) {
+        if let Some(answer) = lock(&self.pending).remove(&id) {
+            let _ = answer.send(answers);
+        }
+    }
+
+    /// Fails every pending batch and any asked from now on.
+    fn close(&self) {
+        let mut pending = lock(&self.pending);
+        self.closed.store(true, Ordering::Relaxed);
+        pending.clear();
     }
 }
 
