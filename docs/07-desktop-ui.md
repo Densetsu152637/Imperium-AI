@@ -31,6 +31,18 @@
   detached window follows the main window's selected project and session. In a plain browser
   the window is a popup and cannot be pinned.
 
+### Resources panel (implemented)
+
+The Resources panel (in Settings → Panels, closable and detachable like the others) shows what
+the machine and the sessions are using: CPU, RAM, and per GPU its utilisation and VRAM as bars
+with a two-minute sparkline each (hover a bar for per-core figures or swap), a table of the
+local models loaded, in use or idle, with placement, memory, busy slots or the idle-unload
+countdown, the sessions on each, and an Unload button for idle ones, and a table of the hosted
+endpoints sessions use with requests, tokens, latency, and errors over the last 15 minutes.
+The panel subscribes to `system.resources_changed` only while it is open and its window is
+visible, so the daemon samples nothing otherwise
+([04](04-models-and-routing.md#active-models-and-resource-monitor)).
+
 **Model download suggestions (implemented):** a `model_suggestion` event shows as a card in the
 conversation, styled like a permission prompt: the repository, quantisation, size, how it fits
 this machine (on the GPU, split with system memory, or on the CPU), and why it is suggested,

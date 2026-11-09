@@ -214,6 +214,34 @@ measured usage are later work. `backend = "auto"` picks `cuda13` for an NVIDIA d
 580 series or newer, `cuda12` for older drivers, `metal` on Apple Silicon, and `cpu`
 otherwise; set `vulkan` or `rocm` explicitly.
 
+## Active models and resource monitor
+
+**Implemented:** `system.resources` returns a snapshot of what the machine and the sessions
+are using, and `system.resources_subscribe {on}` sends the same snapshot as
+`system.resources_changed` about every two seconds to the connections that asked. The daemon
+samples only while at least one connection is subscribed (closing the connection
+unsubscribes it), so an idle daemon reads nothing. A snapshot holds:
+
+- **Machine:** CPU total and per core, RAM and swap used and total (`sysinfo`), and per NVIDIA
+  GPU its utilisation, VRAM used and total, and temperature, read through `nvidia-smi` (NVML's
+  counters). Without an NVIDIA driver the GPU list is empty; other vendors are later work.
+- **Processes:** `imperium-core` itself and each model server (`llama-server`, `vllm`) with
+  its pid, CPU share of the whole machine, RAM, and VRAM when the driver reports it per
+  process (it does not on Windows under WDDM).
+- **Local models:** every model the supervisor holds, in use or idle (cached until it
+  unloads): runtime, placement (`gpu`, `partial` with its GPU layers, or `cpu`), context,
+  planned VRAM and RAM, slots in use, the live sessions on it (their model, or calls on it in
+  the last 15 minutes), and while idle how long until `idle_unload_s` unloads it.
+  `models.unload {model}` (or `imperium models unload <id>`) unloads an idle model now; a model
+  with a slot in use is refused.
+- **Endpoints:** each hosted `<endpoint>:<model>` that a live session uses or called in the
+  last 15 minutes, with the endpoint's host, the sessions, requests and tokens in that window
+  (from `model_call_completed` events, so subagents on catalogue models count), the latest
+  call's latency, and failed turns with the latest error.
+
+`imperium resources` prints a snapshot and `imperium resources --watch` keeps printing them;
+the desktop's [Resources panel](07-desktop-ui.md#resources-panel-implemented) shows them live.
+
 The daemon maintains a live **resource map**:
 
 - GPUs: vendor, VRAM total/free (NVML, ROCm SMI, DXGI, Metal), compute backend support.
