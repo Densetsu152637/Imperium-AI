@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
-    SessionCreate, SessionCreateParams, SessionRespond, SessionRespondParams, SessionSend,
-    SessionSendParams,
+    SessionAnswer, SessionAnswerParams, SessionCreate, SessionCreateParams, SessionRespond,
+    SessionRespondParams, SessionSend, SessionSendParams,
 };
 use imperium_protocol::session::{
-    AgentEvent, ContextCategory, PermissionDecision, ROOT_AGENT, SESSION_EVENT, SessionEvent,
-    SessionEventParams, StepStatus, TokenCountMethod,
+    AgentEvent, ContextCategory, PermissionDecision, Question, ROOT_AGENT, SESSION_EVENT,
+    SessionEvent, SessionEventParams, StepStatus, TokenCountMethod,
 };
 
 use crate::{block_on, connect};
@@ -249,6 +249,20 @@ async fn follow_turn(
                     })
                     .await?;
             }
+            SessionEvent::QuestionsAsked {
+                request_id,
+                questions,
+            } => {
+                let answers = ask_questions(&tag, &questions)?;
+                client
+                    .call::<SessionAnswer>(SessionAnswerParams {
+                        session_id: session_id.to_string(),
+                        request_id,
+                        answers,
+                    })
+                    .await?;
+            }
+            SessionEvent::QuestionsAnswered { .. } => {}
             SessionEvent::ToolFinished { ok, output, .. } => {
                 if !ok {
                     println!("  {tag}✗ {}", output.lines().next().unwrap_or_default());
@@ -361,6 +375,44 @@ fn ask_permission(summary: &str) -> anyhow::Result<PermissionDecision> {
     })
 }
 
+/// Asks a batch of questions. Enter takes the recommended answer, a number picks an option,
+/// and anything else is the answer itself.
+fn ask_questions(tag: &str, questions: &[Question]) -> anyhow::Result<Vec<String>> {
+    println!(
+        "
+{tag}The agent has {} question(s):",
+        questions.len()
+    );
+    let mut answers = Vec::new();
+    for (index, question) in questions.iter().enumerate() {
+        println!(
+            "
+{}. {}",
+            index + 1,
+            question.question
+        );
+        for (number, option) in question.options.iter().enumerate() {
+            println!("   {}) {option}", number + 1);
+        }
+        let line = prompt(&format!("   [Enter = {}]: ", question.recommended))?;
+        answers.push(choose_answer(question, line.as_deref().unwrap_or_default()));
+    }
+    Ok(answers)
+}
+
+fn choose_answer(question: &Question, input: &str) -> String {
+    let input = input.trim();
+    if input.is_empty() {
+        return question.recommended.clone();
+    }
+    input
+        .parse::<usize>()
+        .ok()
+        .and_then(|number| question.options.get(number.checked_sub(1)?))
+        .cloned()
+        .unwrap_or_else(|| input.to_string())
+}
+
 /// Prints a prompt and reads one line; `None` at end of input.
 fn prompt(text: &str) -> anyhow::Result<Option<String>> {
     print!("{text}");
@@ -376,6 +428,38 @@ fn prompt(text: &str) -> anyhow::Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answers_default_to_the_recommendation_and_numbers_pick_options() {
+        let question = Question {
+            question: "Which database?".into(),
+            options: vec!["sqlite".into(), "postgres".into()],
+            recommended: "sqlite".into(),
+        };
+        assert_eq!(
+            choose_answer(
+                &question, "
+"
+            ),
+            "sqlite"
+        );
+        assert_eq!(
+            choose_answer(
+                &question, "2
+"
+            ),
+            "postgres"
+        );
+        assert_eq!(choose_answer(&question, "0"), "0");
+        assert_eq!(choose_answer(&question, "9"), "9");
+        assert_eq!(
+            choose_answer(
+                &question, "duckdb
+"
+            ),
+            "duckdb"
+        );
+    }
 
     fn breakdown(window: Option<u64>) -> Breakdown {
         let category = |key: &str, label: &str, tokens| ContextCategory {
