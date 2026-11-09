@@ -438,6 +438,13 @@ impl Session {
         self.inboxes.remove(agent_id.unwrap_or(ROOT_AGENT), id)
     }
 
+    /// Turns a queued message into steering for the running turn, in place: the agent reads
+    /// it at its next safe point, or it runs as the next turn (ahead of the rest of the queue)
+    /// when the turn ends first. Steering a message for the root pauses its running subagents.
+    pub fn steer_queued(&self, agent_id: Option<&str>, id: &str) -> Result<(), QueueError> {
+        self.inboxes.steer(agent_id.unwrap_or(ROOT_AGENT), id)
+    }
+
     /// Every agent of the session with its kept state: the root first, then subagents in the
     /// order they started.
     pub fn agents(&self) -> Vec<AgentSummary> {
@@ -458,6 +465,16 @@ impl Session {
         // Nobody awaits a subagent the user resumed: its report is its `task_finished`.
         let (_handle, model) = crate::agent::resume_subagent(shared, agent_id, text)?;
         Ok(model)
+    }
+
+    /// Ends a paused (or otherwise finished) subagent without resuming it.
+    pub fn cancel_agent(&self, agent_id: &str) -> Result<(), String> {
+        let shared = self
+            .shared
+            .0
+            .get()
+            .ok_or("the session is still starting; try again in a moment")?;
+        crate::agent::cancel_subagent(shared, agent_id)
     }
 
     /// Answers a permission request. Answers to unknown or already-answered requests are

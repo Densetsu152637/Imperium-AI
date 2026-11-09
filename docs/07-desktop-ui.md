@@ -37,7 +37,7 @@
 ### Agents panel (implemented)
 
 The Agents panel lists the subagents of the selected session: each row shows the task id, its
-status (`running`, `finished`, or `failed`), model, cost, brief, the messages it was given and
+status (`running`, `paused`, `finished`, or `failed`), model, cost, brief, the messages it was given and
 its tool calls, and its latest report. Subagents keep their state when they finish
 ([agent state](03-agent-engine.md#agent-state)), so a finished or failed row's ⋯ menu has
 **Continue with…**: it opens a follow-up box under the row (Ctrl+Enter sends, Escape
@@ -46,7 +46,10 @@ its earlier conversation: its row goes back to `running`, the transcript notes
 "Continued t1 on …", and its new report replaces the old one when it finishes (the cost shown
 adds up across runs). While it runs, the menu item is disabled; archived sessions show no menu.
 Subagents a daemon restart cut off are shown as failed with a report saying so, and can be
-continued the same way.
+continued the same way. A subagent paused by a steering message
+([below](#environments-and-sessions-implemented)) shows a `paused` badge, its progress as its
+report, and **Resume** (continues from its saved conversation), **Re-brief…** (the follow-up
+box), and **Cancel** (`session.agent_cancel`) until the root agent or the user decides.
 
 ### Resources panel (implemented)
 
@@ -590,14 +593,23 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   well.
 
 **Composer, queue, and steering (implemented):** the composer stays enabled while the agent
-works. Its send key (Enter, or Ctrl+Enter, as set in Settings) queues the message for after the
-running turn (the send button reads *Queue* then), and a *Steer* button beside it, or
-Ctrl+Shift+Enter, adds the message to the running turn instead
-([03](03-agent-engine.md#queueing-and-steering)). Waiting messages are listed just above the
-composer, marked *Queued* or *Steering*, each with *Edit* (inline; Enter saves, Escape
-cancels) and *Remove*; the list follows `queue_changed`, so it empties as messages are
-delivered. In the transcript a steering message is a user bubble with an accent edge and a
-*Steering* label, at the point in the turn where the agent read it.
+works, and sending while a turn runs always queues: the send key (Enter, or Ctrl+Enter, as set
+in Settings) and the send button (which reads *Queue* then) put the message in the queue for
+after the running turn. Waiting messages are listed just above the composer, dimmed and in
+italics while they wait, each marked *Queued* with three buttons: *Edit* (inline; Enter
+saves, Escape cancels), *Steer*, and *Remove*. *Steer* (`session.queue` with
+`action: "steer"`) moves that message into the running turn: it is marked *Steering…* with an
+accent edge until the agent reads it at its next safe point (after its current model response
+and tool calls), and can then only be removed, not edited; an edit already open on it closes,
+and an edit the daemon refuses is reported. If the turn ends first it runs as the next turn,
+ahead of the rest of the queue, whose order is kept
+([03](03-agent-engine.md#queueing-and-steering)). The one shortcut that steers directly, without
+queueing first, is Ctrl+Shift+Enter in the composer. A steering message also pauses the
+subagents the agent is running, which the [Agents panel](#agents-panel-implemented) then shows.
+The list follows `queue_changed`, so every window, detached panels included, shows the same
+queue, and it empties as messages are delivered. In the transcript a steered message is a user
+bubble with an accent edge where the agent read it, labelled *Steered*, or *Steered — N
+subagents paused* when it paused any.
 
 **Context breakdown (implemented):** the footer's context meter shows how full the root
 agent's context was on its latest model call, as a slim bar (amber from 70%, red from 90%) and

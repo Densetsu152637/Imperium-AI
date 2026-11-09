@@ -3,4 +3,4 @@
 /**
  * Where an agent stands, in `session.agents`.
  */
-export type AgentStatus = "running" | "idle" | "failed" | "interrupted";
+export type AgentStatus = "running" | "idle" | "failed" | "interrupted" | "paused";

@@ -26,8 +26,8 @@ export type Entry = EntryBody & { event?: number };
 
 type EntryBody =
   | { kind: "user"; text: string }
-  /** A steering message that joined the running turn. */
-  | { kind: "steer"; text: string }
+  /** A steering message that joined the running turn; `paused` lists the subagents it paused. */
+  | { kind: "steer"; text: string; paused: string[] }
   | { kind: "assistant"; text: string }
   | { kind: "tool"; callId: string; summary: string; ok: boolean | null; output: string }
   | {
@@ -69,7 +69,8 @@ export type TaskState = {
   taskId: string;
   brief: string;
   model: string;
-  status: "running" | "finished" | "failed";
+  /** `paused`: stopped at a safe point for a steering message to the root; resume or cancel it. */
+  status: "running" | "paused" | "finished" | "failed";
   entries: Entry[];
   report: string;
   costUsd: number | null;
@@ -177,7 +178,7 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
       next.push({ kind: "user", text: event.text });
       break;
     case "steered":
-      next.push({ kind: "steer", text: event.text });
+      next.push({ kind: "steer", text: event.text, paused: event.paused ?? [] });
       break;
     case "text_delta":
       if (last?.kind === "assistant") next[next.length - 1] = { ...last, text: last.text + event.text };
@@ -407,7 +408,9 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
     const updated: TaskState =
       event.type === "task_finished"
         ? { ...task, status: event.ok ? "finished" : "failed", report: event.report, costUsd: cost(event.cost_usd) }
-        : { ...task, entries: applyToEntries(task.entries, agentEvent) };
+        : event.type === "task_paused"
+          ? { ...task, status: "paused", report: event.progress }
+          : { ...task, entries: applyToEntries(task.entries, agentEvent) };
     tasks = { ...tasks, [agentId]: updated };
   }
   // Entries this event added start at it; earlier ones are already marked.
@@ -505,7 +508,14 @@ export function snapshotSessions(sessions: SessionState[], environments: Environ
         agentId: task.taskId,
         parentId: ROOT,
         brief: task.brief,
-        status: task.status === "running" ? (waiting(task.taskId) ? "waiting" : "working") : task.status,
+        status:
+          task.status === "running"
+            ? waiting(task.taskId)
+              ? "waiting"
+              : "working"
+            : task.status === "paused"
+              ? "idle"
+              : task.status,
       });
     }
     return {

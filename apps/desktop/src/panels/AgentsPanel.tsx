@@ -1,7 +1,9 @@
 // Delegated tasks: each subagent's model, status, cost, activity, and report. A finished
-// subagent keeps its conversation, so its menu can give it a follow-up ("Continue with…").
+// subagent keeps its conversation, so its menu can give it a follow-up ("Continue with…"). A
+// subagent paused by a steering message to the root shows Resume and Cancel until the root or
+// the user decides.
 
-import { MessageSquarePlus } from "lucide-react";
+import { CircleX, MessageSquarePlus, Play } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,14 +12,17 @@ import { RowMenu } from "../components/RowMenu";
 import { ToolState } from "../components/ToolState";
 import { formatCost, type SessionState, type TaskState } from "../sessions";
 
-export function AgentsPanel({
-  session,
-  onResume,
-}: {
-  session: SessionState | null;
-  /** Gives a finished subagent a follow-up (`session.agent_resume`). */
+/** What a paused subagent is told when the user resumes it without a follow-up of their own. */
+const RESUME_TEXT = "Continue where you left off.";
+
+type Actions = {
+  /** Gives a finished or paused subagent a follow-up (`session.agent_resume`). */
   onResume?: (taskId: string, text: string) => Promise<unknown>;
-}) {
+  /** Ends a paused subagent (`session.agent_cancel`). */
+  onCancel?: (taskId: string) => Promise<unknown>;
+};
+
+export function AgentsPanel({ session, onResume, onCancel }: { session: SessionState | null } & Actions) {
   const tasks = session ? Object.values(session.tasks) : [];
   if (tasks.length === 0) {
     return <p className="empty">Subagents appear here when the agent delegates work.</p>;
@@ -26,20 +31,25 @@ export function AgentsPanel({
   return (
     <ul className="tasks">
       {tasks.map((task) => (
-        <TaskRow key={task.taskId} task={task} onResume={archived ? undefined : onResume} />
+        <TaskRow
+          key={task.taskId}
+          task={task}
+          onResume={archived ? undefined : onResume}
+          onCancel={archived ? undefined : onCancel}
+        />
       ))}
     </ul>
   );
 }
 
-function TaskRow({ task, onResume }: { task: TaskState; onResume?: (taskId: string, text: string) => Promise<unknown> }) {
+function TaskRow({ task, onResume, onCancel }: { task: TaskState } & Actions) {
   const [composing, setComposing] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const finished = task.status !== "running";
+  const paused = task.status === "paused";
 
-  const submit = () => {
-    const text = draft.trim();
+  const resume = (text: string) => {
     if (!text || !onResume) return;
     setSending(true);
     onResume(task.taskId, text)
@@ -50,9 +60,16 @@ function TaskRow({ task, onResume }: { task: TaskState; onResume?: (taskId: stri
       .catch(() => {})
       .finally(() => setSending(false));
   };
+  const cancel = () => {
+    if (!onCancel) return;
+    setSending(true);
+    onCancel(task.taskId)
+      .catch(() => {})
+      .finally(() => setSending(false));
+  };
 
   return (
-    <li className="task-row">
+    <li className={paused ? "task-row paused" : "task-row"}>
       {onResume && (
         <div className="task-menu">
           <RowMenu
@@ -68,7 +85,7 @@ function TaskRow({ task, onResume }: { task: TaskState; onResume?: (taskId: stri
           />
         </div>
       )}
-      <details open={task.status === "running" || composing}>
+      <details open={task.status === "running" || paused || composing}>
         <summary>
           <span className={`badge ${task.status}`}>{task.status}</span> <strong>{task.taskId}</strong>{" "}
           <span className="muted">
@@ -97,12 +114,36 @@ function TaskRow({ task, onResume }: { task: TaskState; onResume?: (taskId: stri
           </div>
         )}
       </details>
+      {paused && (onResume || onCancel) && !composing && (
+        <div className="task-paused-actions" aria-label={`${task.taskId} is paused`}>
+          {onResume && (
+            <button
+              type="button"
+              disabled={sending}
+              onClick={() => resume(RESUME_TEXT)}
+              title="Resume from where it paused, with its saved conversation"
+            >
+              <Play aria-hidden="true" /> Resume
+            </button>
+          )}
+          {onResume && (
+            <button type="button" className="ghost" disabled={sending} onClick={() => setComposing(true)}>
+              <MessageSquarePlus aria-hidden="true" /> Re-brief…
+            </button>
+          )}
+          {onCancel && (
+            <button type="button" className="ghost danger" disabled={sending} onClick={cancel} title="End it without resuming">
+              <CircleX aria-hidden="true" /> Cancel
+            </button>
+          )}
+        </div>
+      )}
       {composing && (
         <form
           className="task-follow-up"
           onSubmit={(event) => {
             event.preventDefault();
-            submit();
+            resume(draft.trim());
           }}
         >
           <textarea
@@ -115,7 +156,7 @@ function TaskRow({ task, onResume }: { task: TaskState; onResume?: (taskId: stri
             onKeyDown={(event) => {
               if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                 event.preventDefault();
-                submit();
+                resume(draft.trim());
               } else if (event.key === "Escape") {
                 setComposing(false);
               }

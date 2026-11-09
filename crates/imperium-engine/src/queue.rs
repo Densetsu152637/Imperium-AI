@@ -2,12 +2,19 @@
 //! turns, in order; steering messages join its running turn at the next safe point (after a
 //! model response and its tool calls, before the next model call). Every change is journalled
 //! as `queue_changed`, so a resumed session restores the root agent's queue.
+//!
+//! A queued message can be turned into steering in place ([`Inboxes::steer`]): one lock covers
+//! the change, so the message is never both waiting as a turn and delivered as steering, and it
+//! is never lost. If the turn ends before its next safe point, the steering message runs as the
+//! next turn, ahead of the other queued messages, whose order is kept.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use imperium_protocol::session::{AgentEvent, QueuedMessage, ROOT_AGENT, SessionEvent};
+
+use tokio::sync::watch;
 
 use crate::session::{Emitter, lock};
 
@@ -22,6 +29,8 @@ pub enum QueueError {
     UnknownMessage(String),
     #[error("the message is empty")]
     Empty,
+    #[error("message {0:?} is steering the running turn and can no longer be edited")]
+    Steering(String),
 }
 
 /// One agent's waiting messages.
@@ -30,6 +39,9 @@ pub(crate) struct Inbox {
     agent_id: String,
     emitter: Arc<Emitter>,
     state: Mutex<InboxState>,
+    /// Counts steering messages as they arrive, so a waiting agent wakes for one (the root
+    /// in `await_tasks`) and running subagents pause for one sent to the root.
+    steering: watch::Sender<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -52,15 +64,20 @@ impl Inbox {
             text: message.text.clone(),
             steer: message.steer,
         });
+        let steer = message.steer;
         state.messages.push_back(message);
         self.changed(&state);
+        if steer {
+            self.signal_steering();
+        }
         Ok(())
     }
 
-    /// Takes the next message to run as a turn: the oldest, steering or not.
+    /// Takes the next message to run as a turn: a steering message that missed the turn it
+    /// was meant for comes first, then the oldest; the others keep their order.
     pub fn pop(&self) -> Option<QueuedMessage> {
         let mut state = lock(&self.state);
-        let message = state.messages.pop_front()?;
+        let message = take_next(&mut state.messages)?;
         self.changed(&state);
         Some(message)
     }
@@ -69,7 +86,7 @@ impl Inbox {
     /// slip in after the agent's last look.
     pub fn pop_or_close(&self) -> Option<QueuedMessage> {
         let mut state = lock(&self.state);
-        match state.messages.pop_front() {
+        match take_next(&mut state.messages) {
             Some(message) => {
                 self.changed(&state);
                 Some(message)
@@ -81,7 +98,20 @@ impl Inbox {
         }
     }
 
-    /// Takes every steering message, in order, for the running turn.
+    /// Closes the inbox and takes whatever still waits in it (a subagent that paused).
+    pub fn close_and_drain(&self) -> Vec<QueuedMessage> {
+        let mut state = lock(&self.state);
+        state.closed = true;
+        if state.messages.is_empty() {
+            return Vec::new();
+        }
+        let messages = state.messages.drain(..).collect();
+        self.changed(&state);
+        messages
+    }
+
+    /// Takes every steering message, in order, for the running turn. The agent announces
+    /// each with `steered` once it has added them to its conversation.
     pub fn take_steering(&self) -> Vec<QueuedMessage> {
         let mut state = lock(&self.state);
         if !state.messages.iter().any(|message| message.steer) {
@@ -92,14 +122,35 @@ impl Inbox {
             .drain(..)
             .partition::<Vec<_>, _>(|message| message.steer);
         state.messages = rest.into();
-        for message in &steering {
-            self.emit(SessionEvent::Steered {
-                id: message.id.clone(),
-                text: message.text.clone(),
-            });
-        }
         self.changed(&state);
         steering
+    }
+
+    /// Turns a queued message into steering, in place. Steering one that already steers
+    /// changes nothing.
+    fn steer(&self, id: &str) -> Result<(), QueueError> {
+        let mut state = lock(&self.state);
+        let message = state
+            .messages
+            .iter_mut()
+            .find(|message| message.id == id)
+            .ok_or_else(|| QueueError::UnknownMessage(id.to_string()))?;
+        if message.steer {
+            return Ok(());
+        }
+        message.steer = true;
+        self.changed(&state);
+        self.signal_steering();
+        Ok(())
+    }
+
+    /// Follows steering messages as they arrive: the value changes with each one.
+    pub fn steering_signal(&self) -> watch::Receiver<u64> {
+        self.steering.subscribe()
+    }
+
+    fn signal_steering(&self) {
+        self.steering.send_modify(|count| *count += 1);
     }
 
     pub fn has_steering(&self) -> bool {
@@ -120,6 +171,9 @@ impl Inbox {
             .iter_mut()
             .find(|message| message.id == id)
             .ok_or_else(|| QueueError::UnknownMessage(id.to_string()))?;
+        if message.steer {
+            return Err(QueueError::Steering(id.to_string()));
+        }
         message.text = text;
         self.changed(&state);
         Ok(())
@@ -197,6 +251,7 @@ impl Inboxes {
                         agent_id: agent_id.to_string(),
                         emitter: Arc::clone(&self.emitter),
                         state: Mutex::default(),
+                        steering: watch::Sender::new(0),
                     })
                 }),
         )
@@ -250,6 +305,19 @@ impl Inboxes {
     pub fn remove(&self, agent_id: &str, id: &str) -> Result<(), QueueError> {
         self.get(agent_id)?.remove(id)
     }
+
+    pub fn steer(&self, agent_id: &str, id: &str) -> Result<(), QueueError> {
+        self.get(agent_id)?.steer(id)
+    }
+}
+
+/// The first steering message, else the oldest; the rest keep their order.
+fn take_next(messages: &mut VecDeque<QueuedMessage>) -> Option<QueuedMessage> {
+    let index = messages
+        .iter()
+        .position(|message| message.steer)
+        .unwrap_or(0);
+    messages.remove(index)
 }
 
 /// The number in a message id such as `q12`; 0 for anything else.
@@ -266,4 +334,32 @@ pub(crate) fn steering_text(text: &str) -> String {
         "<steering>\nA message sent while you were working on this turn. Take it into account \
          and carry on from where you are; nothing was cancelled.\n\n{text}\n</steering>"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(text: &str, steer: bool) -> QueuedMessage {
+        QueuedMessage {
+            id: format!("q-{text}"),
+            text: text.into(),
+            steer,
+        }
+    }
+
+    #[test]
+    fn a_steering_message_that_missed_its_turn_runs_next_and_the_rest_keep_their_order() {
+        let mut messages: VecDeque<QueuedMessage> = [
+            message("a", false),
+            message("b", false),
+            message("c", true),
+            message("d", false),
+        ]
+        .into();
+        let order: Vec<String> = std::iter::from_fn(|| take_next(&mut messages))
+            .map(|message| message.text)
+            .collect();
+        assert_eq!(order, ["c", "a", "b", "d"]);
+    }
 }
