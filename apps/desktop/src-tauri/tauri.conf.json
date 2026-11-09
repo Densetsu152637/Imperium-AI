@@ -40,11 +40,7 @@
     "resources": {
       "../../../policy/": "policy/",
       "../../../pets/": "pets/",
-      "../../../mods/imperium-nursery/mod.json": "mods/imperium-nursery/mod.json",
-      "../../../mods/imperium-nursery/index.js": "mods/imperium-nursery/index.js",
-      "../../../mods/imperium-nursery/README.md": "mods/imperium-nursery/README.md",
-      "../../../mods/imperium-nursery/NOTICE": "mods/imperium-nursery/NOTICE",
-      "../../../mods/imperium-nursery/LICENSE-pixel-pets": "mods/imperium-nursery/LICENSE-pixel-pets"
+      "mods/": "mods/"
     },
     "windows": {
       "nsis": {

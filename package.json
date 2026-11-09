@@ -6,6 +6,6 @@
     "node": ">=24"
   },
   "scripts": {
-    "build:mods": "pnpm -r --filter \"./mods/*\" --if-present run build"
+    "build:mods": "pnpm -r --filter \"./mods/*\" --if-present run build && node scripts/stage-mods.mjs"
   }
 }
