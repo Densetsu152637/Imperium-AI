@@ -19,8 +19,8 @@ HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 EXTERNAL = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 
 
-def strip_code(text: str) -> str:
-    """Drops fenced code blocks (``` or ~~~) and inline code."""
+def strip_code(text: str, inline: bool = True) -> str:
+    """Drops fenced code blocks (``` or ~~~) and, unless `inline` is false, inline code."""
     kept = []
     fence = None
     for line in text.splitlines():
@@ -31,7 +31,8 @@ def strip_code(text: str) -> str:
             fence = None
         elif fence is None:
             kept.append(line)
-    return INLINE_CODE.sub("", "\n".join(kept))
+    kept_text = "\n".join(kept)
+    return INLINE_CODE.sub("", kept_text) if inline else kept_text
 
 
 def markdown_files(root: Path) -> list[Path]:
@@ -48,7 +49,9 @@ def anchors(path: Path, cache: dict[Path, set[str]]) -> set[str]:
     if path not in cache:
         seen: dict[str, int] = {}
         found: set[str] = set()
-        for heading in HEADING.findall(strip_code(path.read_text(encoding="utf-8"))):
+        # Inline code in a heading keeps its text in the anchor (backticks are punctuation).
+        text = strip_code(path.read_text(encoding="utf-8"), inline=False)
+        for heading in HEADING.findall(text):
             text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading)  # links keep their text
             text = re.sub(r"<[^>]+>", "", text).strip().lower()
             slug = re.sub(r"[^\w\- ]", "", text).replace(" ", "-")
