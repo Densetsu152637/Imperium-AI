@@ -1,19 +1,15 @@
 // The Environments and Sessions panels on the left. An environment is a named set of folders;
-// its sessions' tools may use every folder, and the first is the working directory.
+// its sessions' tools may use every folder, and the first is the working directory. Each row
+// is an icon and a title with a "more" menu; environments are created and edited in the
+// environment window (EnvironmentWindow.tsx). Pinned environments and sessions come first.
 
-import { ArrowLeft, FolderPlus, Pencil, Trash, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ArrowLeft, FolderOpen, Pencil, Pin, PinOff, Trash } from "lucide-react";
 
-import type { EnvironmentInfo } from "@imperium/protocol";
+import type { EnvironmentInfo, SessionStatus } from "@imperium/protocol";
 
-import {
-  IconPicker,
-  ProjectIcon,
-  environmentIcon,
-  projectName,
-  sameFolder,
-  type ProjectIconChoice,
-} from "../projectIcons";
+import { RowMenu } from "../components/RowMenu";
+import { Select } from "../components/Select";
+import { ProjectIcon, environmentIcon, projectName, sameFolder } from "../projectIcons";
 import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
 import { StatusBadge } from "./StatusBadge";
 
@@ -24,215 +20,132 @@ export function environmentOf(session: SessionState, environments: EnvironmentIn
   return environments.find((env) => env.folders[0] && sameFolder(env.folders[0], session.summary.project_dir)) ?? null;
 }
 
+/** Pinned environments first, otherwise in the daemon's order (creation). */
+export function sortEnvironments(environments: EnvironmentInfo[]): EnvironmentInfo[] {
+  return environments
+    .map((env, index) => ({ env, index }))
+    .sort((a, b) => Number(!!b.env.pinned) - Number(!!a.env.pinned) || a.index - b.index)
+    .map(({ env }) => env);
+}
+
 export type EnvironmentActions = {
-  onCreate: (name: string) => Promise<boolean>;
-  onRename: (id: string, name: string) => void;
+  onEdit: (id: string) => void;
+  onSetPinned: (env: EnvironmentInfo, pinned: boolean) => void;
   onDelete: (id: string) => void;
-  onAddFolder: (id: string) => void;
-  onRemoveFolder: (id: string, folder: string) => void;
-  onSetIcon: (id: string, choice: ProjectIconChoice | null) => void;
 };
 
 export function EnvironmentsPanel({
   environments,
   selected,
-  creating,
   connected,
   onSelect,
-  onCancelCreate,
   actions,
 }: {
   environments: EnvironmentInfo[];
   selected: string | null;
-  /** Whether the "New environment" form is open. */
-  creating: boolean;
   connected: boolean;
   onSelect: (id: string) => void;
-  onCancelCreate: () => void;
   actions: EnvironmentActions;
 }) {
-  const [editingIcon, setEditingIcon] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState<string | null>(null);
+  if (environments.length === 0) {
+    return (
+      <div className="environments">
+        <p className="empty">
+          {connected ? "No environments yet. Use New environment to make one." : "No environments known yet."}
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="environments">
-      {creating && <NameForm label="New environment" submit="Create" onSubmit={actions.onCreate} onCancel={onCancelCreate} />}
-      {environments.length === 0 && !creating ? (
-        <p className="empty">
-          {connected ? "No environments yet. Use New environment, then add folders to it." : "No environments known yet."}
-        </p>
-      ) : (
-        <ul className="list" aria-label="Environments">
-          {environments.map((env) => {
-            const choice = environmentIcon(env);
-            const isSelected = env.id === selected;
-            return (
-              <li key={env.id}>
-                <div className="row">
-                  <button
-                    className="icon-button"
-                    aria-label={`Change icon for ${env.name}`}
-                    aria-expanded={editingIcon === env.id}
-                    title="Change icon"
-                    disabled={!connected}
-                    onClick={() => setEditingIcon((open) => (open === env.id ? null : env.id))}
-                  >
-                    <ProjectIcon choice={choice} />
-                  </button>
-                  <button
-                    className={`row-main${isSelected ? " selected" : ""}`}
-                    aria-current={isSelected ? "true" : undefined}
-                    onClick={() => onSelect(env.id)}
-                  >
-                    <span className="name">{env.name}</span>
-                    <span className="detail">
-                      {env.folders.length === 0
-                        ? "no folders"
-                        : env.folders.length === 1
-                          ? env.folders[0]
-                          : `${projectName(env.folders[0])} + ${env.folders.length - 1} more`}
-                    </span>
-                  </button>
-                </div>
-                {editingIcon === env.id && (
-                  <IconPicker
-                    name={env.name}
-                    choice={choice}
-                    onChange={(next) => actions.onSetIcon(env.id, next)}
-                    onReset={() => actions.onSetIcon(env.id, null)}
-                    onClose={() => setEditingIcon(null)}
-                  />
-                )}
-                {isSelected && (
-                  <div className="environment-detail">
-                    {renaming === env.id ? (
-                      <NameForm
-                        label={`Rename ${env.name}`}
-                        submit="Rename"
-                        initial={env.name}
-                        onSubmit={async (name) => {
-                          actions.onRename(env.id, name);
-                          setRenaming(null);
-                          return true;
-                        }}
-                        onCancel={() => setRenaming(null)}
-                      />
-                    ) : null}
-                    <ul className="folders" aria-label={`Folders of ${env.name}`}>
-                      {env.folders.map((folder, index) => (
-                        <li key={folder} className="folder">
-                          <span className="folder-path" title={folder}>
-                            {folder}
-                            {index === 0 && env.folders.length > 1 && <span className="muted"> · working directory</span>}
-                          </span>
-                          <button
-                            className="ghost icon-only"
-                            aria-label={`Remove ${folder} from ${env.name}`}
-                            title="Remove folder (the folder itself is untouched)"
-                            disabled={!connected}
-                            onClick={() => actions.onRemoveFolder(env.id, folder)}
-                          >
-                            <X />
-                          </button>
-                        </li>
-                      ))}
-                      {env.folders.length === 0 && <li className="muted">Add a folder to start sessions here.</li>}
-                    </ul>
-                    <div className="environment-actions">
-                      <button onClick={() => actions.onAddFolder(env.id)} disabled={!connected}>
-                        <FolderPlus aria-hidden="true" /> Add folder
-                      </button>
-                      <button onClick={() => setRenaming(env.id)} disabled={!connected}>
-                        <Pencil aria-hidden="true" /> Rename
-                      </button>
-                      {deleting === env.id ? (
-                        <>
-                          <button
-                            className="danger"
-                            onClick={() => {
-                              setDeleting(null);
-                              actions.onDelete(env.id);
-                            }}
-                          >
-                            Delete {env.name}
-                          </button>
-                          <button onClick={() => setDeleting(null)}>Keep</button>
-                        </>
-                      ) : (
-                        <button onClick={() => setDeleting(env.id)} disabled={!connected}>
-                          <Trash aria-hidden="true" /> Delete
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      <ul className="list" aria-label="Environments">
+        {sortEnvironments(environments).map((env) => {
+          const isSelected = env.id === selected;
+          return (
+            <li key={env.id}>
+              <div className="row nav-row">
+                <button
+                  className={`row-main nav-row-main${isSelected ? " selected" : ""}`}
+                  aria-current={isSelected ? "true" : undefined}
+                  title={env.folders.length ? env.folders.join("\n") : "No folders yet"}
+                  onClick={() => onSelect(env.id)}
+                  onDoubleClick={() => connected && actions.onEdit(env.id)}
+                >
+                  <ProjectIcon choice={environmentIcon(env)} />
+                  <span className="name">{env.name}</span>
+                  {env.pinned && <Pin className="pin-mark" aria-label="Pinned" />}
+                </button>
+                <RowMenu
+                  label={`More for ${env.name}`}
+                  items={[
+                    { label: "Edit", icon: Pencil, onSelect: () => actions.onEdit(env.id), disabled: !connected },
+                    env.pinned
+                      ? { label: "Unpin", icon: PinOff, onSelect: () => actions.onSetPinned(env, false), disabled: !connected }
+                      : { label: "Pin", icon: Pin, onSelect: () => actions.onSetPinned(env, true), disabled: !connected },
+                    { label: "Delete", icon: Trash, danger: true, onSelect: () => actions.onDelete(env.id), disabled: !connected },
+                  ]}
+                />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
 
-/** A one-field form for a name; Escape cancels. */
-function NameForm({
-  label,
-  submit,
-  initial = "",
-  onSubmit,
-  onCancel,
-}: {
-  label: string;
-  submit: string;
-  initial?: string;
-  /** Resolves to whether the form is done (it stays open on failure). */
-  onSubmit: (name: string) => Promise<boolean>;
-  onCancel: () => void;
-}) {
-  const [name, setName] = useState(initial);
-  const [busy, setBusy] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
-  useEffect(() => input.current?.focus(), []);
-  return (
-    <form
-      className="name-form"
-      aria-label={label}
-      onSubmit={async (event) => {
-        event.preventDefault();
-        if (!name.trim() || busy) return;
-        setBusy(true);
-        const done = await onSubmit(name.trim());
-        setBusy(false);
-        if (done) setName("");
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.stopPropagation();
-          onCancel();
-        }
-      }}
-    >
-      <input ref={input} aria-label={label} placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-      <button type="submit" className="primary" disabled={!name.trim() || busy}>
-        {submit}
-      </button>
-      <button type="button" onClick={onCancel}>
-        Cancel
-      </button>
-    </form>
+export type SessionSort = "recent" | "environment" | "status";
+
+const SORT_OPTIONS: { value: SessionSort; label: string }[] = [
+  { value: "recent", label: "Recent" },
+  { value: "environment", label: "By environment" },
+  { value: "status", label: "By status" },
+];
+
+/** Status groups, in the order they are shown. */
+const STATUS_GROUPS: { label: string; statuses: SessionStatus[] }[] = [
+  { label: "Waiting for approval", statuses: ["needs_attention"] },
+  { label: "Active", statuses: ["working", "watching"] },
+  { label: "Paused", statuses: ["paused"] },
+  { label: "Idle", statuses: ["idle"] },
+  { label: "Merged", statuses: ["merged"] },
+];
+
+/** Pinned first, then the most recently active. */
+export function sortSessions(sessions: SessionState[]): SessionState[] {
+  return [...sessions].sort(
+    (a, b) => Number(!!b.summary.pinned) - Number(!!a.summary.pinned) || b.updatedAt - a.updatedAt,
   );
 }
 
-/** Sessions needing the user come first, merged ones last, and otherwise the most recent first. */
-function rank(session: SessionState): number {
-  if (session.status === "needs_attention") return 0;
-  if (session.status === "merged") return 2;
-  return 1;
-}
+type Group = { key: string; label: string | null; env?: EnvironmentInfo | null; sessions: SessionState[] };
 
-export function sortSessions(sessions: SessionState[]): SessionState[] {
-  return [...sessions].sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt);
+/** The sessions as headed groups (one unheaded group for Recent). */
+export function groupSessions(sessions: SessionState[], environments: EnvironmentInfo[], sort: SessionSort): Group[] {
+  const sorted = sortSessions(sessions);
+  if (sort === "status") {
+    return STATUS_GROUPS.map(({ label, statuses }) => ({
+      key: label,
+      label,
+      sessions: sorted.filter((s) => statuses.includes(s.status)),
+    })).filter((group) => group.sessions.length > 0);
+  }
+  if (sort === "environment") {
+    const groups: Group[] = sortEnvironments(environments).map((env) => ({
+      key: env.id,
+      label: env.name,
+      env,
+      sessions: sorted.filter((s) => environmentOf(s, environments)?.id === env.id),
+    }));
+    groups.push({
+      key: "none",
+      label: "No environment",
+      env: null,
+      sessions: sorted.filter((s) => !environmentOf(s, environments)),
+    });
+    return groups.filter((group) => group.sessions.length > 0);
+  }
+  return [{ key: "all", label: null, sessions: sorted }];
 }
 
 export function SessionsPanel({
@@ -241,7 +154,10 @@ export function SessionsPanel({
   scope,
   selected,
   error,
+  sort,
+  onSort,
   onSelect,
+  onSetPinned,
   onShowEnvironment,
   onShowAll,
 }: {
@@ -252,13 +168,65 @@ export function SessionsPanel({
   selected: string | null;
   /** Why the last attempt to start a session failed. */
   error: string | null;
+  sort: SessionSort;
+  onSort: (sort: SessionSort) => void;
   onSelect: (sessionId: string) => void;
+  onSetPinned: (sessionId: string, pinned: boolean) => void;
   onShowEnvironment: (id: string) => void;
   onShowAll: () => void;
 }) {
-  const shown = sortSessions(
-    scope ? sessions.filter((s) => environmentOf(s, environments)?.id === scope.id) : sessions,
-  );
+  const inScope = scope ? sessions.filter((s) => environmentOf(s, environments)?.id === scope.id) : sessions;
+  // Within one environment, grouping by environment would be a single group.
+  const groups = groupSessions(inScope, environments, scope && sort === "environment" ? "recent" : sort);
+
+  const row = (session: SessionState) => {
+    const id = session.summary.session_id;
+    const env = environmentOf(session, environments);
+    const place = env?.name ?? projectName(session.summary.project_dir);
+    const pinned = !!session.summary.pinned;
+    const title = sessionTitle(session);
+    return (
+      <li key={id}>
+        <div className="row nav-row">
+          <button
+            className={`row-main nav-row-main${id === selected ? " selected" : ""}`}
+            aria-current={id === selected ? "true" : undefined}
+            onClick={() => onSelect(id)}
+          >
+            <ProjectIcon choice={environmentIcon(env ?? { id: session.summary.project_dir, icon: null, color: null })} />
+            <span className="nav-row-text">
+              <span className="name">
+                {title}
+                {pinned && <Pin className="pin-mark" aria-label="Pinned" />}
+              </span>
+              <span className="row-meta">
+                <StatusBadge session={session} />
+                <span className="detail">
+                  {!scope && sort !== "environment" && `${place} · `}
+                  {session.summary.model ?? "No model"} · {formatCost(totals(session.calls).costUsd)}
+                </span>
+              </span>
+            </span>
+          </button>
+          <RowMenu
+            label={`More for ${title}`}
+            items={[
+              pinned
+                ? { label: "Unpin", icon: PinOff, onSelect: () => onSetPinned(id, false) }
+                : { label: "Pin", icon: Pin, onSelect: () => onSetPinned(id, true) },
+              {
+                label: `Show ${place}`,
+                icon: FolderOpen,
+                onSelect: () => env && onShowEnvironment(env.id),
+                disabled: !env || scope?.id === env.id,
+              },
+            ]}
+          />
+        </div>
+      </li>
+    );
+  };
+
   return (
     <div className="sessions">
       {error && (
@@ -266,58 +234,48 @@ export function SessionsPanel({
           {error}
         </p>
       )}
-      {scope && (
-        <div className="sessions-scope">
-          <button className="back" onClick={onShowAll}>
-            <ArrowLeft aria-hidden="true" /> All sessions
-          </button>
-          <span className="scope-name" title={scope.folders.join("\n")}>
-            <ProjectIcon choice={environmentIcon(scope)} size="small" />
-            <span>{scope.name}</span>
-          </span>
-        </div>
-      )}
-      {shown.length === 0 ? (
+      <div className="sessions-toolbar">
+        {scope ? (
+          <div className="sessions-scope">
+            <button className="back" onClick={onShowAll}>
+              <ArrowLeft aria-hidden="true" /> All sessions
+            </button>
+            <span className="scope-name" title={scope.folders.join("\n")}>
+              <ProjectIcon choice={environmentIcon(scope)} size="small" />
+              <span>{scope.name}</span>
+            </span>
+          </div>
+        ) : (
+          <span className="spacer" />
+        )}
+        <Select
+          aria-label="Sort sessions"
+          className="sessions-sort"
+          value={sort}
+          onChange={(value) => onSort(value as SessionSort)}
+          options={SORT_OPTIONS}
+        />
+      </div>
+      {inScope.length === 0 ? (
         <p className="empty">{scope ? "No sessions in this environment." : "No sessions yet."}</p>
       ) : (
-        <ul className="list" aria-label={scope ? `Sessions in ${scope.name}` : "All sessions"}>
-          {shown.map((session) => {
-            const id = session.summary.session_id;
-            const env = environmentOf(session, environments);
-            const place = env?.name ?? projectName(session.summary.project_dir);
-            return (
-              <li key={id}>
-                <div className="row">
-                  <button
-                    className="icon-button"
-                    aria-label={`Show sessions in ${place}`}
-                    title={`Show sessions in ${place}`}
-                    disabled={!env}
-                    onClick={() => env && onShowEnvironment(env.id)}
-                  >
-                    <ProjectIcon
-                      choice={environmentIcon(env ?? { id: session.summary.project_dir, icon: null, color: null })}
-                    />
-                  </button>
-                  <button
-                    className={`row-main${id === selected ? " selected" : ""}`}
-                    aria-current={id === selected ? "true" : undefined}
-                    onClick={() => onSelect(id)}
-                  >
-                    <span className="name">{sessionTitle(session)}</span>
-                    <span className="row-meta">
-                      <StatusBadge session={session} />
-                      <span className="detail">
-                        {!scope && `${place} · `}
-                        {session.summary.model ?? "No model"} · {formatCost(totals(session.calls).costUsd)}
-                      </span>
-                    </span>
-                  </button>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+        groups.map((group) => (
+          <section key={group.key} className="session-group" aria-label={group.label ?? undefined}>
+            {group.label && (
+              <h3 className="session-group-label">
+                {group.env && <ProjectIcon choice={environmentIcon(group.env)} size="small" />}
+                <span>{group.label}</span>
+                <span className="session-group-count">{group.sessions.length}</span>
+              </h3>
+            )}
+            <ul
+              className="list"
+              aria-label={group.label ?? (scope ? `Sessions in ${scope.name}` : "All sessions")}
+            >
+              {group.sessions.map(row)}
+            </ul>
+          </section>
+        ))
       )}
     </div>
   );

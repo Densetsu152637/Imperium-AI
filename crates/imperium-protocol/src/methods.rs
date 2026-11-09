@@ -190,6 +190,9 @@ pub struct SessionSummary {
     /// What it watches, when watching or merged.
     pub status_detail: Option<String>,
     pub resume_policy: crate::session::ResumePolicy,
+    /// Pinned sessions are listed first; set with `session.control` `set_pinned`.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -256,6 +259,9 @@ pub struct EnvironmentInfo {
     pub color: Option<String>,
     /// Absolute folder paths, the working directory first.
     pub folders: Vec<String>,
+    /// Pinned environments are listed first.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// `environments.list`: every environment, in the order they were created.
@@ -303,8 +309,8 @@ pub struct EnvironmentCreateParams {
     pub folders: Vec<String>,
 }
 
-/// `environments.update`: rename an environment or change its icon. Fields left out keep
-/// their value; an empty `icon` or `color` clears it.
+/// `environments.update`: rename an environment, change its icon, or pin it. Fields left out
+/// keep their value; an empty `icon` or `color` clears it.
 #[derive(Debug)]
 pub struct EnvironmentUpdate;
 
@@ -327,6 +333,9 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pinned: Option<bool>,
 }
 
 /// `environments.delete`: forget an environment. Its folders and running sessions are left
@@ -1243,8 +1252,12 @@ pub struct SuggestionRespondResult {
 /// schedule, a project agent, or auto-fix). The payload is a [`SessionSummary`].
 pub const SESSION_CREATED: &str = "session.created";
 
+/// Notification sent to every client when a session's listing changes outside its event
+/// stream (such as being pinned). The payload is a [`SessionSummary`].
+pub const SESSION_UPDATED: &str = "session.updated";
+
 /// `session.control`: change how a session waits for usage resets, resume it now, set what
-/// pull request it watches, switch its model, or compact its conversation.
+/// pull request it watches, switch its model, compact its conversation, or pin it.
 #[derive(Debug)]
 pub struct SessionControl;
 
@@ -1260,10 +1273,10 @@ pub struct SessionControlParams {
     pub session_id: String,
     /// `set_resume_policy` (with `resume_policy`, or none to use the default), `resume_now`,
     /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
-    /// for `models.default`; refused while a turn runs), or `compact` (summarise older turns
-    /// now; refused while a turn runs).
+    /// for `models.default`; refused while a turn runs), `compact` (summarise older turns
+    /// now; refused while a turn runs), or `set_pinned` (with `pinned`; kept across restarts).
     #[ts(
-        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\""
+        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\""
     )]
     pub action: String,
     #[serde(default)]
@@ -1276,6 +1289,10 @@ pub struct SessionControlParams {
     /// For `set_model`: a model table id or an `<endpoint>:<model>` spec.
     #[serde(default)]
     pub model: Option<String>,
+    /// For `set_pinned`: whether the session is pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pinned: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

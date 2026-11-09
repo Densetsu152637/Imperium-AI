@@ -559,7 +559,7 @@ impl Connection {
             }
             EnvironmentUpdate::NAME => {
                 call::<EnvironmentUpdate>(params, |p: EnvironmentUpdateParams| {
-                    envs.update(&p.id, p.name.as_deref(), p.icon, p.color)
+                    envs.update(&p.id, p.name.as_deref(), p.icon, p.color, p.pinned)
                         .map_err(failed)
                 })
             }
@@ -631,6 +631,18 @@ impl Connection {
                     Some(session.set_model(model).await.map_err(switch_error)?)
                 }
                 "compact" => Some(session.compact().await.map_err(switch_error)?),
+                "set_pinned" => {
+                    let pinned = params.pinned.ok_or_else(|| {
+                        ErrorObject::new(codes::INVALID_PARAMS, "set_pinned needs pinned")
+                    })?;
+                    state.set_pinned(&session, pinned).map_err(|error| {
+                        ErrorObject::new(
+                            codes::INTERNAL_ERROR,
+                            format!("could not record the pin: {error}"),
+                        )
+                    })?;
+                    None
+                }
                 other => {
                     return Err(ErrorObject::new(
                         codes::INVALID_PARAMS,
