@@ -472,6 +472,10 @@ pub struct EnvironmentListParams {}
 #[ts(export)]
 pub struct EnvironmentListResult {
     pub environments: Vec<EnvironmentInfo>,
+    /// Ids of the local environments with a folder inside a git repository: those a session can
+    /// start on worktrees (`session.create` `worktree`).
+    #[serde(default)]
+    pub git: Vec<String>,
 }
 
 /// `environments.create`: a new environment, optionally with its first folders.

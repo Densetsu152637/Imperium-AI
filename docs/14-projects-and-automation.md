@@ -15,7 +15,7 @@ RPC:
 
 | Method | Params | Result |
 | --- | --- | --- |
-| `environments.list` | `{}` | `{ environments: EnvironmentInfo[] }` |
+| `environments.list` | `{}` | `{ environments: EnvironmentInfo[], git: string[] }` (`git`: ids of local environments with a folder inside a git repository, which can start sessions on worktrees; also sent with `environments.changed`) |
 | `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent? }` | `EnvironmentInfo` |
 | `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent? }` (empty icon/colour clears it) | `EnvironmentInfo` |
 | `environments.test_runtime` | `{ id }` | `{ ok, message }` |
@@ -92,7 +92,8 @@ An environment will also define:
 ## Worktrees
 
 **Implemented: sessions on a worktree.** `session.create { environment_id, worktree: true,
-worktree_branch? }` (the **Start in a worktree** box beside New session, `imperium chat
+worktree_branch? }` (the **Start in a worktree** switch in the desktop's
+[new-session composer](07-desktop-ui.md#environments-and-sessions-implemented), `imperium chat
 --worktree [BRANCH]`) starts a session on git worktrees: every folder of the environment inside
 a git repository is replaced by a new worktree of that repository on a new branch,
 `imperium/<first 8 characters of the session id>` unless a branch is named, made from the

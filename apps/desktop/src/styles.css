@@ -436,6 +436,86 @@ pre {
   border-top: 1px solid var(--border);
 }
 
+/* Folding a stacked panel: it shrinks to its header and the open ones grow into its room. */
+.split-column > .split-cell {
+  transition: flex-grow var(--slow) var(--ease);
+}
+
+.split-column.dragging > .split-cell {
+  transition: none;
+}
+
+.split-column > .split-cell.collapsed {
+  flex: 0 0 auto;
+}
+
+.panel.collapsed > .panel-body {
+  display: none;
+}
+
+/* The chevron and title sit at the left, the panel's buttons at the right; the title keeps a
+   few letters however narrow the rail. */
+.rail .panel-header {
+  gap: calc(var(--space) * 0.5);
+}
+
+.rail .panel-header h2 {
+  flex: 0 1 auto;
+  min-width: 3.5rem;
+  margin-right: auto;
+}
+
+.rail .panel-header > button:not(.icon-only) {
+  white-space: nowrap;
+}
+
+/* A narrow rail keeps a header action's icon and drops its words (still its accessible name). */
+@container (max-width: 17rem) {
+  .rail .panel-header > button:not(.icon-only):has(> .lucide) {
+    gap: 0;
+    padding-inline: 0.35rem;
+    font-size: 0;
+  }
+
+  .rail .panel-header > button:not(.icon-only) > .lucide {
+    width: 0.95rem;
+    height: 0.95rem;
+  }
+}
+
+.rail .panel-header {
+  cursor: default;
+  user-select: none;
+}
+
+.panel-header button.panel-fold.icon-only {
+  width: 1.4rem;
+  height: 1.4rem;
+  margin-left: calc(var(--space) * -0.6);
+  margin-right: calc(var(--space) * -0.5);
+  padding: 0;
+}
+
+.panel-header button.panel-fold .lucide {
+  width: 0.95rem;
+  height: 0.95rem;
+  transition: transform var(--slow) var(--ease);
+}
+
+.panel.collapsed .panel-fold .lucide {
+  transform: rotate(-90deg);
+}
+
+/* Collapse all / expand all: quiet until the column's top is hovered or it has focus. */
+.panel-fold-all {
+  opacity: 0.35;
+}
+
+.panel-header:hover .panel-fold-all,
+.panel-fold-all:focus-visible {
+  opacity: 1;
+}
+
 .divider {
   position: absolute;
   z-index: 2;
@@ -673,104 +753,203 @@ pre {
   border-bottom: 1px solid var(--border);
 }
 
-.session-env {
+/* Under the composer: the model at the left, cost, options, and the context meter at the right. */
+.session-footer {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: calc(var(--space) * 0.5);
-  font-size: 0.78rem;
+  gap: calc(var(--space) * 0.5) var(--space);
+  width: calc(100% - var(--space) * 6);
+  max-width: var(--prose-max);
+  margin: calc(var(--space) * -1.5) auto calc(var(--space) * 1.5);
+  padding: 0 calc(var(--space) * 0.5);
+  font-size: 0.8rem;
+  color: var(--muted);
 }
 
-.session-env > span {
-  color: var(--muted);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0.1rem 0.65rem;
-  max-width: 100%;
+.session-footer-spacer {
+  flex: 1;
+}
+
+.session-footer button.select {
+  min-width: 0;
+  max-width: 18rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.8rem;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.session-footer button.select:hover:not(:disabled),
+.session-footer button.select.open {
+  background: var(--hover);
+  border-color: var(--border);
+}
+
+.model-select {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.session-footer .model-select-button .select-value {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.session-footer .model-select-button .select-value.placeholder {
+  color: var(--accent);
+}
+
+.model-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  max-width: 24rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* The model picker sits among the environment pills, as one of them. */
-.session-env > .model-picker {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0 0.3rem 0 0.15rem;
-}
-
-.model-picker select {
-  max-width: 22rem;
-  font: inherit;
-  color: var(--text);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 0.05rem 0.4rem;
-  text-overflow: ellipsis;
-  cursor: pointer;
-  transition:
-    border-color var(--fast) var(--ease),
-    box-shadow var(--fast) var(--ease);
-}
-
-.model-picker select:hover:not(:disabled) {
-  border-color: var(--border-strong);
-}
-
-.model-picker select:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.model-picker select:disabled {
-  cursor: default;
-  color: var(--muted);
-}
-
-.model-picker option {
-  background: var(--surface);
-  color: var(--text);
+.model-status.error {
+  margin: 0;
 }
 
 .model-note {
   color: var(--warn);
 }
 
-.toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  margin-left: auto;
-  color: var(--muted);
-  cursor: pointer;
+.session-footer button.icon-only,
+.model-status button.icon-only {
+  width: 1.7rem;
+  height: 1.7rem;
 }
 
-.session-tools {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: calc(var(--space) * 0.25) calc(var(--space) * 3);
-  font-size: 0.8rem;
+.model-status button.icon-only .lucide {
+  width: 0.85rem;
+  height: 0.85rem;
 }
 
-.session-tools > details[open] {
-  flex-basis: 100%;
-}
-
-.session-details > summary {
-  cursor: pointer;
-  color: var(--muted);
-  transition: color var(--fast) var(--ease);
-}
-
-.session-details > summary:hover,
-.usage-limits > summary:hover {
+.session-footer .footer-button[aria-expanded="true"],
+.context-meter[aria-expanded="true"] {
+  background: var(--active);
   color: var(--text);
 }
+
+/* The context meter: a slim bar against the window and `used / window` tokens. */
+.context-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-meter-bar {
+  position: relative;
+  width: 3.5rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.context-meter-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--slow) var(--ease);
+}
+
+.context-meter.high .context-meter-bar > span {
+  background: var(--warn);
+}
+
+.context-meter.full .context-meter-bar > span {
+  background: var(--danger, var(--warn));
+}
+
+/* What the footer opened: above the composer, scrolling within a capped height. */
+.session-drawer {
+  position: relative;
+  flex: none;
+  width: calc(100% - var(--space) * 6);
+  max-width: var(--prose-max);
+  max-height: 45vh;
+  margin: 0 auto var(--space);
+  overflow: auto;
+}
+
+.session-drawer > .session-sections {
+  margin-top: 0;
+}
+
+.session-drawer-close {
+  position: absolute;
+  top: calc(var(--space) * 0.5);
+  right: calc(var(--space) * 0.5);
+  z-index: 1;
+}
+
+.option-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.usage-mode {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* The new-session view: an intro, the first-message composer, and the session's options. */
+.new-session-view {
+  justify-content: center;
+  padding-bottom: 10vh;
+}
+
+.new-session-intro {
+  width: calc(100% - var(--space) * 6);
+  max-width: var(--prose-max);
+  margin: 0 auto calc(var(--space) * 2);
+}
+
+.new-session-intro h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1.25rem;
+}
+
+.new-session-intro p {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-session-error {
+  width: calc(100% - var(--space) * 6);
+  max-width: var(--prose-max);
+  margin: 0 auto var(--space);
+}
+
+.new-session-options {
+  margin-top: calc(var(--space) * -1.5);
+}
+
+.new-session-worktree {
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
 
 .conversation {
   flex: 1;
@@ -2729,20 +2908,6 @@ button.colour-choice[aria-checked="true"]::after {
   font-size: 0.85rem;
 }
 
-.new-session {
-  display: inline-flex;
-  gap: calc(var(--space) * 0.5);
-  align-items: center;
-}
-
-.new-session select,
-.panel-header .new-session button.select {
-  min-width: 0;
-  max-width: 10rem;
-  font-size: 0.75rem;
-  border-color: var(--border);
-}
-
 .session-error {
   margin: 0 calc(var(--space) * 0.5) var(--space);
 }
@@ -2964,7 +3129,11 @@ button.colour-choice[aria-checked="true"]::after {
   }
 
   .composer,
-  .plan {
+  .plan,
+  .session-footer,
+  .session-drawer,
+  .new-session-intro,
+  .new-session-error {
     width: calc(100% - var(--space) * 3);
   }
 
@@ -4506,12 +4675,4 @@ button.select.open .select-chevron {
 
 .badge.worktree {
   border-color: var(--border-strong);
-}
-
-.new-session-worktree {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.8rem;
-  white-space: nowrap;
 }

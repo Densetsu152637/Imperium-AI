@@ -22,6 +22,7 @@ import type {
   SessionQueueParams,
   SessionSendParams,
   SessionControlResult,
+  SessionCreateParams,
   SessionCreateResult,
   SessionEventParams,
   LocalModelListResult,
@@ -48,6 +49,7 @@ import {
   type SessionSort,
 } from "./panels/NavigationPanels";
 import { SessionPanel } from "./panels/SessionPanel";
+import { NewSessionPanel, type NewSessionOptions } from "./panels/NewSessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
@@ -64,7 +66,6 @@ import { SettingsWindow } from "./SettingsWindow";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
 import { ConnectorsWindow } from "./ConnectorsWindow";
 import { EnvironmentWindow } from "./EnvironmentWindow";
-import { Select } from "./components/Select";
 import { getDoc, setDoc, subscribeDoc } from "./store";
 import { type Daemon, useDaemon } from "./DaemonControl";
 import { ModelConfigDialog, type ModelDialogTarget } from "./ModelConfigDialog";
@@ -138,10 +139,8 @@ export function App() {
   /** The environment window: which environment it edits (null id: a new one). */
   const [envWindow, setEnvWindow] = useState<{ id: string | null; confirmDelete?: boolean } | null>(null);
   const [sessionSort, setSessionSort] = useState<SessionSort>(saved.sessionSort);
-  /** The model "New session" asks for; empty for the configured default. */
-  const [newModel, setNewModel] = useState("");
-  const [newWorktree, setNewWorktree] = useState(false);
-  const [sessionError, setSessionError] = useState<string | null>(null);
+  /** Environments with a folder in a git repository: new sessions there may start on worktrees. */
+  const [gitEnvironments, setGitEnvironments] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
   const [hidden, setHidden] = useState<string[]>(saved.hidden);
   const [detached, setDetached] = useState<Record<string, DetachedPanel>>(saved.detached);
@@ -224,7 +223,9 @@ export function App() {
           return;
         }
         if (notification.method === "environments.changed") {
-          setEnvironments((notification.params as EnvironmentListResult).environments);
+          const listing = notification.params as EnvironmentListResult;
+          setEnvironments(listing.environments);
+          setGitEnvironments(listing.git ?? []);
           return;
         }
         if (notification.method === "session.deleted") {
@@ -304,6 +305,11 @@ export function App() {
       );
       if (attempt !== generation.current) return;
       setEnvironments(envs);
+      // Which environments can start on worktrees; older daemons do not say.
+      client
+        .call<EnvironmentListResult>("environments.list")
+        .then((listing) => attempt === generation.current && setGitEnvironments(listing.git ?? []))
+        .catch(() => {});
       // Keep the selected environment if it still exists; else the one the saved project folder
       // became, the first restored session's, or the first there is.
       setEnvId((selected) => {
@@ -435,51 +441,48 @@ export function App() {
     setEnvView(true);
   };
 
-  const startSession = async () => {
-    if (!client || !environment) return;
-    setSessionError(null);
-    try {
-      const created = await client.call<SessionCreateResult>("session.create", {
-        environment_id: environment.id,
-        ...(newModel ? { model: newModel } : {}),
-        ...(newWorktree ? { worktree: true } : {}),
-      });
-      known.current.add(created.session_id);
-      // The rest of the summary arrives with the daemon's session.created notice.
-      const summary: SessionSummary = {
-        session_id: created.session_id,
-        project_dir: created.folders[0] ?? environment.folders[0],
-        environment_id: created.environment_id,
-        folders: created.folders,
-        model: created.model,
-        isolation: created.isolation,
-        title: "",
-        status: "idle",
-        status_detail: null,
-        resume_policy: DEFAULT_RESUME_POLICY,
-        background: false,
-        hold: null,
-        persistent: false,
-        archived: false,
-        archived_at: null,
-        worktrees: created.worktrees,
-        pinned: false,
-      };
-      setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
-      setSelected(created.session_id);
-    } catch (error) {
-      // Shown beside the button rather than in a dialog, which some webviews do not show.
-      setSessionError(message(error));
+  /** Creates a session from the new-session composer and sends its first message; rejects with the daemon's reason. */
+  const createSession = async ({ environmentId, model, worktree, text }: NewSessionOptions) => {
+    const env = environments.find((e) => e.id === environmentId);
+    if (!client || !env) throw new Error("Not connected to imperium-core.");
+    const params: SessionCreateParams = {
+      environment_id: env.id,
+      ...(model ? { model } : {}),
+      ...(worktree ? { worktree: true } : {}),
+    };
+    const created = await client.call<SessionCreateResult>("session.create", params);
+    known.current.add(created.session_id);
+    // The rest of the summary arrives with the daemon's session.created notice.
+    const summary: SessionSummary = {
+      session_id: created.session_id,
+      project_dir: created.folders[0] ?? env.folders[0],
+      environment_id: created.environment_id,
+      folders: created.folders,
+      model: created.model,
+      isolation: created.isolation,
+      title: "",
+      status: "idle",
+      status_detail: null,
+      resume_policy: DEFAULT_RESUME_POLICY,
+      background: false,
+      hold: null,
+      persistent: false,
+      archived: false,
+      archived_at: null,
+      worktrees: created.worktrees,
+      pinned: false,
+    };
+    setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
+    setSelected(created.session_id);
+    setEnvId(env.id);
+    if (text) {
+      const send: SessionSendParams = { session_id: created.session_id, text, mode: "queue" };
+      client.call("session.send", send).catch(report);
     }
   };
 
-  const newSessionBlocker = !client
-    ? "Not connected to imperium-core"
-    : !environment
-      ? "Select or create an environment first"
-      : environment.folders.length === 0
-        ? `Add a folder to ${environment.name} first`
-        : null;
+  /** Opens the new-session composer in the middle panel. */
+  const newSessionView = () => setSelected(null);
 
   /** Sends a message: it starts a turn, waits in the queue while one runs, or (steer) joins it. */
   const send = (text: string, mode: SendMode) => {
@@ -545,19 +548,15 @@ export function App() {
     if (selected) control(selected, { action: "resume_now" }).catch(report);
   };
 
-  /** Switches the selected session's model; the daemon compacts the conversation if needed. */
-  const setModel = async (model: string): Promise<SessionControlResult | null> => {
-    if (!selected) return null;
+  /** Switches the selected session's model; the daemon compacts the conversation if needed.
+   * Rejects with the daemon's reason, which the model selector shows beside itself. */
+  const setModel = async (model: string): Promise<SessionControlResult> => {
+    if (!selected) throw new Error("No session is open.");
     const id = selected;
-    try {
-      const result = await control(id, { action: "set_model", model });
-      const now = result.model ?? model;
-      setSessions((all) => (all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, model: now } } } : all));
-      return result;
-    } catch (error) {
-      report(error);
-      return null;
-    }
+    const result = await control(id, { action: "set_model", model });
+    const now = result.model ?? model;
+    setSessions((all) => (all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, model: now } } } : all));
+    return result;
   };
 
   const selectSession = (sessionId: string) => {
@@ -630,33 +629,13 @@ export function App() {
       id: "sessions",
       title: "Sessions",
       actions: (
-        <span className="new-session">
-          <Select
-            aria-label="Model for new sessions"
-            value={newModel}
-            onChange={setNewModel}
-            options={[
-              { value: "", label: "Default model" },
-              ...(modelTable?.models ?? []).map((row) => ({
-                value: row.id,
-                label: row.id,
-                disabled: !row.endpoint_configured,
-                description: row.endpoint_configured ? undefined : "Endpoint not configured",
-              })),
-            ]}
-          />
-          <label className="new-session-worktree" title="Start on a new git worktree and branch">
-            <input type="checkbox" checked={newWorktree} onChange={(event) => setNewWorktree(event.target.checked)} />
-            Start in a worktree
-          </label>
-          <button
-            onClick={startSession}
-            disabled={newSessionBlocker !== null}
-            title={newSessionBlocker ?? `New session in ${environment?.name}`}
-          >
-            <Plus aria-hidden="true" /> New session
-          </button>
-        </span>
+        <button
+          onClick={newSessionView}
+          disabled={!client}
+          title={client ? "Start a session: choose its options and write the first message in the middle panel" : "Not connected to imperium-core"}
+        >
+          <Plus aria-hidden="true" /> New session
+        </button>
       ),
       body: (
         <SessionsPanel
@@ -664,7 +643,6 @@ export function App() {
           environments={environments}
           scope={envView ? environment : null}
           selected={selected}
-          error={sessionError}
           sort={sessionSort}
           onSort={setSessionSort}
           onSelect={selectSession}
@@ -696,7 +674,7 @@ export function App() {
   const sessionPanel: PanelSpec = {
     id: "session",
     title: "Session",
-    body: (
+    body: session ? (
       <SessionPanel
         session={session}
         icons={icons}
@@ -706,9 +684,21 @@ export function App() {
         onSetResumePolicy={setResumePolicy}
         onResumeNow={resumeNow}
         models={modelTable?.models ?? []}
+        localModels={localModels?.models ?? []}
         onSetModel={setModel}
         client={client}
-        onUnarchive={session ? () => setSessionArchived(session.summary.session_id, false) : undefined}
+        onUnarchive={() => setSessionArchived(session.summary.session_id, false)}
+      />
+    ) : (
+      <NewSessionPanel
+        environments={environments}
+        gitEnvironments={gitEnvironments}
+        environmentId={envId}
+        onSelectEnvironment={setEnvId}
+        models={modelTable?.models ?? []}
+        localModels={localModels?.models ?? []}
+        client={client}
+        onCreate={createSession}
       />
     ),
   };

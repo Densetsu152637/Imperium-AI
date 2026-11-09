@@ -6,11 +6,13 @@
   and the React interface connects over the WebSocket with the subprotocol token. In a plain
   browser (development preview) it asks for the URL and token instead.
 - The default view below, built from columns of spanning or stacked panels with draggable
-  dividers; sizes are remembered.
-- Session panel: environment header (project, model, isolation tier, cost), conversation with
-  assistant replies rendered as Markdown (GitHub-flavoured, raw HTML disabled; a toggle shows
-  the raw text), inline permission prompts (allow, always this session, deny), a floating
-  composer, and context and outputs sections folded into the header.
+  dividers; sizes are remembered, and stacked panels fold to their header
+  ([folding](#columns-spanning-and-stacking)).
+- Session panel: the title and status at the top, conversation with assistant replies rendered
+  as Markdown (GitHub-flavoured, raw HTML disabled; an option shows the raw text), inline
+  permission prompts (allow, always this session, deny), a floating composer, and under it a
+  footer with the model selector and the context meter
+  ([session footer](#environments-and-sessions-implemented)).
 - Telemetry panel: per-call tokens, time to first token, tokens per second, and cost, with
   session totals.
 - Display settings: UI scale, prose and code text scale, density, and line length. They are
@@ -131,17 +133,17 @@ layout of panels, and every panel — including the built-in ones — is customi
 
 ```text
 ┌────────────────────┬──────────────────────────────────────────────────────┐
-│ Environments       │ Session: <name>                                      │
+│ Environments       │ <icon> Session title                        <status> │
 │ (and folders)      │ ┌──────────────────────────────────────────────────┐ │
-│                    │ │ Environment · model · isolation tier · budget    │ │
-│ stackable          │ ├──────────────────────────────────────────────────┤ │
-├────────────────────┤ │ Conversation and plan                            │ │
-│ Sessions           │ │                                                  │ │
-│ (of the selected   │ ├────────────────┬─────────────────┬───────────────┤ │
-│  environment)      │ │ Context        │ Outputs         │ Worktrees     │ │
-│                    │ │ breakdown      │ (artefacts)     │               │ │
-│ stackable          │ └────────────────┴─────────────────┴───────────────┘ │
-│                    │ spans full height                                    │
+│                    │ │ Conversation and plan                            │ │
+│ stackable          │ │                                                  │ │
+├────────────────────┤ ├──────────────────────────────────────────────────┤ │
+│ Sessions           │ │ (opened from the footer: context breakdown,      │ │
+│ (of the selected   │ │  totals, outputs — or options)                   │ │
+│  environment)      │ ├──────────────────────────────────────────────────┤ │
+│                    │ │ Composer                                         │ │
+│ stackable          │ └──────────────────────────────────────────────────┘ │
+│                    │  model ▾                     $cost  ⚙  ▬▬▭ 12k/32k   │
 └────────────────────┴──────────────────────────────────────────────────────┘
 ```
 
@@ -149,8 +151,10 @@ layout of panels, and every panel — including the built-in ones — is customi
   (local, container, SSH host), project-agent status, and schedules.
 - **Sessions panel** (bottom left): sessions in the selected environment, with status, cost,
   and pending approvals.
-- **Main session panel** (middle, full height): the selected session. It is built from
-  sections — environment header, conversation and plan, context breakdown (tokens by system
+- **Main session panel** (middle, full height): the selected session, or the
+  [new-session composer](#environments-and-sessions-implemented) when none is open. It is built
+  from sections — title bar, conversation and plan, composer and its footer (model, cost,
+  options, context meter), context breakdown (tokens by system
   prompt, tools, workflow context, memories, and conversation against the window size; see
   [context breakdown](#environments-and-sessions-implemented)), outputs, and worktrees —
   each of which is itself a movable, replaceable module.
@@ -171,6 +175,15 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
   The user can override a panel's default in its settings.
 - Columns and stack dividers are resizable; sizes are stored as proportions so layouts adapt
   across monitors.
+- **Folding (implemented):** each stacked panel has a chevron before its title that folds it to
+  its header (double-clicking the header's title or empty space does the same); the open panels
+  in its column take the room it gives back, and a divider between two open panels still
+  resizes them across folded ones. The first header of a column also has *Collapse all* /
+  *Expand all* for the column (dim until the header is hovered or the button has focus). The
+  chevron is a button with `aria-expanded` naming its panel, so folding works from the keyboard.
+  The fold animates briefly and not at all under the system's or the app's *Reduce motion*.
+  Folded panels stay mounted (a mod's frame keeps its state) and are kept in the local layout
+  with sizes and closed panels; Settings → *Reset layout* opens them again.
 
 ### Modules inside panels
 
@@ -336,13 +349,21 @@ Both apply with *Create* or *Save*. For a remote runtime the folders are paths i
 ([runtimes](14-projects-and-automation.md#runtimes-implemented)), typed in with *Add path*
 instead of the folder picker.
 
-*New session* (in the Sessions panel's header) starts a session in the selected environment;
-it is disabled, with the reason as its tooltip, while disconnected, with no environment
-selected, or when the environment has no folders. The model list beside it picks the session's
-model (*Default model* uses `models.default`); when no default is configured, starting with
-*Default model* shows the daemon's explanation above the list instead of failing silently.
-*Start in a worktree* beside it starts the session on new git worktrees of the environment's
-repositories ([worktrees](14-projects-and-automation.md#worktrees)).
+**New session (implemented):** *New session* in the Sessions panel's header (disabled while
+disconnected) opens the new-session composer in the middle panel, which is also what the middle
+panel shows whenever no session is open. It is a message box for the first message with the
+session's options under it, in the same footer row an open session uses: the *Environment*
+(the selected one, else the first, pinned ones leading), the *Model* (the model table and local
+models, as in the [session footer](#environments-and-sessions-implemented); it starts on
+`models.default`, read with `config.describe`, and offers *No model* when none is configured),
+and *Start in a worktree*, shown only for a local environment with a folder inside a git
+repository (`environments.list` and `environments.changed` name those in `git`). Sending (Enter,
+or Ctrl+Enter, as set in Settings) creates the session with `session.create` (`environment_id`,
+`model`, `worktree`) and sends the message to it; the send button alone starts it without one.
+An environment with no folders, or none at all, disables sending with the reason beside the
+options, and a refused `session.create` shows the daemon's explanation above the box. A
+session started without a model keeps its message queued until one is picked
+([worktrees](14-projects-and-automation.md#worktrees)).
 
 The Sessions panel lists every session across environments, each with its environment's icon
 to the left of its title and a status badge (idle, working, needs attention, paused with its
@@ -365,20 +386,37 @@ environment. An environment's persistent agent is listed above everything else i
 titled *<environment> agent* with a *Persistent* badge; a session on worktrees has a *Worktree*
 badge whose tooltip lists each worktree and branch. Renaming and stopping sessions are not
 offered yet; deleting one is `session.delete` (`imperium session delete`), and a session
-deleted elsewhere (`session.deleted`) leaves the list. The session header shows the status and the *Usage limits* controls (how to wait
-when usage runs out, and *Resume now* while paused).
+deleted elsewhere (`session.deleted`) leaves the list. The session's top bar shows only its
+icon, title, and status badge (with *Resume now* while paused); everything else about the
+session sits in the footer under the composer.
 
-**Model picker (implemented):** among the header's environment pills, the session's model is a
-picker listing the model table (`models.list`; rows whose endpoint is not configured are shown
-but cannot be chosen, and a model outside the table is listed as is). Choosing one switches the
-session with `session.control` `set_model`; it is disabled while a turn runs, since switches
-apply between turns ([03](03-agent-engine.md#switching-models-and-compaction)). When the new
-model's context window is smaller than the conversation needs, the daemon compacts it first:
-the picker notes `compacted 30.1k → 9.2k tokens`, and the transcript gets a notice naming the
-target, the token counts, how many messages were summarised, and by which model, followed by
-*Switched model from x to y*. A refused switch (nothing fits, a missing key) shows its error
-and leaves the model as it was. Breakdowns of a compacted conversation list the summary as its
-own category, *Conversation summary*.
+**Session footer (implemented):** a compact row under the composer, as in chat apps: the model
+selector at the left, then the session's cost once it has one, an options button, and the
+context meter at the right. The options button opens *Display* (*Render Markdown*, and the
+project and isolation tier) and *Usage limits* (how to wait when usage runs out:
+`session.control` `set_resume_policy`) above the composer; the context meter opens the
+[context breakdown](#environments-and-sessions-implemented), session totals, and recent outputs
+there. Only one of them is open at a time; each closes with its button again or the panel's
+close button.
+
+**Model selector (implemented):** the footer's model is a themed list of the model table
+(`models.list`; each row by id, with its spec, location, and tier; rows whose endpoint is not
+configured are shown but cannot be chosen) followed by local models found in the model folders
+(`models.local`, as `llamacpp:<id>` or `vllm:<id>`, unless the table lists them already); a
+model outside both is listed as is, and a session without one reads *No model* in the accent
+colour. Choosing one switches the session with `session.control` `set_model`, also for a session
+waiting for a model, whose queued messages then run. While a turn runs the choice is held and
+marked *After this turn* (with a button to keep the current model), and applied when the turn
+ends, since switches apply between turns ([03](03-agent-engine.md#switching-models-and-compaction)).
+When the new model's context window is smaller than the conversation needs, the daemon compacts
+it first: the footer notes `Compacted 30.1k → 9.2k tokens`, and the transcript gets a notice
+naming the target, the token counts, how many messages were summarised, and by which model,
+followed by *Switched model from x to y*. A refused switch (nothing fits, a missing key, a turn
+that started meanwhile) shows its error beside the list and leaves the model as it was.
+Breakdowns of a compacted conversation list the summary as its own category, *Conversation
+summary*. (Before this, the picker sat among the header pills as a borderless native select
+that read like plain text, listed only the table, and fell back to plain text when the table
+was empty — so it was easy to miss and absent for local-only setups.)
 
 **Composer, queue, and steering (implemented):** the composer stays enabled while the agent
 works. Its send key (Enter, or Ctrl+Enter, as set in Settings) queues the message for after the
@@ -390,9 +428,10 @@ cancels) and *Remove*; the list follows `queue_changed`, so it empties as messag
 delivered. In the transcript a steering message is a user bubble with an accent edge and a
 *Steering* label, at the point in the turn where the agent read it.
 
-**Context breakdown (implemented):** the header's *Context and outputs* summary shows how full
-the root agent's context was on its latest model call, such as `12.3k / 32.8k tokens` (or just
-the tokens when the window is unknown). Opened, its *Context window* section shows, for the
+**Context breakdown (implemented):** the footer's context meter shows how full the root
+agent's context was on its latest model call, as a slim bar (amber from 70%, red from 90%) and
+`12.3k / 32.8k` (or just the tokens when the window is unknown; its tooltip gives the
+percentage). Pressing it opens the *Context window* section, which shows, for the
 selected agent (root first, then each subagent by task id, chosen from a list when there is
 more than one), what that agent's latest call read, from its `context_breakdown` event
 ([03](03-agent-engine.md#context-management)): a bar segmented by category against the window

@@ -38,9 +38,8 @@ use imperium_protocol::methods::{
 };
 use imperium_protocol::methods::{
     EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
-    EnvironmentFolderParams, EnvironmentList, EnvironmentListParams, EnvironmentListResult,
-    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentTestRuntime, EnvironmentUpdate,
-    EnvironmentUpdateParams,
+    EnvironmentFolderParams, EnvironmentList, EnvironmentListParams, EnvironmentRef,
+    EnvironmentRemoveFolder, EnvironmentTestRuntime, EnvironmentUpdate, EnvironmentUpdateParams,
 };
 use imperium_protocol::methods::{
     HfFiles, ModelDownload, ModelDownloadCancel, ModelDownloadCancelParams,
@@ -672,9 +671,7 @@ impl Connection {
         let result = match method {
             EnvironmentList::NAME => {
                 return call::<EnvironmentList>(params, |_: EnvironmentListParams| {
-                    Ok(EnvironmentListResult {
-                        environments: envs.list(),
-                    })
+                    Ok(self.state.environment_list())
                 });
             }
             EnvironmentCreate::NAME => {
