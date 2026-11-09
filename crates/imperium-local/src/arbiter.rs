@@ -26,7 +26,8 @@ use crate::planner::{Budget, Placement};
 pub(crate) enum Use {
     /// A slot is in use or a call is queued for one.
     Busy,
-    /// No slot is in use, but an agent that took one this time it was loaded is mid-turn.
+    /// No slot is in use, but an agent of the requester's own session that took one this time
+    /// it was loaded is mid-turn. (An agent of another session counts as `Busy`.)
     Claimed,
     /// No slot is in use and no agent is mid-turn on it.
     Free,
@@ -293,6 +294,7 @@ mod tests {
                 weights_bytes: 5 * GIB,
                 kv_bytes: GIB / 2,
                 layers: Some(32),
+                max_gpu_layers: None,
             },
             budget,
         )
@@ -547,6 +549,7 @@ mod tests {
                     weights_bytes: 10 * GIB,
                     kv_bytes: GIB,
                     layers: Some(48),
+                    max_gpu_layers: None,
                 },
                 budget,
             )

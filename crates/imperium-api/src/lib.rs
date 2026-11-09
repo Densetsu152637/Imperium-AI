@@ -11,7 +11,10 @@ mod tools;
 
 pub use chat::{ChatMessage, FunctionCall, ToolCall, ToolSpec, Usage};
 pub use load::{Load, LoadView};
-pub use local::{AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence, Priority};
+pub use local::{
+    AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence, LocalRequest, Priority,
+    holder, holder_session,
+};
 pub use pricing::Pricing;
 pub use tools::{
     StartFuture, ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,

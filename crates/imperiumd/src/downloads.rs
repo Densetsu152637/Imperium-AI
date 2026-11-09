@@ -108,7 +108,7 @@ pub async fn files(
         Some(budget) => budget,
         None => {
             let probing = Arc::clone(&state);
-            tokio::task::spawn_blocking(move || crate::local::probed_budget(probing.settings()))
+            tokio::task::spawn_blocking(move || crate::local::probed_budget(&probing.settings()))
                 .await
                 .map_err(|error| ErrorObject::new(codes::INTERNAL_ERROR, error.to_string()))?
         }

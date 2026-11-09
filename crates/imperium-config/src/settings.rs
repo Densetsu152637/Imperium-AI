@@ -5,6 +5,7 @@ use imperium_api::Pricing;
 use serde::Deserialize;
 
 use crate::SecretName;
+use crate::local_models::{LocalModelSettings, TableOverride};
 
 /// Built-in defaults: the first configuration layer.
 pub(crate) const DEFAULTS: &str = r#"
@@ -23,11 +24,20 @@ resume_days = 7
 backend = "auto"
 # Seconds a loaded model may sit unused before it is unloaded.
 idle_unload_s = 900
-# Context length and parallel slots each loaded model is started with.
+# Tokens one session may use on a local model (per-model override: [runtime.llamacpp.models."<id>"]).
 context = 8192
+# Deprecated: only sizes the default KV pool, pool_tokens = context x parallel. Slots are set by
+# `slots` (default: the larger of 8 and parallel), and no number of sessions is capped.
 parallel = 2
-# KV cache type: f16, q8_0, or q4_0.
+# slots = 8
+# Tokens of KV cache all slots of a model share (default: context x parallel).
+# pool_tokens = 65536
+# KV cache type of keys and values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, or q5_1.
 cache_type = "f16"
+# Flash attention: auto, on, or off.
+flash_attn = "auto"
+# Most tokens one local reply may generate before it is retried without a cap; 0 = no cap.
+max_output_tokens = 8192
 # System memory kept free for everything else when placing models.
 ram_headroom_mb = 2048
 # Host memory (MiB) for llama.cpp's prompt cache, which keeps the prompts of agents that lost
@@ -276,7 +286,7 @@ impl Settings {
                 ));
             }
         }
-        Ok(())
+        self.validate_models()
     }
 }
 
@@ -776,7 +786,7 @@ pub struct AgentSettings {
     pub resume_days: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ModelSettings {
     /// Model for new sessions, as `<endpoint>:<model>`, for example `openrouter:qwen/qwen3-coder`.
     #[serde(default)]
@@ -790,6 +800,9 @@ pub struct ModelSettings {
     /// Where models downloaded from Hugging Face go; see [`ModelSettings::download_dir`].
     #[serde(default)]
     pub download_dir: Option<PathBuf>,
+    /// `[models.overrides."<id>"]`: what the app changes on model-table rows.
+    #[serde(default)]
+    pub overrides: BTreeMap<String, TableOverride>,
 }
 
 impl ModelSettings {
@@ -839,9 +852,27 @@ pub struct LlamaCppSettings {
     #[serde(default)]
     pub custom_path: Option<PathBuf>,
     pub idle_unload_s: u64,
+    /// Tokens one session may use on a local model.
     pub context: u32,
+    /// Deprecated: only sizes the default KV pool (`context × parallel`).
     pub parallel: u32,
+    /// Default `--parallel` of each model; unset takes the larger of 8 and `parallel`.
+    #[serde(default)]
+    pub slots: Option<u32>,
+    /// Default tokens of KV cache all slots of a model share.
+    #[serde(default)]
+    pub pool_tokens: Option<u32>,
+    /// Default type of the K and V cache.
     pub cache_type: String,
+    /// `auto`, `on`, or `off`.
+    #[serde(default = "default_flash_attn")]
+    pub flash_attn: String,
+    /// Most tokens one reply may generate before it is retried without a cap; 0 = no cap.
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: u32,
+    /// Settings of single local models, by model id.
+    #[serde(default)]
+    pub models: BTreeMap<String, LocalModelSettings>,
     pub ram_headroom_mb: u64,
     /// Host memory for llama.cpp's prompt cache (`--cache-ram`), before it is capped to the RAM
     /// the model leaves free; 0 disables it.
@@ -860,6 +891,14 @@ pub struct LlamaCppSettings {
     /// Extra arguments passed to every `llama-server`.
     #[serde(default)]
     pub extra_args: Vec<String>,
+}
+
+fn default_flash_attn() -> String {
+    "auto".into()
+}
+
+fn default_max_output_tokens() -> u32 {
+    8192
 }
 
 /// Overrides for the hardware probe, for machines it cannot read (or to plan as if memory were
@@ -907,6 +946,13 @@ pub struct CatalogEntry {
     /// tasks that take minutes. Only valid with `placement = "cpu"`.
     #[serde(default)]
     pub max_wait_s: Option<u64>,
+    /// False leaves the row out of routing.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 impl CatalogEntry {

@@ -116,6 +116,11 @@ fn settings(cache_ram_mb: u64) -> LlamaCppSettings {
         context: 4096,
         parallel: 2,
         cache_type: "f16".into(),
+        slots: Some(2),
+        pool_tokens: None,
+        flash_attn: "auto".into(),
+        max_output_tokens: 8192,
+        models: Default::default(),
         ram_headroom_mb: 0,
         cache_ram_mb,
         swap_cache_mb: 0,
@@ -391,4 +396,35 @@ async fn cpu_lane_speed_is_measured_from_finished_calls() {
     // The speed outlives the server.
     drop(supervisor.acquire("critic", "reviewer").await.unwrap());
     assert!(supervisor.tokens_per_s("critic").is_some());
+}
+
+#[tokio::test]
+async fn a_cpu_lane_model_another_session_is_using_is_never_evicted_for_ram() {
+    // 24 GiB of RAM holds the 18 GiB lane model or a 6 GiB model beside the GPU's, not both
+    // the lane and a second RAM-hungry load: the newcomer needs the lane's RAM.
+    let (supervisor, log) = start(&hardware(10, 24), 0);
+    let turn = supervisor.attach("critic", "first/root");
+    drop(supervisor.acquire("critic", "first/root").await.unwrap());
+    // A newcomer from another session needs more RAM than is left beside the lane.
+    supervisor.set_cpu_pinned(HashMap::from([
+        ("critic".to_string(), CpuLane::default()),
+        ("worker".to_string(), CpuLane::default()),
+    ]));
+    let newcomer = {
+        let supervisor = Arc::clone(&supervisor);
+        tokio::spawn(async move { supervisor.acquire("worker", "second/root").await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!newcomer.is_finished(), "the newcomer waits for the RAM");
+    assert!(log.stopped().is_empty(), "{:?}", log.stopped());
+    assert!(supervisor.loaded().iter().any(|m| m.model_id == "critic"));
+    // Released, the lane model is swapped out and the newcomer loads.
+    drop(turn);
+    let lease = tokio::time::timeout(Duration::from_secs(5), newcomer)
+        .await
+        .expect("the newcomer loads once the claim drops")
+        .unwrap()
+        .unwrap();
+    assert_eq!(log.stopped(), ["critic"]);
+    drop(lease);
 }

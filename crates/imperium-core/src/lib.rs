@@ -15,8 +15,8 @@ mod session;
 mod status;
 
 pub use imperium_api::{
-    AcquireFuture, Availability, Load, LoadView, LocalLease, LocalModels, LocalPresence, Priority,
-    ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,
+    AcquireFuture, Availability, Load, LoadView, LocalLease, LocalModels, LocalPresence,
+    LocalRequest, Priority, ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,
 };
 pub use imperium_models::{ChatClient, ChatClients};
 pub use launcher::{LaunchFuture, SessionLauncher};

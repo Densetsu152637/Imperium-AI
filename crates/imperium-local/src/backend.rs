@@ -127,17 +127,30 @@ impl RuntimeBackend for LlamaCpp {
             spec.model_path.display().to_string(),
             "--host".into(),
             "127.0.0.1".into(),
+            // One KV cell pool shared by every slot, budgeted in tokens.
             "--ctx-size".into(),
-            spec.context.to_string(),
+            spec.pool_tokens.to_string(),
+            "--kv-unified".into(),
+        ];
+        if spec.context < spec.pool_tokens {
+            // Caps what one slot may use; with the whole pool as the context it could not bind.
+            args.extend(["--kv-unified-per-slot".into(), spec.context.to_string()]);
+        }
+        args.extend([
             "--parallel".into(),
             spec.slots.to_string(),
+            // An idle slot keeps its cells for the swap-out save; llama-server still purges
+            // idle slots when the pool runs short.
+            "--no-cache-idle-slots".into(),
             "--n-gpu-layers".into(),
             // llama.cpp clamps a large count to the model's layers.
             spec.gpu_layers.min(999).to_string(),
             "--cache-type-k".into(),
-            spec.cache_type.clone(),
+            spec.cache_type_k.clone(),
             "--cache-type-v".into(),
-            spec.cache_type.clone(),
+            spec.cache_type_v.clone(),
+            "--flash-attn".into(),
+            spec.flash_attn.clone(),
             // MiB of host memory for the prompts of slots that were reused; 0 disables it.
             // Never add `--slot-prompt-similarity 0`: requests are pinned to a slot with
             // `id_slot`, and it is the server's default similarity threshold that saves a pinned
@@ -146,7 +159,7 @@ impl RuntimeBackend for LlamaCpp {
             "--cache-ram".into(),
             spec.cache_ram_mb.to_string(),
             "--jinja".into(),
-        ];
+        ]);
         if spec.cpu_only {
             // `--n-gpu-layers 0` alone still initialises the GPU backend (compute buffers in
             // VRAM) and runs large batched operations there; `none` uses no GPU device at all
@@ -232,7 +245,7 @@ impl RuntimeBackend for Vllm {
             "--served-model-name".into(),
             spec.model_id.clone(),
             "--max-model-len".into(),
-            (spec.context / spec.slots.max(1)).to_string(),
+            spec.context.to_string(),
             "--max-num-seqs".into(),
             spec.slots.to_string(),
             "--gpu-memory-utilization".into(),

@@ -124,6 +124,8 @@ pub struct TaskRequest<'a> {
     pub tier: Tier,
     pub location: Option<Location>,
     pub tags: &'a [String],
+    /// The delegating session: local models other sessions are using are not available to it.
+    pub session: Option<&'a str>,
 }
 
 /// Picks a subagent's model. Local models are considered only when `local` reports they can run
@@ -149,7 +151,10 @@ pub fn route(
 ) -> ResolvedModel {
     let availability = |c: &CatalogModel| match (c.model.local, local) {
         (false, _) => Availability::Loaded,
-        (true, Some(local)) => local.availability(&c.model.model),
+        (true, Some(local)) => match request.session {
+            Some(session) => local.availability_for(&c.model.model, session),
+            None => local.availability(&c.model.model),
+        },
         (true, None) => Availability::Unavailable,
     };
     let usable = |c: &&CatalogModel| availability(c) != Availability::Unavailable;

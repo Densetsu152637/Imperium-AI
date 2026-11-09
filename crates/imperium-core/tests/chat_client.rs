@@ -35,6 +35,7 @@ impl ChatClient for Scripted {
             Ok(Completion {
                 text: "Hello from the client.".into(),
                 tool_calls: Vec::new(),
+                finish_reason: None,
                 usage: Some(Usage {
                     prompt_tokens: 900,
                     completion_tokens: 4,

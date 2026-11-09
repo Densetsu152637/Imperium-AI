@@ -178,7 +178,7 @@ impl LocalModels for FakeLocal {
 
     fn acquire<'a>(&'a self, _model: &'a str, _holder: &'a str) -> AcquireFuture<'a> {
         let base_url = self.0.clone();
-        Box::pin(async move { Ok(LocalLease::new(base_url, None, ())) })
+        Box::pin(async move { Ok(LocalLease::new(base_url, None, None, ())) })
     }
 }
 

@@ -10,6 +10,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use imperium_config::ModelLaunch;
+
 use crate::scan::LocalModel;
 
 /// Extension of the files this module manages; others in the folder are left alone.
@@ -142,20 +144,24 @@ fn session(holder: &str) -> &str {
 }
 
 /// Identifies the model a slot was saved from: a saved slot only fits a server started from the
-/// same file with the same per-slot context and cache type. The file is identified by its path,
+/// same file with the same context, pool, and cache types. The file is identified by its path,
 /// size, and modification time rather than a hash of its contents, which would mean reading
 /// gigabytes on every load.
-pub(crate) fn model_key(model: &LocalModel, slot_context: u32, cache_type: &str) -> u64 {
+pub(crate) fn model_key(model: &LocalModel, launch: &ModelLaunch) -> u64 {
     let modified = std::fs::metadata(&model.path)
         .and_then(|metadata| metadata.modified())
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |since| since.as_nanos());
     let identity = format!(
-        "{}\0{}\0{}\0{modified}\0{slot_context}\0{cache_type}",
+        "{}\0{}\0{}\0{modified}\0{}\0{}\0{}\0{}",
         model.id,
         model.path.display(),
-        model.size_bytes
+        model.size_bytes,
+        launch.context,
+        launch.pool_tokens,
+        launch.cache_type_k,
+        launch.cache_type_v
     );
     fnv1a(identity.as_bytes())
 }

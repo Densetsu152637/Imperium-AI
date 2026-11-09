@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use imperium_api::{
-    Load, Priority, ToolContext, ToolEvent, ToolGroup, ToolProvider, parse_arguments as parse,
-    truncate_chars as truncate,
+    Load, LocalRequest, Priority, ToolContext, ToolEvent, ToolGroup, ToolProvider,
+    parse_arguments as parse, truncate_chars as truncate,
 };
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
@@ -25,7 +25,7 @@ use imperium_config::{Enforce, WritePolicy};
 use imperium_extensions::{HookEvent, Verdict};
 use imperium_memory::{NewEntry, Scope};
 
-use crate::breakdown::{Call, Category, Request, Spans, join_parts, tool_texts};
+use crate::breakdown::{Call, Category, Request, Spans, estimate_tokens, join_parts, tool_texts};
 use crate::session::{SessionMemory, Shared, lock};
 use crate::{LocalLease, LocalModels, LocalPresence, ResolvedModel, TaskRequest, route};
 
@@ -77,6 +77,9 @@ pub struct Agent {
     role: String,
     /// Required references from the latest manifest that are not loaded yet.
     unloaded: Mutex<Vec<String>>,
+    /// The latest local call's exact prompt plus completion tokens, and the number of messages
+    /// (its reply included) they cover; the next call's prompt estimate starts from it.
+    last_call: Option<(u64, usize)>,
 }
 
 impl Agent {
@@ -140,6 +143,7 @@ impl Agent {
             tasks: HashMap::new(),
             role,
             unloaded: Mutex::new(Vec::new()),
+            last_call: None,
         }
     }
 
@@ -248,11 +252,14 @@ impl Agent {
             self.yield_to_user(&mut attached, &holder).await;
             let mut waits = 0;
             let mut waited = std::time::Duration::ZERO;
+            // A reply cut short by its reservation is retried once without a cap.
+            let mut uncapped = false;
             let (client, queue_wait, started, first_text, result) = loop {
                 // A local model's slot is held for this one request, not for the turn: tool
                 // calls, `await_tasks`, and usage-limit pauses run without one. The model is
                 // loaded here if needed.
-                let (client, lease) = match self.client(&holder).await {
+                let prompt_tokens = self.prompt_estimate(&tool_texts);
+                let (client, lease) = match self.client(&holder, prompt_tokens, uncapped).await {
                     Ok(taken) => taken,
                     Err(message) => {
                         self.emit(SessionEvent::TurnFailed {
@@ -267,7 +274,9 @@ impl Agent {
                     messages: &self.messages,
                     tools: &tools,
                     slot: lease.as_ref().and_then(|lease| lease.slot),
+                    max_tokens: lease.as_ref().and_then(|lease| lease.max_tokens),
                 };
+                let capped = request.max_tokens.is_some();
                 let started = Instant::now();
                 let mut first_text = None;
                 let emitter = &self.shared.emitter;
@@ -283,6 +292,23 @@ impl Agent {
                 };
                 let result = client.stream(request, &mut on_text).await;
                 drop(lease);
+                // A local reply that hit its reservation (or overflowed the KV pool) starts
+                // again with the whole context.
+                if self.model.local && !uncapped {
+                    let cut = match &result {
+                        Ok(completion) => {
+                            capped && completion.finish_reason.as_deref() == Some("length")
+                        }
+                        Err(error) => error.to_string().contains("Context size has been exceeded"),
+                    };
+                    if cut {
+                        uncapped = true;
+                        self.emit(SessionEvent::Notice {
+                            message: "the local reply was cut off by its token reservation (or the KV pool was full); it starts again below".into(),
+                        });
+                        continue;
+                    }
+                }
                 // Usage ran out: wait as the session's resume policy says, then try again.
                 let Err(error) = &result else {
                     break (client, queue_wait, started, first_text, result);
@@ -303,7 +329,12 @@ impl Agent {
                     cause: PauseCause::UsageLimit,
                 });
                 let pause = Instant::now();
+                // Asleep until the limit lifts: the model may be swapped out meanwhile.
+                let sleeping = self
+                    .local_models()
+                    .map(|local| local.waiting(&self.model.model, &holder));
                 self.shared.controls.pause_until(until).await;
+                drop(sleeping);
                 waited += pause.elapsed();
                 waits += 1;
                 self.emit(SessionEvent::Resumed {});
@@ -353,6 +384,12 @@ impl Agent {
                 content: Some(completion.text).filter(|text| !text.is_empty()),
                 tool_calls: completion.tool_calls.clone(),
             });
+            if self.model.local && completion.usage.is_some() {
+                self.last_call = Some((
+                    usage.prompt_tokens + usage.completion_tokens,
+                    self.messages.len(),
+                ));
+            }
             if completion.tool_calls.is_empty() {
                 self.emit(SessionEvent::TurnCompleted {
                     usage: token_usage(&total),
@@ -609,7 +646,13 @@ impl Agent {
             tool: tool.to_string(),
             summary: summary.to_string(),
         });
-        match answer.await.unwrap_or(PermissionDecision::Deny) {
+        // Asleep until the person answers: the local runtime may swap the model out meanwhile.
+        let waiting = self
+            .local_models()
+            .map(|local| local.waiting(&self.model.model, &self.holder()));
+        let decision = answer.await.unwrap_or(PermissionDecision::Deny);
+        drop(waiting);
+        match decision {
             PermissionDecision::Allow => true,
             PermissionDecision::AllowForSession => {
                 lock(&self.shared.allowed_tools).insert(tool.to_string());
@@ -700,7 +743,28 @@ impl Agent {
 
     /// This agent's name to a local model.
     fn holder(&self) -> String {
-        format!("{}/{}", self.shared.session_id, self.id)
+        imperium_api::holder(&self.shared.session_id, &self.id)
+    }
+
+    /// Tokens the next call's prompt is expected to take, for a local model's reservation: the
+    /// last call's exact count plus the messages added since, or on the first call every
+    /// message and the tool specs; estimates carry a 1.25 margin, each message 8 tokens of chat
+    /// template and the whole prompt 64.
+    fn prompt_estimate(&self, tools: &[(Category, String)]) -> u32 {
+        let message = |message: &ChatMessage| {
+            let text = serde_json::to_string(message).unwrap_or_default();
+            8.0 + estimate_tokens(&text) as f64 * 1.25
+        };
+        let total = match self.last_call {
+            Some((exact, covered)) if covered <= self.messages.len() => {
+                exact as f64 + self.messages[covered..].iter().map(message).sum::<f64>()
+            }
+            _ => {
+                let tools: u64 = tools.iter().map(|(_, text)| estimate_tokens(text)).sum();
+                64.0 + self.messages.iter().map(message).sum::<f64>() + tools as f64 * 1.25
+            }
+        };
+        total.ceil().min(f64::from(u32::MAX)) as u32
     }
 
     /// The local runtime, when this agent's model runs on it.
@@ -712,8 +776,10 @@ impl Agent {
     async fn client(
         &self,
         holder: &str,
+        prompt_tokens: u32,
+        uncapped: bool,
     ) -> Result<(Arc<dyn ChatClient>, Option<LocalLease>), String> {
-        let (endpoint, lease) = self.endpoint(holder).await?;
+        let (endpoint, lease) = self.endpoint(holder, prompt_tokens, uncapped).await?;
         let kind = &self.model.kind;
         let client = self
             .shared
@@ -725,7 +791,12 @@ impl Agent {
 
     /// Where to send one model call, with the slot held on a local model. Waits for a slot when
     /// every one is busy, and loads the model first if it is not loaded.
-    async fn endpoint(&self, holder: &str) -> Result<(Endpoint, Option<LocalLease>), String> {
+    async fn endpoint(
+        &self,
+        holder: &str,
+        prompt_tokens: u32,
+        uncapped: bool,
+    ) -> Result<(Endpoint, Option<LocalLease>), String> {
         if !self.model.local {
             return Ok((self.model.endpoint.clone(), None));
         }
@@ -742,7 +813,15 @@ impl Agent {
                 Priority::Interactive
             };
         let lease = local
-            .acquire_as(&self.model.model, holder, priority)
+            .acquire_with(
+                &self.model.model,
+                holder,
+                LocalRequest {
+                    priority,
+                    prompt_tokens: Some(prompt_tokens),
+                    uncapped,
+                },
+            )
             .await
             .map_err(|error| format!("could not load local model {}: {error}", self.model.model))?;
         let endpoint = Endpoint {
@@ -971,6 +1050,7 @@ impl Agent {
                 tier,
                 location,
                 tags: &args.tags,
+                session: Some(&self.shared.session_id),
             },
             self.shared.local.as_deref(),
         );

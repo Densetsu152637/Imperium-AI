@@ -36,16 +36,25 @@ pub struct LocalLease {
     /// How long the call waited for a free slot or for room to load the model, not counting
     /// time spent loading it, swapping other models out, or restoring a saved slot.
     pub waited: Duration,
+    /// What the agent must send as `max_tokens` (the reservation less its prompt estimate), or
+    /// `None` when the reply is uncapped or the runtime has no token pool (vLLM).
+    pub max_tokens: Option<u32>,
     _release: Box<dyn Send + Sync>,
 }
 
 impl LocalLease {
     /// `release` is dropped with the lease; its `Drop` frees the slot.
-    pub fn new(base_url: String, slot: Option<u32>, release: impl Send + Sync + 'static) -> Self {
+    pub fn new(
+        base_url: String,
+        slot: Option<u32>,
+        max_tokens: Option<u32>,
+        release: impl Send + Sync + 'static,
+    ) -> Self {
         LocalLease {
             base_url,
             slot,
             waited: Duration::ZERO,
+            max_tokens,
             _release: Box::new(release),
         }
     }
@@ -64,6 +73,7 @@ impl fmt::Debug for LocalLease {
             .field("base_url", &self.base_url)
             .field("slot", &self.slot)
             .field("waited", &self.waited)
+            .field("max_tokens", &self.max_tokens)
             .finish_non_exhaustive()
     }
 }
@@ -103,6 +113,38 @@ pub enum Priority {
     Background,
 }
 
+/// What one model call asks of a local model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalRequest {
+    pub priority: Priority,
+    /// The agent's estimate of the call's prompt, in tokens; the runtime reserves it plus the
+    /// reply the model may generate. `None` reserves the whole context.
+    pub prompt_tokens: Option<u32>,
+    /// Reserve the whole context and send no `max_tokens`: the retry of a reply that a
+    /// reservation cut short.
+    pub uncapped: bool,
+}
+
+impl Default for LocalRequest {
+    fn default() -> Self {
+        LocalRequest {
+            priority: Priority::Interactive,
+            prompt_tokens: None,
+            uncapped: false,
+        }
+    }
+}
+
+/// The agent id of a holder, `<session id>/<agent id>`.
+pub fn holder(session: &str, agent: &str) -> String {
+    format!("{session}/{agent}")
+}
+
+/// The session a holder (see [`holder`]) belongs to: the text before the first `/`.
+pub fn holder_session(holder: &str) -> &str {
+    holder.split('/').next().unwrap_or(holder)
+}
+
 pub type AcquireFuture<'a> = Pin<Box<dyn Future<Output = Result<LocalLease, String>> + Send + 'a>>;
 
 /// Local models the router may place work on.
@@ -125,13 +167,30 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     ) -> AcquireFuture<'a> {
         self.acquire(model, holder)
     }
-    /// Says that `holder` is working on `model` for one turn, so between its calls the model is
-    /// not swapped out for another unless the other has waited long. Held for the turn.
+    /// Like [`LocalModels::availability`], from the point of view of `session`: models other
+    /// sessions are using are not available to it.
+    fn availability_for(&self, model: &str, _session: &str) -> Availability {
+        self.availability(model)
+    }
+    /// Like [`LocalModels::acquire_as`], with the agent's estimate of the call
+    /// ([`LocalRequest`]): the runtime reserves tokens of the model's KV pool for it.
+    fn acquire_with<'a>(
+        &'a self,
+        model: &'a str,
+        holder: &'a str,
+        request: LocalRequest,
+    ) -> AcquireFuture<'a> {
+        self.acquire_as(model, holder, request.priority)
+    }
+    /// Says that `holder` is working on `model` for one turn: while held, after the agent's
+    /// first call on the loaded model, the model is never unloaded for another session's load,
+    /// an idle timeout or a settings change. Held for the turn.
     fn attach(&self, _model: &str, _holder: &str) -> LocalPresence {
         LocalPresence::untracked()
     }
-    /// Says that `holder` is asleep waiting for its subagents, so its model may be swapped out
-    /// for theirs. Held while it waits.
+    /// Says that `holder` is asleep (waiting for its subagents, an approval, or a usage-limit
+    /// pause). That releases its hold: the model may be swapped out for any load, its slots
+    /// saved and restored. Held while it waits.
     fn waiting(&self, _model: &str, _holder: &str) -> LocalPresence {
         LocalPresence::untracked()
     }

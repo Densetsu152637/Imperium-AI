@@ -33,6 +33,9 @@ use imperium_protocol::methods::{
     HfFiles, ModelDownload, ModelDownloadCancel, ModelDownloadCancelParams,
     ModelDownloadCancelResult, ModelDownloads, ModelDownloadsParams, ModelDownloadsResult,
 };
+use imperium_protocol::methods::{
+    ModelConfig, ModelConfigParams, ModelSetConfig, ModelSetConfigParams,
+};
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 
 /// A session's events, to be forwarded to this connection as notifications.
@@ -312,6 +315,15 @@ impl Connection {
             ModList::NAME => call::<ModList>(request.params, |_: ModListParams| {
                 Ok(crate::mods::list(&self.state.mods_dir()))
             }),
+            ModelConfig::NAME => call::<ModelConfig>(request.params, |_: ModelConfigParams| {
+                Ok(crate::model_config::config(&self.state))
+            }),
+            ModelSetConfig::NAME => {
+                call::<ModelSetConfig>(request.params, |params: ModelSetConfigParams| {
+                    crate::model_config::set_config(&self.state, params)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                })
+            }
             LocalModelList::NAME => {
                 call::<LocalModelList>(request.params, |_: LocalModelListParams| {
                     Ok(self.state.local_models())

@@ -8,6 +8,7 @@ mod endpoint;
 mod load;
 mod local;
 mod mcp;
+mod model_config;
 mod mods;
 mod pets;
 mod phone;

@@ -114,8 +114,25 @@ impl LocalRuntime {
         let found = scan(&folders);
         tracing::info!(models = found.models.len(), "local models scanned again");
         self.supervisor.set_models(found.models);
-        self.supervisor.set_cpu_pinned(cpu_pins(settings));
+        self.apply_model_settings(settings);
         *self.scanned.lock().unwrap_or_else(PoisonError::into_inner) = (folders, found.skipped);
+    }
+
+    /// `gpu`, `partial`, `cpu`, or `none`: how a model with `placement` would load.
+    pub fn placement_label(&self, placement: Option<&Placement>, cpu_lane: bool) -> &'static str {
+        if cpu_lane && placement.is_some() {
+            "cpu"
+        } else {
+            placement_name(placement, &self.hardware)
+        }
+    }
+
+    /// Hands the supervisor the per-model settings and CPU-lane pins in `settings`; loaded models
+    /// whose launch shape changed restart once nothing is using them.
+    pub fn apply_model_settings(&self, settings: &Settings) {
+        self.supervisor.set_cpu_pinned(cpu_pins(settings));
+        self.supervisor
+            .set_model_settings(settings.runtime.llamacpp.models.clone());
     }
 
     /// The memory local models may use.
@@ -125,13 +142,13 @@ impl LocalRuntime {
 
     pub fn listing(&self) -> LocalModelListResult {
         let loaded = self.supervisor.loaded();
-        let llama = self.supervisor.settings();
         let models = self
             .supervisor
             .models()
             .iter()
             .map(|model| {
                 let footprint = self.supervisor.footprint(model);
+                let launch = self.supervisor.launch(&model.id);
                 let placement = self.supervisor.placement_when_idle(model);
                 let status = loaded.iter().find(|l| l.model_id == model.id);
                 let cpu_lane = self.supervisor.cpu_slots(&model.id).is_some();
@@ -148,30 +165,18 @@ impl LocalRuntime {
                     size_bytes: model.size_bytes,
                     context_length: model.info.context_length,
                     required_bytes: footprint.required_bytes(),
-                    placement: if cpu_lane && placement.is_some() {
-                        "cpu"
-                    } else {
-                        placement_name(placement.as_ref(), &self.hardware)
-                    }
-                    .into(),
+                    placement: self.placement_label(placement.as_ref(), cpu_lane).into(),
                     gpu_layers: placement
                         .map(|p| p.gpu_layers.min(footprint.layers.unwrap_or(999))),
                     loaded: status.is_some(),
-                    slots: status.map_or_else(
-                        || {
-                            self.supervisor
-                                .cpu_slots(&model.id)
-                                .unwrap_or(self.supervisor.settings().parallel)
-                        },
-                        |s| s.slots,
-                    ),
+                    slots: status.map_or(launch.slots, |s| s.slots),
                     slots_in_use: status.map_or(0, |s| s.slots_in_use),
                     queued: status.map_or(0, |s| s.queued),
                     cpu_lane,
                     tokens_per_s: self.supervisor.tokens_per_s(&model.id),
-                    context: llama.context,
-                    pool_tokens: llama.context.saturating_mul(llama.parallel),
-                    pool_reserved_tokens: 0,
+                    context: status.map_or(launch.context, |s| s.context),
+                    pool_tokens: status.map_or(launch.pool_tokens, |s| s.pool_tokens),
+                    pool_reserved_tokens: status.map_or(0, |s| s.pool_reserved_tokens),
                 }
             })
             .collect();
@@ -428,7 +433,19 @@ mod tests {
         );
         assert!(critic.cpu_lane);
         assert_eq!(critic.slots, 1, "a lane serves one call at a time");
-        assert_eq!(coder.slots, settings.runtime.llamacpp.parallel);
+        assert_eq!(
+            coder.slots,
+            settings.runtime.llamacpp.default_launch().slots,
+            "a model without settings gets the default slots, not `parallel`"
+        );
+        assert_eq!(
+            (coder.context, coder.pool_tokens, coder.pool_reserved_tokens),
+            (
+                settings.runtime.llamacpp.context,
+                settings.runtime.llamacpp.default_launch().pool_tokens,
+                0
+            )
+        );
         assert_eq!((coder.tokens_per_s, critic.tokens_per_s), (None, None));
 
         // A call that finished on the lane: 120 tokens generated over 10 s.

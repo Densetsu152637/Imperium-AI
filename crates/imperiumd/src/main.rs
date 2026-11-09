@@ -35,7 +35,11 @@ fn main() -> anyhow::Result<()> {
 
 async fn run() -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
-    let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
+    let config = imperium_config::load(&paths, None, std::env::vars())?;
+    for warning in config.warnings() {
+        tracing::warn!("{warning}");
+    }
+    let settings = config.settings()?;
     std::fs::create_dir_all(paths.data_dir())
         .with_context(|| format!("could not create {}", paths.data_dir().display()))?;
     let _lock = acquire_single_instance_lock(&paths)?;

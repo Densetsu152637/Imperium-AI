@@ -103,7 +103,7 @@ pub async fn fix_ci(
         None,
         format!("fixing {checks}"),
     );
-    let worktree = worktree_path(state.settings(), state.data_dir(), repo, pr.number);
+    let worktree = worktree_path(&state.settings(), state.data_dir(), repo, pr.number);
     let local_branch = format!("imperium/fix-pr-{}", pr.number);
     if let Err(error) =
         git::prepare_worktree(&watch.project, &worktree, &pr.branch, &local_branch).await

@@ -69,6 +69,7 @@ impl OneSlot {
         Ok(LocalLease::new(
             self.base_url.clone(),
             Some(0),
+            None,
             Held {
                 held: Arc::clone(&self.held),
                 _permit: permit,

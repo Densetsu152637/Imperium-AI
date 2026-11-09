@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use imperium_config::{KeychainSecrets, ModelPlacement, Paths, SecretStore, Settings};
@@ -57,7 +57,9 @@ pub struct SessionOptions {
 pub struct DaemonState {
     started: Instant,
     paths: Paths,
-    settings: Settings,
+    settings: RwLock<Arc<Settings>>,
+    /// Serialises saves of model settings.
+    pub(crate) config_saves: Mutex<()>,
     /// Where API keys and tokens are read from: the OS keychain unless the caller chose another.
     secrets: Arc<dyn SecretStore>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
@@ -114,7 +116,8 @@ impl DaemonState {
         let state = Arc::new(DaemonState {
             started: Instant::now(),
             paths,
-            settings,
+            settings: RwLock::new(Arc::new(settings)),
+            config_saves: Mutex::new(()),
             secrets,
             sessions: Mutex::new(HashMap::new()),
             local: local.map(OnceLock::from).unwrap_or_default(),
@@ -171,7 +174,7 @@ impl DaemonState {
         if let Some(local) = self.local.get() {
             local.supervisor.set_background_policy(
                 self.load_view(),
-                Duration::from_secs(self.settings.load.interactive_hold_min * 60),
+                Duration::from_secs(self.settings().load.interactive_hold_min * 60),
             );
         }
     }
@@ -253,7 +256,7 @@ impl DaemonState {
 
     /// Starts the phone listener when `phone.bind` is set. Call once.
     pub async fn start_phone(self: &Arc<Self>) -> std::io::Result<Option<std::net::SocketAddr>> {
-        let Some(bind) = &self.settings.phone.bind else {
+        let Some(bind) = &self.settings().phone.bind else {
             return Ok(None);
         };
         let address = bind
@@ -308,7 +311,7 @@ impl DaemonState {
     /// Starts GitHub auto-fix when it is enabled and repositories are watched, and the watcher
     /// for pull requests sessions follow.
     pub fn start_autofix(self: &Arc<Self>, github: Arc<dyn imperium_github::GitHub>) {
-        let poll = std::time::Duration::from_secs(self.settings.github.autofix.poll_s.max(10));
+        let poll = std::time::Duration::from_secs(self.settings().github.autofix.poll_s.max(10));
         crate::autofix::watch_pull_requests(self, Arc::clone(&github), poll);
         crate::autofix::start(self, github);
     }
@@ -317,8 +320,18 @@ impl DaemonState {
         self.scheduler.get()
     }
 
-    pub fn settings(&self) -> &Settings {
-        &self.settings
+    /// The settings in effect. Saving model settings replaces the snapshot, so callers read it
+    /// when they need it rather than keeping it.
+    pub fn settings(&self) -> Arc<Settings> {
+        Arc::clone(&self.settings.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Replaces the settings snapshot, such as after the app saved model settings.
+    pub(crate) fn replace_settings(&self, settings: Settings) {
+        *self
+            .settings
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(settings);
     }
 
     /// The store every secret is read from.
@@ -343,9 +356,10 @@ impl DaemonState {
 
     /// Media backends from `[media]`, using `[endpoints]` for URLs and keys.
     fn media(&self) -> Option<Arc<Media>> {
-        let settings = &self.settings.media;
+        let all = self.settings();
+        let settings = &all.media;
         let service = |endpoint: &str, model: &str| -> Option<Service> {
-            let endpoint_settings = self.settings.endpoints.get(endpoint)?;
+            let endpoint_settings = all.endpoints.get(endpoint)?;
             let api_key = endpoint_settings
                 .api_key
                 .as_ref()
@@ -384,7 +398,7 @@ impl DaemonState {
 
     /// Web tools from `[web]`; a provider whose key is missing is left out with a warning.
     fn web_tools(&self) -> Option<WebTools> {
-        let web = &self.settings.web;
+        let web = &self.settings().web;
         if !web.enabled {
             return None;
         }
@@ -423,7 +437,7 @@ impl DaemonState {
 
     /// The isolation tier commands run under, from `[isolation]`.
     fn sandbox(&self) -> Sandbox {
-        let isolation = &self.settings.isolation;
+        let isolation = &self.settings().isolation;
         match isolation.tier.as_str() {
             "os" => Sandbox::Os {
                 network: isolation.network,
@@ -443,7 +457,7 @@ impl DaemonState {
         let dir = self.paths.data_dir().join("sessions");
         let cutoff = std::time::SystemTime::now()
             .checked_sub(std::time::Duration::from_secs(
-                self.settings.agents.resume_days * 86_400,
+                self.settings().agents.resume_days * 86_400,
             ))
             .unwrap_or(std::time::UNIX_EPOCH);
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -556,7 +570,7 @@ impl DaemonState {
 
     /// The configured resume policy for usage limits.
     fn resume_policy(&self) -> ResumePolicy {
-        let resume = &self.settings.resume;
+        let resume = &self.settings().resume;
         ResumePolicy {
             mode: resume.mode.clone(),
             at_time: resume.at_time.clone(),
@@ -594,6 +608,15 @@ impl DaemonState {
         self.paths.config_dir().join("mods")
     }
 
+    pub(crate) fn paths(&self) -> &Paths {
+        &self.paths
+    }
+
+    /// The local model runtime, when it is running.
+    pub(crate) fn local_runtime(&self) -> Option<&LocalRuntime> {
+        self.local.get()
+    }
+
     /// Local models, the hardware they are planned against, and what is loaded.
     pub fn local_models(&self) -> LocalModelListResult {
         self.local
@@ -610,9 +633,9 @@ impl DaemonState {
     /// was not running for want of folders. Must run inside the Tokio runtime; it blocks.
     pub fn rescan_local_models(self: &Arc<Self>) {
         if let Some(local) = self.local.get() {
-            return local.rescan(&self.paths, &self.settings);
+            return local.rescan(&self.paths, &self.settings());
         }
-        let Some(started) = LocalRuntime::start(&self.paths, &self.settings) else {
+        let Some(started) = LocalRuntime::start(&self.paths, &self.settings()) else {
             return;
         };
         if self.local.set(started).is_ok() {
@@ -621,7 +644,7 @@ impl DaemonState {
             }
         } else if let Some(local) = self.local.get() {
             // Another download started it first, perhaps before this one's files landed.
-            local.rescan(&self.paths, &self.settings);
+            local.rescan(&self.paths, &self.settings());
         }
     }
 
@@ -763,10 +786,10 @@ impl DaemonState {
         let workspace = Workspace::new(Path::new(project_dir))
             .map_err(|error| CreateError::Project(project_dir.to_string(), error))?
             .with_sandbox(self.sandbox());
-        let model = resolve_model(&self.settings, model, |name| self.secrets.load(name))?;
+        let model = resolve_model(&self.settings(), model, |name| self.secrets.load(name))?;
         let catalog = self.catalog();
         let (mut mcp, mut notices) =
-            crate::mcp::session_servers(&self.settings, Path::new(project_dir), |name| {
+            crate::mcp::session_servers(&self.settings(), Path::new(project_dir), |name| {
                 self.secrets.load(name)
             });
         let mut extensions = self.extensions(Path::new(project_dir));
@@ -802,7 +825,7 @@ impl DaemonState {
             model,
             catalog,
             clients: ChatClients::default(),
-            routing: self.settings.routing.clone(),
+            routing: self.settings().routing.clone(),
             local: self.local.get().map(|local| {
                 let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
                 supervisor
@@ -811,7 +834,7 @@ impl DaemonState {
             notices,
             extensions,
             context,
-            enforce: self.settings.workflow.enforce,
+            enforce: self.settings().workflow.enforce,
             pre_approved: options.pre_approved,
             resume,
             resume_policy: self.resume_policy(),
@@ -820,11 +843,11 @@ impl DaemonState {
             background: options.background.then(|| Background {
                 load: self.load_view(),
             }),
-            memory: self.settings.memory.enabled.then(|| SessionMemory {
+            memory: self.settings().memory.enabled.then(|| SessionMemory {
                 store: Store::new(self.paths.data_dir(), Some(Path::new(project_dir))),
-                settings: self.settings.memory.clone(),
+                settings: self.settings().memory.clone(),
             }),
-            max_steps: self.settings.agents.max_steps,
+            max_steps: self.settings().agents.max_steps,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
         // Ordinary sessions are remembered so they continue after a restart; project agents
@@ -864,7 +887,7 @@ impl DaemonState {
     /// Workflow packs and the project's instructions and documentation, unless the workflow is
     /// turned off. Packs that cannot be read are reported in `notices`.
     fn context(&self, project_dir: &Path, notices: &mut Vec<String>) -> Option<Arc<ContextIndex>> {
-        let workflow = &self.settings.workflow;
+        let workflow = &self.settings().workflow;
         if !workflow.enabled {
             return None;
         }
@@ -891,9 +914,9 @@ impl DaemonState {
         imperium_extensions::load(&Sources {
             config_dir: self.paths.config_dir().to_path_buf(),
             project_dir: project_dir.to_path_buf(),
-            plugin_dirs: self.settings.extensions.plugin_dirs.clone(),
+            plugin_dirs: self.settings().extensions.plugin_dirs.clone(),
             hooks: self
-                .settings
+                .settings()
                 .hooks
                 .iter()
                 .map(|hook| ConfiguredHook {
@@ -910,14 +933,14 @@ impl DaemonState {
     /// Resolves `[[models.catalog]]` for routing subagents. Entries that cannot be used (an
     /// unknown endpoint, a missing key) are skipped with a warning rather than failing the session.
     fn catalog(&self) -> Vec<CatalogModel> {
-        self.settings
+        let settings = self.settings();
+        settings
             .models
             .catalog
             .iter()
+            .filter(|entry| entry.enabled)
             .filter_map(|entry| {
-                match resolve_model(&self.settings, Some(&entry.spec), |name| {
-                    self.secrets.load(name)
-                }) {
+                match resolve_model(&settings, Some(&entry.spec), |name| self.secrets.load(name)) {
                     Ok(model) => Some(CatalogModel {
                         id: entry.id.clone(),
                         model,
@@ -937,14 +960,14 @@ impl DaemonState {
 
     /// The configured model table, with prices from each endpoint's pricing.
     pub fn model_table(&self) -> ModelListResult {
-        let models = self
-            .settings
+        let settings = self.settings();
+        let models = settings
             .models
             .catalog
             .iter()
             .map(|entry| {
                 let (endpoint_id, model) = entry.spec.split_once(':').unwrap_or((&entry.spec, ""));
-                let endpoint = self.settings.endpoints.get(endpoint_id);
+                let endpoint = settings.endpoints.get(endpoint_id);
                 let pricing = endpoint.and_then(|endpoint| endpoint.pricing.get(model));
                 ModelRow {
                     id: entry.id.clone(),
@@ -956,14 +979,14 @@ impl DaemonState {
                     output_usd_per_mtok: pricing.map(|p| p.output_usd_per_mtok),
                     endpoint_configured: endpoint.is_some(),
                     context_window: entry.context_window,
-                    enabled: true,
+                    enabled: entry.enabled,
                 }
             })
             .collect();
         ModelListResult {
             models,
-            prefer: self.settings.routing.prefer.as_str().into(),
-            rules: u32::try_from(self.settings.routing.rules.len()).unwrap_or(u32::MAX),
+            prefer: self.settings().routing.prefer.as_str().into(),
+            rules: u32::try_from(self.settings().routing.rules.len()).unwrap_or(u32::MAX),
         }
     }
 

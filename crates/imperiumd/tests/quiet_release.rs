@@ -66,7 +66,7 @@ impl Setup {
     fn restart(&self) -> (Arc<imperiumd::DaemonState>, Arc<ManualLoad>) {
         let daemon = imperiumd::DaemonState::new(
             imperium_config::Paths::under(self.home.path()),
-            self.daemon.settings().clone(),
+            (*self.daemon.settings()).clone(),
             None,
         );
         let load = ManualLoad::new(imperium_core::Load::Busy);

@@ -54,6 +54,26 @@ struct Log {
     hang_restores: AtomicBool,
     /// Raised when a restore starts.
     restoring: Notify,
+    /// Launches and stops running right now, and the most there have been at once.
+    active: AtomicU32,
+    max_active: AtomicU32,
+}
+
+/// Counts a launch or stop as running while it is held.
+struct Active<'a>(&'a Log);
+
+impl<'a> Active<'a> {
+    fn new(log: &'a Log) -> Self {
+        let now = log.active.fetch_add(1, Ordering::SeqCst) + 1;
+        log.max_active.fetch_max(now, Ordering::SeqCst);
+        Active(log)
+    }
+}
+
+impl Drop for Active<'_> {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Log {
@@ -124,6 +144,7 @@ impl Server for FakeServer {
     /// Takes a moment to exit, so a launch that does not wait for it would come first.
     fn stop(&self) -> StopFuture<'_> {
         Box::pin(async move {
+            let _active = Active::new(&self.log);
             if lock(&self.log.in_use)
                 .get(&self.model)
                 .copied()
@@ -159,6 +180,7 @@ impl Server for FakeServer {
 impl Launcher for FakeLauncher {
     fn launch<'a>(&'a self, spec: &'a LaunchSpec) -> LaunchFuture<'a> {
         Box::pin(async move {
+            let _active = Active::new(&self.log);
             assert_eq!(
                 spec.slot_save_path.as_deref(),
                 Some(self.slots.path()),
@@ -217,6 +239,11 @@ fn settings() -> LlamaCppSettings {
         context: 4096,
         parallel: 2,
         cache_type: "f16".into(),
+        slots: Some(2),
+        pool_tokens: None,
+        flash_attn: "auto".into(),
+        max_output_tokens: 8192,
+        models: Default::default(),
         ram_headroom_mb: 0,
         cache_ram_mb: 0,
         swap_cache_mb: 1024,
@@ -416,17 +443,28 @@ async fn swap_never_evicts_a_model_in_use() {
     );
 }
 
+/// Waits for `condition`, up to five seconds.
+async fn until(what: &str, mut condition: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what}"));
+}
+
 #[tokio::test]
-async fn swap_reloads_a_model_evicted_between_calls() {
-    // No residency: another session's agent may take the GPU between this agent's calls.
+async fn a_load_never_evicts_a_model_another_session_is_using() {
+    // No residency: only the usage lock stands between the worker and the GPU.
     let (supervisor, log) = start(LlamaCppSettings {
         min_residency_s: 0,
         ..settings()
     });
     let agent = "first/root";
-    let _turn = supervisor.attach("emperor", agent);
+    let turn = supervisor.attach("emperor", agent);
     call(&supervisor, &log, "emperor", agent, Duration::ZERO).await;
-    // Between the agent's calls, another session's agent swaps its model out and is mid-call.
+    // Between the agent's calls, another session asks for the worker.
     let other = {
         let supervisor = Arc::clone(&supervisor);
         let log = Arc::clone(&log);
@@ -437,26 +475,111 @@ async fn swap_reloads_a_model_evicted_between_calls() {
                 &log,
                 "worker",
                 "second/root",
-                Duration::from_millis(100),
+                Duration::from_millis(10),
             )
             .await
         })
     };
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while supervisor.loaded().first().map(|m| m.model_id.clone()) != Some("worker".into()) {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(supervisor.loaded()[0].model_id, "emperor");
+    assert_eq!(log.steps(), ["launch emperor"], "{:?}", log.steps());
+    assert!(!other.is_finished(), "the worker waits for the GPU");
+    // The agent's next call finds its model still loaded.
+    call(&supervisor, &log, "emperor", agent, Duration::ZERO).await;
+    drop(turn);
+    tokio::time::timeout(Duration::from_secs(5), other)
+        .await
+        .expect("the worker loads once the emperor is released")
+        .unwrap();
+    assert_eq!(
+        log.steps(),
+        ["launch emperor", "stop emperor", "launch worker"]
+    );
+
+    // The same holds while a call lease is held, without any attach.
+    let (supervisor, log) = start(LlamaCppSettings {
+        min_residency_s: 0,
+        ..settings()
+    });
+    let lease = supervisor.acquire("emperor", "first/root").await.unwrap();
+    let other = {
+        let supervisor = Arc::clone(&supervisor);
+        let log = Arc::clone(&log);
+        tokio::spawn(async move {
+            call(&supervisor, &log, "worker", "second/root", Duration::ZERO).await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(log.steps(), ["launch emperor"]);
+    drop(lease);
+    tokio::time::timeout(Duration::from_secs(5), other)
+        .await
+        .expect("the worker loads once the lease is dropped")
+        .unwrap();
+    until("the worker is loaded", || {
+        supervisor.loaded().iter().any(|m| m.model_id == "worker")
+    })
+    .await;
+    assert!(lock(&log.stopped_in_use).is_empty());
+}
+
+#[tokio::test]
+async fn idle_unload_spares_a_model_another_session_is_mid_turn_on() {
+    let (supervisor, log) = start(settings());
+    let turn = supervisor.attach("emperor", "first/root");
+    call(&supervisor, &log, "emperor", "first/root", Duration::ZERO).await;
+    // Past its first call and between calls: no lease held, but the turn is on.
+    supervisor.unload_idle_now(Duration::ZERO).await;
+    assert_eq!(log.steps(), ["launch emperor"], "{:?}", log.steps());
+    assert_eq!(supervisor.loaded().len(), 1);
+    drop(turn);
+    supervisor.unload_idle_now(Duration::ZERO).await;
+    assert_eq!(log.steps(), ["launch emperor", "stop emperor"]);
+    assert!(supervisor.loaded().is_empty());
+}
+
+#[tokio::test]
+async fn concurrent_loads_take_turns_and_all_finish() {
+    // Three 6 GiB models on a 10 GiB GPU: one at a time, in turns.
+    let (supervisor, log) = start(LlamaCppSettings {
+        min_residency_s: 0,
+        max_swaps_per_min: 100,
+        ..settings()
+    });
+    let callers = [
+        ("a", "emperor"),
+        ("b", "worker"),
+        ("c", "helper"),
+        ("d", "emperor"),
+        ("e", "worker"),
+        ("f", "helper"),
+    ];
+    let handles: Vec<_> = callers
+        .into_iter()
+        .map(|(session, model)| {
+            let supervisor = Arc::clone(&supervisor);
+            let log = Arc::clone(&log);
+            tokio::spawn(async move {
+                let holder = format!("{session}/root");
+                let _turn = supervisor.attach(model, &holder);
+                let work = Duration::from_millis(15);
+                call(&supervisor, &log, model, &holder, work).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                call(&supervisor, &log, model, &holder, work).await;
+            })
+        })
+        .collect();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for handle in handles {
+            handle.await.unwrap();
         }
     })
     .await
-    .expect("the worker is loaded");
-    // The agent's next call waits for room and reloads its model rather than failing.
-    let reloaded = supervisor.acquire("emperor", agent).await;
-    assert!(reloaded.is_ok(), "{reloaded:?}");
-    other.await.unwrap();
+    .expect("every caller finishes");
     assert_eq!(
-        log.steps().last().map(String::as_str),
-        Some("restore emperor 0"),
-        "{:?}",
+        log.max_active.load(Ordering::SeqCst),
+        1,
+        "a launch or stop ran beside another: {:?}",
         log.steps()
     );
     assert!(lock(&log.stopped_in_use).is_empty());
@@ -566,10 +689,13 @@ async fn swap_cache_keeps_a_waiting_orchestrators_slot_over_a_finished_subagents
     // session's agent swaps the worker out (saving the subagent's slot too).
     let subagent = supervisor.attach("worker", "s/t1");
     call(&supervisor, &log, "worker", "s/t1", Duration::ZERO).await;
+    // The subagent is asleep (an approval, say), so another session may take the worker's room.
+    let subagent_asleep = supervisor.waiting("worker", "s/t1");
     let _other = supervisor.attach("helper", "x/root");
     call(&supervisor, &log, "helper", "x/root", Duration::ZERO).await;
     // The subagent finishes and the orchestrator wakes; saving the other agent's slot needs
     // room, and the finished subagent's file goes even though the orchestrator's is older.
+    drop(subagent_asleep);
     drop(subagent);
     drop(waiting);
     call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
@@ -769,6 +895,7 @@ async fn swap_restores_a_saved_slot_only_into_its_own_agent() {
     let (supervisor, log) = start(LlamaCppSettings {
         min_residency_s: 0,
         parallel: 1,
+        slots: Some(1),
         ..settings()
     });
     let root = "s/root";
