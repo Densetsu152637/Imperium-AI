@@ -21,6 +21,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@imperium/mod-sdk": "workspace:*",
     "@imperium/protocol": "workspace:*",
     "@tauri-apps/cli": "2.12.4",
     "@types/react": "19.3.0",

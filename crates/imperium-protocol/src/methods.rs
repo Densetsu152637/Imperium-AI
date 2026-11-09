@@ -806,9 +806,11 @@ pub struct ModInfo {
     pub id: String,
     pub name: String,
     pub version: String,
-    /// `telemetry:read`, `sessions:read`; the desktop app forwards only what is granted.
+    /// `telemetry:read`, `sessions:read`, `pets:read`, `storage`; the desktop app grants only these.
     pub permissions: Vec<String>,
     pub panels: Vec<ModPanel>,
+    /// Shipped with Imperium (opt-in in the desktop app) rather than installed by the user.
+    pub bundled: bool,
     /// The entry ES module's source.
     pub source: String,
 }
@@ -818,6 +820,9 @@ pub struct ModInfo {
 pub struct ModPanel {
     pub id: String,
     pub title: String,
+    /// Where the panel docks: `sidebar.left` or `sidebar.right` (the default).
+    #[serde(default)]
+    pub slot: Option<String>,
 }
 
 /// `schedules.list`: configured schedules with their next and last runs.
@@ -1022,7 +1027,8 @@ pub struct ProjectMessageResult {
     pub delivered: bool,
 }
 
-/// `pet.list`: installed pets, the selected one, and its current state.
+/// `pet.list`: installed pets, the selected one, and its current state. Installed pets are
+/// listed even when `pets.enabled` is false; `selected` and `state` are then null.
 #[derive(Debug)]
 pub struct PetList;
 
@@ -1055,6 +1061,10 @@ pub struct PetInfo {
     pub license: String,
     pub cell_width: u32,
     pub cell_height: u32,
+    /// Animations the pet draws (a strip exists for each).
+    pub drawn: Vec<String>,
+    /// The package's `pet.json`, unparsed.
+    pub pet_json: String,
 }
 
 /// Notification sent to every client when the pet's animation changes.
@@ -1075,7 +1085,8 @@ pub struct PetStateInfo {
     pub hidden: bool,
 }
 
-/// `pet.strip`: the selected pet's strip image for an animation.
+/// `pet.strip`: a pet's strip image for an animation. Works without the pet engine, but then
+/// `pet_id` is required (there is no selected pet).
 #[derive(Debug)]
 pub struct PetStrip;
 
@@ -1089,6 +1100,9 @@ impl Method for PetStrip {
 #[ts(export)]
 pub struct PetStripParams {
     pub animation: String,
+    /// The pet to draw; the selected pet when absent.
+    #[serde(default)]
+    pub pet_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
