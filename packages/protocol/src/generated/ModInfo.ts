@@ -3,9 +3,13 @@ import type { ModPanel } from "./ModPanel";
 
 export type ModInfo = { id: string, name: string, version: string, 
 /**
- * `telemetry:read`, `sessions:read`; the desktop app forwards only what is granted.
+ * `telemetry:read`, `sessions:read`, `pets:read`, `storage`; the desktop app grants only these.
  */
 permissions: Array<string>, panels: Array<ModPanel>, 
+/**
+ * Shipped with Imperium (opt-in in the desktop app) rather than installed by the user.
+ */
+bundled: boolean, 
 /**
  * The entry ES module's source.
  */

@@ -3,6 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { ToolState } from "../components/ToolState";
 import { formatCost, type SessionState } from "../sessions";
 
 export function AgentsPanel({ session }: { session: SessionState | null }) {
@@ -27,7 +28,7 @@ export function AgentsPanel({ session }: { session: SessionState | null }) {
                 .filter((entry) => entry.kind === "tool")
                 .map((entry, index) => (
                   <li key={index} className={entry.ok === false ? "failed" : undefined}>
-                    {entry.ok === null ? "…" : entry.ok ? "✓" : "✗"} {entry.summary}
+                    <ToolState ok={entry.ok} /> {entry.summary}
                   </li>
                 ))}
             </ul>
