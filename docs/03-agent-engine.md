@@ -97,6 +97,31 @@ share the session's permission approvals. Events carry an `agent_id` (`root`, or
 and the session emits `task_spawned` and `task_finished` (status, report, tokens, cost).
 Not yet: `send_to_task`, budgets per task, deeper trees, and cancellation.
 
+### Large inputs and `delegate_chunks`
+
+**Implemented.** An input that would take more than 75 % of the root's context window
+(`context_window` from the model table; no guard when it is unknown) never enters the
+conversation. This covers user messages, tool results and file reads, estimated at four
+characters a token. The input is stored as a session artefact (`a1`, `a2`, ..., in memory, for
+the life of the daemon's session) and the root sees only a handle message: size, line count, an
+outline (up to 12 headings or file starts, else the first lines), and how to read it. Subagents
+are not guarded; they receive chunks sized by the root.
+
+`delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` splits the artefact and starts one
+subagent per chunk, each with the same `brief` plus its chunk (marked "chunk i of n") in its
+first message. Boundaries, in order of preference:
+
+1. a file start (`diff --git`, `=== path ===`, `<file ...>`) always starts a new chunk;
+2. headings, blank-line paragraphs and fenced code blocks, which stay whole when they fit;
+3. otherwise token windows (`chunk_tokens` x 4 characters), cut at a line break when one falls
+   in the second half of the window.
+
+Limits: at most 64 chunks per call (the tool errors and asks for larger chunks) and four chunk
+subagents running at once per session; the rest wait for a free slot. Chunk subagents use the
+default routing tier. The result lists the task ids; `await_tasks` collects the reports. With
+`reduce`, one more subagent receives that instruction plus the chunk reports (never the chunks)
+once all chunks finish, and its task id is the only one to collect. The root sees only reports.
+
 Delegation must not burn tokens while subagents work.
 
 - `spawn_agent` (a built-in tool) creates a **Task** and returns immediately with a task ID.
@@ -150,8 +175,8 @@ not there yet.
 | Tool | Status |
 | --- | --- |
 | `spawn_agent`, `await_tasks`, `update_plan`, `web_search`, `web_fetch` | implemented |
-| `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | planned: definition only, not offered to models |
-| `ask_user(questions[])`: each question has text, optional options, and a recommended answer | planned: definition only, not offered to models |
+| `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | implemented, root only ([large inputs](#large-inputs-and-delegate_chunks)) |
+| `ask_user(questions[])`: each question has text, optional options, and a recommended answer | implemented, root only ([05](05-tools-and-isolation.md#ask_user)) |
 
 **Templates and root prompt (implemented):** hand-written files checked in under
 [`crates/imperium-protocol/schemas/prompts/`](../crates/imperium-protocol/schemas/prompts/) and
