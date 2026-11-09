@@ -15,7 +15,11 @@ environment_id: string | null,
 /**
  * Every folder the session's tools may use, the working directory first.
  */
-folders: Array<string>, model: string, 
+folders: Array<string>, 
+/**
+ * The root agent's model spec; `None` while the session waits for one to be chosen.
+ */
+model: string | null, 
 /**
  * Where the session's commands run, such as `tier 0 · folder policy`.
  */

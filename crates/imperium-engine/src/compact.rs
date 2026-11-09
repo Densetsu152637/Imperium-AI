@@ -65,6 +65,8 @@ pub enum SwitchError {
     Summary(String),
     #[error("{0}")]
     Unavailable(String),
+    #[error("the session has no model yet; set one first")]
+    NoModel,
     #[error("the session has stopped")]
     Closed,
 }

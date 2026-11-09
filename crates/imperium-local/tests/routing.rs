@@ -193,7 +193,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
     let session = Session::spawn(SessionConfig {
         id: "routing".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: hosted("cloud:root"),
+        model: Some(hosted("cloud:root")),
         catalog,
         clients: Default::default(),
         routing: RoutingSettings {

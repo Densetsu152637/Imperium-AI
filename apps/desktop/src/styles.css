@@ -2400,6 +2400,23 @@ button.sort:hover:not(:disabled) {
   font-weight: 600;
 }
 
+.badge.status.needs_model {
+  border-color: var(--accent);
+  border-style: dashed;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* A session without a model: says what to do before its messages can run. */
+.needs-model {
+  margin: 0 var(--space) var(--space);
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: 0.85rem;
+}
+
 .badge.status.paused {
   border-style: dashed;
   border-color: var(--accent);

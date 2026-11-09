@@ -467,17 +467,17 @@ impl Connection {
         params: SessionCreateParams,
     ) -> Result<(SessionCreateResult, broadcast::Receiver<AgentEvent>), ErrorObject> {
         let model = params.model.as_deref();
+        // Without a model (and no models.default) the session still starts; it waits for one.
+        let options = || SessionOptions {
+            may_wait_for_model: true,
+            ..SessionOptions::default()
+        };
         let created = match (&params.environment_id, &params.project_dir) {
-            (Some(env), _) => {
-                self.state
-                    .create_in_environment(env, model, SessionOptions::default())
-            }
+            (Some(env), _) => self.state.create_in_environment(env, model, options()),
             // A bare folder: the environment it is the working directory of, made if needed.
             (None, Some(dir)) => match self.state.environments().for_folder(dir) {
                 Ok(env) => {
-                    let created =
-                        self.state
-                            .create_in_environment(&env.id, model, SessionOptions::default());
+                    let created = self.state.create_in_environment(&env.id, model, options());
                     self.state.announce_environments();
                     created
                 }
@@ -509,7 +509,7 @@ impl Connection {
         Ok((
             SessionCreateResult {
                 session_id: session.id().to_string(),
-                model: session.model().to_string(),
+                model: session.model(),
                 isolation: session.isolation().to_string(),
                 environment_id: summary.environment_id,
                 folders: summary.folders,
@@ -625,7 +625,7 @@ impl Connection {
             };
             Ok(match fitted {
                 Some(context) => SessionControlResult {
-                    model: Some(session.model()),
+                    model: session.model(),
                     context: Some(context),
                 },
                 None => SessionControlResult::default(),
@@ -700,7 +700,7 @@ fn switch_error(error: SwitchError) -> ErrorObject {
     let code = match &error {
         SwitchError::Busy => codes::SESSION_BUSY,
         SwitchError::TooLarge { .. } | SwitchError::NoFit { .. } => codes::CONTEXT_TOO_LARGE,
-        SwitchError::UnknownWindow(_) => codes::INVALID_PARAMS,
+        SwitchError::UnknownWindow(_) | SwitchError::NoModel => codes::INVALID_PARAMS,
         SwitchError::Unavailable(_) | SwitchError::Summary(_) => codes::MODEL_UNAVAILABLE,
         SwitchError::Closed => codes::INTERNAL_ERROR,
     };
@@ -1162,8 +1162,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn session_creation_explains_missing_folders_and_models() {
+    #[tokio::test]
+    async fn sessions_start_without_a_model_and_wait_for_one() {
         let mut connection = handshaken();
         let missing_folder = connection.handle_text(&request(
             2,
@@ -1172,21 +1172,47 @@ mod tests {
         ));
         assert_eq!(error_code(&missing_folder), Some(codes::INVALID_PARAMS));
 
+        // No model given and no models.default: the session is created anyway, without one.
         let dir = tempfile::tempdir().unwrap();
-        let no_model = connection.handle_text(&request(
+        let created = connection.handle_text(&request(
             3,
             SessionCreate::NAME,
             json!({"project_dir": dir.path()}),
         ));
-        assert_eq!(error_code(&no_model), Some(codes::MODEL_UNAVAILABLE));
-        assert!(no_model.subscription.is_none());
-        // Without models.default the reply says how to go on, rather than only what failed.
-        let Some(Outcome::Error(error)) = no_model.response.as_ref().map(|r| &r.outcome) else {
-            panic!("expected an error");
-        };
-        assert!(error.message.contains("Pick a model"), "{}", error.message);
+        assert!(created.subscription.is_some());
+        let created = result_of(&created);
+        assert_eq!(created["model"], Value::Null);
+        let id = created["session_id"].as_str().unwrap().to_string();
+        let listed = result_of(&connection.handle_text(&request(4, SessionList::NAME, json!({}))));
+        assert_eq!(listed["sessions"][0]["model"], Value::Null);
+        assert_eq!(listed["sessions"][0]["status"], "idle");
 
-        let neither = connection.handle_text(&request(4, SessionCreate::NAME, json!({})));
+        // A message waits for a model instead of failing.
+        let session = connection.state.session(&id).unwrap();
+        session.send("hello".into()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while session.status().0 != imperium_protocol::session::SessionStatus::NeedsModel {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the message never waited"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(session.queue(None).unwrap().len(), 1);
+
+        // A model that cannot be resolved is refused, and the session keeps waiting.
+        let refused = connection.handle_text(&request(
+            5,
+            SessionControl::NAME,
+            json!({"session_id": id, "action": "set_model", "model": "nowhere:m"}),
+        ));
+        let refused = refused.deferred.expect("a deferred reply").await;
+        assert!(
+            matches!(refused.outcome, Outcome::Error(ref error) if error.code == codes::MODEL_UNAVAILABLE)
+        );
+        assert_eq!(session.model(), None);
+
+        let neither = connection.handle_text(&request(6, SessionCreate::NAME, json!({})));
         assert_eq!(error_code(&neither), Some(codes::INVALID_PARAMS));
     }
 

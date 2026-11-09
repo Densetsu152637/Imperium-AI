@@ -259,7 +259,10 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
       break;
     }
     case "model_changed":
-      next.push({ kind: "notice", message: `Switched model from ${event.from} to ${event.to}` });
+      next.push({
+        kind: "notice",
+        message: event.from ? `Switched model from ${event.from} to ${event.to}` : `Model set to ${event.to}`,
+      });
       break;
     default:
       break;

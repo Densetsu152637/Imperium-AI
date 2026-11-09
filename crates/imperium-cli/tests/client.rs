@@ -92,7 +92,7 @@ async fn a_chat_turn_streams_events_to_the_client() {
         })
         .await
         .unwrap();
-    assert_eq!(session.model, "fake:m");
+    assert_eq!(session.model.as_deref(), Some("fake:m"));
     client
         .call::<SessionSend>(SessionSendParams {
             session_id: session.session_id.clone(),

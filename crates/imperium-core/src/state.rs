@@ -47,6 +47,9 @@ pub struct SessionOptions {
     pub environment_id: Option<String>,
     /// Folders the session may use besides its working directory.
     pub folders: Vec<String>,
+    /// Start without a model when none was given and `models.default` is not set: messages
+    /// wait until one is chosen. Otherwise a missing model fails the creation.
+    pub may_wait_for_model: bool,
 }
 
 /// Where a session works: its environment and every folder, the working directory first.
@@ -431,6 +434,8 @@ impl DaemonState {
             let model = switched.as_deref().or(meta["model"].as_str());
             let options = SessionOptions {
                 resume_id: Some(id.clone()),
+                // A session that never had a model keeps waiting for one.
+                may_wait_for_model: model.is_none(),
                 ..SessionOptions::default()
             };
             let resumed_session = match meta["environment_id"].as_str() {
@@ -695,7 +700,11 @@ impl DaemonState {
             folders: workspace.folders_display(),
         };
         // A model table id or a spec, as the model pickers offer them.
-        let model = self.resolve_model(model)?;
+        let model = match self.resolve_model(model) {
+            Ok(model) => Some(model),
+            Err(ModelError::NoDefault) if options.may_wait_for_model => None,
+            Err(error) => return Err(error.into()),
+        };
         let catalog = self.catalog();
         // Connectors added or changed in the app since the daemon started apply to new sessions.
         let fresh = crate::connectors::saved_settings(&self.paths);
@@ -731,7 +740,7 @@ impl DaemonState {
                 session_id: id.clone(),
             }));
         }
-        let model_spec = model.spec.clone();
+        let model_spec = model.as_ref().map(|model| model.spec.clone());
         let session = Session::spawn(SessionConfig {
             journal_path: self
                 .paths
@@ -1048,7 +1057,7 @@ fn summary(session: &Session) -> SessionSummary {
         project_dir: session.project_dir().to_string(),
         environment_id: None,
         folders: vec![session.project_dir().to_string()],
-        model: session.model().to_string(),
+        model: session.model(),
         isolation: session.isolation().to_string(),
         title: session.title(),
         status,

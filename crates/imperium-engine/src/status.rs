@@ -20,6 +20,8 @@ struct Tracker {
     /// Agents waiting for a permission answer.
     asking: HashMap<String, usize>,
     paused: bool,
+    /// A message waits for the session to be given a model.
+    needs_model: bool,
     /// Set by the daemon: the session is watching a pull request, or it merged.
     overlay: Option<(SessionStatus, String)>,
     shown: Option<(SessionStatus, Option<String>)>,
@@ -32,6 +34,9 @@ impl Tracker {
         }
         if self.paused {
             return (SessionStatus::Paused, None);
+        }
+        if self.needs_model {
+            return (SessionStatus::NeedsModel, None);
         }
         let base = self.base.unwrap_or(SessionStatus::Idle);
         match (&base, &self.overlay) {
@@ -90,6 +95,13 @@ impl Controls {
             SessionEvent::Resumed {} => tracker.paused = false,
             _ => {}
         }
+        Self::changed(&mut tracker)
+    }
+
+    /// Marks whether a message waits for the session to be given a model.
+    pub(crate) fn set_needs_model(&self, needs: bool) -> Option<SessionEvent> {
+        let mut tracker = lock(&self.tracker);
+        tracker.needs_model = needs;
         Self::changed(&mut tracker)
     }
 

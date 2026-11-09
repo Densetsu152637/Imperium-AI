@@ -105,7 +105,7 @@ async fn agents_research_and_cite_sources() {
     let session = Session::spawn(SessionConfig {
         id: "web".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint: Endpoint {
                 base_url: format!("{model}/v1"),
@@ -116,7 +116,7 @@ async fn agents_research_and_cite_sources() {
             local: false,
             context_window: None,
             kind: "openai".into(),
-        },
+        }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),
@@ -234,7 +234,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
     let session = Session::spawn(SessionConfig {
         id: "browser".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint: Endpoint {
                 base_url: format!("{model}/v1"),
@@ -245,7 +245,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
             local: false,
             context_window: None,
             kind: "openai".into(),
-        },
+        }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),

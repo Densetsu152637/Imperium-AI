@@ -38,8 +38,10 @@ const EVENT_BUFFER: usize = 1024;
 pub struct SessionConfig {
     pub id: String,
     pub workspace: Workspace,
-    /// The root agent's model, and the fallback for subagents.
-    pub model: ResolvedModel,
+    /// The root agent's model, and the fallback for subagents. `None` starts the session
+    /// without one: messages wait (status `needs_model`) until [`Session::set_model`] gives it
+    /// one.
+    pub model: Option<ResolvedModel>,
     /// Models subagents may be routed to.
     pub catalog: Vec<CatalogModel>,
     pub routing: RoutingSettings,
@@ -104,8 +106,8 @@ pub struct SessionClosed;
 #[derive(Debug)]
 pub struct Session {
     id: String,
-    /// The root agent's model spec, updated when it is switched.
-    model: Arc<Mutex<String>>,
+    /// The root agent's model spec, updated when it is switched; `None` until it has one.
+    model: Arc<Mutex<Option<String>>>,
     project_dir: String,
     isolation: String,
     controls: Arc<Controls>,
@@ -137,7 +139,9 @@ impl Session {
         let (commands, receiver) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(EVENT_BUFFER);
         let id = config.id.clone();
-        let model = Arc::new(Mutex::new(config.model.spec.clone()));
+        let model = Arc::new(Mutex::new(
+            config.model.as_ref().map(|model| model.spec.clone()),
+        ));
         let project_dir = config.workspace.root_display();
         let isolation = config.workspace.sandbox().label();
         let history = History::default();
@@ -181,15 +185,16 @@ impl Session {
         &self.id
     }
 
-    /// The root agent's model spec.
-    pub fn model(&self) -> String {
+    /// The root agent's model spec, or `None` while the session waits for one.
+    pub fn model(&self) -> Option<String> {
         lock(&self.model).clone()
     }
 
     /// Switches the session to `model` from its next turn, keeping the conversation. When the
     /// conversation does not fit the new model's context window it is compacted first (older
     /// turns summarised); when it cannot fit, or a turn is running, the session keeps its
-    /// model. The switch is journalled (`model_changed`), so a resumed session keeps it.
+    /// model. The switch is journalled (`model_changed`), so a resumed session keeps it. A
+    /// session started without a model takes this one, and messages that waited for it run.
     pub async fn set_model(&self, model: ResolvedModel) -> Result<ContextFit, SwitchError> {
         let (reply, answer) = oneshot::channel();
         self.commands
@@ -403,7 +408,7 @@ async fn run(
     mut commands: mpsc::UnboundedReceiver<Command>,
     emitter: Arc<Emitter>,
     inboxes: Arc<Inboxes>,
-    model: Arc<Mutex<String>>,
+    model: Arc<Mutex<Option<String>>>,
 ) {
     for message in config.notices {
         emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
@@ -446,13 +451,19 @@ async fn run(
             json!({"session_id": config.id, "project_dir": shared.workspace.root_display()}),
         )
         .await;
-    let mut root = Agent::new(
-        ROOT_AGENT.into(),
-        Arc::clone(&shared),
-        config.model,
-        true,
-        "root".into(),
-    );
+    let mut root = match config.model {
+        Some(first) => Agent::new(
+            ROOT_AGENT.into(),
+            Arc::clone(&shared),
+            first,
+            true,
+            "root".into(),
+        ),
+        None => match wait_for_model(&shared, &mut commands, &model).await {
+            Some(root) => root,
+            None => return,
+        },
+    };
     let messages_path = crate::journal::messages_path(&config.journal_path);
     if config.resume {
         if let Some(messages) = std::fs::read_to_string(&messages_path)
@@ -493,7 +504,7 @@ async fn run(
                 }) => {
                     let result = root.switch_model(*target).await;
                     if result.is_ok() {
-                        *lock(&model) = root.model().spec.clone();
+                        *lock(&model) = Some(root.model().spec.clone());
                         save_messages(&messages_path, root.messages());
                     }
                     let _ = reply.send(result);
@@ -545,6 +556,64 @@ async fn run(
         save_messages(&messages_path, root.messages());
         if !handles_open {
             return;
+        }
+    }
+}
+
+/// Holds a session that has no model until one is set: messages wait in the root's queue and
+/// the status says a model is needed. Returns the root agent on the model it was given, or
+/// `None` when every handle is gone.
+async fn wait_for_model(
+    shared: &Arc<Shared>,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    model: &Mutex<Option<String>>,
+) -> Option<Agent> {
+    let needs_model = |needs: bool| {
+        if let Some(event) = shared.controls.set_needs_model(needs) {
+            shared.emitter.emit_raw(ROOT_AGENT, event);
+        }
+    };
+    // Messages a resumed session queued before the daemon stopped still wait.
+    if !shared.inboxes.open(ROOT_AGENT).list().is_empty() {
+        needs_model(true);
+    }
+    loop {
+        match commands.recv().await? {
+            Command::Message(message) => {
+                shared.inboxes.queue_for_root(message);
+                needs_model(true);
+            }
+            Command::Respond {
+                request_id,
+                decision,
+            } => shared.broker.resolve(request_id, decision),
+            Command::SetModel {
+                model: target,
+                reply,
+            } => {
+                let spec = target.spec.clone();
+                let mut root = Agent::new(
+                    ROOT_AGENT.into(),
+                    Arc::clone(shared),
+                    *target,
+                    true,
+                    "root".into(),
+                );
+                match root.adopt_first_model().await {
+                    Ok(fit) => {
+                        *lock(model) = Some(spec);
+                        needs_model(false);
+                        let _ = reply.send(Ok(fit));
+                        return Some(root);
+                    }
+                    Err(error) => {
+                        let _ = reply.send(Err(error));
+                    }
+                }
+            }
+            Command::Compact { reply } => {
+                let _ = reply.send(Err(SwitchError::NoModel));
+            }
         }
     }
 }

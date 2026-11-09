@@ -83,7 +83,7 @@ async fn a_session_calls_the_client_registered_for_its_endpoint_kind() {
     let session = Session::spawn(SessionConfig {
         id: "client".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: "custom:model-x".into(),
             // Never contacted: the scripted client answers.
             endpoint: Endpoint {
@@ -95,7 +95,7 @@ async fn a_session_calls_the_client_registered_for_its_endpoint_kind() {
             local: false,
             context_window: None,
             kind: "scripted".into(),
-        },
+        }),
         catalog: Vec::new(),
         clients,
         routing: imperium_config::RoutingSettings::default(),
@@ -159,7 +159,7 @@ async fn an_unknown_endpoint_kind_fails_the_turn() {
     let session = Session::spawn(SessionConfig {
         id: "unknown".into(),
         workspace: Workspace::new(dir.path()).unwrap(),
-        model: ResolvedModel {
+        model: Some(ResolvedModel {
             spec: "custom:model".into(),
             endpoint: Endpoint {
                 base_url: "http://unreachable.invalid/v1".into(),
@@ -170,7 +170,7 @@ async fn an_unknown_endpoint_kind_fails_the_turn() {
             local: false,
             context_window: None,
             kind: "anthropic".into(),
-        },
+        }),
         catalog: Vec::new(),
         clients: ChatClients::default(),
         routing: imperium_config::RoutingSettings::default(),

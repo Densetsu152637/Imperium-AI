@@ -204,6 +204,15 @@ export function SessionPanel({
         <div ref={end} />
       </div>
 
+      {session.summary.model === null && (
+        <p className="needs-model" role="status">
+          This session has no model yet. Pick one in the model list above (or set a default under Settings → Models);
+          {session.status === "needs_model"
+            ? " your messages are waiting and run as soon as it has one."
+            : " messages you send wait until then."}
+        </p>
+      )}
+
       {session.queue.length > 0 && <QueueView queue={session.queue} onChange={onChangeQueued} />}
 
       <form
@@ -403,15 +412,16 @@ function ModelPicker({
   busy,
   onSwitch,
 }: {
-  current: string;
+  /** `null` while the session has no model yet. */
+  current: string | null;
   models: ModelRow[];
   busy: boolean;
   onSwitch: Props["onSetModel"];
 }) {
   const [switching, setSwitching] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  if (models.length === 0) return <span title="Model">{current}</span>;
-  const listed = models.some((row) => row.spec === current);
+  if (models.length === 0) return <span title="Model">{current ?? "no model"}</span>;
+  const listed = current === null || models.some((row) => row.spec === current);
   const switchTo = (spec: string) => {
     if (spec === current) return;
     setSwitching(true);
@@ -436,11 +446,16 @@ function ModelPicker({
             ? "Switch models when the turn finishes"
             : "Switch the session's model; older turns are summarised if its context window is smaller"
         }
-        value={current}
+        value={current ?? ""}
         disabled={busy || switching}
         onChange={(event) => switchTo(event.target.value)}
       >
-        {!listed && <option value={current}>{current}</option>}
+        {current === null && (
+          <option value="" disabled>
+            Pick a model…
+          </option>
+        )}
+        {!listed && current !== null && <option value={current}>{current}</option>}
         {models.map((row) => (
           <option key={row.id} value={row.spec} disabled={!row.endpoint_configured}>
             {row.id === row.spec ? row.spec : `${row.id} · ${row.spec}`}

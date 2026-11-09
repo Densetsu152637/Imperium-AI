@@ -180,7 +180,8 @@ pub struct SessionSummary {
     /// Every folder the session's tools may use, the working directory first.
     #[serde(default)]
     pub folders: Vec<String>,
-    pub model: String,
+    /// The root agent's model spec; `None` while the session waits for one to be chosen.
+    pub model: Option<String>,
     /// Where the session's commands run, such as `tier 0 · folder policy`.
     pub isolation: String,
     /// The session's first message, for lists.
@@ -218,7 +219,8 @@ pub struct SessionCreateParams {
     #[ts(optional)]
     pub project_dir: Option<String>,
     /// A model table id or `<endpoint>:<model>`; defaults to `models.default` from the
-    /// configuration.
+    /// configuration. With neither, the session is still created, without a model: messages
+    /// sent to it wait (status `needs_model`) until `session.control` `set_model` gives it one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
@@ -228,7 +230,8 @@ pub struct SessionCreateParams {
 #[ts(export)]
 pub struct SessionCreateResult {
     pub session_id: String,
-    pub model: String,
+    /// `None` when no model was given and `models.default` is not set.
+    pub model: Option<String>,
     pub isolation: String,
     /// The environment the session works in.
     #[serde(default)]

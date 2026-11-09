@@ -1139,6 +1139,19 @@ impl Agent {
         Ok(fit)
     }
 
+    /// Takes up the model a session without one was just given: checks the (empty)
+    /// conversation fits it and journals the change from no model.
+    pub(crate) async fn adopt_first_model(&mut self) -> Result<ContextFit, SwitchError> {
+        let model = self.model.clone();
+        let fit = self.fit_to(&model, false).await?;
+        self.emit(SessionEvent::ModelChanged {
+            from: String::new(),
+            to: model.spec,
+            compacted: fit.compaction.is_some(),
+        });
+        Ok(fit)
+    }
+
     /// Compacts the conversation now for this agent's own model, keeping the last
     /// [`KEEP_TURNS`](compact::KEEP_TURNS) turns verbatim (fewer if they do not fit).
     pub async fn compact_now(&mut self) -> Result<ContextFit, SwitchError> {

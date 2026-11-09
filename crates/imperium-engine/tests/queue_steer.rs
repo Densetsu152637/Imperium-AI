@@ -137,7 +137,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
     Session::spawn(SessionConfig {
         id: "s".into(),
         workspace: Workspace::new(dir).unwrap(),
-        model: model(url),
+        model: Some(model(url)),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),
