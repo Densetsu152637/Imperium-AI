@@ -350,8 +350,9 @@ async fn swap_out_an_awaiting_orchestrator_for_its_subagent_and_restore_it() {
     let _turn = supervisor.attach("emperor", root);
     let work = Duration::from_millis(10);
     let (_, slot) = call(&supervisor, &log, "emperor", root, work).await;
+    // Its own session may swap the orchestrator out; nobody else may while it is mid-turn.
     assert!(matches!(
-        supervisor.availability("worker"),
+        supervisor.availability_for("worker", "session"),
         Availability::Swap { .. }
     ));
 
@@ -691,8 +692,10 @@ async fn swap_cache_keeps_a_waiting_orchestrators_slot_over_a_finished_subagents
     call(&supervisor, &log, "worker", "s/t1", Duration::ZERO).await;
     // The subagent is asleep (an approval, say), so another session may take the worker's room.
     let subagent_asleep = supervisor.waiting("worker", "s/t1");
-    let _other = supervisor.attach("helper", "x/root");
+    let other = supervisor.attach("helper", "x/root");
     call(&supervisor, &log, "helper", "x/root", Duration::ZERO).await;
+    // The other agent's turn ends (mid-turn, its model could not be taken from it).
+    drop(other);
     // The subagent finishes and the orchestrator wakes; saving the other agent's slot needs
     // room, and the finished subagent's file goes even though the orchestrator's is older.
     drop(subagent_asleep);
