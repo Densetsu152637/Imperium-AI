@@ -5,6 +5,7 @@ pub mod backend;
 pub mod gguf;
 pub mod hardware;
 pub mod hf;
+pub mod monitor;
 pub mod planner;
 pub mod process;
 pub mod runtime;

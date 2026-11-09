@@ -50,6 +50,10 @@ use imperium_protocol::methods::{
     McpCatalog, McpCatalogParams, McpInstall, McpList, McpListParams, McpRemove, McpSave,
     McpSetEnabled, McpTest,
 };
+use imperium_protocol::methods::{
+    ModelUnload, ModelUnloadParams, ModelUnloadResult, SystemResources, SystemResourcesParams,
+    SystemResourcesSubscribe, SystemResourcesSubscribeParams, SystemResourcesSubscribeResult,
+};
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 use imperium_protocol::methods::{
     SessionQueue, SessionQueueParams, SessionQueueResult, SessionSendResult,
@@ -94,6 +98,8 @@ pub struct Connection {
     handshake_done: bool,
     /// For a paired phone: the only methods it may call.
     allowed: Option<Vec<&'static str>>,
+    /// Set while this connection watches resources (`system.resources_subscribe`).
+    resources: Option<crate::resources::Watch>,
 }
 
 impl Connection {
@@ -102,6 +108,7 @@ impl Connection {
             state,
             handshake_done: false,
             allowed: None,
+            resources: None,
         }
     }
 
@@ -111,7 +118,13 @@ impl Connection {
             state,
             handshake_done: false,
             allowed: Some(allowed),
+            resources: None,
         }
+    }
+
+    /// Whether this connection wants `system.resources_changed` notifications.
+    pub fn watches_resources(&self) -> bool {
+        self.resources.is_some()
     }
 
     /// Handles one text frame.
@@ -177,6 +190,38 @@ impl Connection {
                         .revoke(&params.id)
                         .map_err(|message| ErrorObject::new(codes::INTERNAL_ERROR, message))?;
                     Ok(PhoneRevokeResult { found })
+                })
+            }
+            SystemResources::NAME => call_later::<SystemResources, _>(
+                request.params,
+                &mut later,
+                |_: SystemResourcesParams| {
+                    let state = Arc::clone(&self.state);
+                    async move { Ok(crate::resources::snapshot(&state).await) }
+                },
+            ),
+            SystemResourcesSubscribe::NAME => call::<SystemResourcesSubscribe>(
+                request.params,
+                |params: SystemResourcesSubscribeParams| {
+                    let monitor = Arc::clone(self.state.resource_monitor());
+                    if !params.on {
+                        self.resources = None;
+                    } else if self.resources.is_none() {
+                        self.resources = Some(monitor.watch(&self.state));
+                    }
+                    Ok(SystemResourcesSubscribeResult {
+                        on: params.on,
+                        interval_ms: u32::try_from(monitor.interval().as_millis())
+                            .unwrap_or(u32::MAX),
+                    })
+                },
+            ),
+            ModelUnload::NAME => {
+                call::<ModelUnload>(request.params, |params: ModelUnloadParams| {
+                    self.state
+                        .unload_local_model(&params.model)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+                    Ok(ModelUnloadResult { unloaded: true })
                 })
             }
             Shutdown::NAME => call::<Shutdown>(request.params, |_: ShutdownParams| {

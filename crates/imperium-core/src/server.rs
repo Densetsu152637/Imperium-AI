@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::get;
 use imperium_protocol::jsonrpc::{ErrorObject, Notification, Response, codes};
+use imperium_protocol::methods::RESOURCES_CHANGED;
 use imperium_protocol::session::{SESSION_EVENT, SessionEventParams};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
@@ -117,6 +118,10 @@ pub(crate) async fn run_connection(
             Some(response) = replies.recv() => serde_json::to_string(&response),
             Some(notification) = notifications.recv() => serde_json::to_string(&notification),
             announcement = announcements.recv() => match announcement {
+                // Resource snapshots go only to connections that asked for them.
+                Ok(notification)
+                    if notification.method == RESOURCES_CHANGED
+                        && !connection.watches_resources() => continue,
                 Ok(notification) => serde_json::to_string(&notification),
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,

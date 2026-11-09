@@ -93,3 +93,96 @@ async fn a_client_without_the_token_is_refused() {
         }
     }
 }
+
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Connects with the token and handshakes.
+async fn client(url: &str) -> Socket {
+    let mut request = url.into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("Authorization", "Bearer secret".parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let hello = json!({"jsonrpc":"2.0","id":0,"method":"system.handshake","params":{
+        "client":{"name":"test","version":"0"},"protocol":PROTOCOL_VERSION}});
+    socket
+        .send(Message::Text(hello.to_string().into()))
+        .await
+        .unwrap();
+    socket.next().await.unwrap().unwrap();
+    socket
+}
+
+/// The next frame as JSON.
+async fn next_json(socket: &mut Socket) -> serde_json::Value {
+    let frame = socket.next().await.unwrap().unwrap();
+    serde_json::from_str(frame.to_text().unwrap()).unwrap()
+}
+
+fn call(id: u32, method: &str, params: serde_json::Value) -> Message {
+    Message::Text(
+        json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+            .to_string()
+            .into(),
+    )
+}
+
+#[tokio::test]
+async fn resource_snapshots_reach_only_subscribed_connections() {
+    let url = start_server("secret").await;
+    let mut watcher = client(&url).await;
+    let mut bystander = client(&url).await;
+
+    watcher
+        .send(call(1, "system.resources", json!({})))
+        .await
+        .unwrap();
+    let snapshot = next_json(&mut watcher).await;
+    assert!(
+        snapshot["result"]["memory"]["ram_total_bytes"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert!(
+        snapshot["result"]["local_models"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    watcher
+        .send(call(2, "system.resources_subscribe", json!({"on": true})))
+        .await
+        .unwrap();
+    // The reply and the first snapshot, in either order.
+    let mut seen = Vec::new();
+    while seen.len() < 2 {
+        let message = next_json(&mut watcher).await;
+        seen.push(
+            message["method"]
+                .as_str()
+                .map_or_else(|| format!("reply {}", message["id"]), str::to_string),
+        );
+    }
+    assert!(
+        seen.contains(&"system.resources_changed".to_string()),
+        "{seen:?}"
+    );
+    assert!(seen.contains(&"reply 2".to_string()), "{seen:?}");
+
+    // The bystander's next frame is the reply to its own call, not a snapshot.
+    bystander
+        .send(call(3, "models.unload", json!({"model": "none"})))
+        .await
+        .unwrap();
+    let reply = next_json(&mut bystander).await;
+    assert_eq!(reply["id"], 3, "{reply}");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not loaded")
+    );
+}
