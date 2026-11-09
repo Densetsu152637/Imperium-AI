@@ -106,6 +106,9 @@ Losing the key means installed apps can no longer update, so keep a copy outside
   its log in the app's log folder; it keeps running after the window closes. Before an update
   installs, the app stops that daemon (only if it is the bundled one), and the Windows
   installer's hooks (`src-tauri/windows/hooks.nsh`) stop it before replacing or removing files.
+  An update over an existing install also replaces the bundled `mods`, `pets` and `policy` folders
+  whole and removes the pre-rename `imperiumd.exe`, so nothing an older version shipped lingers;
+  the user's settings and data are left alone.
   On Windows the CLI is in the install folder; on Linux the deb puts it on `PATH`.
 - Linux builds use Ubuntu 22.04 for an older glibc baseline.
 - MSI and RPM reject the hyphen in pre-release versions, so pre-release and experimental builds
