@@ -11,7 +11,7 @@ use imperium_protocol::methods::SessionHold;
 use imperium_protocol::session::{
     AgentEvent, PauseCause, ResumePolicy, SessionEvent, SessionStatus,
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 
 use crate::quiet::RunNow;
 use crate::session::lock;
@@ -24,6 +24,8 @@ struct Tracker {
     /// Agents waiting for a permission answer.
     asking: HashMap<String, usize>,
     paused: bool,
+    /// The user stopped the session; it stays paused until they resume it.
+    stopped: bool,
     /// Background work waiting for a quiet machine: before it started or between steps.
     hold: Option<SessionHold>,
     /// A message waits for the session to be given a model.
@@ -37,6 +39,9 @@ impl Tracker {
     fn current(&self) -> (SessionStatus, Option<String>) {
         if self.asking.values().any(|count| *count > 0) {
             return (SessionStatus::NeedsAttention, None);
+        }
+        if self.stopped {
+            return (SessionStatus::Paused, Some("stopped".into()));
         }
         if self.paused {
             return (SessionStatus::Paused, None);
@@ -61,6 +66,9 @@ pub struct Controls {
     wake: Notify,
     /// Released by "run now" while the session waits for a quiet machine.
     run_now: RunNow,
+    /// Whether the user stopped the session: agents halt at their next safe point while set.
+    /// Follows `work_stopped` and `work_resumed`, so a replayed journal restores it.
+    stop: watch::Sender<bool>,
 }
 
 impl Controls {
@@ -71,7 +79,18 @@ impl Controls {
             policy: Mutex::new(None),
             wake: Notify::new(),
             run_now: RunNow::default(),
+            stop: watch::Sender::new(false),
         }
+    }
+
+    /// Whether the user stopped the session.
+    pub fn is_stopped(&self) -> bool {
+        *self.stop.borrow()
+    }
+
+    /// Follows the stop: `true` while the session is stopped.
+    pub(crate) fn stop_signal(&self) -> watch::Receiver<bool> {
+        self.stop.subscribe()
     }
 
     /// Why background work is waiting for a quiet machine, if it is.
@@ -129,6 +148,14 @@ impl Controls {
             SessionEvent::Resumed {} => {
                 tracker.paused = false;
                 tracker.hold = None;
+            }
+            SessionEvent::WorkStopped {} if root => {
+                tracker.stopped = true;
+                self.stop.send_replace(true);
+            }
+            SessionEvent::WorkResumed {} if root => {
+                tracker.stopped = false;
+                self.stop.send_replace(false);
             }
             _ => {}
         }

@@ -1390,7 +1390,10 @@ button.danger:hover:not(:disabled) {
   color: var(--accent);
 }
 
+/* Pending: dimmed and italic until the agent reads it */
 .queue-text {
+  color: var(--muted);
+  font-style: italic;
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1410,19 +1413,24 @@ button.danger:hover:not(:disabled) {
 }
 
 .queue button {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--space) * 0.35);
   padding: calc(var(--space) * 0.25) var(--space);
   font-size: 0.75rem;
 }
 
-/* Steer: beside the send button while a turn runs */
-.composer .steer {
-  flex: none;
-  align-self: center;
-  height: 2.25rem;
-  padding: 0 calc(var(--space) * 1.5);
-  border-radius: var(--radius-lg);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+.queue button svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.queue button.steer {
   color: var(--accent);
+}
+
+.queue button.danger {
+  color: var(--danger);
 }
 
 .session-sections {
@@ -1960,6 +1968,33 @@ button.danger:hover:not(:disabled) {
   border-color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 50%, transparent);
   color: var(--danger);
+}
+
+/* Paused for a steering message: waiting for the root or the user to resume or cancel it */
+.badge.paused {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border-color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+  color: var(--warn);
+}
+
+.task-paused-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: calc(var(--space) * 0.5);
+  margin-top: calc(var(--space) * 0.5);
+}
+
+.task-paused-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--space) * 0.35);
+}
+
+.task-paused-actions button svg {
+  width: 0.9rem;
+  height: 0.9rem;
 }
 
 .tasks {
@@ -3401,6 +3436,43 @@ button.colour-choice[aria-checked="true"]::after {
 }
 
 .resume-now {
+  font-size: 0.85rem;
+}
+
+/* Stop / Resume: halt or continue all of a session's work */
+.stop-session,
+.resume-now,
+.stopped-banner button {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--space) * 0.35);
+}
+
+.stop-session {
+  font-size: 0.85rem;
+}
+
+.stop-session svg,
+.resume-now svg,
+.stopped-banner svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+/* Shown while the user has the session stopped, above the queue and the composer */
+.stopped-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space);
+  width: calc(100% - var(--space) * 6);
+  max-width: var(--prose-max);
+  margin: 0 auto var(--space);
+  padding: calc(var(--space) * 0.75) var(--space) calc(var(--space) * 0.75) calc(var(--space) * 1.5);
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: var(--radius);
   font-size: 0.85rem;
 }
 

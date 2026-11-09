@@ -40,6 +40,8 @@ export type SessionSnapshot = {
   environmentId: string | null;
   /** Whether the session is archived. */
   archived: boolean;
+  /** Whether it is an environment's persistent agent session (absent from older hosts). */
+  persistent?: boolean;
   /** The environment's default pet (an installed pet id), or null when the nursery decides. */
   pet: string | null;
   /** When the session was created, in ms since the Unix epoch; null when unknown. */

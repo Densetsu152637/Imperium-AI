@@ -241,9 +241,12 @@ export class Nursery {
     this.onChange();
   }
 
-  /** Your pet follows every unarchived session; each of them has a pet of its own. */
+  /**
+   * Your pet follows every unarchived session; each of them has a pet of its own. Persistent
+   * agent sessions are left out: they run in the background and have no pet.
+   */
   private nurserySnapshots(sessions: SessionSnapshot[], now: number): void {
-    const live = sessions.filter((s) => !s.archived);
+    const live = sessions.filter((s) => !s.archived && !s.persistent);
     this.liveSessions = new Set(live.map((s) => s.sessionId));
     const resident = this.entries.get(RESIDENT);
     const heard = new Set<string>();

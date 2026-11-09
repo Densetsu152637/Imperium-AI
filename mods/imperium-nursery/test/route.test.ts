@@ -111,6 +111,13 @@ test("nursery: a pet per unarchived session, busy sessions first, subagents coun
   expect(n.summary().subagents).toBe(1);
 });
 
+test("nursery: persistent agent sessions have no pet", () => {
+  const n = new Nursery("nursery", deps);
+  n.snapshots([session("a", [agent("root", "idle")], "Alpha"), session("p", [agent("root", "working")], "Keeper", { persistent: true })], null, T0);
+  expect([...n.entries.keys()]).toEqual([sessionKey("a")]);
+  expect(n.summary()).toMatchObject({ sessions: 1, busy: 0 });
+});
+
 test("nursery: a new session's pet pops in, an archived one walks out and comes back when unarchived", () => {
   const n = new Nursery("nursery", deps);
   n.snapshots([session("a", [agent("root", "idle")], "Alpha")], null, T0);

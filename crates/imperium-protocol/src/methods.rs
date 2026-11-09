@@ -137,7 +137,31 @@ impl Method for SessionAgents {
     type Result = SessionAgentsResult;
 }
 
-/// `session.agent_resume`: gives a finished (idle, failed, or interrupted) subagent a
+/// `session.agent_cancel`: ends a paused (or otherwise finished) subagent without resuming it.
+/// It emits `task_finished` (not ok, reported as cancelled) and is no longer listed as paused;
+/// its conversation is kept, so it can still be resumed later. Fails while it is running.
+#[derive(Debug)]
+pub struct SessionAgentCancel;
+
+impl Method for SessionAgentCancel {
+    const NAME: &'static str = "session.agent_cancel";
+    type Params = SessionAgentCancelParams;
+    type Result = SessionAgentCancelResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentCancelParams {
+    pub session_id: String,
+    /// A subagent's task id, such as `t1`.
+    pub agent_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentCancelResult {}
+
+/// `session.agent_resume`: gives a finished (idle, failed, interrupted, or paused) subagent a
 /// follow-up. It works again with its earlier conversation, emitting `task_resumed` and then
 /// `task_finished`; while it runs, `session.send` with its `agent_id` steers or queues for it.
 #[derive(Debug)]
@@ -690,9 +714,12 @@ pub struct SessionSendResult {
 #[ts(export)]
 pub struct SessionQueueParams {
     pub session_id: String,
-    /// `list`, `edit` (with `id` and `text`), or `remove` (with `id`). Editing or removing a
-    /// message that was already delivered fails.
-    #[ts(type = "\"list\" | \"edit\" | \"remove\"")]
+    /// `list`, `edit` (with `id` and `text`), `remove` (with `id`), or `steer` (with `id`).
+    /// `steer` turns a queued message into steering for the running turn, in place: it leaves
+    /// the queue when the agent reads it at its next safe point (or runs as the next turn,
+    /// ahead of the other queued messages, when the turn ended first). Editing or removing a
+    /// message that was already delivered fails, and editing one that is steering fails.
+    #[ts(type = "\"list\" | \"edit\" | \"remove\" | \"steer\"")]
     pub action: String,
     /// A running subagent's task id; the root agent when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2204,10 +2231,13 @@ pub struct SessionControlParams {
     /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
     /// for `models.default`; refused while a turn runs), `compact` (summarise older turns
     /// now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
-    /// `archive` (stop the session and keep its journal; announced with `session.updated`), or
-    /// `unarchive` (resume an archived session).
+    /// `archive` (stop the session and keep its journal; announced with `session.updated`),
+    /// `unarchive` (resume an archived session), `stop` (halt the root and every subagent at
+    /// their next safe point; queued messages wait; kept across restarts; see `work_stopped`),
+    /// or `resume` (continue a stopped session; not to be confused with `resume_now`, which ends
+    /// a usage-limit wait).
     #[ts(
-        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\" | \"archive\" | \"unarchive\""
+        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\" | \"archive\" | \"unarchive\" | \"stop\" | \"resume\""
     )]
     pub action: String,
     #[serde(default)]
