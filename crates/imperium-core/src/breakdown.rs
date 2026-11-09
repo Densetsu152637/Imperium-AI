@@ -575,6 +575,17 @@ impl TokenCounter {
         rendered
     }
 
+    /// The context window the server behind `client` reports, when it has a tokenizer and
+    /// answers in time.
+    pub(crate) async fn server_window(&self, client: &dyn ChatClient) -> Option<u64> {
+        let tokenizer = client.tokenizer()?;
+        let root = tokenizer.server().to_string();
+        tokio::time::timeout(TOKENIZE_BUDGET, self.window(tokenizer, &root))
+            .await
+            .ok()
+            .flatten()
+    }
+
     /// The server's context window, asked once per server. A failed connection is asked again
     /// next time; a server that answers without one is not.
     async fn window(&self, tokenizer: &dyn Tokenizer, root: &str) -> Option<u64> {

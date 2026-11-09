@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -41,6 +42,14 @@ const REPORT_CHARS: usize = 8_000;
 const ARTEFACT_THRESHOLD_PERCENT: u64 = 75;
 /// Most chunks one `delegate_chunks` call may make; a larger input needs larger chunks.
 const MAX_CHUNKS: usize = 64;
+/// Most chunk agents one session may start across all its `delegate_chunks` calls.
+const MAX_CHUNK_AGENTS: usize = 256;
+/// Share of a chunk model's window, in percent, that one chunk may take.
+const CHUNK_WINDOW_PERCENT: u64 = 60;
+/// The window assumed when none is known, in tokens.
+const DEFAULT_WINDOW_TOKENS: u64 = 32_768;
+/// How long `ask_user` waits for an answer before taking the recommendations.
+const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// What a turn produced, for a parent awaiting a subagent.
 pub struct TurnOutcome {
@@ -87,6 +96,9 @@ pub struct Agent {
     role: String,
     /// Required references from the latest manifest that are not loaded yet.
     unloaded: Mutex<Vec<String>>,
+    /// What `turn_started` says instead of the brief, for chunk and reduce agents whose real
+    /// brief holds chunk text that must stay out of the journal and history.
+    shown: Option<String>,
 }
 
 impl Agent {
@@ -153,6 +165,7 @@ impl Agent {
             tasks: HashMap::new(),
             role,
             unloaded: Mutex::new(Vec::new()),
+            shown: None,
         }
     }
 
@@ -235,8 +248,28 @@ impl Agent {
     /// `context` (recalled memories) is given to the model before the message but not shown
     /// as part of it.
     pub async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
-        let text = self.guard_input(text);
-        self.emit(SessionEvent::TurnStarted { text: text.clone() });
+        let mut total = Usage::default();
+        // A local model is held (and loaded if needed) for the whole turn.
+        let (client, _lease) = match self.client().await {
+            Ok(client) => client,
+            Err(message) => {
+                self.emit(SessionEvent::TurnStarted {
+                    text: truncate(&text, EVENT_OUTPUT_CHARS),
+                });
+                self.emit(SessionEvent::TurnFailed {
+                    message: message.clone(),
+                });
+                return self.outcome(message, false, total);
+            }
+        };
+        let window = if self.can_delegate {
+            self.window(client.as_ref()).await
+        } else {
+            u64::MAX
+        };
+        let text = self.guard_input(text, window);
+        let shown = self.shown.clone().unwrap_or_else(|| text.clone());
+        self.emit(SessionEvent::TurnStarted { text: shown });
         let mut parts = Vec::new();
         if let Some(index) = &self.shared.context {
             let manifest = index.resolve(&self.role, &text);
@@ -253,17 +286,6 @@ impl Agent {
         self.messages.push(ChatMessage::User { content });
         let (tools, mcp) = self.tool_specs();
         let tool_texts = tool_texts(&tools, mcp);
-        let mut total = Usage::default();
-        // A local model is held (and loaded if needed) for the whole turn.
-        let (client, _lease) = match self.client().await {
-            Ok(client) => client,
-            Err(message) => {
-                self.emit(SessionEvent::TurnFailed {
-                    message: message.clone(),
-                });
-                return self.outcome(message, false, total);
-            }
-        };
         let mut reply = String::new();
         let max_steps = self.shared.max_steps;
         for step in 1..=max_steps {
@@ -363,7 +385,7 @@ impl Agent {
             }
             for call in completion.tool_calls {
                 let output = self.run_tool(&call).await;
-                let output = self.guard_input(output);
+                let output = self.guard_input(output, window);
                 self.messages.push(ChatMessage::Tool {
                     tool_call_id: call.id,
                     content: output,
@@ -960,10 +982,11 @@ impl Agent {
                 .hook(
                     HookEvent::AgentSpawn,
                     None,
-                    json!({"task_id": id, "brief": shown, "model": spec}),
+                    json!({"task_id": id, "brief": &shown, "model": spec}),
                 )
                 .await;
             let mut agent = Agent::new(id.clone(), Arc::clone(&shared), model, false, role);
+            agent.shown = Some(shown);
             let outcome = agent.run_turn(brief, None).await;
             shared
                 .hook(
@@ -992,14 +1015,25 @@ impl Agent {
         (task_id, handle)
     }
 
+    /// The window to guard against: the table's for a hosted model, the server's for a local
+    /// one (or when the table has none), else a conservative default.
+    async fn window(&self, client: &dyn ChatClient) -> u64 {
+        let table = self.model.context_window;
+        let server = if self.model.local || table.is_none() {
+            self.shared.tokens.server_window(client).await
+        } else {
+            None
+        };
+        effective_window(table, self.model.local, server)
+    }
+
     /// Keeps an input that would fill the window out of the conversation: past the threshold
     /// the agent gets an artefact handle and an outline instead of the text. Only the root,
-    /// which can chunk, is guarded, and only when its window is known.
-    fn guard_input(&self, text: String) -> String {
-        let Some(window) = self.model.context_window.filter(|_| self.can_delegate) else {
-            return text;
-        };
-        if estimate_tokens(&text) <= window.saturating_mul(ARTEFACT_THRESHOLD_PERCENT) / 100 {
+    /// which can chunk, is guarded.
+    fn guard_input(&self, text: String, window: u64) -> String {
+        if !self.can_delegate
+            || estimate_tokens(&text) <= window.saturating_mul(ARTEFACT_THRESHOLD_PERCENT) / 100
+        {
             return text;
         }
         let id = self.shared.artefacts.store(&text);
@@ -1026,15 +1060,11 @@ impl Agent {
             return Err("chunk_tokens must be at least 1".into());
         }
         let Some(text) = self.shared.artefacts.get(&args.artefact_id) else {
-            return Err(format!("unknown artefact {:?}", args.artefact_id));
-        };
-        let chunks = artefacts::split(&text, args.chunk_tokens);
-        if chunks.len() > MAX_CHUNKS {
             return Err(format!(
-                "that would make {} chunks and one call allows {MAX_CHUNKS}; raise chunk_tokens",
-                chunks.len()
+                "artefact {:?} does not exist (artefacts are lost when the daemon restarts)",
+                args.artefact_id
             ));
-        }
+        };
         let model = route(
             &self.shared.catalog,
             &self.shared.routing,
@@ -1047,6 +1077,34 @@ impl Agent {
             },
             self.shared.local.as_deref(),
         );
+        // A chunk must leave the chunk agent room for its brief and its answer.
+        let chunk_tokens = model.context_window.map_or(args.chunk_tokens, |window| {
+            args.chunk_tokens
+                .min((window * CHUNK_WINDOW_PERCENT / 100).max(1))
+        });
+        let note = if chunk_tokens < args.chunk_tokens {
+            format!(" (chunk_tokens lowered to {chunk_tokens} to fit the chunk model's window)")
+        } else {
+            String::new()
+        };
+        let chunks = artefacts::split(&text, chunk_tokens);
+        if chunks.len() > MAX_CHUNKS {
+            return Err(format!(
+                "that would make {} chunks and one call allows {MAX_CHUNKS}; raise chunk_tokens",
+                chunks.len()
+            ));
+        }
+        let used = self.shared.chunk_agents.load(Ordering::Relaxed);
+        if used + chunks.len() > MAX_CHUNK_AGENTS {
+            return Err(format!(
+                "this session has started {used} chunk agents and may start {MAX_CHUNK_AGENTS} in \
+                 all; this call would add {}",
+                chunks.len()
+            ));
+        }
+        self.shared
+            .chunk_agents
+            .fetch_add(chunks.len(), Ordering::Relaxed);
         let total = chunks.len();
         let artefact = args.artefact_id;
         let mut started = Vec::new();
@@ -1074,8 +1132,8 @@ impl Agent {
         let Some(reduce) = args.reduce.filter(|reduce| !reduce.trim().is_empty()) else {
             self.tasks.extend(started);
             return Ok(format!(
-                "started {list}, one per chunk of {artefact} ({total} chunks); call await_tasks \
-                 to collect the reports"
+                "started {list}, one per chunk of {artefact} ({total} chunks){note}; call \
+                 await_tasks to collect the reports"
             ));
         };
         let shown = format!("{reduce} (merge the reports on {artefact})");
@@ -1083,6 +1141,12 @@ impl Agent {
             "{reduce}\n\nThe reports below come from {total} subagents that each read one chunk \
              of artefact {artefact}."
         );
+        // The merge agent reads every report, so each gets an equal share of sixty percent of
+        // its window (four characters a token).
+        let share = model.context_window.unwrap_or(DEFAULT_WINDOW_TOKENS) * 12 / 5;
+        let cap = usize::try_from(share / u64::try_from(total).unwrap_or(1))
+            .unwrap_or(usize::MAX)
+            .max(200);
         let brief = async move {
             let mut reports = vec![intro];
             for (id, handle) in started {
@@ -1091,7 +1155,7 @@ impl Agent {
                         "## {} ({})\n{}",
                         task.task_id,
                         if task.ok { "finished" } else { "failed" },
-                        task.report
+                        clip(&task.report, cap)
                     ),
                     Err(error) => format!("## {id}\nthe subagent crashed: {error}"),
                 });
@@ -1102,7 +1166,7 @@ impl Agent {
         self.tasks.insert(reduce_id.clone(), handle);
         Ok(format!(
             "started {list}, one per chunk of {artefact} ({total} chunks), and {reduce_id}, which \
-             merges their reports; call await_tasks with task_ids [\"{reduce_id}\"]"
+             merges their reports{note}; call await_tasks with task_ids [\"{reduce_id}\"]"
         ))
     }
 
@@ -1121,9 +1185,14 @@ impl Agent {
             request_id,
             questions: args.questions.clone(),
         });
-        let answers = answer
-            .await
-            .map_err(|_| "nobody can answer: the session is closing".to_string())?;
+        let (answers, timed_out) = match tokio::time::timeout(ASK_TIMEOUT, answer).await {
+            Ok(Ok(answers)) => (answers, false),
+            Ok(Err(_)) => return Err("nobody can answer: the session is closing".into()),
+            Err(_) => {
+                self.shared.questions.cancel(request_id);
+                (Vec::new(), true)
+            }
+        };
         self.emit(SessionEvent::QuestionsAnswered { request_id });
         let mut lines = Vec::new();
         for (index, question) in args.questions.iter().enumerate() {
@@ -1142,7 +1211,15 @@ impl Agent {
                 question.question
             ));
         }
-        Ok(lines.join("\n\n"))
+        let lines = lines.join("\n\n");
+        Ok(if timed_out {
+            format!(
+                "Nobody answered within {} minutes, so your recommended answers were used.\n\n{lines}",
+                ASK_TIMEOUT.as_secs() / 60
+            )
+        } else {
+            lines
+        })
     }
 
     /// Waits for subagents without calling the model, then returns their reports.
@@ -1323,6 +1400,24 @@ fn await_tasks_spec() -> ToolSpec {
     tool_spec(contract::await_tasks())
 }
 
+/// The window to plan with: a hosted model's table value; a local model's server value; the
+/// default when neither is known.
+fn effective_window(table: Option<u64>, local: bool, server: Option<u64>) -> u64 {
+    match table {
+        Some(window) if !local => window,
+        _ => server.or(table).unwrap_or(DEFAULT_WINDOW_TOKENS),
+    }
+}
+
+/// `text` cut to `max` characters, with a marker when anything was dropped.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max).collect();
+    format!("{kept}\n[report truncated to fit the merge window]")
+}
+
 fn delegate_chunks_spec() -> ToolSpec {
     tool_spec(contract::delegate_chunks())
 }
@@ -1365,6 +1460,21 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_falls_back_to_the_server_then_to_the_default() {
+        assert_eq!(effective_window(Some(8_000), false, Some(4_096)), 8_000);
+        assert_eq!(effective_window(Some(8_000), true, Some(4_096)), 4_096);
+        assert_eq!(effective_window(None, false, Some(16_384)), 16_384);
+        assert_eq!(effective_window(None, false, None), DEFAULT_WINDOW_TOKENS);
+        assert_eq!(effective_window(Some(8_000), true, None), 8_000);
+    }
+
+    #[test]
+    fn clipped_reports_say_so() {
+        assert_eq!(clip("short", 10), "short");
+        assert!(clip(&"x".repeat(50), 10).ends_with("truncated to fit the merge window]"));
+    }
 
     /// The delegation and planning tools sent to models are the protocol's exported definitions.
     #[test]

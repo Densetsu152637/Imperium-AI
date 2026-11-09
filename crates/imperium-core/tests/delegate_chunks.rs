@@ -47,8 +47,16 @@ async fn endpoint(requests: Requests) -> Endpoint {
                 } else {
                     match root_calls.fetch_add(1, Ordering::SeqCst) {
                         0 => {
+                            // The handle in the first request is the artefact to split.
+                            let id = body.to_string();
+                            let id = id
+                                .split("stored as artefact ")
+                                .nth(1)
+                                .and_then(|rest| rest.split(' ').next())
+                                .unwrap_or("missing")
+                                .to_string();
                             let arguments = serde_json::json!({
-                                "artefact_id": "a1",
+                                "artefact_id": id,
                                 "chunk_tokens": 100_000,
                                 "brief": "list the rows you were given",
                                 "reduce": "merge the lists"
@@ -162,7 +170,7 @@ async fn delegate_chunks_keeps_a_300k_token_input_out_of_the_roots_context() {
     assert_eq!(root.len(), 3);
     assert!(root.iter().all(|(_, body)| !body.contains("NEEDLE")));
     assert!(root.iter().all(|(_, body)| body.len() < 20_000));
-    assert!(root[0].1.contains("stored as artefact a1"));
+    assert!(root[0].1.contains("stored as artefact a"));
     // Every chunk went to its own subagent, and together they read the whole input.
     assert!(chunk_agents.len() >= 3);
     for row in ["000000", "015000", "029999"] {

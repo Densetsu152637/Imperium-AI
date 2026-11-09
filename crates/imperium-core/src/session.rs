@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use imperium_api::ToolProvider;
@@ -291,6 +291,8 @@ pub(crate) struct Shared {
     pub questions: QuestionBroker,
     /// Limits how many chunk subagents of `delegate_chunks` run at once.
     pub chunk_gate: Arc<Semaphore>,
+    /// Chunk agents started so far, across all `delegate_chunks` calls.
+    pub chunk_agents: AtomicUsize,
     next_task: AtomicU32,
 }
 
@@ -342,6 +344,7 @@ async fn run(
         artefacts: Artefacts::default(),
         questions: QuestionBroker::default(),
         chunk_gate: Arc::new(Semaphore::new(MAX_PARALLEL_CHUNKS)),
+        chunk_agents: AtomicUsize::new(0),
         next_task: AtomicU32::new(0),
     });
     shared
@@ -544,6 +547,11 @@ impl QuestionBroker {
         if let Some(answer) = lock(&self.pending).remove(&id) {
             let _ = answer.send(answers);
         }
+    }
+
+    /// Forgets a batch nobody answered in time.
+    pub fn cancel(&self, id: u64) {
+        lock(&self.pending).remove(&id);
     }
 
     /// Fails every pending batch and any asked from now on.

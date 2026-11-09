@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::session::lock;
 
@@ -26,7 +26,11 @@ pub(crate) struct Artefacts {
 
 impl Artefacts {
     pub fn store(&self, text: &str) -> String {
-        let id = format!("a{}", self.next.fetch_add(1, Ordering::Relaxed) + 1);
+        let id = format!(
+            "a{}-{}",
+            run_prefix(),
+            self.next.fetch_add(1, Ordering::Relaxed) + 1
+        );
         lock(&self.items).insert(id.clone(), text.into());
         id
     }
@@ -36,9 +40,21 @@ impl Artefacts {
     }
 }
 
-/// Approximate tokens in `text`.
+/// Four random hex digits fixed for this process, so a handle from before a restart (still
+/// named in a resumed conversation) cannot match a new artefact.
+fn run_prefix() -> &'static str {
+    static PREFIX: OnceLock<String> = OnceLock::new();
+    PREFIX.get_or_init(|| {
+        let mut bytes = [0u8; 2];
+        // Without randomness the prefix is fixed, which only weakens the restart guard.
+        let _ = getrandom::fill(&mut bytes);
+        format!("{:02x}{:02x}", bytes[0], bytes[1])
+    })
+}
+
+/// Approximate tokens in `text`, counting characters rather than bytes.
 pub(crate) fn estimate_tokens(text: &str) -> u64 {
-    u64::try_from(text.len() / CHARS_PER_TOKEN).unwrap_or(u64::MAX)
+    u64::try_from(text.chars().count() / CHARS_PER_TOKEN).unwrap_or(u64::MAX)
 }
 
 /// What an agent is shown in place of an input it must not read inline.
@@ -262,6 +278,21 @@ mod tests {
         assert_eq!(chunks.len(), 3);
         assert!(chunks.iter().all(|chunk| chunk.len() <= 400));
         assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn handles_carry_a_run_prefix_and_never_repeat() {
+        let artefacts = Artefacts::default();
+        let (first, second) = (artefacts.store("x"), artefacts.store("y"));
+        assert_ne!(first, second);
+        assert!(first.starts_with('a') && first.contains('-'));
+        assert_eq!(artefacts.get(&first).as_deref(), Some("x"));
+        assert!(artefacts.get("a1").is_none());
+    }
+
+    #[test]
+    fn tokens_are_estimated_from_characters() {
+        assert_eq!(estimate_tokens(&"é".repeat(8)), 2);
     }
 
     #[test]
