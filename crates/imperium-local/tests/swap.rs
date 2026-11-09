@@ -692,10 +692,11 @@ async fn swap_cache_keeps_a_waiting_orchestrators_slot_over_a_finished_subagents
     call(&supervisor, &log, "worker", "s/t1", Duration::ZERO).await;
     // The subagent is asleep (an approval, say), so another session may take the worker's room.
     let subagent_asleep = supervisor.waiting("worker", "s/t1");
-    let other = supervisor.attach("helper", "x/root");
+    let _other = supervisor.attach("helper", "x/root");
     call(&supervisor, &log, "helper", "x/root", Duration::ZERO).await;
-    // The other agent's turn ends (mid-turn, its model could not be taken from it).
-    drop(other);
+    // The other agent falls asleep too (mid-turn, its model could not be taken from it), so
+    // its slot is saved when the orchestrator comes back.
+    let _other_asleep = supervisor.waiting("helper", "x/root");
     // The subagent finishes and the orchestrator wakes; saving the other agent's slot needs
     // room, and the finished subagent's file goes even though the orchestrator's is older.
     drop(subagent_asleep);
