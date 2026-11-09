@@ -71,6 +71,8 @@ struct Placement {
     folders: Vec<String>,
     persistent: bool,
     worktrees: Vec<SessionWorktree>,
+    /// Listed first; recorded in the session's meta file so it survives a restart.
+    pinned: bool,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -776,11 +778,12 @@ impl DaemonState {
         options: SessionOptions,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
         let workspace = self.workspace(project_dir, &options.folders, &options.runtime)?;
-        let placement = Placement {
+        let mut placement = Placement {
             environment_id: options.environment_id.clone(),
             folders: workspace.folders_display(),
             persistent: options.persistent,
             worktrees: options.worktrees.clone(),
+            pinned: false,
         };
         // A remote runtime's folders are not on this machine: project files (instructions,
         // skills, project memory) are not read from them.
@@ -811,6 +814,13 @@ impl DaemonState {
             None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
         };
         let remember = options.launcher.is_none();
+        if resume {
+            // A resumed session keeps its pin.
+            placement.pinned = std::fs::read_to_string(self.meta_path(&id))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .is_some_and(|meta| meta["pinned"].as_bool() == Some(true));
+        }
         // Tool providers in the order their tools are offered (MCP tools always come first).
         let mut tools: Vec<Arc<dyn ToolProvider>> = Vec::new();
         if !mcp.is_empty() {
@@ -872,12 +882,9 @@ impl DaemonState {
                 "environment_id": placement.environment_id,
                 "folders": placement.folders,
                 "worktrees": placement.worktrees,
+                "pinned": placement.pinned,
             });
-            let path = self
-                .paths
-                .data_dir()
-                .join("sessions")
-                .join(format!("{id}.meta.json"));
+            let path = self.meta_path(&id);
             if let Err(error) = std::fs::write(&path, meta.to_string()) {
                 tracing::warn!(path = %path.display(), %error, "could not record the session");
             }
@@ -1020,6 +1027,38 @@ impl DaemonState {
         );
     }
 
+    fn meta_path(&self, id: &str) -> PathBuf {
+        self.paths
+            .data_dir()
+            .join("sessions")
+            .join(format!("{id}.meta.json"))
+    }
+
+    /// Pins or unpins a session, records it with the session so it survives a restart, and
+    /// tells every client.
+    pub fn set_pinned(&self, session: &Session, pinned: bool) -> std::io::Result<()> {
+        let path = self.meta_path(session.id());
+        // Sessions that are not remembered (project agents) have no meta file; their pin lasts
+        // until the daemon stops.
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let mut meta: serde_json::Value =
+                serde_json::from_str(&text).map_err(std::io::Error::other)?;
+            meta["pinned"] = serde_json::Value::Bool(pinned);
+            std::fs::write(&path, meta.to_string())?;
+        }
+        self.placements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(session.id().to_string())
+            .or_default()
+            .pinned = pinned;
+        self.announce(
+            imperium_protocol::methods::SESSION_UPDATED,
+            self.summary(session),
+        );
+        Ok(())
+    }
+
     /// A session as lists show it, with its environment and folders.
     pub fn summary(&self, session: &Session) -> SessionSummary {
         let placement = self
@@ -1034,6 +1073,7 @@ impl DaemonState {
             folders: placement.folders,
             persistent: placement.persistent,
             worktrees: placement.worktrees,
+            pinned: placement.pinned,
             ..summary(session)
         }
     }
@@ -1247,6 +1287,7 @@ fn summary(session: &Session) -> SessionSummary {
         resume_policy: session.resume_policy(),
         persistent: false,
         worktrees: Vec::new(),
+        pinned: false,
     }
 }
 

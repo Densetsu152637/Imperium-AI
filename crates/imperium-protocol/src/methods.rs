@@ -196,6 +196,9 @@ pub struct SessionSummary {
     /// Git worktrees the session works in instead of its environment's folders.
     #[serde(default)]
     pub worktrees: Vec<SessionWorktree>,
+    /// Pinned sessions are listed first; set with `session.control` `set_pinned`.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// A git worktree a session was started on: its tools use `path` instead of `folder`.
@@ -320,6 +323,9 @@ pub struct EnvironmentInfo {
     /// Absolute folder paths, the working directory first. For a remote runtime they are paths
     /// inside it.
     pub folders: Vec<String>,
+    /// Pinned environments are listed first.
+    #[serde(default)]
+    pub pinned: bool,
     /// Where the environment's file and command tools run.
     #[serde(default)]
     pub runtime: EnvironmentRuntime,
@@ -448,6 +454,9 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pinned: Option<bool>,
     /// A new runtime. Folders are kept as they are (Windows paths are translated for WSL).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -949,9 +958,11 @@ pub struct ModInfo {
     pub id: String,
     pub name: String,
     pub version: String,
-    /// `telemetry:read`, `sessions:read`; the desktop app forwards only what is granted.
+    /// `telemetry:read`, `sessions:read`, `pets:read`, `storage`; the desktop app grants only these.
     pub permissions: Vec<String>,
     pub panels: Vec<ModPanel>,
+    /// Shipped with Imperium (opt-in in the desktop app) rather than installed by the user.
+    pub bundled: bool,
     /// The entry ES module's source.
     pub source: String,
 }
@@ -961,6 +972,9 @@ pub struct ModInfo {
 pub struct ModPanel {
     pub id: String,
     pub title: String,
+    /// Where the panel docks: `sidebar.left` or `sidebar.right` (the default).
+    #[serde(default)]
+    pub slot: Option<String>,
 }
 
 /// `schedules.list`: configured schedules with their next and last runs.
@@ -1165,7 +1179,8 @@ pub struct ProjectMessageResult {
     pub delivered: bool,
 }
 
-/// `pet.list`: installed pets, the selected one, and its current state.
+/// `pet.list`: installed pets, the selected one, and its current state. Installed pets are
+/// listed even when `pets.enabled` is false; `selected` and `state` are then null.
 #[derive(Debug)]
 pub struct PetList;
 
@@ -1198,6 +1213,10 @@ pub struct PetInfo {
     pub license: String,
     pub cell_width: u32,
     pub cell_height: u32,
+    /// Animations the pet draws (a strip exists for each).
+    pub drawn: Vec<String>,
+    /// The package's `pet.json`, unparsed.
+    pub pet_json: String,
 }
 
 /// Notification sent to every client when the pet's animation changes.
@@ -1218,7 +1237,8 @@ pub struct PetStateInfo {
     pub hidden: bool,
 }
 
-/// `pet.strip`: the selected pet's strip image for an animation.
+/// `pet.strip`: a pet's strip image for an animation. Works without the pet engine, but then
+/// `pet_id` is required (there is no selected pet).
 #[derive(Debug)]
 pub struct PetStrip;
 
@@ -1232,6 +1252,9 @@ impl Method for PetStrip {
 #[ts(export)]
 pub struct PetStripParams {
     pub animation: String,
+    /// The pet to draw; the selected pet when absent.
+    #[serde(default)]
+    pub pet_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1378,8 +1401,12 @@ pub struct SuggestionRespondResult {
 /// schedule, a project agent, or auto-fix). The payload is a [`SessionSummary`].
 pub const SESSION_CREATED: &str = "session.created";
 
+/// Notification sent to every client when a session's listing changes outside its event
+/// stream (such as being pinned). The payload is a [`SessionSummary`].
+pub const SESSION_UPDATED: &str = "session.updated";
+
 /// `session.control`: change how a session waits for usage resets, resume it now, set what
-/// pull request it watches, switch its model, or compact its conversation.
+/// pull request it watches, switch its model, compact its conversation, or pin it.
 #[derive(Debug)]
 pub struct SessionControl;
 
@@ -1395,10 +1422,10 @@ pub struct SessionControlParams {
     pub session_id: String,
     /// `set_resume_policy` (with `resume_policy`, or none to use the default), `resume_now`,
     /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
-    /// for `models.default`; refused while a turn runs), or `compact` (summarise older turns
-    /// now; refused while a turn runs).
+    /// for `models.default`; refused while a turn runs), `compact` (summarise older turns
+    /// now; refused while a turn runs), or `set_pinned` (with `pinned`; kept across restarts).
     #[ts(
-        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\""
+        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\""
     )]
     pub action: String,
     #[serde(default)]
@@ -1411,6 +1438,10 @@ pub struct SessionControlParams {
     /// For `set_model`: a model table id or an `<endpoint>:<model>` spec.
     #[serde(default)]
     pub model: Option<String>,
+    /// For `set_pinned`: whether the session is pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pinned: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

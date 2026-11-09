@@ -32,6 +32,9 @@ importers:
         specifier: ^4.0.1
         version: 4.0.1
     devDependencies:
+      '@imperium/mod-sdk':
+        specifier: workspace:*
+        version: link:../../packages/mod-sdk
       '@imperium/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -49,6 +52,18 @@ importers:
         version: 6.2.1(vite@8.3.6)
       typescript:
         specifier: 7.0.2
+        version: 7.0.2
+      vite:
+        specifier: 8.3.6
+        version: 8.3.6
+
+  mods/imperium-nursery:
+    devDependencies:
+      '@imperium/mod-sdk':
+        specifier: workspace:*
+        version: link:../../packages/mod-sdk
+      typescript:
+        specifier: ^7.0.2
         version: 7.0.2
       vite:
         specifier: 8.3.6

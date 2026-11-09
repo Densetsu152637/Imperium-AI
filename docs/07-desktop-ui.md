@@ -21,6 +21,16 @@
   columns are brushed-metal rails; the conversation is a centred column with the user's turns
   as pills on the right.
 
+- Detachable panels: every panel, built-in or from a mod, has a Detach button (⧉) that moves it
+  to a window of its own. A detached window shows only that panel under a slim header with the
+  panel's actions, a Pin toggle (always on top), and Dock. Many can be open at once; each keeps
+  its position, size, and pin in the saved layout, and all reopen at the next start (moved onto
+  a visible monitor if theirs is gone). Closing one with the OS button docks it; quitting from
+  the main window leaves them detached. Only the main window writes the layout, so detached
+  windows report pinning, moving, and docking to it; documents are synced between windows, and a
+  detached window follows the main window's selected project and session. In a plain browser
+  the window is a popup and cannot be pinned.
+
 **Model download suggestions (implemented):** a `model_suggestion` event shows as a card in the
 conversation, styled like a permission prompt: the repository, quantisation, size, how it fits
 this machine (on the GPU, split with system memory, or on the CPU), and why it is suggested,
@@ -30,8 +40,8 @@ when it is done the card offers **Switch to it** (`session.control` `set_model`)
 downloaded until Download is clicked. The answers go through `session.suggestion_respond`
 ([04](04-models-and-routing.md#model-download-suggestions)).
 
-Not yet: dragging panels and modules between columns, the edit-layout mode, detachable windows,
-project layout overrides, mods, and themes beyond light and dark.
+Not yet: dragging panels and modules between columns, the edit-layout mode, project layout
+overrides, mods, and themes beyond light and dark.
 
 ## Shell
 
@@ -240,26 +250,35 @@ the sessions as last seen.
 ## Environments and sessions (implemented)
 
 The Environments panel lists the daemon's
-[environments](14-projects-and-automation.md#environments-implemented). *New environment* asks
-for a name, creates it, and opens the folder picker for its first folder. Selecting an
-environment shows its folders (the first marked as the working directory when there are
-several) with *×* to remove one, and *Add folder* (the native folder picker), *Rename*, and
-*Delete* (asks once more; folders on disk are untouched). Each environment has an icon: a glyph
-on a coloured tile, derived from its id by default and changeable by clicking it; the choice is
-stored with the environment in the daemon. The first time the app connects after environments
-arrived, every project folder it knew (opened folders, the selected project, folders of running
-sessions) becomes an environment of its own, keeping the icon it had.
+[environments](14-projects-and-automation.md#environments-implemented), one row each: the
+environment's icon and name, a pin mark when pinned, and a *⋯* menu on the right with *Edit*,
+*Pin*/*Unpin*, and *Delete*. Pinned environments are listed first. Clicking a row selects the
+environment (new sessions start there) and shows its sessions; double-clicking opens it for
+editing.
 
-**Runtime and persistent agent (implemented):** below its folders, a selected environment has a
-*Runtime* section (`EnvironmentRuntimeFields`, a small component any environment editor can
-host): a select for *This machine*, *Docker*, *WSL*, or *SSH* with that runtime's fields (the
-image and an optional running container, the distribution, or the host), *Save runtime*, and
-*Test*, which calls `environments.test_runtime` and shows its answer in green or red (for
-example *Docker is running but image rust:1 is not present; get it with: docker pull rust:1*).
-For a remote runtime the folders are paths inside it
-([runtimes](14-projects-and-automation.md#runtimes-implemented)). The *Persistent agent* switch
-turns on the environment's
-[persistent agent](14-projects-and-automation.md#persistent-agent-implemented).
+*New environment* and *Edit* open the **environment window**, a sheet over the workspace like
+Settings (Escape or a click outside closes it): the name; the icon, picked from a searchable grid
+of every icon the app uses (`icons.ts`, the shared registry — Settings sections, Connectors, the
+titlebar, and project glyphs; older saved names still resolve); the tile colour, picked from a
+row of rounded-square swatches; and the folders, the first marked as the working directory, with
+*Add folder* (the native folder picker) and *×* to remove one. A new environment is created with
+all of it at once; for an existing one, folder changes apply at once and the name, icon and
+colour with *Save*. *Delete environment* asks once more (folders on disk are untouched); *Delete*
+in a row's menu opens the window at that question. Icons and colours are stored with the
+environment in the daemon. The first time the app connects after environments arrived, every
+project folder it knew (opened folders, the selected project, folders of running sessions)
+becomes an environment of its own, keeping the icon it had.
+
+**Runtime and persistent agent (implemented):** the environment window (create and edit) has a
+*Runtime* section (`EnvironmentRuntimeFields`): a select for *This machine*, *Docker*, *WSL*,
+or *SSH* with that runtime's fields (the image and an optional running container, the
+distribution, or the host), *Test*, which calls `environments.test_runtime` for the saved
+runtime and shows its answer in green or red (for example *Docker is running but image rust:1
+is not present; get it with: docker pull rust:1*), and the *Persistent agent* switch for the
+environment's [persistent agent](14-projects-and-automation.md#persistent-agent-implemented).
+Both apply with *Create* or *Save*. For a remote runtime the folders are paths inside it
+([runtimes](14-projects-and-automation.md#runtimes-implemented)), typed in with *Add path*
+instead of the folder picker.
 
 *New session* (in the Sessions panel's header) starts a session in the selected environment;
 it is disabled, with the reason as its tooltip, while disconnected, with no environment
@@ -271,14 +290,21 @@ repositories ([worktrees](14-projects-and-automation.md#worktrees)).
 
 The Sessions panel lists every session across environments, each with its environment's icon
 to the left of its title and a status badge (idle, working, needs attention, paused with its
-resume time, watching with its pull request, merged); sessions needing attention sort first.
-An environment's persistent agent is pinned above everything else, titled *<environment>
-agent* with a *Persistent* badge; a session on worktrees has a *Worktree* badge whose tooltip
-lists each worktree and branch. A session deleted elsewhere (`session.deleted`) leaves the
-list.
-Clicking a session's icon (or an environment) opens that environment's view, which lists only
-its sessions, with *All sessions* to return; clicking the row opens the session and selects its
-environment. The session header shows the status and the *Usage limits* controls (how to wait
+resume time, watching with its pull request, merged), and a *⋯* menu with *Pin*/*Unpin* and
+*Show* its environment. A sort control above the list orders it *Recent* (the default: most
+recently active first), *By environment* (grouped under environment headings, pinned
+environments first), or *By status* (groups *Waiting for approval*, *Active* — working or
+watching —, *Paused*, *Idle*, *Merged*); pinned sessions stay on top within each group, and the
+choice is kept in the local layout. Pins on sessions and environments are kept by the daemon
+(`session.control` `set_pinned`, `environments.update` `pinned`), so every client agrees and
+they survive restarts; the daemon announces a changed session as `session.updated`. Clicking an
+environment (or *Show* in a session's menu) opens that environment's view, which lists only its
+sessions, with *All sessions* to return; clicking the row opens the session and selects its
+environment. An environment's persistent agent is listed above everything else in its group,
+titled *<environment> agent* with a *Persistent* badge; a session on worktrees has a *Worktree*
+badge whose tooltip lists each worktree and branch. Renaming and stopping sessions are not
+offered yet; deleting one is `session.delete` (`imperium session delete`), and a session
+deleted elsewhere (`session.deleted`) leaves the list. The session header shows the status and the *Usage limits* controls (how to wait
 when usage runs out, and *Resume now* while paused).
 
 **Model picker (implemented):** among the header's environment pills, the session's model is a

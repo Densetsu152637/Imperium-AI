@@ -20,6 +20,10 @@ color: string | null,
  */
 folders: Array<string>, 
 /**
+ * Pinned environments are listed first.
+ */
+pinned: boolean, 
+/**
  * Where the environment's file and command tools run.
  */
 runtime: EnvironmentRuntime, 

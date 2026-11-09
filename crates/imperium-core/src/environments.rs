@@ -114,6 +114,7 @@ impl Environments {
             runtime,
             persistent_agent: params.persistent_agent.unwrap_or(false),
             agent_session_id: None,
+            pinned: false,
         };
         self.change(|list| {
             list.push(env.clone());
@@ -139,6 +140,9 @@ impl Environments {
             }
             if let Some(color) = params.color {
                 env.color = (!color.is_empty()).then_some(color);
+            }
+            if let Some(pinned) = params.pinned {
+                env.pinned = pinned;
             }
             if let Some(runtime) = runtime {
                 if matches!(runtime, EnvironmentRuntime::Wsl { .. }) {

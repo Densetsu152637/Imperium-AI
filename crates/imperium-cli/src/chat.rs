@@ -205,6 +205,7 @@ impl Chat {
                         repo: None,
                         pull_request: None,
                         model,
+                        pinned: None,
                     })
                     .await;
                 match result {

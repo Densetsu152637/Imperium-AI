@@ -290,6 +290,7 @@ mod tests {
             runtime: EnvironmentRuntime::Local,
             persistent_agent: false,
             agent_session_id: None,
+            pinned: false,
         }
     }
 

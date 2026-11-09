@@ -37,4 +37,8 @@ persistent: boolean,
 /**
  * Git worktrees the session works in instead of its environment's folders.
  */
-worktrees: Array<SessionWorktree>, };
+worktrees: Array<SessionWorktree>, 
+/**
+ * Pinned sessions are listed first; set with `session.control` `set_pinned`.
+ */
+pinned: boolean, };
