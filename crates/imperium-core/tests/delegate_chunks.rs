@@ -166,9 +166,17 @@ async fn delegate_chunks_keeps_a_300k_token_input_out_of_the_roots_context() {
         .iter()
         .filter(|(sub, body)| *sub && body.contains("NEEDLE"))
         .collect();
-    // The root made three model calls, and none of them carried any of the input.
+    // The root made three model calls, and none of them carried the input beyond the handle's
+    // outline (its first three lines, as the input has no headings).
     assert_eq!(root.len(), 3);
-    assert!(root.iter().all(|(_, body)| !body.contains("NEEDLE")));
+    assert!(
+        root.iter()
+            .all(|(_, body)| body.matches("NEEDLE").count() <= 3)
+    );
+    assert!(
+        root.iter()
+            .all(|(_, body)| !body.contains("NEEDLE row 000003"))
+    );
     assert!(root.iter().all(|(_, body)| body.len() < 20_000));
     assert!(root[0].1.contains("stored as artefact a"));
     // Every chunk went to its own subagent, and together they read the whole input.
