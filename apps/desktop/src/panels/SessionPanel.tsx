@@ -180,6 +180,7 @@ function QuestionsView({
   onAnswer: Props["onAnswer"];
 }) {
   const [answers, setAnswers] = useState<string[]>(() => entry.questions.map((question: Question) => question.recommended));
+  const inputId = `question-${entry.requestId}`;
   const setAnswer = (index: number, value: string) =>
     setAnswers((all) => all.map((answer, at) => (at === index ? value : answer)));
   return (
@@ -192,8 +193,8 @@ function QuestionsView({
       }}
     >
       {entry.questions.map((question: Question, index: number) => (
-        <label key={index} className="question">
-          <span>{question.question}</span>
+        <div key={index} className="question">
+          <label htmlFor={`${inputId}-${index}`}>{question.question}</label>
           {question.options.length > 0 && (
             <span className="buttons">
               {question.options.map((option) => (
@@ -210,12 +211,13 @@ function QuestionsView({
             </span>
           )}
           <input
+            id={`${inputId}-${index}`}
             value={answers[index] ?? ""}
             disabled={entry.answered}
             onChange={(event) => setAnswer(index, event.target.value)}
           />
           <span className="muted">Suggested: {question.recommended}</span>
-        </label>
+        </div>
       ))}
       {entry.answered ? (
         <span className="muted">Answered</span>
