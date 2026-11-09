@@ -55,6 +55,7 @@ import { PetPanel } from "./panels/PetPanel";
 import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
+import { ResourcesPanel } from "./panels/ResourcesPanel";
 import { environmentIcon, projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./projectIcons";
 import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, snapshotSessions, type SessionState } from "./sessions";
 import { applySettings, loadSettings, modEnabled, saveSettings, SettingsContext, type AppSettings } from "./settings";
@@ -700,6 +701,7 @@ export function App() {
       body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} client={client} />,
     },
     { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
+    { id: "resources", title: "Resources", body: <ResourcesPanel client={client} /> },
     { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },
     ...modPanels("right"),
   ];
@@ -870,6 +872,7 @@ const PANELS: { id: string; title: string }[] = [
   { id: "models", title: "Models" },
   { id: "local-models", title: "Local models" },
   { id: "telemetry", title: "Telemetry" },
+  { id: "resources", title: "Resources" },
   { id: "browser", title: "Browser" },
 ];
 
