@@ -21,6 +21,7 @@ sysinfo = { version = "0.38.4", default-features = false, features = ["system"] 
 tauri = { version = "2", features = [] }
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-dialog = "2"
+tauri-plugin-notification = "=2.4.0"
 tauri-plugin-updater = "2"
 tokio = { version = "1.54.1", features = ["macros", "sync", "time"] }
 

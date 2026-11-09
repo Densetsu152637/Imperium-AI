@@ -25,6 +25,7 @@ import type {
   SessionCreateParams,
   SessionCreateResult,
   SessionEventParams,
+  DownloadJob,
   LocalModelListResult,
   ModListResult,
   ModelListResult,
@@ -38,7 +39,8 @@ import { findDaemon, insideTauri, rememberDevConnection } from "./daemon/connect
 import { Columns, type ColumnSpec, type PanelSpec } from "./layout/Columns";
 import { PanelWindow } from "./layout/PanelWindow";
 import { getLayout, resetLayout, updateLayout, type DetachedPanel } from "./layout/state";
-import { notify } from "./notify";
+import { downloadNotice, sessionNotice, updateNotice } from "./attention";
+import { focusMainWindow, notify, onNoticeOpened } from "./notify";
 import {
   EnvironmentsPanel,
   SessionsPanel,
@@ -57,7 +59,16 @@ import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { ResourcesPanel } from "./panels/ResourcesPanel";
 import { environmentIcon, projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./projectIcons";
-import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, markQuestionsAnswered, newSession, snapshotSessions, type SessionState } from "./sessions";
+import {
+  applyEvent,
+  DEFAULT_RESUME_POLICY,
+  markAnswered,
+  markQuestionsAnswered,
+  newSession,
+  sessionTitle,
+  snapshotSessions,
+  type SessionState,
+} from "./sessions";
 import { applySettings, loadSettings, modEnabled, saveSettings, SettingsContext, type AppSettings } from "./settings";
 import { SettingsWindow } from "./SettingsWindow";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
@@ -152,6 +163,13 @@ export function App() {
   const [mods, setMods] = useState<ModListResult | null>(null);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   const modBus = useMemo(() => new ModBus(), []);
+  // The latest settings and sessions, for the daemon's notification handler (set up once per connection).
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  // Downloads already announced, so repeated progress reports for a finished one stay quiet.
+  const announcedDownloads = useRef(new Set<string>());
   // Icons chosen per folder before environments, carried over when folders become environments.
   const folderIcons = useProjectIcons();
   const folderIconsRef = useRef(folderIcons);
@@ -210,6 +228,9 @@ export function App() {
       client.onNotification((notification) => {
         if (notification.method === "approval.requested") {
           const approval = notification.params as ApprovalInfo;
+          if (!isDetached) {
+            void notify({ kind: "approval", title: "Approval needed", body: approval.summary }, settingsRef.current);
+          }
           setApprovals((all) => [...all.filter((a) => a.id !== approval.id), approval]);
           return;
         }
@@ -258,9 +279,24 @@ export function App() {
           }, 500);
           return;
         }
+        if (notification.method === "models.download_progress") {
+          const job = notification.params as DownloadJob;
+          const notice = downloadNotice(job);
+          if (notice && !isDetached && !announcedDownloads.current.has(job.job_id)) {
+            announcedDownloads.current.add(job.job_id);
+            void notify(notice, settingsRef.current);
+          }
+          return;
+        }
         if (notification.method !== "session.event") return;
         const params = notification.params as SessionEventParams;
         modBus.emit(params);
+        const session = sessionsRef.current[params.session_id];
+        const notice =
+          !isDetached && session
+            ? sessionNotice(params.session_id, sessionTitle(session), params.agent_id, params.event)
+            : null;
+        if (notice) void notify(notice, settingsRef.current);
         if (pending) pending.push(params);
         else apply(params);
       });
@@ -568,22 +604,26 @@ export function App() {
     saveSettings(next);
   };
 
-  // Sound and a title badge when an agent needs approval or a session finishes.
-  const approvalCount = useRef(0);
+  // Approvals, finished and failed turns, and downloads notify from the daemon's notification
+  // handler above; an update notifies once its build has downloaded.
+  const announcedUpdate = useRef<string | null>(null);
+  const readyVersion = updates?.status.state === "ready" ? updates.status.version : null;
   useEffect(() => {
-    if (!isDetached && approvals.length > approvalCount.current) notify("approval", settings);
-    approvalCount.current = approvals.length;
-  }, [approvals.length, settings, isDetached]);
-  const running = useRef(new Set<string>());
+    if (isDetached || !readyVersion || announcedUpdate.current === readyVersion) return;
+    announcedUpdate.current = readyVersion;
+    void notify(updateNotice(readyVersion), settingsRef.current);
+  }, [readyVersion, isDetached]);
+
+  // Answering a notification brings the main window forward on the session it was about.
+  const selectSessionRef = useRef(selectSession);
+  selectSessionRef.current = selectSession;
   useEffect(() => {
     if (isDetached) return;
-    for (const s of Object.values(sessions)) {
-      const busy = s.summary.status === "working";
-      if (!busy && running.current.has(s.summary.session_id)) notify("finished", settings);
-      if (busy) running.current.add(s.summary.session_id);
-      else running.current.delete(s.summary.session_id);
-    }
-  }, [sessions, settings, isDetached]);
+    return onNoticeOpened((notice) => {
+      void focusMainWindow();
+      if (notice.sessionId && sessionsRef.current[notice.sessionId]) selectSessionRef.current(notice.sessionId);
+    });
+  }, [isDetached]);
 
   // Panels from enabled mods, by the side they dock on (the right unless they ask for the left).
   const modPanels = (side: "left" | "right"): PanelSpec[] =>

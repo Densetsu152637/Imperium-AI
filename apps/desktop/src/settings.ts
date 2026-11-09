@@ -45,6 +45,14 @@ export type AppSettings = {
   soundOnApproval: boolean;
   soundOnFinish: boolean;
   titleBadge: boolean;
+  /** System notifications only while no Imperium window has focus. */
+  notifyOnlyInBackground: boolean;
+  notifyApproval: boolean;
+  notifyFinished: boolean;
+  notifyFailed: boolean;
+  notifyBudget: boolean;
+  notifyDownload: boolean;
+  notifyUpdate: boolean;
   // Startup
   restoreSession: boolean;
   autoStartDaemon: boolean;
@@ -74,6 +82,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   soundOnApproval: true,
   soundOnFinish: false,
   titleBadge: true,
+  notifyOnlyInBackground: true,
+  notifyApproval: true,
+  notifyFinished: true,
+  notifyFailed: true,
+  notifyBudget: true,
+  notifyDownload: true,
+  notifyUpdate: true,
   restoreSession: true,
   autoStartDaemon: true,
   updateIntervalDays: 1,

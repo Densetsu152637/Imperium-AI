@@ -47,7 +47,7 @@ import { Row } from "./components/SettingsRow";
 import { Switch as Toggle } from "./components/Switch";
 import type { DaemonClient } from "./daemon/client";
 import { type Daemon, DaemonSettings } from "./DaemonControl";
-import { preview } from "./notify";
+import { preview, testNotification } from "./notify";
 import { ACCENTS, DEFAULT_SETTINGS, BUNDLED_ON_BY_DEFAULT, modEnabled, type AppSettings } from "./settings";
 import { storeFolder } from "./store";
 import { type Updates, UpdateSettings } from "./UpdateControl";
@@ -208,6 +208,55 @@ const FIELDS: Field[] = [
     section: "notifications",
     label: "Mark the window title",
     description: "Put a dot before the title while something needs you and Imperium is in the background.",
+    control: { type: "toggle" },
+  },
+  {
+    key: "notifyOnlyInBackground",
+    section: "notifications",
+    label: "Only when Imperium is in the background",
+    description: "Show system notifications only while no Imperium window has focus. Your system's do-not-disturb still applies.",
+    control: { type: "toggle" },
+  },
+  {
+    key: "notifyApproval",
+    section: "notifications",
+    label: "Notify when an agent needs approval",
+    description: "A system notification when an agent asks to run a tool, asks you a question, or an action waits for approval.",
+    control: { type: "toggle" },
+  },
+  {
+    key: "notifyFinished",
+    section: "notifications",
+    label: "Notify when a session finishes",
+    description: "A system notification when an agent finishes its turn and waits for you.",
+    control: { type: "toggle" },
+  },
+  {
+    key: "notifyFailed",
+    section: "notifications",
+    label: "Notify when a turn fails",
+    description: "A system notification when an agent's turn stops on an error.",
+    control: { type: "toggle" },
+  },
+  {
+    key: "notifyBudget",
+    section: "notifications",
+    label: "Notify about budgets and usage",
+    description: "A system notification when spending or usage reaches an alert you set.",
+    control: { type: "toggle" },
+  },
+  {
+    key: "notifyDownload",
+    section: "notifications",
+    label: "Notify when a model download finishes",
+    description: "A system notification when a downloaded model is ready to use.",
+    control: { type: "toggle" },
+  },
+  {
+    key: "notifyUpdate",
+    section: "notifications",
+    label: "Notify when an update is ready",
+    description: "A system notification when a new version has downloaded and installs on restart.",
     control: { type: "toggle" },
   },
 ];
@@ -470,12 +519,16 @@ export function SettingsWindow(props: Props) {
           <>
             {fieldRows(fields)}
             {section === "notifications" && (
-              <Row label="Try the sounds" description="Hear each chime.">
-                <div className="row-actions">
-                  <button onClick={() => preview("approval")}>Approval</button>
-                  <button onClick={() => preview("finished")}>Finished</button>
-                </div>
-              </Row>
+              <>
+                <Row label="Try the sounds" description="Hear each chime; a failed turn uses the finish sound setting.">
+                  <div className="row-actions">
+                    <button onClick={() => preview("approval")}>Approval</button>
+                    <button onClick={() => preview("finished")}>Finished</button>
+                    <button onClick={() => preview("failed")}>Failed</button>
+                  </div>
+                </Row>
+                <TestNotificationRow />
+              </>
             )}
           </>
         );
@@ -827,5 +880,20 @@ function AboutSection({ updates, client }: { updates: Updates | null; client: Da
         <span>github.com/Densetsu152637/Imperium-AI</span>
       </Row>
     </>
+  );
+}
+
+/** Sends a sample system notification, asking for permission first where the system wants it. */
+function TestNotificationRow() {
+  const [result, setResult] = useState<string | null>(null);
+  const send = async () => {
+    setResult(null);
+    const shown = await testNotification();
+    if (!shown) setResult("Notifications are blocked. Allow them for Imperium in your system or browser settings.");
+  };
+  return (
+    <Row label="Try a notification" description={result ?? "Show a sample system notification now."}>
+      <button onClick={() => void send()}>Send a test</button>
+    </Row>
   );
 }
