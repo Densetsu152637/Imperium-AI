@@ -126,9 +126,7 @@ needs on the release side, once the new ref's builds are checked locally.
 There is no runtime-pack pipeline of our own: an earlier `runtime-packs.yml` never built
 Windows CUDA or macOS packs and was removed once the app switched to llama.cpp's own builds.
 
-Each pack contains a `manifest.json` (pack id, backend, OS, arch, llama.cpp ref, build
-flags) and, for CUDA packs, the redistributable CUDA runtime libraries. vLLM is never packaged
-(see [04](04-models-and-routing.md#runtimes)).
+vLLM is never packaged (see [04](04-models-and-routing.md#runtimes)).
 
 ## Mobile (later)
 
