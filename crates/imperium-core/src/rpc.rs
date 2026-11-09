@@ -239,24 +239,36 @@ impl Connection {
                         selected: Some(pets.selected().to_string()),
                         state: pets.state(),
                     },
+                    // Pets are off (or none loaded): still list what is installed.
                     None => PetListResult {
-                        pets: Vec::new(),
+                        pets: crate::pets::discover_installed(&self.state)
+                            .0
+                            .iter()
+                            .map(crate::pets::pet_info)
+                            .collect(),
                         selected: None,
                         state: None,
                     },
                 })
             }),
             PetStrip::NAME => call::<PetStrip>(request.params, |params: PetStripParams| {
-                let png = self
-                    .state
-                    .pets()
-                    .and_then(|pets| pets.strip(&params.animation))
-                    .ok_or_else(|| {
-                        ErrorObject::new(
-                            codes::INVALID_PARAMS,
-                            format!("the pet does not draw {}", params.animation),
+                let png = match self.state.pets() {
+                    Some(pets) => pets.strip(params.pet_id.as_deref(), &params.animation),
+                    // Without the engine there is no selected pet, so one must be named.
+                    None => params.pet_id.as_deref().and_then(|id| {
+                        crate::pets::strip_of(
+                            &crate::pets::discover_installed(&self.state).0,
+                            id,
+                            &params.animation,
                         )
-                    })?;
+                    }),
+                }
+                .ok_or_else(|| {
+                    ErrorObject::new(
+                        codes::INVALID_PARAMS,
+                        format!("the pet does not draw {}", params.animation),
+                    )
+                })?;
                 Ok(PetStripResult {
                     png_base64: base64::engine::general_purpose::STANDARD.encode(png),
                 })
@@ -338,7 +350,10 @@ impl Connection {
                 })
             }
             ModList::NAME => call::<ModList>(request.params, |_: ModListParams| {
-                Ok(crate::mods::list(&self.state.mods_dir()))
+                Ok(crate::mods::list(
+                    &self.state.mods_dir(),
+                    &crate::mods::bundled_roots(),
+                ))
             }),
             LocalModelList::NAME => {
                 call::<LocalModelList>(request.params, |_: LocalModelListParams| {
@@ -996,6 +1011,68 @@ mod tests {
             json!({"key": "endpoints.x.base_url", "value": "u"}),
         ));
         assert_eq!(error_code(&unknown), Some(codes::INVALID_PARAMS));
+    }
+
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            let target = to.join(entry.file_name());
+            if entry.path().is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn pets_are_listed_and_stripped_without_the_pet_engine() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        let bundled =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pets/pixel-clawd");
+        copy_dir(
+            &bundled,
+            &paths.config_dir().join("pets").join("pixel-clawd"),
+        );
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        // The engine is never started here, as when `pets.enabled` is false.
+        let mut connection = Connection::new(DaemonState::new(paths, settings, None));
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+
+        let listed = result(connection.handle_text(&request(2, PetList::NAME, json!({}))));
+        assert!(listed["selected"].is_null());
+        assert!(listed["state"].is_null());
+        let pet = listed["pets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|pet| pet["id"] == "pixel-clawd")
+            .expect("the installed pet is listed");
+        assert!(pet["drawn"].as_array().unwrap().iter().any(|a| a == "idle"));
+        assert!(pet["pet_json"].as_str().unwrap().contains("pixel-clawd"));
+
+        let strip = result(connection.handle_text(&request(
+            3,
+            PetStrip::NAME,
+            json!({"pet_id": "pixel-clawd", "animation": "idle"}),
+        )));
+        assert!(!strip["png_base64"].as_str().unwrap().is_empty());
+        // Without the engine there is no selected pet; unknown pets and animations are refused,
+        // including names that try to leave the strips folder.
+        for params in [
+            json!({"animation": "idle"}),
+            json!({"pet_id": "nobody", "animation": "idle"}),
+            json!({"pet_id": "pixel-clawd", "animation": "../pet"}),
+            json!({"pet_id": "../pixel-clawd", "animation": "idle"}),
+        ] {
+            let refused = connection.handle_text(&request(4, PetStrip::NAME, params));
+            assert_eq!(error_code(&refused), Some(codes::INVALID_PARAMS));
+        }
     }
 
     fn connectors_connection() -> (

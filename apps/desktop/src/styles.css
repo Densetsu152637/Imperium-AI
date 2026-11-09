@@ -2883,6 +2883,33 @@ button.sort:hover:not(:disabled) {
   }
 }
 
+/* A detached panel's window: the panel fills it under its own header (layout/PanelWindow.tsx). */
+.app-panel .panel-window {
+  background: var(--bg);
+}
+
+.app-panel .panel-window > .panel-header {
+  position: static;
+  width: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--metal-bar);
+  box-shadow: var(--highlight);
+}
+
+.panel-pin[aria-pressed="true"] {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.panel-detach {
+  padding: 0 0.35rem;
+  opacity: 0.5;
+}
+
+.panel-detach:hover {
+  opacity: 1;
+}
+
 /* ---- Icons: Lucide line icons, one stroke (set in main.tsx), sized by the text around them ---- */
 .lucide {
   flex: none;
