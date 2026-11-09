@@ -13,6 +13,7 @@ mod local;
 mod mcp;
 mod model_config;
 mod mods;
+mod onboarding;
 mod pets;
 mod phone;
 mod project_agent;

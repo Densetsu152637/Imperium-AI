@@ -10,6 +10,7 @@ pub mod monitor;
 pub mod planner;
 pub mod process;
 pub mod runtime;
+pub mod runtime_check;
 pub mod scan;
 pub(crate) mod slot_files;
 pub mod suggest;

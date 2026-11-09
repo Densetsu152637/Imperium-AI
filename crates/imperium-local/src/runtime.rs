@@ -99,6 +99,18 @@ pub async fn install(
     data_dir: &Path,
     pack: &str,
 ) -> Result<PathBuf, InstallError> {
+    install_with_progress(http, base_url, data_dir, pack, &|_, _| {}).await
+}
+
+/// [`install`], calling `progress` with the bytes downloaded so far and the archive's size
+/// (when the server says) as the download goes.
+pub async fn install_with_progress(
+    http: &reqwest::Client,
+    base_url: &str,
+    data_dir: &Path,
+    pack: &str,
+    progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
+) -> Result<PathBuf, InstallError> {
     let release = format!("{base_url}/runtime-llama.cpp-{}", llama_cpp_ref());
     let archive = format!("{}.tar.gz", archive_name(pack));
     let sums = get(http, &format!("{release}/SHA256SUMS"))
@@ -121,12 +133,16 @@ pub async fn install(
     let download = root.join(format!("{archive}.part"));
     let mut file = std::fs::File::create(&download).map_err(io(download.display().to_string()))?;
     let mut hasher = Sha256::new();
-    let mut body = get(http, &format!("{release}/{archive}"))
-        .await?
-        .bytes_stream();
+    let response = get(http, &format!("{release}/{archive}")).await?;
+    let total = response.content_length();
+    let mut body = response.bytes_stream();
+    let mut done = 0u64;
+    progress(0, total);
     while let Some(chunk) = body.next().await {
         let chunk =
             chunk.map_err(|error| InstallError::Download(archive.clone(), error.to_string()))?;
+        done += chunk.len() as u64;
+        progress(done, total);
         hasher.update(&chunk);
         file.write_all(&chunk)
             .map_err(io(download.display().to_string()))?;

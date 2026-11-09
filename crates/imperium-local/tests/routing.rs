@@ -126,6 +126,7 @@ fn supervisor(launcher: Arc<FakeLlama>, vram_gib: u64) -> Arc<Supervisor> {
             ..GgufInfo::default()
         },
         mmproj: None,
+        repo: None,
         format: imperium_local::scan::Format::Gguf,
     };
     let hardware = Hardware {

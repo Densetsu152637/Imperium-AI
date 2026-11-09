@@ -50,6 +50,10 @@ use imperium_protocol::methods::{
     McpSetEnabled, McpTest,
 };
 use imperium_protocol::methods::{
+    ModelAddEndpoint, ModelAddEndpointParams, ModelFolderAdd, ModelFolderRemove, ModelTest,
+    ModelUse, ModelUseParams, RuntimeInstall, RuntimeSetServer, RuntimeStatus,
+};
+use imperium_protocol::methods::{
     ModelConfig, ModelConfigParams, ModelSetConfig, ModelSetConfigParams,
 };
 use imperium_protocol::methods::{
@@ -441,6 +445,43 @@ impl Connection {
             LocalModelList::NAME => {
                 call::<LocalModelList>(request.params, |_: LocalModelListParams| {
                     Ok(self.state.local_models())
+                })
+            }
+            ModelFolderAdd::NAME => {
+                call_later::<ModelFolderAdd, _>(request.params, &mut later, |params| {
+                    crate::onboarding::add_folder(Arc::clone(&self.state), params)
+                })
+            }
+            ModelFolderRemove::NAME => {
+                call_later::<ModelFolderRemove, _>(request.params, &mut later, |params| {
+                    crate::onboarding::remove_folder(Arc::clone(&self.state), params)
+                })
+            }
+            ModelUse::NAME => call::<ModelUse>(request.params, |params: ModelUseParams| {
+                crate::onboarding::use_model(&self.state, params)
+            }),
+            ModelAddEndpoint::NAME => {
+                call::<ModelAddEndpoint>(request.params, |params: ModelAddEndpointParams| {
+                    crate::onboarding::add_endpoint(&self.state, params)
+                })
+            }
+            ModelTest::NAME => call_later::<ModelTest, _>(request.params, &mut later, |params| {
+                crate::onboarding::test_model(Arc::clone(&self.state), params)
+            }),
+            RuntimeStatus::NAME => {
+                call_later::<RuntimeStatus, _>(request.params, &mut later, |_| {
+                    let state = Arc::clone(&self.state);
+                    async move { Ok(crate::onboarding::runtime_status(state).await) }
+                })
+            }
+            RuntimeSetServer::NAME => {
+                call_later::<RuntimeSetServer, _>(request.params, &mut later, |params| {
+                    crate::onboarding::set_server(Arc::clone(&self.state), params)
+                })
+            }
+            RuntimeInstall::NAME => {
+                call_later::<RuntimeInstall, _>(request.params, &mut later, |_| {
+                    crate::onboarding::install_runtime(Arc::clone(&self.state))
                 })
             }
             HfFiles::NAME => call_later::<HfFiles, _>(request.params, &mut later, |params| {

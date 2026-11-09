@@ -752,7 +752,14 @@ pub struct LocalModelListParams {}
 pub struct LocalModelListResult {
     /// False when no `models.folders` are configured.
     pub enabled: bool,
+    /// Every folder scanned: `models.folders` and the download folder.
     pub folders: Vec<String>,
+    /// `models.folders` alone, the folders `models.remove_folder` can remove.
+    #[serde(default)]
+    pub configured_folders: Vec<String>,
+    /// `models.default`: the model new sessions use, when set.
+    #[serde(default)]
+    pub default_model: Option<String>,
     pub models: Vec<LocalModelRow>,
     /// Files that looked like models but could not be used, with the reason.
     pub skipped: Vec<SkippedModel>,
@@ -770,6 +777,16 @@ pub struct LocalModelRow {
     #[ts(type = "\"llamacpp\" | \"vllm\"")]
     pub runtime: String,
     pub path: String,
+    /// The repository it came from, such as `unsloth/Qwen3-8B-GGUF`, from the Hugging Face
+    /// cache or the `<publisher>/<repo>` folders above the file.
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// The multimodal projector paired with it, which lets it read images.
+    #[serde(default)]
+    pub mmproj: Option<String>,
+    /// Why it cannot be used on this machine, when it cannot (such as vLLM models off Linux).
+    #[serde(default)]
+    pub problem: Option<String>,
     pub architecture: Option<String>,
     pub quantization: Option<String>,
     pub parts: u32,
@@ -854,6 +871,252 @@ pub struct RuntimeInfo {
     pub installed: bool,
     pub llama_cpp_ref: String,
 }
+
+/// `models.add_folder`: adds a folder to `models.folders` in the user's config file and scans
+/// the model folders again at once (no restart). Returns the new listing.
+#[derive(Debug)]
+pub struct ModelFolderAdd;
+
+impl Method for ModelFolderAdd {
+    const NAME: &'static str = "models.add_folder";
+    type Params = ModelFolderParams;
+    type Result = LocalModelListResult;
+}
+
+/// `models.remove_folder`: removes a folder from `models.folders` and scans again. Nothing in
+/// the folder is touched.
+#[derive(Debug)]
+pub struct ModelFolderRemove;
+
+impl Method for ModelFolderRemove {
+    const NAME: &'static str = "models.remove_folder";
+    type Params = ModelFolderParams;
+    type Result = LocalModelListResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelFolderParams {
+    /// An absolute path to a folder.
+    pub path: String,
+}
+
+/// `models.use`: makes a model the default for new sessions (`models.default` in the user's
+/// config file), applied at once.
+#[derive(Debug)]
+pub struct ModelUse;
+
+impl Method for ModelUse {
+    const NAME: &'static str = "models.use";
+    type Params = ModelUseParams;
+    type Result = ModelUseResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelUseParams {
+    /// A local model's id (from `models.local`), a model-table id, or an `<endpoint>:<model>`
+    /// spec.
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelUseResult {
+    /// What `models.default` is now, such as `llamacpp:Qwen3-8B-Q4_K_M`.
+    pub default: String,
+}
+
+/// `models.add_endpoint`: connects a hosted OpenAI-compatible API (`[endpoints.<id>]` in the
+/// user's config file, its key in the OS keychain), applied at once.
+#[derive(Debug)]
+pub struct ModelAddEndpoint;
+
+impl Method for ModelAddEndpoint {
+    const NAME: &'static str = "models.add_endpoint";
+    type Params = ModelAddEndpointParams;
+    type Result = ModelAddEndpointResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelAddEndpointParams {
+    /// A short name, such as `openrouter`: lowercase letters, digits, `_` or `-`.
+    pub id: String,
+    /// The URL before `/chat/completions`, such as `https://openrouter.ai/api/v1`.
+    pub base_url: String,
+    /// The API key, stored in the keychain as `<id>-api-key`; never written to a file.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// A model the endpoint serves, such as `openai/gpt-4.1-mini`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Make `<id>:<model>` the default for new sessions.
+    #[serde(default)]
+    pub make_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelAddEndpointResult {
+    pub id: String,
+    /// The new `models.default`, when the endpoint was made the default.
+    pub default: Option<String>,
+}
+
+/// `models.test`: loads a model if needed and sends it one short prompt, reporting the reply
+/// and its speed. For local and hosted models alike.
+#[derive(Debug)]
+pub struct ModelTest;
+
+impl Method for ModelTest {
+    const NAME: &'static str = "models.test";
+    type Params = ModelTestParams;
+    type Result = ModelTestResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelTestParams {
+    /// As for `models.use`.
+    pub model: String,
+    /// The prompt; a short default asking for a one-line greeting when absent.
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelTestResult {
+    /// The spec that was tested.
+    pub model: String,
+    pub ok: bool,
+    /// The model's reply, when it answered.
+    pub reply: String,
+    /// Why the test failed, in words, when it did.
+    pub message: Option<String>,
+    /// Seconds spent waiting for and loading the model before the request was sent.
+    pub load_seconds: f64,
+    /// Seconds the request took.
+    pub seconds: f64,
+    pub completion_tokens: u32,
+    /// Generation speed: the server's own measurement when it reports one, else completion
+    /// tokens over the request's time.
+    pub tokens_per_s: Option<f64>,
+}
+
+/// `runtime.status`: the llama.cpp runtime local GGUF models use, whether it runs, and whether
+/// it sees the GPU, with what to do when something is wrong. It runs `llama-server --version`
+/// and `--list-devices`, which load no model.
+#[derive(Debug)]
+pub struct RuntimeStatus;
+
+impl Method for RuntimeStatus {
+    const NAME: &'static str = "runtime.status";
+    type Params = RuntimeStatusParams;
+    type Result = RuntimeStatusResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeStatusParams {}
+
+/// `runtime.set_server`: uses an existing `llama-server` (`runtime.llamacpp.custom_path` in
+/// the user's config file), or the runtime pack again when `path` is null. Applies to models
+/// loaded from then on.
+#[derive(Debug)]
+pub struct RuntimeSetServer;
+
+impl Method for RuntimeSetServer {
+    const NAME: &'static str = "runtime.set_server";
+    type Params = RuntimeSetServerParams;
+    type Result = RuntimeStatusResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeSetServerParams {
+    /// The `llama-server` executable; null to go back to the runtime pack.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeStatusResult {
+    /// `custom` (your own `llama-server`) or `pack` (a runtime pack).
+    #[ts(type = "\"custom\" | \"pack\"")]
+    pub source: String,
+    /// The pack used when `source` is `pack`, such as `windows-x64-cuda13`.
+    pub pack: String,
+    /// The pack that suits this machine, which `runtime.install` installs.
+    pub suggested_pack: String,
+    pub server_path: String,
+    /// The `llama-server` file exists.
+    pub installed: bool,
+    /// It starts and answers.
+    pub runs: bool,
+    /// Its `--version` line.
+    pub version: Option<String>,
+    pub devices: Vec<RuntimeDevice>,
+    /// Whether it sees a GPU; null when that could not be told.
+    pub gpu_visible: Option<bool>,
+    /// What is wrong and what to do, when something is.
+    pub problem: Option<String>,
+    /// How models will run, in a sentence.
+    pub summary: String,
+    pub llama_cpp_ref: String,
+    /// Other `llama-server` executables found on this machine (on `PATH`, common build
+    /// folders), offered when none is set up.
+    pub candidates: Vec<String>,
+    /// The latest runtime pack installation since the daemon started.
+    pub install: Option<RuntimeInstallJob>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeDevice {
+    /// Such as `CUDA0` or `Vulkan0`.
+    pub id: String,
+    pub description: String,
+    pub gpu: bool,
+}
+
+/// `runtime.install`: downloads and installs the runtime pack that suits this machine in the
+/// background, verified against the release's checksums, reporting
+/// `runtime.install_progress`. Once done, new model loads use it (unless a custom
+/// `llama-server` is set).
+#[derive(Debug)]
+pub struct RuntimeInstall;
+
+impl Method for RuntimeInstall {
+    const NAME: &'static str = "runtime.install";
+    type Params = RuntimeInstallParams;
+    type Result = RuntimeInstallJob;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeInstallParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeInstallJob {
+    pub pack: String,
+    #[ts(type = "\"running\" | \"done\" | \"failed\"")]
+    pub state: String,
+    #[ts(type = "number")]
+    pub done_bytes: u64,
+    /// Zero until the download's size is known.
+    #[ts(type = "number")]
+    pub total_bytes: u64,
+    /// Why it failed, or where `llama-server` was installed.
+    pub message: Option<String>,
+}
+
+/// Notification sent to every client as a runtime pack installs and when it ends. The payload
+/// is a [`RuntimeInstallJob`].
+pub const RUNTIME_INSTALL_PROGRESS: &str = "runtime.install_progress";
 
 /// `models.hf_files`: what a Hugging Face repository offers to download (GGUF quantisations and
 /// a safetensors folder), with sizes and whether each would fit on this machine.

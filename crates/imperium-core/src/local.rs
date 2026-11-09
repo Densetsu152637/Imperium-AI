@@ -16,14 +16,20 @@ use imperium_protocol::methods::{
     GpuInfo, HardwareInfo, LocalModelListResult, LocalModelRow, RuntimeInfo, SkippedModel,
 };
 
+/// vLLM runs on Linux (including WSL2) only; elsewhere its models are listed but cannot load.
+const VLLM_AVAILABLE: bool = cfg!(target_os = "linux");
+
 #[derive(Debug)]
 pub struct LocalRuntime {
     pub supervisor: Arc<Supervisor>,
     /// The folders and what the last scan skipped; both change when they are scanned again.
     scanned: Mutex<(Vec<PathBuf>, Vec<Skipped>)>,
     hardware: Hardware,
-    pack: String,
-    server: PathBuf,
+    /// The runtime pack (or `custom`) and the `llama-server` models are loaded with; they
+    /// change when the user picks another server or installs a pack.
+    server: Mutex<(String, PathBuf)>,
+    /// Starts the servers; `None` in tests that use a fake.
+    launcher: Option<Arc<ProcessLauncher>>,
 }
 
 /// Folders to scan: `models.folders`, plus the download folder when it exists and is not
@@ -81,31 +87,58 @@ impl LocalRuntime {
             tracing::warn!(path = %skipped.path.display(), reason = %skipped.reason, "skipped model file");
         }
         let vllm = &settings.runtime.vllm;
-        let launcher = ProcessLauncher::new(
-            server.clone(),
-            PathBuf::from(&vllm.command),
-            paths.data_dir().join("logs"),
-        )
-        .with_slot_dir(paths.data_dir().join("swap"));
+        let launcher = Arc::new(
+            ProcessLauncher::new(
+                server.clone(),
+                PathBuf::from(&vllm.command),
+                paths.data_dir().join("logs"),
+            )
+            .with_slot_dir(paths.data_dir().join("swap")),
+        );
         let runtimes = Runtimes {
             vllm: vllm.clone(),
-            vllm_available: cfg!(target_os = "linux"),
+            vllm_available: VLLM_AVAILABLE,
         };
         let supervisor = Supervisor::start(
             found.models,
             llamacpp.clone(),
             runtimes,
             &hardware,
-            Arc::new(launcher),
+            Arc::clone(&launcher) as Arc<dyn imperium_local::supervisor::Launcher>,
         );
         supervisor.set_cpu_pinned(cpu_pins(settings));
         Some(LocalRuntime {
             supervisor,
             scanned: Mutex::new((folders, found.skipped)),
             hardware,
-            pack,
-            server,
+            server: Mutex::new((pack, server)),
+            launcher: Some(launcher),
         })
+    }
+
+    /// The hardware the models are planned against.
+    pub fn hardware(&self) -> &Hardware {
+        &self.hardware
+    }
+
+    /// The runtime pack (or `custom`) and `llama-server` in use.
+    pub fn server(&self) -> (String, PathBuf) {
+        self.server
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Loads models from now on with the `llama-server` `settings` name (a custom path or the
+    /// runtime pack); models already loaded keep theirs until they are unloaded.
+    pub fn use_server(&self, paths: &Paths, settings: &Settings) {
+        let (pack, server) =
+            server_path(&settings.runtime.llamacpp, paths.data_dir(), &self.hardware);
+        tracing::info!(%pack, server = %server.display(), "llama-server for new model loads");
+        if let Some(launcher) = &self.launcher {
+            launcher.set_program(imperium_local::backend::LLAMA_CPP, server.clone());
+        }
+        *self.server.lock().unwrap_or_else(PoisonError::into_inner) = (pack, server);
     }
 
     /// Scans the folders again, such as after a download, so new models can be used. The caller
@@ -141,6 +174,21 @@ impl LocalRuntime {
         self.supervisor.budget()
     }
 
+    /// What `models.local` reports, with the configured folders and default model from
+    /// `settings`.
+    pub fn listing_with(&self, settings: &Settings) -> LocalModelListResult {
+        let mut listing = self.listing();
+        listing.configured_folders = settings
+            .models
+            .folders
+            .iter()
+            .map(|folder| folder.display().to_string())
+            .collect();
+        listing.default_model.clone_from(&settings.models.default);
+        listing.enabled = !listing.configured_folders.is_empty() || !listing.models.is_empty();
+        listing
+    }
+
     pub fn listing(&self) -> LocalModelListResult {
         let loaded = self.supervisor.loaded();
         let models = self
@@ -160,6 +208,13 @@ impl LocalRuntime {
                         Format::Safetensors => "vllm".into(),
                     },
                     path: model.path.display().to_string(),
+                    repo: model.repo.clone(),
+                    mmproj: model.mmproj.as_ref().map(|path| path.display().to_string()),
+                    problem: (model.format == Format::Safetensors && !VLLM_AVAILABLE).then(|| {
+                        "vLLM, which serves Hugging Face folders, runs on Linux or WSL2 only; \
+                         use a GGUF build of this model here"
+                            .to_string()
+                    }),
                     architecture: model.info.architecture.clone(),
                     quantization: model.info.quantization().map(str::to_string),
                     parts: model.parts,
@@ -184,12 +239,15 @@ impl LocalRuntime {
         let budget = self.supervisor.budget();
         let scanned = self.scanned.lock().unwrap_or_else(PoisonError::into_inner);
         let (folders, skipped) = &*scanned;
+        let (pack, server) = self.server();
         LocalModelListResult {
             enabled: true,
             folders: folders
                 .iter()
                 .map(|folder| folder.display().to_string())
                 .collect(),
+            configured_folders: Vec::new(),
+            default_model: None,
             models,
             skipped: skipped
                 .iter()
@@ -219,9 +277,9 @@ impl LocalRuntime {
                 budget_ram_bytes: budget.ram_bytes,
             }),
             runtime: Some(RuntimeInfo {
-                pack: self.pack.clone(),
-                server_path: self.server.display().to_string(),
-                installed: self.server.is_file(),
+                pack,
+                server_path: server.display().to_string(),
+                installed: server.is_file(),
                 llama_cpp_ref: llama_cpp_ref().into(),
             }),
         }
@@ -257,6 +315,8 @@ pub fn disabled() -> LocalModelListResult {
     LocalModelListResult {
         enabled: false,
         folders: Vec::new(),
+        configured_folders: Vec::new(),
+        default_model: None,
         models: Vec::new(),
         skipped: Vec::new(),
         hardware: None,
@@ -315,6 +375,7 @@ mod tests {
                 ..GgufInfo::default()
             },
             mmproj: None,
+            repo: None,
             format: Format::Gguf,
         }
     }
@@ -401,8 +462,8 @@ mod tests {
             supervisor: Arc::clone(&supervisor),
             scanned: Mutex::new((Vec::new(), Vec::new())),
             hardware,
-            pack: "cpu".into(),
-            server: PathBuf::from("llama-server"),
+            server: Mutex::new(("cpu".into(), PathBuf::from("llama-server"))),
+            launcher: None,
         };
         let row = |listing: &LocalModelListResult, id: &str| {
             listing
