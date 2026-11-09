@@ -876,6 +876,11 @@ impl DaemonState {
     }
 
     /// The local model runtime, when it is running.
+    /// This state as an `Arc`, for work handed to another task; `None` while it is dropped.
+    pub(crate) fn this(&self) -> Option<Arc<DaemonState>> {
+        self.me.upgrade()
+    }
+
     pub(crate) fn local_runtime(&self) -> Option<&LocalRuntime> {
         self.local.get()
     }

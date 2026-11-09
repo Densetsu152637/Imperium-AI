@@ -530,6 +530,38 @@ pub async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResult {
     }
 }
 
+/// Applies a setting `config.set` just saved, for the settings this module applies live
+/// (`models.default`, `models.folders`, `runtime.llamacpp.custom_path`); others are left for
+/// a restart. New folders are scanned in the background.
+pub(crate) fn apply_setting(state: &DaemonState, key: &str) {
+    let applied = match key {
+        "models.default" => apply_saved(state, |next, fresh| {
+            next.models.default.clone_from(&fresh.models.default);
+        }),
+        "models.folders" => apply_saved(state, |next, fresh| {
+            next.models.folders.clone_from(&fresh.models.folders);
+        }),
+        "runtime.llamacpp.custom_path" => apply_saved(state, |next, fresh| {
+            next.runtime
+                .llamacpp
+                .custom_path
+                .clone_from(&fresh.runtime.llamacpp.custom_path);
+        })
+        .map(|()| apply_server(state)),
+        _ => return,
+    };
+    if let Err(error) = applied {
+        tracing::warn!(%key, error = %error.message, "the saved setting could not be applied");
+        return;
+    }
+    if key == "models.folders"
+        && let Some(state) = state.this()
+        && tokio::runtime::Handle::try_current().is_ok()
+    {
+        tokio::task::spawn_blocking(move || state.rescan_local_models());
+    }
+}
+
 /// Points the running local runtime at the `llama-server` the live settings name.
 fn apply_server(state: &DaemonState) {
     if let Some(local) = state.local_runtime() {

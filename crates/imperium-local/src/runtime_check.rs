@@ -191,10 +191,10 @@ pub fn explain(
     };
     let (code, version, devices) = match outcome {
         ProbeOutcome::NotFound => {
+            // The path is shown beside the verdict; it is long, so it is not repeated here.
             return failed(format!(
-                "No llama-server at {}. Install the {suggested_pack} runtime pack, or choose a \
-                 llama-server you already have.",
-                server.display()
+                "No llama-server is installed there yet. Install the {suggested_pack} runtime \
+                 pack, or choose a llama-server you already have."
             ));
         }
         ProbeOutcome::SpawnFailed(error) => {

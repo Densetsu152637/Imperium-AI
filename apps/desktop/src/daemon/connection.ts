@@ -37,3 +37,13 @@ export async function pickFolder(title = "Add folder"): Promise<string | null> {
   }
   return window.prompt(`${title} (absolute path)`)?.trim() || null;
 }
+
+/** Asks for a file: a native picker in Tauri, a text prompt in a browser. */
+export async function pickFile(title = "Choose a file"): Promise<string | null> {
+  if (insideTauri()) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const chosen = await open({ directory: false, multiple: false, title });
+    return typeof chosen === "string" ? chosen : null;
+  }
+  return window.prompt(`${title} (absolute path)`)?.trim() || null;
+}

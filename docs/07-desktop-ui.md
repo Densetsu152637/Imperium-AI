@@ -416,7 +416,47 @@ that started meanwhile) shows its error beside the list and leaves the model as 
 Breakdowns of a compacted conversation list the summary as its own category, *Conversation
 summary*. (Before this, the picker sat among the header pills as a borderless native select
 that read like plain text, listed only the table, and fell back to plain text when the table
-was empty — so it was easy to miss and absent for local-only setups.)
+was empty — so it was easy to miss and absent for local-only setups.) Each local model's option
+(and each table row that names a local model) says what it is under its name: quantisation,
+the context it was trained for and the per-session context it is started with when different,
+its size on disk, and how it fits this machine, such as *Q4_K_M · 256k ctx (8k per session) ·
+2.3 GB · GPU + RAM · llama.cpp*. A local model that cannot run here (a vLLM folder off Linux) is
+listed but cannot be chosen. The new-session composer's model list is the same.
+
+## Setting up models (implemented)
+
+Models already on disk are set up from the app, with no config file edit and no daemon restart.
+Each step below writes the user's `config.toml` through the settings table and applies the change
+to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-from-the-app)).
+
+- **First run.** While no model is usable (no default, no table row with a configured endpoint,
+  no runnable local model), the new-session composer and the Local models panel show three
+  choices: *Add a model folder* (the native folder picker; the folder is scanned at once and the
+  number of models found is reported), *Download from Hugging Face* (opens the Local models
+  panel's download form), and *Connect an API endpoint* (a name, base URL, API key, and an
+  optional model, which then becomes the default; the key goes to the system keychain,
+  `models.add_endpoint`).
+- **Model folders.** The Local models panel lists `models.folders`, each with a remove button
+  (*Stop scanning this folder*; nothing in it is deleted), the download folder when it is separate,
+  and *Add folder*. *Rescan* scans again.
+- **Runtime.** A *llama.cpp runtime* card runs `runtime.status` when the panel opens: which
+  `llama-server` is used (yours or the runtime pack's), its version, the devices it sees, and a
+  verdict (*ready*, *check*, *not ready*) with the problem and what to do in words, such as
+  *llama-server can't see your GPU — the CUDA runtime is missing or the NVIDIA driver is too old
+  for this build*. `llama-server` executables found on this computer are offered with *Use this*;
+  *Choose llama-server…* opens the native file picker; *Install runtime pack* downloads the pack
+  that suits this machine with a progress bar (`runtime.install_progress`); *Use the runtime pack
+  instead* drops a custom server.
+- **Models.** Each model row shows its id, its repository (`unsloth/Qwen3-8B-GGUF`), *vision*
+  when a projector is paired, *default*, quantisation, size, trained context and per-session
+  context, and fit on this machine. *Use* makes it the default for new sessions (`models.use`),
+  *Test* loads it and sends one short prompt, showing the reply, tokens, tokens per second and
+  load time under the row (`models.test`), and the sliders button opens the
+  [model configuration dialog](#model-configuration-dialog-implemented) on that model. Models
+  that cannot run here say why under the row. Items left out of the scan (image models,
+  diffusers pipelines, unreadable files) are listed, with the reason, in a collapsed section.
+- **Settings.** `models.default`, `models.folders`, and `runtime.llamacpp.custom_path` changed in
+  Settings apply at once too.
 
 **Composer, queue, and steering (implemented):** the composer stays enabled while the agent
 works. Its send key (Enter, or Ctrl+Enter, as set in Settings) queues the message for after the

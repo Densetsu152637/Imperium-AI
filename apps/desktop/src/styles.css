@@ -2276,6 +2276,277 @@ button.sort:hover:not(:disabled) {
   white-space: nowrap;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Sections of the Local models panel: folders, the runtime, then the models. */
+.local-models .section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space);
+  margin-bottom: calc(var(--space) * 0.5);
+}
+
+.local-models .section-head h3 {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  flex: 1;
+}
+
+.local-models .section-head button {
+  font-size: 0.78rem;
+  padding: 0.2rem 0.65rem;
+}
+
+.folder-list,
+.runtime-card {
+  margin-bottom: calc(var(--space) * 1.5);
+  font-size: 0.8rem;
+}
+
+.folder-list ul,
+.runtime-card .candidates,
+.skipped ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 0.4);
+}
+
+.folder-list li,
+.runtime-card .candidates li {
+  display: flex;
+  align-items: center;
+  gap: var(--space);
+  min-width: 0;
+}
+
+.folder-list code,
+.runtime-card code,
+.skipped code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.folder-list li code {
+  flex: 1;
+}
+
+.folder-list button.icon,
+.local-model-table button.icon {
+  padding: 0.15rem 0.3rem;
+}
+
+.runtime-card {
+  padding: var(--space);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.runtime-card.attention {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
+.runtime-card p {
+  margin: 0 0 calc(var(--space) * 0.5);
+}
+
+.runtime-card .runtime-path code {
+  display: block;
+}
+
+.folder-list code,
+.runtime-card code,
+.skipped code {
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.runtime-card .models-toolbar {
+  margin: calc(var(--space) * 0.5) 0 0;
+}
+
+.runtime-install progress {
+  width: 100%;
+}
+
+.local-model-table .model-name {
+  white-space: normal;
+  min-width: 10rem;
+}
+
+.local-model-table .model-id {
+  display: block;
+  font-weight: 500;
+  color: var(--text);
+  word-break: break-all;
+}
+
+/* The fit column is hidden in a narrow panel; the fit then shows under the model's name. */
+.local-model-table .fit-inline {
+  display: none;
+}
+
+@container (max-width: 40rem) {
+  .local-model-table .fit-inline {
+    display: inline;
+  }
+
+  .local-model-table th:nth-child(5),
+  .local-model-table td:nth-child(5) {
+    display: none;
+  }
+}
+
+.local-model-table .model-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  font-size: 0.72rem;
+}
+
+.local-model-table td.model-actions {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+  justify-content: flex-end;
+  white-space: nowrap;
+  color: inherit;
+}
+
+.local-model-table .model-actions button {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.55rem;
+}
+
+.local-model-table .default-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+}
+
+.local-model-table .default-mark svg,
+.local-model-table .model-actions svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.local-model-table tr.model-note td {
+  white-space: normal;
+  font-size: 0.78rem;
+  border-bottom-style: dashed;
+}
+
+.local-models details.skipped {
+  margin-top: var(--space);
+  font-size: 0.78rem;
+}
+
+.local-models details.skipped li {
+  margin: 0.2rem 0;
+  display: block;
+}
+
+/* First-run setup: three large choices, then the endpoint form when chosen. */
+.model-setup {
+  margin-bottom: calc(var(--space) * 1.5);
+}
+
+.model-setup h3 {
+  margin: 0 0 calc(var(--space) * 0.5);
+  font-size: 0.9rem;
+}
+
+.model-setup p {
+  margin: 0 0 var(--space);
+  font-size: 0.8rem;
+}
+
+.setup-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space);
+  margin-bottom: var(--space);
+}
+
+button.setup-action {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space);
+  text-align: left;
+  padding: var(--space);
+  white-space: normal;
+}
+
+button.setup-action svg {
+  flex: none;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.1rem;
+}
+
+button.setup-action span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+button.setup-action small {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.endpoint-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space);
+  font-size: 0.8rem;
+}
+
+.endpoint-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  color: var(--muted);
+}
+
+.endpoint-form input {
+  padding: calc(var(--space) * 0.5) var(--space);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+}
+
+.endpoint-form p,
+.endpoint-form .error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.endpoint-form button {
+  justify-self: start;
+}
+
+.new-session-view .model-setup {
+  width: min(100%, 46rem);
+  margin: 0 auto calc(var(--space) * 1.5);
+}
+
 /* Download from Hugging Face: the same toolbar look, with progress in words and bars. */
 .hf-download {
   margin-top: calc(var(--space) * 2);

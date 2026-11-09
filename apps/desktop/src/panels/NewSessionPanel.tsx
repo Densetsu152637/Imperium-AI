@@ -13,6 +13,7 @@ import { Switch } from "../components/Switch";
 import type { DaemonClient } from "../daemon/client";
 import { useSettings } from "../settings";
 import { asSpec, modelOptions } from "./ModelSelect";
+import { ModelSetup } from "./ModelSetup";
 
 export type NewSessionOptions = {
   environmentId: string;
@@ -31,9 +32,15 @@ type Props = {
   onSelectEnvironment: (id: string) => void;
   models: ModelRow[];
   localModels: LocalModelRow[];
+  /** `models.default` as the daemon applies it (from `models.local`); undefined until known. */
+  defaultModel?: string | null;
   client: DaemonClient | null;
   /** Creates the session and sends the message; rejects with the daemon's reason. */
   onCreate: (options: NewSessionOptions) => Promise<void>;
+  /** Refreshes the model lists after the setup added a folder or an endpoint. */
+  onModelsChanged: () => void;
+  /** Opens the Local models panel (for its Hugging Face download form). */
+  onOpenLocalModels: () => void;
 };
 
 /** `models.default` from the daemon's configuration, or null when unset. */
@@ -63,8 +70,11 @@ export function NewSessionPanel({
   onSelectEnvironment,
   models,
   localModels,
+  defaultModel,
   client,
   onCreate,
+  onModelsChanged,
+  onOpenLocalModels,
 }: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
@@ -85,7 +95,10 @@ export function NewSessionPanel({
     environments[0] ??
     null;
   const hasGit = environment !== null && gitEnvironments.includes(environment.id);
-  const defaultSpec = asSpec(models, defaults.model);
+  // The daemon's live default wins: it changes at once when a model is made the default.
+  const defaultSpec = asSpec(models, defaultModel !== undefined ? defaultModel : defaults.model);
+  const usable = models.some((row) => row.endpoint_configured) || localModels.some((row) => !row.problem);
+  const needsSetup = client !== null && !defaultSpec && !usable;
   const model = chosenModel ?? defaultSpec ?? "";
   const options = [
     // Without a configured default a session may start with no model; its messages wait.
@@ -136,6 +149,8 @@ export function NewSessionPanel({
           {error}
         </p>
       )}
+
+      {needsSetup && <ModelSetup client={client} onChanged={onModelsChanged} onDownload={onOpenLocalModels} />}
 
       <form
         className="composer"
