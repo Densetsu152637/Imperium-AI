@@ -371,9 +371,27 @@ function PlanView({ plan }: { plan: Plan }) {
         {plan.steps.map((step, index) => (
           <li key={index} className={`step ${step.status}`}>
             <span className="mark">{STEP_MARK[step.status]}</span> {step.title}
+            {step.depends_on.length > 0 && <span className="muted"> · after {step.depends_on.join(", ")}</span>}
+            {step.owner && <span className="muted"> · {step.owner}</span>}
+            {step.acceptance && <div className="muted">Done when: {step.acceptance}</div>}
           </li>
         ))}
       </ol>
+      {plan.assumptions.length > 0 && <PlanNotes title="Assumptions" items={plan.assumptions} />}
+      {plan.open_questions.length > 0 && <PlanNotes title="Open questions" items={plan.open_questions} />}
     </details>
+  );
+}
+
+function PlanNotes({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="muted">
+      {title}:
+      <ul>
+        {items.map((item, index) => (
+          <li key={index}>{item}</li>
+        ))}
+      </ul>
+    </div>
   );
 }

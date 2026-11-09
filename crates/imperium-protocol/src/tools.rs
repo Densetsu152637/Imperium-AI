@@ -90,13 +90,18 @@ pub fn await_tasks() -> ToolDefinition {
 pub fn update_plan() -> ToolDefinition {
     ToolDefinition {
         name: "update_plan",
-        description: "Replace your plan: a goal and its steps with statuses. Keep exactly one step in_progress while working.",
+        description: "Replace your plan: a goal, its steps in dependency order with statuses, and the assumptions and open questions behind it. Keep exactly one step in_progress while working.",
         parameters: json!({"type": "object", "properties": {
             "goal": {"type": "string"},
             "steps": {"type": "array", "items": {"type": "object", "properties": {
-                "title": {"type": "string"},
-                "status": {"type": "string", "enum": ["pending", "in_progress", "done", "blocked", "skipped"]}
-            }, "required": ["title", "status"]}}
+                "title": {"type": "string", "description": "Unique within the plan; depends_on refers to it"},
+                "status": {"type": "string", "enum": ["pending", "in_progress", "done", "blocked", "skipped"]},
+                "depends_on": {"type": "array", "items": {"type": "string"}, "description": "Titles of the steps that must finish first"},
+                "owner": {"type": "string", "description": "Who does the step: yourself, or a subagent and its tier"},
+                "acceptance": {"type": "string", "description": "The check that shows the step is done"}
+            }, "required": ["title", "status"]}},
+            "assumptions": {"type": "array", "items": {"type": "string"}, "description": "Gaps you filled yourself, each with the value you chose"},
+            "open_questions": {"type": "array", "items": {"type": "string"}, "description": "Decisions that are the user's to make or cannot be researched"}
         }, "required": ["steps"]}),
         status: ToolStatus::Available,
     }
@@ -175,13 +180,24 @@ mod tests {
         text
     }
 
-    /// Writes the tool schemas and the index under `schemas/tools/`; `scripts/check-rust.sh`
-    /// then fails when what this writes differs from what is checked in.
+    /// Writes the tool schemas and the index under `schemas/tools/`, and removes the schema of
+    /// any tool no longer in `all()`; `scripts/check-rust.sh` then fails when what this leaves
+    /// differs from what is checked in.
     #[test]
     fn exports_the_tool_schemas() {
         let dir = schemas_dir().join("tools");
         std::fs::create_dir_all(&dir).expect("create schemas/tools");
         let tools = all();
+        for entry in std::fs::read_dir(&dir).expect("read schemas/tools") {
+            let path = entry.expect("directory entry").path();
+            let stale = path.extension().is_some_and(|ext| ext == "json")
+                && path.file_stem().is_some_and(|stem| {
+                    stem != "index" && !tools.iter().any(|tool| stem == tool.name)
+                });
+            if stale {
+                std::fs::remove_file(&path).expect("remove stale tool schema");
+            }
+        }
         let mut index = Vec::new();
         for tool in &tools {
             std::fs::write(
@@ -224,7 +240,39 @@ mod tests {
             assert!(root.contains(name), "{name} missing from the root prompt");
         }
         assert!(prompt("questions.md").contains("recommended"));
-        assert!(prompt("plan.md").contains("## Open questions"));
+        let plan = prompt("plan.md");
+        assert!(plan.contains("## Open questions"));
+        for field in [
+            "goal",
+            "depends_on",
+            "owner",
+            "acceptance",
+            "assumptions",
+            "open_questions",
+        ] {
+            assert!(
+                plan.contains(&format!("`{field}`")),
+                "{field} missing from plan.md"
+            );
+        }
+    }
+
+    /// Arguments that follow the `update_plan` schema load into the protocol's `Plan`.
+    #[test]
+    fn update_plan_arguments_load_into_a_plan() {
+        let plan: crate::session::Plan = serde_json::from_value(json!({
+            "goal": "ship",
+            "steps": [
+                {"title": "research", "status": "done", "owner": "subagent, standard", "acceptance": "sources cited"},
+                {"title": "build", "status": "pending", "depends_on": ["research"]}
+            ],
+            "assumptions": ["Rust stable"],
+            "open_questions": ["Which licence?"]
+        }))
+        .expect("plan");
+        assert_eq!(plan.steps[1].depends_on, ["research"]);
+        assert_eq!(plan.steps[0].acceptance.as_deref(), Some("sources cited"));
+        assert_eq!(plan.open_questions, ["Which licence?"]);
     }
 
     fn property_names(value: &Value, out: &mut Vec<String>) {
