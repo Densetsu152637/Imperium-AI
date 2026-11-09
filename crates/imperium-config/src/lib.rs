@@ -5,6 +5,7 @@
 //! `.imperium/config.local.toml`, then `IMPERIUM_<SECTION>__<KEY>` environment variables.
 //! Every value remembers which layer set it, for `imperium config explain`.
 
+mod budgets;
 mod endpoints;
 mod layers;
 mod local_models;
@@ -15,6 +16,10 @@ mod registry;
 mod secrets;
 mod settings;
 
+pub use budgets::{
+    Budget, BudgetAction, BudgetScope, BudgetSettings, BudgetWindow, DEFAULT_THRESHOLDS, WeekStart,
+    save_budgets,
+};
 pub use endpoints::{save_endpoint, valid_endpoint_id};
 pub use layers::{
     Config, ConfigError, Explained, Layer, Source, load, load_layers, replace_app_layer,

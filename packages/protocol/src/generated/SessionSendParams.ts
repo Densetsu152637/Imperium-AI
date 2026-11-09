@@ -9,4 +9,8 @@ mode?: SendMode,
 /**
  * A running subagent's task id (`t1`, ...); the root agent when absent.
  */
-agent_id?: string, };
+agent_id?: string, 
+/**
+ * Go ahead although a budget in the session's scope is used up and says to ask first.
+ */
+confirm_budget?: boolean, };

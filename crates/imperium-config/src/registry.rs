@@ -5,7 +5,8 @@
 //! Structured lists and maps (`endpoints`, `models.catalog`, `routing.rules`, `mcp.servers`,
 //! `projects`, `schedules`, `hooks`, `github.watch`, `media.speech`, `media.transcription`)
 //! are not listed; they are edited in the file. `permissions` (grants and rules) has its own
-//! methods, `permissions.get` and `permissions.set`. Add a new scalar or list setting by adding a
+//! methods, `permissions.get` and `permissions.set`; so has `budgets` (`budgets.get`,
+//! `budgets.set`). Add a new scalar or list setting by adding a
 //! row to [`SETTINGS`].
 
 use std::path::{Path, PathBuf};

@@ -112,6 +112,9 @@ pub struct Settings {
     /// `[permissions]`: path grants and rules for every environment (see docs/05).
     #[serde(default)]
     pub permissions: crate::PermissionSettings,
+    /// `[budgets]`: token and cost budgets with alerts (see docs/10, Budgets).
+    #[serde(default)]
+    pub budgets: crate::BudgetSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -135,6 +138,7 @@ impl Settings {
     /// Checks rules that span keys: model table ids are unique, and routing rules name models
     /// that exist in the table.
     pub fn validate(&self) -> Result<(), String> {
+        self.budgets.validate()?;
         for reserved in [LLAMACPP_ENDPOINT, VLLM_ENDPOINT] {
             if self.endpoints.contains_key(reserved) {
                 return Err(format!(

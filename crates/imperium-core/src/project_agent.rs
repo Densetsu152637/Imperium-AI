@@ -475,7 +475,9 @@ fn dispatch(
             }
             session.undefer();
         }
-        let result = if session.send(brief).is_ok() {
+        let result = if let Err(stop) = crate::budgets::check(&daemon, &id, false) {
+            Err(stop.message)
+        } else if session.send(brief).is_ok() {
             daemon.set_deferred_brief(&id, None);
             daemon
                 .wait_for_turn(&session, events, SESSION_TIMEOUT)
