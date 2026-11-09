@@ -6,6 +6,7 @@ only about decisions that are the user's to make (scope, budget, taste, authorit
 change the plan materially and cannot be researched.
 
 Each question has:
+
 - `question`: one short, specific sentence the user can answer without more context.
 - `options`: the likely choices, when there are only a few.
 - `recommended`: the answer you suggest, with the reason in a few words. Always give one.
