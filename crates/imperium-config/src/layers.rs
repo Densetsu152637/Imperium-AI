@@ -781,7 +781,10 @@ max_wait_s = 9",
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
         let llamacpp = &settings.runtime.llamacpp;
         assert_eq!(llamacpp.backend, "auto");
-        assert_eq!((llamacpp.context, llamacpp.parallel), (8192, 2));
+        assert_eq!(
+            (llamacpp.context, llamacpp.parallel),
+            (crate::ContextLimit::Auto, 2)
+        );
         assert!(settings.models.folders.is_empty());
         assert_eq!(settings.hardware.vram_mb, None);
     }

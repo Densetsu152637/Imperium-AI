@@ -2,6 +2,7 @@
 import type { ContextCategory } from "./ContextCategory";
 import type { ContextItem } from "./ContextItem";
 import type { ContextPointer } from "./ContextPointer";
+import type { LocalWaitReason } from "./LocalWaitReason";
 import type { PauseCause } from "./PauseCause";
 import type { PermissionRule } from "./PermissionRule";
 import type { Plan } from "./Plan";
@@ -74,7 +75,7 @@ steps: number, } | { "type": "turn_failed", message: string, } | { "type": "noti
 /**
  * Why it waits; older journals have no cause and mean a usage limit.
  */
-cause: PauseCause, } | { "type": "resumed", } | { "type": "work_stopped", } | { "type": "work_resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "context_compacted", 
+cause: PauseCause, } | { "type": "local_model_waiting", agent_id: string, model: string, reason: LocalWaitReason, } | { "type": "resumed", } | { "type": "work_stopped", } | { "type": "work_resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "context_compacted", 
 /**
  * The model whose window the conversation was fitted to.
  */

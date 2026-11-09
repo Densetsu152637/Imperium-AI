@@ -48,6 +48,21 @@ use, including models still loaded or cached for active sessions (and which sess
 them), in the desktop's Resources panel and `imperium resources [--watch]`
 ([04](04-models-and-routing.md#active-models-and-resource-monitor)).
 
+Implemented: **the most context each local agent can use, reserved as it is used.** A local
+model's agents may each use up to its ceiling: what the model was trained for, capped to what
+fits in memory beside its weights (`context = "auto"`, the new default, or a number per model or
+globally). The unified KV pool starts small and grows on demand by restarting the server between
+calls, and starts small again after the model is unloaded, so VRAM is only reserved as context is
+used; compaction is planned against the ceiling. Slots reserve nothing (16 by default), and the
+pool also grows when agents fill it together. The weights stay on the GPU first, for each of
+several models loaded at once: a KV pool that does not fit beside them is cut rather than moving
+layers to the CPU. Calls say why they wait for a local model, and the model lists show the
+loader's own memory plan ([04](04-models-and-routing.md#runtimes)). Not measured on hardware
+yet: restoring saved slots into a grown pool, and llama.cpp's compute buffers at large contexts.
+Next: shrinking a loaded pool after sustained low fill (today it shrinks on unload), growing a
+squeezed pool once other models leave, fill read from llama-server's own metrics, and showing
+the wait reason in the desktop.
+
 ## Next (in order)
 
 1. **OS notifications** (implemented). System notifications for approvals, finished and failed

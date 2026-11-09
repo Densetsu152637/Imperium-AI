@@ -5,4 +5,9 @@ export type RuntimeInfo = {
  * The llama.cpp build in use, such as `windows-x64-cuda13`; `custom` for your own
  * `llama-server`, `detected` for one found on this machine.
  */
-pack: string, server_path: string, installed: boolean, llama_cpp_ref: string, };
+pack: string, server_path: string, installed: boolean, llama_cpp_ref: string, 
+/**
+ * `runtime.llamacpp.auto_install`: with none installed, the official build is fetched the
+ * first time a model is loaded.
+ */
+auto_install: boolean, };

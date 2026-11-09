@@ -5,11 +5,18 @@
  */
 export type LocalLaunchSettings = { 
 /**
- * Tokens one session may use (`--kv-unified-per-slot`; vLLM `--max-model-len`).
+ * Most tokens one agent may use (vLLM `--max-model-len`), capped to what the model was
+ * trained for and what fits in memory. Ignored when `context_auto` is true.
  */
 context: number | null, 
 /**
- * Tokens of KV cache shared by every slot (`--ctx-size`); at least `context`.
+ * Size the context automatically (`context = "auto"`): the most the model was trained for
+ * that fits in memory. False with a null `context` takes the default.
+ */
+context_auto: boolean, 
+/**
+ * Fixes the tokens of KV cache shared by every slot (`--ctx-size`), at least `context`;
+ * null lets the pool start small and grow on demand.
  */
 pool_tokens: number | null, 
 /**

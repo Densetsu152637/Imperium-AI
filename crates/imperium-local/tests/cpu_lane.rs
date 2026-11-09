@@ -117,7 +117,7 @@ fn settings(cache_ram_mb: u64) -> LlamaCppSettings {
         auto_install: false,
         update_external: "off".into(),
         idle_unload_s: 900,
-        context: 4096,
+        context: 4096.into(),
         parallel: 2,
         cache_type: "f16".into(),
         slots: Some(2),

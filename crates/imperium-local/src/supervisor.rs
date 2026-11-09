@@ -11,6 +11,12 @@
 //! the slot it used last when that slot is free. The reservation bounds what the call may use
 //! (the lease carries the `max_tokens` to send), so a full pool makes calls wait, not fail.
 //!
+//! One agent may use the whole pool, up to the model's context ceiling (see [`crate::context`]).
+//! A pool no setting fixes starts small (or at what the call loading the model needs) and grows
+//! on demand: a call whose prompt and reply do not fit makes the model restart with the pool
+//! doubled, once the calls running on it are done, even while agents are mid-turn on it (their
+//! slots are saved and restored). An unloaded model forgets its grown pool.
+//!
 //! The supervisor is the one memory arbiter for every session. Memory is reserved per loaded
 //! model against the budget measured when it started. A model that does not fit beside the
 //! loaded ones swaps out models nobody is using: no slot held, no call queued, and no agent of
@@ -39,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use imperium_api::{
     AcquireFuture, Availability, Load as MachineLoad, LoadView, LocalLease, LocalModels,
-    LocalPresence, LocalRequest, Priority, holder_session,
+    LocalPresence, LocalRequest, LocalWait, Priority, holder_session,
 };
 pub use imperium_config::{CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS};
 use imperium_config::{LaneRow, LlamaCppSettings, LocalModelSettings, ModelLaunch, VllmSettings};
@@ -47,8 +53,9 @@ use tokio::sync::{Notify, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore, broa
 
 use crate::arbiter::{self, Decision, Outlook, Policy, Resident, Swaps, Use};
 use crate::backend::{self, RuntimeBackend};
+use crate::context;
 use crate::hardware::Hardware;
-use crate::planner::{Budget, Footprint, Placement, prompt_cache_mb};
+use crate::planner::{self, Budget, Footprint, Placement, prompt_cache_mb};
 use crate::scan::{Format, LocalModel};
 use crate::slot_files::{self, Saved, SlotFiles};
 
@@ -332,7 +339,8 @@ pub struct SwapEvent {
     pub bytes: u64,
     /// Out: slots saved. In: saved slots its agents will get back.
     pub slots: u32,
-    /// Out: `room`, `idle`, `config` (its settings changed), or `request` (`models.unload`).
+    /// Out: `room`, `idle`, `config` (its settings changed), `grow` (a call needs a larger KV
+    /// pool), or `request` (`models.unload`).
     /// In: `swap` (it replaced a
     /// model) or `restore` (it came back to saved slots).
     pub reason: &'static str,
@@ -614,11 +622,40 @@ struct Loaded {
     launch: ModelLaunch,
     /// Its settings changed since: it restarts once nothing is using it.
     stale: bool,
+    /// A call needs a larger KV pool: no call takes a slot on it, and it restarts with the
+    /// larger pool once the calls running on it are done, even with agents mid-turn on it.
+    growing: bool,
+    /// Started with a smaller pool than `launch` asks for, to keep every layer on the GPU beside
+    /// the models loaded then.
+    squeezed: bool,
 }
 
 impl Loaded {
     fn in_use(&self) -> u32 {
         self.pool.in_use()
+    }
+
+    /// The pool a call of `request` needs this server restarted with, when it does not fit the
+    /// current one and the pool may grow.
+    ///
+    /// One call that does not fit grows the pool towards the context ceiling; a call that fits
+    /// but finds the pool filled by the others (past the high-water mark: it would have to
+    /// wait) grows it towards what fits in memory, so the pool follows how many agents work at
+    /// once. A pool squeezed beside other models does not grow until it is next loaded.
+    fn growth(&self, request: &LocalRequest) -> Option<u32> {
+        if self.pool.tokens.is_none() || self.launch.pool_fixed || self.squeezed {
+            return None;
+        }
+        let need = context::demand(
+            request.prompt_tokens,
+            self.pool.max_output_tokens.load(Ordering::SeqCst),
+        )?;
+        let pool = self.pool.pool_tokens;
+        if need > pool {
+            return context::grow_target(pool, need, self.pool.context);
+        }
+        let filled = self.pool.reserved_tokens().saturating_add(need);
+        context::grow_target(pool, filled, self.launch.pool_max)
     }
 
     /// A slot is in use or a call is queued for one.
@@ -927,6 +964,9 @@ struct Load {
     priority: Priority,
     /// What it is started with.
     launch: ModelLaunch,
+    /// The KV pool it is started with: `launch.pool_tokens`, or less to keep its layers on the
+    /// GPU beside the models loaded now.
+    served_pool: u32,
     /// It is pinned to the CPU lane.
     cpu_pinned: bool,
 }
@@ -955,6 +995,11 @@ pub struct Supervisor {
     slot_files: Option<Mutex<SlotFiles>>,
     /// Models pinned to the CPU lane, with their slots.
     cpu_pinned: Mutex<HashMap<String, CpuLane>>,
+    /// The KV pool each model's calls have asked for beyond the one it starts with; forgotten
+    /// when the model is unloaded, so it starts small again.
+    grown: Mutex<HashMap<String, u32>>,
+    /// Why each waiting holder's call waits, while it does.
+    waits: Mutex<HashMap<String, LocalWait>>,
     events: broadcast::Sender<SwapEvent>,
     /// How background calls give way to the user's.
     background: Mutex<BackgroundPolicy>,
@@ -1048,6 +1093,8 @@ impl Supervisor {
             swapping: Arc::default(),
             slot_files,
             cpu_pinned: Mutex::default(),
+            grown: Mutex::default(),
+            waits: Mutex::default(),
             events: broadcast::channel(64).0,
             background: Mutex::new(BackgroundPolicy {
                 view: None,
@@ -1185,11 +1232,96 @@ impl Supervisor {
         self.cpu_lane(id).map(|lane| lane.slots)
     }
 
-    /// The settings `id` is started with: its own, then the CPU lane's, then the globals.
+    /// The settings `id` is started with: its own, then the CPU lane's, then the globals, sized
+    /// for the model ([`Supervisor::sized`]).
     pub fn launch(&self, id: &str) -> ModelLaunch {
         let lane = self.cpu_lane(id).map(CpuLane::row);
-        self.settings
-            .launch_with(lock(&self.model_settings).get(id), lane)
+        let configured = self
+            .settings
+            .launch_with(lock(&self.model_settings).get(id), lane);
+        match self.model(id) {
+            Some(model) => self.sized(&model, &configured),
+            None => configured,
+        }
+    }
+
+    /// `launch` sized for `model` (see [`crate::context`]): the context becomes the most one
+    /// agent may use (what the model was trained for, the configured limit, and the largest
+    /// pool that fits on an empty machine without pushing layers off the GPU), and a pool no
+    /// setting fixes becomes the one the model's calls have asked for so far.
+    pub fn sized(&self, model: &LocalModel, launch: &ModelLaunch) -> ModelLaunch {
+        let Some(backend) = self.backend(model.format) else {
+            return launch.clone();
+        };
+        let trained = model.info.context_length;
+        let fit = self.fit_tokens(model, launch, backend.as_ref(), trained);
+        let grown = lock(&self.grown).get(&model.id).copied().unwrap_or(0);
+        context::size(launch, trained, fit, grown, backend.slot_aware())
+    }
+
+    /// The largest KV pool `model` started with `launch` fits with on an empty machine: while
+    /// every layer fits on the GPU, only pools that keep them all there.
+    fn fit_tokens(
+        &self,
+        model: &LocalModel,
+        launch: &ModelLaunch,
+        backend: &dyn RuntimeBackend,
+        trained: Option<u64>,
+    ) -> u32 {
+        let cpu = self.cpu_slots(&model.id).is_some();
+        let place = |tokens: u32| {
+            let footprint = Footprint::of(
+                model,
+                &ModelLaunch {
+                    pool_tokens: tokens,
+                    ..launch.clone()
+                },
+            );
+            if cpu {
+                backend.place_on_cpu(footprint, self.budget)
+            } else {
+                backend.place(footprint, self.budget)
+            }
+        };
+        let Some(base) = place(context::MIN_FIT_TOKENS) else {
+            return context::MIN_FIT_TOKENS;
+        };
+        let whole = base.all_layers_on_gpu;
+        context::largest_fitting(
+            context::MIN_FIT_TOKENS,
+            context::search_limit(launch, trained),
+            |tokens| place(tokens).is_some_and(|p| !whole || p.all_layers_on_gpu),
+        )
+    }
+
+    /// Before `id` is loaded for a call of `request`: has it start with a pool the call fits in,
+    /// up to its ceiling, so the call does not restart it at once.
+    fn note_demand(&self, id: &str, request: &LocalRequest) {
+        let launch = self.launch(id);
+        let slot_aware = self
+            .model(id)
+            .and_then(|model| self.backend(model.format).map(|b| b.slot_aware()))
+            .unwrap_or(false);
+        if launch.pool_fixed || !slot_aware {
+            return;
+        }
+        let Some(need) = context::demand(request.prompt_tokens, launch.max_output_tokens) else {
+            return;
+        };
+        if let Some(target) = context::grow_target(launch.pool_tokens, need, launch.context) {
+            self.grow_to(id, target);
+        }
+    }
+
+    fn grow_to(&self, id: &str, target: u32) {
+        let mut grown = lock(&self.grown);
+        let pool = grown.entry(id.to_string()).or_default();
+        *pool = (*pool).max(target);
+    }
+
+    /// Forgets what `id`'s calls asked of its pool: it starts small again when next loaded.
+    fn shrink(&self, id: &str) {
+        lock(&self.grown).remove(id);
     }
 
     /// What loading `model` needs with the settings it is started with.
@@ -1204,14 +1336,95 @@ impl Supervisor {
         model: &LocalModel,
         backend: Arc<dyn RuntimeBackend>,
     ) -> impl Fn(Budget) -> Option<Placement> {
-        let footprint = self.footprint(model);
+        let launch = self.launch(&model.id);
+        let model = model.clone();
         let cpu = self.cpu_slots(&model.id).is_some();
+        // The pool may give way down to a working context (or what the launch starts with, if
+        // less); the weights never give way for it.
+        let floor = launch
+            .pool_tokens
+            .min(context::MIN_WORKING_CONTEXT.min(launch.context))
+            .max(1);
+        let elastic = backend.slot_aware();
         move |budget| {
-            if cpu {
-                backend.place_on_cpu(footprint, budget)
-            } else {
-                backend.place(footprint, budget)
+            let at = |tokens: u32| {
+                let footprint = Footprint::of(
+                    &model,
+                    &ModelLaunch {
+                        pool_tokens: tokens,
+                        ..launch.clone()
+                    },
+                );
+                if cpu {
+                    backend.place_on_cpu(footprint, budget)
+                } else {
+                    backend.place(footprint, budget)
+                }
+            };
+            let full = at(launch.pool_tokens);
+            if !elastic || full.is_some_and(|p| cpu || p.all_layers_on_gpu) {
+                return full;
             }
+            // Beside the models loaded now the whole pool would push layers off the GPU (or
+            // not fit): cut the pool instead, while the weights and a working pool fit.
+            let Some(least) = at(floor) else {
+                return full;
+            };
+            let keep = |p: &Placement| !least.all_layers_on_gpu || p.all_layers_on_gpu;
+            if full.as_ref().is_some_and(keep) {
+                return full;
+            }
+            let tokens = context::largest_fitting(floor, launch.pool_tokens, |tokens| {
+                at(tokens).as_ref().is_some_and(keep)
+            });
+            at(tokens)
+        }
+    }
+
+    /// What loading `model` now would get, from the placer the loader uses: its placement and
+    /// KV pool beside the models loaded (other than itself), or on their memory too when it only
+    /// fits once they are swapped out; `None` when it does not fit this machine.
+    pub fn estimate(&self, model: &LocalModel) -> Option<(Placement, u32)> {
+        let backend = Arc::clone(self.backend(model.format)?);
+        let launch = self.launch(&model.id);
+        let left = {
+            let state = lock(&self.state);
+            let (vram, ram) = state.loaded.iter().filter(|(id, _)| **id != model.id).fold(
+                (0, 0),
+                |(vram, ram), (_, loaded)| {
+                    (
+                        vram + loaded.placement.vram_bytes,
+                        ram + loaded.placement.ram_bytes,
+                    )
+                },
+            );
+            Budget {
+                vram_bytes: self.budget.vram_bytes.saturating_sub(vram),
+                ram_bytes: self.budget.ram_bytes.saturating_sub(ram),
+                unified: self.budget.unified,
+            }
+        };
+        let place = self.placer(model, backend);
+        let placement = place(left).or_else(|| place(self.budget))?;
+        Some((placement, Self::placed_pool(model, &launch, &placement)))
+    }
+
+    /// The KV pool `placement` (from [`Supervisor::placer`]) was made with: the launch's pool,
+    /// or less when it was cut to keep the layers on the GPU.
+    fn placed_pool(model: &LocalModel, launch: &ModelLaunch, placement: &Placement) -> u32 {
+        let per_token = model.info.kv_bytes_per_token_kv(
+            planner::cache_element_bytes(&launch.cache_type_k),
+            planner::cache_element_bytes(&launch.cache_type_v),
+        );
+        let weights = model.size_bytes + planner::RUNTIME_OVERHEAD_BYTES;
+        match per_token {
+            Some(per_token) if per_token > 0 => {
+                let kv = placement.required_bytes.saturating_sub(weights);
+                u32::try_from(kv / per_token)
+                    .unwrap_or(u32::MAX)
+                    .min(launch.pool_tokens)
+            }
+            _ => launch.pool_tokens,
         }
     }
 
@@ -1329,6 +1542,7 @@ impl Supervisor {
                 .collect::<Vec<_>>()
         };
         tracing::info!(model = %id, "unloading model on request");
+        self.shrink(id);
         if let Err(error) = self.swap_out_detached(victim, "request", swapping).await {
             tracing::warn!(%error, model = %id, "could not unload a model");
         }
@@ -1448,6 +1662,10 @@ impl Supervisor {
         // Time spent waiting for a slot or for room, which the lease reports; loading the
         // model, swapping others out, and restoring a saved slot are not counted.
         let mut waited = Duration::ZERO;
+        let waiting = Waiting {
+            waits: &self.waits,
+            holder,
+        };
         loop {
             // Listen before looking, so a change between the two is not missed.
             let changed = self.changed.notified();
@@ -1469,6 +1687,11 @@ impl Supervisor {
                     let queued_at = Instant::now();
                     // Tokens first, then the slot, so a call never holds a slot while it waits
                     // for tokens.
+                    waiting.set(if queued.tokens.is_none() && pool.tokens.is_some() {
+                        LocalWait::KvRoom
+                    } else {
+                        LocalWait::Slot
+                    });
                     let tokens = match (queued.tokens.take(), &pool.tokens) {
                         (Some(tokens), _) => Some(tokens),
                         (None, Some(semaphore)) => Some(
@@ -1482,6 +1705,7 @@ impl Supervisor {
                         ),
                         (None, None) => None,
                     };
+                    waiting.set(LocalWait::Slot);
                     let slot = tokio::time::timeout_at(
                         deadline,
                         Arc::clone(&pool.permits).acquire_owned(),
@@ -1506,6 +1730,9 @@ impl Supervisor {
                     continue;
                 }
                 Step::Load => {
+                    self.note_demand(id, &request);
+                    // Behind a load or unload in flight, perhaps of another model.
+                    waiting.set(LocalWait::OtherModel);
                     let swapping = Arc::clone(&self.swapping).lock_owned();
                     let swapping = tokio::time::timeout_at(deadline, swapping)
                         .await
@@ -1513,6 +1740,7 @@ impl Supervisor {
                     match self.plan(&model, holder, priority, &ticket)? {
                         Plan::Retry => continue,
                         Plan::Load(load) => {
+                            waiting.set(LocalWait::Loading);
                             return self
                                 .swap_in(&model, holder, &request, *load, swapping)
                                 .await
@@ -1526,9 +1754,12 @@ impl Supervisor {
                         }
                     }
                 }
-                Step::Wait => {}
+                Step::Wait => waiting.set(self.why_waiting(id)),
                 // Giving way to the user is not a failure to get room: the wait starts over.
-                Step::Yield => deadline = tokio::time::Instant::now() + max_wait,
+                Step::Yield => {
+                    waiting.set(LocalWait::Slot);
+                    deadline = tokio::time::Instant::now() + max_wait;
+                }
             }
             let now = tokio::time::Instant::now();
             if now >= deadline {
@@ -1559,6 +1790,25 @@ impl Supervisor {
         let Some(entry) = state.loaded.get_mut(id) else {
             return Ok(Step::Wait);
         };
+        // Growing: nothing new starts on it, so the calls running drain and it restarts.
+        if entry.growing {
+            return Ok(Step::Wait);
+        }
+        if let Some(target) = entry.growth(request) {
+            tracing::info!(model = %id, from = entry.pool.pool_tokens, to = target, "a call needs a larger KV pool; the model restarts with it once its running calls are done");
+            self.grow_to(id, target);
+            entry.stale = true;
+            entry.growing = true;
+            state.set_admitted(ticket.seq, false);
+            let spawn = !state.stale_task;
+            state.stale_task = true;
+            drop(state);
+            self.changed.notify_waiters();
+            if spawn {
+                tokio::spawn(unload_stale(Weak::clone(&self.me)));
+            }
+            return Ok(Step::Wait);
+        }
         // An agent already in the model's batch carries on; a newcomer joins only while no
         // earlier call for another model is waiting for the room, and not while the model
         // waits to restart with new settings.
@@ -1652,7 +1902,8 @@ impl Supervisor {
         priority: Priority,
         ticket: &Ticket<'_>,
     ) -> Result<Plan, String> {
-        let footprint = self.footprint(model);
+        let launch = self.launch(&model.id);
+        let footprint = Footprint::of(model, &launch);
         let no_room = || {
             format!(
                 "not enough memory for {} (needs {} MiB)",
@@ -1728,6 +1979,9 @@ impl Supervisor {
             .filter_map(|id| state.loaded.remove_entry(id))
             .collect();
         drop(users);
+        for (id, _) in &victims {
+            self.shrink(id);
+        }
         if !victims.is_empty() {
             state.swaps.push_back(tokio::time::Instant::now());
         }
@@ -1738,7 +1992,8 @@ impl Supervisor {
             victims,
             call: ticket.seq,
             priority,
-            launch: self.launch(&model.id),
+            served_pool: Self::placed_pool(model, &launch, &placement),
+            launch,
             cpu_pinned: self.cpu_lane(&model.id).is_some(),
         })))
     }
@@ -1761,7 +2016,24 @@ impl Supervisor {
             priority,
             mut launch,
             cpu_pinned,
+            served_pool,
         } = load;
+        // A pool cut to keep the layers on the GPU beside the loaded models: one agent may use
+        // at most all of it. `launch` stays what the settings ask, so the model is not taken
+        // for stale.
+        let squeezed = served_pool < launch.pool_tokens;
+        let served = ModelLaunch {
+            pool_tokens: served_pool,
+            context: if squeezed {
+                launch.context.min(served_pool.max(1))
+            } else {
+                launch.context
+            },
+            ..launch.clone()
+        };
+        if squeezed {
+            tracing::info!(model = %model.id, pool_tokens = served_pool, wanted = launch.pool_tokens, "the KV pool is cut to keep every layer on the GPU beside the loaded models");
+        }
         let replaced = !victims.is_empty();
         let swapping = self.swap_out_detached(victims, "room", swapping).await?;
         // The prompt cache takes what the setting asks of the RAM left after the model, and
@@ -1793,8 +2065,8 @@ impl Supervisor {
             model_id: model.id.clone(),
             model_path: model.path.clone(),
             mmproj: model.mmproj.clone(),
-            context: launch.context,
-            pool_tokens: launch.pool_tokens,
+            context: served.context,
+            pool_tokens: served.pool_tokens,
             slots: launch.slots,
             gpu_layers: placement.gpu_layers,
             cpu_only: cpu_pinned,
@@ -1805,7 +2077,13 @@ impl Supervisor {
             slot_save_path: files.map(|files| lock(files).dir().to_path_buf()),
             extra_args,
         };
-        tracing::info!(model = %model.id, gpu_layers = placement.gpu_layers, cpu_pinned, slots = launch.slots, pool_tokens = launch.pool_tokens, cache_ram_mb, "loading local model");
+        tracing::info!(model = %model.id, gpu_layers = placement.gpu_layers, cpu_pinned, slots = launch.slots, pool_tokens = served.pool_tokens, context = served.context, squeezed, cache_ram_mb, "loading local model");
+        if launch.pool_clamped {
+            tracing::warn!(model = %model.id, pool_tokens = launch.pool_tokens, "the model's fixed KV pool does not fit beside its weights on the GPU; it is cut to what fits so the layers stay on the GPU");
+        }
+        if !cpu_pinned && !placement.all_layers_on_gpu && self.budget.vram_bytes > 0 {
+            tracing::warn!(model = %model.id, gpu_layers = placement.gpu_layers, "the model's weights do not fit on the GPU beside what is loaded; some layers run on the CPU");
+        }
         let started = Instant::now();
         // A quick failure, such as the process exiting while it starts, is tried once more; one
         // that ran out the launcher's time is not.
@@ -1827,7 +2105,7 @@ impl Supervisor {
         let seconds = started.elapsed().as_secs_f64();
         let pool = SlotPool::new(
             server.base_url().to_string(),
-            &launch,
+            &served,
             backend.slot_aware(),
             Arc::clone(&self.changed),
         );
@@ -1874,6 +2152,8 @@ impl Supervisor {
                     batch: HashSet::from([holder.to_string()]),
                     launch,
                     stale,
+                    growing: false,
+                    squeezed,
                 },
             );
             let spawn = stale && !state.stale_task;
@@ -2066,14 +2346,20 @@ impl Supervisor {
                 .filter_map(|id| state.loaded.remove_entry(id))
                 .collect()
         };
+        // Its sessions are done with it: it starts with a small pool again.
+        for (id, _) in &victims {
+            self.shrink(id);
+        }
         if let Err(error) = self.swap_out_detached(victims, "idle", swapping).await {
             tracing::warn!(%error, "could not unload idle models");
         }
     }
 
     /// Unloads the loaded models whose settings changed and that nobody is using: no call lease,
-    /// no queued call, no agent of any session mid-turn on them. Waits its turn behind a load or
-    /// unload in flight. Used by the daemon's tick and by tests.
+    /// no queued call, no agent of any session mid-turn on them. A model whose pool must grow
+    /// goes as soon as no call runs on it, between its agents' calls: they are mid-turn by
+    /// definition, one of them waiting for it. Waits its turn behind a load or unload in flight.
+    /// Used by the daemon's tick and by tests.
     pub async fn unload_stale_now(&self) {
         let swapping = Arc::clone(&self.swapping).lock_owned().await;
         let victims: Vec<_> = {
@@ -2085,7 +2371,8 @@ impl Supervisor {
                 .filter(|(id, entry)| {
                     entry.stale
                         && !entry.busy()
-                        && Presence::claims(&users, id, &entry.batch, None) == Claim::None
+                        && (entry.growing
+                            || Presence::claims(&users, id, &entry.batch, None) == Claim::None)
                 })
                 .map(|(id, _)| id.clone())
                 .collect();
@@ -2107,14 +2394,51 @@ impl Supervisor {
                 }
                 (id, entry)
             })
-            .collect();
-        if let Err(error) = self.swap_out_detached(victims, "config", swapping).await {
+            .collect::<Vec<_>>();
+        let (grow, config): (Vec<_>, Vec<_>) =
+            victims.into_iter().partition(|(_, entry)| entry.growing);
+        let swapping = match self.swap_out_detached(grow, "grow", swapping).await {
+            Ok(swapping) => swapping,
+            Err(error) => {
+                tracing::warn!(%error, "could not restart models to grow their KV pool");
+                return;
+            }
+        };
+        if let Err(error) = self.swap_out_detached(config, "config", swapping).await {
             tracing::warn!(%error, "could not restart models after a settings change");
+        }
+    }
+
+    /// Why a call for `id` that must wait its turn waits.
+    fn why_waiting(&self, id: &str) -> LocalWait {
+        match lock(&self.state).loaded.get(id) {
+            Some(entry) if entry.growing => LocalWait::GrowingPool,
+            // Stale: it restarts with new settings once free.
+            Some(entry) if entry.stale => LocalWait::Loading,
+            _ => LocalWait::OtherModel,
         }
     }
 
     fn any_stale(&self) -> bool {
         lock(&self.state).loaded.values().any(|entry| entry.stale)
+    }
+}
+
+/// What a holder's call waits for, while it waits; dropping it says it no longer does.
+struct Waiting<'a> {
+    waits: &'a Mutex<HashMap<String, LocalWait>>,
+    holder: &'a str,
+}
+
+impl Waiting<'_> {
+    fn set(&self, reason: LocalWait) {
+        lock(self.waits).insert(self.holder.to_string(), reason);
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        lock(self.waits).remove(self.holder);
     }
 }
 
@@ -2261,6 +2585,10 @@ impl LocalModels for Supervisor {
         (context > 0).then_some(u64::from(context))
     }
 
+    fn wait_reason(&self, holder: &str) -> Option<LocalWait> {
+        lock(&self.waits).get(holder).copied()
+    }
+
     fn acquire<'a>(&'a self, id: &'a str, holder: &'a str) -> AcquireFuture<'a> {
         self.acquire_with(id, holder, LocalRequest::default())
     }
@@ -2394,7 +2722,7 @@ mod tests {
             auto_install: false,
             update_external: "off".into(),
             idle_unload_s: 900,
-            context: 4096,
+            context: 4096.into(),
             parallel: 2,
             cache_type: "f16".into(),
             slots: Some(2),
