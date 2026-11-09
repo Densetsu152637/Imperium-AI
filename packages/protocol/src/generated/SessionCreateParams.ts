@@ -2,10 +2,24 @@
 
 export type SessionCreateParams = { 
 /**
- * Absolute path of the project folder the session works in.
+ * The environment the session works in: its folders are the sandbox, the first is the
+ * working directory. Give this or `project_dir`.
  */
-project_dir: string, 
+environment_id?: string, 
 /**
- * `<endpoint>:<model>`; defaults to `models.default` from the configuration.
+ * Absolute path of a folder to work in, for clients that predate environments. It maps to
+ * the environment whose first folder it is, created (named after the folder) if needed.
  */
-model?: string, };
+project_dir?: string, 
+/**
+ * A model table id or `<endpoint>:<model>`; defaults to `models.default` from the
+ * configuration. With neither, the session is still created, without a model: messages
+ * sent to it wait (status `needs_model`) until `session.control` `set_model` gives it one.
+ */
+model?: string, 
+/**
+ * Start on git worktrees: every folder of the environment that is in a git repository is
+ * replaced by a new worktree on a new branch (`imperium/<session id>` unless
+ * `worktree_branch` names one). Other folders are used as they are. Local folders only.
+ */
+worktree?: boolean, worktree_branch?: string, };

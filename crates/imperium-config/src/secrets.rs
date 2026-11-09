@@ -46,6 +46,12 @@ impl<'de> serde::Deserialize<'de> for SecretName {
     }
 }
 
+impl serde::Serialize for SecretName {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
 impl fmt::Display for SecretName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)

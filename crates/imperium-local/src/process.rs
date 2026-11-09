@@ -3,15 +3,20 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use tokio::process::{Child, Command};
 
 use crate::backend::{LLAMA_CPP, VLLM};
-use crate::supervisor::{LaunchFuture, LaunchSpec, Launcher, Server};
+use crate::supervisor::{
+    LaunchError, LaunchFuture, LaunchSpec, Launcher, Server, SlotFuture, SlotTransfer, StopFuture,
+};
 
 /// How long a model may take to load before the launch is abandoned.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// How long saving or restoring a slot may take: a long context is gigabytes of KV cache.
+const SLOT_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL: Duration = Duration::from_millis(250);
 
 /// Starts each runtime's executable, found by the runtime's id: `llama-server` from a runtime
@@ -21,6 +26,8 @@ pub struct ProcessLauncher {
     /// Runtime id and its executable.
     programs: Vec<(String, PathBuf)>,
     logs: PathBuf,
+    /// Where llama.cpp servers save slots when their model is swapped out.
+    slots: Option<PathBuf>,
     http: reqwest::Client,
 }
 
@@ -31,8 +38,15 @@ impl ProcessLauncher {
         ProcessLauncher {
             programs: vec![(LLAMA_CPP.into(), server), (VLLM.into(), vllm)],
             logs,
+            slots: None,
             http: reqwest::Client::new(),
         }
+    }
+
+    /// Saves the slots of models swapped out to `dir` (see [`Launcher::slot_dir`]).
+    pub fn with_slot_dir(mut self, dir: PathBuf) -> Self {
+        self.slots = Some(dir);
+        self
     }
 
     /// Runs `program` for the runtime with id `runtime`, replacing any executable set for it.
@@ -51,7 +65,7 @@ impl ProcessLauncher {
             .ok_or_else(|| format!("no executable is set for the {runtime} runtime"))
     }
 
-    async fn start(&self, spec: &LaunchSpec) -> Result<Box<dyn Server>, String> {
+    async fn start(&self, spec: &LaunchSpec) -> Result<Box<dyn Server>, LaunchError> {
         let program = self.program(spec.backend.id())?;
         spec.backend.check_program(program)?;
         let port = free_port()?;
@@ -74,15 +88,18 @@ impl ProcessLauncher {
         let ready = tokio::time::timeout(LOAD_TIMEOUT, self.wait_ready(&base, &mut child)).await;
         match ready {
             Ok(Ok(())) => Ok(Box::new(ProcessServer {
-                _child: child,
+                pid: child.id(),
+                child: Mutex::new(Some(child)),
                 base_url: format!("{base}/v1"),
+                root: base,
+                http: self.http.clone(),
             })),
-            Ok(Err(message)) => Err(format!("{message}; see {}", log_path.display())),
-            Err(_) => Err(format!(
+            Ok(Err(message)) => Err(format!("{message}; see {}", log_path.display()).into()),
+            Err(_) => Err(LaunchError::timed_out(format!(
                 "the model did not load within {} s; see {}",
                 LOAD_TIMEOUT.as_secs(),
                 log_path.display()
-            )),
+            ))),
         }
     }
 
@@ -105,17 +122,94 @@ impl Launcher for ProcessLauncher {
     fn launch<'a>(&'a self, spec: &'a LaunchSpec) -> LaunchFuture<'a> {
         Box::pin(self.start(spec))
     }
+
+    fn slot_dir(&self) -> Option<PathBuf> {
+        self.slots.clone()
+    }
 }
 
 /// A running server process; dropping it kills the process.
 struct ProcessServer {
-    _child: Child,
+    /// Killed on drop if [`Server::stop`] has not taken it.
+    child: Mutex<Option<Child>>,
+    /// The process id, for resource readings; kept after [`Server::stop`] takes the child.
+    pid: Option<u32>,
     base_url: String,
+    /// The server's address without `/v1`, where llama.cpp's `/slots` endpoints are.
+    root: String,
+    http: reqwest::Client,
+}
+
+impl ProcessServer {
+    /// `POST /slots/{slot}?action=save|restore` with the file name (llama.cpp b12180); the
+    /// reply counts tokens in `n_saved`/`n_restored` and bytes in `n_written`/`n_read`.
+    async fn slot_action(
+        &self,
+        slot: u32,
+        action: &str,
+        file: &str,
+    ) -> Result<SlotTransfer, String> {
+        let url = format!("{}/slots/{slot}?action={action}", self.root);
+        let response = self
+            .http
+            .post(&url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(serde_json::json!({ "filename": file }).to_string())
+            .timeout(SLOT_TIMEOUT)
+            .send()
+            .await
+            .map_err(|error| format!("{action} slot {slot}: {error}"))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|error| format!("{action} slot {slot}: {error}"))?;
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        if !status.is_success() {
+            let message = body["error"]["message"].as_str().unwrap_or(&text);
+            return Err(format!("{action} slot {slot}: {status}: {message}"));
+        }
+        let (tokens, bytes) = match action {
+            "save" => ("n_saved", "n_written"),
+            _ => ("n_restored", "n_read"),
+        };
+        Ok(SlotTransfer {
+            tokens: body[tokens].as_u64().unwrap_or(0),
+            bytes: body[bytes].as_u64().unwrap_or(0),
+        })
+    }
 }
 
 impl Server for ProcessServer {
     fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    fn save_slot<'a>(&'a self, slot: u32, file: &'a str) -> SlotFuture<'a> {
+        Box::pin(self.slot_action(slot, "save", file))
+    }
+
+    fn restore_slot<'a>(&'a self, slot: u32, file: &'a str) -> SlotFuture<'a> {
+        Box::pin(self.slot_action(slot, "restore", file))
+    }
+
+    fn stop(&self) -> StopFuture<'_> {
+        let child = self
+            .child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        Box::pin(async move {
+            if let Some(mut child) = child
+                && let Err(error) = child.kill().await
+            {
+                tracing::warn!(%error, "could not stop a model server");
+            }
+        })
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.pid
     }
 }
 
@@ -177,12 +271,22 @@ mod tests {
             model_path: PathBuf::from("m.gguf"),
             mmproj: None,
             context: 4096,
+            pool_tokens: 4096,
             slots: 1,
             gpu_layers: 0,
-            cache_type: "f16".into(),
+            cpu_only: false,
+            cache_type_k: "f16".into(),
+            cache_type_v: "f16".into(),
+            flash_attn: "auto".into(),
+            cache_ram_mb: 0,
+            slot_save_path: None,
             extra_args: Vec::new(),
         };
         let error = launcher.launch(&spec).await.err().unwrap();
-        assert!(error.contains("imperium runtime install"), "{error}");
+        assert!(
+            error.message.contains("imperium runtime install"),
+            "{error}"
+        );
+        assert!(!error.timed_out, "a missing server fails at once");
     }
 }

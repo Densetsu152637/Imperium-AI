@@ -16,7 +16,13 @@ pub fn list() -> anyhow::Result<()> {
         for row in listing.schedules {
             let state = match (&row.problem, row.running, row.enabled) {
                 (Some(problem), ..) => format!("error: {problem}"),
-                (None, true, _) => "running".into(),
+                (None, true, _) => match &row.deferred {
+                    Some(reason) => format!(
+                        "deferred: {reason} (imperium schedule run {} runs it now)",
+                        row.id
+                    ),
+                    None => "running".into(),
+                },
                 (None, false, false) => "disabled".into(),
                 (None, false, true) => row
                     .next_run

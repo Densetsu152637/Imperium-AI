@@ -23,6 +23,8 @@ pub struct Sources {
     pub project_dir: PathBuf,
     /// More plugin folders (each a plugin, or a folder of plugins).
     pub plugin_dirs: Vec<PathBuf>,
+    /// Plugins, by name, that are found but not loaded.
+    pub disabled_plugins: Vec<String>,
     /// `[[hooks]]` from the user's configuration.
     pub hooks: Vec<ConfiguredHook>,
     pub server_timeout: Duration,
@@ -47,7 +49,8 @@ pub struct Extensions {
 pub fn load(sources: &Sources) -> Extensions {
     let mut plugin_dirs = vec![sources.config_dir.join("plugins")];
     plugin_dirs.extend(sources.plugin_dirs.iter().cloned());
-    let (plugins, mut notices) = plugins::discover(&plugin_dirs, sources.server_timeout);
+    let (mut plugins, mut notices) = plugins::discover(&plugin_dirs, sources.server_timeout);
+    plugins.retain(|plugin| !sources.disabled_plugins.contains(&plugin.name));
 
     let project = &sources.project_dir;
     let mut skill_dirs = vec![

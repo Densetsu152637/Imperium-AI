@@ -9,12 +9,22 @@ const STATUS: Record<SessionStatus, { mark: string; label: string }> = {
   working: { mark: "●", label: "Working" },
   needs_attention: { mark: "!", label: "Needs attention" },
   paused: { mark: "⏸", label: "Paused" },
+  needs_model: { mark: "?", label: "Needs a model" },
   watching: { mark: "◉", label: "Watching" },
   merged: { mark: "✓", label: "Merged" },
 };
 
+/** Background sessions (started by a schedule or a project agent) say so. */
 export function statusText(session: SessionState): string {
+  const text = baseStatusText(session);
+  return session.summary.background ? `${text} · background` : text;
+}
+
+function baseStatusText(session: SessionState): string {
   const { label } = STATUS[session.status];
+  if (session.status === "paused" && session.pause && session.pause.cause !== "usage_limit") {
+    return `${label} · ${session.pause.cause === "deferred" ? "waiting for a quiet machine" : "giving way to you"}`;
+  }
   if (session.status === "paused" && session.pause && session.pause.untilMs > 0) {
     return `${label} · resumes ${formatResumeTime(session.pause.untilMs)}`;
   }

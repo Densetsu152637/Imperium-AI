@@ -4,25 +4,49 @@
 import type {
   AgentEvent,
   ContextCategory,
+  PauseCause,
   Plan,
+  QueuedMessage,
   ResumePolicy,
   SessionStatus,
   SessionSummary,
   TokenCountMethod,
   TokenUsage,
 } from "@imperium/protocol";
+import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
 export const ROOT = "root";
 
 export type Entry =
   | { kind: "user"; text: string }
+  /** A steering message that joined the running turn. */
+  | { kind: "steer"; text: string }
   | { kind: "assistant"; text: string }
   | { kind: "tool"; callId: string; summary: string; ok: boolean | null; output: string }
   | { kind: "permission"; agentId: string; requestId: number; tool: string; summary: string; answered: boolean }
   | { kind: "task"; taskId: string; brief: string; model: string }
   | { kind: "turn"; usage: TokenUsage; costUsd: number | null; steps: number }
   | { kind: "error"; message: string }
-  | { kind: "notice"; message: string };
+  | { kind: "notice"; message: string }
+  | SuggestionEntry;
+
+/** A model download suggestion and what became of it (see docs/07-desktop-ui.md). */
+export type SuggestionEntry = {
+  kind: "suggestion";
+  id: string;
+  need: string;
+  repo: string;
+  quant: string;
+  /** What to switch to once it is downloaded. */
+  model: string;
+  sizeBytes: number;
+  fit: string;
+  reason: string;
+  /** `pending` until answered; then as `model_suggestion_update` reports. */
+  state: "pending" | "downloading" | "ready" | "failed" | "cancelled" | "dismissed" | "disabled";
+  jobId: string | null;
+  message: string | null;
+};
 
 export type TaskState = {
   taskId: string;
@@ -70,13 +94,15 @@ export type SessionState = {
   /** Each agent's latest context breakdown, by agent id. */
   breakdowns: Record<string, ContextBreakdown>;
   busy: boolean;
+  /** Messages waiting for the root agent, in delivery order (steering ones join its turn). */
+  queue: QueuedMessage[];
   /** The agent's browser after its latest action. */
   browser: { url: string; title: string; screenshot: string } | null;
   status: SessionStatus;
   /** What a watching or merged session follows, such as `owner/repo#12`. */
   statusDetail: string | null;
-  /** While waiting out a usage limit: when the session tries again. */
-  pause: { untilMs: number; reason: string } | null;
+  /** While paused: when the session tries again after a usage limit (0 when it waits for a quiet machine), and why. */
+  pause: { untilMs: number; reason: string; cause: PauseCause } | null;
   /** When this window last saw the session change, for ordering lists. */
   updatedAt: number;
 };
@@ -97,10 +123,11 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   calls: [],
   breakdowns: {},
   busy: false,
+  queue: [],
   browser: null,
   status: summary.status,
   statusDetail: summary.status_detail,
-  pause: null,
+  pause: summary.hold ? { untilMs: 0, reason: summary.hold.reason, cause: summary.hold.cause } : null,
   updatedAt,
 });
 
@@ -128,6 +155,9 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
   switch (event.type) {
     case "turn_started":
       next.push({ kind: "user", text: event.text });
+      break;
+    case "steered":
+      next.push({ kind: "steer", text: event.text });
       break;
     case "text_delta":
       if (last?.kind === "assistant") next[next.length - 1] = { ...last, text: last.text + event.text };
@@ -183,13 +213,63 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
       next.push({
         kind: "notice",
         message:
-          event.until_unix_ms > 0
-            ? `Usage limit reached; waiting until ${formatResumeTime(event.until_unix_ms)}`
-            : "Usage limit reached; waiting",
+          event.cause !== "usage_limit"
+            ? `Background work paused: ${event.reason}. Resume now to skip the wait.`
+            : event.until_unix_ms > 0
+              ? `Usage limit reached; waiting until ${formatResumeTime(event.until_unix_ms)}`
+              : "Usage limit reached; waiting",
       });
       break;
     case "resumed":
       next.push({ kind: "notice", message: "Resumed" });
+      break;
+    case "context_compacted":
+      next.push({
+        kind: "notice",
+        message:
+          `Context compacted to fit ${event.model}: ${formatTokens(event.before_tokens)} → ` +
+          `${formatTokens(event.after_tokens)} tokens; ${event.summarised_messages} earlier messages ` +
+          `summarised by ${event.summary_model}`,
+      });
+      break;
+    case "model_suggestion":
+      next.push({
+        kind: "suggestion",
+        id: event.id,
+        need: event.need,
+        repo: event.repo,
+        quant: event.quant,
+        model: event.model,
+        sizeBytes: event.size_bytes,
+        fit: event.fit,
+        reason: event.reason,
+        state: "pending",
+        jobId: null,
+        message: null,
+      });
+      break;
+    case "model_suggestion_update": {
+      const index = next.findLastIndex((entry) => entry.kind === "suggestion" && entry.id === event.id);
+      if (index >= 0) {
+        const suggestion = next[index] as SuggestionEntry;
+        next[index] = {
+          ...suggestion,
+          state: event.state,
+          jobId: event.job_id ?? suggestion.jobId,
+          model: event.model ?? suggestion.model,
+          message: event.message,
+        };
+      }
+      break;
+    }
+    case "task_resumed":
+      next.push({ kind: "notice", message: `Continued ${event.task_id} on ${event.model}: ${event.text.split("\n")[0]}` });
+      break;
+    case "model_changed":
+      next.push({
+        kind: "notice",
+        message: event.from ? `Switched model from ${event.from} to ${event.to}` : `Model set to ${event.to}`,
+      });
       break;
     default:
       break;
@@ -215,12 +295,13 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
     ];
   }
 
-  let { tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause } = state;
+  let { summary, tasks, plan, calls, breakdowns, busy, queue, browser, status, statusDetail, pause } = state;
+  if (event.type === "model_changed" && agentId === ROOT) summary = { ...summary, model: event.to };
   if (event.type === "status_changed") {
     status = event.status;
     statusDetail = event.detail;
   }
-  if (event.type === "paused") pause = { untilMs: event.until_unix_ms, reason: event.reason };
+  if (event.type === "paused") pause = { untilMs: event.until_unix_ms, reason: event.reason, cause: event.cause };
   if (event.type === "resumed") pause = null;
   if (event.type === "browser_view") {
     browser = { url: event.url, title: event.title, screenshot: event.screenshot };
@@ -259,6 +340,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
   if (agentId === ROOT) {
     entries = applyToEntries(entries, agentEvent);
     if (event.type === "plan_updated") plan = event.plan;
+    if (event.type === "queue_changed") queue = event.messages;
     if (event.type === "turn_started") busy = true;
     if (event.type === "turn_completed" || event.type === "turn_failed") busy = false;
     if (event.type === "task_spawned") {
@@ -275,15 +357,22 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
         },
       };
     }
+    // A finished subagent given a follow-up works again with its earlier conversation.
+    if (event.type === "task_resumed" && tasks[event.task_id]) {
+      const task = tasks[event.task_id];
+      tasks = { ...tasks, [event.task_id]: { ...task, status: "running", model: event.model, report: "" } };
+    }
   } else if (tasks[agentId]) {
     const task = tasks[agentId];
+    // A resumed task's cost adds to what it cost before.
+    const cost = (more: number | null) => (more === null ? task.costUsd : (task.costUsd ?? 0) + more);
     const updated: TaskState =
       event.type === "task_finished"
-        ? { ...task, status: event.ok ? "finished" : "failed", report: event.report, costUsd: event.cost_usd }
+        ? { ...task, status: event.ok ? "finished" : "failed", report: event.report, costUsd: cost(event.cost_usd) }
         : { ...task, entries: applyToEntries(task.entries, agentEvent) };
     tasks = { ...tasks, [agentId]: updated };
   }
-  return { ...state, entries, tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause };
+  return { ...state, summary, entries, tasks, plan, calls, breakdowns, busy, queue, browser, status, statusDetail, pause };
 }
 
 /** Tokens a breakdown's request held: the categories, which add up to the reported size. */
@@ -329,3 +418,32 @@ export function totals(calls: ModelCall[]): Totals {
 
 export const formatCost = (usd: number | null): string => (usd === null ? "—" : `$${usd.toFixed(4)}`);
 export const formatCount = (n: number): string => n.toLocaleString();
+
+/** What mods (`sessions:read`) see of each session: its agents and what each is doing now. */
+export function snapshotSessions(sessions: SessionState[]): SessionSnapshot[] {
+  return sessions.map((session) => {
+    const waiting = (agentId: string) =>
+      session.entries.some((entry) => entry.kind === "permission" && entry.agentId === agentId && !entry.answered);
+    const rootStatus: AgentSnapshot["status"] = waiting(ROOT)
+      ? "waiting"
+      : session.busy || session.status === "working"
+        ? "working"
+        : "idle";
+    const agents: AgentSnapshot[] = [{ agentId: ROOT, parentId: null, brief: "", status: rootStatus }];
+    for (const task of Object.values(session.tasks)) {
+      agents.push({
+        agentId: task.taskId,
+        parentId: ROOT,
+        brief: task.brief,
+        status: task.status === "running" ? (waiting(task.taskId) ? "waiting" : "working") : task.status,
+      });
+    }
+    return {
+      sessionId: session.summary.session_id,
+      title: sessionTitle(session),
+      projectDir: session.summary.project_dir,
+      status: session.status,
+      agents,
+    };
+  });
+}

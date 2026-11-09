@@ -1,6 +1,7 @@
 // Local models: GGUF files in the model folders, the hardware they are planned against, which
 // are loaded, and downloads from Hugging Face.
 
+import { Download, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import type {
   DownloadJob,
@@ -9,6 +10,7 @@ import type {
   LocalModelRow,
   ModelDownloadsResult,
 } from "@imperium/protocol";
+import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
 
 const GIB = 1024 ** 3;
@@ -16,7 +18,17 @@ const GIB = 1024 ** 3;
 const gib = (bytes: number): string => `${(bytes / GIB).toFixed(1)} GiB`;
 
 function fit(row: LocalModelRow): string {
-  if (row.loaded) return `loaded · ${row.slots_in_use}/${row.slots} busy`;
+  const speed = row.tokens_per_s != null ? ` · ${row.tokens_per_s.toFixed(1)} tok/s` : "";
+  return `${placement(row)}${speed}`;
+}
+
+function placement(row: LocalModelRow): string {
+  if (row.loaded) {
+    const queue = row.queued > 0 ? ` · ${row.queued} waiting` : "";
+    const lane = row.cpu_lane ? "CPU lane · " : "";
+    return `${lane}loaded · ${row.slots_in_use}/${row.slots} busy${queue} · pool ${row.pool_reserved_tokens}/${row.pool_tokens}`;
+  }
+  if (row.cpu_lane && row.placement === "cpu") return "CPU lane (RAM only)";
   switch (row.placement) {
     case "gpu":
       return "fits on GPU";
@@ -49,10 +61,12 @@ export function LocalModelsPanel({
   listing,
   onRefresh,
   client,
+  onConfigure,
 }: {
   listing: LocalModelListResult | null;
   onRefresh: () => void;
   client: DaemonClient | null;
+  onConfigure: () => void;
 }) {
   const download = <HfDownload client={client} onDone={onRefresh} />;
   if (!listing || !listing.enabled) {
@@ -76,7 +90,12 @@ export function LocalModelsPanel({
             {gib(hardware.ram_available_bytes)} free{hardware.overridden ? " (overridden)" : ""}
           </span>
         )}
-        <button onClick={onRefresh}>Refresh</button>
+        <button onClick={onRefresh}>
+          <RefreshCw aria-hidden="true" /> Refresh
+        </button>
+        <button onClick={onConfigure}>
+          <SlidersHorizontal aria-hidden="true" /> Configure
+        </button>
       </div>
       {runtime && !runtime.installed && (
         <p className="warning">
@@ -203,7 +222,7 @@ function HfDownload({ client, onDone }: { client: DaemonClient | null; onDone: (
           onChange={(event) => setRepo(event.target.value)}
         />
         <button type="submit" disabled={!client || busy || !repo.trim()}>
-          List files
+          <Search aria-hidden="true" /> List files
         </button>
       </form>
       {busy && (
@@ -222,13 +241,16 @@ function HfDownload({ client, onDone }: { client: DaemonClient | null; onDone: (
       {files && files.variants.length > 0 && (
         <div className="models-toolbar">
           <label htmlFor="hf-variant">Quantisation</label>
-          <select id="hf-variant" value={variant} onChange={(event) => setVariant(event.target.value)}>
-            {files.variants.map((option) => (
-              <option key={`${option.name}:${option.files[0]}`} value={option.name}>
-                {`${option.name} · ${gib(option.size_bytes)} · ${fitHint(option.fit)}`}
-              </option>
-            ))}
-          </select>
+          <Select
+            id="hf-variant"
+            value={variant}
+            onChange={setVariant}
+            options={files.variants.map((option) => ({
+              value: option.name,
+              label: option.name,
+              description: `${gib(option.size_bytes)} · ${fitHint(option.fit)}`,
+            }))}
+          />
           {files.projectors.length > 0 && (
             <label>
               <input type="checkbox" checked={mmproj} onChange={(event) => setMmproj(event.target.checked)} /> Include
@@ -236,7 +258,7 @@ function HfDownload({ client, onDone }: { client: DaemonClient | null; onDone: (
             </label>
           )}
           <button className="primary" onClick={start} disabled={busy || !variant}>
-            Download
+            <Download aria-hidden="true" /> Download
           </button>
         </div>
       )}
@@ -277,7 +299,7 @@ function DownloadRow({ job, onCancel }: { job: DownloadJob; onCancel: () => void
         <span className={`badge ${job.state === "done" ? "finished" : job.state}`}>{job.state}</span>
         {job.state === "running" && (
           <button onClick={onCancel} aria-label={`Cancel download of ${label}`}>
-            Cancel
+            <X aria-hidden="true" /> Cancel
           </button>
         )}
       </div>

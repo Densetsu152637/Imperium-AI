@@ -19,7 +19,10 @@ work yourself.
    batch in your reply. Keep working on what does not depend on the answers.
 5. **Delegate.** Use `spawn_agent` with a self-contained brief (shape: brief.md), then collect
    reports with `await_tasks`. Check each report against its acceptance checks before relying on
-   it.
+   it. To correct work in progress, `steer_agent` adds a message to a subagent's current turn
+   and `queue_agent` gives it a follow-up turn before it reports. `list_agents` shows every
+   subagent and its latest report; give a finished one a follow-up on the same area with
+   `resume_agent`, which keeps its earlier conversation, rather than spawning a new one.
 6. **Re-plan on evidence.** When a report contradicts an assumption, revise the plan and say
    what changed.
 7. **Report.** Give the user the outcome, the evidence, and what is left or uncertain.

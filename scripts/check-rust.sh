@@ -12,6 +12,11 @@ untracked="$(git ls-files --others --exclude-standard -- "$generated")"
 if ! git diff --quiet -- "$generated" || [ -n "$untracked" ]; then
   echo "Generated protocol types are out of date. Run cargo test and commit $generated:" >&2
   git status --short -- "$generated" >&2
+  git --no-pager diff -- "$generated" >&2
+  for file in $untracked; do
+    echo "--- new file: $file" >&2
+    cat "$file" >&2
+  done
   exit 1
 fi
 

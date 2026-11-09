@@ -1,31 +1,25 @@
 // The window is a row of columns. A column holds either one spanning panel or a stack of
-// panels; columns and stack dividers are resizable and sizes are kept as proportions.
+// panels; columns and stack dividers are resizable and sizes are kept as proportions in the
+// saved layout (state.ts). Panels with `onClose` can be closed; Settings → Panels reopens them.
+// Panels with `onDetach` can move to a window of their own (panelWindows.ts).
 
+import { ExternalLink, X } from "lucide-react";
 import { useRef, useState, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
 
-export type PanelSpec = { id: string; title: string; body: ReactNode; actions?: ReactNode };
+import { getLayout, updateLayout } from "./state";
+
+export type PanelSpec = { id: string; title: string; body: ReactNode; actions?: ReactNode; onClose?: () => void; onDetach?: () => void };
 export type ColumnSpec =
   | { id: string; mode: "span"; panel: PanelSpec }
   | { id: string; mode: "stack"; panels: PanelSpec[] };
 
-const STORAGE_KEY = "imperium.layout";
-
 function loadSizes(key: string, count: number): number[] {
-  try {
-    const saved = JSON.parse(localStorage.getItem(`${STORAGE_KEY}.${key}`) ?? "null") as number[] | null;
-    if (saved?.length === count) return saved;
-  } catch {
-    // Fall through to equal sizes.
-  }
-  return Array(count).fill(1 / count);
+  const saved = getLayout().sizes[key];
+  return saved?.length === count ? saved : Array(count).fill(1 / count);
 }
 
 function saveSizes(key: string, sizes: number[]): void {
-  try {
-    localStorage.setItem(`${STORAGE_KEY}.${key}`, JSON.stringify(sizes));
-  } catch {
-    // Not remembering a layout is harmless.
-  }
+  updateLayout({ sizes: { ...getLayout().sizes, [key]: sizes } });
 }
 
 /** Splits space between children along one axis, with draggable dividers between them. */
@@ -44,7 +38,7 @@ function Split({
   children: ReactNode[];
 }) {
   const [sizes, setSizes] = useState(() =>
-    initial && !localStorage.getItem(`${STORAGE_KEY}.${storageKey}`) ? initial : loadSizes(storageKey, children.length),
+    initial && !getLayout().sizes[storageKey] ? initial : loadSizes(storageKey, children.length),
   );
   // Panels added or removed after the first render (mods load later) start from equal (or
   // remembered) sizes for the new count, so no panel is left without room.
@@ -103,6 +97,21 @@ function Panel({ panel }: { panel: PanelSpec }) {
       <header className="panel-header">
         <h2 id={`panel-${panel.id}`}>{panel.title}</h2>
         {panel.actions}
+        {panel.onDetach && (
+          <button
+            className="ghost panel-close panel-detach icon-only"
+            onClick={panel.onDetach}
+            aria-label={`Detach ${panel.title}`}
+            title="Open in its own window"
+          >
+            <ExternalLink />
+          </button>
+        )}
+        {panel.onClose && (
+          <button className="ghost panel-close icon-only" onClick={panel.onClose} aria-label={`Close ${panel.title}`} title="Close panel">
+            <X />
+          </button>
+        )}
       </header>
       <div className="panel-body">{panel.body}</div>
     </section>
@@ -116,7 +125,12 @@ export function Columns({ columns, initial }: { columns: ColumnSpec[]; initial?:
         column.mode === "span" ? (
           <Panel key={column.id} panel={column.panel} />
         ) : (
-          <Split key={column.id} storageKey={`stack.${column.id}`} axis="column" className={`rail rail-${column.id}`}>
+          <Split
+            key={`${column.id}:${column.panels.map((panel) => panel.id).join(",")}`}
+            storageKey={`stack.${column.id}.${column.panels.length}`}
+            axis="column"
+            className={`rail rail-${column.id}`}
+          >
             {column.panels.map((panel) => (
               <Panel key={panel.id} panel={panel} />
             ))}

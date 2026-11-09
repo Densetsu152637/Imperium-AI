@@ -9,6 +9,22 @@
       "status": "available"
     },
     {
+      "name": "steer_agent",
+      "status": "available"
+    },
+    {
+      "name": "queue_agent",
+      "status": "available"
+    },
+    {
+      "name": "list_agents",
+      "status": "available"
+    },
+    {
+      "name": "resume_agent",
+      "status": "available"
+    },
+    {
       "name": "update_plan",
       "status": "available"
     },
@@ -18,6 +34,10 @@
     },
     {
       "name": "web_fetch",
+      "status": "available"
+    },
+    {
+      "name": "suggest_local_model",
       "status": "available"
     },
     {
