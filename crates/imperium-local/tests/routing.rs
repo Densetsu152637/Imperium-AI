@@ -248,6 +248,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         max_steps: 10,
         background: None,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

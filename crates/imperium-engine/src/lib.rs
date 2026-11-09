@@ -6,6 +6,7 @@
 //! [`AgentEvent`](imperium_protocol::session::AgentEvent)s by subscribing.
 
 mod agent;
+mod agents;
 mod breakdown;
 mod compact;
 mod journal;
@@ -16,6 +17,7 @@ mod quiet;
 mod session;
 mod status;
 
+pub use agents::agents_dir;
 pub use compact::SwitchError;
 pub use imperium_api::{
     AcquireFuture, Availability, Load, LoadView, LocalLease, LocalModels, LocalPresence,

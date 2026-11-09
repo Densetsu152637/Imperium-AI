@@ -177,6 +177,7 @@ fn start(local: Arc<OneSlot>, load: Arc<Manual>, dir: &std::path::Path) -> Sessi
         max_steps: 6,
         background: Some(Background { load }),
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.join(".journal.jsonl"),
     })
     .unwrap()

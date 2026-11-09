@@ -99,6 +99,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         max_steps: 5,
         background: None,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: data.join(format!("{id}.jsonl")),
     })
     .unwrap()

@@ -18,6 +18,7 @@ import type {
   ResumePolicy,
   SendMode,
   SessionControlParams,
+  SessionAgentResumeParams,
   SessionQueueParams,
   SessionSendParams,
   SessionControlResult,
@@ -497,6 +498,16 @@ export function App() {
     client.call("session.queue", params).catch(report);
   };
 
+  /** Gives a finished subagent a follow-up; it reports through `task_resumed` and `task_finished`. */
+  const resumeAgent = (agentId: string, text: string): Promise<unknown> => {
+    if (!client || !selected) return Promise.reject(new Error("Not connected to imperium-core."));
+    const params: SessionAgentResumeParams = { session_id: selected, agent_id: agentId, text };
+    return client.call("session.agent_resume", params).catch((error: unknown) => {
+      report(error);
+      throw error;
+    });
+  };
+
   const respond = (requestId: number, decision: PermissionDecision) => {
     if (!client || !selected) return;
     setSessions((all) => ({ ...all, [selected]: markAnswered(all[selected], requestId) }));
@@ -702,7 +713,7 @@ export function App() {
     ),
   };
   const rightPanels: PanelSpec[] = [
-    { id: "agents", title: "Agents", body: <AgentsPanel session={session} /> },
+    { id: "agents", title: "Agents", body: <AgentsPanel session={session} onResume={client && selected ? resumeAgent : undefined} /> },
     { id: "models", title: "Models", body: <ModelsPanel table={modelTable} onConfigure={() => setModelDialog({ tab: "table" })} /> },
     {
       id: "local-models",

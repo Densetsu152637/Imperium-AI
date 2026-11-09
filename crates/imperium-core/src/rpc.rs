@@ -57,6 +57,10 @@ use imperium_protocol::methods::{
     ModelUnload, ModelUnloadParams, ModelUnloadResult, SystemResources, SystemResourcesParams,
     SystemResourcesSubscribe, SystemResourcesSubscribeParams, SystemResourcesSubscribeResult,
 };
+use imperium_protocol::methods::{
+    SessionAgentResume, SessionAgentResumeParams, SessionAgentResumeResult, SessionAgents,
+    SessionAgentsParams, SessionAgentsResult,
+};
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 use imperium_protocol::methods::{
     SessionQueue, SessionQueueParams, SessionQueueResult, SessionSendResult,
@@ -509,6 +513,25 @@ impl Connection {
             SessionQueue::NAME => {
                 call::<SessionQueue>(request.params, |params: SessionQueueParams| {
                     self.queue(params)
+                })
+            }
+            SessionAgents::NAME => {
+                call::<SessionAgents>(request.params, |params: SessionAgentsParams| {
+                    Ok(SessionAgentsResult {
+                        agents: self.session(&params.session_id)?.agents(),
+                    })
+                })
+            }
+            SessionAgentResume::NAME => {
+                call::<SessionAgentResume>(request.params, |params: SessionAgentResumeParams| {
+                    let model = self
+                        .session(&params.session_id)?
+                        .resume_agent(&params.agent_id, params.text)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+                    Ok(SessionAgentResumeResult {
+                        agent_id: params.agent_id,
+                        model,
+                    })
                 })
             }
             SessionSuggestionRespond::NAME => {

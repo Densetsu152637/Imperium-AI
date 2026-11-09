@@ -674,6 +674,7 @@ async fn a_session_parked_on_an_approval_holds_no_claim() {
         max_steps: 10,
         background: None,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

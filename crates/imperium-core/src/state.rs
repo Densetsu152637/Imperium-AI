@@ -1196,6 +1196,7 @@ impl DaemonState {
             }),
             max_steps: self.settings().agents.max_steps,
             auto_compact: options.auto_compact,
+            keep_agent_state: remember && self.settings().sessions.agent_state_keep,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
         // Ordinary sessions are remembered so they continue after a restart; project agents
@@ -1337,6 +1338,13 @@ impl DaemonState {
         self.forget_session(id);
         let sessions = self.paths.data_dir().join("sessions");
         let _ = std::fs::remove_file(sessions.join(format!("{id}.meta.json")));
+        // Its agents' kept state goes with it.
+        let agents = imperium_engine::agents_dir(&sessions.join(format!("{id}.jsonl")));
+        if agents.exists()
+            && let Err(error) = std::fs::remove_dir_all(&agents)
+        {
+            tracing::warn!(path = %agents.display(), %error, "could not delete the session's agent state");
+        }
         let mut result = SessionDeleteResult::default();
         if remove_worktrees && !placement.worktrees.is_empty() {
             (result.removed_worktrees, result.failed) =

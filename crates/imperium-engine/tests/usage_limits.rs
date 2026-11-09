@@ -79,6 +79,7 @@ fn start(url: &str, dir: &std::path::Path, policy: ResumePolicy) -> Session {
         max_steps: 3,
         background: None,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.join("u.jsonl"),
     })
     .unwrap()

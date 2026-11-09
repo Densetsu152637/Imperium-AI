@@ -171,6 +171,7 @@ fn start(index: usize, local: Arc<dyn LocalModels>, dir: &std::path::Path) -> Se
         max_steps: 6,
         background: None,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.join(".journal.jsonl"),
     })
     .unwrap()

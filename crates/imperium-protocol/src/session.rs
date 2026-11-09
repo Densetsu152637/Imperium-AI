@@ -107,6 +107,15 @@ pub enum SessionEvent {
         usage: TokenUsage,
         cost_usd: Option<f64>,
     },
+    /// A finished subagent was given a follow-up (`resume_agent`, or `session.agent_resume`)
+    /// and works again with its earlier conversation; `task_finished` follows as for a new
+    /// task. Emitted by the agent that resumed it (`root`).
+    TaskResumed {
+        task_id: String,
+        /// The follow-up message.
+        text: String,
+        model: String,
+    },
     /// The agent finished the turn.
     TurnCompleted {
         usage: TokenUsage,
@@ -334,6 +343,59 @@ pub enum TokenCountMethod {
     /// The provider reported no usage: parts are counted with the tokenizer where one is
     /// available, else estimated, and the formatting overhead is estimated.
     Estimated,
+}
+
+/// Where an agent stands, in `session.agents`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentStatus {
+    /// Working on a turn.
+    Running,
+    /// Finished its last turn; a subagent can be resumed with a follow-up.
+    Idle,
+    /// Its last turn failed; a subagent can still be resumed.
+    Failed,
+    /// The daemon stopped while it was working; it can be resumed from where it was saved.
+    Interrupted,
+}
+
+/// An agent of a session and its kept state, from `session.agents`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentSummary {
+    /// `root`, or a subagent's task id (`t1`, ...).
+    pub agent_id: String,
+    /// The agent that started it; `None` for the root.
+    pub parent: Option<String>,
+    /// The workflow role it loads files for: `root`, `leaf`, or what its delegator asked.
+    pub role: String,
+    /// The first line of its brief, for lists.
+    pub title: String,
+    /// Its brief (empty for the root).
+    pub task: String,
+    /// The model spec it last ran on.
+    pub model: String,
+    /// Served by a local runtime, which it takes a slot on for each turn.
+    pub local: bool,
+    pub status: AgentStatus,
+    /// Its conversation is kept, so `resume_agent` / `session.agent_resume` can continue it.
+    /// Always false for the root, which is continued by sending the session a message.
+    pub resumable: bool,
+    /// Turns it has run (the brief and every follow-up).
+    pub turns: u32,
+    /// Messages in its kept conversation.
+    pub messages: u32,
+    /// Every model call it made, across turns.
+    pub usage: TokenUsage,
+    pub cost_usd: Option<f64>,
+    /// Its latest plan, when it kept one.
+    pub plan: Option<Plan>,
+    /// Its latest report (a subagent's final reply), truncated.
+    pub last_report: Option<String>,
+    /// When its state last changed, in milliseconds since the Unix epoch.
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
 }
 
 /// A goal and the steps toward it, kept by an agent with the `update_plan` tool.

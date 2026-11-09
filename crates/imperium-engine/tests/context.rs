@@ -217,6 +217,7 @@ fn start(dir: &std::path::Path, base_url: String, local: bool) -> Session {
         max_steps: 5,
         background: None,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.join(".journal/context.jsonl"),
     })
     .unwrap()

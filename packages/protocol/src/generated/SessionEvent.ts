@@ -47,7 +47,11 @@ cached_tokens: number, } | { "type": "plan_updated", plan: Plan, } | { "type": "
 /**
  * The subagent's final reply, truncated for display.
  */
-report: string, usage: TokenUsage, cost_usd: number | null, } | { "type": "turn_completed", usage: TokenUsage, 
+report: string, usage: TokenUsage, cost_usd: number | null, } | { "type": "task_resumed", task_id: string, 
+/**
+ * The follow-up message.
+ */
+text: string, model: string, } | { "type": "turn_completed", usage: TokenUsage, 
 /**
  * Absent when the model has no configured prices.
  */
