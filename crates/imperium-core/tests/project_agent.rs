@@ -151,3 +151,99 @@ async fn a_scheduled_event_wakes_the_project_agent_which_dispatches_and_hears_ba
     // The agent, its dispatched session, and nothing more.
     assert!(daemon.sessions().len() >= 2);
 }
+
+/// With the machine busy, the session the agent starts exists at once, as a background session
+/// waiting for a quiet machine; it gets its brief when the machine turns quiet.
+#[tokio::test]
+async fn a_project_agents_session_waits_for_a_quiet_machine_and_is_a_background_session() {
+    use imperium_engine::Load;
+    use imperium_protocol::session::PauseCause;
+
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().display().to_string().replace('\\', "/");
+    let config = format!(
+        r#"
+        [models]
+        default = "fake:model"
+        [endpoints.fake]
+        base_url = "{model}"
+        [memory]
+        enabled = false
+        [[projects]]
+        path = "{path}"
+        agent = true
+        "#,
+        model = fake_model().await
+    );
+    let settings = imperium_config::Config::from_layers([
+        imperium_config::Layer::defaults(),
+        imperium_config::Layer::new(
+            imperium_config::Source::User("test".into()),
+            config.parse().unwrap(),
+        ),
+    ])
+    .settings()
+    .unwrap();
+    let daemon =
+        imperium_core::DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+    let load = imperium_core::ManualLoad::new(Load::Busy);
+    daemon.use_load_view(load.clone());
+    daemon.start_project_agents();
+    let agents = daemon.project_agents().list();
+    let agent = daemon.session(&agents[0].1).unwrap();
+    assert!(
+        !agent.is_background(),
+        "the agent itself answers you promptly"
+    );
+    daemon.tell_project_agent(project.path(), "Summarise the open issues.".into());
+
+    // The dispatched session is there, waiting.
+    let dispatched = loop {
+        let found = daemon
+            .sessions()
+            .into_iter()
+            .find(|session| session.id() != agent.id());
+        if let Some(session) = found {
+            break session;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(dispatched.is_background());
+    let mut events = dispatched.subscribe();
+    let hold = dispatched.hold().expect("it waits for a quiet machine");
+    assert_eq!(hold.cause, PauseCause::Deferred);
+    assert!(hold.reason.contains("quiet") && hold.reason.contains("busy"));
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        dispatched.title().is_empty(),
+        "it has not been given its brief"
+    );
+
+    // Quiet: it starts (the next check is within a couple of seconds).
+    load.set(Load::Quiet);
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("the session starts within 20 s")
+            .unwrap();
+        if matches!(event.event, SessionEvent::TurnStarted { .. }) {
+            break;
+        }
+    }
+    assert!(dispatched.hold().is_none());
+    // Its write needs approval; answer it so the session ends cleanly.
+    let mut announcements = daemon.announcements();
+    let approval = loop {
+        let notification = tokio::time::timeout(Duration::from_secs(20), announcements.recv())
+            .await
+            .expect("an approval request within 20 s")
+            .unwrap();
+        if notification.method == "approval.requested" {
+            break notification.params;
+        }
+    };
+    daemon
+        .approvals()
+        .respond(approval["id"].as_u64().unwrap(), true);
+}

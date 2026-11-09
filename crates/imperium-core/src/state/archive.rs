@@ -95,6 +95,8 @@ impl DaemonState {
             status: serde_json::from_value(meta["status"].clone()).unwrap_or(SessionStatus::Idle),
             status_detail: meta["status_detail"].as_str().map(str::to_string),
             resume_policy: self.resume_policy(),
+            background: meta["background"] == true,
+            hold: None,
             pinned: meta["pinned"] == true,
             persistent: false,
             worktrees: serde_json::from_value(meta["worktrees"].clone()).unwrap_or_default(),
@@ -244,7 +246,7 @@ impl DaemonState {
     /// `sessions.auto_archive_on_pr_close` is on and it may be archived now. Returns whether it
     /// was.
     pub fn archive_after_pull_request(&self, session: &Session) -> bool {
-        self.settings.sessions.auto_archive_on_pr_close
+        self.settings().sessions.auto_archive_on_pr_close
             && self.may_auto_archive(session)
             && self.archive(session.id()).is_ok()
     }
@@ -252,7 +254,7 @@ impl DaemonState {
     /// Archives sessions idle for `sessions.auto_archive_after_days` as of `now` (activity is
     /// the session's last journalled event). Returns the ids archived.
     pub fn archive_idle_sessions(&self, now: SystemTime) -> Vec<String> {
-        let days = self.settings.sessions.auto_archive_after_days;
+        let days = self.settings().sessions.auto_archive_after_days;
         if days == 0 {
             return Vec::new();
         }

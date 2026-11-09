@@ -103,7 +103,7 @@ pub async fn fix_ci(
         None,
         format!("fixing {checks}"),
     );
-    let worktree = worktree_path(state.settings(), state.data_dir(), repo, pr.number);
+    let worktree = worktree_path(&state.settings(), state.data_dir(), repo, pr.number);
     let local_branch = format!("imperium/fix-pr-{}", pr.number);
     if let Err(error) =
         git::prepare_worktree(&watch.project, &worktree, &pr.branch, &local_branch).await
@@ -128,7 +128,16 @@ pub async fn fix_ci(
     let project = worktree.display().to_string();
     let model = state.settings().github.autofix.model.clone();
     let (ok, summary, session_id) = state
-        .run_prompt(&project, model.as_deref(), prompt, tools, FIX_TIMEOUT)
+        .run_prompt(
+            &project,
+            model.as_deref(),
+            prompt,
+            crate::SessionOptions {
+                pre_approved: tools,
+                ..crate::SessionOptions::default()
+            },
+            FIX_TIMEOUT,
+        )
         .await;
     if !ok {
         announce(state, repo, pr.number, "failed", session_id, summary);

@@ -1,16 +1,17 @@
 //! The daemon's local model runtime: scanned folders, the hardware probe, and the supervisor.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use imperium_config::{Paths, Settings};
+use imperium_config::{ModelPlacement, Paths, Settings};
 use imperium_local::hardware::{Hardware, probe};
 use imperium_local::hf::Weights;
 use imperium_local::planner::{Budget, Placement};
 use imperium_local::process::ProcessLauncher;
 use imperium_local::runtime::{llama_cpp_ref, server_path};
 use imperium_local::scan::{Format, Skipped, scan};
-use imperium_local::supervisor::{Runtimes, Supervisor};
+use imperium_local::supervisor::{CPU_LANE_SLOTS, CpuLane, Runtimes, Supervisor};
 use imperium_protocol::methods::{
     GpuInfo, HardwareInfo, LocalModelListResult, LocalModelRow, RuntimeInfo, SkippedModel,
 };
@@ -36,6 +37,27 @@ pub fn scan_folders(paths: &Paths, settings: &Settings) -> Vec<PathBuf> {
     folders
 }
 
+/// The local models pinned to the CPU lane by `placement = "cpu"` rows of the model table, with
+/// how each is served.
+pub fn cpu_pins(settings: &Settings) -> HashMap<String, CpuLane> {
+    settings
+        .models
+        .catalog
+        .iter()
+        .filter(|entry| entry.placement == ModelPlacement::Cpu)
+        .filter_map(|entry| {
+            Some((
+                entry.llamacpp_model()?.to_string(),
+                CpuLane {
+                    slots: entry.parallel.unwrap_or(CPU_LANE_SLOTS),
+                    context: entry.context,
+                    max_wait_s: entry.max_wait_s,
+                },
+            ))
+        })
+        .collect()
+}
+
 impl LocalRuntime {
     /// Scans the model folders ([`scan_folders`]), probes the hardware, and starts the
     /// supervisor. `None` when there is nothing to scan. Must run inside the Tokio runtime.
@@ -59,11 +81,12 @@ impl LocalRuntime {
             tracing::warn!(path = %skipped.path.display(), reason = %skipped.reason, "skipped model file");
         }
         let vllm = &settings.runtime.vllm;
-        let launcher = Arc::new(ProcessLauncher::new(
+        let launcher = ProcessLauncher::new(
             server.clone(),
             PathBuf::from(&vllm.command),
             paths.data_dir().join("logs"),
-        ));
+        )
+        .with_slot_dir(paths.data_dir().join("swap"));
         let runtimes = Runtimes {
             vllm: vllm.clone(),
             vllm_available: cfg!(target_os = "linux"),
@@ -73,8 +96,9 @@ impl LocalRuntime {
             llamacpp.clone(),
             runtimes,
             &hardware,
-            launcher,
+            Arc::new(launcher),
         );
+        supervisor.set_cpu_pinned(cpu_pins(settings));
         Some(LocalRuntime {
             supervisor,
             scanned: Mutex::new((folders, found.skipped)),
@@ -84,13 +108,32 @@ impl LocalRuntime {
         })
     }
 
-    /// Scans the folders again, such as after a download, so new models can be used.
+    /// Scans the folders again, such as after a download, so new models can be used. The caller
+    /// applies the per-model settings afterwards, reading them under the lock that serialises
+    /// saves (see `DaemonState::rescan_local_models`), so a save made meanwhile is not undone.
     pub fn rescan(&self, paths: &Paths, settings: &Settings) {
         let folders = scan_folders(paths, settings);
         let found = scan(&folders);
         tracing::info!(models = found.models.len(), "local models scanned again");
         self.supervisor.set_models(found.models);
         *self.scanned.lock().unwrap_or_else(PoisonError::into_inner) = (folders, found.skipped);
+    }
+
+    /// `gpu`, `partial`, `cpu`, or `none`: how a model with `placement` would load.
+    pub fn placement_label(&self, placement: Option<&Placement>, cpu_lane: bool) -> &'static str {
+        if cpu_lane && placement.is_some() {
+            "cpu"
+        } else {
+            placement_name(placement, &self.hardware)
+        }
+    }
+
+    /// Hands the supervisor the per-model settings and CPU-lane pins in `settings`; loaded models
+    /// whose launch shape changed restart once nothing is using them.
+    pub fn apply_model_settings(&self, settings: &Settings) {
+        self.supervisor.set_cpu_pinned(cpu_pins(settings));
+        self.supervisor
+            .set_model_settings(settings.runtime.llamacpp.models.clone());
     }
 
     /// The memory local models may use.
@@ -106,8 +149,10 @@ impl LocalRuntime {
             .iter()
             .map(|model| {
                 let footprint = self.supervisor.footprint(model);
+                let launch = self.supervisor.launch(&model.id);
                 let placement = self.supervisor.placement_when_idle(model);
                 let status = loaded.iter().find(|l| l.model_id == model.id);
+                let cpu_lane = self.supervisor.cpu_slots(&model.id).is_some();
                 LocalModelRow {
                     id: model.id.clone(),
                     runtime: match model.format {
@@ -121,12 +166,18 @@ impl LocalRuntime {
                     size_bytes: model.size_bytes,
                     context_length: model.info.context_length,
                     required_bytes: footprint.required_bytes(),
-                    placement: placement_name(placement.as_ref(), &self.hardware).into(),
+                    placement: self.placement_label(placement.as_ref(), cpu_lane).into(),
                     gpu_layers: placement
                         .map(|p| p.gpu_layers.min(footprint.layers.unwrap_or(999))),
                     loaded: status.is_some(),
-                    slots: status.map_or(self.supervisor.settings().parallel, |s| s.slots),
+                    slots: status.map_or(launch.slots, |s| s.slots),
                     slots_in_use: status.map_or(0, |s| s.slots_in_use),
+                    queued: status.map_or(0, |s| s.queued),
+                    cpu_lane,
+                    tokens_per_s: self.supervisor.tokens_per_s(&model.id),
+                    context: status.map_or(launch.context, |s| s.context),
+                    pool_tokens: status.map_or(launch.pool_tokens, |s| s.pool_tokens),
+                    pool_reserved_tokens: status.map_or(0, |s| s.pool_reserved_tokens),
                 }
             })
             .collect();
@@ -210,5 +261,191 @@ pub fn disabled() -> LocalModelListResult {
         skipped: Vec::new(),
         hardware: None,
         runtime: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use imperium_config::{Config, Layer, Source};
+    use imperium_engine::LocalModels;
+    use imperium_local::gguf::GgufInfo;
+    use imperium_local::hardware::Gpu;
+    use imperium_local::scan::LocalModel;
+    use imperium_local::supervisor::{LaunchFuture, LaunchSpec, Launcher, Server};
+
+    use super::*;
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[derive(Debug)]
+    struct FakeLauncher;
+
+    struct FakeServer(String);
+
+    impl Server for FakeServer {
+        fn base_url(&self) -> &str {
+            &self.0
+        }
+    }
+
+    impl Launcher for FakeLauncher {
+        fn launch<'a>(&'a self, spec: &'a LaunchSpec) -> LaunchFuture<'a> {
+            Box::pin(async move {
+                Ok(
+                    Box::new(FakeServer(format!("http://fake/{}/v1", spec.model_id)))
+                        as Box<dyn Server>,
+                )
+            })
+        }
+    }
+
+    fn model(id: &str, gib: u64) -> LocalModel {
+        LocalModel {
+            id: id.into(),
+            path: PathBuf::from(format!("{id}.gguf")),
+            parts: 1,
+            size_bytes: gib * GIB,
+            info: GgufInfo {
+                block_count: Some(32),
+                embedding_length: Some(4096),
+                head_count: Some(32),
+                head_count_kv: Some(8),
+                ..GgufInfo::default()
+            },
+            mmproj: None,
+            format: Format::Gguf,
+        }
+    }
+
+    fn settings(table: &str) -> Settings {
+        Config::from_layers([
+            Layer::defaults(),
+            Layer::new(Source::User("u".into()), table.parse().unwrap()),
+        ])
+        .settings()
+        .unwrap()
+    }
+
+    #[test]
+    fn cpu_lane_pins_come_from_the_model_table() {
+        let settings = settings(
+            r#"
+            [[models.catalog]]
+            id = "critic"
+            spec = "llamacpp:qwen3-30b"
+            location = "local"
+            tier = "strong"
+            placement = "cpu"
+            parallel = 2
+            context = 32768
+            max_wait_s = 7200
+
+            [[models.catalog]]
+            id = "lane"
+            spec = "llamacpp:consul"
+            location = "local"
+            tier = "strong"
+            placement = "cpu"
+
+            [[models.catalog]]
+            id = "coder"
+            spec = "llamacpp:coder"
+            location = "local"
+            tier = "standard"
+            "#,
+        );
+        assert_eq!(
+            cpu_pins(&settings),
+            HashMap::from([
+                (
+                    "qwen3-30b".to_string(),
+                    CpuLane {
+                        slots: 2,
+                        context: Some(32768),
+                        max_wait_s: Some(7200),
+                    }
+                ),
+                ("consul".to_string(), CpuLane::default()),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn cpu_lane_listing_reports_the_lane_and_the_measured_speed() {
+        let hardware = Hardware {
+            gpus: vec![Gpu {
+                name: "test".into(),
+                vendor: "nvidia".into(),
+                vram_total_bytes: 24 * GIB,
+                vram_free_bytes: 24 * GIB,
+                driver: None,
+            }],
+            ram_total_bytes: 64 * GIB,
+            ram_available_bytes: 64 * GIB,
+            cpu_cores: 16,
+            unified_memory: false,
+            overridden: true,
+        };
+        let settings = settings("");
+        let supervisor = Supervisor::start(
+            vec![model("coder", 6), model("critic", 18)],
+            settings.runtime.llamacpp.clone(),
+            Runtimes::default(),
+            &hardware,
+            Arc::new(FakeLauncher),
+        );
+        supervisor.set_cpu_pinned(HashMap::from([("critic".to_string(), CpuLane::default())]));
+        let runtime = LocalRuntime {
+            supervisor: Arc::clone(&supervisor),
+            scanned: Mutex::new((Vec::new(), Vec::new())),
+            hardware,
+            pack: "cpu".into(),
+            server: PathBuf::from("llama-server"),
+        };
+        let row = |listing: &LocalModelListResult, id: &str| {
+            listing
+                .models
+                .iter()
+                .find(|row| row.id == id)
+                .cloned()
+                .unwrap()
+        };
+
+        let listing = runtime.listing();
+        let (coder, critic) = (row(&listing, "coder"), row(&listing, "critic"));
+        assert_eq!(coder.placement, "gpu");
+        assert!(!coder.cpu_lane);
+        assert_eq!(
+            (critic.placement.as_str(), critic.gpu_layers),
+            ("cpu", Some(0))
+        );
+        assert!(critic.cpu_lane);
+        assert_eq!(critic.slots, 1, "a lane serves one call at a time");
+        assert_eq!(
+            coder.slots,
+            settings.runtime.llamacpp.default_launch().slots,
+            "a model without settings gets the default slots, not `parallel`"
+        );
+        assert_eq!(
+            (coder.context, coder.pool_tokens, coder.pool_reserved_tokens),
+            (
+                settings.runtime.llamacpp.context,
+                settings.runtime.llamacpp.default_launch().pool_tokens,
+                0
+            )
+        );
+        assert_eq!((coder.tokens_per_s, critic.tokens_per_s), (None, None));
+
+        // A call that finished on the lane: 120 tokens generated over 10 s.
+        let lease = supervisor.acquire("critic", "reviewer").await.unwrap();
+        supervisor.record_throughput("critic", 120, Duration::from_secs(10));
+        drop(lease);
+        let listing = runtime.listing();
+        let critic = row(&listing, "critic");
+        assert!(critic.loaded);
+        assert_eq!(critic.tokens_per_s, Some(12.0));
+        assert_eq!(row(&listing, "coder").tokens_per_s, None);
     }
 }

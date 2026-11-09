@@ -118,7 +118,9 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 5,
+        background: None,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: project.path().join(".journal.jsonl"),
     })
     .unwrap();

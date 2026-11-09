@@ -3,13 +3,18 @@
 //! Imperium crate; everything else may depend on it.
 
 mod chat;
+mod load;
 mod local;
 pub mod markdown;
 mod pricing;
 mod tools;
 
 pub use chat::{ChatMessage, FunctionCall, ToolCall, ToolSpec, Usage};
-pub use local::{AcquireFuture, Availability, LocalLease, LocalModels};
+pub use load::{Load, LoadView};
+pub use local::{
+    AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence, LocalRequest, Priority,
+    holder, holder_session,
+};
 pub use pricing::Pricing;
 pub use tools::{
     StartFuture, ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,

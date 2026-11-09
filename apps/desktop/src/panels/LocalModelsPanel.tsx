@@ -1,7 +1,7 @@
 // Local models: GGUF files in the model folders, the hardware they are planned against, which
 // are loaded, and downloads from Hugging Face.
 
-import { Download, RefreshCw, Search, X } from "lucide-react";
+import { Download, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import type {
   DownloadJob,
@@ -18,7 +18,17 @@ const GIB = 1024 ** 3;
 const gib = (bytes: number): string => `${(bytes / GIB).toFixed(1)} GiB`;
 
 function fit(row: LocalModelRow): string {
-  if (row.loaded) return `loaded · ${row.slots_in_use}/${row.slots} busy`;
+  const speed = row.tokens_per_s != null ? ` · ${row.tokens_per_s.toFixed(1)} tok/s` : "";
+  return `${placement(row)}${speed}`;
+}
+
+function placement(row: LocalModelRow): string {
+  if (row.loaded) {
+    const queue = row.queued > 0 ? ` · ${row.queued} waiting` : "";
+    const lane = row.cpu_lane ? "CPU lane · " : "";
+    return `${lane}loaded · ${row.slots_in_use}/${row.slots} busy${queue} · pool ${row.pool_reserved_tokens}/${row.pool_tokens}`;
+  }
+  if (row.cpu_lane && row.placement === "cpu") return "CPU lane (RAM only)";
   switch (row.placement) {
     case "gpu":
       return "fits on GPU";
@@ -51,10 +61,12 @@ export function LocalModelsPanel({
   listing,
   onRefresh,
   client,
+  onConfigure,
 }: {
   listing: LocalModelListResult | null;
   onRefresh: () => void;
   client: DaemonClient | null;
+  onConfigure: () => void;
 }) {
   const download = <HfDownload client={client} onDone={onRefresh} />;
   if (!listing || !listing.enabled) {
@@ -80,6 +92,9 @@ export function LocalModelsPanel({
         )}
         <button onClick={onRefresh}>
           <RefreshCw aria-hidden="true" /> Refresh
+        </button>
+        <button onClick={onConfigure}>
+          <SlidersHorizontal aria-hidden="true" /> Configure
         </button>
       </div>
       {runtime && !runtime.installed && (

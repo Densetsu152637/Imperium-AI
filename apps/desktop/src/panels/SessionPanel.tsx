@@ -1,13 +1,15 @@
-// The main session panel: a header with title and status, environment (with the model picker),
-// usage-limit controls, and the folded context and outputs sections; then the conversation and
-// the composer.
+// The main session panel: the title and status at the top, then the conversation, the composer,
+// and under it a footer with the model selector at the left and the context meter at the right.
+// The meter opens the context breakdown, session totals, and outputs above the composer; the
+// options button opens Markdown rendering and the usage-limit policy there.
 
-import { ArrowUp, CornerDownRight, ListPlus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ArrowUp, CornerDownRight, ListPlus, SlidersHorizontal, X } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type {
+  LocalModelRow,
   ModelRow,
   PermissionDecision,
   Plan,
@@ -20,6 +22,7 @@ import type {
 import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
 import {
   ROOT,
+  breakdownUsed,
   describeUse,
   formatCost,
   formatCount,
@@ -29,15 +32,18 @@ import {
   type Entry,
   type SessionState,
 } from "../sessions";
+import { Select } from "../components/Select";
+import { Switch } from "../components/Switch";
 import { ToolState } from "../components/ToolState";
 import type { DaemonClient } from "../daemon/client";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { ModelSuggestionCard } from "./ModelSuggestionCard";
+import { SessionModelSelect } from "./ModelSelect";
 import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
 
 type Props = {
-  session: SessionState | null;
+  session: SessionState;
   icons: ProjectIcons;
   /** Sends a message: `queue` starts a turn, or waits while one runs; `steer` joins the running turn. */
   onSend: (text: string, mode: SendMode) => void;
@@ -47,15 +53,20 @@ type Props = {
   /** Resolves once the daemon accepted the policy. */
   onSetResumePolicy: (policy: ResumePolicy) => Promise<void>;
   onResumeNow: () => void;
-  /** The model table (`models.list`), offered in the model picker. */
+  /** The model table (`models.list`), offered in the model selector. */
   models: ModelRow[];
-  /** Switches the session's model; resolves with the daemon's answer, or null when it failed. */
-  onSetModel: (model: string) => Promise<SessionControlResult | null>;
+  /** Local models found in the model folders (`models.local`), offered after the table. */
+  localModels: LocalModelRow[];
+  /** Switches the session's model; resolves with the daemon's answer, rejects with its reason. */
+  onSetModel: (model: string) => Promise<SessionControlResult>;
   /** For answering model download suggestions and following their downloads. */
   client?: DaemonClient | null;
   /** Resumes an archived session. */
   onUnarchive?: () => void;
 };
+
+/** What the footer has opened above the composer. */
+type Drawer = "context" | "options" | null;
 
 export function SessionPanel({
   session,
@@ -66,6 +77,7 @@ export function SessionPanel({
   onSetResumePolicy,
   onResumeNow,
   models,
+  localModels,
   onSetModel,
   client = null,
   onUnarchive,
@@ -73,26 +85,22 @@ export function SessionPanel({
   const settings = useSettings();
   const [draft, setDraft] = useState("");
   const [rendered, setRendered] = useState(settings.renderMarkdown);
+  const [drawer, setDrawer] = useState<Drawer>(null);
+  const drawerId = useId();
   useEffect(() => setRendered(settings.renderMarkdown), [settings.renderMarkdown]);
   const end = useRef<HTMLDivElement>(null);
-  const entryCount = session?.entries.length ?? 0;
-  const lastLength = session?.entries.at(-1) && "text" in session.entries.at(-1)! ? (session.entries.at(-1) as { text: string }).text.length : 0;
+  const entryCount = session.entries.length;
+  const last = session.entries.at(-1);
+  const lastLength = last && "text" in last ? last.text.length : 0;
 
   // Block body: newer browsers return a promise from scrollIntoView, which an effect must not return.
   useEffect(() => {
     if (settings.autoScroll) end.current?.scrollIntoView({ block: "end" });
   }, [entryCount, lastLength, settings.autoScroll]);
 
-  if (!session) {
-    return (
-      <div className="session-empty">
-        <p className="empty">Open a project folder and start a session to begin.</p>
-      </div>
-    );
-  }
   const sum = totals(session.calls);
-  const rootContext = session.breakdowns[ROOT];
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
+  const archived = session.summary.archived;
   // While the agent works the composer stays open: Enter queues the message for after the turn,
   // and Steer (Ctrl+Shift+Enter) adds it to the running turn.
   const send = (mode: SendMode = "queue") => {
@@ -101,6 +109,7 @@ export function SessionPanel({
     onSend(text, mode);
     setDraft("");
   };
+  const toggle = (next: Exclude<Drawer, null>) => setDrawer((open) => (open === next ? null : next));
 
   return (
     <div className="session">
@@ -117,39 +126,67 @@ export function SessionPanel({
             </button>
           )}
         </div>
+      </header>
 
-        <div className="session-env">
-          <span title={session.summary.project_dir}>{projectName(session.summary.project_dir)}</span>
-          <ModelPicker
-            key={session.summary.session_id}
-            current={session.summary.model}
-            models={models}
-            busy={session.busy}
-            onSwitch={onSetModel}
-          />
-          <span title="Isolation tier">{session.summary.isolation}</span>
-          <span title="Session cost">{formatCost(sum.costUsd)}</span>
-          <label className="toggle">
-            <input type="checkbox" checked={rendered} onChange={(event) => setRendered(event.target.checked)} />
-            Markdown
-          </label>
+      {session.plan && <PlanView plan={session.plan} />}
+
+      <div className="conversation" aria-live="polite">
+        {session.entries.map((entry, index) =>
+          entry.kind === "suggestion" ? (
+            <ModelSuggestionCard
+              key={index}
+              entry={entry}
+              sessionId={session.summary.session_id}
+              client={client}
+              onSetModel={(model) => onSetModel(model).catch(() => null)}
+            />
+          ) : (
+            <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} />
+          ),
+        )}
+        {session.busy && <p className="working">Working…</p>}
+        <div ref={end} />
+      </div>
+
+      {archived && (
+        <div className="archived-note" role="status">
+          <span>This session is archived: it is not running and keeps its history. Unarchive it to continue.</span>
+          {onUnarchive && (
+            <button className="primary" onClick={onUnarchive}>
+              Unarchive
+            </button>
+          )}
         </div>
+      )}
 
-        {/* Settings and statistics fold away so the conversation keeps the room. */}
-        <div className="session-tools">
-          <ResumeControls
-            key={session.summary.session_id}
-            policy={session.summary.resume_policy}
-            onSave={onSetResumePolicy}
-          />
-          <details className="session-details">
-            <summary>
-              Context and outputs{" "}
-              <span className="muted">
-                · {rootContext ? describeUse(rootContext) : `${formatCount(sum.prompt)} prompt tokens`} ·{" "}
-                {session.calls.length} model calls
-              </span>
-            </summary>
+      {session.summary.model === null && !archived && (
+        <p className="needs-model" role="status">
+          This session has no model yet. Pick one with the model selector under the message box (or set a default under
+          Settings → Models);
+          {session.status === "needs_model"
+            ? " your messages are waiting and run as soon as it has one."
+            : " messages you send wait until then."}
+        </p>
+      )}
+
+      {session.queue.length > 0 && <QueueView queue={session.queue} onChange={onChangeQueued} />}
+
+      {drawer && (
+        <section
+          id={drawerId}
+          className="session-drawer"
+          aria-label={drawer === "context" ? "Context and outputs" : "Session options"}
+        >
+          <button
+            type="button"
+            className="ghost icon-only session-drawer-close"
+            onClick={() => setDrawer(null)}
+            aria-label="Close"
+            title="Close"
+          >
+            <X aria-hidden="true" />
+          </button>
+          {drawer === "context" ? (
             <div className="session-sections">
               <section className="context-window-section">
                 <h3>Context window</h3>
@@ -166,6 +203,8 @@ export function SessionPanel({
                   <dd>{formatCount(sum.completion)}</dd>
                   <dt>Model calls</dt>
                   <dd>{session.calls.length}</dd>
+                  <dt>Cost</dt>
+                  <dd>{formatCost(sum.costUsd)}</dd>
                 </dl>
               </section>
               <section>
@@ -183,55 +222,34 @@ export function SessionPanel({
                 )}
               </section>
             </div>
-          </details>
-        </div>
-      </header>
-
-      {session.plan && <PlanView plan={session.plan} />}
-
-      <div className="conversation" aria-live="polite">
-        {session.entries.map((entry, index) => (
-          entry.kind === "suggestion" ? (
-            <ModelSuggestionCard
-              key={index}
-              entry={entry}
-              sessionId={session.summary.session_id}
-              client={client}
-              onSetModel={onSetModel}
-            />
           ) : (
-            <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} />
-          )
-        ))}
-        {session.busy && <p className="working">Working…</p>}
-        <div ref={end} />
-      </div>
-
-      {session.summary.archived && (
-        <div className="archived-note" role="status">
-          <span>This session is archived: it is not running and keeps its history. Unarchive it to continue.</span>
-          {onUnarchive && (
-            <button className="primary" onClick={onUnarchive}>
-              Unarchive
-            </button>
+            <div className="session-sections session-options">
+              <section>
+                <h3>Display</h3>
+                <label className="option-row">
+                  <Switch checked={rendered} onChange={setRendered} label="Render Markdown" />
+                  Render Markdown
+                </label>
+                <p className="muted" title={session.summary.project_dir}>
+                  {projectName(session.summary.project_dir)} · {session.summary.isolation}
+                </p>
+              </section>
+              <section>
+                <h3>Usage limits</h3>
+                <ResumeControls
+                  key={session.summary.session_id}
+                  policy={session.summary.resume_policy}
+                  onSave={onSetResumePolicy}
+                />
+              </section>
+            </div>
           )}
-        </div>
+        </section>
       )}
-
-      {session.summary.model === null && !session.summary.archived && (
-        <p className="needs-model" role="status">
-          This session has no model yet. Pick one in the model list above (or set a default under Settings → Models);
-          {session.status === "needs_model"
-            ? " your messages are waiting and run as soon as it has one."
-            : " messages you send wait until then."}
-        </p>
-      )}
-
-      {session.queue.length > 0 && <QueueView queue={session.queue} onChange={onChangeQueued} />}
 
       <form
         className="composer"
-        hidden={session.summary.archived}
+        hidden={archived}
         onSubmit={(event) => {
           event.preventDefault();
           send();
@@ -239,6 +257,7 @@ export function SessionPanel({
       >
         <textarea
           value={draft}
+          aria-label="Message"
           placeholder={composerHint(settings.sendKey === "enter", session.busy)}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
@@ -278,7 +297,95 @@ export function SessionPanel({
           {session.busy ? <ListPlus aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}
         </button>
       </form>
+
+      <footer className="session-footer" aria-label="Session status">
+        <SessionModelSelect
+          key={session.summary.session_id}
+          current={session.summary.model}
+          busy={session.busy}
+          disabled={archived}
+          models={models}
+          local={localModels}
+          onSwitch={onSetModel}
+        />
+        <span className="session-footer-spacer" />
+        {sum.costUsd !== null && (
+          <span className="session-cost muted" title="Session cost">
+            {formatCost(sum.costUsd)}
+          </span>
+        )}
+        <button
+          type="button"
+          className="ghost icon-only footer-button"
+          onClick={() => toggle("options")}
+          aria-label="Session options"
+          aria-expanded={drawer === "options"}
+          aria-controls={drawer === "options" ? drawerId : undefined}
+          title={`Session options: Markdown and usage limits (when usage runs out: ${describePolicy(session.summary.resume_policy)})`}
+        >
+          <SlidersHorizontal aria-hidden="true" />
+        </button>
+        <ContextMeter
+          session={session}
+          promptTokens={sum.prompt}
+          open={drawer === "context"}
+          controls={drawer === "context" ? drawerId : undefined}
+          onToggle={() => toggle("context")}
+        />
+      </footer>
     </div>
+  );
+}
+
+/**
+ * How full the root agent's context was on its latest call, as a small bar and `12.3k / 32.8k`;
+ * pressing it opens the full breakdown.
+ */
+function ContextMeter({
+  session,
+  promptTokens,
+  open,
+  controls,
+  onToggle,
+}: {
+  session: SessionState;
+  promptTokens: number;
+  open: boolean;
+  controls?: string;
+  onToggle: () => void;
+}) {
+  const breakdown = session.breakdowns[ROOT];
+  const used = breakdown ? breakdownUsed(breakdown) : 0;
+  const limit = breakdown?.contextWindow ?? null;
+  const share = limit ? Math.min(used / limit, 1) : null;
+  const text = breakdown
+    ? limit
+      ? `${formatTokens(used)} / ${formatTokens(limit)}`
+      : `${formatTokens(used)} tokens`
+    : promptTokens > 0
+      ? `${formatTokens(promptTokens)} prompt tokens`
+      : "Context";
+  const level = share === null ? "" : share >= 0.9 ? " full" : share >= 0.7 ? " high" : "";
+  return (
+    <button
+      type="button"
+      className={`ghost context-meter${level}`}
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-controls={controls}
+      title={
+        breakdown
+          ? `Context: ${describeUse(breakdown)}${share !== null ? ` (${Math.round(share * 100)}%)` : ""}. Show the breakdown, totals, and outputs.`
+          : "Show the context breakdown, totals, and outputs"
+      }
+    >
+      {share !== null && (
+        <span className="context-meter-bar" aria-hidden="true">
+          <span style={{ width: `${Math.max(share * 100, 2)}%` }} />
+        </span>
+      )}
+      <span className="context-meter-text">{text}</span>
+    </button>
   );
 }
 
@@ -417,72 +524,6 @@ function QueueView({ queue, onChange }: { queue: QueuedMessage[]; onChange: Prop
   );
 }
 
-/**
- * The session's model, switchable to any row of the model table between turns. A smaller
- * context window makes the daemon summarise older turns first; the result is noted beside it.
- */
-function ModelPicker({
-  current,
-  models,
-  busy,
-  onSwitch,
-}: {
-  /** `null` while the session has no model yet. */
-  current: string | null;
-  models: ModelRow[];
-  busy: boolean;
-  onSwitch: Props["onSetModel"];
-}) {
-  const [switching, setSwitching] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  if (models.length === 0) return <span title="Model">{current ?? "no model"}</span>;
-  const listed = current === null || models.some((row) => row.spec === current);
-  const switchTo = (spec: string) => {
-    if (spec === current) return;
-    setSwitching(true);
-    setNote(null);
-    onSwitch(spec)
-      .then((result) => {
-        const compaction = result?.context?.compaction;
-        if (compaction) {
-          setNote(
-            `compacted ${formatTokens(compaction.before_tokens)} → ${formatTokens(compaction.after_tokens)} tokens`,
-          );
-        }
-      })
-      .finally(() => setSwitching(false));
-  };
-  return (
-    <span className="model-picker">
-      <select
-        aria-label="Model"
-        title={
-          busy
-            ? "Switch models when the turn finishes"
-            : "Switch the session's model; older turns are summarised if its context window is smaller"
-        }
-        value={current ?? ""}
-        disabled={busy || switching}
-        onChange={(event) => switchTo(event.target.value)}
-      >
-        {current === null && (
-          <option value="" disabled>
-            Pick a model…
-          </option>
-        )}
-        {!listed && current !== null && <option value={current}>{current}</option>}
-        {models.map((row) => (
-          <option key={row.id} value={row.spec} disabled={!row.endpoint_configured}>
-            {row.id === row.spec ? row.spec : `${row.id} · ${row.spec}`}
-          </option>
-        ))}
-      </select>
-      {switching && <span className="muted">Switching…</span>}
-      {note && !switching && <span className="model-note">{note}</span>}
-    </span>
-  );
-}
-
 const RESUME_MODES: Record<ResumePolicy["mode"], string> = {
   wait_for_reset: "Wait for the provider's reset",
   at_time: "Resume at a set time",
@@ -520,10 +561,7 @@ function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Prop
   const retries = draft.mode !== "stop";
 
   return (
-    <details className="usage-limits">
-      <summary>
-        Usage limits <span className="muted">· {describePolicy(policy)}</span>
-      </summary>
+    <div className="usage-limits">
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -532,16 +570,15 @@ function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Prop
           onSave(draft).finally(() => setSaving(false));
         }}
       >
-        <label>
+        <span className="usage-mode">
           When usage runs out:
-          <select value={draft.mode} onChange={(event) => set({ mode: event.target.value as ResumePolicy["mode"] })}>
-            {Object.entries(RESUME_MODES).map(([mode, label]) => (
-              <option key={mode} value={mode}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
+          <Select
+            aria-label="When usage runs out"
+            value={draft.mode}
+            onChange={(mode) => set({ mode: mode as ResumePolicy["mode"] })}
+            options={Object.entries(RESUME_MODES).map(([mode, label]) => ({ value: mode, label }))}
+          />
+        </span>
         {draft.mode === "at_time" && (
           <label>
             At
@@ -590,7 +627,7 @@ function ResumeControls({ policy, onSave }: { policy: ResumePolicy; onSave: Prop
           </button>
         </span>
       </form>
-    </details>
+    </div>
   );
 }
 
@@ -616,9 +653,27 @@ function PlanView({ plan }: { plan: Plan }) {
         {plan.steps.map((step, index) => (
           <li key={index} className={`step ${step.status}`}>
             <span className="mark">{STEP_MARK[step.status]}</span> {step.title}
+            {step.depends_on.length > 0 && <span className="muted"> · after {step.depends_on.join(", ")}</span>}
+            {step.owner && <span className="muted"> · {step.owner}</span>}
+            {step.acceptance && <div className="muted">Done when: {step.acceptance}</div>}
           </li>
         ))}
       </ol>
+      {plan.assumptions.length > 0 && <PlanNotes title="Assumptions" items={plan.assumptions} />}
+      {plan.open_questions.length > 0 && <PlanNotes title="Open questions" items={plan.open_questions} />}
     </details>
+  );
+}
+
+function PlanNotes({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="muted">
+      {title}:
+      <ul>
+        {items.map((item, index) => (
+          <li key={index}>{item}</li>
+        ))}
+      </ul>
+    </div>
   );
 }

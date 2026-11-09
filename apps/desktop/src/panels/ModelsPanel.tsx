@@ -29,7 +29,7 @@ const formatPrice = (row: ModelRow): string =>
     ? "free"
     : `$${row.input_usd_per_mtok ?? 0} / $${row.output_usd_per_mtok ?? 0}`;
 
-export function ModelsPanel({ table }: { table: ModelListResult | null }) {
+export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | null; onConfigure: () => void }) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; descending: boolean }>({ key: "id", descending: false });
 
@@ -77,6 +77,7 @@ export function ModelsPanel({ table }: { table: ModelListResult | null }) {
         <span className="muted">
           prefer {table.prefer} · {table.rules} rule{table.rules === 1 ? "" : "s"}
         </span>
+        <button onClick={onConfigure}>Configure</button>
       </div>
       <table>
         <thead>
@@ -90,8 +91,11 @@ export function ModelsPanel({ table }: { table: ModelListResult | null }) {
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.id} className={row.endpoint_configured ? undefined : "unusable"} title={row.spec}>
-              <td>{row.id}</td>
+            <tr key={row.id} className={row.endpoint_configured && row.enabled ? undefined : "unusable"} title={row.spec}>
+              <td>
+                {row.id}
+                {!row.enabled && <span className="badge off">off</span>}
+              </td>
               <td>
                 <span className={`badge ${row.location}`}>{row.location}</span>
               </td>

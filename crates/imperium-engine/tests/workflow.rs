@@ -149,6 +149,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
             tier: Tier::Frontier,
             location: Location::Cloud,
             tags: Vec::new(),
+            cpu_lane: false,
         },
         CatalogModel {
             id: "local".into(),
@@ -156,6 +157,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
             tier: Tier::Basic,
             location: Location::Local,
             tags: Vec::new(),
+            cpu_lane: false,
         },
     ];
     let context = ContextIndex::new(vec![Pack::load(pack.path()).unwrap()], project.path());
@@ -179,7 +181,9 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 8,
+        background: None,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: project.path().join(".journal.jsonl"),
     })
     .unwrap();

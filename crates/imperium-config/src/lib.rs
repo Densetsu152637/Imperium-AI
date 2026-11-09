@@ -6,13 +6,20 @@
 //! Every value remembers which layer set it, for `imperium config explain`.
 
 mod layers;
+mod local_models;
 mod mcp_servers;
 mod paths;
 mod registry;
 mod secrets;
 mod settings;
 
-pub use layers::{Config, ConfigError, Explained, Layer, Source, load};
+pub use layers::{
+    Config, ConfigError, Explained, Layer, Source, load, load_layers, replace_app_layer,
+};
+pub use local_models::{
+    CACHE_TYPES, CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS, DEFAULT_SLOTS, LaneRow, LocalModelSettings,
+    MAX_SLOTS, ModelLaunch, TableOverride, check_launch, check_local_model,
+};
 pub use mcp_servers::{
     MAX_SERVER_NAME, remove_mcp_server, save_mcp_server, set_mcp_server_enabled, valid_server_name,
 };
@@ -26,13 +33,13 @@ pub use secrets::{
     load_secret, store_secret,
 };
 pub use settings::{
-    ActionSettings, AgentSettings, AutofixSettings, CatalogEntry, DaemonSettings, EndpointSettings,
-    Enforce, ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HookSettings,
-    ImageSettings, IsolationSettings, LLAMACPP_ENDPOINT, LlamaCppSettings, Location,
-    McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings, MemorySettings,
-    MemoryWrite, ModelSettings, PetSettings, PhoneSettings, Preference, ProjectSettings,
-    ResumeSettings, RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef,
-    SessionSettings, Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings,
-    WorkflowSettings, WritePolicy,
+    ActionSettings, AgentSettings, AutofixSettings, CatalogEntry, ConditionSettings,
+    DaemonSettings, EndpointSettings, Enforce, ExtensionSettings, GithubSettings, GithubWatch,
+    HardwareSettings, HookSettings, ImageSettings, IsolationSettings, LLAMACPP_ENDPOINT,
+    LlamaCppSettings, LoadSettings, Location, McpServerSettings, McpSettings, MediaServiceSettings,
+    MediaSettings, MemorySettings, MemoryWrite, ModelPlacement, ModelSettings, PetSettings,
+    PhoneSettings, Preference, ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings,
+    RuntimeSettings, ScheduleSettings, SecretRef, SessionSettings, Settings, Tier, TriggerSettings,
+    VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings, WritePolicy,
 };
 pub use settings::{SuggestionCandidate, default_suggestions};

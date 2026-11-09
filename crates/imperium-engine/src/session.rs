@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use imperium_api::ToolProvider;
 use imperium_config::RoutingSettings;
+use imperium_protocol::methods::SessionHold;
 use imperium_protocol::session::{
-    AgentEvent, PermissionDecision, QueuedMessage, ROOT_AGENT, ResumePolicy, SendMode,
-    SessionEvent, SessionStatus,
+    AgentEvent, AgentSummary, PauseCause, PermissionDecision, QueuedMessage, ROOT_AGENT,
+    ResumePolicy, SendMode, SessionEvent, SessionStatus,
 };
 use imperium_tools::Workspace;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -23,10 +24,12 @@ use serde_json::json;
 use imperium_protocol::methods::ContextFit;
 
 use crate::agent::Agent;
+use crate::agents::{AgentStore, agents_dir};
 use crate::breakdown::TokenCounter;
 use crate::compact::SwitchError;
 use crate::journal::Journal;
 use crate::queue::{Inboxes, QueueError};
+use crate::quiet::{Background, RunNow};
 use crate::status::Controls;
 use crate::{CatalogModel, LocalModels, ResolvedModel, SessionLauncher};
 
@@ -75,7 +78,14 @@ pub struct SessionConfig {
     /// Compact the root conversation at the start of a turn when it has grown past the model's
     /// context budget (for long-lived sessions such as an environment's persistent agent).
     pub auto_compact: bool,
+    /// Keep every agent's state (a subagent's conversation included) in
+    /// `<journal>.agents/`, so finished subagents can be resumed after a restart
+    /// (`sessions.agent_state_keep`). Off, it is kept in memory while the session runs.
+    pub keep_agent_state: bool,
     pub journal_path: PathBuf,
+    /// Set for a session a schedule or a project agent started: its local model calls rank below
+    /// the user's, and it pauses at a step boundary while the machine is busy.
+    pub background: Option<Background>,
 }
 
 /// The answer to a model switch or a compaction.
@@ -119,8 +129,23 @@ pub struct Session {
     events: broadcast::Sender<AgentEvent>,
     /// Every event so far, so late subscribers can catch up.
     history: History,
+    background: bool,
     inboxes: Arc<Inboxes>,
+    agents: Arc<AgentStore>,
+    shared: SharedSlot,
     _task: JoinHandle<()>,
+}
+
+/// The session's shared state, once its task has started its tool providers.
+#[derive(Clone, Default)]
+struct SharedSlot(Arc<OnceLock<Arc<Shared>>>);
+
+impl std::fmt::Debug for SharedSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedSlot")
+            .field("started", &self.0.get().is_some())
+            .finish()
+    }
 }
 
 /// A random 16-hex-digit session id.
@@ -138,6 +163,13 @@ impl Session {
         } else {
             Vec::new()
         };
+        let agents = Arc::new(AgentStore::open(
+            config
+                .keep_agent_state
+                .then(|| agents_dir(&config.journal_path)),
+            &previous,
+            config.resume,
+        ));
         let journal = Journal::open(&config.journal_path)?;
         let (commands, receiver) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(EVENT_BUFFER);
@@ -154,19 +186,28 @@ impl Session {
         for event in history.lock().iter() {
             controls.observe(event);
         }
+        // Nothing waits for a quiet machine after a restart.
+        controls.clear_hold();
+        let background = config.background.is_some();
         let emitter = Arc::new(Emitter {
             session_id: id.clone(),
             journal: Mutex::new(journal),
             history: history.clone(),
             events: events.clone(),
             controls: Arc::clone(&controls),
+            agents: Arc::clone(&agents),
         });
         let inboxes = Arc::new(Inboxes::new(Arc::clone(&emitter), &history.lock()));
+        let shared = SharedSlot::default();
         let task = tokio::spawn(run(
             config,
             receiver,
-            Arc::clone(&emitter),
-            Arc::clone(&inboxes),
+            Started {
+                emitter: Arc::clone(&emitter),
+                inboxes: Arc::clone(&inboxes),
+                agents: Arc::clone(&agents),
+                slot: shared.clone(),
+            },
             Arc::clone(&model),
         ));
         Ok(Session {
@@ -179,7 +220,10 @@ impl Session {
             commands,
             events,
             history,
+            background,
             inboxes,
+            agents,
+            shared,
             _task: task,
         })
     }
@@ -249,6 +293,38 @@ impl Session {
 
     pub fn resume_policy(&self) -> ResumePolicy {
         self.controls.policy()
+    }
+
+    /// Started by a schedule or a project agent: it gives way to the user's own sessions.
+    pub fn is_background(&self) -> bool {
+        self.background
+    }
+
+    /// Why background work is waiting for a quiet machine, if it is.
+    pub fn hold(&self) -> Option<SessionHold> {
+        self.controls.hold()
+    }
+
+    /// Marks the session as waiting, before its first turn, for a quiet machine.
+    pub fn defer(&self, reason: String) {
+        self.emitter.emit(
+            ROOT_AGENT,
+            SessionEvent::Paused {
+                until_unix_ms: 0,
+                reason,
+                cause: PauseCause::Deferred,
+            },
+        );
+    }
+
+    /// Ends [`Session::defer`].
+    pub fn undefer(&self) {
+        self.emitter.emit(ROOT_AGENT, SessionEvent::Resumed {});
+    }
+
+    /// Released when a person says to run the session now, whatever the load.
+    pub fn run_now(&self) -> &RunNow {
+        self.controls.run_now()
     }
 
     /// Overrides how this session waits for usage resets; `None` restores the default.
@@ -352,6 +428,28 @@ impl Session {
         self.inboxes.remove(agent_id.unwrap_or(ROOT_AGENT), id)
     }
 
+    /// Every agent of the session with its kept state: the root first, then subagents in the
+    /// order they started.
+    pub fn agents(&self) -> Vec<AgentSummary> {
+        self.agents.list()
+    }
+
+    /// Gives a finished (idle, failed, or interrupted) subagent a follow-up: it works again with
+    /// its earlier conversation, on the model it last ran on when that is still available (the
+    /// session's model otherwise). Its report arrives as `task_finished`; while it works,
+    /// [`send_message`](Self::send_message) with its id steers or queues for it. Returns the
+    /// model it runs on. Must be called from within a Tokio runtime.
+    pub fn resume_agent(&self, agent_id: &str, text: String) -> Result<String, String> {
+        let shared = self
+            .shared
+            .0
+            .get()
+            .ok_or("the session is still starting; try again in a moment")?;
+        // Nobody awaits a subagent the user resumed: its report is its `task_finished`.
+        let (_handle, model) = crate::agent::resume_subagent(shared, agent_id, text)?;
+        Ok(model)
+    }
+
     /// Answers a permission request. Answers to unknown or already-answered requests are
     /// ignored.
     pub fn respond(
@@ -391,10 +489,14 @@ pub(crate) struct Shared {
     pub enforce: Enforce,
     pub launcher: Option<Arc<dyn SessionLauncher>>,
     pub instructions: Option<String>,
+    /// Set for a background session: what it yields to.
+    pub background: Option<Background>,
     /// Token counts for context breakdowns, shared so agents on one model count text once.
     pub tokens: TokenCounter,
     /// Messages waiting for each agent.
     pub inboxes: Arc<Inboxes>,
+    /// Every agent's kept state.
+    pub agents: Arc<AgentStore>,
     next_task: AtomicU32,
 }
 
@@ -404,15 +506,28 @@ impl Shared {
     }
 }
 
+/// What a session's task starts with besides its configuration.
+struct Started {
+    emitter: Arc<Emitter>,
+    inboxes: Arc<Inboxes>,
+    agents: Arc<AgentStore>,
+    slot: SharedSlot,
+}
+
 /// The root agent's task: one turn at a time, in message order, while
 /// permission answers are routed to whichever agent asked.
 async fn run(
     config: SessionConfig,
     mut commands: mpsc::UnboundedReceiver<Command>,
-    emitter: Arc<Emitter>,
-    inboxes: Arc<Inboxes>,
+    started: Started,
     model: Arc<Mutex<Option<String>>>,
 ) {
+    let Started {
+        emitter,
+        inboxes,
+        agents,
+        slot,
+    } = started;
     for message in config.notices {
         emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
     }
@@ -443,10 +558,14 @@ async fn run(
         enforce: config.enforce,
         launcher: config.launcher,
         instructions: config.instructions,
+        background: config.background,
         tokens: TokenCounter::default(),
         inboxes,
-        next_task: AtomicU32::new(0),
+        // Task ids continue after those of earlier runs, whose state is kept.
+        next_task: AtomicU32::new(agents.last_task_number()),
+        agents,
     });
+    let _ = slot.0.set(Arc::clone(&shared));
     shared
         .hook(
             HookEvent::SessionStart,
@@ -484,6 +603,24 @@ async fn run(
                 },
             );
         }
+        // Subagents the restart cut off end their task, and can be resumed from where they
+        // last saved their conversation.
+        let interrupted = shared.agents.running_subagents();
+        for id in &interrupted {
+            shared.emitter.emit(
+                id,
+                SessionEvent::TaskFinished {
+                    task_id: id.clone(),
+                    ok: false,
+                    report: "The daemon stopped while this subagent was working. Resume it with \
+                             a follow-up to continue from where it was."
+                        .into(),
+                    usage: Default::default(),
+                    cost_usd: None,
+                },
+            );
+        }
+        shared.agents.mark_interrupted(&interrupted);
     }
     let queue = shared.inboxes.open(ROOT_AGENT);
     let auto_compact = config.auto_compact;
@@ -509,7 +646,7 @@ async fn run(
                     let result = root.switch_model(*target).await;
                     if result.is_ok() {
                         *lock(&model) = Some(root.model().spec.clone());
-                        save_messages(&messages_path, root.messages());
+                        save_messages(&shared, &messages_path, root.messages());
                     }
                     let _ = reply.send(result);
                     continue;
@@ -517,7 +654,7 @@ async fn run(
                 Some(Command::Compact { reply }) => {
                     let result = root.compact_now().await;
                     if result.is_ok() {
-                        save_messages(&messages_path, root.messages());
+                        save_messages(&shared, &messages_path, root.messages());
                     }
                     let _ = reply.send(result);
                     continue;
@@ -532,7 +669,7 @@ async fn run(
             // Over the budget, older turns are summarised before the new message is added.
             match root.fit_current().await {
                 Ok(fit) if fit.compaction.is_some() => {
-                    save_messages(&messages_path, root.messages());
+                    save_messages(&shared, &messages_path, root.messages());
                 }
                 Ok(_) => {}
                 Err(error) => shared.emitter.emit(
@@ -572,7 +709,7 @@ async fn run(
             }
             handles_open
         };
-        save_messages(&messages_path, root.messages());
+        save_messages(&shared, &messages_path, root.messages());
         if !handles_open {
             return;
         }
@@ -645,6 +782,7 @@ pub(crate) struct Emitter {
     history: History,
     events: broadcast::Sender<AgentEvent>,
     controls: Arc<Controls>,
+    agents: Arc<AgentStore>,
 }
 
 impl Emitter {
@@ -676,6 +814,8 @@ impl Emitter {
         // Record and broadcast under the history lock so subscribe_with_history sees each
         // event exactly once. No subscribers is fine: the journal still has the event.
         let mut history = self.history.lock();
+        // Under the history lock, so agent records follow events in journal order.
+        self.agents.observe(&event);
         history.push(event.clone());
         let _ = self.events.send(event);
     }
@@ -837,7 +977,12 @@ impl Shared {
 }
 
 /// Keeps the root conversation so the session can continue after a daemon restart.
-fn save_messages(path: &std::path::Path, messages: &[imperium_models::ChatMessage]) {
+fn save_messages(
+    shared: &Shared,
+    path: &std::path::Path,
+    messages: &[imperium_models::ChatMessage],
+) {
+    shared.agents.save_conversation(ROOT_AGENT, messages);
     match serde_json::to_vec(messages) {
         Ok(bytes) => {
             if let Err(error) = std::fs::write(path, bytes) {

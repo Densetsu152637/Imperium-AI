@@ -6,11 +6,13 @@
   and the React interface connects over the WebSocket with the subprotocol token. In a plain
   browser (development preview) it asks for the URL and token instead.
 - The default view below, built from columns of spanning or stacked panels with draggable
-  dividers; sizes are remembered.
-- Session panel: environment header (project, model, isolation tier, cost), conversation with
-  assistant replies rendered as Markdown (GitHub-flavoured, raw HTML disabled; a toggle shows
-  the raw text), inline permission prompts (allow, always this session, deny), a floating
-  composer, and context and outputs sections folded into the header.
+  dividers; sizes are remembered, and stacked panels fold to their header
+  ([folding](#columns-spanning-and-stacking)).
+- Session panel: the title and status at the top, conversation with assistant replies rendered
+  as Markdown (GitHub-flavoured, raw HTML disabled; an option shows the raw text), inline
+  permission prompts (allow, always this session, deny), a floating composer, and under it a
+  footer with the model selector and the context meter
+  ([session footer](#environments-and-sessions-implemented)).
 - Telemetry panel: per-call tokens, time to first token, tokens per second, and cost, with
   session totals.
 - Display settings: UI scale, prose and code text scale, density, and line length. They are
@@ -30,6 +32,34 @@
   windows report pinning, moving, and docking to it; documents are synced between windows, and a
   detached window follows the main window's selected project and session. In a plain browser
   the window is a popup and cannot be pinned.
+
+### Agents panel (implemented)
+
+The Agents panel lists the subagents of the selected session: each row shows the task id, its
+status (`running`, `finished`, or `failed`), model, cost, brief, the messages it was given and
+its tool calls, and its latest report. Subagents keep their state when they finish
+([agent state](03-agent-engine.md#agent-state)), so a finished or failed row's ⋯ menu has
+**Continue with…**: it opens a follow-up box under the row (Ctrl+Enter sends, Escape
+cancels), and the follow-up is sent with `session.agent_resume`. The subagent works again with
+its earlier conversation: its row goes back to `running`, the transcript notes
+"Continued t1 on …", and its new report replaces the old one when it finishes (the cost shown
+adds up across runs). While it runs, the menu item is disabled; archived sessions show no menu.
+Subagents a daemon restart cut off are shown as failed with a report saying so, and can be
+continued the same way.
+
+### Resources panel (implemented)
+
+The Resources panel (in Settings → Panels, closable and detachable like the others) shows what
+the machine and the sessions are using: CPU, RAM, and per GPU its utilisation and VRAM as bars
+with a two-minute sparkline each (hover a bar for per-core figures or swap), a table of the
+local models loaded, in use or idle, with placement (or the CPU lane), the context per session
+and the KV pool's reserved and total tokens, memory, busy slots and queued calls (or "held by a
+turn" while an agent is mid-turn on it) or the idle-unload countdown, the sessions on each, and
+an Unload button for idle ones, and a table of the hosted
+endpoints sessions use with requests, tokens, latency, and errors over the last 15 minutes.
+The panel subscribes to `system.resources_changed` only while it is open and its window is
+visible, so the daemon samples nothing otherwise
+([04](04-models-and-routing.md#active-models-and-resource-monitor)).
 
 **Model download suggestions (implemented):** a `model_suggestion` event shows as a card in the
 conversation, styled like a permission prompt: the repository, quantisation, size, how it fits
@@ -103,17 +133,17 @@ layout of panels, and every panel — including the built-in ones — is customi
 
 ```text
 ┌────────────────────┬──────────────────────────────────────────────────────┐
-│ Environments       │ Session: <name>                                      │
+│ Environments       │ <icon> Session title                        <status> │
 │ (and folders)      │ ┌──────────────────────────────────────────────────┐ │
-│                    │ │ Environment · model · isolation tier · budget    │ │
-│ stackable          │ ├──────────────────────────────────────────────────┤ │
-├────────────────────┤ │ Conversation and plan                            │ │
-│ Sessions           │ │                                                  │ │
-│ (of the selected   │ ├────────────────┬─────────────────┬───────────────┤ │
-│  environment)      │ │ Context        │ Outputs         │ Worktrees     │ │
-│                    │ │ breakdown      │ (artefacts)     │               │ │
-│ stackable          │ └────────────────┴─────────────────┴───────────────┘ │
-│                    │ spans full height                                    │
+│                    │ │ Conversation and plan                            │ │
+│ stackable          │ │                                                  │ │
+├────────────────────┤ ├──────────────────────────────────────────────────┤ │
+│ Sessions           │ │ (opened from the footer: context breakdown,      │ │
+│ (of the selected   │ │  totals, outputs — or options)                   │ │
+│  environment)      │ ├──────────────────────────────────────────────────┤ │
+│                    │ │ Composer                                         │ │
+│ stackable          │ └──────────────────────────────────────────────────┘ │
+│                    │  model ▾                     $cost  ⚙  ▬▬▭ 12k/32k   │
 └────────────────────┴──────────────────────────────────────────────────────┘
 ```
 
@@ -121,8 +151,10 @@ layout of panels, and every panel — including the built-in ones — is customi
   (local, container, SSH host), project-agent status, and schedules.
 - **Sessions panel** (bottom left): sessions in the selected environment, with status, cost,
   and pending approvals.
-- **Main session panel** (middle, full height): the selected session. It is built from
-  sections — environment header, conversation and plan, context breakdown (tokens by system
+- **Main session panel** (middle, full height): the selected session, or the
+  [new-session composer](#environments-and-sessions-implemented) when none is open. It is built
+  from sections — title bar, conversation and plan, composer and its footer (model, cost,
+  options, context meter), context breakdown (tokens by system
   prompt, tools, workflow context, memories, and conversation against the window size; see
   [context breakdown](#environments-and-sessions-implemented)), outputs, and worktrees —
   each of which is itself a movable, replaceable module.
@@ -143,6 +175,15 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
   The user can override a panel's default in its settings.
 - Columns and stack dividers are resizable; sizes are stored as proportions so layouts adapt
   across monitors.
+- **Folding (implemented):** each stacked panel has a chevron before its title that folds it to
+  its header (double-clicking the header's title or empty space does the same); the open panels
+  in its column take the room it gives back, and a divider between two open panels still
+  resizes them across folded ones. The first header of a column also has *Collapse all* /
+  *Expand all* for the column (dim until the header is hovered or the button has focus). The
+  chevron is a button with `aria-expanded` naming its panel, so folding works from the keyboard.
+  The fold animates briefly and not at all under the system's or the app's *Reduce motion*.
+  Folded panels stay mounted (a mod's frame keeps its state) and are kept in the local layout
+  with sizes and closed panels; Settings → *Reset layout* opens them again.
 
 ### Modules inside panels
 
@@ -308,13 +349,21 @@ Both apply with *Create* or *Save*. For a remote runtime the folders are paths i
 ([runtimes](14-projects-and-automation.md#runtimes-implemented)), typed in with *Add path*
 instead of the folder picker.
 
-*New session* (in the Sessions panel's header) starts a session in the selected environment;
-it is disabled, with the reason as its tooltip, while disconnected, with no environment
-selected, or when the environment has no folders. The model list beside it picks the session's
-model (*Default model* uses `models.default`); when no default is configured, starting with
-*Default model* shows the daemon's explanation above the list instead of failing silently.
-*Start in a worktree* beside it starts the session on new git worktrees of the environment's
-repositories ([worktrees](14-projects-and-automation.md#worktrees)).
+**New session (implemented):** *New session* in the Sessions panel's header (disabled while
+disconnected) opens the new-session composer in the middle panel, which is also what the middle
+panel shows whenever no session is open. It is a message box for the first message with the
+session's options under it, in the same footer row an open session uses: the *Environment*
+(the selected one, else the first, pinned ones leading), the *Model* (the model table and local
+models, as in the [session footer](#environments-and-sessions-implemented); it starts on
+`models.default`, read with `config.describe`, and offers *No model* when none is configured),
+and *Start in a worktree*, shown only for a local environment with a folder inside a git
+repository (`environments.list` and `environments.changed` name those in `git`). Sending (Enter,
+or Ctrl+Enter, as set in Settings) creates the session with `session.create` (`environment_id`,
+`model`, `worktree`) and sends the message to it; the send button alone starts it without one.
+An environment with no folders, or none at all, disables sending with the reason beside the
+options, and a refused `session.create` shows the daemon's explanation above the box. A
+session started without a model keeps its message queued until one is picked
+([worktrees](14-projects-and-automation.md#worktrees)).
 
 The Sessions panel lists every session across environments, each with its environment's icon
 to the left of its title and a status badge (idle, working, needs attention, paused with its
@@ -337,20 +386,37 @@ environment. An environment's persistent agent is listed above everything else i
 titled *<environment> agent* with a *Persistent* badge; a session on worktrees has a *Worktree*
 badge whose tooltip lists each worktree and branch. Renaming and stopping sessions are not
 offered yet; deleting one is `session.delete` (`imperium session delete`), and a session
-deleted elsewhere (`session.deleted`) leaves the list. The session header shows the status and the *Usage limits* controls (how to wait
-when usage runs out, and *Resume now* while paused).
+deleted elsewhere (`session.deleted`) leaves the list. The session's top bar shows only its
+icon, title, and status badge (with *Resume now* while paused); everything else about the
+session sits in the footer under the composer.
 
-**Model picker (implemented):** among the header's environment pills, the session's model is a
-picker listing the model table (`models.list`; rows whose endpoint is not configured are shown
-but cannot be chosen, and a model outside the table is listed as is). Choosing one switches the
-session with `session.control` `set_model`; it is disabled while a turn runs, since switches
-apply between turns ([03](03-agent-engine.md#switching-models-and-compaction)). When the new
-model's context window is smaller than the conversation needs, the daemon compacts it first:
-the picker notes `compacted 30.1k → 9.2k tokens`, and the transcript gets a notice naming the
-target, the token counts, how many messages were summarised, and by which model, followed by
-*Switched model from x to y*. A refused switch (nothing fits, a missing key) shows its error
-and leaves the model as it was. Breakdowns of a compacted conversation list the summary as its
-own category, *Conversation summary*.
+**Session footer (implemented):** a compact row under the composer, as in chat apps: the model
+selector at the left, then the session's cost once it has one, an options button, and the
+context meter at the right. The options button opens *Display* (*Render Markdown*, and the
+project and isolation tier) and *Usage limits* (how to wait when usage runs out:
+`session.control` `set_resume_policy`) above the composer; the context meter opens the
+[context breakdown](#environments-and-sessions-implemented), session totals, and recent outputs
+there. Only one of them is open at a time; each closes with its button again or the panel's
+close button.
+
+**Model selector (implemented):** the footer's model is a themed list of the model table
+(`models.list`; each row by id, with its spec, location, and tier; rows whose endpoint is not
+configured are shown but cannot be chosen) followed by local models found in the model folders
+(`models.local`, as `llamacpp:<id>` or `vllm:<id>`, unless the table lists them already); a
+model outside both is listed as is, and a session without one reads *No model* in the accent
+colour. Choosing one switches the session with `session.control` `set_model`, also for a session
+waiting for a model, whose queued messages then run. While a turn runs the choice is held and
+marked *After this turn* (with a button to keep the current model), and applied when the turn
+ends, since switches apply between turns ([03](03-agent-engine.md#switching-models-and-compaction)).
+When the new model's context window is smaller than the conversation needs, the daemon compacts
+it first: the footer notes `Compacted 30.1k → 9.2k tokens`, and the transcript gets a notice
+naming the target, the token counts, how many messages were summarised, and by which model,
+followed by *Switched model from x to y*. A refused switch (nothing fits, a missing key, a turn
+that started meanwhile) shows its error beside the list and leaves the model as it was.
+Breakdowns of a compacted conversation list the summary as its own category, *Conversation
+summary*. (Before this, the picker sat among the header pills as a borderless native select
+that read like plain text, listed only the table, and fell back to plain text when the table
+was empty — so it was easy to miss and absent for local-only setups.)
 
 **Composer, queue, and steering (implemented):** the composer stays enabled while the agent
 works. Its send key (Enter, or Ctrl+Enter, as set in Settings) queues the message for after the
@@ -362,9 +428,10 @@ cancels) and *Remove*; the list follows `queue_changed`, so it empties as messag
 delivered. In the transcript a steering message is a user bubble with an accent edge and a
 *Steering* label, at the point in the turn where the agent read it.
 
-**Context breakdown (implemented):** the header's *Context and outputs* summary shows how full
-the root agent's context was on its latest model call, such as `12.3k / 32.8k tokens` (or just
-the tokens when the window is unknown). Opened, its *Context window* section shows, for the
+**Context breakdown (implemented):** the footer's context meter shows how full the root
+agent's context was on its latest model call, as a slim bar (amber from 70%, red from 90%) and
+`12.3k / 32.8k` (or just the tokens when the window is unknown; its tooltip gives the
+percentage). Pressing it opens the *Context window* section, which shows, for the
 selected agent (root first, then each subagent by task id, chosen from a list when there is
 more than one), what that agent's latest call read, from its `context_breakdown` event
 ([03](03-agent-engine.md#context-management)): a bar segmented by category against the window
@@ -375,3 +442,21 @@ segment and swatch is named. Below it, the counting method in words (*Exact, cou
 model's tokenizer*; *Calibrated to the provider's count*; *Estimated; the provider reported no
 usage*) and the prompt tokens served from cache. A negative template overhead is listed but not
 drawn. Session totals and recent outputs follow.
+
+## Model configuration dialog (implemented)
+
+A modal (a native `<dialog>`, so Esc and the backdrop close it) edits model settings. It opens
+from *Models…* in the settings menu, from *Configure* in the Local models panel (Local tab) and
+from *Configure* in the Models panel (Model table tab). The Local tab lists the models in
+`models.folders`; each form field is optional, shows the effective value as its placeholder and
+has a *reset* that clears the saved value. Fields: context per session, KV pool tokens, slots, K
+and V cache types, flash attention, max GPU layers, max wait, max output tokens (0 is uncapped)
+and extra arguments (one per line). For a vLLM model the cache types, flash attention and GPU
+layers are disabled. A debounced (500 ms) `models.set_config` dry run shows the memory the model
+would need, its KV pool and its placement, or the server's error. The Model table tab edits
+existing rows only (enabled, tier, tags, context window, prices; both prices or neither); it
+does not add or remove rows. *Save* sends only the models that differ from what is saved, each
+as a whole-settings update, then closes and refreshes the panels; a failure keeps the dialog
+open with the message. *Reset model* clears all of a model's saved settings. A loaded model's
+badge reads `loaded · <in use>/<slots> busy · pool <reserved>/<pool>`, and a disabled table row
+is dimmed with an *off* badge.

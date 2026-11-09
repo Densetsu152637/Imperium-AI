@@ -127,6 +127,59 @@ impl Method for SessionQueue {
     type Result = SessionQueueResult;
 }
 
+/// `session.agents`: a session's agents (the root and every subagent) with their kept state.
+#[derive(Debug)]
+pub struct SessionAgents;
+
+impl Method for SessionAgents {
+    const NAME: &'static str = "session.agents";
+    type Params = SessionAgentsParams;
+    type Result = SessionAgentsResult;
+}
+
+/// `session.agent_resume`: gives a finished (idle, failed, or interrupted) subagent a
+/// follow-up. It works again with its earlier conversation, emitting `task_resumed` and then
+/// `task_finished`; while it runs, `session.send` with its `agent_id` steers or queues for it.
+#[derive(Debug)]
+pub struct SessionAgentResume;
+
+impl Method for SessionAgentResume {
+    const NAME: &'static str = "session.agent_resume";
+    type Params = SessionAgentResumeParams;
+    type Result = SessionAgentResumeResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentsParams {
+    pub session_id: String,
+}
+
+/// The root first, then subagents in the order they were started.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentsResult {
+    pub agents: Vec<crate::session::AgentSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentResumeParams {
+    pub session_id: String,
+    /// A subagent's task id, such as `t1`.
+    pub agent_id: String,
+    /// The follow-up message.
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAgentResumeResult {
+    pub agent_id: String,
+    /// The model it runs on.
+    pub model: String,
+}
+
 /// `session.respond`: answers a `permission_requested` event.
 #[derive(Debug)]
 pub struct SessionRespond;
@@ -190,6 +243,13 @@ pub struct SessionSummary {
     /// What it watches, when watching or merged.
     pub status_detail: Option<String>,
     pub resume_policy: crate::session::ResumePolicy,
+    /// Started by a schedule or a project agent: it gives way to the user's own sessions.
+    #[serde(default)]
+    pub background: bool,
+    /// Why background work is waiting (deferred before it started, or paused at a step
+    /// boundary), until the machine is quiet or the user runs it now.
+    #[serde(default)]
+    pub hold: Option<SessionHold>,
     /// True for an environment's persistent agent session, which is always running, resumes
     /// after restarts, and is listed first among its environment's sessions.
     #[serde(default)]
@@ -208,6 +268,14 @@ pub struct SessionSummary {
     #[serde(default)]
     #[ts(type = "number | null")]
     pub archived_at: Option<u64>,
+}
+
+/// A background session that is waiting for a quiet machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionHold {
+    pub cause: crate::session::PauseCause,
+    pub reason: String,
 }
 
 /// A git worktree a session was started on: its tools use `path` instead of `folder`.
@@ -408,6 +476,10 @@ pub struct EnvironmentListParams {}
 #[ts(export)]
 pub struct EnvironmentListResult {
     pub environments: Vec<EnvironmentInfo>,
+    /// Ids of the local environments with a folder inside a git repository: those a session can
+    /// start on worktrees (`session.create` `worktree`).
+    #[serde(default)]
+    pub git: Vec<String>,
 }
 
 /// `environments.create`: a new environment, optionally with its first folders.
@@ -668,6 +740,8 @@ pub struct ModelRow {
     /// The row's `context_window`, in tokens, when configured.
     #[serde(default)]
     pub context_window: Option<u32>,
+    /// False when the row is switched off and left out of routing.
+    pub enabled: bool,
 }
 
 /// `models.local`: models found in `models.folders`, the hardware they are planned against, and
@@ -685,7 +759,7 @@ impl Method for LocalModelList {
 #[ts(export)]
 pub struct LocalModelListParams {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LocalModelListResult {
     /// False when no `models.folders` are configured.
@@ -699,7 +773,7 @@ pub struct LocalModelListResult {
 }
 
 /// A GGUF model found in a model folder.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LocalModelRow {
     /// Use as `<runtime>:<id>` (`llamacpp:` or `vllm:`) in `[[models.catalog]]`.
@@ -715,7 +789,7 @@ pub struct LocalModelRow {
     pub size_bytes: u64,
     #[ts(type = "number | null")]
     pub context_length: Option<u64>,
-    /// Memory needed at the configured context and slots.
+    /// Memory needed with the model's KV pool and settings.
     #[ts(type = "number")]
     pub required_bytes: u64,
     /// How the model would load on this machine when nothing else is loaded.
@@ -725,6 +799,25 @@ pub struct LocalModelRow {
     pub loaded: bool,
     pub slots: u32,
     pub slots_in_use: u32,
+    /// Calls waiting for a slot on this model.
+    pub queued: u32,
+    /// Pinned to the CPU lane by `placement = "cpu"` in the model table: served with no GPU
+    /// layers, in system RAM only.
+    #[serde(default)]
+    pub cpu_lane: bool,
+    /// How fast the model has generated in its recent calls, in tokens per second; absent
+    /// before a call finished since the daemon started.
+    #[serde(default)]
+    pub tokens_per_s: Option<f64>,
+    /// Tokens one session may use.
+    #[serde(default)]
+    pub context: u32,
+    /// Tokens of KV cache shared by the model's slots.
+    #[serde(default)]
+    pub pool_tokens: u32,
+    /// Of those, tokens reserved by calls running now.
+    #[serde(default)]
+    pub pool_reserved_tokens: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -917,9 +1010,242 @@ pub struct ModelDownloadCancelResult {
     pub found: bool,
 }
 
+/// `models.config`: every local model's llama.cpp settings and every model-table row's
+/// settings, as saved from the app and as they take effect.
+#[derive(Debug)]
+pub struct ModelConfig;
+
+impl Method for ModelConfig {
+    const NAME: &'static str = "models.config";
+    type Params = ModelConfigParams;
+    type Result = ModelConfigResult;
+}
+
+/// `models.set_config`: saves model settings to the app's settings file and applies them.
+/// Each update replaces that model's saved settings whole; models not named keep theirs.
+#[derive(Debug)]
+pub struct ModelSetConfig;
+
+impl Method for ModelSetConfig {
+    const NAME: &'static str = "models.set_config";
+    type Params = ModelSetConfigParams;
+    type Result = ModelConfigResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelConfigParams {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelConfigResult {
+    /// Models found in `models.folders`, in id order.
+    pub local: Vec<LocalModelConfig>,
+    /// Rows of the model table, in table order.
+    pub table: Vec<TableModelConfig>,
+    /// What a local model gets for each setting it does not set.
+    pub defaults: LocalLaunchEffective,
+    /// KV cache types llama-server accepts for `cache_type_k` and `cache_type_v`.
+    pub cache_types: Vec<String>,
+    /// The file saved settings are written to.
+    pub file: String,
+}
+
+/// A local model's llama.cpp settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LocalModelConfig {
+    /// The id in `models.local`.
+    pub id: String,
+    #[ts(type = "\"llamacpp\" | \"vllm\"")]
+    pub runtime: String,
+    /// What the app's settings file sets; null fields take the effective value from elsewhere.
+    pub saved: LocalLaunchSettings,
+    /// What the model is started with.
+    pub effective: LocalLaunchEffective,
+    /// Memory the model needs with the effective settings.
+    #[ts(type = "number")]
+    pub required_bytes: u64,
+    /// The part of `required_bytes` that is the KV cache pool.
+    #[ts(type = "number")]
+    pub kv_pool_bytes: u64,
+    /// How it would load on this machine when nothing else is loaded.
+    #[ts(type = "\"gpu\" | \"partial\" | \"cpu\" | \"none\"")]
+    pub placement: String,
+    pub loaded: bool,
+    /// Loaded with other settings: the new ones apply once no session is using it.
+    pub reload_pending: bool,
+    /// Pinned to the CPU lane by `placement = "cpu"` in the model table.
+    pub cpu_lane: bool,
+    /// The context the model was trained for, from its header.
+    #[ts(type = "number | null")]
+    pub context_length: Option<u64>,
+}
+
+/// Per-model llama.cpp settings; a null field takes the default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LocalLaunchSettings {
+    /// Tokens one session may use (`--kv-unified-per-slot`; vLLM `--max-model-len`).
+    #[serde(default)]
+    pub context: Option<u32>,
+    /// Tokens of KV cache shared by every slot (`--ctx-size`); at least `context`.
+    #[serde(default)]
+    pub pool_tokens: Option<u32>,
+    /// Calls the server runs at once (`--parallel`; vLLM `--max-num-seqs`).
+    #[serde(default)]
+    pub slots: Option<u32>,
+    /// `--cache-type-k`, one of `cache_types`.
+    #[serde(default)]
+    pub cache_type_k: Option<String>,
+    /// `--cache-type-v`, one of `cache_types`; a quantised type needs flash attention.
+    #[serde(default)]
+    pub cache_type_v: Option<String>,
+    /// `--flash-attn`.
+    #[serde(default)]
+    #[ts(type = "\"auto\" | \"on\" | \"off\" | null")]
+    pub flash_attn: Option<String>,
+    /// Most layers placed on the GPU; the planner may place fewer.
+    #[serde(default)]
+    pub max_gpu_layers: Option<u32>,
+    /// Longest a call waits for a slot or for room to load the model.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub max_wait_s: Option<u64>,
+    /// Most tokens one reply may generate before it is retried without a cap; 0 means no cap.
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    /// Arguments added after `runtime.llamacpp.extra_args` (or `runtime.vllm.extra_args`).
+    #[serde(default)]
+    pub extra_args: Option<Vec<String>>,
+}
+
+/// The llama.cpp settings a local model is started with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LocalLaunchEffective {
+    pub context: u32,
+    pub pool_tokens: u32,
+    pub slots: u32,
+    pub cache_type_k: String,
+    pub cache_type_v: String,
+    #[ts(type = "\"auto\" | \"on\" | \"off\"")]
+    pub flash_attn: String,
+    /// Absent: as many as the planner fits.
+    pub max_gpu_layers: Option<u32>,
+    #[ts(type = "number")]
+    pub max_wait_s: u64,
+    pub max_output_tokens: u32,
+    /// Every extra argument, the global ones first.
+    pub extra_args: Vec<String>,
+}
+
+/// A model-table row's settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TableModelConfig {
+    pub id: String,
+    /// `<endpoint>:<model>`.
+    pub spec: String,
+    #[ts(type = "\"local\" | \"cloud\"")]
+    pub location: String,
+    /// False when the row names an endpoint that is not configured.
+    pub endpoint_configured: bool,
+    /// What the app's settings file sets; null fields keep the row's value from the config.
+    pub saved: TableModelSettings,
+    pub effective: TableModelEffective,
+}
+
+/// Settings the app may change on a model-table row; a null field keeps the row's own value.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TableModelSettings {
+    /// False leaves the row out of routing.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    #[ts(type = "\"basic\" | \"standard\" | \"strong\" | \"frontier\" | null")]
+    pub tier: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    /// Tokens the model reads per request.
+    #[serde(default)]
+    pub context_window: Option<u32>,
+    /// Set both prices or neither.
+    #[serde(default)]
+    pub input_usd_per_mtok: Option<f64>,
+    #[serde(default)]
+    pub output_usd_per_mtok: Option<f64>,
+}
+
+/// A model-table row as routing uses it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TableModelEffective {
+    pub enabled: bool,
+    #[ts(type = "\"basic\" | \"standard\" | \"strong\" | \"frontier\"")]
+    pub tier: String,
+    pub tags: Vec<String>,
+    pub context_window: Option<u32>,
+    pub input_usd_per_mtok: Option<f64>,
+    pub output_usd_per_mtok: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelSetConfigParams {
+    #[serde(default)]
+    pub local: Vec<LocalModelUpdate>,
+    #[serde(default)]
+    pub table: Vec<TableModelUpdate>,
+    /// Check and compute the result without saving or applying anything.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// New saved settings for one local model; all-null settings remove its saved settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LocalModelUpdate {
+    pub id: String,
+    pub settings: LocalLaunchSettings,
+}
+
+/// New saved settings for one model-table row; all-null settings remove its saved settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TableModelUpdate {
+    pub id: String,
+    pub settings: TableModelSettings,
+}
+
 /// Notification sent to every client as a download progresses and when it ends. The payload is
 /// a [`DownloadJob`].
 pub const MODEL_DOWNLOAD_PROGRESS: &str = "models.download_progress";
+
+/// Notification sent to every client when a local model is unloaded to make room for another
+/// (or after `idle_unload_s`), with its slots saved to disk. The payload is a [`ModelSwap`].
+pub const MODEL_SWAPPED_OUT: &str = "model.swapped_out";
+/// Notification sent to every client when a local model is loaded in place of one swapped out,
+/// or comes back with saved slots. The payload is a [`ModelSwap`].
+pub const MODEL_SWAPPED_IN: &str = "model.swapped_in";
+
+/// A local model swapped out or in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelSwap {
+    pub model_id: String,
+    /// Out: saving the slots and stopping the server. In: starting the server.
+    pub seconds: f64,
+    /// Out: bytes of slot state written to disk. In: memory the model took.
+    #[ts(type = "number")]
+    pub bytes: u64,
+    /// Out: slots saved. In: saved slots waiting to be restored on their agents' next calls.
+    pub slots: u32,
+    /// Out: `room` (another model needed the memory), `idle`, `config` (its settings
+    /// changed), or `request` (`models.unload`). In: `swap` (it replaced a model) or `restore` (it came back with saved slots).
+    pub reason: String,
+}
 
 /// A download and how far it has got.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1035,6 +1361,9 @@ pub struct ScheduleRow {
     pub last_run: Option<String>,
     pub last_ok: Option<bool>,
     pub running: bool,
+    /// Set while a run waits for a quiet machine (`prefer_quiet`, `when_quiet`): why. Run it
+    /// now with `schedules.run`.
+    pub deferred: Option<String>,
     /// Why the schedule cannot run, if it cannot.
     pub problem: Option<String>,
 }
@@ -1069,7 +1398,7 @@ pub const SCHEDULE_EVENT: &str = "schedule.event";
 #[ts(export)]
 pub struct ScheduleEventParams {
     pub schedule_id: String,
-    #[ts(type = "\"started\" | \"completed\" | \"failed\"")]
+    #[ts(type = "\"deferred\" | \"started\" | \"completed\" | \"failed\"")]
     pub status: String,
     /// The session a prompt run created.
     pub session_id: Option<String>,
@@ -1558,7 +1887,7 @@ pub struct ConfigEntry {
     #[ts(type = "unknown")]
     pub value: serde_json::Value,
     /// The layer that set `value`.
-    #[ts(type = "\"default\" | \"user\" | \"project\" | \"env\"")]
+    #[ts(type = "\"default\" | \"user\" | \"app\" | \"project\" | \"env\"")]
     pub source: String,
     /// Whether the daemon must restart before a change applies.
     pub restart: bool,
@@ -1905,4 +2234,214 @@ pub struct CatalogField {
     pub placeholder: Option<String>,
     #[serde(default)]
     pub default: Option<String>,
+}
+
+/// `system.resources`: what the machine and the sessions are using right now.
+#[derive(Debug)]
+pub struct SystemResources;
+
+impl Method for SystemResources {
+    const NAME: &'static str = "system.resources";
+    type Params = SystemResourcesParams;
+    type Result = ResourceSnapshot;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SystemResourcesParams {}
+
+/// `system.resources_subscribe`: start (`on: true`) or stop `system.resources_changed`
+/// notifications on this connection. The daemon samples only while a connection is subscribed;
+/// closing the connection unsubscribes it.
+#[derive(Debug)]
+pub struct SystemResourcesSubscribe;
+
+impl Method for SystemResourcesSubscribe {
+    const NAME: &'static str = "system.resources_subscribe";
+    type Params = SystemResourcesSubscribeParams;
+    type Result = SystemResourcesSubscribeResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SystemResourcesSubscribeParams {
+    pub on: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SystemResourcesSubscribeResult {
+    pub on: bool,
+    /// How often snapshots arrive while subscribed.
+    pub interval_ms: u32,
+}
+
+/// Notification carrying a [`ResourceSnapshot`], sent about every two seconds to connections
+/// subscribed with `system.resources_subscribe`.
+pub const RESOURCES_CHANGED: &str = "system.resources_changed";
+
+/// What the machine and the sessions are using.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ResourceSnapshot {
+    /// When it was taken, in milliseconds since the Unix epoch.
+    #[ts(type = "number")]
+    pub taken_at_ms: u64,
+    pub cpu: CpuUsage,
+    pub memory: MemoryUsage,
+    /// Empty when no supported GPU (NVIDIA, through its driver) is present.
+    pub gpus: Vec<GpuUsage>,
+    /// The daemon itself, then each model server it runs.
+    pub processes: Vec<ProcessUsage>,
+    /// Local models loaded now, in use or idle (cached until they unload).
+    pub local_models: Vec<ActiveLocalModel>,
+    /// Hosted endpoints that live sessions use, with their last 15 minutes of calls.
+    pub endpoints: Vec<ActiveEndpoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CpuUsage {
+    /// Busy share of every core together, 0 to 100.
+    pub total_percent: f32,
+    /// Busy share of each logical core, 0 to 100.
+    pub per_core: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MemoryUsage {
+    #[ts(type = "number")]
+    pub ram_used_bytes: u64,
+    #[ts(type = "number")]
+    pub ram_total_bytes: u64,
+    #[ts(type = "number")]
+    pub swap_used_bytes: u64,
+    #[ts(type = "number")]
+    pub swap_total_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GpuUsage {
+    pub index: u32,
+    pub name: String,
+    pub vendor: String,
+    /// Busy share, 0 to 100; absent when the driver does not report it.
+    pub utilization_percent: Option<f32>,
+    #[ts(type = "number")]
+    pub vram_used_bytes: u64,
+    #[ts(type = "number")]
+    pub vram_total_bytes: u64,
+    pub temperature_c: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProcessUsage {
+    pub pid: u32,
+    pub name: String,
+    /// `daemon` for imperium-core, otherwise the runtime serving `model` (`llamacpp`, `vllm`).
+    pub role: String,
+    pub model: Option<String>,
+    /// Share of the whole machine (every core), 0 to 100.
+    pub cpu_percent: f32,
+    #[ts(type = "number")]
+    pub ram_bytes: u64,
+    /// Absent when the driver does not report GPU memory per process.
+    #[ts(type = "number | null")]
+    pub vram_bytes: Option<u64>,
+}
+
+/// A local model loaded by the supervisor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActiveLocalModel {
+    pub model: String,
+    /// The runtime serving it: `llamacpp` or `vllm`.
+    pub runtime: String,
+    /// `gpu`, `partial` (layers split between GPU and RAM), or `cpu`.
+    #[ts(type = "\"gpu\" | \"partial\" | \"cpu\"")]
+    pub placement: String,
+    pub gpu_layers: u32,
+    /// Tokens one session may use.
+    pub context: u32,
+    /// Tokens of KV cache its slots share (the KV pool).
+    pub pool_tokens: u32,
+    /// Of those, tokens reserved by calls running now.
+    pub pool_reserved_tokens: u32,
+    /// Memory planned for it.
+    #[ts(type = "number")]
+    pub vram_bytes: u64,
+    #[ts(type = "number")]
+    pub ram_bytes: u64,
+    pub slots: u32,
+    pub slots_in_use: u32,
+    /// Calls waiting for a slot or for room in the pool.
+    pub queued: u32,
+    /// Pinned to the CPU lane.
+    pub cpu_pinned: bool,
+    /// An agent is mid-turn on it (between its calls), so it stays loaded.
+    pub claimed: bool,
+    /// Live sessions on this model: as their model, or with calls on it in the last 15 minutes.
+    pub sessions: Vec<String>,
+    pub pid: Option<u32>,
+    /// How long it has been idle; absent while it is in use (a slot in use, a call queued, or
+    /// an agent mid-turn on it).
+    #[ts(type = "number | null")]
+    pub idle_ms: Option<u64>,
+    /// When it unloads if it stays idle; absent while it is in use.
+    #[ts(type = "number | null")]
+    pub unload_in_ms: Option<u64>,
+    /// `models.unload` can release it now (nothing is using it).
+    pub can_unload: bool,
+}
+
+/// A hosted model live sessions use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActiveEndpoint {
+    /// The `[endpoints.<id>]` it is served from.
+    pub endpoint: String,
+    /// The endpoint's host, from its base URL.
+    pub host: Option<String>,
+    pub model: String,
+    /// `<endpoint>:<model>`.
+    pub spec: String,
+    pub sessions: Vec<String>,
+    /// Model calls in the last 15 minutes.
+    pub requests: u32,
+    #[ts(type = "number")]
+    pub prompt_tokens: u64,
+    #[ts(type = "number")]
+    pub completion_tokens: u64,
+    /// How long the latest call took.
+    #[ts(type = "number | null")]
+    pub last_latency_ms: Option<u64>,
+    /// Failed turns on this model in the last 15 minutes, and the latest message.
+    pub errors: u32,
+    pub last_error: Option<String>,
+}
+
+/// `models.unload`: unload an idle local model now, freeing its memory.
+#[derive(Debug)]
+pub struct ModelUnload;
+
+impl Method for ModelUnload {
+    const NAME: &'static str = "models.unload";
+    type Params = ModelUnloadParams;
+    type Result = ModelUnloadResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelUnloadParams {
+    /// The local model id, as `local_models[].model` names it.
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelUnloadResult {
+    pub unloaded: bool,
 }

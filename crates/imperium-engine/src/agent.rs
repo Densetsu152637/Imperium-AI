@@ -6,15 +6,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use imperium_api::{
-    ToolContext, ToolEvent, ToolGroup, ToolProvider, parse_arguments as parse,
-    truncate_chars as truncate,
+    Load, LocalRequest, Priority, ToolContext, ToolEvent, ToolGroup, ToolProvider,
+    parse_arguments as parse, truncate_chars as truncate,
 };
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
 use imperium_protocol::session::{
-    ContextItem, ContextPointer, PermissionDecision, Plan, PlanStep, SessionEvent, StepStatus,
-    TokenUsage,
+    AgentStatus, ContextItem, ContextPointer, PauseCause, PermissionDecision, Plan, PlanStep,
+    ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
 };
+use imperium_protocol::tools as contract;
 use imperium_tools::{Access, Invocation, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
@@ -27,11 +28,13 @@ use imperium_memory::{NewEntry, Scope};
 
 use imperium_protocol::methods::{Compaction, ContextFit};
 
-use crate::breakdown::{Call, Category, Measured, Request, Spans, join_parts, tool_texts};
+use crate::breakdown::{
+    Call, Category, Measured, Request, Spans, estimate_tokens, join_parts, tool_texts,
+};
 use crate::compact::{self, SwitchError};
 use crate::queue::{Inbox, QueueError, steering_text};
 use crate::session::{SessionMemory, Shared, lock};
-use crate::{LocalLease, ResolvedModel, TaskRequest, route};
+use crate::{LocalLease, LocalModels, LocalPresence, ResolvedModel, TaskRequest, route};
 
 /// Longest tool output or report shown in events (the model receives the full text).
 const EVENT_OUTPUT_CHARS: usize = 2_000;
@@ -59,9 +62,11 @@ enum AgentTool {
     MemoryRemember,
     ContextLoad,
     StartSession,
+    ListAgents,
+    ResumeAgent,
 }
 
-struct TaskReport {
+pub(crate) struct TaskReport {
     task_id: String,
     model: String,
     ok: bool,
@@ -85,9 +90,14 @@ pub struct Agent {
     role: String,
     /// Required references from the latest manifest that are not loaded yet.
     unloaded: Mutex<Vec<String>>,
+    /// The latest local call's exact prompt plus completion tokens, and the number of messages
+    /// (its reply included) they cover; the next call's prompt estimate starts from it.
+    last_call: Option<(u64, usize)>,
     /// The latest model call that reported its prompt size: the messages it read, and that
     /// size, so measurements without a tokenizer can be calibrated.
     last_reported: Option<(usize, u64)>,
+    /// A single-call task: no tools, no recalled context, and exactly one model call.
+    single_call: bool,
 }
 
 impl Agent {
@@ -155,6 +165,7 @@ impl Agent {
         }
         let (system, spans) = join_parts(parts);
         let inbox = shared.inboxes.open(&id);
+        shared.agents.register(&id, &role, &model);
         Agent {
             id,
             inbox,
@@ -166,7 +177,9 @@ impl Agent {
             tasks: HashMap::new(),
             role,
             unloaded: Mutex::new(Vec::new()),
+            last_call: None,
             last_reported: None,
+            single_call: false,
         }
     }
 
@@ -191,6 +204,18 @@ impl Agent {
         }
     }
 
+    /// Makes this a single-call agent: it is given the brief and no tools, makes exactly one
+    /// model call, and that reply is its report.
+    pub fn single_call(mut self) -> Self {
+        let root = self.shared.workspace.root_display();
+        let system = single_call_prompt(&root);
+        let (system, spans) = join_parts(vec![(Category::SystemBase, system)]);
+        self.messages = vec![ChatMessage::System { content: system }];
+        self.spans = HashMap::from([(0, spans)]);
+        self.single_call = true;
+        self
+    }
+
     /// The conversation so far.
     pub fn messages(&self) -> &[ChatMessage] {
         &self.messages
@@ -206,10 +231,21 @@ impl Agent {
         self.messages.extend(earlier);
         self.spans.retain(|index, _| *index == 0);
         self.last_reported = None;
+        self.last_call = None;
     }
 
     fn emit(&self, event: SessionEvent) {
         self.shared.emitter.emit(&self.id, event);
+    }
+
+    /// Saves a subagent's conversation, so it can be resumed later (after a restart too). The
+    /// root's conversation is saved by its session after every turn.
+    fn checkpoint(&self) {
+        if !self.can_delegate {
+            self.shared
+                .agents
+                .save_conversation(&self.id, &self.messages);
+        }
     }
 
     /// The tool providers in `group`, in the order they were given.
@@ -231,6 +267,9 @@ impl Agent {
 
     /// The tools offered to the model, and where the MCP tools sit among them.
     fn tool_specs(&self) -> (Vec<ToolSpec>, Range<usize>) {
+        if self.single_call {
+            return (Vec::new(), 0..0);
+        }
         let mut tools = specs();
         let mcp_start = tools.len();
         for provider in self.providers(ToolGroup::External) {
@@ -262,6 +301,8 @@ impl Agent {
                 await_tasks_spec(),
                 steer_agent_spec(),
                 queue_agent_spec(),
+                list_agents_spec(),
+                resume_agent_spec(),
             ]);
         }
         (tools, mcp)
@@ -273,7 +314,9 @@ impl Agent {
     pub async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
         self.emit(SessionEvent::TurnStarted { text: text.clone() });
         let mut parts = Vec::new();
-        if let Some(index) = &self.shared.context {
+        if !self.single_call
+            && let Some(index) = &self.shared.context
+        {
             let manifest = index.resolve(&self.role, &text);
             if !manifest.is_empty() {
                 *lock(&self.unloaded) = manifest.required().map(str::to_string).collect();
@@ -286,35 +329,56 @@ impl Agent {
         let (content, spans) = join_parts(parts);
         self.spans.insert(self.messages.len(), spans);
         self.messages.push(ChatMessage::User { content });
+        self.checkpoint();
         let (tools, mcp) = self.tool_specs();
         let tool_texts = tool_texts(&tools, mcp);
         let mut total = Usage::default();
-        // A local model is held (and loaded if needed) for the whole turn.
-        let (client, _lease) = match self.client().await {
-            Ok(client) => client,
-            Err(message) => {
-                self.emit(SessionEvent::TurnFailed {
-                    message: message.clone(),
-                });
-                return self.outcome(message, false, total);
-            }
-        };
         let mut reply = String::new();
         let max_steps = self.shared.max_steps;
+        // Names this agent to a local model, which gives it back the slot it used last and
+        // keeps the model loaded between its calls.
+        let holder = self.holder();
+        let mut attached = self
+            .local_models()
+            .map(|local| local.attach(&self.model.model, &holder));
         for step in 1..=max_steps {
+            // A background session gives way here, between model calls, holding no slot.
+            self.yield_to_user(&mut attached, &holder).await;
             // The safe point for steering: the last model response's tool calls all have
             // their results.
             self.take_steering();
-            let request = ChatRequest {
-                model: &self.model.model,
-                messages: &self.messages,
-                tools: &tools,
-            };
-            let mut started = Instant::now();
-            let mut first_text = None;
             let mut waits = 0;
             let mut waited = std::time::Duration::ZERO;
-            let result = loop {
+            // A reply cut short by its reservation is retried once without a cap.
+            let mut uncapped = false;
+            // What the reservation counted for the prompt, to compare with what it was.
+            let mut estimate: u32;
+            let (client, queue_wait, started, first_text, result) = loop {
+                // A local model's slot is held for this one request, not for the turn: tool
+                // calls, `await_tasks`, and usage-limit pauses run without one. The model is
+                // loaded here if needed.
+                let prompt_tokens = self.prompt_estimate(&tool_texts);
+                estimate = prompt_tokens;
+                let (client, lease) = match self.client(&holder, prompt_tokens, uncapped).await {
+                    Ok(taken) => taken,
+                    Err(message) => {
+                        self.emit(SessionEvent::TurnFailed {
+                            message: message.clone(),
+                        });
+                        return self.outcome(message, false, total);
+                    }
+                };
+                let queue_wait = lease.as_ref().map(|lease| lease.waited);
+                let request = ChatRequest {
+                    model: &self.model.model,
+                    messages: &self.messages,
+                    tools: &tools,
+                    slot: lease.as_ref().and_then(|lease| lease.slot),
+                    max_tokens: lease.as_ref().and_then(|lease| lease.max_tokens),
+                };
+                let capped = request.max_tokens.is_some();
+                let started = Instant::now();
+                let mut first_text = None;
                 let emitter = &self.shared.emitter;
                 let id = &self.id;
                 let mut on_text = |text: &str| {
@@ -327,29 +391,51 @@ impl Agent {
                     );
                 };
                 let result = client.stream(request, &mut on_text).await;
+                drop(lease);
+                // A capped local reply that hit its reservation (or overflowed the KV pool) starts
+                // again with the whole context; one sent uncapped would only fail the same way.
+                if self.model.local && !uncapped && capped {
+                    let cut = match &result {
+                        Ok(completion) => completion.finish_reason.as_deref() == Some("length"),
+                        Err(error) => error.to_string().contains("Context size has been exceeded"),
+                    };
+                    if cut {
+                        uncapped = true;
+                        self.emit(SessionEvent::Notice {
+                            message: "the local reply was cut off by its token reservation (or the KV pool was full); it starts again below".into(),
+                        });
+                        continue;
+                    }
+                }
                 // Usage ran out: wait as the session's resume policy says, then try again.
-                let Err(error) = &result else { break result };
+                let Err(error) = &result else {
+                    break (client, queue_wait, started, first_text, result);
+                };
                 if !error.is_usage_limit() {
-                    break result;
+                    break (client, queue_wait, started, first_text, result);
                 }
                 let now = chrono::Local::now();
                 let policy = self.shared.controls.policy();
                 let Some(until) =
                     crate::next_attempt(&policy, error.retry_after_s(), waits, waited, now)
                 else {
-                    break result;
+                    break (client, queue_wait, started, first_text, result);
                 };
                 self.emit(SessionEvent::Paused {
                     until_unix_ms: u64::try_from(until.timestamp_millis()).unwrap_or(0),
                     reason: error.to_string(),
+                    cause: PauseCause::UsageLimit,
                 });
                 let pause = Instant::now();
+                // Asleep until the limit lifts: the model may be swapped out meanwhile.
+                let sleeping = self
+                    .local_models()
+                    .map(|local| local.waiting(&self.model.model, &holder));
                 self.shared.controls.pause_until(until).await;
+                drop(sleeping);
                 waited += pause.elapsed();
                 waits += 1;
                 self.emit(SessionEvent::Resumed {});
-                started = Instant::now();
-                first_text = None;
             };
             let completion = match result {
                 Ok(completion) => completion,
@@ -362,10 +448,24 @@ impl Agent {
                 }
             };
             let usage = completion.usage.unwrap_or_default();
+            // The pool admits calls by the estimate: a prompt above it overcommits the pool.
+            if self.model.local && usage.prompt_tokens > u64::from(estimate) {
+                tracing::warn!(
+                    model = %self.model.model,
+                    estimate,
+                    prompt_tokens = usage.prompt_tokens,
+                    "a local prompt exceeded its reservation estimate"
+                );
+            }
             total.prompt_tokens += usage.prompt_tokens;
             total.completion_tokens += usage.completion_tokens;
             total.cached_tokens += usage.cached_tokens;
-            self.emit(self.call_telemetry(&usage, started, first_text));
+            // A thinking model's reasoning streams before any reply text; the client marks it.
+            let first_token = match (completion.first_token, first_text) {
+                (Some(marked), Some(text)) => Some(marked.min(text)),
+                (marked, text) => marked.or(text),
+            };
+            self.emit(self.call_telemetry(&usage, started, first_token, queue_wait));
             // What this call read: the messages before its reply is appended, and the tools.
             let breakdown = self
                 .shared
@@ -390,15 +490,37 @@ impl Agent {
             if !completion.text.is_empty() {
                 reply = completion.text.clone();
             }
+            // A single-call agent runs no tools, so stray calls are dropped from the transcript
+            // rather than left without results.
+            let tool_calls = if self.single_call {
+                Vec::new()
+            } else {
+                completion.tool_calls.clone()
+            };
             self.messages.push(ChatMessage::Assistant {
                 content: Some(completion.text).filter(|text| !text.is_empty()),
-                tool_calls: completion.tool_calls.clone(),
+                tool_calls,
             });
-            // Steering that arrived during the final answer keeps the turn going.
-            if completion.tool_calls.is_empty() && self.inbox.has_steering() {
+            if self.model.local && completion.usage.is_some() {
+                self.last_call = Some((
+                    usage.prompt_tokens + usage.completion_tokens,
+                    self.messages.len(),
+                ));
+            }
+            if self.single_call && reply.trim().is_empty() {
+                let message = "the model returned no reply to a single-call task".to_string();
+                self.emit(SessionEvent::TurnFailed {
+                    message: message.clone(),
+                });
+                return self.outcome(message, false, total);
+            }
+            // Steering that arrived during the final answer keeps the turn going (a single-call
+            // task makes exactly one call, so it does not).
+            if !self.single_call && completion.tool_calls.is_empty() && self.inbox.has_steering() {
                 continue;
             }
-            if completion.tool_calls.is_empty() {
+            if completion.tool_calls.is_empty() || self.single_call {
+                self.checkpoint();
                 self.emit(SessionEvent::TurnCompleted {
                     usage: token_usage(&total),
                     cost_usd: self.cost(&total),
@@ -413,6 +535,8 @@ impl Agent {
                     content: output,
                 });
             }
+            // A safe point: every tool call has its result.
+            self.checkpoint();
         }
         let message = format!("stopped after {max_steps} model calls (agents.max_steps)");
         self.emit(SessionEvent::TurnFailed {
@@ -654,7 +778,13 @@ impl Agent {
             tool: tool.to_string(),
             summary: summary.to_string(),
         });
-        match answer.await.unwrap_or(PermissionDecision::Deny) {
+        // Asleep until the person answers: the local runtime may swap the model out meanwhile.
+        let waiting = self
+            .local_models()
+            .map(|local| local.waiting(&self.model.model, &self.holder()));
+        let decision = answer.await.unwrap_or(PermissionDecision::Deny);
+        drop(waiting);
+        match decision {
             PermissionDecision::Allow => true,
             PermissionDecision::AllowForSession => {
                 lock(&self.shared.allowed_tools).insert(tool.to_string());
@@ -714,17 +844,90 @@ impl Agent {
         finish(ok, output)
     }
 
-    /// The client for this turn's model calls, with the slot held on a local model.
-    async fn client(&self) -> Result<(Arc<dyn ChatClient>, Option<LocalLease>), String> {
-        self.client_for(&self.model).await
+    /// For a background session: waits, before the next model call, while the machine is busy
+    /// or saturated. The call in flight has finished and the next one has not asked for a
+    /// slot, so the wait holds none and spends no tokens; it ends when the machine is quiet or
+    /// a person runs the session now. While it waits it is not attached to its model, so a
+    /// model the user asks for can swap that one out without waiting for this agent.
+    async fn yield_to_user(&self, attached: &mut Option<LocalPresence>, holder: &str) {
+        let Some(background) = &self.shared.background else {
+            return;
+        };
+        let run_now = self.shared.controls.run_now();
+        if run_now.released() || background.load.level() == Load::Quiet {
+            return;
+        }
+        self.emit(SessionEvent::Paused {
+            until_unix_ms: 0,
+            reason: format!(
+                "the machine is {}; waiting for it to be quiet",
+                background.load.level().label()
+            ),
+            cause: PauseCause::Load,
+        });
+        *attached = None;
+        crate::wait_for_quiet(&*background.load, run_now, None).await;
+        *attached = self
+            .local_models()
+            .map(|local| local.attach(&self.model.model, holder));
+        self.emit(SessionEvent::Resumed {});
     }
 
-    /// A client for `model`'s calls, with the slot held on a local model.
+    /// This agent's name to a local model.
+    fn holder(&self) -> String {
+        imperium_api::holder(&self.shared.session_id, &self.id)
+    }
+
+    /// Tokens the next call's prompt is expected to take, for a local model's reservation: the
+    /// last call's exact count plus the messages added since, or on the first call every
+    /// message and the tool specs; estimates carry a 1.25 margin, each message 8 tokens of chat
+    /// template and the whole prompt 64.
+    fn prompt_estimate(&self, tools: &[(Category, String)]) -> u32 {
+        let message = |message: &ChatMessage| {
+            let text = serde_json::to_string(message).unwrap_or_default();
+            8.0 + estimate_tokens(&text) as f64 * 1.25
+        };
+        let total = match self.last_call {
+            Some((exact, covered)) if covered <= self.messages.len() => {
+                exact as f64 + self.messages[covered..].iter().map(message).sum::<f64>()
+            }
+            _ => {
+                let tools: u64 = tools.iter().map(|(_, text)| estimate_tokens(text)).sum();
+                64.0 + self.messages.iter().map(message).sum::<f64>() + tools as f64 * 1.25
+            }
+        };
+        total.ceil().min(f64::from(u32::MAX)) as u32
+    }
+
+    /// The local runtime, when this agent's model runs on it.
+    fn local_models(&self) -> Option<&dyn LocalModels> {
+        self.shared.local.as_deref().filter(|_| self.model.local)
+    }
+
+    /// The client for one model call, with the slot held on a local model until the call ends.
+    async fn client(
+        &self,
+        holder: &str,
+        prompt_tokens: u32,
+        uncapped: bool,
+    ) -> Result<(Arc<dyn ChatClient>, Option<LocalLease>), String> {
+        self.client_for(&self.model, holder, Some(prompt_tokens), uncapped)
+            .await
+    }
+
+    /// A client for one call to `model`, with the slot held on a local model until the lease
+    /// is dropped. `prompt_tokens` is the call's estimated prompt; `None` reserves the whole
+    /// context (a summary or a measurement outside the turn loop).
     async fn client_for(
         &self,
         model: &ResolvedModel,
+        holder: &str,
+        prompt_tokens: Option<u32>,
+        uncapped: bool,
     ) -> Result<(Arc<dyn ChatClient>, Option<LocalLease>), String> {
-        let (endpoint, lease) = self.endpoint(model).await?;
+        let (endpoint, lease) = self
+            .endpoint(model, holder, prompt_tokens, uncapped)
+            .await?;
         let kind = &model.kind;
         let client = self
             .shared
@@ -734,10 +937,14 @@ impl Agent {
         Ok((client, lease))
     }
 
-    /// Where to send `model`'s calls, with the slot held on a local model.
+    /// Where to send one call to `model`, with the slot held on a local model. Waits for a slot
+    /// when every one is busy, and loads the model first if it is not loaded.
     async fn endpoint(
         &self,
         model: &ResolvedModel,
+        holder: &str,
+        prompt_tokens: Option<u32>,
+        uncapped: bool,
     ) -> Result<(Endpoint, Option<LocalLease>), String> {
         if !model.local {
             return Ok((model.endpoint.clone(), None));
@@ -747,8 +954,23 @@ impl Agent {
             .local
             .as_deref()
             .ok_or("local models are not available: no llama.cpp runtime is configured")?;
+        // A session a person ran now, or that waited out its deferral, ranks as the user's.
+        let priority =
+            if self.shared.background.is_some() && !self.shared.controls.run_now().released() {
+                Priority::Background
+            } else {
+                Priority::Interactive
+            };
         let lease = local
-            .acquire(&model.model)
+            .acquire_with(
+                &model.model,
+                holder,
+                LocalRequest {
+                    priority,
+                    prompt_tokens,
+                    uncapped,
+                },
+            )
             .await
             .map_err(|error| format!("could not load local model {}: {error}", model.model))?;
         let endpoint = Endpoint {
@@ -775,22 +997,28 @@ impl Agent {
         &self,
         usage: &Usage,
         started: Instant,
-        first_text: Option<Instant>,
+        first_token: Option<Instant>,
+        queue_wait: Option<std::time::Duration>,
     ) -> SessionEvent {
         let duration = started.elapsed();
-        // Generation speed after the first token, unless the endpoint delivered everything at
-        // once (a buffered response), where only the whole call's duration is meaningful.
-        let after_first = first_text.map(|first| first.elapsed());
-        let generating = after_first
-            .filter(|window| window.as_millis() >= 100)
-            .unwrap_or(duration);
-        let tokens_per_sec = (usage.completion_tokens > 0 && !generating.is_zero())
-            .then(|| usage.completion_tokens as f64 / generating.as_secs_f64());
+        let (tokens_per_sec, measured) = generation_speed(
+            usage.completion_tokens,
+            duration,
+            first_token.map(|first| first.elapsed()),
+        );
+        // The local runtime keeps the measured speed per model, which routing and the model
+        // listing report; only a real generation window goes into it.
+        if let Some(generating) = measured
+            && let Some(local) = self.local_models()
+        {
+            local.record_throughput(&self.model.model, usage.completion_tokens, generating);
+        }
         SessionEvent::ModelCallCompleted {
             model: self.model.spec.clone(),
             usage: token_usage(usage),
             duration_ms: millis(duration),
-            time_to_first_token_ms: first_text.map(|first| millis(first - started)),
+            queue_wait_ms: queue_wait.map(millis),
+            time_to_first_token_ms: first_token.map(|first| millis(first - started)),
             tokens_per_sec,
             cost_usd: self.cost(usage),
         }
@@ -806,6 +1034,8 @@ impl Agent {
             "await_tasks" if self.can_delegate => AgentTool::AwaitTasks,
             "steer_agent" if self.can_delegate => AgentTool::SteerAgent,
             "queue_agent" if self.can_delegate => AgentTool::QueueAgent,
+            "list_agents" if self.can_delegate => AgentTool::ListAgents,
+            "resume_agent" if self.can_delegate => AgentTool::ResumeAgent,
             "load_skill" if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
             "context_load" if self.shared.context.is_some() => AgentTool::ContextLoad,
             "start_session" if self.can_delegate && self.shared.launcher.is_some() => {
@@ -829,6 +1059,8 @@ impl Agent {
             AgentTool::AwaitTasks => "wait for subagents",
             AgentTool::SteerAgent => "steer a subagent",
             AgentTool::QueueAgent => "queue a message for a subagent",
+            AgentTool::ListAgents => "list subagents",
+            AgentTool::ResumeAgent => "resume a subagent",
             AgentTool::LoadSkill => "load a skill",
             AgentTool::ContextLoad => "load workflow context",
             AgentTool::StartSession => "start a session",
@@ -847,6 +1079,8 @@ impl Agent {
             AgentTool::AwaitTasks => self.await_tasks(arguments).await,
             AgentTool::SteerAgent => self.message_agent(arguments, true),
             AgentTool::QueueAgent => self.message_agent(arguments, false),
+            AgentTool::ListAgents => Ok(self.list_agents()),
+            AgentTool::ResumeAgent => self.resume_agent(arguments),
             AgentTool::LoadSkill => self.load_skill(arguments),
             AgentTool::ContextLoad => self.context_load(arguments),
             AgentTool::StartSession => self.start_session(arguments).await,
@@ -911,24 +1145,18 @@ impl Agent {
         struct Args {
             #[serde(default)]
             goal: String,
-            steps: Vec<StepArgs>,
-        }
-        #[derive(Deserialize)]
-        struct StepArgs {
-            title: String,
-            status: StepStatus,
+            steps: Vec<PlanStep>,
+            #[serde(default)]
+            assumptions: Vec<String>,
+            #[serde(default)]
+            open_questions: Vec<String>,
         }
         let args: Args = parse(arguments)?;
         let plan = Plan {
             goal: args.goal,
-            steps: args
-                .steps
-                .into_iter()
-                .map(|step| PlanStep {
-                    title: step.title,
-                    status: step.status,
-                })
-                .collect(),
+            steps: args.steps,
+            assumptions: args.assumptions,
+            open_questions: args.open_questions,
         };
         let done = plan
             .steps
@@ -954,6 +1182,8 @@ impl Agent {
             tags: Vec<String>,
             #[serde(default)]
             role: Option<String>,
+            #[serde(default)]
+            single_call: bool,
         }
         let args: Args = parse(arguments)?;
         if args.brief.trim().is_empty() {
@@ -978,6 +1208,7 @@ impl Agent {
                 tier,
                 location,
                 tags: &args.tags,
+                session: Some(&self.shared.session_id),
             },
             self.shared.local.as_deref(),
         );
@@ -987,60 +1218,88 @@ impl Agent {
             brief: args.brief.clone(),
             model: model.spec.clone(),
         });
-        let shared = Arc::clone(&self.shared);
-        let id = task_id.clone();
-        let spec = model.spec.clone();
+        let role = args.role.unwrap_or_else(|| "leaf".into());
+        let mut agent = Agent::new(
+            task_id.clone(),
+            Arc::clone(&self.shared),
+            model,
+            false,
+            role,
+        );
+        if args.single_call {
+            agent = agent.single_call();
+        }
+        let spawned = json!({"task_id": task_id, "brief": args.brief, "model": agent.model.spec});
         // Each subagent is its own task, so subagents run in parallel across the runtime's threads.
-        let handle = tokio::spawn(async move {
-            shared
-                .hook(
-                    HookEvent::AgentSpawn,
-                    None,
-                    json!({"task_id": id, "brief": args.brief, "model": spec}),
-                )
-                .await;
-            let role = args.role.unwrap_or_else(|| "leaf".into());
-            let mut agent = Agent::new(id.clone(), Arc::clone(&shared), model, false, role);
-            let mut outcome = agent.run_turn(args.brief, None).await;
-            // Messages queued for the subagent run as further turns before it reports; the
-            // report is the last turn's reply, with every turn's usage.
-            while let Some(message) = agent.inbox().pop_or_close() {
-                let next = agent.run_turn(message.text, None).await;
-                outcome = TurnOutcome {
-                    text: next.text,
-                    ok: next.ok,
-                    usage: add_usage(&outcome.usage, &next.usage),
-                    cost_usd: add_cost(outcome.cost_usd, next.cost_usd),
-                };
-            }
-            shared.inboxes.close(&id);
-            shared
-                .hook(
-                    HookEvent::AgentComplete,
-                    None,
-                    json!({"task_id": id, "ok": outcome.ok, "report": truncate(&outcome.text, REPORT_CHARS)}),
-                )
-                .await;
-            shared.emitter.emit(
-                &id,
-                SessionEvent::TaskFinished {
-                    task_id: id.clone(),
-                    ok: outcome.ok,
-                    report: truncate(&outcome.text, EVENT_OUTPUT_CHARS),
-                    usage: token_usage(&outcome.usage),
-                    cost_usd: outcome.cost_usd,
-                },
-            );
-            TaskReport {
-                task_id: id,
-                model: spec,
-                ok: outcome.ok,
-                report: truncate(&outcome.text, REPORT_CHARS),
-            }
-        });
+        let handle = tokio::spawn(run_subagent(agent, args.brief, Some(spawned), false));
         self.tasks.insert(task_id.clone(), handle);
         Ok(format!(
             "started {task_id}; call await_tasks to collect its report"
+        ))
+    }
+
+    /// `list_agents`: the session's subagents with their status and latest report.
+    fn list_agents(&self) -> String {
+        let agents: Vec<_> = self
+            .shared
+            .agents
+            .list()
+            .into_iter()
+            .filter(|agent| agent.agent_id != ROOT_AGENT)
+            .collect();
+        if agents.is_empty() {
+            return "No subagents yet.".into();
+        }
+        agents
+            .iter()
+            .map(|agent| {
+                let status = match agent.status {
+                    AgentStatus::Running => "running",
+                    AgentStatus::Idle => "idle",
+                    AgentStatus::Failed => "failed",
+                    AgentStatus::Interrupted => "interrupted",
+                };
+                let resumable = if agent.resumable && agent.status != AgentStatus::Running {
+                    ", resumable"
+                } else {
+                    ""
+                };
+                let mut line = format!(
+                    "- {} ({status}{resumable}; {}; {} turns, {} messages): {}",
+                    agent.agent_id, agent.model, agent.turns, agent.messages, agent.title
+                );
+                if let Some(report) = &agent.last_report {
+                    let report = truncate(report.lines().next().unwrap_or_default(), 200);
+                    line.push_str(&format!("\n  last report: {report}"));
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `resume_agent`: a follow-up for a finished subagent, which continues with its earlier
+    /// conversation. Collected with `await_tasks` like a new task.
+    fn resume_agent(&mut self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            agent_id: String,
+            text: String,
+        }
+        let args: Args = parse(arguments)?;
+        if self.tasks.contains_key(&args.agent_id) {
+            return Err(format!(
+                "{} has not been collected yet; call await_tasks first, or steer_agent / \
+                 queue_agent while it works",
+                args.agent_id
+            ));
+        }
+        let (handle, model) = resume_subagent(&self.shared, &args.agent_id, args.text)?;
+        self.tasks.insert(args.agent_id.clone(), handle);
+        Ok(format!(
+            "resumed {} on {model} with its earlier conversation; call await_tasks to collect \
+             its report",
+            args.agent_id
         ))
     }
 
@@ -1092,6 +1351,11 @@ impl Agent {
             task_ids: Option<Vec<String>>,
         }
         let args: Args = parse(arguments)?;
+        // Asleep until the reports arrive: the local runtime may swap this agent's model out
+        // for its subagents' and restore it afterwards.
+        let _waiting = self
+            .local_models()
+            .map(|local| local.waiting(&self.model.model, &self.holder()));
         let mut ids = args
             .task_ids
             .unwrap_or_else(|| self.tasks.keys().cloned().collect());
@@ -1120,6 +1384,19 @@ impl Agent {
     }
 }
 
+/// The system prompt of a single-call agent.
+fn single_call_prompt(root: &str) -> String {
+    format!(
+        concat!(
+            "You are an Imperium subagent for the project at {root}. You have no tools and cannot ",
+            "look anything up: the brief contains everything you need. Answer it completely in one ",
+            "reply. Your reply is returned unchanged as your report to the agent that delegated to ",
+            "you, so give the finished answer, not a plan or questions."
+        ),
+        root = root
+    )
+}
+
 /// Tool arguments as JSON for hooks, or the raw text when they do not parse.
 /// Switching models and compacting the conversation; see [`compact`](crate::compact).
 impl Agent {
@@ -1129,8 +1406,13 @@ impl Agent {
     pub async fn switch_model(&mut self, target: ResolvedModel) -> Result<ContextFit, SwitchError> {
         let fit = self.fit_to(&target, false).await?;
         let from = std::mem::replace(&mut self.model, target);
-        // The calibration related the heuristic to the old model's counts.
+        self.shared
+            .agents
+            .register(&self.id, &self.role, &self.model);
+        // The calibration related the heuristic to the old model's counts, and the exact count
+        // the next local reservation starts from was the old model's.
         self.last_reported = None;
+        self.last_call = None;
         self.emit(SessionEvent::ModelChanged {
             from: from.spec,
             to: self.model.spec.clone(),
@@ -1244,6 +1526,7 @@ impl Agent {
                 self.messages = messages;
                 self.spans = spans;
                 self.last_reported = None;
+                self.last_call = None;
                 self.emit(SessionEvent::ContextCompacted {
                     model: target.spec.clone(),
                     before_tokens,
@@ -1321,8 +1604,9 @@ impl Agent {
             candidates.push(target);
         }
         let mut failures = Vec::new();
+        let holder = self.holder();
         for model in candidates {
-            let (client, _lease) = match self.client_for(model).await {
+            let (client, lease) = match self.client_for(model, &holder, None, false).await {
                 Ok(client) => client,
                 Err(error) => {
                     failures.push(format!("{}: {error}", model.spec));
@@ -1336,10 +1620,13 @@ impl Agent {
                         model: &model.model,
                         messages: &request,
                         tools: &[],
+                        slot: lease.as_ref().and_then(|lease| lease.slot),
+                        max_tokens: lease.as_ref().and_then(|lease| lease.max_tokens),
                     },
                     &mut ignore,
                 )
                 .await;
+            drop(lease);
             match completion {
                 Ok(completion) if !completion.text.trim().is_empty() => {
                     return Ok((completion.text.trim().to_string(), model.spec.clone()));
@@ -1361,7 +1648,7 @@ impl Agent {
         scale: Option<f64>,
     ) -> Result<Measured, SwitchError> {
         let (client, _lease) = self
-            .client_for(model)
+            .client_for(model, &self.holder(), None, false)
             .await
             .map_err(SwitchError::Unavailable)?;
         let request = Request {
@@ -1510,64 +1797,161 @@ fn load_skill_spec() -> ToolSpec {
     }
 }
 
-fn update_plan_spec() -> ToolSpec {
+/// A protocol tool definition as the spec sent to the model.
+fn tool_spec(definition: contract::ToolDefinition) -> ToolSpec {
     ToolSpec {
-        name: "update_plan".into(),
-        description: "Replace your plan: a goal and its steps with statuses. Keep exactly one step in_progress while working.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "goal": {"type": "string"},
-            "steps": {"type": "array", "items": {"type": "object", "properties": {
-                "title": {"type": "string"},
-                "status": {"type": "string", "enum": ["pending", "in_progress", "done", "blocked", "skipped"]}
-            }, "required": ["title", "status"]}}
-        }, "required": ["steps"]}),
+        name: definition.name.into(),
+        description: definition.description.into(),
+        parameters: definition.parameters,
     }
+}
+
+fn update_plan_spec() -> ToolSpec {
+    tool_spec(contract::update_plan())
 }
 
 fn spawn_agent_spec() -> ToolSpec {
-    ToolSpec {
-        name: "spawn_agent".into(),
-        description: "Delegate an independent task to a subagent that runs in parallel. The brief must be self-contained. Returns a task id; collect the report with await_tasks.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "brief": {"type": "string"},
-            "tier": {"type": "string", "enum": ["basic", "standard", "strong", "frontier"], "description": "Minimum model capability; the cheapest suitable model is chosen. Default standard."},
-            "model": {"type": "string", "description": "A model table id (or <endpoint>:<model>) to use"},
-            "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},
-            "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match"}
-        }, "required": ["brief"]}),
-    }
+    tool_spec(contract::spawn_agent())
 }
 
 fn await_tasks_spec() -> ToolSpec {
-    ToolSpec {
-        name: "await_tasks".into(),
-        description: "Wait for subagents to finish and return their reports. Omit task_ids to wait for all running tasks. Uses no tokens while waiting.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "task_ids": {"type": "array", "items": {"type": "string"}}
-        }}),
-    }
+    tool_spec(contract::await_tasks())
 }
 
 fn steer_agent_spec() -> ToolSpec {
-    ToolSpec {
-        name: "steer_agent".into(),
-        description: "Send a running subagent a message that joins its current turn: it reads it before its next model call and carries on. Use to correct or redirect work in progress.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
-            "text": {"type": "string"}
-        }, "required": ["agent_id", "text"]}),
-    }
+    tool_spec(contract::steer_agent())
 }
 
 fn queue_agent_spec() -> ToolSpec {
-    ToolSpec {
-        name: "queue_agent".into(),
-        description: "Give a running subagent a follow-up message that runs as a new turn after its current one, before it reports. Its report then covers the follow-up.".into(),
-        parameters: json!({"type": "object", "properties": {
-            "agent_id": {"type": "string", "description": "The subagent's task id, such as t1"},
-            "text": {"type": "string"}
-        }, "required": ["agent_id", "text"]}),
+    tool_spec(contract::queue_agent())
+}
+
+fn list_agents_spec() -> ToolSpec {
+    tool_spec(contract::list_agents())
+}
+
+fn resume_agent_spec() -> ToolSpec {
+    tool_spec(contract::resume_agent())
+}
+
+/// Runs a subagent's turn on `text`, then any messages queued for it, and reports. A new task
+/// runs `agent.spawn` hooks first (`spawned` is their payload); a resumed one is fitted to its
+/// model's context window first, compacting a long conversation.
+async fn run_subagent(
+    mut agent: Agent,
+    text: String,
+    spawned: Option<serde_json::Value>,
+    resumed: bool,
+) -> TaskReport {
+    let shared = Arc::clone(&agent.shared);
+    let id = agent.id.clone();
+    let spec = agent.model.spec.clone();
+    if let Some(payload) = spawned {
+        shared.hook(HookEvent::AgentSpawn, None, payload).await;
     }
+    if resumed {
+        match agent.fit_current().await {
+            Ok(fit) if fit.compaction.is_some() => agent.checkpoint(),
+            Ok(_) => {}
+            Err(error) => agent.emit(SessionEvent::Notice {
+                message: format!("{id}'s conversation could not be compacted: {error}"),
+            }),
+        }
+    }
+    let mut outcome = agent.run_turn(text, None).await;
+    // Messages queued for the subagent run as further turns before it reports; the
+    // report is the last turn's reply, with every turn's usage.
+    while let Some(message) = agent.inbox().pop_or_close() {
+        let next = agent.run_turn(message.text, None).await;
+        outcome = TurnOutcome {
+            text: next.text,
+            ok: next.ok,
+            usage: add_usage(&outcome.usage, &next.usage),
+            cost_usd: add_cost(outcome.cost_usd, next.cost_usd),
+        };
+    }
+    shared.inboxes.close(&id);
+    agent.checkpoint();
+    shared
+        .hook(
+            HookEvent::AgentComplete,
+            None,
+            json!({"task_id": id, "ok": outcome.ok, "report": truncate(&outcome.text, REPORT_CHARS)}),
+        )
+        .await;
+    // Finishing makes the subagent idle (or failed): its state stays, so it can be resumed.
+    shared.emitter.emit(
+        &id,
+        SessionEvent::TaskFinished {
+            task_id: id.clone(),
+            ok: outcome.ok,
+            report: truncate(&outcome.text, EVENT_OUTPUT_CHARS),
+            usage: token_usage(&outcome.usage),
+            cost_usd: outcome.cost_usd,
+        },
+    );
+    TaskReport {
+        task_id: id,
+        model: spec,
+        ok: outcome.ok,
+        report: truncate(&outcome.text, REPORT_CHARS),
+    }
+}
+
+/// Resumes a finished subagent with `text` as a new turn after its kept conversation, on the
+/// model it last ran on (found by spec after a restart; the session's model when it is gone).
+/// Returns its task and the model's spec.
+pub(crate) fn resume_subagent(
+    shared: &Arc<Shared>,
+    agent_id: &str,
+    text: String,
+) -> Result<(JoinHandle<TaskReport>, String), String> {
+    if text.trim().is_empty() {
+        return Err("the follow-up must not be empty".into());
+    }
+    let before = shared.agents.claim(agent_id)?;
+    let model = shared
+        .agents
+        .model(agent_id)
+        .or_else(|| {
+            shared
+                .catalog
+                .iter()
+                .find(|entry| entry.model.spec == before.model)
+                .map(|entry| entry.model.clone())
+        })
+        .or_else(|| shared.agents.model(ROOT_AGENT));
+    let Some(model) = model else {
+        shared.agents.release(agent_id, before.status);
+        return Err("the session has no model to run the subagent on".into());
+    };
+    let spec = model.spec.clone();
+    let mut agent = Agent::new(
+        agent_id.to_string(),
+        Arc::clone(shared),
+        model,
+        false,
+        before.role.clone(),
+    );
+    agent.restore(shared.agents.conversation(agent_id));
+    shared.emitter.emit(
+        ROOT_AGENT,
+        SessionEvent::TaskResumed {
+            task_id: agent_id.to_string(),
+            text: text.clone(),
+            model: spec.clone(),
+        },
+    );
+    let text = if before.status == AgentStatus::Interrupted {
+        format!(
+            "<note>The daemon stopped while you were working on the previous message, so that \
+             turn did not finish. Check what was already done, finish it, and then handle this \
+             message.</note>\n\n{text}"
+        )
+    } else {
+        text
+    };
+    Ok((tokio::spawn(run_subagent(agent, text, None, true)), spec))
 }
 
 fn add_usage(a: &Usage, b: &Usage) -> Usage {
@@ -1593,6 +1977,26 @@ fn token_usage(usage: &Usage) -> TokenUsage {
     }
 }
 
+/// A call's generation speed in tokens/s for its event, and the generation window to record as
+/// the model's measured speed. The window runs from the first generated token (reasoning or
+/// text) to the end. When it is under 100 ms, or nothing streamed (a tool call alone), the
+/// event's speed falls back to the whole call's duration, prompt reading included; that is
+/// shown but not recorded, since a short reply after a long prompt would understate the model.
+fn generation_speed(
+    completion_tokens: u64,
+    duration: std::time::Duration,
+    after_first: Option<std::time::Duration>,
+) -> (Option<f64>, Option<std::time::Duration>) {
+    let measured = after_first.filter(|window| window.as_millis() >= 100);
+    let generating = measured.unwrap_or(duration);
+    let tokens_per_sec = (completion_tokens > 0 && !generating.is_zero())
+        .then(|| completion_tokens as f64 / generating.as_secs_f64());
+    (
+        tokens_per_sec,
+        measured.filter(|_| tokens_per_sec.is_some()),
+    )
+}
+
 fn millis(duration: std::time::Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
@@ -1614,4 +2018,59 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
         },
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn a_streamed_window_is_shown_and_recorded() {
+        let (shown, recorded) =
+            generation_speed(40, Duration::from_secs(5), Some(Duration::from_secs(2)));
+        assert_eq!(shown, Some(20.0));
+        assert_eq!(recorded, Some(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_short_reply_is_shown_over_the_whole_call_but_not_recorded() {
+        let (shown, recorded) =
+            generation_speed(2, Duration::from_secs(10), Some(Duration::from_millis(50)));
+        assert_eq!(shown, Some(0.2));
+        assert_eq!(recorded, None);
+        let (shown, recorded) = generation_speed(30, Duration::from_secs(3), None);
+        assert_eq!(shown, Some(10.0));
+        assert_eq!(recorded, None);
+    }
+
+    /// The delegation and planning tools sent to models are the protocol's exported definitions.
+    #[test]
+    fn specs_are_the_protocol_definitions() {
+        for (spec, definition) in [
+            (update_plan_spec(), contract::update_plan()),
+            (spawn_agent_spec(), contract::spawn_agent()),
+            (await_tasks_spec(), contract::await_tasks()),
+            (steer_agent_spec(), contract::steer_agent()),
+            (queue_agent_spec(), contract::queue_agent()),
+            (list_agents_spec(), contract::list_agents()),
+            (resume_agent_spec(), contract::resume_agent()),
+        ] {
+            assert_eq!(spec.name, definition.name);
+            assert_eq!(spec.description, definition.description);
+            assert_eq!(spec.parameters, definition.parameters);
+        }
+    }
+}
+
+#[cfg(test)]
+mod single_call_tests {
+    use super::single_call_prompt;
+
+    #[test]
+    fn the_single_call_prompt_has_no_runs_of_spaces() {
+        let prompt = single_call_prompt("/work");
+        assert!(!prompt.contains("  "), "{prompt}");
+        assert!(prompt.contains("/work") && prompt.contains("subagent"));
+    }
 }

@@ -35,6 +35,12 @@ fn repository(folder: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(plain(&top)))
 }
 
+/// Whether `folder` looks like it is inside a git repository: it or a parent holds `.git`. A
+/// cheap check for listings; starting worktrees asks git itself.
+pub fn in_repository(folder: &Path) -> bool {
+    folder.ancestors().any(|dir| dir.join(".git").exists())
+}
+
 /// The branch name as a single folder name.
 fn folder_name(branch: &str) -> String {
     branch

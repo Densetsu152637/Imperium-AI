@@ -5,6 +5,7 @@ import type {
   AgentEvent,
   EnvironmentInfo,
   ContextCategory,
+  PauseCause,
   Plan,
   QueuedMessage,
   ResumePolicy,
@@ -101,8 +102,8 @@ export type SessionState = {
   status: SessionStatus;
   /** What a watching or merged session follows, such as `owner/repo#12`. */
   statusDetail: string | null;
-  /** While waiting out a usage limit: when the session tries again. */
-  pause: { untilMs: number; reason: string } | null;
+  /** While paused: when the session tries again after a usage limit (0 when it waits for a quiet machine), and why. */
+  pause: { untilMs: number; reason: string; cause: PauseCause } | null;
   /** When this window last saw the session change, for ordering lists. */
   updatedAt: number;
 };
@@ -127,7 +128,7 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   browser: null,
   status: summary.status,
   statusDetail: summary.status_detail,
-  pause: null,
+  pause: summary.hold ? { untilMs: 0, reason: summary.hold.reason, cause: summary.hold.cause } : null,
   updatedAt,
 });
 
@@ -213,9 +214,11 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
       next.push({
         kind: "notice",
         message:
-          event.until_unix_ms > 0
-            ? `Usage limit reached; waiting until ${formatResumeTime(event.until_unix_ms)}`
-            : "Usage limit reached; waiting",
+          event.cause !== "usage_limit"
+            ? `Background work paused: ${event.reason}. Resume now to skip the wait.`
+            : event.until_unix_ms > 0
+              ? `Usage limit reached; waiting until ${formatResumeTime(event.until_unix_ms)}`
+              : "Usage limit reached; waiting",
       });
       break;
     case "resumed":
@@ -260,6 +263,9 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
       }
       break;
     }
+    case "task_resumed":
+      next.push({ kind: "notice", message: `Continued ${event.task_id} on ${event.model}: ${event.text.split("\n")[0]}` });
+      break;
     case "model_changed":
       next.push({
         kind: "notice",
@@ -296,7 +302,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
     status = event.status;
     statusDetail = event.detail;
   }
-  if (event.type === "paused") pause = { untilMs: event.until_unix_ms, reason: event.reason };
+  if (event.type === "paused") pause = { untilMs: event.until_unix_ms, reason: event.reason, cause: event.cause };
   if (event.type === "resumed") pause = null;
   if (event.type === "browser_view") {
     browser = { url: event.url, title: event.title, screenshot: event.screenshot };
@@ -352,11 +358,18 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
         },
       };
     }
+    // A finished subagent given a follow-up works again with its earlier conversation.
+    if (event.type === "task_resumed" && tasks[event.task_id]) {
+      const task = tasks[event.task_id];
+      tasks = { ...tasks, [event.task_id]: { ...task, status: "running", model: event.model, report: "" } };
+    }
   } else if (tasks[agentId]) {
     const task = tasks[agentId];
+    // A resumed task's cost adds to what it cost before.
+    const cost = (more: number | null) => (more === null ? task.costUsd : (task.costUsd ?? 0) + more);
     const updated: TaskState =
       event.type === "task_finished"
-        ? { ...task, status: event.ok ? "finished" : "failed", report: event.report, costUsd: event.cost_usd }
+        ? { ...task, status: event.ok ? "finished" : "failed", report: event.report, costUsd: cost(event.cost_usd) }
         : { ...task, entries: applyToEntries(task.entries, agentEvent) };
     tasks = { ...tasks, [agentId]: updated };
   }

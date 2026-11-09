@@ -1,21 +1,26 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, Weak};
 use std::time::{Duration, Instant};
 
-use imperium_config::{KeychainSecrets, Paths, SecretStore, Settings};
+use imperium_config::{
+    Config, KeychainSecrets, Layer, ModelPlacement, Paths, SecretStore, Settings,
+};
 use imperium_engine::{
-    CatalogModel, ChatClients, LocalModels, ModelError, ResolvedModel, Session, SessionConfig,
-    SessionMemory, TaskRequest, ToolProvider, new_session_id, resolve_model, route,
+    Background, CatalogModel, ChatClients, LoadView, LocalModels, ModelError, ResolvedModel,
+    Session, SessionConfig, SessionMemory, TaskRequest, ToolProvider, new_session_id,
+    resolve_model, route,
 };
 use imperium_extensions::{ConfiguredHook, Extensions, Sources};
+use imperium_local::supervisor::SwapDirection;
 use imperium_mcp::McpTools;
 use imperium_media::{ImageConfig, ImageGenerators, Media, MediaTools, Service};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
-    EnvironmentRuntime, LocalModelListResult, ModelListResult, ModelRow, SESSION_CREATED,
-    SessionDeleteParams, SessionDeleteResult, SessionSummary, SessionWorktree,
+    EnvironmentRuntime, LocalModelListResult, MODEL_SWAPPED_IN, MODEL_SWAPPED_OUT, ModelListResult,
+    ModelRow, ModelSwap, SESSION_CREATED, SessionDeleteParams, SessionDeleteResult, SessionSummary,
+    SessionWorktree,
 };
 use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
@@ -28,9 +33,11 @@ use tokio::sync::broadcast;
 use crate::approvals::Approvals;
 use crate::downloads::Downloads;
 use crate::environments::{EnvironmentError, Environments};
+use crate::load::{self, LoadMonitor};
 use crate::local::LocalRuntime;
 use crate::pets::PetEngine;
 use crate::phone::Devices;
+use crate::project_agent::PendingBrief;
 use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
 use crate::suggestions::{SuggestTool, Suggestions};
@@ -47,6 +54,11 @@ pub struct SessionOptions {
     pub pre_approved: Vec<String>,
     pub launcher: Option<Arc<dyn imperium_engine::SessionLauncher>>,
     pub instructions: Option<String>,
+    /// Started by a schedule or a project agent: it gives way to the user's own sessions.
+    pub background: bool,
+    /// A background session that must not give way to the load: a person ran it now, or it
+    /// waited out its `max_defer`.
+    pub run_now: bool,
     /// The environment the session works in, recorded with it.
     pub environment_id: Option<String>,
     /// Folders the session may use besides its working directory.
@@ -91,7 +103,12 @@ pub struct DaemonState {
     me: Weak<DaemonState>,
     started: Instant,
     paths: Paths,
-    settings: Settings,
+    settings: RwLock<Arc<Settings>>,
+    /// Serialises saves of model settings.
+    pub(crate) config_saves: Mutex<()>,
+    /// The configuration layers the settings were built from, so a save rebuilds them with
+    /// only the app file replaced; `None` when the caller gave settings alone.
+    config_layers: Mutex<Option<Vec<Layer>>>,
     /// Where API keys and tokens are read from: the OS keychain unless the caller chose another.
     secrets: Arc<dyn SecretStore>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
@@ -113,6 +130,13 @@ pub struct DaemonState {
     phone_address: OnceLock<std::net::SocketAddr>,
     /// Pull requests sessions watch: session id to (repo, number).
     watches: Mutex<HashMap<String, (String, u64)>>,
+    /// Turns what the daemon sees into quiet, busy, or saturated ([`start_sampling`]).
+    monitor: Arc<LoadMonitor>,
+    /// A load view to use instead of the monitor (for tests).
+    load_override: OnceLock<Arc<dyn LoadView>>,
+    /// Briefs of project-agent sessions that were waiting for a quiet machine when the daemon
+    /// stopped, until the project agents start and pick them up.
+    pending_briefs: Mutex<Vec<PendingBrief>>,
     /// Archived sessions, which no longer run, as lists show them, by session id.
     archived: Mutex<HashMap<String, SessionSummary>>,
     /// Signalled when a client asks the daemon to stop.
@@ -123,6 +147,8 @@ pub struct DaemonState {
     suggestions: Suggestions,
     /// Runs processes for remote runtimes; a fake in tests.
     runner: OnceLock<Arc<dyn Runner>>,
+    /// Machine usage for `system.resources` and its watchers.
+    resources: Arc<crate::resources::ResourceMonitor>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -156,13 +182,16 @@ impl DaemonState {
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
         let devices = Devices::load(paths.data_dir().join("devices.json"));
+        let monitor = Arc::new(LoadMonitor::new(settings.load.clone()));
         let environments = Environments::load(paths.data_dir().join("environments.json"));
         let suggest = settings.models.suggest_downloads;
-        Arc::new_cyclic(|me| DaemonState {
+        let state = Arc::new_cyclic(|me| DaemonState {
             me: me.clone(),
             started: Instant::now(),
             paths,
-            settings,
+            settings: RwLock::new(Arc::new(settings)),
+            config_saves: Mutex::new(()),
+            config_layers: Mutex::new(None),
             secrets,
             sessions: Mutex::new(HashMap::new()),
             placements: Mutex::new(HashMap::new()),
@@ -178,12 +207,124 @@ impl DaemonState {
             devices,
             phone_address: OnceLock::new(),
             watches: Mutex::new(HashMap::new()),
+            monitor,
+            load_override: OnceLock::new(),
+            pending_briefs: Mutex::new(Vec::new()),
             archived: Mutex::new(HashMap::new()),
             shutdown: tokio::sync::Notify::new(),
             connectors: crate::connectors::StatusCache::default(),
             suggestions: Suggestions::new(suggest),
             runner: OnceLock::new(),
+            resources: Arc::default(),
+        });
+        state.apply_load_view();
+        if let Some(local) = state.local.get()
+            && tokio::runtime::Handle::try_current().is_ok()
+        {
+            state.announce_swaps(local);
+        }
+        state
+    }
+
+    /// Starts reading the machine so the load view follows it (until then it reads quiet).
+    pub fn start_load_monitor(self: &Arc<Self>) {
+        load::start_sampling(self);
+    }
+
+    pub(crate) fn load_monitor(&self) -> Arc<LoadMonitor> {
+        Arc::clone(&self.monitor)
+    }
+
+    /// Whether the machine is quiet, busy, or saturated, for work that gives way to the user.
+    pub fn load_view(&self) -> Arc<dyn LoadView> {
+        self.load_override.get().cloned().unwrap_or_else(|| {
+            let monitor: Arc<dyn LoadView> = self.monitor.clone();
+            monitor
         })
+    }
+
+    /// Uses `view` instead of the monitor, such as a fixed one in tests. Call once, before
+    /// sessions start.
+    pub fn use_load_view(&self, view: Arc<dyn LoadView>) {
+        if self.load_override.set(view).is_ok() {
+            self.apply_load_view();
+        }
+    }
+
+    /// Tells the local models how background calls give way.
+    fn apply_load_view(&self) {
+        if let Some(local) = self.local.get() {
+            local.supervisor.set_background_policy(
+                self.load_view(),
+                Duration::from_secs(self.settings().load.interactive_hold_min * 60),
+            );
+        }
+    }
+
+    /// Sessions with a turn running: the user's, and background ones.
+    pub(crate) fn working_sessions(&self) -> (u32, u32) {
+        let sessions = self
+            .sessions
+            .lock()
+            .expect("session map lock is never poisoned by a panic while held");
+        let mut counts = (0, 0);
+        for session in sessions.values() {
+            if session.status().0 == SessionStatus::Working {
+                if session.is_background() {
+                    counts.1 += 1;
+                } else {
+                    counts.0 += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    /// Slots in use and calls queued on the local models.
+    pub(crate) fn local_activity(&self) -> imperium_local::supervisor::Activity {
+        self.local
+            .get()
+            .map(|local| local.supervisor.activity())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn recent_swaps(&self) -> u32 {
+        self.local
+            .get()
+            .map_or(0, |local| local.supervisor.recent_swaps())
+    }
+
+    /// Tells every client when a local model is swapped out or in (`model.swapped_out`,
+    /// `model.swapped_in`).
+    fn announce_swaps(self: &Arc<Self>, local: &LocalRuntime) {
+        let mut swaps = local.supervisor.swap_events();
+        let state = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let event = match swaps.recv().await {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                let method = match event.direction {
+                    SwapDirection::Out => MODEL_SWAPPED_OUT,
+                    SwapDirection::In => MODEL_SWAPPED_IN,
+                };
+                state.announce(
+                    method,
+                    ModelSwap {
+                        model_id: event.model_id,
+                        seconds: event.seconds,
+                        bytes: event.bytes,
+                        slots: event.slots,
+                        reason: event.reason.to_string(),
+                    },
+                );
+            }
+        });
     }
 
     /// What runs processes for remote runtimes (`docker`, `wsl.exe`, `ssh`).
@@ -256,7 +397,7 @@ impl DaemonState {
 
     /// For suggestions: whether `routing.prefer` is `local`, and what each local model can do.
     pub fn suggestion_inputs(&self) -> (bool, Vec<imperium_local::suggest::LocalCapability>) {
-        let prefer_local = self.settings.routing.prefer == imperium_config::Preference::Local;
+        let prefer_local = self.settings().routing.prefer == imperium_config::Preference::Local;
         let local = self.local.get().map_or_else(Vec::new, |local| {
             local
                 .supervisor
@@ -281,7 +422,7 @@ impl DaemonState {
         });
         let routed = route(
             &self.catalog(),
-            &self.settings.routing,
+            &self.settings().routing,
             &fallback,
             TaskRequest::default(),
             local.as_deref(),
@@ -300,7 +441,7 @@ impl DaemonState {
 
     /// Starts the phone listener when `phone.bind` is set. Call once.
     pub async fn start_phone(self: &Arc<Self>) -> std::io::Result<Option<std::net::SocketAddr>> {
-        let Some(bind) = &self.settings.phone.bind else {
+        let Some(bind) = &self.settings().phone.bind else {
             return Ok(None);
         };
         let address = bind
@@ -366,7 +507,7 @@ impl DaemonState {
     /// Starts GitHub auto-fix when it is enabled and repositories are watched, and the watcher
     /// for pull requests sessions follow.
     pub fn start_autofix(self: &Arc<Self>, github: Arc<dyn imperium_github::GitHub>) {
-        let poll = std::time::Duration::from_secs(self.settings.github.autofix.poll_s.max(10));
+        let poll = std::time::Duration::from_secs(self.settings().github.autofix.poll_s.max(10));
         crate::autofix::watch_pull_requests(self, Arc::clone(&github), poll);
         crate::autofix::start(self, github);
     }
@@ -375,8 +516,35 @@ impl DaemonState {
         self.scheduler.get()
     }
 
-    pub fn settings(&self) -> &Settings {
-        &self.settings
+    /// The settings in effect. Saving model settings replaces the snapshot, so callers read it
+    /// when they need it rather than keeping it.
+    pub fn settings(&self) -> Arc<Settings> {
+        Arc::clone(&self.settings.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Keeps the layers `config` merged, which the settings were built from: saving model
+    /// settings then changes only what the app file sets, never what other files say now.
+    pub fn remember_config(&self, config: &Config) {
+        *self
+            .config_layers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(config.layers().to_vec());
+    }
+
+    /// The layers kept by [`DaemonState::remember_config`].
+    pub(crate) fn config_layers(&self) -> Option<Vec<Layer>> {
+        self.config_layers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Replaces the settings snapshot, such as after the app saved model settings.
+    pub(crate) fn replace_settings(&self, settings: Settings) {
+        *self
+            .settings
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(settings);
     }
 
     /// The store every secret is read from.
@@ -401,9 +569,10 @@ impl DaemonState {
 
     /// Media backends from `[media]`, using `[endpoints]` for URLs and keys.
     fn media(&self) -> Option<Arc<Media>> {
-        let settings = &self.settings.media;
+        let all = self.settings();
+        let settings = &all.media;
         let service = |endpoint: &str, model: &str| -> Option<Service> {
-            let endpoint_settings = self.settings.endpoints.get(endpoint)?;
+            let endpoint_settings = all.endpoints.get(endpoint)?;
             let api_key = endpoint_settings
                 .api_key
                 .as_ref()
@@ -442,7 +611,7 @@ impl DaemonState {
 
     /// Web tools from `[web]`; a provider whose key is missing is left out with a warning.
     fn web_tools(&self) -> Option<WebTools> {
-        let web = &self.settings.web;
+        let web = &self.settings().web;
         if !web.enabled {
             return None;
         }
@@ -481,7 +650,7 @@ impl DaemonState {
 
     /// The isolation tier commands run under, from `[isolation]`.
     fn sandbox(&self) -> Sandbox {
-        let isolation = &self.settings.isolation;
+        let isolation = &self.settings().isolation;
         match isolation.tier.as_str() {
             "os" => Sandbox::Os {
                 network: isolation.network,
@@ -501,7 +670,7 @@ impl DaemonState {
         let dir = self.paths.data_dir().join("sessions");
         let cutoff = std::time::SystemTime::now()
             .checked_sub(std::time::Duration::from_secs(
-                self.settings.agents.resume_days * 86_400,
+                self.settings().agents.resume_days * 86_400,
             ))
             .unwrap_or(std::time::UNIX_EPOCH);
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -557,12 +726,14 @@ impl DaemonState {
             let model = switched.as_deref().or(meta["model"].as_str());
             let options = SessionOptions {
                 resume_id: Some(id.clone()),
+                background: meta["background"].as_bool().unwrap_or(false),
+                run_now: meta["run_now"].as_bool().unwrap_or(false),
                 // A session that never had a model keeps waiting for one.
                 may_wait_for_model: model.is_none(),
                 worktrees: serde_json::from_value(meta["worktrees"].clone()).unwrap_or_default(),
                 ..SessionOptions::default()
             };
-            match meta["environment_id"].as_str() {
+            let created = match meta["environment_id"].as_str() {
                 // Its environment as it is now, if it still exists.
                 Some(env) if self.environments.get(env).is_some() => {
                     self.create_in_environment(env, model, options)
@@ -589,13 +760,81 @@ impl DaemonState {
                     Ok(env) => self.create_in_environment(&env.id, model, options),
                     Err(_) => self.create_session_with(project, model, options),
                 },
+            };
+            let (session, events) = created?;
+            // A brief still waiting for a quiet machine is sent once the project agents start
+            // ([`crate::project_agent::start`]).
+            if let Some(brief) = meta["deferred_brief"]["text"].as_str() {
+                lock_pending(&self.pending_briefs).push(PendingBrief {
+                    project: project.to_string(),
+                    session: Arc::clone(&session),
+                    events: session.subscribe(),
+                    brief: brief.to_string(),
+                    until_unix_ms: meta["deferred_brief"]["until_unix_ms"]
+                        .as_u64()
+                        .unwrap_or(0),
+                });
             }
+            Ok((session, events))
+        }
+    }
+
+    /// Briefs restored by [`DaemonState::resume_sessions`] that have not been sent yet.
+    pub(crate) fn take_pending_briefs(&self) -> Vec<PendingBrief> {
+        std::mem::take(&mut *lock_pending(&self.pending_briefs))
+    }
+
+    /// Stops a background session giving way to the load for the rest of its life, after a
+    /// restart too.
+    pub fn release_run_now(&self, session: &Session) {
+        session.run_now().release();
+        self.update_meta(session.id(), |meta| {
+            meta.insert("run_now".into(), true.into());
+        });
+    }
+
+    /// Records the brief a session gets once the machine is quiet (and the time it gets it
+    /// anyway), so a restart does not lose it; `None` once it has been sent.
+    pub(crate) fn set_deferred_brief(&self, id: &str, brief: Option<(&str, u64)>) {
+        self.update_meta(id, |meta| match brief {
+            Some((text, until_unix_ms)) => {
+                meta.insert(
+                    "deferred_brief".into(),
+                    serde_json::json!({ "text": text, "until_unix_ms": until_unix_ms }),
+                );
+            }
+            None => {
+                meta.remove("deferred_brief");
+            }
+        });
+    }
+
+    /// Changes a remembered session's `.meta.json`; sessions that are not remembered have none.
+    fn update_meta(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    ) {
+        let path = self
+            .paths
+            .data_dir()
+            .join("sessions")
+            .join(format!("{id}.meta.json"));
+        let Some(serde_json::Value::Object(mut meta)) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+        else {
+            return;
+        };
+        change(&mut meta);
+        if let Err(error) = std::fs::write(&path, serde_json::Value::Object(meta).to_string()) {
+            tracing::warn!(path = %path.display(), %error, "could not record the session");
         }
     }
 
     /// The configured resume policy for usage limits.
     fn resume_policy(&self) -> ResumePolicy {
-        let resume = &self.settings.resume;
+        let resume = &self.settings().resume;
         ResumePolicy {
             mode: resume.mode.clone(),
             at_time: resume.at_time.clone(),
@@ -633,11 +872,44 @@ impl DaemonState {
         self.paths.config_dir().join("mods")
     }
 
+    /// The local model runtime, when it is running.
+    pub(crate) fn local_runtime(&self) -> Option<&LocalRuntime> {
+        self.local.get()
+    }
+
     /// Local models, the hardware they are planned against, and what is loaded.
     pub fn local_models(&self) -> LocalModelListResult {
         self.local
             .get()
             .map_or_else(crate::local::disabled, LocalRuntime::listing)
+    }
+
+    /// The resource monitor behind `system.resources`.
+    pub fn resource_monitor(&self) -> &Arc<crate::resources::ResourceMonitor> {
+        &self.resources
+    }
+
+    /// Local models loaded now, in use or idle.
+    pub fn loaded_local_models(&self) -> Vec<imperium_local::supervisor::LoadedStatus> {
+        self.local
+            .get()
+            .map(|local| local.supervisor.loaded())
+            .unwrap_or_default()
+    }
+
+    /// Unloads an idle local model now.
+    ///
+    /// A model with a slot in use, a call queued, or an agent mid-turn on it is not unloaded.
+    pub async fn unload_local_model(&self, model: &str) -> Result<(), String> {
+        let supervisor = self
+            .local
+            .get()
+            .map(|local| Arc::clone(&local.supervisor))
+            .ok_or_else(|| format!("{model} is not loaded: no local runtime is running"))?;
+        supervisor
+            .unload(model)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     /// The memory local models may use, when the local runtime is running.
@@ -647,17 +919,34 @@ impl DaemonState {
 
     /// Scans the model folders again (after a download), starting the local runtime when it
     /// was not running for want of folders. Must run inside the Tokio runtime; it blocks.
-    pub fn rescan_local_models(&self) {
+    pub fn rescan_local_models(self: &Arc<Self>) {
         if let Some(local) = self.local.get() {
-            return local.rescan(&self.paths, &self.settings);
+            local.rescan(&self.paths, &self.settings());
+            return self.apply_local_settings(local);
         }
-        if let Some(started) = LocalRuntime::start(&self.paths, &self.settings)
-            && self.local.set(started).is_err()
-            && let Some(local) = self.local.get()
-        {
+        let Some(started) = LocalRuntime::start(&self.paths, &self.settings()) else {
+            return;
+        };
+        if self.local.set(started).is_ok() {
+            if let Some(local) = self.local.get() {
+                self.apply_local_settings(local);
+                self.announce_swaps(local);
+            }
+        } else if let Some(local) = self.local.get() {
             // Another download started it first, perhaps before this one's files landed.
-            local.rescan(&self.paths, &self.settings);
+            local.rescan(&self.paths, &self.settings());
+            self.apply_local_settings(local);
         }
+    }
+
+    /// Hands the local runtime the per-model settings in effect, read under the lock that
+    /// serialises saves: a save is never overwritten by a snapshot taken before it.
+    fn apply_local_settings(&self, local: &LocalRuntime) {
+        let _saving = self
+            .config_saves
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        local.apply_model_settings(&self.settings());
     }
 
     pub fn downloads(&self) -> &Downloads {
@@ -708,13 +997,9 @@ impl DaemonState {
         project_dir: &str,
         model: Option<&str>,
         prompt: String,
-        pre_approved: Vec<String>,
+        options: SessionOptions,
         timeout: std::time::Duration,
     ) -> (bool, String, Option<String>) {
-        let options = SessionOptions {
-            pre_approved,
-            ..SessionOptions::default()
-        };
         let (session, events) = match self.create_session_with(project_dir, model, options) {
             Ok(created) => created,
             Err(error) => return (false, error.to_string(), None),
@@ -837,7 +1122,7 @@ impl DaemonState {
         // Connectors added or changed in the app since the daemon started apply to new sessions.
         let fresh = crate::connectors::saved_settings(&self.paths);
         let (mut mcp, mut notices) = crate::mcp::session_servers(
-            fresh.as_ref().unwrap_or(&self.settings),
+            fresh.as_ref().unwrap_or(&*self.settings()),
             project_dir_path,
             |name| self.secrets.load(name),
         );
@@ -887,7 +1172,7 @@ impl DaemonState {
             model,
             catalog,
             clients: ChatClients::default(),
-            routing: self.settings.routing.clone(),
+            routing: self.settings().routing.clone(),
             local: self.local.get().map(|local| {
                 let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
                 supervisor
@@ -896,18 +1181,22 @@ impl DaemonState {
             notices,
             extensions,
             context,
-            enforce: self.settings.workflow.enforce,
+            enforce: self.settings().workflow.enforce,
             pre_approved: options.pre_approved,
             resume,
             resume_policy: self.resume_policy(),
             launcher: options.launcher,
             instructions: options.instructions,
-            memory: self.settings.memory.enabled.then(|| SessionMemory {
-                store: Store::new(self.paths.data_dir(), (!remote).then_some(project_dir_path)),
-                settings: self.settings.memory.clone(),
+            background: options.background.then(|| Background {
+                load: self.load_view(),
             }),
-            max_steps: self.settings.agents.max_steps,
+            memory: self.settings().memory.enabled.then(|| SessionMemory {
+                store: Store::new(self.paths.data_dir(), (!remote).then_some(project_dir_path)),
+                settings: self.settings().memory.clone(),
+            }),
+            max_steps: self.settings().agents.max_steps,
             auto_compact: options.auto_compact,
+            keep_agent_state: remember && self.settings().sessions.agent_state_keep,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
         // Ordinary sessions are remembered so they continue after a restart; project agents
@@ -916,6 +1205,8 @@ impl DaemonState {
             let meta = serde_json::json!({
                 "project_dir": project_dir,
                 "model": model_spec,
+                "background": options.background,
+                "run_now": options.run_now,
                 "environment_id": placement.environment_id,
                 "folders": placement.folders,
                 "worktrees": placement.worktrees,
@@ -926,12 +1217,16 @@ impl DaemonState {
                 tracing::warn!(path = %path.display(), %error, "could not record the session");
             }
         }
+        if options.run_now {
+            session.run_now().release();
+        }
         let events = session.subscribe();
         if let Some(pets) = self.pets() {
             pets.watch(id.clone(), session.subscribe());
         }
         if let Some(me) = self.me.upgrade() {
             crate::suggestions::watch(&me, id.clone(), session.subscribe());
+            crate::resources::watch_session(&me, id.clone(), session.subscribe());
         }
         let session = Arc::new(session);
         self.placements
@@ -987,9 +1282,10 @@ impl DaemonState {
                 .unwrap_or_else(|| format!("imperium/{}", &id[..id.len().min(8)]));
             // Read afresh, so a change in Settings applies to the next session.
             let fresh = crate::connectors::saved_settings(&self.paths);
+            let current = self.settings();
             let dir = fresh
                 .as_ref()
-                .unwrap_or(&self.settings)
+                .unwrap_or(&*current)
                 .sessions
                 .worktree_dir
                 .clone()
@@ -1042,6 +1338,13 @@ impl DaemonState {
         self.forget_session(id);
         let sessions = self.paths.data_dir().join("sessions");
         let _ = std::fs::remove_file(sessions.join(format!("{id}.meta.json")));
+        // Its agents' kept state goes with it.
+        let agents = imperium_engine::agents_dir(&sessions.join(format!("{id}.jsonl")));
+        if agents.exists()
+            && let Err(error) = std::fs::remove_dir_all(&agents)
+        {
+            tracing::warn!(path = %agents.display(), %error, "could not delete the session's agent state");
+        }
         let mut result = SessionDeleteResult::default();
         if remove_worktrees && !placement.worktrees.is_empty() {
             (result.removed_worktrees, result.failed) =
@@ -1061,13 +1364,27 @@ impl DaemonState {
         &self.environments
     }
 
+    /// The environments, with which of them can start sessions on git worktrees.
+    pub fn environment_list(&self) -> imperium_protocol::methods::EnvironmentListResult {
+        let environments = self.environments.list();
+        let git = environments
+            .iter()
+            .filter(|env| env.runtime == imperium_protocol::methods::EnvironmentRuntime::Local)
+            .filter(|env| {
+                env.folders
+                    .iter()
+                    .any(|folder| crate::worktrees::in_repository(Path::new(folder)))
+            })
+            .map(|env| env.id.clone())
+            .collect();
+        imperium_protocol::methods::EnvironmentListResult { environments, git }
+    }
+
     /// Tells every client the environments changed.
     pub fn announce_environments(&self) {
         self.announce(
             imperium_protocol::methods::ENVIRONMENTS_CHANGED,
-            imperium_protocol::methods::EnvironmentListResult {
-                environments: self.environments.list(),
-            },
+            self.environment_list(),
         );
     }
 
@@ -1125,7 +1442,7 @@ impl DaemonState {
     /// Workflow packs and the project's instructions and documentation, unless the workflow is
     /// turned off. Packs that cannot be read are reported in `notices`.
     fn context(&self, project_dir: &Path, notices: &mut Vec<String>) -> Option<Arc<ContextIndex>> {
-        let workflow = &self.settings.workflow;
+        let workflow = &self.settings().workflow;
         if !workflow.enabled {
             return None;
         }
@@ -1152,10 +1469,10 @@ impl DaemonState {
         imperium_extensions::load(&Sources {
             config_dir: self.paths.config_dir().to_path_buf(),
             project_dir: project_dir.to_path_buf(),
-            plugin_dirs: self.settings.extensions.plugin_dirs.clone(),
-            disabled_plugins: self.settings.extensions.disabled_plugins.clone(),
+            plugin_dirs: self.settings().extensions.plugin_dirs.clone(),
+            disabled_plugins: self.settings().extensions.disabled_plugins.clone(),
             hooks: self
-                .settings
+                .settings()
                 .hooks
                 .iter()
                 .map(|hook| ConfiguredHook {
@@ -1172,34 +1489,36 @@ impl DaemonState {
     /// Resolves a model a client asked a session to switch to: a model table id or an
     /// `<endpoint>:<model>` spec, or `None` for `models.default`.
     pub fn resolve_model(&self, requested: Option<&str>) -> Result<ResolvedModel, ModelError> {
+        let settings = self.settings();
         let spec = requested.map(|requested| {
-            self.settings
+            settings
                 .models
                 .catalog
                 .iter()
                 .find(|entry| entry.id == requested)
                 .map_or(requested, |entry| entry.spec.as_str())
         });
-        resolve_model(&self.settings, spec, |name| self.secrets.load(name))
+        resolve_model(&settings, spec, |name| self.secrets.load(name))
     }
 
     /// Resolves `[[models.catalog]]` for routing subagents. Entries that cannot be used (an
     /// unknown endpoint, a missing key) are skipped with a warning rather than failing the session.
     fn catalog(&self) -> Vec<CatalogModel> {
-        self.settings
+        let settings = self.settings();
+        settings
             .models
             .catalog
             .iter()
+            .filter(|entry| entry.enabled)
             .filter_map(|entry| {
-                match resolve_model(&self.settings, Some(&entry.spec), |name| {
-                    self.secrets.load(name)
-                }) {
+                match resolve_model(&settings, Some(&entry.spec), |name| self.secrets.load(name)) {
                     Ok(model) => Some(CatalogModel {
                         id: entry.id.clone(),
                         model,
                         tier: entry.tier,
                         location: entry.location,
                         tags: entry.tags.clone(),
+                        cpu_lane: entry.placement == ModelPlacement::Cpu,
                     }),
                     Err(error) => {
                         tracing::warn!(model = %entry.spec, %error, "skipping catalog model");
@@ -1212,14 +1531,14 @@ impl DaemonState {
 
     /// The configured model table, with prices from each endpoint's pricing.
     pub fn model_table(&self) -> ModelListResult {
-        let models = self
-            .settings
+        let settings = self.settings();
+        let models = settings
             .models
             .catalog
             .iter()
             .map(|entry| {
                 let (endpoint_id, model) = entry.spec.split_once(':').unwrap_or((&entry.spec, ""));
-                let endpoint = self.settings.endpoints.get(endpoint_id);
+                let endpoint = settings.endpoints.get(endpoint_id);
                 let pricing = endpoint.and_then(|endpoint| endpoint.pricing.get(model));
                 ModelRow {
                     id: entry.id.clone(),
@@ -1231,13 +1550,14 @@ impl DaemonState {
                     output_usd_per_mtok: pricing.map(|p| p.output_usd_per_mtok),
                     endpoint_configured: endpoint.is_some(),
                     context_window: entry.context_window,
+                    enabled: entry.enabled,
                 }
             })
             .collect();
         ModelListResult {
             models,
-            prefer: self.settings.routing.prefer.as_str().into(),
-            rules: u32::try_from(self.settings.routing.rules.len()).unwrap_or(u32::MAX),
+            prefer: self.settings().routing.prefer.as_str().into(),
+            rules: u32::try_from(self.settings().routing.rules.len()).unwrap_or(u32::MAX),
         }
     }
 
@@ -1315,6 +1635,14 @@ fn lock_watches(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn lock_pending(
+    pending: &Mutex<Vec<PendingBrief>>,
+) -> std::sync::MutexGuard<'_, Vec<PendingBrief>> {
+    pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// A session as lists show it, without its environment ([`DaemonState::summary`] adds it).
 fn summary(session: &Session) -> SessionSummary {
     let (status, status_detail) = session.status();
@@ -1329,6 +1657,8 @@ fn summary(session: &Session) -> SessionSummary {
         status,
         status_detail,
         resume_policy: session.resume_policy(),
+        background: session.is_background(),
+        hold: session.hold(),
         persistent: false,
         worktrees: Vec::new(),
         pinned: false,

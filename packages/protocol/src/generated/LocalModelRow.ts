@@ -13,10 +13,36 @@ id: string,
  */
 runtime: "llamacpp" | "vllm", path: string, architecture: string | null, quantization: string | null, parts: number, size_bytes: number, context_length: number | null, 
 /**
- * Memory needed at the configured context and slots.
+ * Memory needed with the model's KV pool and settings.
  */
 required_bytes: number, 
 /**
  * How the model would load on this machine when nothing else is loaded.
  */
-placement: "gpu" | "partial" | "cpu" | "none", gpu_layers: number | null, loaded: boolean, slots: number, slots_in_use: number, };
+placement: "gpu" | "partial" | "cpu" | "none", gpu_layers: number | null, loaded: boolean, slots: number, slots_in_use: number, 
+/**
+ * Calls waiting for a slot on this model.
+ */
+queued: number, 
+/**
+ * Pinned to the CPU lane by `placement = "cpu"` in the model table: served with no GPU
+ * layers, in system RAM only.
+ */
+cpu_lane: boolean, 
+/**
+ * How fast the model has generated in its recent calls, in tokens per second; absent
+ * before a call finished since the daemon started.
+ */
+tokens_per_s: number | null, 
+/**
+ * Tokens one session may use.
+ */
+context: number, 
+/**
+ * Tokens of KV cache shared by the model's slots.
+ */
+pool_tokens: number, 
+/**
+ * Of those, tokens reserved by calls running now.
+ */
+pool_reserved_tokens: number, };

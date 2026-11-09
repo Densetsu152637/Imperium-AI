@@ -67,6 +67,8 @@ type Props = {
   onDock: (id: string) => void;
   /** Opens the Connectors window (MCP servers, plugins, skills). */
   onOpenConnectors: () => void;
+  /** Opens the model configuration dialog (local models and model-table rows). */
+  onOpenModels: () => void;
   onResetLayout: () => void;
   onClose: () => void;
 };
@@ -344,7 +346,7 @@ export function SettingsWindow(props: Props) {
         },
       );
       if (result.restart) setNeedsRestart(true);
-      if (result.overridden) setConfigError(`${key} is set by an environment variable or project file, which wins.`);
+      if (result.overridden) setConfigError(`${key} is set by an environment variable, a project file, or the model configuration, which wins.`);
     } catch (error) {
       setConfigError(String(error instanceof Error ? error.message : error));
     }
@@ -372,7 +374,21 @@ export function SettingsWindow(props: Props) {
       const id = section.slice("config:".length);
       if (!client) return <p className="muted">Connect to imperium-core to change these settings.</p>;
       if (!config) return <p className="muted">Loading…</p>;
-      return configRows(config.entries.filter((entry) => entry.section === id));
+      const rows = configRows(config.entries.filter((entry) => entry.section === id));
+      if (id !== "models" && id !== "runtime") return rows;
+      return (
+        <>
+          <Row
+            label="Model configuration"
+            description="Context, KV pool, slots, cache types and CPU lane of each local model, and the model table's rows. Saved to the app's settings file, which wins over the user config."
+          >
+            <button className="primary" onClick={props.onOpenModels}>
+              Configure models
+            </button>
+          </Row>
+          {rows}
+        </>
+      );
     }
     switch (section) {
       case "panels":
@@ -610,6 +626,7 @@ function FieldRow({
 const SOURCE_LABEL: Record<ConfigEntry["source"], string> = {
   default: "",
   user: "",
+  app: "set in the model configuration",
   project: "set by the project",
   env: "set by an environment variable",
 };

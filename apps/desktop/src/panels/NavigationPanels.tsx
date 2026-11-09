@@ -157,7 +157,6 @@ export function SessionsPanel({
   environments,
   scope,
   selected,
-  error,
   sort,
   onSort,
   onSelect,
@@ -171,8 +170,6 @@ export function SessionsPanel({
   environments: EnvironmentInfo[];
   scope: EnvironmentInfo | null;
   selected: string | null;
-  /** Why the last attempt to start a session failed. */
-  error: string | null;
   sort: SessionSort;
   onSort: (sort: SessionSort) => void;
   onSelect: (sessionId: string) => void;
@@ -264,11 +261,6 @@ export function SessionsPanel({
 
   return (
     <div className="sessions">
-      {error && (
-        <p className="error session-error" role="alert">
-          {error}
-        </p>
-      )}
       <div className="sessions-toolbar">
         {scope ? (
           <div className="sessions-scope">

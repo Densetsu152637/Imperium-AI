@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use imperium_api::ToolSpec;
-use serde_json::json;
+use imperium_protocol::tools as contract;
 
 pub use search::{
     Brave, SearchConfig, SearchFuture, SearchProvider, SearchProviderBuilder, SearchProviders,
@@ -21,6 +21,15 @@ pub use tools::{BrowserSetup, WebTools};
 
 /// Longest page text kept from one fetch.
 const MAX_PAGE_CHARS: usize = 200_000;
+/// A tool definition from the protocol crate as the spec sent to the model.
+fn tool_spec(definition: contract::ToolDefinition) -> ToolSpec {
+    ToolSpec {
+        name: definition.name.into(),
+        description: definition.description.into(),
+        parameters: definition.parameters,
+    }
+}
+
 /// Text returned per `web_fetch` call unless the agent asks for less.
 const DEFAULT_CHUNK: usize = 20_000;
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -69,24 +78,9 @@ impl Web {
 
     /// Tool definitions: `web_fetch` always, `web_search` when a provider is configured.
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
-        let mut specs = vec![ToolSpec {
-            name: "web_fetch".into(),
-            description: "Read a web page as text. Long pages come in chunks: pass offset to continue. Cite the URL when you use what it says.".into(),
-            parameters: json!({"type": "object", "properties": {
-                "url": {"type": "string"},
-                "offset": {"type": "integer", "description": "Character to start from"},
-                "limit": {"type": "integer", "description": "Characters to return"}
-            }, "required": ["url"]}),
-        }];
+        let mut specs = vec![tool_spec(contract::web_fetch())];
         if self.can_search() {
-            specs.push(ToolSpec {
-                name: "web_search".into(),
-                description: "Search the web; returns titles, URLs, and snippets. Fetch pages for details and cite their URLs.".into(),
-                parameters: json!({"type": "object", "properties": {
-                    "query": {"type": "string"},
-                    "count": {"type": "integer", "description": "Results to return, up to 20"}
-                }, "required": ["query"]}),
-            });
+            specs.push(tool_spec(contract::web_search()));
         }
         specs
     }
@@ -188,6 +182,7 @@ mod tests {
     use super::*;
     use axum::Router;
     use axum::routing::get;
+    use serde_json::json;
 
     async fn serve(app: Router) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -260,6 +255,30 @@ mod tests {
                 .tool_specs()
                 .iter()
                 .all(|spec| spec.name != "web_search")
+        );
+    }
+
+    #[test]
+    fn specs_are_the_protocol_definitions() {
+        let specs = Web::new(Some(Arc::new(Searxng { url: String::new() }))).tool_specs();
+        let sent: Vec<_> = specs
+            .iter()
+            .map(|spec| {
+                (
+                    spec.name.as_str(),
+                    spec.description.as_str(),
+                    &spec.parameters,
+                )
+            })
+            .collect();
+        let fetch = contract::web_fetch();
+        let search = contract::web_search();
+        assert_eq!(
+            sent,
+            [
+                (fetch.name, fetch.description, &fetch.parameters),
+                (search.name, search.description, &search.parameters)
+            ]
         );
     }
 

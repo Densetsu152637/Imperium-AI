@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use imperium_config::{LlamaCppSettings, VllmSettings};
 
-use crate::planner::{Budget, Footprint, Placement, place, place_on_gpu};
+use crate::planner::{Budget, Footprint, Placement, place, place_on_cpu, place_on_gpu};
 use crate::scan::Format;
 use crate::supervisor::{LaunchSpec, Runtimes};
 
@@ -37,9 +37,22 @@ pub trait RuntimeBackend: Send + Sync + fmt::Debug {
     /// Where a model needing `footprint` goes within `budget`; `None` when it does not fit.
     fn place(&self, footprint: Footprint, budget: Budget) -> Option<Placement>;
 
+    /// Where a model pinned to the CPU lane goes within `budget`: no GPU layers, everything in
+    /// RAM. `None` when it does not fit, and for runtimes that cannot serve on the CPU.
+    fn place_on_cpu(&self, _footprint: Footprint, _budget: Budget) -> Option<Placement> {
+        None
+    }
+
     /// The share of GPU memory a server with `placement` may take
     /// ([`LaunchSpec::gpu_memory_utilization`]); runtimes that size their own memory ignore it.
     fn gpu_memory_utilization(&self, placement: &Placement, budget: Budget) -> f64;
+
+    /// Whether requests can be pinned to a slot by index and the server keeps a host-memory
+    /// prompt cache for slots another agent reused (llama.cpp). Then the supervisor hands each
+    /// lease a slot index, sizes `LaunchSpec::cache_ram_mb`, and counts it in the RAM budget.
+    fn slot_aware(&self) -> bool {
+        false
+    }
 
     /// Extra arguments from the settings, passed to every server of this runtime.
     fn extra_args(&self) -> Vec<String>;
@@ -91,9 +104,17 @@ impl RuntimeBackend for LlamaCpp {
         place(footprint, budget)
     }
 
+    fn place_on_cpu(&self, footprint: Footprint, budget: Budget) -> Option<Placement> {
+        place_on_cpu(footprint, budget)
+    }
+
     /// Unused: llama.cpp is sized by its layers on the GPU.
     fn gpu_memory_utilization(&self, _placement: &Placement, _budget: Budget) -> f64 {
         0.0
+    }
+
+    fn slot_aware(&self) -> bool {
+        true
     }
 
     fn extra_args(&self) -> Vec<String> {
@@ -106,21 +127,57 @@ impl RuntimeBackend for LlamaCpp {
             spec.model_path.display().to_string(),
             "--host".into(),
             "127.0.0.1".into(),
+            // One KV cell pool shared by every slot, budgeted in tokens.
             "--ctx-size".into(),
-            spec.context.to_string(),
+            spec.pool_tokens.to_string(),
+            "--kv-unified".into(),
+        ];
+        if spec.context < spec.pool_tokens {
+            // Caps what one slot may use; with the whole pool as the context it could not bind.
+            args.extend(["--kv-unified-per-slot".into(), spec.context.to_string()]);
+        }
+        args.extend([
             "--parallel".into(),
             spec.slots.to_string(),
+            // An idle slot keeps its cells for the swap-out save; llama-server still purges
+            // idle slots when the pool runs short.
+            "--no-cache-idle-slots".into(),
             "--n-gpu-layers".into(),
             // llama.cpp clamps a large count to the model's layers.
             spec.gpu_layers.min(999).to_string(),
             "--cache-type-k".into(),
-            spec.cache_type.clone(),
+            spec.cache_type_k.clone(),
             "--cache-type-v".into(),
-            spec.cache_type.clone(),
+            spec.cache_type_v.clone(),
+            "--flash-attn".into(),
+            spec.flash_attn.clone(),
+            // MiB of host memory for the prompts of slots that were reused; 0 disables it.
+            // Never add `--slot-prompt-similarity 0`: requests are pinned to a slot with
+            // `id_slot`, and it is the server's default similarity threshold that saves a pinned
+            // slot's old prompt to this cache and restores the agent's own (llama.cpp
+            // b12180, `get_available_slot`); 0 would skip both and re-read every prompt.
+            "--cache-ram".into(),
+            spec.cache_ram_mb.to_string(),
             "--jinja".into(),
-        ];
+        ]);
+        if spec.cpu_only {
+            // `--n-gpu-layers 0` alone still initialises the GPU backend (compute buffers in
+            // VRAM) and runs large batched operations there; `none` uses no GPU device at all
+            // (llama.cpp b12180, `--device`).
+            args.extend(["--device".into(), "none".into()]);
+        }
+        if let Some(dir) = &spec.slot_save_path {
+            // Where slots are saved before the model is swapped out, and restored from.
+            args.extend(["--slot-save-path".into(), dir.display().to_string()]);
+        }
         if let Some(mmproj) = &spec.mmproj {
             args.extend(["--mmproj".into(), mmproj.display().to_string()]);
+            if spec.cpu_only {
+                // In b12180 the projector already follows `--device none` off the GPU
+                // (`common_params_parse_ex` defaults its device to the first of `--device`);
+                // the flag says so explicitly, so the lane never depends on that default.
+                args.push("--no-mmproj-offload".into());
+            }
         }
         args.extend(spec.extra_args.iter().cloned());
         args
@@ -188,7 +245,7 @@ impl RuntimeBackend for Vllm {
             "--served-model-name".into(),
             spec.model_id.clone(),
             "--max-model-len".into(),
-            (spec.context / spec.slots.max(1)).to_string(),
+            spec.context.to_string(),
             "--max-num-seqs".into(),
             spec.slots.to_string(),
             "--gpu-memory-utilization".into(),

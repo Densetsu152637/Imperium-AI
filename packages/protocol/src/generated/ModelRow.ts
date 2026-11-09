@@ -15,4 +15,8 @@ endpoint_configured: boolean,
 /**
  * The row's `context_window`, in tokens, when configured.
  */
-context_window: number | null, };
+context_window: number | null, 
+/**
+ * False when the row is switched off and left out of routing.
+ */
+enabled: boolean, };

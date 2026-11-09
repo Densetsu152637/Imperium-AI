@@ -38,9 +38,8 @@ use imperium_protocol::methods::{
 };
 use imperium_protocol::methods::{
     EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
-    EnvironmentFolderParams, EnvironmentList, EnvironmentListParams, EnvironmentListResult,
-    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentTestRuntime, EnvironmentUpdate,
-    EnvironmentUpdateParams,
+    EnvironmentFolderParams, EnvironmentList, EnvironmentListParams, EnvironmentRef,
+    EnvironmentRemoveFolder, EnvironmentTestRuntime, EnvironmentUpdate, EnvironmentUpdateParams,
 };
 use imperium_protocol::methods::{
     HfFiles, ModelDownload, ModelDownloadCancel, ModelDownloadCancelParams,
@@ -49,6 +48,17 @@ use imperium_protocol::methods::{
 use imperium_protocol::methods::{
     McpCatalog, McpCatalogParams, McpInstall, McpList, McpListParams, McpRemove, McpSave,
     McpSetEnabled, McpTest,
+};
+use imperium_protocol::methods::{
+    ModelConfig, ModelConfigParams, ModelSetConfig, ModelSetConfigParams,
+};
+use imperium_protocol::methods::{
+    ModelUnload, ModelUnloadParams, ModelUnloadResult, SystemResources, SystemResourcesParams,
+    SystemResourcesSubscribe, SystemResourcesSubscribeParams, SystemResourcesSubscribeResult,
+};
+use imperium_protocol::methods::{
+    SessionAgentResume, SessionAgentResumeParams, SessionAgentResumeResult, SessionAgents,
+    SessionAgentsParams, SessionAgentsResult,
 };
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 use imperium_protocol::methods::{
@@ -94,6 +104,8 @@ pub struct Connection {
     handshake_done: bool,
     /// For a paired phone: the only methods it may call.
     allowed: Option<Vec<&'static str>>,
+    /// Set while this connection watches resources (`system.resources_subscribe`).
+    resources: Option<crate::resources::Watch>,
 }
 
 impl Connection {
@@ -102,6 +114,7 @@ impl Connection {
             state,
             handshake_done: false,
             allowed: None,
+            resources: None,
         }
     }
 
@@ -111,7 +124,13 @@ impl Connection {
             state,
             handshake_done: false,
             allowed: Some(allowed),
+            resources: None,
         }
+    }
+
+    /// Whether this connection wants `system.resources_changed` notifications.
+    pub fn watches_resources(&self) -> bool {
+        self.resources.is_some()
     }
 
     /// Handles one text frame.
@@ -179,6 +198,44 @@ impl Connection {
                     Ok(PhoneRevokeResult { found })
                 })
             }
+            SystemResources::NAME => call_later::<SystemResources, _>(
+                request.params,
+                &mut later,
+                |_: SystemResourcesParams| {
+                    let state = Arc::clone(&self.state);
+                    async move { Ok(crate::resources::snapshot(&state).await) }
+                },
+            ),
+            SystemResourcesSubscribe::NAME => call::<SystemResourcesSubscribe>(
+                request.params,
+                |params: SystemResourcesSubscribeParams| {
+                    let monitor = Arc::clone(self.state.resource_monitor());
+                    if !params.on {
+                        self.resources = None;
+                    } else if self.resources.is_none() {
+                        self.resources = Some(monitor.watch(&self.state));
+                    }
+                    Ok(SystemResourcesSubscribeResult {
+                        on: params.on,
+                        interval_ms: u32::try_from(monitor.interval().as_millis())
+                            .unwrap_or(u32::MAX),
+                    })
+                },
+            ),
+            ModelUnload::NAME => call_later::<ModelUnload, _>(
+                request.params,
+                &mut later,
+                |params: ModelUnloadParams| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        state
+                            .unload_local_model(&params.model)
+                            .await
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+                        Ok(ModelUnloadResult { unloaded: true })
+                    }
+                },
+            ),
             Shutdown::NAME => call::<Shutdown>(request.params, |_: ShutdownParams| {
                 tracing::info!("a client asked imperium-core to stop");
                 self.state.request_shutdown();
@@ -372,6 +429,15 @@ impl Connection {
                     &crate::mods::bundled_roots(),
                 ))
             }),
+            ModelConfig::NAME => call::<ModelConfig>(request.params, |_: ModelConfigParams| {
+                Ok(crate::model_config::config(&self.state))
+            }),
+            ModelSetConfig::NAME => {
+                call::<ModelSetConfig>(request.params, |params: ModelSetConfigParams| {
+                    crate::model_config::set_config(&self.state, params)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                })
+            }
             LocalModelList::NAME => {
                 call::<LocalModelList>(request.params, |_: LocalModelListParams| {
                     Ok(self.state.local_models())
@@ -427,8 +493,13 @@ impl Connection {
             }
             SessionSend::NAME => {
                 call::<SessionSend>(request.params, |params: SessionSendParams| {
-                    let id = self
-                        .session(&params.session_id)?
+                    let session = self.session(&params.session_id)?;
+                    // A person writing to background work wants an answer now: it stops giving
+                    // way to the load.
+                    if session.is_background() {
+                        self.state.release_run_now(&session);
+                    }
+                    let id = session
                         .send_message(
                             params.text,
                             params.mode.unwrap_or_default(),
@@ -441,6 +512,25 @@ impl Connection {
             SessionQueue::NAME => {
                 call::<SessionQueue>(request.params, |params: SessionQueueParams| {
                     self.queue(params)
+                })
+            }
+            SessionAgents::NAME => {
+                call::<SessionAgents>(request.params, |params: SessionAgentsParams| {
+                    Ok(SessionAgentsResult {
+                        agents: self.session(&params.session_id)?.agents(),
+                    })
+                })
+            }
+            SessionAgentResume::NAME => {
+                call::<SessionAgentResume>(request.params, |params: SessionAgentResumeParams| {
+                    let model = self
+                        .session(&params.session_id)?
+                        .resume_agent(&params.agent_id, params.text)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+                    Ok(SessionAgentResumeResult {
+                        agent_id: params.agent_id,
+                        model,
+                    })
                 })
             }
             SessionSuggestionRespond::NAME => {
@@ -581,9 +671,7 @@ impl Connection {
         let result = match method {
             EnvironmentList::NAME => {
                 return call::<EnvironmentList>(params, |_: EnvironmentListParams| {
-                    Ok(EnvironmentListResult {
-                        environments: envs.list(),
-                    })
+                    Ok(self.state.environment_list())
                 });
             }
             EnvironmentCreate::NAME => {
@@ -676,6 +764,9 @@ impl Connection {
                 }
                 "resume_now" => {
                     session.resume_now();
+                    if session.run_now().released() {
+                        state.release_run_now(&session);
+                    }
                     None
                 }
                 "watch" => {

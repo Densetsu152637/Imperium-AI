@@ -4,4 +4,12 @@ import type { PlanStep } from "./PlanStep";
 /**
  * A goal and the steps toward it, kept by an agent with the `update_plan` tool.
  */
-export type Plan = { goal: string, steps: Array<PlanStep>, };
+export type Plan = { goal: string, steps: Array<PlanStep>, 
+/**
+ * Gaps the agent filled itself, each with the value it chose.
+ */
+assumptions: Array<string>, 
+/**
+ * Decisions left to the user, or that cannot be researched.
+ */
+open_questions: Array<string>, };

@@ -59,6 +59,10 @@ pub enum SessionEvent {
         usage: TokenUsage,
         #[ts(type = "number")]
         duration_ms: u64,
+        /// Time the call waited for a slot on a local model before it started, which
+        /// `duration_ms` leaves out; absent for hosted models.
+        #[ts(type = "number | null")]
+        queue_wait_ms: Option<u64>,
         /// Time to the first streamed text; absent when the call produced no text.
         #[ts(type = "number | null")]
         time_to_first_token_ms: Option<u64>,
@@ -103,6 +107,15 @@ pub enum SessionEvent {
         usage: TokenUsage,
         cost_usd: Option<f64>,
     },
+    /// A finished subagent was given a follow-up (`resume_agent`, or `session.agent_resume`)
+    /// and works again with its earlier conversation; `task_finished` follows as for a new
+    /// task. Emitted by the agent that resumed it (`root`).
+    TaskResumed {
+        task_id: String,
+        /// The follow-up message.
+        text: String,
+        model: String,
+    },
     /// The agent finished the turn.
     TurnCompleted {
         usage: TokenUsage,
@@ -135,12 +148,17 @@ pub enum SessionEvent {
         title: String,
         screenshot: String,
     },
-    /// A model call hit a usage or rate limit; the turn waits until `until_unix_ms` (or until
-    /// resumed early), following the session's resume policy.
+    /// The session waits: a model call hit a usage or rate limit (the turn waits until
+    /// `until_unix_ms`, or until resumed early, following the session's resume policy), or
+    /// background work is giving way to the user (`until_unix_ms` is 0; it resumes when the
+    /// machine is quiet or when the user says to run it now).
     Paused {
         #[ts(type = "number")]
         until_unix_ms: u64,
         reason: String,
+        /// Why it waits; older journals have no cause and mean a usage limit.
+        #[serde(default)]
+        cause: PauseCause,
     },
     /// The wait ended and the turn continues.
     Resumed {},
@@ -327,19 +345,91 @@ pub enum TokenCountMethod {
     Estimated,
 }
 
+/// Where an agent stands, in `session.agents`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentStatus {
+    /// Working on a turn.
+    Running,
+    /// Finished its last turn; a subagent can be resumed with a follow-up.
+    Idle,
+    /// Its last turn failed; a subagent can still be resumed.
+    Failed,
+    /// The daemon stopped while it was working; it can be resumed from where it was saved.
+    Interrupted,
+}
+
+/// An agent of a session and its kept state, from `session.agents`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentSummary {
+    /// `root`, or a subagent's task id (`t1`, ...).
+    pub agent_id: String,
+    /// The agent that started it; `None` for the root.
+    pub parent: Option<String>,
+    /// The workflow role it loads files for: `root`, `leaf`, or what its delegator asked.
+    pub role: String,
+    /// The first line of its brief, for lists.
+    pub title: String,
+    /// Its brief (empty for the root).
+    pub task: String,
+    /// The model spec it last ran on.
+    pub model: String,
+    /// Served by a local runtime, which it takes a slot on for each turn.
+    pub local: bool,
+    pub status: AgentStatus,
+    /// Its conversation is kept, so `resume_agent` / `session.agent_resume` can continue it.
+    /// Always false for the root, which is continued by sending the session a message.
+    pub resumable: bool,
+    /// Turns it has run (the brief and every follow-up).
+    pub turns: u32,
+    /// Messages in its kept conversation.
+    pub messages: u32,
+    /// Every model call it made, across turns.
+    pub usage: TokenUsage,
+    pub cost_usd: Option<f64>,
+    /// Its latest plan, when it kept one.
+    pub plan: Option<Plan>,
+    /// Its latest report (a subagent's final reply), truncated.
+    pub last_report: Option<String>,
+    /// When its state last changed, in milliseconds since the Unix epoch.
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+}
+
 /// A goal and the steps toward it, kept by an agent with the `update_plan` tool.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Plan {
     pub goal: String,
     pub steps: Vec<PlanStep>,
+    /// Gaps the agent filled itself, each with the value it chose.
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    /// Decisions left to the user, or that cannot be researched.
+    #[serde(default)]
+    pub open_questions: Vec<String>,
 }
 
+/// One stage of a plan. Everything after `status` is optional so plans saved before those
+/// fields existed still load.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PlanStep {
     pub title: String,
     pub status: StepStatus,
+    /// Titles of the steps that must finish first.
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    /// Who does the step: the agent itself, or a subagent and its tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub owner: Option<String>,
+    /// The check that shows the step is done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub acceptance: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -387,6 +477,46 @@ mod tests {
     }
 
     #[test]
+    fn plans_round_trip_with_their_stage_details() {
+        let plan = Plan {
+            goal: "ship".into(),
+            steps: vec![
+                PlanStep {
+                    title: "research".into(),
+                    status: StepStatus::Done,
+                    depends_on: vec![],
+                    owner: Some("subagent, standard".into()),
+                    acceptance: Some("three sources cited".into()),
+                },
+                PlanStep {
+                    title: "build".into(),
+                    status: StepStatus::InProgress,
+                    depends_on: vec!["research".into()],
+                    owner: None,
+                    acceptance: None,
+                },
+            ],
+            assumptions: vec!["Rust 1.80".into()],
+            open_questions: vec!["Which licence?".into()],
+        };
+        let value = serde_json::to_value(&plan).unwrap();
+        assert_eq!(value["steps"][1]["depends_on"], json!(["research"]));
+        assert!(value["steps"][1].get("owner").is_none());
+        assert_eq!(serde_json::from_value::<Plan>(value).unwrap(), plan);
+    }
+
+    #[test]
+    fn plans_saved_without_stage_details_still_load() {
+        let plan: Plan = serde_json::from_value(
+            json!({"goal": "g", "steps": [{"title": "t", "status": "pending"}]}),
+        )
+        .unwrap();
+        assert!(plan.assumptions.is_empty() && plan.open_questions.is_empty());
+        let step = &plan.steps[0];
+        assert!(step.depends_on.is_empty() && step.owner.is_none() && step.acceptance.is_none());
+    }
+
+    #[test]
     fn context_breakdowns_serialise_with_their_method() {
         let event = SessionEvent::ContextBreakdown {
             model: "llamacpp:q".into(),
@@ -408,6 +538,20 @@ mod tests {
     }
 }
 
+/// Why a session is [`SessionEvent::Paused`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PauseCause {
+    /// A provider's usage limit.
+    #[default]
+    UsageLimit,
+    /// Background work paused at a step boundary because the machine got busy.
+    Load,
+    /// Background work that has not started, waiting for a quiet machine.
+    Deferred,
+}
+
 /// What a session is doing, as clients show it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -419,7 +563,7 @@ pub enum SessionStatus {
     Working,
     /// Waiting on the user: a permission request, or a turn that failed.
     NeedsAttention,
-    /// Waiting for a usage limit to reset.
+    /// Waiting for a usage limit to reset, or (background work) for a quiet machine.
     Paused,
     /// A message is waiting, but the session has no model yet; it runs once one is set.
     NeedsModel,

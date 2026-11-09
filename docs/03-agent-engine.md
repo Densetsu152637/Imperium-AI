@@ -131,6 +131,67 @@ root ──spawn A──spawn B──await────────────�
 The router ([04](04-models-and-routing.md#routing)) resolves `requirements` to a concrete
 model; the parent model never needs to name one, though it may express a preference.
 
+## Dispatch contract
+
+**Tool contract (implemented, [D25](13-decisions.md)):** every built-in model-facing tool is
+defined once in `imperium-protocol` (`crates/imperium-protocol/src/tools.rs`): its name,
+description and JSON Schema parameters. `imperium-engine` (delegation, steering, agent state and
+planning), `imperium-core` (`suggest_local_model`) and `imperium-web` build the tools they send
+to models from those definitions, and `cargo test` exports each one to
+[`crates/imperium-protocol/schemas/tools/<name>.json`](../crates/imperium-protocol/schemas/tools/)
+with an `index.json` listing names and status (`available` or `planned`). `scripts/check-rust.sh`
+fails when the checked-in files differ from what the tests write, the same drift check as the
+generated TypeScript. The Emperor training repository vendors that folder at a pinned Imperium
+commit. A test rejects credential-like property names (key, secret, token, password, bearer,
+auth, scope, header, base URL, endpoint; `url`, `chunk_tokens` and `context_tokens` are
+allowed), so no schema has such a field. Descriptions are not checked. `spawn_agent` keeps its
+current `brief`, `tier`, `location`, `tags` and `model` parameters and adds the optional
+`single_call` (below); `requirements`, `budget` and `result` are not there yet. File, command,
+memory, skill and workflow-context tools, and tools from MCP servers, connectors and extension
+providers, are outside the contract.
+
+| Tool | Status |
+| --- | --- |
+| `spawn_agent`, `await_tasks`, `update_plan`, `web_search`, `web_fetch` | implemented |
+| `steer_agent`, `queue_agent`, `list_agents`, `resume_agent` ([queueing and steering](#queueing-and-steering), [agent state](#agent-state)) | implemented; root only |
+| `suggest_local_model` ([model download suggestions](04-models-and-routing.md#model-download-suggestions)) | implemented; daemon sessions |
+| `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | planned: definition only, not offered to models |
+| `ask_user(questions[])`: each question has text, optional options, and a recommended answer | planned: definition only, not offered to models |
+
+**Single-call tasks (implemented):** `spawn_agent` with `single_call: true` (default false) starts
+a subagent that is given the brief and no tools (no files, commands, web, memory or workflow
+context), makes exactly one model call, and returns that reply as its report. It is meant for
+hard, self-contained questions routed to a cloud frontier model
+([task classes](04-models-and-routing.md#task-classes)); an empty reply fails the task. Emperor's
+root prompt tells it to set `single_call: true` for frontier work.
+
+**Templates and root prompt (implemented):** hand-written files checked in under
+[`crates/imperium-protocol/schemas/prompts/`](../crates/imperium-protocol/schemas/prompts/) and
+next to the exported schemas (not generated).
+
+- [`brief.md`](../crates/imperium-protocol/schemas/prompts/brief.md): the shape of a
+  `spawn_agent` brief: goal, context, constraints, acceptance, output format; at most 2,000
+  tokens.
+- [`plan.md`](../crates/imperium-protocol/schemas/prompts/plan.md): the plan kept with
+  `update_plan`: `goal`; `steps` with `title`, `status`, `depends_on` (titles of earlier
+  steps), `owner` and `acceptance`; `assumptions`; `open_questions`. Everything after `status`
+  is optional, so plans saved before these fields existed still load.
+- [`questions.md`](../crates/imperium-protocol/schemas/prompts/questions.md): one batch of
+  questions, each with options and a recommended answer; only decisions that are the user's or
+  cannot be researched.
+- [`emperor-root.md`](../crates/imperium-protocol/schemas/prompts/emperor-root.md): the root
+  system prompt Emperor is trained with. It names the steering and agent-state tools for
+  correcting and following up delegated work, and says where work runs: menial, well-bounded
+  work is tagged for small local models (`tier` basic or standard, tags such as `refactor`);
+  large, hard reasoning is tagged for cloud models (`tier: "frontier"`, tags such as `math`) in
+  one self-contained, single-call brief; everything else uses `tier: "standard"` and the router
+  chooses. `location` is set only when it must be a requirement.
+
+**Context-budget line:** the root prompt is followed by a line of exactly the form
+`context budget: <N>K tokens` (for example `context budget: 64K tokens`) naming the active
+context size. The model delegates and chunks earlier on small budgets. Engine support for
+adding the line is planned; the form is fixed now so training data matches.
+
 ## Budgets and limits
 
 - Budgets are hierarchical: a child's budget is carved from its parent's.
@@ -311,19 +372,76 @@ wait, or join the running turn when the user asks.
   such as `t1`) to reach a running subagent; its events carry that agent id. A queued message
   runs as a further turn of the subagent before it reports, and its report (what
   `await_tasks` returns) is the last turn's reply with every turn's usage. A subagent that
-  has reported takes no more messages (`-32602`).
+  has reported takes no more messages (`-32602`) until it is resumed
+  ([agent state](#agent-state)); a resumed subagent is reached the same way.
 - **Root over subagents:** the root agent has `steer_agent` and `queue_agent`
   (`agent_id`, `text`) beside `spawn_agent` and `await_tasks`, for subagents it started and
   has not collected. Like the other delegation tools they run without a permission prompt and
   show as tool calls in the transcript.
 - **Persistence:** queue events are journalled. A resumed session restores the root agent's
   queue from the latest `queue_changed` and delivers it (after reporting a turn the restart cut
-  off as failed); ids continue from the highest journalled one. Subagents are not resumed, so
-  neither are their queues.
+  off as failed); ids continue from the highest journalled one. A subagent's queue is not
+  kept: a subagent the restart cut off is marked interrupted and resumed with a new follow-up
+  ([agent state](#agent-state)).
 
 `imperium chat` reads input while a turn runs: a line typed then is queued, `/steer <text>`
 steers, and `/queue` lists the queue. The desktop composer stays enabled while the agent works
 ([07](07-desktop-ui.md#environments-and-sessions-implemented)).
+
+## Agent state
+
+**Implemented:** every agent of a session (the root and each subagent) keeps its state, so a
+subagent that finished is not discarded: it becomes *idle* and can be given a follow-up with
+its full earlier context, for example handing more work on a module to the subagent that
+already explored it.
+
+- **What is kept.** One record per agent: id, parent (the root for subagents), role, title
+  (the brief's first line) and brief, model spec and whether it is local (a local model's slot
+  is taken again for each turn), status, turns, message count, usage and cost summed over
+  every model call it made, its latest plan, and its latest report. A subagent's record also
+  holds its conversation after its instructions: the brief, every reply, tool call, and tool
+  result, saved at each safe point (after the user message, and after each model response's
+  tool calls all have results) so an interrupted subagent loses at most its current step. The
+  root's conversation stays in `<id>.messages.json`.
+- **Statuses.** `running`, `idle` (finished; for subagents, reported), `failed` (its last turn
+  or task failed; still resumable), and `interrupted` (the daemon stopped while it worked).
+  Records follow the session's events (`task_spawned`, `task_resumed`, `turn_started`,
+  `model_call_completed`, `plan_updated`, `task_finished`, ...), so replaying a journal
+  rebuilds the agent tree.
+- **Where.** With `sessions.agent_state_keep` (on by default), each record is written to
+  `<data>/sessions/<session-id>.agents/<agent-id>.json`, atomically (a temporary file, then a
+  rename), beside the journal and messages files, so it moves with them. Off, the state is kept
+  in memory while the session runs: subagents can still be resumed until the daemon stops,
+  and after a restart they are listed from the journal but not resumable. Project-agent
+  sessions keep it in memory only, as they start afresh with the daemon.
+- **Resuming.** The root agent has `list_agents` (each subagent's status, model, turns,
+  message count, brief, and latest report) and `resume_agent` (`agent_id`, `text`). Resuming
+  rebuilds the subagent under the current instructions with its kept conversation, on the
+  model it last ran on (in the catalog after a restart; the session's model when it is no
+  longer available), emits `task_resumed` (`task_id`, `text`, `model`) from the root, and runs
+  the follow-up as a new turn. Before that turn, a conversation that no longer fits the
+  model's context window is compacted with the [compactor](#switching-models-and-compaction).
+  The resumed task goes through the same path as `spawn_agent`: `await_tasks` collects its
+  report, `steer_agent` and `queue_agent` reach it while it works, `agent.complete` hooks run,
+  and `task_finished` reports that run's usage (the record keeps the running total, and a
+  subagent not yet collected must be collected before it is resumed). No per-task budgets
+  exist yet ([budgets](#budgets-and-limits)); when they do, a resume counts like a spawn.
+  A running subagent, the root, an unknown id, or an empty follow-up is refused.
+- **From clients.** `session.agents` (`session_id`) returns every agent's summary
+  (`AgentSummary`: the fields above, `resumable`, and `updated_at_ms`), the root first, and
+  `session.agent_resume` (`session_id`, `agent_id`, `text`) resumes a subagent for the user,
+  returning the model it runs on; nobody awaits it, so its report is its `task_finished`.
+  `session.send` with its `agent_id` steers or queues for it while it works. Phones may read
+  `session.agents`. `imperium chat` has `/agents` and `/resume-agent <id> <text>`; the desktop
+  has *Continue with…* in the Agents panel ([07](07-desktop-ui.md#agents-panel-implemented)).
+- **Restarts.** A resumed session loads the records, so idle subagents are listed and
+  resumable; task ids continue after the highest kept one. A subagent that was working when the
+  daemon stopped gets a `task_finished` (not ok, saying the daemon stopped) and the status
+  `interrupted`; resuming it continues from its last saved point, with a note telling it the
+  earlier turn did not finish before the follow-up.
+- **Retention.** Agent state is kept while the session exists, including while it is archived
+  (unarchiving resumes it with its agents), and `session.delete` deletes the session's
+  `.agents` folder.
 
 ## Persistence
 
@@ -347,6 +465,11 @@ and be resumed early, with `session.control` (`set_resume_policy`, `resume_now`)
 desktop's session header has these as *Usage limits* and *Resume now*. A session's override is
 not yet kept across daemon restarts.
 
+**Background sessions (implemented, stage 2g):** a session started by a schedule or a project
+agent pauses the same way, before a model call, while the machine is busy (`paused` with
+`cause = "load"`, `until_unix_ms = 0`), holding no slot and spending no tokens; *Resume now* ends
+the wait ([14](14-projects-and-automation.md#quiet-periods)).
+
 Every event is appended to the session journal, `<data>/sessions/<session-id>.jsonl` (one JSON
 object per line with an `at_ms` timestamp; implemented). A running session also keeps its events in memory
 so clients that attach later replay them. Sessions continue after a daemon restart
@@ -354,6 +477,6 @@ so clients that attach later replay them. Sessions continue after a daemon resta
 `<id>.messages.json` (the root's conversation); on start the daemon re-opens sessions whose
 journal changed within `agents.resume_days`, replays the journal so clients see the transcript,
 restores the conversation under the current instructions, and reports a turn the restart cut
-off as failed. Subagents that were running are not resumed, and project-agent sessions start
-afresh. Every client is told about new sessions (`session.created`), whoever started them.
+off as failed. Subagents keep their state in `<id>.agents/` and can be resumed with a
+follow-up ([agent state](#agent-state)); project-agent sessions start afresh. Every client is told about new sessions (`session.created`), whoever started them.
 Planned: transcripts, task trees, and artefacts browsable and exportable.

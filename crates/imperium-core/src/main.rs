@@ -35,7 +35,11 @@ fn main() -> anyhow::Result<()> {
 
 async fn run() -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
-    let settings = imperium_config::load(&paths, None, std::env::vars())?.settings()?;
+    let config = imperium_config::load(&paths, None, std::env::vars())?;
+    for warning in config.warnings() {
+        tracing::warn!("{warning}");
+    }
+    let settings = config.settings()?;
     std::fs::create_dir_all(paths.data_dir())
         .with_context(|| format!("could not create {}", paths.data_dir().display()))?;
     let _lock = acquire_single_instance_lock(&paths)?;
@@ -64,6 +68,7 @@ async fn run() -> anyhow::Result<()> {
     let local = imperium_core::LocalRuntime::start(&paths, &settings);
     let secrets: Arc<dyn SecretStore> = Arc::new(KeychainSecrets);
     let daemon = DaemonState::with_secrets(paths.clone(), settings, local, secrets);
+    daemon.remember_config(&config);
     daemon.start_pets();
     let resumed = daemon.resume_sessions();
     if resumed > 0 {
@@ -79,6 +84,7 @@ async fn run() -> anyhow::Result<()> {
     {
         tracing::info!(%address, "phones can connect");
     }
+    daemon.start_load_monitor();
     daemon.start_project_agents();
     daemon.start_scheduler();
     daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));

@@ -95,7 +95,7 @@ pub fn list(state: &DaemonState) -> McpListResult {
     let mut problems = Vec::new();
     let settings = current(state).unwrap_or_else(|error| {
         problems.push(error.message);
-        state.settings().clone()
+        (*state.settings()).clone()
     });
     let servers = settings
         .mcp

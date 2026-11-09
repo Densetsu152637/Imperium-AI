@@ -6,25 +6,29 @@
 //! [`AgentEvent`](imperium_protocol::session::AgentEvent)s by subscribing.
 
 mod agent;
+mod agents;
 mod breakdown;
 mod compact;
 mod journal;
 mod launcher;
 mod model;
 mod queue;
+mod quiet;
 mod session;
 mod status;
 
+pub use agents::agents_dir;
 pub use compact::SwitchError;
 pub use imperium_api::{
-    AcquireFuture, Availability, LocalLease, LocalModels, ToolCheck, ToolContext, ToolEvent,
-    ToolFuture, ToolGroup, ToolProvider,
+    AcquireFuture, Availability, Load, LoadView, LocalLease, LocalModels, LocalPresence,
+    LocalRequest, Priority, ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,
 };
 pub use imperium_models::{ChatClient, ChatClients};
 pub use journal::{journalled_model, read_events as journal_events};
 pub use launcher::{LaunchFuture, SessionLauncher};
 pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
 pub use queue::QueueError;
+pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
 pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};
 pub use status::next_attempt;
 
