@@ -72,6 +72,9 @@ pub struct SessionConfig {
     /// How turns wait when usage runs out, unless the session overrides it.
     pub resume_policy: ResumePolicy,
     pub max_steps: u32,
+    /// Compact the root conversation at the start of a turn when it has grown past the model's
+    /// context budget (for long-lived sessions such as an environment's persistent agent).
+    pub auto_compact: bool,
     pub journal_path: PathBuf,
 }
 
@@ -143,7 +146,7 @@ impl Session {
             config.model.as_ref().map(|model| model.spec.clone()),
         ));
         let project_dir = config.workspace.root_display();
-        let isolation = config.workspace.sandbox().label();
+        let isolation = config.workspace.isolation_label();
         let history = History::default();
         history.lock().extend(previous);
         let controls = Arc::new(Controls::new(config.resume_policy.clone()));
@@ -483,6 +486,7 @@ async fn run(
         }
     }
     let queue = shared.inboxes.open(ROOT_AGENT);
+    let auto_compact = config.auto_compact;
     loop {
         // Messages that waited for the last turn run first, in order.
         let text = match queue.pop() {
@@ -524,6 +528,21 @@ async fn run(
         let Some(text) = shared.prepare_prompt(text).await else {
             continue;
         };
+        if auto_compact {
+            // Over the budget, older turns are summarised before the new message is added.
+            match root.fit_current().await {
+                Ok(fit) if fit.compaction.is_some() => {
+                    save_messages(&messages_path, root.messages());
+                }
+                Ok(_) => {}
+                Err(error) => shared.emitter.emit(
+                    ROOT_AGENT,
+                    SessionEvent::Notice {
+                        message: format!("The conversation could not be compacted: {error}"),
+                    },
+                ),
+            }
+        }
         let recalled = shared.recall(&text);
         let handles_open = {
             let turn = root.run_turn(text, recalled);
@@ -729,7 +748,7 @@ impl Shared {
         }
         self.extensions
             .hooks
-            .run(event, tool, &payload, self.workspace.root())
+            .run(event, tool, &payload, &self.workspace.local_dir())
             .await
     }
 

@@ -1159,6 +1159,13 @@ impl Agent {
         self.fit_to(&model, true).await
     }
 
+    /// Compacts the conversation only when it no longer fits this agent's own model's budget
+    /// (nothing happens when the model's context window is unknown).
+    pub async fn fit_current(&mut self) -> Result<ContextFit, SwitchError> {
+        let model = self.model.clone();
+        self.fit_to(&model, false).await
+    }
+
     /// Measures the conversation for `target` and, when it does not fit the target's budget
     /// (or `force` is set), replaces older messages with a summary until it does.
     async fn fit_to(

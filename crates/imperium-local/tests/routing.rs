@@ -213,6 +213,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 10,
+        auto_compact: false,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

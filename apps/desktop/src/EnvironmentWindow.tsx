@@ -2,17 +2,20 @@
 // folders — and delete it. A centred sheet over the workspace like Settings; Escape or a click on
 // the backdrop closes it. Folder changes to an existing environment apply at once (each is its
 // own daemon call); name, icon and colour apply with Save. A new environment is created with
-// everything at once, its folders included.
+// everything at once, its folders included. The Runtime section says where the environment's
+// tools run (for a remote runtime, folders are paths typed in, inside it) and turns its
+// persistent agent on or off; both apply with Save.
 
 import { FolderPlus, Search, Trash, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import type { EnvironmentInfo } from "@imperium/protocol";
+import type { EnvironmentInfo, RuntimeTestResult } from "@imperium/protocol";
 
 import type { DaemonClient } from "./daemon/client";
 import { pickFolder } from "./daemon/connection";
 import { searchIcons } from "./icons";
+import { EnvironmentRuntimeFields, draftOf, isRemote, runtimeOf, sameRuntime } from "./panels/EnvironmentRuntimeFields";
 import { GlyphSvg, ICON_COLORS, ProjectIcon, environmentIcon, sameFolder, type ProjectIconChoice } from "./projectIcons";
 
 type Props = {
@@ -39,6 +42,10 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
   );
   const [query, setQuery] = useState("");
   const [newFolders, setNewFolders] = useState<string[]>([]);
+  const [runtime, setRuntime] = useState(() => draftOf(environment?.runtime));
+  const [persistentAgent, setPersistentAgent] = useState(environment?.persistent_agent ?? false);
+  const [typedFolder, setTypedFolder] = useState("");
+  const runtimeChanged = !creating && !sameRuntime(environment.runtime, runtime);
   const [deleting, setDeleting] = useState(confirmDelete);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,8 +83,9 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
     }
   };
 
-  const addFolder = async () => {
-    const folder = await pickFolder(creating ? "Add folder to the new environment" : `Add folder to ${environment.name}`);
+  const addFolder = async (typed?: string) => {
+    const folder =
+      typed ?? (await pickFolder(creating ? "Add folder to the new environment" : `Add folder to ${environment.name}`));
     if (!folder) return;
     if (creating) {
       setNewFolders((all) => (all.some((known) => sameFolder(known, folder)) ? all : [...all, folder]));
@@ -105,6 +113,11 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
       nameInput.current?.focus();
       return;
     }
+    const chosen = runtimeOf(runtime);
+    if (typeof chosen === "string") {
+      setError(chosen);
+      return;
+    }
     const env = await attempt((c) =>
       creating
         ? c.call<EnvironmentInfo>("environments.create", {
@@ -112,12 +125,16 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             icon: choice.icon,
             color: choice.color,
             folders: newFolders,
+            runtime: chosen,
+            persistent_agent: persistentAgent,
           })
         : c.call<EnvironmentInfo>("environments.update", {
             id: environment.id,
             name: trimmed,
             icon: choice.icon,
             color: choice.color,
+            ...(runtimeChanged ? { runtime: chosen } : {}),
+            ...(persistentAgent !== (environment.persistent_agent ?? false) ? { persistent_agent: persistentAgent } : {}),
           }),
     );
     if (env) {
@@ -231,10 +248,33 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
           <section className="environment-section" aria-label="Folders">
             <div className="environment-section-head">
               <span className="environment-label">Folders</span>
-              <button type="button" onClick={() => void addFolder()} disabled={busy || !client}>
-                <FolderPlus aria-hidden="true" /> Add folder
-              </button>
+              {!isRemote(runtime) && (
+                <button type="button" onClick={() => void addFolder()} disabled={busy || !client}>
+                  <FolderPlus aria-hidden="true" /> Add folder
+                </button>
+              )}
             </div>
+            {isRemote(runtime) && (
+              <div className="runtime-row">
+                <input
+                  aria-label="Folder inside the runtime"
+                  placeholder="/home/me/project"
+                  value={typedFolder}
+                  onChange={(event) => setTypedFolder(event.target.value)}
+                />
+                <button
+                  type="button"
+                  disabled={busy || !client || !typedFolder.trim() || runtimeChanged}
+                  title={runtimeChanged ? "Save the runtime first" : "Add this path inside the runtime"}
+                  onClick={() => {
+                    void addFolder(typedFolder.trim());
+                    setTypedFolder("");
+                  }}
+                >
+                  <FolderPlus aria-hidden="true" /> Add path
+                </button>
+              </div>
+            )}
             <ul className="environment-folders" aria-label="Folders">
               {folders.map((folder, index) => (
                 <li key={folder}>
@@ -259,6 +299,21 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
               )}
             </ul>
           </section>
+
+          <EnvironmentRuntimeFields
+            draft={runtime}
+            onChange={setRuntime}
+            persistentAgent={persistentAgent}
+            onPersistentAgent={setPersistentAgent}
+            disabled={busy || !client}
+            testBlocked={
+              creating ? "Create the environment first" : runtimeChanged ? "Save the runtime first" : null
+            }
+            onTest={() => {
+              if (!client || creating) return Promise.reject(new Error("Not connected to imperium-core."));
+              return client.call<RuntimeTestResult>("environments.test_runtime", { id: environment.id });
+            }}
+          />
 
           {error && (
             <p className="error" role="alert">

@@ -111,6 +111,17 @@ async fn idle_sessions_are_archived_after_the_set_days_but_not_pinned_busy_or_pe
             },
         )
         .unwrap();
+    // An environment's persistent agent.
+    let (persistent, _) = state
+        .create_session_with(
+            &dir,
+            None,
+            SessionOptions {
+                persistent: true,
+                ..SessionOptions::default()
+            },
+        )
+        .unwrap();
     // A turn against an endpoint that is not there fails and leaves the session needing
     // attention: it waits on the user.
     let (waiting, _) = state.create_session(&dir, None).unwrap();
@@ -128,15 +139,16 @@ async fn idle_sessions_are_archived_after_the_set_days_but_not_pinned_busy_or_pe
     assert!(state.archive_idle_sessions(now + DAY * 6).is_empty());
     let archived = state.archive_idle_sessions(now + DAY * 8);
     assert_eq!(archived, vec![idle.id().to_string()]);
-    for kept in [&pinned, &agent, &waiting] {
+    for kept in [&pinned, &agent, &persistent, &waiting] {
         assert!(
             state.session(kept.id()).is_some(),
             "{} was archived",
             kept.id()
         );
     }
-    // A project agent is not archived by hand either.
+    // Agents are not archived by hand either.
     assert!(state.archive(agent.id()).is_err());
+    assert!(state.archive(persistent.id()).is_err());
 }
 
 #[tokio::test]

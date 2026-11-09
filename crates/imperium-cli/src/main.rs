@@ -57,6 +57,15 @@ enum Command {
         /// for the full breakdown at any time).
         #[arg(long)]
         context: bool,
+        /// Start on git worktrees: each folder in a git repository gets a new worktree on a new
+        /// branch (`imperium/<session id>`, or the branch given).
+        #[arg(long, value_name = "BRANCH", num_args = 0..=1, default_missing_value = "")]
+        worktree: Option<String>,
+    },
+    /// Manage running sessions.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
     },
     /// Inspect configuration.
     Config {
@@ -223,6 +232,17 @@ enum RemoteCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum SessionCommand {
+    /// Stop and forget a session so it does not continue after a restart.
+    Delete {
+        session_id: String,
+        /// Also remove the session's git worktrees (their branches are kept).
+        #[arg(long)]
+        remove_worktrees: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum EnvCommand {
     /// List environments and their folders.
     List,
@@ -250,6 +270,39 @@ enum EnvCommand {
     Delete {
         /// Environment name or id.
         env: String,
+    },
+    /// Choose where an environment's tools run: local, docker, wsl, or ssh. For a remote
+    /// runtime, its folders are paths inside it.
+    SetRuntime {
+        /// Environment name or id.
+        env: String,
+        /// `local`, `docker`, `wsl`, or `ssh`.
+        kind: String,
+        /// docker: the image (each command runs in a fresh container with the folders mounted).
+        #[arg(long)]
+        image: Option<String>,
+        /// docker: a running container to `docker exec` into instead.
+        #[arg(long)]
+        container: Option<String>,
+        /// wsl: the distribution.
+        #[arg(long)]
+        distro: Option<String>,
+        /// ssh: a host alias from your SSH config, or user@host[:port].
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// Check that an environment's runtime can be reached.
+    Test {
+        /// Environment name or id.
+        env: String,
+    },
+    /// Turn an environment's persistent agent session on or off.
+    Agent {
+        /// Environment name or id.
+        env: String,
+        /// `on` or `off`.
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
     },
 }
 
@@ -352,7 +405,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             project,
             model,
             context,
-        } => chat::run(env, project, model, context),
+            worktree,
+        } => chat::run(
+            env,
+            project,
+            model,
+            context,
+            worktree.map(|branch| (!branch.is_empty()).then_some(branch)),
+        ),
+        Command::Session {
+            command:
+                SessionCommand::Delete {
+                    session_id,
+                    remove_worktrees,
+                },
+        } => env::delete_session(session_id, remove_worktrees),
         Command::Env { command } => match command {
             EnvCommand::List => env::list(),
             EnvCommand::Create { name, folders } => env::create(name, folders),
@@ -360,6 +427,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             EnvCommand::RemoveFolder { env: id, folder } => env::remove_folder(id, folder),
             EnvCommand::Rename { env: id, name } => env::rename(id, name),
             EnvCommand::Delete { env: id } => env::delete(id),
+            EnvCommand::SetRuntime {
+                env: id,
+                kind,
+                image,
+                container,
+                distro,
+                host,
+            } => env::set_runtime(id, env::runtime(&kind, image, container, distro, host)?),
+            EnvCommand::Test { env: id } => env::test(id),
+            EnvCommand::Agent { env: id, state } => env::set_agent(id, state == "on"),
         },
         Command::Config {
             command: ConfigCommand::Explain { key, project },

@@ -16,14 +16,15 @@ RPC:
 | Method | Params | Result |
 | --- | --- | --- |
 | `environments.list` | `{}` | `{ environments: EnvironmentInfo[] }` |
-| `environments.create` | `{ name, icon?, color?, folders }` | `EnvironmentInfo` |
-| `environments.update` | `{ id, name?, icon?, color?, pinned? }` (empty icon/colour clears it) | `EnvironmentInfo` |
+| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent? }` | `EnvironmentInfo` |
+| `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent? }` (empty icon/colour clears it) | `EnvironmentInfo` |
+| `environments.test_runtime` | `{ id }` | `{ ok, message }` |
 | `environments.delete` | `{ id }` | `{}` (folders and running sessions are left alone) |
 | `environments.add_folder` | `{ id, folder }` (an existing absolute folder) | `EnvironmentInfo` |
 | `environments.remove_folder` | `{ id, folder }` | `EnvironmentInfo` |
 
-`EnvironmentInfo` is `{ id, name, icon, color, folders, pinned }`, folders first-to-last with
-the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
+`EnvironmentInfo` is `{ id, name, icon, color, folders, pinned, runtime, persistent_agent,
+agent_session_id }`, folders first-to-last with the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
 (the full list). `session.create` takes `environment_id`; `project_dir` still works and maps to
 the environment whose first folder it is, created (named after the folder) when there is none.
 Sessions from before environments are moved the same way when the daemon resumes them, and the
@@ -32,7 +33,48 @@ desktop app turns each folder it had opened into an environment the first time i
 From the command line: `imperium env list`, `imperium env create <name> [folder...]`,
 `imperium env add-folder <env> <folder>`, `imperium env remove-folder <env> <folder>`,
 `imperium env rename <env> <name>`, `imperium env delete <env>` (an environment by name or id),
-and `imperium chat --env <name|id>`.
+`imperium env set-runtime <env> local|docker|wsl|ssh [--image I] [--container C] [--distro D]
+[--host H]`, `imperium env test <env>`, `imperium env agent <env> on|off`, and
+`imperium chat --env <name|id> [--worktree [BRANCH]]`.
+
+### Runtimes (implemented)
+
+An environment's `runtime` says where its sessions' file and command tools run. It is an
+object tagged by `kind`:
+
+| `kind` | Fields | Tools run | Folders are |
+| --- | --- | --- | --- |
+| `local` (default) | none | on this machine, under `isolation.tier` | local folders |
+| `docker` | `image` | each command in a fresh container from `image` (the container tier, network on) | local folders, mounted at `/workspace`, `/folders/2`, … |
+| `docker` | `image`, `container` | `docker exec` into that running container | paths inside the container |
+| `wsl` | `distro` | `wsl.exe -d <distro> --cd <folder> --exec sh -c …` (Windows only) | Linux paths; Windows paths are translated to `/mnt/<drive>/…` |
+| `ssh` | `host` | the system `ssh` client (`BatchMode`, so keys and agents from your SSH config; never passwords) | paths on the host |
+
+For a remote runtime (a container, WSL, or SSH) the folders are not checked on this machine; a
+missing one fails the tool that uses it, and `environments.test_runtime` (the **Test** button,
+`imperium env test`) checks that the runtime can be reached: Docker's engine runs and has the
+image (or the container is running), the WSL distribution is installed, or SSH connects without
+a prompt. Details of how tools run there are in
+[isolation](05-tools-and-isolation.md#environment-runtimes-implemented). The approval layer is
+unchanged. Changing an environment's runtime keeps its folders (translating Windows paths for
+WSL) and applies to sessions started afterwards. Project files on a remote runtime
+(instructions, skills, project memory) are not read yet.
+
+### Persistent agent (implemented)
+
+An environment can keep a **persistent agent**: one session that is always available, listed
+first among that environment's sessions with a **Persistent** badge (`persistent: true` in
+`session.list`). It is off by default; turn it on with the switch in the environment's detail,
+`imperium env agent <env> on`, or `environments.update { persistent_agent: true }`. It starts
+at once (or as soon as the environment has a folder) and with every daemon start, and it resumes
+the same conversation each time, however long ago it was used: its session id is kept as the
+environment's `agent_session_id`, outside the `agents.resume_days` window that applies to
+ordinary sessions. Like a project agent (below) it has `start_session`, which starts sessions in
+the same environment (at most 2 at once and 20 a day) and reports back to it. When a turn starts
+with the conversation over the model's context budget, older turns are summarised first (the
+same compaction as `/compact`), so it can run for days. Turning it off stops the session and
+keeps its id, so turning it on again continues the conversation; deleting the environment stops
+it too.
 
 Sessions that a schedule, a project agent, or auto-fix start still work in a single folder and
 carry no environment.
@@ -41,19 +83,34 @@ carry no environment.
 
 An environment will also define:
 
-- **Where it runs:** local folders, a container image with mounted folders, or a path on an
-  SSH host (see [isolation](05-tools-and-isolation.md#isolation-tiers)).
 - **Its configuration layer** (`.imperium/config.toml`), instructions, policy overrides,
   plugins, MCP servers, routing rules, and budgets. Today these come from the working directory
   (the first folder).
 - **Narrowed sessions:** a session limited to a subfolder or a read-only mount.
-- **A project agent** and **schedules** (below), which are still configured per folder.
+- **Schedules** (below), which are still configured per folder.
 
 ## Worktrees
 
-For Git projects, sessions and parallel writing subagents can each work in their own Git
-worktree, so concurrent edits never collide. Worktree behaviour is explicit configuration, set
-globally and overridable per project:
+**Implemented: sessions on a worktree.** `session.create { environment_id, worktree: true,
+worktree_branch? }` (the **Start in a worktree** box beside New session, `imperium chat
+--worktree [BRANCH]`) starts a session on git worktrees: every folder of the environment inside
+a git repository is replaced by a new worktree of that repository on a new branch,
+`imperium/<first 8 characters of the session id>` unless a branch is named, made from the
+repository's current `HEAD`. Folders outside git are used as they are; a subfolder of a
+repository becomes the same subfolder of its worktree. Worktrees go in
+`<sessions.worktree_dir>/<repo name>/<branch>` when that setting is set (Settings → Sessions),
+and otherwise inside the repository in `.worktrees/<branch>` (slashes in the branch become
+`-`), which is added to the repository's `.git/info/exclude` so it is never committed. The
+session records its worktrees (`worktrees: [{ folder, path, branch, repo }]` in
+`session.list` and `session.create`, a **Worktree** badge in the app), keeps them when it
+resumes after a restart, and `session.delete { session_id, remove_worktrees }` (`imperium
+session delete <id> --remove-worktrees`) stops and forgets the session and removes its
+worktrees, keeping their branches. Worktrees are made only for local folders (not remote
+runtimes).
+
+**Planned:** parallel writing subagents can each work in their own Git worktree, so concurrent
+edits never collide. Worktree behaviour is explicit configuration, set globally and overridable
+per project:
 
 ```toml
 [worktrees]
@@ -86,6 +143,8 @@ max_disk_gb = 50                # per project; new worktrees are refused above t
 ## Project agent
 
 A long-lived agent per project that watches for work and **dispatches it into new sessions**.
+An environment's [persistent agent](#persistent-agent-implemented) uses the same machinery,
+keyed by environment instead of folder.
 
 **Implemented (phase 6):** `[[projects]]` entries with `agent = true` get an agent when the
 daemon starts: an ordinary session (it appears in the session list and can be talked to) with

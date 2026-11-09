@@ -30,7 +30,7 @@ const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 pub enum ArchiveError {
     #[error("no session {0:?}")]
     NotFound(String),
-    #[error("session {0} is a project agent, which runs while the daemon does")]
+    #[error("session {0} is a persistent or project agent, which runs while the daemon does")]
     Persistent(String),
     #[error("could not record the archive: {0}")]
     Record(#[from] std::io::Error),
@@ -96,6 +96,8 @@ impl DaemonState {
             status_detail: meta["status_detail"].as_str().map(str::to_string),
             resume_policy: self.resume_policy(),
             pinned: meta["pinned"] == true,
+            persistent: false,
+            worktrees: serde_json::from_value(meta["worktrees"].clone()).unwrap_or_default(),
             archived: true,
             archived_at: meta["archived_at"].as_u64(),
         };
@@ -107,6 +109,11 @@ impl DaemonState {
         let mut sessions: Vec<_> = self.archived_map().values().cloned().collect();
         sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
         sessions
+    }
+
+    /// Stops listing an archived session (it is being deleted); its summary, if it was one.
+    pub(super) fn take_archived(&self, id: &str) -> Option<SessionSummary> {
+        self.archived_map().remove(id)
     }
 
     /// An archived session's events, read from its journal.
@@ -129,7 +136,8 @@ impl DaemonState {
         let session = self
             .session(id)
             .ok_or_else(|| ArchiveError::NotFound(id.to_string()))?;
-        if self.placement(id).persistent {
+        let placement = self.placement(id);
+        if placement.persistent || placement.project_agent {
             return Err(ArchiveError::Persistent(id.to_string()));
         }
         let mut summary = self.summary(&session);
@@ -225,7 +233,11 @@ impl DaemonState {
             SessionStatus::Idle | SessionStatus::Merged
         );
         let nothing_queued = session.queue(None).map_or(true, |queue| queue.is_empty());
-        quiet && nothing_queued && !placement.pinned && !placement.persistent
+        quiet
+            && nothing_queued
+            && !placement.pinned
+            && !placement.persistent
+            && !placement.project_agent
     }
 
     /// After the pull request a session watches was merged or closed: archives the session when

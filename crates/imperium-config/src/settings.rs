@@ -235,6 +235,31 @@ impl Default for AutofixSettings {
     }
 }
 
+/// `[sessions]`: how sessions are started, and when they are archived on their own (see
+/// docs/14-projects-and-automation.md#archiving-sessions). An archived session stops running but
+/// keeps its journal; unarchiving resumes it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SessionSettings {
+    /// Where sessions started on a git worktree put it: `<worktree_dir>/<repo>/<branch>`. When
+    /// unset, worktrees go in `<repo>/.worktrees/<branch>` (excluded from git).
+    pub worktree_dir: Option<PathBuf>,
+    /// Archive an idle session after this many days without activity; 0 turns it off.
+    pub auto_archive_after_days: u32,
+    /// Archive a session once the pull request it watches is merged or closed.
+    pub auto_archive_on_pr_close: bool,
+}
+
+impl Default for SessionSettings {
+    fn default() -> Self {
+        SessionSettings {
+            worktree_dir: None,
+            auto_archive_after_days: 0,
+            auto_archive_on_pr_close: true,
+        }
+    }
+}
+
 /// How sessions wait when a provider's usage or rate limit is hit (each session can override).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
@@ -254,26 +279,6 @@ impl Default for ResumeSettings {
             at_time: None,
             retry_every_minutes: 5,
             max_wait_hours: 12,
-        }
-    }
-}
-
-/// When sessions are archived on their own (see docs/14-projects-and-automation.md#archiving-sessions).
-/// An archived session stops running but keeps its journal; unarchiving resumes it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default)]
-pub struct SessionSettings {
-    /// Archive an idle session after this many days without activity; 0 turns it off.
-    pub auto_archive_after_days: u32,
-    /// Archive a session once the pull request it watches is merged or closed.
-    pub auto_archive_on_pr_close: bool,
-}
-
-impl Default for SessionSettings {
-    fn default() -> Self {
-        SessionSettings {
-            auto_archive_after_days: 0,
-            auto_archive_on_pr_close: true,
         }
     }
 }
