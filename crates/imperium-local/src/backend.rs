@@ -159,6 +159,12 @@ impl RuntimeBackend for LlamaCpp {
         }
         if let Some(mmproj) = &spec.mmproj {
             args.extend(["--mmproj".into(), mmproj.display().to_string()]);
+            if spec.cpu_only {
+                // In b12180 the projector already follows `--device none` off the GPU
+                // (`common_params_parse_ex` defaults its device to the first of `--device`);
+                // the flag says so explicitly, so the lane never depends on that default.
+                args.push("--no-mmproj-offload".into());
+            }
         }
         args.extend(spec.extra_args.iter().cloned());
         args

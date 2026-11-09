@@ -128,8 +128,9 @@ reuses the same `llama-server`. What changed is how long a slot is held:
   `max_wait_s` (stage 2d; default 600 s), after which the call fails. `models.local`,
   `imperium models local`, and the desktop's Local models panel show each loaded model's slots in
   use and `queued` (calls waiting), and each `model_call_completed` event carries `queue_wait_ms`,
-  the time that call waited for a slot (`duration_ms` and the time to first token start after it;
-  absent for hosted models).
+  the time that call waited for a slot or for room to load its model, not counting the load, a
+  swap-out, or a slot restore (`duration_ms` and the time to first token start after it; absent
+  for hosted models).
 - **Slot affinity.** The supervisor remembers which agent (session and agent id) used each slot
   last. A call goes to the free slot its agent used last, whose KV cache still holds the agent's
   prompt, unless another agent has used it since; otherwise to the slot that has been free the
@@ -163,7 +164,8 @@ memory arbiter for every session (`crates/imperium-local/src/arbiter.rs` holds t
   fit beside them, or gets more than `swap_gain` times the GPU memory once they are gone than it
   would beside them. The default, 2.0, keeps a subagent model from running mostly from RAM next
   to a sleeping orchestrator while not swapping for a small gain; 1.0 swaps whenever the
-  newcomer would get more GPU memory alone, so subagents run fully on the GPU (as G14 measures). If
+  newcomer would get more GPU memory alone, so subagents run fully on the GPU (as G14 measures);
+  values below 1.0 are rejected. If
   only a claimed model is in the way, it waits for that model's agent to start waiting or finish
   its turn (an orchestrator that spawns a subagent usually starts waiting moments later), for up
   to `min_residency_s`. After that it loads beside the claimed model if it fits at all, and swaps
@@ -264,8 +266,10 @@ placement = "cpu"                         # auto (default) | cpu
   `--n-gpu-layers 0 --device none`, even when VRAM is free. `-ngl 0` alone would still
   initialise the GPU backend (compute buffers in VRAM) and run large batched operations there;
   `--device none` (llama.cpp b12180, `common/arg.cpp`) gives the server no GPU device at all.
-  What is guaranteed is exactly that: Imperium plans zero VRAM for the model, passes those two
-  flags, and never counts it against the VRAM budget. The planner places it with
+  A model with an `mmproj` projector also gets `--no-mmproj-offload`, so the projector stays
+  off the GPU without relying on it following `--device`. What is guaranteed is exactly that:
+  Imperium plans zero VRAM for the model, passes those flags, and never counts it against the
+  VRAM budget. The planner places it with
   `place_on_cpu`: weights, KV cache for `context x parallel`, and the runtime overhead all count
   against RAM, so loading it leaves the GPU models' placements as they were. Nothing here has
   been measured on hardware (a driver may still hold a little memory for the process). The
@@ -292,13 +296,17 @@ placement = "cpu"                         # auto (default) | cpu
   models before the lane, even when freeing the lane alone would have been enough; the order is
   kept simple on purpose, and the evicted models come back by the usual swap.
 - **Measured speed.** After each model call the agent loop reports the tokens generated and how
-  long generating them took (after the first token, or the whole call for a buffered
-  response; a reply that streamed no text, such as a tool call alone, is not counted, since
-  its time is mostly reading the prompt); the supervisor keeps a running tokens-per-second per model, weighted by tokens so a
-  short reply does not outweigh a long one, and `models.local` lists it as `tokens_per_s`
-  (`imperium models local` and the desktop panel show it). It is kept after the model unloads
-  and reset when the daemon restarts. `llama-server`'s own `timings` object is not read; the
-  call's measured time is used.
+  long generating them took, from the first generated token to the end. A thinking model's
+  reasoning (`reasoning_content`, or `reasoning` from some services) counts as generated: it
+  is in `completion_tokens` and starts the window, though it is not shown as reply text, and it
+  sets the event's time to first token. A call whose window is under 100 ms (a buffered
+  response or a reply of a few tokens) or that streamed nothing (a tool call alone) is not
+  counted, since its time is mostly reading the prompt; its event's `tokens_per_sec` still
+  shows tokens over the whole call. The supervisor keeps a running tokens-per-second per model,
+  weighted by tokens so a short reply does not outweigh a long one, and `models.local` lists it
+  as `tokens_per_s` (`imperium models local` and the desktop panel show it). It is kept after
+  the model unloads and reset when the daemon restarts. `llama-server`'s own `timings` object
+  is not read; the call's measured time is used.
 - **Not in the ranking.** A CPU-pinned row is left out of the ranking by tier, so a task asking
   for `strong` work never lands on the slow lane by accident. It is chosen when an agent names
   it, or when a routing rule lists it in `use`. A rule matches one tag, so send each tag of
