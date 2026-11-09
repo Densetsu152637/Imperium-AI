@@ -642,9 +642,12 @@ the grain of one agent's slot as well as one model:
   `await_tasks`, an approval, an answer) and another agent takes a slot on the same model, the
   waiting agent's slot is saved to the slot files and its cells are freed
   (`POST /slots/{id}?action=erase`), so its subagents use the GPU pool. Its next call restores
-  the prompt before it is sent (`restoring_context`). `LocalModels::suspended` says whether an
-  agent's context is saved this way, for whoever wakes it, such as a steer. The restore happens
-  on its next `acquire`; nothing else is needed. A waiting agent was already no claim on its
+  the prompt before it is sent (`restoring_context`). A session the user stops releases its
+  agents' slots at once (`LocalModels::suspend` at the safe point where each halts). When an
+  agent goes on, after Resume or after a steering message wakes the root, the engine
+  (`ensure_resident`) checks `LocalModels::suspended` and restores the context ahead of the
+  next call with a near-empty interactive call. That loads the model if it was swapped out and
+  puts the agent ahead of idle subagents. A waiting agent was already no claim on its
   model, so a subagent on another model that does not fit beside it swaps it out (slots saved)
   rather than running on the CPU, and it comes back with its slots restored when it resumes.
 - **The critic.** A CPU-lane model (`placement = "cpu"`) runs on the CPU beside the agents

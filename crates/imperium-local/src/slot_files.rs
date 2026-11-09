@@ -88,6 +88,11 @@ impl SlotFiles {
             .cloned()
     }
 
+    /// Whether a slot of `holder`'s is saved, on any model.
+    pub fn holds(&self, holder: &str) -> bool {
+        self.saved.iter().any(|saved| saved.holder == holder)
+    }
+
     /// Removes `holder`'s saved slot on the model with `key` from the index and its file from
     /// the folder, whether or not it was recorded: a save that failed or was cut short may have
     /// left a partial file behind.

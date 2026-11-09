@@ -374,14 +374,35 @@ impl Agent {
         reports
     }
 
-    /// Makes sure the root agent is ready to work again after waiting on subagents: its model
-    /// loaded and its context restored.
-    ///
-    /// INTEGRATION POINT: the local runtime is gaining an explicit "restore root slot" call
-    /// (slot-level KV residency); wire it in here once it lands. Until then nothing extra is
-    /// needed: the next model call's `acquire` loads the model if it was swapped out and gives
-    /// this agent back its saved slot, and a hosted model keeps no state between calls.
-    async fn ensure_resident(&self) {}
+    /// Makes sure the agent is ready to work again after waiting (on subagents, or a stopped
+    /// session): when the local runtime saved its context and freed its cells meanwhile, its
+    /// model is loaded and its context restored now, as the user's work, ahead of idle
+    /// subagents, rather than at its next call. A hosted model keeps no state between calls.
+    async fn ensure_resident(&self) {
+        let Some(local) = self.local_models() else {
+            return;
+        };
+        let holder = self.holder();
+        if !local.suspended(&holder) {
+            return;
+        }
+        // A call that reserves almost nothing: taking the slot restores the context into it,
+        // and releasing it leaves the slot this agent's for its next call.
+        let request = LocalRequest {
+            priority: Priority::Interactive,
+            prompt_tokens: Some(0),
+            uncapped: false,
+        };
+        match local
+            .acquire_with(&self.model.model, &holder, request)
+            .await
+        {
+            Ok(lease) => drop(lease),
+            Err(error) => {
+                tracing::debug!(%holder, %error, "could not restore the agent's context ahead of its call");
+            }
+        }
+    }
 
     /// What the root reads, after a steering message, about the subagents that stopped for it.
     fn stopped_status(&self, stopped: &[TaskReport]) -> String {
@@ -436,13 +457,18 @@ impl Agent {
         let asleep = self
             .local_models()
             .map(|local| local.waiting(&self.model.model, holder));
-        // INTEGRATION POINT: an explicit slot release / save from the local runtime goes here
-        // (and its restore in `ensure_resident`); `waiting` already lets it reclaim the slot.
+        // Stopped for who knows how long: its context is saved and its cells freed at once, so
+        // other sessions use the GPU meanwhile.
+        if let Some(local) = self.local_models() {
+            local.suspend(&self.model.model, holder).await;
+        }
         let _ = stop.wait_for(|stopped| !*stopped).await;
         drop(asleep);
         *attached = self
             .local_models()
             .map(|local| local.attach(&self.model.model, holder));
+        // Resumed: its context comes back before it goes on.
+        self.ensure_resident().await;
     }
 
     /// Makes this subagent pause when the user steers the root agent from now on.

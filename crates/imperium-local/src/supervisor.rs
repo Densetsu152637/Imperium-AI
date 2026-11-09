@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use imperium_api::{
     AcquireFuture, Availability, Load as MachineLoad, LoadView, LocalLease, LocalModels,
-    LocalPresence, LocalRequest, LocalWait, Priority, holder_session,
+    LocalPresence, LocalRequest, LocalWait, Priority, SuspendFuture, holder_session,
 };
 pub use imperium_config::{CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS};
 use imperium_config::{LaneRow, LlamaCppSettings, LocalModelSettings, ModelLaunch, VllmSettings};
@@ -2433,7 +2433,7 @@ impl Supervisor {
             .collect();
         for other in waiting {
             let (me, model) = (Arc::clone(&me), model.to_string());
-            tokio::spawn(async move { me.suspend(&model, &other).await });
+            tokio::spawn(async move { me.suspend_slot(&model, &other).await });
         }
     }
 
@@ -2442,7 +2442,7 @@ impl Supervisor {
     /// other agents on the model use the pool. Its next call restores the prompt into whatever
     /// slot it gets ([`Supervisor::restore`]). Nothing happens when slots are not saved, the
     /// model is not loaded, or the holder holds no idle slot on it.
-    pub async fn suspend(&self, model: &str, holder: &str) {
+    pub async fn suspend_slot(&self, model: &str, holder: &str) {
         let Some(files) = &self.slot_files else {
             return;
         };
@@ -2871,16 +2871,13 @@ impl LocalModels for Supervisor {
     }
 
     fn suspended(&self, holder: &str) -> bool {
-        let Some(files) = &self.slot_files else {
-            return false;
-        };
-        let state = lock(&self.state);
-        let files = lock(files);
-        state
-            .loaded
-            .values()
-            .filter_map(|entry| entry.key)
-            .any(|key| files.find(holder, key).is_some())
+        self.slot_files
+            .as_ref()
+            .is_some_and(|files| lock(files).holds(holder))
+    }
+
+    fn suspend<'a>(&'a self, model: &'a str, holder: &'a str) -> SuspendFuture<'a> {
+        Box::pin(self.suspend_slot(model, holder))
     }
 
     fn record_throughput(&self, model: &str, completion_tokens: u64, generating: Duration) {

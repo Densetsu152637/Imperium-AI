@@ -1133,3 +1133,31 @@ async fn the_critic_stays_on_the_cpu_lane_while_another_session_works() {
     );
     drop(review);
 }
+
+#[tokio::test]
+async fn a_stopped_agents_slot_is_released_at_once_and_comes_back_on_resume() {
+    let (supervisor, log) = start(quick());
+    let root = "s/root";
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    // The session is stopped: the engine suspends the agent's slot explicitly.
+    let stopped = supervisor.waiting("emperor", root);
+    LocalModels::suspend(supervisor.as_ref(), "emperor", root).await;
+    assert!(supervisor.suspended(root));
+    assert_eq!(log.steps()[1..], ["save emperor 0", "erase emperor 0"]);
+    // Resumed: the engine's near-empty call restores it before the agent goes on.
+    drop(stopped);
+    let lease = supervisor
+        .acquire_with(
+            "emperor",
+            root,
+            imperium_api::LocalRequest {
+                prompt_tokens: Some(0),
+                ..imperium_api::LocalRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(log.steps().contains(&"restore emperor 0".to_string()));
+    assert!(!supervisor.suspended(root));
+    drop(lease);
+}
