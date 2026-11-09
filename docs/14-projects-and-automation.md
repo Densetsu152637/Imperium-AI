@@ -17,13 +17,13 @@ RPC:
 | --- | --- | --- |
 | `environments.list` | `{}` | `{ environments: EnvironmentInfo[] }` |
 | `environments.create` | `{ name, icon?, color?, folders }` | `EnvironmentInfo` |
-| `environments.update` | `{ id, name?, icon?, color? }` (empty icon/colour clears it) | `EnvironmentInfo` |
+| `environments.update` | `{ id, name?, icon?, color?, pinned? }` (empty icon/colour clears it) | `EnvironmentInfo` |
 | `environments.delete` | `{ id }` | `{}` (folders and running sessions are left alone) |
 | `environments.add_folder` | `{ id, folder }` (an existing absolute folder) | `EnvironmentInfo` |
 | `environments.remove_folder` | `{ id, folder }` | `EnvironmentInfo` |
 
-`EnvironmentInfo` is `{ id, name, icon, color, folders }`, folders first-to-last with the
-working directory first. Every change is announced to all clients as `environments.changed`
+`EnvironmentInfo` is `{ id, name, icon, color, folders, pinned }`, folders first-to-last with
+the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
 (the full list). `session.create` takes `environment_id`; `project_dir` still works and maps to
 the environment whose first folder it is, created (named after the folder) when there is none.
 Sessions from before environments are moved the same way when the daemon resumes them, and the

@@ -14,6 +14,8 @@ export type Layout = {
   session: string | null;
   /** Whether the Sessions list shows only the selected environment's sessions. */
   projectView: boolean;
+  /** How the Sessions list is ordered: most recent first, or grouped by environment or status. */
+  sessionSort: "recent" | "environment" | "status";
   /** Before environments: the selected project folder, read once to pick its environment. */
   project: string | null;
   /** Before environments: folders opened here, each moved into an environment of its own. */
@@ -28,6 +30,7 @@ const EMPTY: Layout = {
   environment: null,
   session: null,
   projectView: false,
+  sessionSort: "recent",
   project: null,
   folders: [],
   environmentsMigrated: false,

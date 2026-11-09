@@ -240,15 +240,24 @@ the sessions as last seen.
 ## Environments and sessions (implemented)
 
 The Environments panel lists the daemon's
-[environments](14-projects-and-automation.md#environments-implemented). *New environment* asks
-for a name, creates it, and opens the folder picker for its first folder. Selecting an
-environment shows its folders (the first marked as the working directory when there are
-several) with *×* to remove one, and *Add folder* (the native folder picker), *Rename*, and
-*Delete* (asks once more; folders on disk are untouched). Each environment has an icon: a glyph
-on a coloured tile, derived from its id by default and changeable by clicking it; the choice is
-stored with the environment in the daemon. The first time the app connects after environments
-arrived, every project folder it knew (opened folders, the selected project, folders of running
-sessions) becomes an environment of its own, keeping the icon it had.
+[environments](14-projects-and-automation.md#environments-implemented), one row each: the
+environment's icon and name, a pin mark when pinned, and a *⋯* menu on the right with *Edit*,
+*Pin*/*Unpin*, and *Delete*. Pinned environments are listed first. Clicking a row selects the
+environment (new sessions start there) and shows its sessions; double-clicking opens it for
+editing.
+
+*New environment* and *Edit* open the **environment window**, a sheet over the workspace like
+Settings (Escape or a click outside closes it): the name; the icon, picked from a searchable grid
+of every icon the app uses (`icons.ts`, the shared registry — Settings sections, Connectors, the
+titlebar, and project glyphs; older saved names still resolve); the tile colour, picked from a
+row of rounded-square swatches; and the folders, the first marked as the working directory, with
+*Add folder* (the native folder picker) and *×* to remove one. A new environment is created with
+all of it at once; for an existing one, folder changes apply at once and the name, icon and
+colour with *Save*. *Delete environment* asks once more (folders on disk are untouched); *Delete*
+in a row's menu opens the window at that question. Icons and colours are stored with the
+environment in the daemon. The first time the app connects after environments arrived, every
+project folder it knew (opened folders, the selected project, folders of running sessions)
+becomes an environment of its own, keeping the icon it had.
 
 *New session* (in the Sessions panel's header) starts a session in the selected environment;
 it is disabled, with the reason as its tooltip, while disconnected, with no environment
@@ -258,10 +267,18 @@ model (*Default model* uses `models.default`); when no default is configured, st
 
 The Sessions panel lists every session across environments, each with its environment's icon
 to the left of its title and a status badge (idle, working, needs attention, paused with its
-resume time, watching with its pull request, merged); sessions needing attention sort first.
-Clicking a session's icon (or an environment) opens that environment's view, which lists only
-its sessions, with *All sessions* to return; clicking the row opens the session and selects its
-environment. The session header shows the status and the *Usage limits* controls (how to wait
+resume time, watching with its pull request, merged), and a *⋯* menu with *Pin*/*Unpin* and
+*Show* its environment. A sort control above the list orders it *Recent* (the default: most
+recently active first), *By environment* (grouped under environment headings, pinned
+environments first), or *By status* (groups *Waiting for approval*, *Active* — working or
+watching —, *Paused*, *Idle*, *Merged*); pinned sessions stay on top within each group, and the
+choice is kept in the local layout. Pins on sessions and environments are kept by the daemon
+(`session.control` `set_pinned`, `environments.update` `pinned`), so every client agrees and
+they survive restarts; the daemon announces a changed session as `session.updated`. Clicking an
+environment (or *Show* in a session's menu) opens that environment's view, which lists only its
+sessions, with *All sessions* to return; clicking the row opens the session and selects its
+environment. Renaming, stopping, and deleting sessions are not offered yet: the daemon has no
+methods for them. The session header shows the status and the *Usage limits* controls (how to wait
 when usage runs out, and *Resume now* while paused).
 
 **Model picker (implemented):** among the header's environment pills, the session's model is a

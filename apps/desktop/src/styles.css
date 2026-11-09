@@ -2144,7 +2144,7 @@ button.sort:hover:not(:disabled) {
   stroke-linejoin: round;
 }
 
-/* A list row with an icon button beside the main button. */
+/* A list row: the main button and controls beside it. */
 .list .row {
   display: flex;
   align-items: center;
@@ -2157,111 +2157,352 @@ button.sort:hover:not(:disabled) {
   min-width: 0;
 }
 
-.list .icon-button {
-  width: auto;
-  flex: none;
-  padding: 0.2rem;
-  border-color: transparent;
-  background: transparent;
+/* Environment and session rows: icon and title, a pin mark, and a "more" menu on the right. */
+.list button.nav-row-main {
+  flex-direction: row;
+  align-items: center;
+  gap: calc(var(--space) * 0.75);
+  padding: calc(var(--space) * 0.5) calc(var(--space) * 0.75);
 }
 
-.list .icon-button[aria-expanded="true"] {
-  border-color: var(--accent);
+.nav-row-main > .name {
+  flex: 1;
+  min-width: 0;
 }
 
-.icon-picker {
-  margin: calc(var(--space) * 0.25) 0 calc(var(--space) * 0.5);
-  padding: calc(var(--space) * 1.25);
+.nav-row-text {
   display: flex;
   flex-direction: column;
-  gap: var(--space);
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-row-text > .name {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.pin-mark {
+  flex: none;
+  width: 0.8rem;
+  height: 0.8rem;
+  color: var(--accent);
+  transform: rotate(35deg);
+}
+
+.list button.row-menu-button {
+  width: 1.8rem;
+  height: 1.8rem;
+  padding: 0;
+  flex: none;
+  flex-direction: row;
+  justify-content: center;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease);
+}
+
+.list .row:hover .row-menu-button,
+.list .row:focus-within .row-menu-button,
+.list button.row-menu-button.open,
+.list .row:has(.selected) .row-menu-button {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .list button.row-menu-button {
+    opacity: 1;
+  }
+}
+
+.list button.row-menu-button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.row-menu {
+  position: fixed;
+  z-index: 1100;
+  min-width: 10rem;
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
   background: var(--metal-card);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   box-shadow: var(--highlight), var(--shadow);
+  font-size: 0.85rem;
+  animation: pop-in var(--fast) var(--ease);
+}
+
+.row-menu.above {
+  transform: translateY(-100%);
+  animation: none;
+}
+
+.row-menu:focus {
+  outline: none;
+}
+
+.row-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.4rem 0.7rem 0.4rem 0.5rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.row-menu-item .lucide,
+.row-menu-spacer {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: none;
+  color: var(--muted);
+}
+
+.row-menu-item.active {
+  background: var(--hover);
+}
+
+.row-menu:focus-visible .row-menu-item.active {
+  background: var(--accent-soft);
+}
+
+.row-menu-item.danger,
+.row-menu-item.danger .lucide {
+  color: var(--danger);
+}
+
+.row-menu-item[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Sessions: a sort control, then the sessions, under headings when grouped. */
+.sessions-toolbar {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--space) * 0.5);
+  margin: 0 calc(var(--space) * 0.5) calc(var(--space) * 0.75);
+}
+
+.sessions-toolbar .sessions-scope {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.sessions-toolbar button.select.sessions-sort {
+  min-width: 0;
+  width: auto;
+  font-size: 0.75rem;
+  border-color: var(--border);
+}
+
+.session-group + .session-group {
+  margin-top: calc(var(--space) * 0.75);
+}
+
+.session-group-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 calc(var(--space) * 0.5) calc(var(--space) * 0.25);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.session-group-count {
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+/* The environment window: a narrower sheet like Settings. */
+.environment-window {
+  display: flex;
+  flex-direction: column;
+  width: min(36rem, 100%);
+  max-height: min(44rem, 100%);
+  overflow: hidden;
+  background: var(--metal-card, var(--surface));
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: calc(var(--radius) * 1.5);
+  box-shadow: var(--highlight), var(--shadow);
   animation: rise-in var(--slow) var(--ease);
 }
 
-.icon-grid,
-.swatches {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(2.1rem, 1fr));
-  gap: calc(var(--space) * 0.5);
+.environment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem 1.4rem 1.2rem;
 }
 
-.icon-grid button,
-.swatch {
+.environment-identity {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.9rem;
+}
+
+.environment-preview .project-icon {
+  --tile: 3rem;
+  border-radius: calc(var(--radius) * 1.1);
+}
+
+.environment-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.environment-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.environment-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.environment-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.environment-icon-search {
+  flex: 0 1 14rem;
+}
+
+.environment-icon-search input {
+  padding-top: 0.28rem;
+  padding-bottom: 0.28rem;
+  font-size: 0.85rem;
+}
+
+/* Icon and colour choices share one look: rounded-square tiles in a grid. */
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(2.3rem, 1fr));
+  gap: 0.4rem;
+}
+
+.icon-choices {
+  max-height: 12.5rem;
+  overflow-y: auto;
+  padding: 0.15rem;
+}
+
+.tile-grid-empty {
+  grid-column: 1 / -1;
+  margin: 0.4rem 0;
+  font-size: 0.85rem;
+}
+
+button.tile-choice {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0.2rem;
-  background: transparent;
-  border: 2px solid transparent;
-}
-
-.icon-grid button[aria-pressed="true"],
-.swatch[aria-pressed="true"] {
-  border-color: var(--text);
-}
-
-.swatch {
   aspect-ratio: 1;
-  min-height: 1.6rem;
-  border-radius: 999px;
-}
-
-.swatch[aria-pressed="true"]::after {
-  content: "✓";
-  color: #fff;
-  font-size: 0.8rem;
-}
-
-.icon-picker-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: calc(var(--space) * 0.5);
-}
-
-/* The picker sits inside a list, whose borderless full-width row buttons it must not inherit. */
-.list .icon-picker-actions button {
-  width: auto;
-  padding: calc(var(--space) * 0.5) calc(var(--space) * 1.5);
+  width: 100%;
+  min-height: 2.3rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
-  border-color: var(--border);
+  color: var(--text);
   box-shadow: var(--highlight);
 }
 
-.list .icon-picker-actions button:hover {
-  background: var(--surface-3);
+button.tile-choice .lucide {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+button.tile-choice:hover:not(:disabled) {
   border-color: var(--border-strong);
 }
 
-/* Environments: the selected one opens to show its folders and what can be done with it. */
-.list .environment-detail {
-  margin: calc(var(--space) * 0.25) 0 calc(var(--space) * 0.75) calc(var(--space) * 2.5);
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--space) * 0.5);
+button.tile-choice[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-soft), var(--highlight);
 }
 
-.list .folders {
+button.colour-choice {
+  border-color: rgb(0 0 0 / 0.25);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22);
+}
+
+button.colour-choice:hover:not(:disabled) {
+  border-color: var(--text);
+}
+
+button.colour-choice[aria-checked="true"] {
+  border-color: var(--text);
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--text);
+}
+
+button.colour-choice[aria-checked="true"]::after {
+  content: "";
+  width: 0.45rem;
+  height: 0.8rem;
+  margin-top: -0.15rem;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.environment-section-head button {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.65rem;
+}
+
+.environment-folders {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 0.75rem;
+  font-size: 0.85rem;
 }
 
-.list .folder {
+.environment-folders li {
   display: flex;
   align-items: center;
-  gap: calc(var(--space) * 0.5);
+  gap: 0.5rem;
   min-width: 0;
+  padding: 0.2rem 0.2rem 0.2rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
 }
 
-.list .folder-path {
+.environment-folders li.muted {
+  padding: 0.5rem 0.6rem;
+  background: transparent;
+}
+
+.environment-folders .folder-path {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -2269,34 +2510,36 @@ button.sort:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-.list .folder button,
-.list .environment-actions button,
-.name-form button {
-  width: auto;
-  flex-direction: row;
-  padding: 0.15rem 0.55rem;
-  font-size: 0.75rem;
+.folder-badge {
+  flex: none;
+  font-size: 0.7rem;
+  color: var(--muted);
 }
 
-.list .environment-actions button:not(.danger) {
-  border-color: var(--border);
+.environment-folders button.icon-only {
+  width: 1.7rem;
+  height: 1.7rem;
 }
 
-.environment-actions,
-.name-form {
+.environment-footer {
   display: flex;
   flex-wrap: wrap;
-  gap: calc(var(--space) * 0.5);
   align-items: center;
+  gap: 0.5rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
 }
 
-.name-form {
-  margin: 0 calc(var(--space) * 0.5) var(--space);
-}
-
-.name-form input {
+.environment-footer .spacer {
   flex: 1;
-  min-width: 8rem;
+}
+
+.environment-delete-confirm {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
 }
 
 .new-session {

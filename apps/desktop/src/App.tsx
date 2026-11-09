@@ -31,11 +31,17 @@ import type {
 } from "@imperium/protocol";
 
 import { DaemonClient, type DaemonConnection } from "./daemon/client";
-import { findDaemon, insideTauri, pickFolder, rememberDevConnection } from "./daemon/connection";
+import { findDaemon, insideTauri, rememberDevConnection } from "./daemon/connection";
 import { Columns, type PanelSpec } from "./layout/Columns";
 import { getLayout, resetLayout, updateLayout } from "./layout/state";
 import { notify } from "./notify";
-import { EnvironmentsPanel, SessionsPanel, environmentOf, type EnvironmentActions } from "./panels/NavigationPanels";
+import {
+  EnvironmentsPanel,
+  SessionsPanel,
+  environmentOf,
+  type EnvironmentActions,
+  type SessionSort,
+} from "./panels/NavigationPanels";
 import { SessionPanel } from "./panels/SessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { ModBus, ModFrame } from "./mods/ModFrame";
@@ -50,6 +56,7 @@ import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type Sessi
 import { applySettings, loadSettings, saveSettings, SettingsContext, type AppSettings } from "./settings";
 import { SettingsWindow } from "./SettingsWindow";
 import { ConnectorsWindow } from "./ConnectorsWindow";
+import { EnvironmentWindow } from "./EnvironmentWindow";
 import { Select } from "./components/Select";
 import { getDoc, setDoc } from "./store";
 import { type Daemon, useDaemon } from "./DaemonControl";
@@ -116,7 +123,9 @@ export function App() {
   // The environment new sessions start in, and whether the Sessions list shows only its sessions.
   const [envId, setEnvId] = useState<string | null>(restore ? saved.environment : null);
   const [envView, setEnvView] = useState(restore && saved.projectView);
-  const [creatingEnv, setCreatingEnv] = useState(false);
+  /** The environment window: which environment it edits (null id: a new one). */
+  const [envWindow, setEnvWindow] = useState<{ id: string | null; confirmDelete?: boolean } | null>(null);
+  const [sessionSort, setSessionSort] = useState<SessionSort>(saved.sessionSort);
   /** The model "New session" asks for; empty for the configured default. */
   const [newModel, setNewModel] = useState("");
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -185,6 +194,13 @@ export function App() {
         }
         if (notification.method === "environments.changed") {
           setEnvironments((notification.params as EnvironmentListResult).environments);
+          return;
+        }
+        if (notification.method === "session.updated") {
+          const summary = notification.params as SessionSummary;
+          setSessions((all) =>
+            all[summary.session_id] ? { ...all, [summary.session_id]: { ...all[summary.session_id], summary } } : all,
+          );
           return;
         }
         if (notification.method === "session.created") {
@@ -274,8 +290,8 @@ export function App() {
 
   // Remember the selection and closed panels.
   useEffect(() => {
-    updateLayout({ environment: envId, session: selected, projectView: envView, hidden });
-  }, [envId, selected, envView, hidden]);
+    updateLayout({ environment: envId, session: selected, projectView: envView, hidden, sessionSort });
+  }, [envId, selected, envView, hidden, sessionSort]);
 
   // Remember the sessions as last seen, for the next time the daemon is away.
   useEffect(() => {
@@ -339,50 +355,21 @@ export function App() {
     setEnvironments((all) => (all.some((e) => e.id === env.id) ? all.map((e) => (e.id === env.id ? env : e)) : [...all, env]));
 
   const envActions: EnvironmentActions = {
-    onCreate: async (name) => {
-      if (!client) return false;
-      try {
-        const env = await client.call<EnvironmentInfo>("environments.create", { name, folders: [] });
-        replaceEnvironment(env);
-        setCreatingEnv(false);
-        showEnvironment(env.id);
-        // An environment is only useful with a folder; ask for the first one straight away.
-        await addFolder(env.id);
-        return true;
-      } catch (error) {
-        report(error);
-        return false;
-      }
+    onEdit: (id) => setEnvWindow({ id }),
+    onSetPinned: (env, pinned) => {
+      client?.call<EnvironmentInfo>("environments.update", { id: env.id, pinned }).then(replaceEnvironment, report);
     },
-    onRename: (id, name) => {
-      client?.call<EnvironmentInfo>("environments.update", { id, name }).then(replaceEnvironment, report);
-    },
-    onDelete: (id) => {
-      client?.call("environments.delete", { id }).then(() => {
-        setEnvironments((all) => all.filter((env) => env.id !== id));
-        setEnvId((current) => (current === id ? null : current));
-      }, report);
-    },
-    onAddFolder: (id) => void addFolder(id),
-    onRemoveFolder: (id, folder) => {
-      client?.call<EnvironmentInfo>("environments.remove_folder", { id, folder }).then(replaceEnvironment, report);
-    },
-    onSetIcon: (id, choice) => {
-      client
-        ?.call<EnvironmentInfo>("environments.update", { id, icon: choice?.icon ?? "", color: choice?.color ?? "" })
-        .then(replaceEnvironment, report);
-    },
+    onDelete: (id) => setEnvWindow({ id, confirmDelete: true }),
   };
 
-  const addFolder = async (id: string) => {
-    if (!client) return;
-    const folder = await pickFolder("Add folder to environment");
-    if (!folder) return;
-    try {
-      replaceEnvironment(await client.call<EnvironmentInfo>("environments.add_folder", { id, folder }));
-    } catch (error) {
-      report(error);
-    }
+  const setSessionPinned = (sessionId: string, pinned: boolean) => {
+    control(sessionId, { action: "set_pinned", pinned }).then(
+      () =>
+        setSessions((all) =>
+          all[sessionId] ? { ...all, [sessionId]: { ...all[sessionId], summary: { ...all[sessionId].summary, pinned } } } : all,
+        ),
+      report,
+    );
   };
 
   const showEnvironment = (id: string) => {
@@ -411,6 +398,7 @@ export function App() {
         status: "idle",
         status_detail: null,
         resume_policy: DEFAULT_RESUME_POLICY,
+        pinned: false,
       };
       setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
       setSelected(created.session_id);
@@ -588,6 +576,24 @@ export function App() {
           onClose={() => setShowSettings(false)}
         />
       )}
+      {envWindow && (envWindow.id === null || environments.some((env) => env.id === envWindow.id)) && (
+        <EnvironmentWindow
+          key={envWindow.id ?? "new"}
+          environment={envWindow.id ? (environments.find((env) => env.id === envWindow.id) ?? null) : null}
+          client={client}
+          confirmDelete={envWindow.confirmDelete}
+          onSaved={(env) => {
+            const isNew = !environments.some((e) => e.id === env.id);
+            replaceEnvironment(env);
+            if (isNew) showEnvironment(env.id);
+          }}
+          onDeleted={(id) => {
+            setEnvironments((all) => all.filter((env) => env.id !== id));
+            setEnvId((current) => (current === id ? null : current));
+          }}
+          onClose={() => setEnvWindow(null)}
+        />
+      )}
       {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={daemon} />}
       {(
         <main className="workspace">
@@ -602,7 +608,7 @@ export function App() {
                     id: "projects",
                     title: "Environments",
                     actions: (
-                      <button onClick={() => setCreatingEnv((open) => !open)} disabled={!client} aria-expanded={creatingEnv}>
+                      <button onClick={() => setEnvWindow({ id: null })} disabled={!client}>
                         <Plus aria-hidden="true" /> New environment
                       </button>
                     ),
@@ -610,13 +616,11 @@ export function App() {
                       <EnvironmentsPanel
                         environments={environments}
                         selected={envId}
-                        creating={creatingEnv}
                         connected={!!client}
                         onSelect={(next) => {
                           showEnvironment(next);
                           setSelected(null);
                         }}
-                        onCancelCreate={() => setCreatingEnv(false)}
                         actions={envActions}
                       />
                     ),
@@ -656,7 +660,10 @@ export function App() {
                         scope={envView ? environment : null}
                         selected={selected}
                         error={sessionError}
+                        sort={sessionSort}
+                        onSort={setSessionSort}
                         onSelect={selectSession}
+                        onSetPinned={setSessionPinned}
                         onShowEnvironment={showEnvironment}
                         onShowAll={() => setEnvView(false)}
                       />
