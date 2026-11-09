@@ -74,8 +74,10 @@ ordinary sessions. Like a project agent (below) it has `start_session`, which st
 the same environment (at most 2 at once and 20 a day) and reports back to it. When a turn starts
 with the conversation over the model's context budget, older turns are summarised first (the
 same compaction as `/compact`), so it can run for days. Turning it off stops the session and
-keeps its id, so turning it on again continues the conversation; deleting the environment stops
-it too.
+archives it, so its history is listed with the other archived sessions; the environment keeps its
+id, so turning it on again takes it out of the archive and continues the conversation (unless it
+was unarchived by hand in the meantime, when a new one starts). Deleting the environment stops it
+too. It has no pet in the nursery.
 
 Sessions that a schedule, a project agent, or auto-fix start still work in a single folder and
 carry no environment.

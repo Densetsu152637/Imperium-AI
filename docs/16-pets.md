@@ -119,7 +119,7 @@ that is the desktop's pet panel: it puts many pets on screen, each with its own 
 behaviour arbiter ported from Pixel Pets. It contributes two panels. The **Nursery** docks in
 the left column where the Pet panel used to be and holds **your pet** (always there, chosen with
 the "Your pet" select, and feeling every session's activity combined as the single pet did),
-**one pet per unarchived session** (labelled with the session title, with a badge for its
+**one pet per unarchived session** (persistent agent sessions have none and are not felt by your pet; labelled with the session title, with a badge for its
 working subagents; it pops in when the session is created, walks out when the session is
 archived and returns when it is unarchived) and **extra pets** you put in with an optional
 nickname and take out again. A session's pet is its environment's default pet
