@@ -47,7 +47,8 @@ const TOOL: &str = "search_sessions";
 /// An embedding model on an OpenAI-compatible endpoint (`POST <base>/embeddings`).
 pub(crate) struct HttpEmbedder {
     spec: String,
-    model: String,
+    /// The model name the endpoint expects; vectors are keyed by `spec` instead.
+    request_model: String,
     base_url: String,
     api_key: Option<String>,
     client: reqwest::Client,
@@ -79,7 +80,7 @@ impl HttpEmbedder {
                 "{}/embeddings",
                 self.base_url.trim_end_matches('/')
             ))
-            .json(&serde_json::json!({"model": self.model, "input": texts}));
+            .json(&serde_json::json!({"model": self.request_model, "input": texts}));
         if let Some(key) = &self.api_key {
             request = request.bearer_auth(key);
         }
@@ -165,7 +166,7 @@ impl DaemonState {
             .ok()?;
         Some(Arc::new(HttpEmbedder {
             spec: model.spec,
-            model: model.model,
+            request_model: model.model,
             base_url: model.endpoint.base_url,
             api_key: model.endpoint.api_key,
             client,
