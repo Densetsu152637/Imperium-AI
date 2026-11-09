@@ -15,7 +15,9 @@ export type PanelWindowEvent =
   | { kind: "bounds"; id: string; bounds: NonNullable<DetachedPanel["bounds"]> }
   | { kind: "dock"; id: string }
   /** From the main window: close this panel's window. */
-  | { kind: "close"; id: string };
+  | { kind: "close"; id: string }
+  /** From a panel window's command palette: the main window runs the command with this id. */
+  | { kind: "command"; command: string };
 
 const EVENT = "imperium://panel-window";
 const DEFAULT_SIZE = { width: 420, height: 560 };

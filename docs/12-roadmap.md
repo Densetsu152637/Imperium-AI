@@ -67,7 +67,11 @@ them), in the desktop's Resources panel and `imperium resources [--watch]`
    thresholds (default 50/80/100%) through notifications, and warn, ask before each new turn, or
    block new turns when used up; Settings → Budgets, a Usage dashboard, and a budget mark beside
    the context meter ([10](10-configuration.md#budgets), [07](07-desktop-ui.md#budgets-and-usage-implemented)).
-4. **Command palette.** One searchable list of every action, session, environment, and setting.
+4. **Command palette** (implemented). Ctrl+K (Cmd+K) in the main and panel windows: fuzzy
+   search over actions, sessions (archived ones grouped), environments, models for the open
+   session, panels, and settings sections, recently run first, from a typed command registry
+   features register into; plus a light, dark, or system theme setting
+   ([07](07-desktop-ui.md#command-palette-implemented)). Rebindable shortcuts remain to do.
 5. **Attachments and voice.** Images, PDFs, and files in messages; push-to-talk voice input
    through the transcription layer.
 6. **Review pane and checkpoints.** Diffs of an agent's changes with accept or reject per hunk,
