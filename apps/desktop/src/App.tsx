@@ -36,7 +36,14 @@ import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { normalizeProject, useProjectIcons } from "./projectIcons";
-import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
+import {
+  applyEvent,
+  DEFAULT_RESUME_POLICY,
+  markAnswered,
+  markQuestionsAnswered,
+  newSession,
+  type SessionState,
+} from "./sessions";
 import { applySettings, loadSettings, saveSettings, type DisplaySettings } from "./settings";
 import { SettingsMenu } from "./SettingsMenu";
 import { UpdateControl, useUpdates } from "./UpdateControl";
@@ -253,6 +260,12 @@ export function App() {
     client.call("session.respond", { session_id: selected, request_id: requestId, decision }).catch(report);
   };
 
+  const answer = (requestId: number, answers: string[]) => {
+    if (!client || !selected) return;
+    setSessions((all) => ({ ...all, [selected]: markQuestionsAnswered(all[selected], requestId) }));
+    client.call("session.answer", { session_id: selected, request_id: requestId, answers }).catch(report);
+  };
+
   const control = (sessionId: string, params: Partial<Omit<SessionControlParams, "session_id">>) => {
     if (!client) return Promise.reject(new Error("Not connected to imperiumd."));
     const full: SessionControlParams = {
@@ -400,6 +413,7 @@ export function App() {
                       icons={icons}
                       onSend={send}
                       onRespond={respond}
+                      onAnswer={answer}
                       onSetResumePolicy={setResumePolicy}
                       onResumeNow={resumeNow}
                     />

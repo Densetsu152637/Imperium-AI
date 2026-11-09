@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { PermissionDecision, Plan, ResumePolicy } from "@imperium/protocol";
+import type { PermissionDecision, Plan, Question, ResumePolicy } from "@imperium/protocol";
 
 import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
 import { ROOT, describeUse, formatCost, formatCount, sessionTitle, totals, type Entry, type SessionState } from "../sessions";
@@ -17,12 +17,14 @@ type Props = {
   icons: ProjectIcons;
   onSend: (text: string) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
+  /** One answer per question, in order. */
+  onAnswer: (requestId: number, answers: string[]) => void;
   /** Resolves once the daemon accepted the policy. */
   onSetResumePolicy: (policy: ResumePolicy) => Promise<void>;
   onResumeNow: () => void;
 };
 
-export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePolicy, onResumeNow }: Props) {
+export function SessionPanel({ session, icons, onSend, onRespond, onAnswer, onSetResumePolicy, onResumeNow }: Props) {
   const [draft, setDraft] = useState("");
   const [rendered, setRendered] = useState(true);
   const end = useRef<HTMLDivElement>(null);
@@ -134,7 +136,7 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
 
       <div className="conversation" aria-live="polite">
         {session.entries.map((entry, index) => (
-          <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} />
+          <EntryView key={index} entry={entry} rendered={rendered} onRespond={onRespond} onAnswer={onAnswer} />
         ))}
         {session.busy && <p className="working">Working…</p>}
         <div ref={end} />
@@ -169,14 +171,73 @@ export function SessionPanel({ session, icons, onSend, onRespond, onSetResumePol
   );
 }
 
+/** A batch of questions from the agent; each starts at its recommended answer. */
+function QuestionsView({
+  entry,
+  onAnswer,
+}: {
+  entry: Extract<Entry, { kind: "questions" }>;
+  onAnswer: Props["onAnswer"];
+}) {
+  const [answers, setAnswers] = useState<string[]>(() => entry.questions.map((question: Question) => question.recommended));
+  const setAnswer = (index: number, value: string) =>
+    setAnswers((all) => all.map((answer, at) => (at === index ? value : answer)));
+  return (
+    <form
+      className="questions"
+      aria-label="Questions from the agent"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!entry.answered) onAnswer(entry.requestId, answers);
+      }}
+    >
+      {entry.questions.map((question: Question, index: number) => (
+        <label key={index} className="question">
+          <span>{question.question}</span>
+          {question.options.length > 0 && (
+            <span className="buttons">
+              {question.options.map((option) => (
+                <button
+                  type="button"
+                  key={option}
+                  className={answers[index] === option ? "primary" : ""}
+                  disabled={entry.answered}
+                  onClick={() => setAnswer(index, option)}
+                >
+                  {option}
+                </button>
+              ))}
+            </span>
+          )}
+          <input
+            value={answers[index] ?? ""}
+            disabled={entry.answered}
+            onChange={(event) => setAnswer(index, event.target.value)}
+          />
+          <span className="muted">Suggested: {question.recommended}</span>
+        </label>
+      ))}
+      {entry.answered ? (
+        <span className="muted">Answered</span>
+      ) : (
+        <button type="submit" className="primary">
+          Send answers
+        </button>
+      )}
+    </form>
+  );
+}
+
 function EntryView({
   entry,
   rendered,
   onRespond,
+  onAnswer,
 }: {
   entry: Entry;
   rendered: boolean;
   onRespond: Props["onRespond"];
+  onAnswer: Props["onAnswer"];
 }) {
   switch (entry.kind) {
     case "user":
@@ -224,6 +285,8 @@ function EntryView({
           )}
         </div>
       );
+    case "questions":
+      return <QuestionsView entry={entry} onAnswer={onAnswer} />;
     case "turn":
       return (
         <p className="turn-summary">

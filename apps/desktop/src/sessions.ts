@@ -5,6 +5,7 @@ import type {
   AgentEvent,
   ContextCategory,
   Plan,
+  Question,
   ResumePolicy,
   SessionStatus,
   SessionSummary,
@@ -19,6 +20,7 @@ export type Entry =
   | { kind: "assistant"; text: string }
   | { kind: "tool"; callId: string; summary: string; ok: boolean | null; output: string }
   | { kind: "permission"; agentId: string; requestId: number; tool: string; summary: string; answered: boolean }
+  | { kind: "questions"; requestId: number; questions: Question[]; answered: boolean }
   | { kind: "task"; taskId: string; brief: string; model: string }
   | { kind: "turn"; usage: TokenUsage; costUsd: number | null; steps: number }
   | { kind: "error"; message: string }
@@ -215,6 +217,16 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
     ];
   }
 
+  if (event.type === "questions_asked") {
+    entries = [...entries, { kind: "questions", requestId: event.request_id, questions: event.questions, answered: false }];
+  }
+  if (event.type === "questions_answered") {
+    const requestId = event.request_id;
+    entries = entries.map((entry) =>
+      entry.kind === "questions" && entry.requestId === requestId ? { ...entry, answered: true } : entry,
+    );
+  }
+
   let { tasks, plan, calls, breakdowns, busy, browser, status, statusDetail, pause } = state;
   if (event.type === "status_changed") {
     status = event.status;
@@ -309,6 +321,15 @@ export function markAnswered(state: SessionState, requestId: number): SessionSta
     ...state,
     entries: state.entries.map((entry) =>
       entry.kind === "permission" && entry.requestId === requestId ? { ...entry, answered: true } : entry,
+    ),
+  };
+}
+
+export function markQuestionsAnswered(state: SessionState, requestId: number): SessionState {
+  return {
+    ...state,
+    entries: state.entries.map((entry) =>
+      entry.kind === "questions" && entry.requestId === requestId ? { ...entry, answered: true } : entry,
     ),
   };
 }
