@@ -1,5 +1,5 @@
 {
-  "description": "List this session's subagents: status (running, idle, failed, interrupted), model, turns, brief, and latest report. Finished subagents keep their conversation and can be given a follow-up with resume_agent.",
+  "description": "List this session's subagents: status (running, idle, failed, interrupted, paused), model, turns, brief, and latest report. Finished subagents keep their conversation and can be given a follow-up with resume_agent.",
   "name": "list_agents",
   "parameters": {
     "properties": {},

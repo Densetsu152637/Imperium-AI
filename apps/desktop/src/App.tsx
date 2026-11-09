@@ -21,8 +21,8 @@ import type {
   ResumePolicy,
   SendMode,
   SessionControlParams,
+  SessionAgentCancelParams,
   SessionAgentResumeParams,
-  SessionQueueParams,
   SessionSendParams,
   SessionControlResult,
   SessionCreateParams,
@@ -55,6 +55,7 @@ import {
 import { SessionPanel } from "./panels/SessionPanel";
 import { NewSessionPanel, type NewSessionOptions } from "./panels/NewSessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
+import { queueParams, type QueueChange } from "./queue";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
 import { BrowserPanel } from "./panels/BrowserPanel";
@@ -557,14 +558,24 @@ export function App() {
     }
   };
 
-  /** Edits (with text) or removes a queued message; the queue updates from `queue_changed`. */
-  const changeQueued = (id: string, text: string | null) => {
+  /**
+   * Edits, removes, or steers a queued message. Every window, detached panels included, follows
+   * the daemon's `queue_changed`, so the change shows in all of them; a refused change (editing a
+   * message that is steering, or one already delivered) is reported.
+   */
+  const changeQueued = (id: string, change: QueueChange) => {
     if (!client || !selected) return;
-    const params: SessionQueueParams =
-      text === null
-        ? { session_id: selected, action: "remove", id }
-        : { session_id: selected, action: "edit", id, text };
-    client.call("session.queue", params).catch(report);
+    client.call("session.queue", queueParams(selected, id, change)).catch(report);
+  };
+
+  /** Ends a paused subagent without resuming it; it reports through `task_finished`. */
+  const cancelAgent = (agentId: string): Promise<unknown> => {
+    if (!client || !selected) return Promise.reject(new Error("Not connected to imperium-core."));
+    const params: SessionAgentCancelParams = { session_id: selected, agent_id: agentId };
+    return client.call("session.agent_cancel", params).catch((error: unknown) => {
+      report(error);
+      throw error;
+    });
   };
 
   /** Gives a finished subagent a follow-up; it reports through `task_resumed` and `task_finished`. */
@@ -790,7 +801,11 @@ export function App() {
     ),
   };
   const rightPanels: PanelSpec[] = [
-    { id: "agents", title: "Agents", body: <AgentsPanel session={session} onResume={client && selected ? resumeAgent : undefined} /> },
+    { id: "agents", title: "Agents", body: <AgentsPanel
+          session={session}
+          onResume={client && selected ? resumeAgent : undefined}
+          onCancel={client && selected ? cancelAgent : undefined}
+        /> },
     { id: "models", title: "Models", body: <ModelsPanel table={modelTable} onConfigure={() => setModelDialog({ tab: "table" })} /> },
     {
       id: "local-models",
