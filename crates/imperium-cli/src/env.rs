@@ -7,7 +7,8 @@ use imperium_cli::client::Client;
 use imperium_protocol::methods::{
     EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
     EnvironmentFolderParams, EnvironmentInfo, EnvironmentList, EnvironmentListParams,
-    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentUpdate, EnvironmentUpdateParams,
+    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentRuntime, EnvironmentTestRuntime,
+    EnvironmentUpdate, EnvironmentUpdateParams,
 };
 
 use crate::{block_on, connect};
@@ -38,9 +39,8 @@ pub fn create(name: String, folders: Vec<PathBuf>) -> anyhow::Result<()> {
         let env = client
             .call::<EnvironmentCreate>(EnvironmentCreateParams {
                 name,
-                icon: None,
-                color: None,
                 folders,
+                ..EnvironmentCreateParams::default()
             })
             .await?;
         print!("{}", describe(&env));
@@ -82,13 +82,101 @@ pub fn rename(env: String, name: String) -> anyhow::Result<()> {
             .call::<EnvironmentUpdate>(EnvironmentUpdateParams {
                 id,
                 name: Some(name),
-                icon: None,
-                color: None,
+                ..EnvironmentUpdateParams::default()
             })
             .await?;
         print!("{}", describe(&env));
         Ok(())
     })
+}
+
+/// The runtime `kind` names, with the options it needs.
+pub fn runtime(
+    kind: &str,
+    image: Option<String>,
+    container: Option<String>,
+    distro: Option<String>,
+    host: Option<String>,
+) -> anyhow::Result<EnvironmentRuntime> {
+    let need = |value: Option<String>, flag: &str| {
+        value.with_context(|| format!("the {kind} runtime needs --{flag}"))
+    };
+    Ok(match kind {
+        "local" => EnvironmentRuntime::Local,
+        "docker" => EnvironmentRuntime::Docker {
+            image: need(image, "image")?,
+            container,
+        },
+        "wsl" => EnvironmentRuntime::Wsl {
+            distro: need(distro, "distro")?,
+        },
+        "ssh" => EnvironmentRuntime::Ssh {
+            host: need(host, "host")?,
+        },
+        other => bail!("unknown runtime {other:?}: use local, docker, wsl, or ssh"),
+    })
+}
+
+pub fn set_runtime(env: String, runtime: EnvironmentRuntime) -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let id = resolve(&mut client, &env).await?.id;
+        let env = client
+            .call::<EnvironmentUpdate>(EnvironmentUpdateParams {
+                id,
+                runtime: Some(runtime),
+                ..EnvironmentUpdateParams::default()
+            })
+            .await?;
+        print!("{}", describe(&env));
+        println!("Check it with: imperium env test {}", env.id);
+        Ok(())
+    })
+}
+
+pub fn set_agent(env: String, on: bool) -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let id = resolve(&mut client, &env).await?.id;
+        let env = client
+            .call::<EnvironmentUpdate>(EnvironmentUpdateParams {
+                id,
+                persistent_agent: Some(on),
+                ..EnvironmentUpdateParams::default()
+            })
+            .await?;
+        print!("{}", describe(&env));
+        Ok(())
+    })
+}
+
+pub fn test(env: String) -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let id = resolve(&mut client, &env).await?.id;
+        let result = client
+            .call::<EnvironmentTestRuntime>(EnvironmentRef { id })
+            .await?;
+        if result.ok {
+            println!("ok: {}", result.message);
+            Ok(())
+        } else {
+            bail!("{}", result.message)
+        }
+    })
+}
+
+fn runtime_label(runtime: &EnvironmentRuntime) -> String {
+    match runtime {
+        EnvironmentRuntime::Local => "local".into(),
+        EnvironmentRuntime::Docker {
+            image,
+            container: Some(container),
+        } => format!("docker container {container} (image {image})"),
+        EnvironmentRuntime::Docker { image, .. } => format!("docker image {image}"),
+        EnvironmentRuntime::Wsl { distro } => format!("wsl {distro}"),
+        EnvironmentRuntime::Ssh { host } => format!("ssh {host}"),
+    }
 }
 
 pub fn delete(env: String) -> anyhow::Result<()> {
@@ -134,6 +222,13 @@ fn pick(environments: Vec<EnvironmentInfo>, id_or_name: &str) -> anyhow::Result<
 
 fn describe(env: &EnvironmentInfo) -> String {
     let mut text = format!("{}  {}\n", env.id, env.name);
+    if env.runtime != EnvironmentRuntime::Local {
+        text.push_str(&format!("    runtime: {}\n", runtime_label(&env.runtime)));
+    }
+    if env.persistent_agent {
+        let session = env.agent_session_id.as_deref().unwrap_or("not started");
+        text.push_str(&format!("    persistent agent: {session}\n"));
+    }
     if env.folders.is_empty() {
         text.push_str("    (no folders yet: imperium env add-folder <env> <folder>)\n");
     }
@@ -148,7 +243,13 @@ fn describe(env: &EnvironmentInfo) -> String {
     text
 }
 
+/// A folder as the daemon expects it: absolute on this machine, or a POSIX path (starting with
+/// `/`) kept as written, since for a remote runtime it names a folder there.
 fn absolute(folder: &Path) -> anyhow::Result<String> {
+    let written = folder.to_string_lossy();
+    if written.starts_with('/') {
+        return Ok(written.into_owned());
+    }
     Ok(std::path::absolute(folder)
         .with_context(|| format!("folder {}", folder.display()))?
         .to_string_lossy()
@@ -166,7 +267,42 @@ mod tests {
             icon: None,
             color: None,
             folders: vec!["/a".into(), "/b".into()],
+            runtime: EnvironmentRuntime::Local,
+            persistent_agent: false,
+            agent_session_id: None,
         }
+    }
+
+    #[test]
+    fn runtimes_are_built_from_their_options() {
+        assert_eq!(
+            runtime("ssh", None, None, None, Some("box".into())).unwrap(),
+            EnvironmentRuntime::Ssh { host: "box".into() }
+        );
+        assert_eq!(
+            runtime(
+                "docker",
+                Some("rust:1".into()),
+                Some("web".into()),
+                None,
+                None
+            )
+            .unwrap(),
+            EnvironmentRuntime::Docker {
+                image: "rust:1".into(),
+                container: Some("web".into())
+            }
+        );
+        assert!(runtime("wsl", None, None, None, None).is_err());
+        assert!(runtime("vm", None, None, None, None).is_err());
+        let mut remote = env("a1", "Work");
+        remote.runtime = EnvironmentRuntime::Wsl {
+            distro: "Ubuntu".into(),
+        };
+        remote.persistent_agent = true;
+        let shown = describe(&remote);
+        assert!(shown.contains("runtime: wsl Ubuntu") && shown.contains("persistent agent"));
+        assert_eq!(absolute(Path::new("/srv/app")).unwrap(), "/srv/app");
     }
 
     #[test]

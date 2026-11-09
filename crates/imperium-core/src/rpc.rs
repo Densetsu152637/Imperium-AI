@@ -38,7 +38,8 @@ use imperium_protocol::methods::{
 use imperium_protocol::methods::{
     EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
     EnvironmentFolderParams, EnvironmentList, EnvironmentListParams, EnvironmentListResult,
-    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentUpdate, EnvironmentUpdateParams,
+    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentTestRuntime, EnvironmentUpdate,
+    EnvironmentUpdateParams,
 };
 use imperium_protocol::methods::{
     HfFiles, ModelDownload, ModelDownloadCancel, ModelDownloadCancelParams,
@@ -226,6 +227,21 @@ impl Connection {
                 });
                 Ok(result)
             }),
+            EnvironmentTestRuntime::NAME => {
+                call_later::<EnvironmentTestRuntime, _>(request.params, &mut later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        let env = state.environments().find(&params.id).map_err(|error| {
+                            ErrorObject::new(codes::INVALID_PARAMS, error.to_string())
+                        })?;
+                        let runner = state.runner();
+                        Ok(
+                            crate::runtimes::test(&env.runtime, runner.as_ref(), cfg!(windows))
+                                .await,
+                        )
+                    }
+                })
+            }
             method if method.starts_with("environments.") => {
                 self.environment_call(method, request.params)
             }
@@ -492,7 +508,9 @@ impl Connection {
         };
         let (session, events) = created.map_err(|error| {
             let code = match &error {
-                CreateError::Project(..) | CreateError::Environment(_) => codes::INVALID_PARAMS,
+                CreateError::Project(..)
+                | CreateError::Environment(_)
+                | CreateError::Runtime(_) => codes::INVALID_PARAMS,
                 CreateError::Model(ModelError::NoDefault) => {
                     return ErrorObject::new(
                         codes::MODEL_UNAVAILABLE,
@@ -538,23 +556,35 @@ impl Connection {
             }
             EnvironmentCreate::NAME => {
                 call::<EnvironmentCreate>(params, |p: EnvironmentCreateParams| {
-                    envs.create(&p.name, p.icon, p.color, &p.folders)
-                        .map_err(failed)
+                    let env = envs.create(p).map_err(failed)?;
+                    self.state.sync_environment_agent(&env.id);
+                    Ok(envs.get(&env.id).unwrap_or(env))
                 })
             }
             EnvironmentUpdate::NAME => {
                 call::<EnvironmentUpdate>(params, |p: EnvironmentUpdateParams| {
-                    envs.update(&p.id, p.name.as_deref(), p.icon, p.color)
-                        .map_err(failed)
+                    let id = p.id.clone();
+                    let runtime_changed = p.runtime.is_some();
+                    let env = envs.update(p).map_err(failed)?;
+                    if runtime_changed {
+                        // The agent's tools follow the new runtime from its next start.
+                        self.restart_environment_agent(&id);
+                    }
+                    self.state.sync_environment_agent(&id);
+                    Ok(envs.get(&id).unwrap_or(env))
                 })
             }
             EnvironmentDelete::NAME => call::<EnvironmentDelete>(params, |p: EnvironmentRef| {
                 envs.delete(&p.id).map_err(failed)?;
+                self.state.sync_environment_agent(&p.id);
                 Ok(Accepted {})
             }),
             EnvironmentAddFolder::NAME => {
                 call::<EnvironmentAddFolder>(params, |p: EnvironmentFolderParams| {
-                    envs.add_folder(&p.id, &p.folder).map_err(failed)
+                    let env = envs.add_folder(&p.id, &p.folder).map_err(failed)?;
+                    // An agent waiting for a first folder can start now.
+                    self.state.sync_environment_agent(&p.id);
+                    Ok(envs.get(&p.id).unwrap_or(env))
                 })
             }
             EnvironmentRemoveFolder::NAME => {
@@ -571,6 +601,17 @@ impl Connection {
             self.state.announce_environments();
         }
         result
+    }
+
+    /// Stops an environment's persistent agent so the next sync starts it afresh (resuming its
+    /// conversation) with the environment as it is now.
+    fn restart_environment_agent(&self, environment_id: &str) {
+        if let Some(session) = self.state.project_agents().environment(environment_id) {
+            self.state
+                .project_agents()
+                .forget_environment(environment_id);
+            self.state.forget_session(session.id());
+        }
     }
 
     /// `session.control`. Most actions apply at once; switching models and compacting wait for

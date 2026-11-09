@@ -27,4 +27,9 @@ title: string, status: SessionStatus,
 /**
  * What it watches, when watching or merged.
  */
-status_detail: string | null, resume_policy: ResumePolicy, };
+status_detail: string | null, resume_policy: ResumePolicy, 
+/**
+ * True for an environment's persistent agent session, which is always running, resumes
+ * after restarts, and is listed first among its environment's sessions.
+ */
+persistent: boolean, };

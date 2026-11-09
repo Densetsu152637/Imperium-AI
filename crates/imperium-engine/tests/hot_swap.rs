@@ -108,6 +108,15 @@ fn model(spec: &str, url: &str, context_window: Option<u64>) -> ResolvedModel {
 }
 
 fn start(model: ResolvedModel, dir: &std::path::Path, resume: bool) -> Session {
+    start_with(model, dir, resume, false)
+}
+
+fn start_with(
+    model: ResolvedModel,
+    dir: &std::path::Path,
+    resume: bool,
+    auto_compact: bool,
+) -> Session {
     Session::spawn(SessionConfig {
         id: "s".into(),
         workspace: Workspace::new(dir).unwrap(),
@@ -128,6 +137,7 @@ fn start(model: ResolvedModel, dir: &std::path::Path, resume: bool) -> Session {
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 5,
+        auto_compact,
         journal_path: dir.join(".sessions/s.jsonl"),
     })
     .unwrap()
@@ -381,4 +391,60 @@ async fn compacting_now_keeps_the_last_turns() {
     let said = contents(a.turns().last().unwrap());
     assert!(said[1].starts_with("<conversation-summary>") && said[1].ends_with("two"));
     assert_eq!(said[2..], ["done", "three", "done", "four"]);
+}
+
+/// What the instructions and tools take, from a turn's first context breakdown.
+fn fixed_tokens(events: &[SessionEvent]) -> u64 {
+    let base: i64 = events
+        .iter()
+        .find_map(|event| match event {
+            SessionEvent::ContextBreakdown { categories, .. } => Some(
+                categories
+                    .iter()
+                    .filter(|c| c.key.starts_with("system_") || c.key.starts_with("tools_"))
+                    .map(|c| c.tokens)
+                    .sum(),
+            ),
+            _ => None,
+        })
+        .unwrap();
+    u64::try_from(base).unwrap()
+}
+
+#[tokio::test]
+async fn a_long_lived_session_compacts_itself_when_a_turn_starts_over_budget() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    // The model's window is unknown at first, so the conversation grows unchecked.
+    let session = start(model("a:m", &url, None), dir.path(), false);
+    let report = "alpha ".repeat(8_000);
+    let first = turn(&session, &format!("first report: {report}")).await;
+    turn(&session, &format!("second report: {report}")).await;
+    turn(&session, "a short note").await;
+    let base = fixed_tokens(&first);
+    drop(session);
+
+    // After a restart, with a window the reports no longer fit, the next turn compacts first.
+    let window = (base + 3_000) * 2;
+    let session = start_with(model("a:m", &url, Some(window)), dir.path(), true, true);
+    turn(&session, "anything new?").await;
+    assert_eq!(fake.summaries().len(), 1);
+    assert!(history(&session).iter().any(|event| matches!(
+        event,
+        SessionEvent::ContextCompacted { model, .. } if model == "a:m"
+    )));
+    let last = fake.turns().pop().unwrap();
+    let said = contents(&last);
+    assert!(
+        said[1].starts_with("<conversation-summary>"),
+        "{:?}",
+        said[1]
+    );
+    assert!(!said.iter().any(|text| text.contains("alpha alpha")));
+    assert_eq!(said.last().unwrap(), "anything new?");
+
+    // Under the budget, nothing more is summarised.
+    turn(&session, "and now?").await;
+    assert_eq!(fake.summaries().len(), 1);
 }

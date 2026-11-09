@@ -14,12 +14,13 @@ use imperium_media::{ImageConfig, ImageGenerators, Media, MediaTools, Service};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
-    LocalModelListResult, ModelListResult, ModelRow, SESSION_CREATED, SessionSummary,
+    EnvironmentRuntime, LocalModelListResult, ModelListResult, ModelRow, SESSION_CREATED,
+    SessionSummary,
 };
 use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
 };
-use imperium_tools::{Sandbox, Workspace};
+use imperium_tools::{ProcessRunner, Remote, Runner, Sandbox, Workspace};
 use imperium_web::{BrowserSetup, SearchConfig, SearchProviders, Web, WebTools};
 use imperium_workflow::{ContextIndex, Pack};
 use tokio::sync::broadcast;
@@ -47,6 +48,12 @@ pub struct SessionOptions {
     pub environment_id: Option<String>,
     /// Folders the session may use besides its working directory.
     pub folders: Vec<String>,
+    /// Where the session's tools run (its environment's runtime).
+    pub runtime: EnvironmentRuntime,
+    /// The environment's persistent agent session.
+    pub persistent: bool,
+    /// Compact the conversation when a turn starts over the model's budget.
+    pub auto_compact: bool,
 }
 
 /// Where a session works: its environment and every folder, the working directory first.
@@ -54,6 +61,7 @@ pub struct SessionOptions {
 struct Placement {
     environment_id: Option<String>,
     folders: Vec<String>,
+    persistent: bool,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -91,6 +99,8 @@ pub struct DaemonState {
     connectors: crate::connectors::StatusCache,
     /// Model download suggestions offered to sessions.
     suggestions: Suggestions,
+    /// Runs processes for remote runtimes; a fake in tests.
+    runner: OnceLock<Arc<dyn Runner>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -103,6 +113,8 @@ pub enum CreateError {
     Model(#[from] ModelError),
     #[error("could not start the session: {0}")]
     Start(String),
+    #[error("the environment's runtime: {0}")]
+    Runtime(String),
 }
 
 impl DaemonState {
@@ -145,7 +157,66 @@ impl DaemonState {
             shutdown: tokio::sync::Notify::new(),
             connectors: crate::connectors::StatusCache::default(),
             suggestions: Suggestions::new(suggest),
+            runner: OnceLock::new(),
         })
+    }
+
+    /// What runs processes for remote runtimes (`docker`, `wsl.exe`, `ssh`).
+    pub fn runner(&self) -> Arc<dyn Runner> {
+        Arc::clone(self.runner.get_or_init(|| Arc::new(ProcessRunner)))
+    }
+
+    /// Uses `runner` for remote runtimes instead of starting real processes (for tests). Call
+    /// before the first session.
+    pub fn use_runner(&self, runner: Arc<dyn Runner>) {
+        let _ = self.runner.set(runner);
+    }
+
+    /// The workspace for a session in `project_dir` (plus `folders`) under `runtime`.
+    fn workspace(
+        &self,
+        project_dir: &str,
+        folders: &[String],
+        runtime: &EnvironmentRuntime,
+    ) -> Result<Workspace, CreateError> {
+        let remote = match runtime {
+            EnvironmentRuntime::Local
+            | EnvironmentRuntime::Docker {
+                container: None, ..
+            } => None,
+            EnvironmentRuntime::Docker {
+                container: Some(container),
+                ..
+            } => Some(Remote::Docker {
+                container: container.clone(),
+            }),
+            EnvironmentRuntime::Wsl { distro } => Some(Remote::Wsl {
+                distro: distro.clone(),
+            }),
+            EnvironmentRuntime::Ssh { host } => Some(Remote::Ssh { host: host.clone() }),
+        };
+        if let Some(remote) = remote {
+            let all: Vec<String> = std::iter::once(project_dir.to_string())
+                .chain(folders.iter().cloned())
+                .collect();
+            return Workspace::remote(remote, &all, self.runner())
+                .map_err(|error| CreateError::Runtime(error.to_string()));
+        }
+        // A Docker image without a container: each command runs in a fresh container with the
+        // folders mounted, as the container isolation tier does.
+        let sandbox = match runtime {
+            EnvironmentRuntime::Docker { image, .. } => Sandbox::Container {
+                runtime: "docker".into(),
+                image: image.clone(),
+                network: true,
+            },
+            _ => self.sandbox(),
+        };
+        Ok(Workspace::new(Path::new(project_dir))
+            .map_err(|error| CreateError::Project(project_dir.to_string(), error))?
+            .with_folders(folders)
+            .map_err(|error| CreateError::Project(folders.join(", "), error))?
+            .with_sandbox(sandbox))
     }
 
     /// What connector tests last learned about each MCP server.
@@ -244,9 +315,16 @@ impl DaemonState {
         &self.project_agents
     }
 
-    /// Starts the agents of projects with `agent = true`.
+    /// Starts the agents of projects with `agent = true`, and the persistent agents of
+    /// environments that have one turned on.
     pub fn start_project_agents(self: &Arc<Self>) {
         crate::project_agent::start(self);
+        crate::project_agent::start_environment_agents(self);
+    }
+
+    /// Starts or stops an environment's persistent agent to match its setting.
+    pub fn sync_environment_agent(self: &Arc<Self>, environment_id: &str) {
+        crate::project_agent::sync_environment_agent(self, environment_id);
     }
 
     /// Wakes a project's agent with a message; false when the project has no agent.
@@ -685,15 +763,21 @@ impl DaemonState {
         model: Option<&str>,
         options: SessionOptions,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
-        let workspace = Workspace::new(Path::new(project_dir))
-            .map_err(|error| CreateError::Project(project_dir.to_string(), error))?
-            .with_folders(&options.folders)
-            .map_err(|error| CreateError::Project(options.folders.join(", "), error))?
-            .with_sandbox(self.sandbox());
+        let workspace = self.workspace(project_dir, &options.folders, &options.runtime)?;
         let placement = Placement {
             environment_id: options.environment_id.clone(),
             folders: workspace.folders_display(),
+            persistent: options.persistent,
         };
+        // A remote runtime's folders are not on this machine: project files (instructions,
+        // skills, project memory) are not read from them.
+        let remote = workspace.runtime().is_some();
+        let local_project = if remote {
+            self.paths.data_dir().join("runtimes").join("none")
+        } else {
+            PathBuf::from(project_dir)
+        };
+        let project_dir_path = local_project.as_path();
         // A model table id or a spec, as the model pickers offer them.
         let model = self.resolve_model(model)?;
         let catalog = self.catalog();
@@ -701,11 +785,11 @@ impl DaemonState {
         let fresh = crate::connectors::saved_settings(&self.paths);
         let (mut mcp, mut notices) = crate::mcp::session_servers(
             fresh.as_ref().unwrap_or(&self.settings),
-            Path::new(project_dir),
+            project_dir_path,
             |name| self.secrets.load(name),
         );
-        let mut extensions = self.extensions(Path::new(project_dir));
-        let context = self.context(Path::new(project_dir), &mut notices);
+        let mut extensions = self.extensions(project_dir_path);
+        let context = self.context(project_dir_path, &mut notices);
         mcp.append(&mut extensions.servers);
         notices.append(&mut extensions.notices);
         let resume = options.resume_id.is_some();
@@ -759,10 +843,11 @@ impl DaemonState {
             launcher: options.launcher,
             instructions: options.instructions,
             memory: self.settings.memory.enabled.then(|| SessionMemory {
-                store: Store::new(self.paths.data_dir(), Some(Path::new(project_dir))),
+                store: Store::new(self.paths.data_dir(), (!remote).then_some(project_dir_path)),
                 settings: self.settings.memory.clone(),
             }),
             max_steps: self.settings.agents.max_steps,
+            auto_compact: options.auto_compact,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
         // Ordinary sessions are remembered so they continue after a restart; project agents
@@ -825,6 +910,7 @@ impl DaemonState {
         let options = SessionOptions {
             environment_id: Some(env.id.clone()),
             folders: rest.to_vec(),
+            runtime: env.runtime.clone(),
             ..options
         };
         self.create_session_with(first, model, options)
@@ -856,6 +942,7 @@ impl DaemonState {
         SessionSummary {
             environment_id: placement.environment_id,
             folders: placement.folders,
+            persistent: placement.persistent,
             ..summary(session)
         }
     }
@@ -992,6 +1079,19 @@ impl DaemonState {
         sessions
     }
 
+    /// Stops tracking a session; once its other handles are gone it ends after its current
+    /// turn. Its journal stays, so it can be resumed later.
+    pub fn forget_session(&self, id: &str) {
+        self.sessions
+            .lock()
+            .expect("session map lock is never poisoned by a panic while held")
+            .remove(id);
+        self.placements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+    }
+
     pub fn session(&self, id: &str) -> Option<Arc<Session>> {
         self.sessions
             .lock()
@@ -1054,6 +1154,7 @@ fn summary(session: &Session) -> SessionSummary {
         status,
         status_detail,
         resume_policy: session.resume_policy(),
+        persistent: false,
     }
 }
 

@@ -189,6 +189,10 @@ pub struct SessionSummary {
     /// What it watches, when watching or merged.
     pub status_detail: Option<String>,
     pub resume_policy: crate::session::ResumePolicy,
+    /// True for an environment's persistent agent session, which is always running, resumes
+    /// after restarts, and is listed first among its environment's sessions.
+    #[serde(default)]
+    pub persistent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -251,8 +255,56 @@ pub struct EnvironmentInfo {
     /// The icon's tile colour, such as `#2f6fdb`.
     #[serde(default)]
     pub color: Option<String>,
-    /// Absolute folder paths, the working directory first.
+    /// Absolute folder paths, the working directory first. For a remote runtime they are paths
+    /// inside it.
     pub folders: Vec<String>,
+    /// Where the environment's file and command tools run.
+    #[serde(default)]
+    pub runtime: EnvironmentRuntime,
+    /// Whether the environment keeps a persistent agent session (off unless turned on).
+    #[serde(default)]
+    pub persistent_agent: bool,
+    /// The persistent agent's session id, once it has started; kept when the agent is turned
+    /// off so turning it on again continues the same conversation.
+    #[serde(default)]
+    pub agent_session_id: Option<String>,
+}
+
+/// Where an environment's tools run. `local` is this machine (under the configured isolation
+/// tier); the others run them inside a Docker container, a WSL distribution, or over SSH, and the
+/// environment's folders are paths there.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum EnvironmentRuntime {
+    #[default]
+    Local,
+    /// With `container`, commands run in that running container (`docker exec`) and folders are
+    /// paths inside it. Without, each command runs in a fresh container from `image` with the
+    /// environment's (local) folders mounted, as the container isolation tier does.
+    Docker {
+        image: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        container: Option<String>,
+    },
+    /// A WSL distribution (Windows only); Windows folder paths become `/mnt/<drive>/…`.
+    Wsl { distro: String },
+    /// A host reached with the system `ssh` client: an alias from the SSH config, or
+    /// `user@host[:port]`. Authentication uses the user's keys and agent.
+    Ssh { host: String },
+}
+
+impl EnvironmentRuntime {
+    /// Whether the environment's folders are paths inside the runtime rather than on this
+    /// machine.
+    pub fn is_remote(&self) -> bool {
+        match self {
+            EnvironmentRuntime::Local => false,
+            EnvironmentRuntime::Docker { container, .. } => container.is_some(),
+            EnvironmentRuntime::Wsl { .. } | EnvironmentRuntime::Ssh { .. } => true,
+        }
+    }
 }
 
 /// `environments.list`: every environment, in the order they were created.
@@ -295,13 +347,23 @@ pub struct EnvironmentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub color: Option<String>,
-    /// Existing folders to start with (may be empty).
+    /// Existing folders to start with (may be empty); paths inside the runtime when it is
+    /// remote.
     #[serde(default)]
     pub folders: Vec<String>,
+    /// Where tools run; `local` when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub runtime: Option<EnvironmentRuntime>,
+    /// Start a persistent agent session for the environment (off when left out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub persistent_agent: Option<bool>,
 }
 
-/// `environments.update`: rename an environment or change its icon. Fields left out keep
-/// their value; an empty `icon` or `color` clears it.
+/// `environments.update`: rename an environment, change its icon, its runtime, or turn its
+/// persistent agent on or off. Fields left out keep their value; an empty `icon` or `color`
+/// clears it.
 #[derive(Debug)]
 pub struct EnvironmentUpdate;
 
@@ -324,6 +386,34 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub color: Option<String>,
+    /// A new runtime. Folders are kept as they are (Windows paths are translated for WSL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub runtime: Option<EnvironmentRuntime>,
+    /// Turns the persistent agent session on (started at once) or off (stopped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub persistent_agent: Option<bool>,
+}
+
+/// `environments.test_runtime`: checks that an environment's runtime can be reached: Docker is
+/// running and has the image (or the container is running), the WSL distribution exists, or
+/// SSH connects without asking for anything.
+#[derive(Debug)]
+pub struct EnvironmentTestRuntime;
+
+impl Method for EnvironmentTestRuntime {
+    const NAME: &'static str = "environments.test_runtime";
+    type Params = EnvironmentRef;
+    type Result = RuntimeTestResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeTestResult {
+    pub ok: bool,
+    /// What was found, or what to fix, in a sentence.
+    pub message: String,
 }
 
 /// `environments.delete`: forget an environment. Its folders and running sessions are left
