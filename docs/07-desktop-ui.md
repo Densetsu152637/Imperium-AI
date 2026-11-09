@@ -292,7 +292,8 @@ every setting:
 - **Imperium:** General (reopen where you left off, start imperium-core with the app), Appearance
   (accent colour, interface, message, and code scale, line length, density, message font,
   reduce motion), Chat (send key, Markdown, code wrapping, following new output),
-  Notifications (sounds for approvals and finished sessions, a title badge), Panels (show or
+  Notifications (sounds, a title badge, and system notifications; see
+  [notifications](#notifications-implemented)), Panels (show or
   hide each panel, reset the layout), Keyboard, Daemon (start, stop, restart, log, keep
   running), Updates (installed version with **Check for updates** and **Check and install**,
   channel, how often to check, and checking when the computer starts; see
@@ -315,6 +316,38 @@ and the last-known sessions are files in `desktop/` inside Imperium's config fol
 daemon's `config.toml`, so they persist across updates and reinstalls. The workspace is always
 shown: while the daemon is away, a bar above it offers to start or reach it and the lists show
 the sessions as last seen.
+
+## Notifications (implemented)
+
+Imperium gets your attention in three ways, each switched in Settings → Notifications:
+
+- **Sounds:** a short chime when an agent needs approval (on by default), and one when a session
+  finishes (off by default); a failed turn uses the finish setting with a lower chime.
+- **Title badge:** a dot before the window title while something needs you and Imperium is in
+  the background.
+- **System notifications:** the operating system's own (through `tauri-plugin-notification`,
+  or the Web Notification API in the browser preview), for an agent waiting for approval or
+  asking a question, a session finishing its turn, a turn failing, a budget or usage alert, a
+  model download finishing, and an update ready to install. Each kind has its own switch, all
+  on by default. **Only when Imperium is in the background** (on by default) holds them back
+  while any Imperium window has focus.
+
+The operating system's do-not-disturb or focus mode applies as usual. Where the system asks
+for consent (macOS, browsers), Imperium asks the first time it has something to show;
+**Try a notification** shows a sample and says when notifications are blocked.
+
+Answering a notification brings the main window forward on the session it was about. In a
+browser that is a click on the notification. The desktop plugin reports no clicks on Windows,
+macOS, or Linux, so in the desktop app the next time Imperium comes to the front within ten
+minutes of a notification sent while it was in the background (by clicking the notification,
+where the system does that, or from the taskbar or dock), it opens the latest such notification's
+session.
+
+Notifications come from the main window only, so detached panel windows do not repeat them.
+Other parts of the app send their own through one internal entry point, `notify(notice,
+settings)` in `apps/desktop/src/notify.ts`, which applies these settings; budget alerts will use
+it. Which events notify is decided in `apps/desktop/src/attention.ts` and covered by
+`apps/desktop/test/attention.test.ts`.
 
 ## Environments and sessions (implemented)
 

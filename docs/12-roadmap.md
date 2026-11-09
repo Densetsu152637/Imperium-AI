@@ -39,4 +39,35 @@ use, including models still loaded or cached for active sessions (and which sess
 them), in the desktop's Resources panel and `imperium resources [--watch]`
 ([04](04-models-and-routing.md#active-models-and-resource-monitor)).
 
+## Next (in order)
+
+1. **OS notifications** (implemented). System notifications for approvals, finished and failed
+   turns, finished model downloads, and ready updates, with per-kind switches, a background-only
+   default, and an internal `notify` entry point for budget alerts
+   ([07](07-desktop-ui.md#notifications-implemented)).
+2. **Permission rules.** Allow, ask, and deny rules per tool, command, and path, including
+   read-only or writable access to paths outside environments (global package caches,
+   toolchains), and permission modes (ask every time, accept edits, plan only, full access).
+3. **Budgets and alerts.** Weekly and monthly budgets per environment, globally, and per
+   endpoint; alerts through notifications, with optional pause or block; a usage dashboard.
+4. **Command palette.** One searchable list of every action, session, environment, and setting.
+5. **Attachments and voice.** Images, PDFs, and files in messages; push-to-talk voice input
+   through the transcription layer.
+6. **Review pane and checkpoints.** Diffs of an agent's changes with accept or reject per hunk,
+   then commit or open a pull request; git-based checkpoints to rewind a session's files and
+   conversation.
+7. **Branching and comparison.** Branch a conversation from any message; run best-of-N across
+   models and compare the results side by side.
+8. **Session search.** Index session content and search it, integrated with the RAG retrieval
+   layer so agents can recall earlier sessions too.
+9. **Live preview and browser.** A live preview of the app being built and an integrated
+   browser the user drives, beside the agent's own browser view.
+10. **Local-model extras.** Speculative decoding with draft models, a local model benchmark,
+    and an OpenAI-compatible local API server for other tools.
+11. **Sharing and sync (design).** Design plans for session sharing and export, and for team
+    sync.
+
+Custom agents come from customised open-weight models (Emperor and Consul) rather than a
+separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
+
 Later candidates: fine-tuning plugin (Unsloth), shared team projects, a plugin registry.
