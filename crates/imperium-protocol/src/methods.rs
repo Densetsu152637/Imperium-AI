@@ -376,6 +376,84 @@ pub struct SessionSubscribeResult {
     pub history: Vec<crate::session::AgentEvent>,
 }
 
+/// `session.search`: searches what was said and done in sessions, running and archived. The
+/// daemon indexes session journals in the background; ranking is by keyword, fused with vector
+/// similarity when `memory.embedding_model` is set (see docs/17-memory.md#session-search).
+#[derive(Debug)]
+pub struct SessionSearch;
+
+impl Method for SessionSearch {
+    const NAME: &'static str = "session.search";
+    type Params = SessionSearchParams;
+    type Result = SessionSearchResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSearchParams {
+    pub query: String,
+    /// Only sessions in this environment; every session when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub environment_id: Option<String>,
+    /// `true`: archived sessions only; `false`: running ones only; left out: both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub archived: Option<bool>,
+    /// At most this many hits (one per session); 20 when left out, at most 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSearchResult {
+    /// The best match in each matching session, best first.
+    pub hits: Vec<SessionSearchHit>,
+    /// Ranking used vector similarity as well as keywords.
+    pub semantic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionSearchHit {
+    pub session_id: String,
+    pub title: String,
+    #[serde(default)]
+    pub environment_id: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
+    /// What matched: `user`, `assistant`, `tool`, `task`, `report`, or `title`.
+    pub kind: String,
+    /// The index in the session's `session.subscribe` history of the event the match starts
+    /// at, to open the session there.
+    #[ts(type = "number")]
+    pub event_index: u32,
+    /// When that event happened, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub at_ms: Option<u64>,
+    /// An excerpt around the match.
+    pub snippet: String,
+    /// Matched words in `snippet` as `[start, end)` UTF-16 offsets (JavaScript string indexes).
+    pub highlights: Vec<SearchHighlight>,
+    pub score: f64,
+    /// Other matches in the same session.
+    #[serde(default)]
+    pub more: u32,
+    /// Found by meaning, without the query's words.
+    #[serde(default)]
+    pub semantic: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SearchHighlight {
+    pub start: u32,
+    pub end: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionCreateParams {

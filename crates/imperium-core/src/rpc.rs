@@ -21,8 +21,9 @@ use imperium_protocol::methods::{
     ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionAnswer,
     SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult, SessionDelete,
     SessionDeleteParams, SessionList, SessionListParams, SessionListResult, SessionRespond,
-    SessionRespondParams, SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
-    SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
+    SessionRespondParams, SessionSearch, SessionSearchParams, SessionSend, SessionSendParams,
+    SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult, Shutdown, ShutdownParams,
+    ShutdownResult,
 };
 use imperium_protocol::permissions::{
     PermissionsAddRule, PermissionsGet, PermissionsGetParams, PermissionsSet,
@@ -548,6 +549,19 @@ impl Connection {
                 sessions.extend(self.state.archived_sessions());
                 Ok(SessionListResult { sessions })
             }),
+            SessionSearch::NAME => call_later::<SessionSearch, _>(
+                request.params,
+                &mut later,
+                |params: SessionSearchParams| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        state
+                            .search_sessions(params)
+                            .await
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                    }
+                },
+            ),
             SessionSubscribe::NAME => {
                 call::<SessionSubscribe>(request.params, |params: SessionSubscribeParams| {
                     // An archived session's history comes from its journal; nothing follows.

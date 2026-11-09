@@ -2992,6 +2992,86 @@ button.setup-action small {
   cursor: default;
 }
 
+/* Session search: a box above the sessions; its results replace the list while a query is entered. */
+.session-search {
+  margin: 0 calc(var(--space) * 0.5) calc(var(--space) * 0.75);
+}
+
+.session-search-box {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.session-search-box:focus-within {
+  border-color: var(--accent);
+}
+
+.session-search-box .lucide {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: none;
+  color: var(--muted);
+}
+
+.session-search-box input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0.35rem 0;
+  font-size: 0.8rem;
+  outline: none;
+}
+
+.session-search-box button.icon {
+  padding: 0.1rem;
+  border: none;
+  background: transparent;
+}
+
+.session-search-results {
+  margin-top: calc(var(--space) * 0.5);
+}
+
+.session-search-results .search-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.15rem;
+  text-align: left;
+}
+
+.search-snippet {
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.search-snippet mark {
+  background: var(--accent-soft);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* The entry a search hit opened at, marked for a moment. */
+.conversation > .search-focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
+  transition: outline-color var(--slow) var(--ease);
+}
+
 /* Sessions: a sort control, then the sessions, under headings when grouped. */
 .sessions-toolbar {
   display: flex;

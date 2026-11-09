@@ -566,6 +566,21 @@ its size on disk, and how it fits this machine, such as *Q4_K_M · 256k ctx (8k 
 2.3 GB · GPU + RAM · llama.cpp*. A local model that cannot run here (a vLLM folder off Linux) is
 listed but cannot be chosen. The new-session composer's model list is the same.
 
+### Session search (implemented)
+
+A search box sits at the top of the Sessions panel (*Search sessions*, or *Search this
+environment's sessions* in an environment's view). Typing searches what was said and done in
+every session, running and archived, with `session.search` (after a short pause in typing; Escape
+clears it); while a query is entered its results replace the list. Each result is one session:
+its title (with an archive mark when archived), the best excerpt with the matched words marked,
+and what matched (*You*, *Reply*, *Tool*, *Subagent brief*, *Subagent report*, or *Title*), when,
+how many more matches the session has, and *related* for a match found by meaning rather than by
+its words. Choosing a result opens the session scrolled to that point of the conversation, the
+entry outlined for a moment: each transcript entry remembers the index of the history event it
+started at, and the hit's `event_index` picks the entry holding it. The search call is exported
+as `searchSessions` (`apps/desktop/src/sessionSearch.ts`) for the command palette. How the index
+is built and ranked is in [17](17-memory.md#session-search-implemented).
+
 ## Setting up models (implemented)
 
 Models already on disk are set up from the app, with no config file edit and no daemon restart.

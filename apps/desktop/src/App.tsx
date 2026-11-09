@@ -661,12 +661,20 @@ export function App() {
     return result;
   };
 
+  // The session search hit to scroll to, until another session is chosen.
+  const [searchFocus, setSearchFocus] = useState<{ sessionId: string; index: number; nonce: number } | null>(null);
   const selectSession = (sessionId: string) => {
+    setSearchFocus(null);
     setSelected(sessionId);
     // New sessions start in the environment the user is working in.
     const picked = sessions[sessionId];
     const env = picked ? environmentOf(picked, environments) : null;
     if (env) setEnvId(env.id);
+  };
+
+  const openSearchHit = (sessionId: string, index: number) => {
+    selectSession(sessionId);
+    setSearchFocus({ sessionId, index, nonce: Date.now() });
   };
 
   const updateSettings = (next: AppSettings) => {
@@ -756,6 +764,8 @@ export function App() {
           onSetArchived={setSessionArchived}
           onShowEnvironment={showEnvironment}
           onShowAll={() => setEnvView(false)}
+          client={client}
+          onOpenHit={openSearchHit}
         />
       ),
     },
@@ -789,6 +799,7 @@ export function App() {
         client={client}
         onUnarchive={() => setSessionArchived(session.summary.session_id, false)}
         budgets={budgets?.status ?? []}
+        focusEvent={searchFocus?.sessionId === session.summary.session_id ? searchFocus : null}
       />
     ) : (
       <NewSessionPanel

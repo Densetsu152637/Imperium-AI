@@ -14,9 +14,12 @@ look like keys or tokens. Every agent's instructions carry the index (within
 permission prompt). With `recall`, the best matches for each message are placed before it in
 a `<relevant-memories>` block marked as data (within `max_recall_tokens`), and the session
 reports `memory_used` and `memory_saved` events. `imperium memory list/search/show/forget`
-works on the folders directly. Not yet: embeddings, `[[links]]` traversal, stale-reference
-checks, consolidation, import/export, `memory.cloud`, the desktop Memory panel, and the
-`memory.*` protocol methods.
+works on the folders directly. Earlier sessions are searchable too, by clients and agents
+([session search](#session-search-implemented)), on retrieval primitives memory search shares
+(`imperium_memory::retrieval`: one tokenizer, the embedding interface, vector similarity, rank
+fusion, and snippets). Not yet: embeddings for memory entries, `[[links]]` traversal,
+stale-reference checks, consolidation, import/export, `memory.cloud`, the desktop Memory panel,
+and the `memory.*` protocol methods.
 
 ## Scopes
 
@@ -75,6 +78,60 @@ Use pnpm for installs and scripts. **Why:** the user's workspaces rely on pnpm w
 
 Subagents can search and read memory in their parent's scopes; they propose new memories
 through their parent rather than writing directly.
+
+## Session search (implemented)
+
+What was said and done in earlier sessions is a retrieval source of its own: the desktop's
+search box ([07](07-desktop-ui.md#session-search-implemented)) and the agents'
+`search_sessions` tool both use it. It is built in `imperium_memory::sessions` on the same
+retrieval layer as memory search, and the daemon keeps it current.
+
+- **What is indexed:** every session's journal (`<data>/sessions/<id>.jsonl`), running and
+  archived, split into chunks: the user's messages (and steering messages), the root agent's
+  replies (split about every 2,000 characters), tool calls by tool and summary (which name the
+  files and commands they touched), subagent briefs and follow-ups, and subagent reports. Each
+  chunk keeps the index of the history event it starts at (as `session.subscribe` counts them)
+  and when it happened; the session's title is matched too.
+- **Incremental and bounded:** a background pass, a few seconds after the daemon starts and then
+  every 15 seconds, reads only what each journal gained since the last pass (at most 4 MiB per
+  session and 32 MiB per pass, on a blocking thread, yielding between journals), so a large
+  backlog is indexed over several passes and turns never wait for it. A search first reads up to
+  2 MiB of anything new, so what was just said is found. A reply still being written is
+  searchable before it ends. Deleted sessions leave the index; archiving or moving a session is
+  picked up on the next pass.
+- **Storage:** `<data>/index/sessions/`, per session `<id>.state.json` (where reading stopped),
+  `<id>.chunks.jsonl` (append-only chunks), and `<id>.vec` (append-only vectors). A session whose
+  files are missing, do not parse, disagree with each other, or come from another index version
+  is indexed again from its journal; damaged vectors alone are dropped and made again. A journal
+  that became shorter (replaced) is read again from the start.
+- **Ranking:** BM25 over the chunks' words (a user message weighs a little more and a tool call
+  a little less than a reply; chunks with more of the query's words rank higher), plus the title.
+  When `memory.embedding_model` names an embedding model on an OpenAI-compatible endpoint
+  (`POST <base_url>/embeddings`), messages, replies, briefs, and reports (not tool calls) are
+  embedded in batches of 16 (at most four per pass), the query is embedded at search time (5
+  second limit), and the keyword and similarity rankings are fused by reciprocal rank. Vectors
+  are tied to the model that made them; changing the model embeds again. Without a model, or
+  when it fails, search is keyword-only. Local models cannot embed yet (they are served through
+  chat slots).
+- **Results:** the best chunk per session, best first, with an excerpt around the first match,
+  the matched words as UTF-16 ranges, what matched, when, the event to open at, how many more
+  chunks matched, and whether it was found by meaning only.
+- **Agents (`search_sessions`):** offered to every agent while `memory.session_search` is on; it
+  reaches the sessions of the agent's own environment (outside any environment, sessions in the
+  same folder), never the searching session itself, and every environment only when
+  `memory.session_search_scope` is `all`. It returns up to 5 sessions (at most 20) as excerpts
+  marked as data from past conversations, not instructions. It needs no approval: it only reads
+  what the environment's own sessions recorded.
+- **Clients (`session.search`):** `query`, optional `environment_id`, `archived` (`true` for
+  archived only, `false` for running only), and `limit` (20 by default, at most 100); the result
+  says whether vectors took part (`semantic`).
+
+```toml
+[memory]
+session_search = true                 # index sessions and offer search_sessions
+session_search_scope = "environment"  # environment | all: what agents may search
+embedding_model = ""                  # e.g. "openai:text-embedding-3-small"; empty: keywords only
+```
 
 ## Project documentation retrieval
 
@@ -164,7 +221,7 @@ write = { global = "ask", project = "ask", project_private = "auto" }
 recall = true                 # inject top matches before each turn
 max_index_tokens = 1500
 max_recall_tokens = 1500
-embedding_model = "embed-local" # a model table id; empty means full-text search only
+embedding_model = ""          # a model table id or <endpoint>:<model>; empty means keyword search only
 cloud = "allow"               # allow | index-only | deny
 consolidate = "weekly"        # weekly | monthly | off
 ```
