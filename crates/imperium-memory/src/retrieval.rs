@@ -110,7 +110,7 @@ pub fn snippet(text: &str, terms: &[String], width: usize) -> Snippet {
     let runs = word_runs(&flat);
     let is_term = |(start, end): (usize, usize)| {
         let word: String = flat[start..end].iter().collect::<String>().to_lowercase();
-        terms.iter().any(|term| *term == word)
+        terms.contains(&word)
     };
     let first = runs.iter().copied().find(|run| is_term(*run));
     let (mut start, mut end) = match first {

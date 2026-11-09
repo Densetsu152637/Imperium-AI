@@ -915,9 +915,10 @@ fn read_vectors(path: &Path, dims: usize, count: usize) -> Option<Vec<(u32, Vec<
             .chunks_exact(record)
             .map(|record| {
                 let chunk = u32::from_le_bytes(record[..4].try_into().unwrap_or_default());
-                let vector = record[4..]
-                    .chunks_exact(4)
-                    .map(|value| f32::from_le_bytes(value.try_into().unwrap_or_default()))
+                let (values, _) = record[4..].as_chunks::<4>();
+                let vector = values
+                    .iter()
+                    .map(|value| f32::from_le_bytes(*value))
                     .collect();
                 (chunk, vector)
             })
