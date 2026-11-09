@@ -120,6 +120,8 @@ pub struct DaemonState {
     downloads: Downloads,
     /// The latest llama.cpp runtime pack installation (`runtime.install`).
     pub(crate) runtime_install: Mutex<Option<imperium_protocol::methods::RuntimeInstallJob>>,
+    /// The latest package-manager update of an external `llama-server`.
+    pub(crate) runtime_update: Mutex<Option<imperium_protocol::methods::RuntimeUpdateJob>>,
     /// The Hugging Face Hub to use instead of the one from the environment (for tests).
     hub: OnceLock<imperium_local::hf::Hub>,
     /// Notifications for every connected client, such as schedule runs.
@@ -154,6 +156,8 @@ pub struct DaemonState {
     /// Global and environment permission rules as running sessions see them, and the global
     /// path grants.
     permissions: crate::permissions::PermissionStore,
+    /// Budgets and the usage ledger they count.
+    budgets: crate::budgets::BudgetBook,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -191,6 +195,10 @@ impl DaemonState {
         let environments = Environments::load(paths.data_dir().join("environments.json"));
         let suggest = settings.models.suggest_downloads;
         let permissions = crate::permissions::PermissionStore::new(&settings.permissions);
+        let budgets = crate::budgets::BudgetBook::load(
+            paths.data_dir().join("usage.json"),
+            settings.budgets.clone(),
+        );
         let state = Arc::new_cyclic(|me| DaemonState {
             me: me.clone(),
             started: Instant::now(),
@@ -205,6 +213,7 @@ impl DaemonState {
             local: local.map(OnceLock::from).unwrap_or_default(),
             downloads: Downloads::default(),
             runtime_install: Mutex::new(None),
+            runtime_update: Mutex::new(None),
             hub: OnceLock::new(),
             announcements: broadcast::channel(256).0,
             scheduler: OnceLock::new(),
@@ -224,12 +233,14 @@ impl DaemonState {
             runner: OnceLock::new(),
             resources: Arc::default(),
             permissions,
+            budgets,
         });
         state.apply_load_view();
-        if let Some(local) = state.local.get()
-            && tokio::runtime::Handle::try_current().is_ok()
-        {
-            state.announce_swaps(local);
+        if let Some(local) = state.local.get() {
+            local.set_runtime_hooks(crate::llama_runtime::Hooks::new(&state));
+            if tokio::runtime::Handle::try_current().is_ok() {
+                state.announce_swaps(local);
+            }
         }
         state
     }
@@ -982,6 +993,7 @@ impl DaemonState {
         };
         if self.local.set(started).is_ok() {
             if let Some(local) = self.local.get() {
+                local.set_runtime_hooks(crate::llama_runtime::Hooks::new(self));
                 self.apply_local_settings(local);
                 self.announce_swaps(local);
             }
@@ -1058,6 +1070,9 @@ impl DaemonState {
             Err(error) => return (false, error.to_string(), None),
         };
         let session_id = Some(session.id().to_string());
+        if let Err(stop) = crate::budgets::check(self, session.id(), false) {
+            return (false, stop.message, session_id);
+        }
         if session.send(prompt).is_err() {
             return (
                 false,
@@ -1290,6 +1305,12 @@ impl DaemonState {
         if let Some(me) = self.me.upgrade() {
             crate::suggestions::watch(&me, id.clone(), session.subscribe());
             crate::resources::watch_session(&me, id.clone(), session.subscribe());
+            crate::budgets::watch_session(
+                &me,
+                id.clone(),
+                placement.environment_id.clone(),
+                session.subscribe(),
+            );
         }
         let session = Arc::new(session);
         self.placements
@@ -1444,6 +1465,10 @@ impl DaemonState {
     }
 
     /// The permission rules running sessions check calls against, and the global grants.
+    pub fn budgets(&self) -> &crate::budgets::BudgetBook {
+        &self.budgets
+    }
+
     pub fn permissions(&self) -> &crate::permissions::PermissionStore {
         &self.permissions
     }

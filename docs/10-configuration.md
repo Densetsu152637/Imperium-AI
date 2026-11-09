@@ -93,7 +93,9 @@ listed; edit them in the file.
 | `models.download_dir` | first of `models.folders`, else `<data>/models` | Where [Hugging Face downloads](04-models-and-routing.md#downloading-from-hugging-face) go, as `<owner>/<repo>/` below it; must be absolute; scanned with `models.folders` |
 | `runtime.llamacpp.backend` | `auto` | llama.cpp build to install and use: `auto` (the best that runs here: CUDA 13, CUDA 12, Vulkan, CPU; Metal on Apple Silicon), `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` ([runtimes](04-models-and-routing.md#runtimes)) |
 | `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of an installed build; applies to models loaded from then on, without a restart (*Choose llama-server…* in the app, `imperium runtime use`) |
-| `runtime.llamacpp.find_existing` | `true` | With no build installed and no `custom_path`, use a `llama-server` already on this machine (on `PATH`, or in `~/.unsloth/llama.cpp` or `~/llama.cpp`) that starts and supports the flags Imperium passes, preferring one that sees the GPU |
+| `runtime.llamacpp.find_existing` | `true` | With no build installed and no `custom_path`, use a `llama-server` already on this machine (on `PATH`, package managers, LM Studio, llama.cpp folders in the home or Downloads folder; [where](04-models-and-routing.md#runtimes)) that starts and supports the flags Imperium passes, preferring one that sees the GPU |
+| `runtime.llamacpp.auto_install` | `true` | With no `custom_path` and no usable `llama-server` (or only a CPU build on a machine with a GPU, or Imperium's build of an earlier release), download and verify llama.cpp's official build for this machine the first time a local model is needed ([runtimes](04-models-and-routing.md#runtimes)) |
+| `runtime.llamacpp.update_external` | `ask` | A `llama-server` installed with winget, scoop, Chocolatey, or Homebrew that is older than the pinned release: `off`, `ask` (offer *Update*), or `auto` (run the package manager's upgrade while no model is loaded from it) ([updates](04-models-and-routing.md#llamacpp-updates)) |
 | `runtime.llamacpp.context` | `8192` | Tokens one session may use on a local model (`--kv-unified-per-slot` when below the pool) |
 | `runtime.llamacpp.parallel` | `2` | Deprecated: only sizes the default KV pool, `pool_tokens = context × parallel`. It no longer caps anything: sessions beyond a model's slots queue |
 | `runtime.llamacpp.slots` | the larger of `8` and `parallel` | Default `--parallel` of each model: calls one server decodes at once, `1`-`256`. A CPU-pinned model defaults to `1` |
@@ -140,6 +142,8 @@ listed; edit them in the file.
 | `isolation.tier` | `policy` | Where agents' commands run: `policy` (tier 0), `os` (bubblewrap or Seatbelt), or `container` ([tiers](05-tools-and-isolation.md#isolation-tiers)) |
 | `isolation.container_runtime`, `container_image`, `network` | `docker`, `ubuntu:24.04`, `true` | Container tier settings; `network = false` cuts sandboxed and container commands off the network |
 | `permissions.grants`, `permissions.rules` | none | Path grants outside environments (`{ path, mode }`, mode `read` or `read_write`) and allow / ask / deny rules (`{ tool, pattern, action }`) for every environment; edited in Settings → Permissions ([permissions](05-tools-and-isolation.md#permissions)) |
+| `budgets.week_start`, `budgets.month_start_day`, `budgets.thresholds` | `monday`, `1`, `[50, 80, 100]` | When weekly budgets start (a day name) and monthly ones reset (1 to 28), at local midnight; the percentages that alert for budgets without their own ([budgets](#budgets)) |
+| `budgets.limits` | none | Token and cost budgets (`{ id, name, scope, target, window, tokens, cost_usd, thresholds, action }`); edited in Settings → Budgets ([budgets](#budgets)) |
 | `projects` | none | `[[projects]]` with `path`, `agent` (run a project agent), `agent_model`, `max_sessions` (2), `max_sessions_per_day` (20), `prefer_quiet` (default `true`: the agent's sessions get their brief only when the machine is quiet, for at most `max_defer`, default `2h`) |
 | `load.sample_s`, `load.settle_s` | `5`, `60` | How often (seconds) the daemon looks at the machine for the [load view](14-projects-and-automation.md#quiet-periods), and how long it must look calmer before the level drops (so a pause between two of your messages is not quiet) |
 | `load.busy_cpu_pct`, `load.saturated_cpu_pct` | `70`, `95` | Overall CPU use (percent) at which the machine counts as busy, and as saturated; not counted while a background session is working |
@@ -153,6 +157,47 @@ listed; edit them in the file.
 | `hooks` | none | `[[hooks]]` entries with `event`, optional `matcher`, `command`, and `timeout_s`; see [hooks](06-extensibility.md#hooks) |
 
 Configuration is read when the daemon starts; restart it after editing.
+
+## Budgets
+
+Budgets put limits on model usage over a window and alert as it fills up. The daemon records
+every model call a session makes (subagents included) by local day, environment, and model spec
+in `<data>/usage.json`, keeping 400 days, so windows and alerts survive restarts.
+
+```toml
+[budgets]
+week_start = "monday"     # weekly windows start at local midnight on this day
+month_start_day = 1       # monthly windows reset on this day of the month (1 to 28)
+thresholds = [50, 80, 100]
+limits = [
+  { id = "all-month", scope = "global", window = "monthly", cost_usd = 50.0, action = "ask" },
+  { id = "work-week", name = "Work", scope = "environment", target = "<environment id>", window = "weekly", tokens = 5000000, action = "block" },
+  { id = "router-day", scope = "endpoint", target = "openrouter", window = "daily", cost_usd = 5.0, thresholds = [80, 100] },
+  { id = "big-model", scope = "model", target = "openrouter:anthropic/claude-sonnet", window = "monthly", tokens = 20000000 },
+]
+```
+
+- **Scope:** `global` counts every call; `environment` the calls of sessions in one environment
+  (`target` is its id); `endpoint` the calls to one endpoint (`target` is its name, such as
+  `openrouter` or `llamacpp`); `model` the calls to one model (`target` is its spec,
+  `<endpoint>:<model>`).
+- **Window:** `daily`, `weekly`, or `monthly`, in the daemon machine's local time.
+- **Limits:** `tokens` counts prompt plus completion tokens; `cost_usd` counts calls to models
+  with prices ([pricing](04-models-and-routing.md)). Local models have no price, so they count
+  tokens only, unless one is configured for them. With both limits, whichever is further along
+  counts. Each budget needs at least one.
+- **Alerts:** each threshold (a percentage, default 50, 80, 100) alerts once per window; a call
+  that crosses several sends one alert for the highest. Alerts go to every client as
+  `budgets.alert`; the desktop shows them as notifications (Settings → Notifications).
+- **Action** when a budget is used up: `warn` (the default) only alerts; `ask` makes each new
+  turn in the scope ask first (`session.send` fails with `-32008` until it is repeated with
+  `confirm_budget`); `block` refuses new turns in the scope until the window resets. Turns already
+  running, messages already queued, and steering a running turn are not stopped. Scheduled runs
+  and project-agent briefs in a scope that asks or blocks do not start.
+
+`budgets.get` returns the budgets and where each stands, `budgets.set` replaces them (applied at
+once; budgets without an id get one), and `budgets.usage` returns usage by day with the top
+environments, endpoints, and models for the Usage panel ([07](07-desktop-ui.md#budgets-and-usage-implemented)).
 
 ## Secrets
 
@@ -199,6 +244,8 @@ base_url = "http://192.168.1.20:8000/v1"
 backend = "auto"          # auto | cpu | cuda12 | cuda13 | vulkan | rocm | metal
 custom_path = ""
 find_existing = true      # use a llama-server already on this machine until one is installed
+auto_install = true       # install the official build the first time a local model needs one
+update_external = "ask"   # off | ask | auto: package-manager llama.cpp updates
 idle_unload_s = 900
 context = 8192            # tokens one session may use
 slots = 8                 # calls one server decodes at once; no cap on sessions
@@ -242,7 +289,8 @@ prometheus = false
 
 ## Other recommended options
 
-- Per-endpoint rate limits, timeouts, retry policy, and monthly spend caps with alerts.
+- Per-endpoint rate limits, timeouts, and retry policy (spend caps with alerts are
+  [budgets](#budgets)).
 - Model aliases (`fast`, `smart`, `vision`) usable in routing rules and prompts.
 - Proxy settings and custom CA certificates.
 - Transcript retention period and automatic redaction rules.

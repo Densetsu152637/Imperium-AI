@@ -5,7 +5,8 @@
 //! Structured lists and maps (`endpoints`, `models.catalog`, `routing.rules`, `mcp.servers`,
 //! `projects`, `schedules`, `hooks`, `github.watch`, `media.speech`, `media.transcription`)
 //! are not listed; they are edited in the file. `permissions` (grants and rules) has its own
-//! methods, `permissions.get` and `permissions.set`. Add a new scalar or list setting by adding a
+//! methods, `permissions.get` and `permissions.set`; so has `budgets` (`budgets.get`,
+//! `budgets.set`). Add a new scalar or list setting by adding a
 //! row to [`SETTINGS`].
 
 use std::path::{Path, PathBuf};
@@ -132,6 +133,8 @@ pub static SETTINGS: &[SettingDef] = &[
     choice("runtime.llamacpp.backend", "llama.cpp backend", &["auto", "cpu", "vulkan", "cuda12", "cuda13", "rocm", "metal"], "Runtime pack used to run local GGUF models."),
     live(def("runtime.llamacpp.custom_path", "Custom llama-server", PathKind, "Your own llama-server executable, used instead of an installed runtime for models loaded from then on.")),
     def("runtime.llamacpp.find_existing", "Use a llama-server found here", Bool, "With no runtime installed and no custom llama-server, use one already on this computer (on PATH or in a llama.cpp build in your home folder) that starts and supports the flags Imperium passes."),
+    def("runtime.llamacpp.auto_install", "Install llama.cpp automatically", Bool, "With no usable llama-server (or only a CPU build on a machine with a GPU), download and verify llama.cpp's official build for this computer the first time a local model is needed."),
+    choice("runtime.llamacpp.update_external", "Update a package-manager llama.cpp", &["off", "ask", "auto"], "When a llama-server installed with winget, scoop, Chocolatey, or Homebrew is older than the llama.cpp release Imperium pins: off, ask (offer Update in Local models), or auto (upgrade it while no model is loaded from it)."),
     def("runtime.llamacpp.context", "Context per slot", Integer, "Context length each loaded model is started with, per slot."),
     def("runtime.llamacpp.parallel", "Parallel slots", Integer, "Slots per loaded model (agents served at once)."),
     choice("runtime.llamacpp.cache_type", "KV cache type", &["f16", "q8_0", "q4_0"], "Precision of the KV cache."),

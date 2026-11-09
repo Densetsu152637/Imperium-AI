@@ -1,6 +1,7 @@
 //! Setting up models from the app without editing files: model folders (`models.add_folder`,
 //! `models.remove_folder`), the default model (`models.use`), a test prompt (`models.test`),
-//! and the llama.cpp runtime (`runtime.status`, `runtime.set_server`, `runtime.install`).
+//! and the llama.cpp runtime (`runtime.status`, `runtime.set_server`, `runtime.install`; the
+//! automatic install and package-manager updates are in [`crate::llama_runtime`]).
 //!
 //! Each change is written to the user's `config.toml` through the settings table (as
 //! `config.set` does) and applied to the running daemon at once: the live settings take the new
@@ -14,7 +15,10 @@ use std::time::{Duration, Instant};
 use imperium_api::{LocalModels, LocalRequest};
 use imperium_config::{SetError, Settings};
 use imperium_local::hardware::{Hardware, probe};
-use imperium_local::runtime::{GITHUB_API, install, llama_cpp_ref, pack_for, packs_for, resolve};
+use imperium_local::runtime::{
+    GITHUB_API, build_number, install, llama_cpp_ref, pack_for, packs_for, pinned_build,
+    remove_earlier_releases, resolve,
+};
 use imperium_local::runtime_check::{self, find_existing, has_cuda_backend, home_dir};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
@@ -461,7 +465,7 @@ pub async fn test_model(
 }
 
 /// The hardware the local runtime planned against, or a fresh probe when it is not running.
-async fn hardware(state: &DaemonState) -> Hardware {
+pub(crate) async fn hardware(state: &DaemonState) -> Hardware {
     if let Some(local) = state.local_runtime() {
         return local.hardware().clone();
     }
@@ -487,7 +491,9 @@ pub async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResult {
         local.set_server(resolved.label(), resolved.server.clone());
     }
     let server = resolved.server.clone();
-    let check = match resolved.check {
+    // Opening the panel is a first need of a runtime: one is installed now when none is usable.
+    crate::llama_runtime::install_if_needed(&state, &resolved, &hardware).await;
+    let check = match resolved.check.clone() {
         Some(check) => check,
         None => {
             let outcome = runtime_check::probe(&server).await;
@@ -500,6 +506,22 @@ pub async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResult {
             )
         }
     };
+    let flags_ok = if resolved.source == "custom" && check.runs {
+        runtime_check::missing_flags(&server)
+            .await
+            .is_none_or(|missing| missing.is_empty())
+    } else {
+        true
+    };
+    let (kind, _, update) =
+        crate::llama_runtime::offer(&state, &resolved, check.version.as_deref(), flags_ok);
+    let device_ids: Vec<(String, bool)> = check
+        .devices
+        .iter()
+        .map(|device| (device.id.clone(), device.is_gpu()))
+        .collect();
+    let backend = crate::llama_runtime::backend_label(&resolved, &device_ids);
+    let build = build_number(check.version.as_deref());
     let candidates = find_existing(home.as_deref())
         .into_iter()
         .filter(|candidate| candidate != &server)
@@ -529,6 +551,17 @@ pub async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResult {
         candidates,
         install: state
             .runtime_install
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone(),
+        backend,
+        auto_install: llamacpp.auto_install,
+        build,
+        pinned_build: pinned_build(),
+        install_kind: kind.name().into(),
+        update,
+        update_job: state
+            .runtime_update
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone(),
@@ -568,7 +601,7 @@ pub(crate) fn apply_setting(state: &DaemonState, key: &str) {
 }
 
 /// Points the running local runtime at the `llama-server` the live settings name.
-fn apply_server(state: &DaemonState) {
+pub(crate) fn apply_server(state: &DaemonState) {
     if let Some(local) = state.local_runtime() {
         local.use_server(state.paths(), &state.settings());
     }
@@ -701,6 +734,12 @@ pub async fn install_runtime(state: Arc<DaemonState>) -> Result<RuntimeInstallJo
                     "llama.cpp runtime installed"
                 );
                 apply_server(&state);
+                // One earlier release stays until the new build has loaded a model.
+                let data_dir = state.data_dir().to_path_buf();
+                let _ = tokio::task::spawn_blocking(move || {
+                    remove_earlier_releases(&data_dir, false);
+                })
+                .await;
                 update_install(&state, |job| {
                     job.state = "done".into();
                     job.pack.clone_from(&installed.pack);

@@ -3,11 +3,13 @@
 
 mod approvals;
 mod autofix;
+mod budgets;
 mod config;
 mod connectors;
 mod downloads;
 mod endpoint;
 mod environments;
+mod llama_runtime;
 mod load;
 mod local;
 mod mcp;

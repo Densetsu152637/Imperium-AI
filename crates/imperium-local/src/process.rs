@@ -1,9 +1,12 @@
 //! Runs a runtime's server (`llama-server`, `vllm serve`, ...) as a child process and waits until
 //! it is ready.
 
+use std::fmt;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use tokio::process::{Child, Command};
@@ -19,12 +22,31 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const SLOT_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL: Duration = Duration::from_millis(250);
 
+/// What the launcher asks the daemon around starting `llama-server`, so the runtime is
+/// installed when a model first needs it rather than when the app starts.
+pub trait RuntimeHooks: Send + Sync + fmt::Debug {
+    /// A llama.cpp model is about to load with `program`; `present` says whether that file
+    /// exists. Returns the `llama-server` to start instead (after installing one, when that is
+    /// allowed and nothing is there), or why there is none. With `present`, a hook may start
+    /// work in the background (a GPU build, a newer release) and return `program` at once.
+    fn ensure(
+        &self,
+        program: PathBuf,
+        present: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<PathBuf, String>> + Send>>;
+
+    /// A model loaded with `program`.
+    fn started(&self, program: &Path);
+}
+
 /// Starts each runtime's executable, found by the runtime's id: `llama-server` from a runtime
 /// pack or a custom path, and `vllm`.
 #[derive(Debug)]
 pub struct ProcessLauncher {
     /// Runtime id and its executable.
     programs: Mutex<Vec<(String, PathBuf)>>,
+    /// Asked before and after a llama.cpp model loads.
+    hooks: Mutex<Option<Arc<dyn RuntimeHooks>>>,
     logs: PathBuf,
     /// Where llama.cpp servers save slots when their model is swapped out.
     slots: Option<PathBuf>,
@@ -37,6 +59,7 @@ impl ProcessLauncher {
     pub fn new(server: PathBuf, vllm: PathBuf, logs: PathBuf) -> Self {
         ProcessLauncher {
             programs: Mutex::new(vec![(LLAMA_CPP.into(), server), (VLLM.into(), vllm)]),
+            hooks: Mutex::new(None),
             logs,
             slots: None,
             http: reqwest::Client::new(),
@@ -65,6 +88,18 @@ impl ProcessLauncher {
         programs.push((runtime, program));
     }
 
+    /// Asks `hooks` before and after each llama.cpp model loads ([`RuntimeHooks`]).
+    pub fn set_hooks(&self, hooks: Arc<dyn RuntimeHooks>) {
+        *self.hooks.lock().unwrap_or_else(PoisonError::into_inner) = Some(hooks);
+    }
+
+    fn hooks(&self) -> Option<Arc<dyn RuntimeHooks>> {
+        self.hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     fn program(&self, runtime: &str) -> Result<PathBuf, String> {
         self.programs
             .lock()
@@ -76,7 +111,14 @@ impl ProcessLauncher {
     }
 
     async fn start(&self, spec: &LaunchSpec) -> Result<Box<dyn Server>, LaunchError> {
-        let program = self.program(spec.backend.id())?;
+        let mut program = self.program(spec.backend.id())?;
+        let hooks = (spec.backend.id() == LLAMA_CPP)
+            .then(|| self.hooks())
+            .flatten();
+        if let Some(hooks) = &hooks {
+            let present = program.is_file();
+            program = hooks.ensure(program, present).await?;
+        }
         let program = program.as_path();
         spec.backend.check_program(program)?;
         let port = free_port()?;
@@ -97,6 +139,9 @@ impl ProcessLauncher {
             .map_err(|error| format!("could not start {}: {error}", program.display()))?;
         let base = format!("http://127.0.0.1:{port}");
         let ready = tokio::time::timeout(LOAD_TIMEOUT, self.wait_ready(&base, &mut child)).await;
+        if let (Ok(Ok(())), Some(hooks)) = (&ready, &hooks) {
+            hooks.started(program);
+        }
         match ready {
             Ok(Ok(())) => Ok(Box::new(ProcessServer {
                 pid: child.id(),

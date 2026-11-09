@@ -156,6 +156,14 @@ impl LocalRuntime {
         self.detect_if_missing(paths, settings);
     }
 
+    /// Asks `hooks` before and after each llama.cpp model loads, so a missing runtime is
+    /// installed when a model first needs it.
+    pub fn set_runtime_hooks(&self, hooks: Arc<dyn imperium_local::process::RuntimeHooks>) {
+        if let Some(launcher) = &self.launcher {
+            launcher.set_hooks(hooks);
+        }
+    }
+
     /// Loads models from now on with `server`, labelled `label` (a build, `custom`, or
     /// `detected`).
     pub fn set_server(&self, label: String, server: PathBuf) {

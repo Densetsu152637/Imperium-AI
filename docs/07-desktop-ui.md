@@ -380,9 +380,37 @@ session.
 
 Notifications come from the main window only, so detached panel windows do not repeat them.
 Other parts of the app send their own through one internal entry point, `notify(notice,
-settings)` in `apps/desktop/src/notify.ts`, which applies these settings; budget alerts will use
-it. Which events notify is decided in `apps/desktop/src/attention.ts` and covered by
+settings)` in `apps/desktop/src/notify.ts`, which applies these settings; budget alerts use it
+([budgets](#budgets-and-usage-implemented)). Which events notify is decided in `apps/desktop/src/attention.ts` and covered by
 `apps/desktop/test/attention.test.ts`.
+
+## Budgets and usage (implemented)
+
+**Settings → Budgets** edits the daemon's [budgets](10-configuration.md#budgets)
+(`budgets.get` / `budgets.set`, saved to `[budgets]` in the user config): when weekly budgets
+start, the day monthly ones reset, the default alert thresholds, and one card per budget with an
+optional name, its scope (*All usage*, an environment picked from the list, an endpoint, or a
+model, the last two with suggestions from the model table), its window (daily, weekly, monthly),
+a token limit, a cost limit in US dollars (either may be empty), what happens when it is used up
+(*Warn only*, *Ask first*, *Block*), and its own alert thresholds (empty: the defaults). Each
+saved budget shows where it stands in its current window. *Save* applies the budgets at once.
+
+The **Usage** panel (in Settings → Panels, closable and detachable like the others) is the
+dashboard: every budget's current window as a bar with its share, tokens and cost against the
+limits, when it resets, and its action; a bar chart of the last 30 days, by tokens or cost, for
+all usage or, after clicking a budget, that budget's scope; and the top five environments,
+endpoints, and models over the same days. It follows `budgets.changed`, which the daemon sends
+after each model call.
+
+A **budget alert** (`budgets.alert`, once per threshold per window) becomes a *budget* notice
+through `notify`, so it follows *Notify about budgets and usage* and the other notification
+settings, and answering it opens the session whose call crossed the threshold. Beside the context
+meter in the session footer, a small gauge mark shows when a budget over the session (all usage,
+its environment, or its model's endpoint or model) is past an alert threshold: amber with the
+share, red once used up; its tooltip lists each such budget, its usage, when it resets, and
+whether new turns ask or are blocked. Sending a message while a budget that asks is used up opens
+a confirmation; *OK* sends it anyway (`confirm_budget`). A blocked turn says which budget blocks
+it and when it resets.
 
 ## Environments and sessions (implemented)
 
@@ -513,15 +541,24 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   (*Stop scanning this folder*; nothing in it is deleted), the download folder when it is separate,
   and *Add folder*. *Rescan* scans again.
 - **Runtime.** A *llama.cpp runtime* card runs `runtime.status` when the panel opens: which
-  `llama-server` is used (yours, the installed llama.cpp build, or one *Found on this computer*
-  that is used until a runtime is installed), its version, the devices it sees, and a
-  verdict (*ready*, *check*, *not ready*) with the problem and what to do in words, such as
-  *llama-server can't see your GPU — the CUDA runtime is missing or the NVIDIA driver is too old
-  for this build*. `llama-server` executables found on this computer are offered with *Use this*;
-  *Choose llama-server…* opens the native file picker; *Install llama.cpp <ref>* downloads
-  llama.cpp's build for this machine with a progress bar (`runtime.install_progress`), falling
-  back to the next build when one does not run; *Use the installed runtime instead* drops a
-  custom server. When the server in use changes, the model listing is read again.
+  `llama-server` is used and where it comes from (*Your llama-server*, *Found on this computer*
+  with how it was installed, such as winget or LM Studio, or *Imperium's build* with its
+  release), its path, backend (*CUDA 13*, *Vulkan*, *CPU*, ...), whether the GPU is visible,
+  its build number (with the release Imperium uses when it is older), and a verdict (*ready*,
+  *check*, *not ready*) with the problem and what to do in words, such as *llama-server can't
+  see your GPU — the CUDA runtime is missing or the NVIDIA driver is too old for this build*.
+  With no runtime it says Imperium downloads the official build the first time a local model is
+  needed (opening the panel counts, so the install usually starts there, with a progress bar
+  from `runtime.install_progress`), or, with `runtime.llamacpp.auto_install` off, that it must
+  be installed or chosen. *Use detected…* is a choice list of the other `llama-server`
+  executables found on this computer, with *Use this*; *Install official build* installs
+  llama.cpp's build for this machine (falling back to the next build when one does not run);
+  *Choose file…* opens the native file picker for your own; *Stop using my llama-server* drops
+  a custom server. When an update is available
+  ([llama.cpp updates](04-models-and-routing.md#llamacpp-updates)) the card says so: *Update*
+  runs the package manager's upgrade and shows its output (`runtime.update_progress`); *Use
+  Imperium's build instead* installs the official build for a folder Imperium does not modify.
+  When the server in use changes, the model listing is read again.
 - **Choosing a local model without a runtime.** When no `llama-server` is there
   (`models.local` reports the runtime not installed), choosing a llama.cpp model in a session's
   model selector first says *No llama.cpp runtime yet — open Local models → Runtime to install
@@ -536,7 +573,9 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   that cannot run here say why under the row. Items left out of the scan (image models,
   diffusers pipelines, unreadable files) are listed, with the reason, in a collapsed section.
 - **Settings.** `models.default`, `models.folders`, and `runtime.llamacpp.custom_path` changed in
-  Settings apply at once too.
+  Settings apply at once too; *Install llama.cpp automatically* (`runtime.llamacpp.auto_install`)
+  and *Update a package-manager llama.cpp* (`runtime.llamacpp.update_external`) are there as
+  well.
 
 **Composer, queue, and steering (implemented):** the composer stays enabled while the agent
 works, and sending while a turn runs always queues: the send key (Enter, or Ctrl+Enter, as set

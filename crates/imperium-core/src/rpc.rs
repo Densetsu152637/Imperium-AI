@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use base64::Engine;
 use imperium_engine::{QueueError, Session, SwitchError};
+use imperium_protocol::budgets::{BudgetsGet, BudgetsGetParams, BudgetsSet, BudgetsUsage};
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
@@ -55,6 +56,7 @@ use imperium_protocol::methods::{
 use imperium_protocol::methods::{
     ModelAddEndpoint, ModelAddEndpointParams, ModelFolderAdd, ModelFolderRemove, ModelTest,
     ModelUse, ModelUseParams, RuntimeInstall, RuntimeSetServer, RuntimeStatus,
+    RuntimeUpdateExternal,
 };
 use imperium_protocol::methods::{
     ModelConfig, ModelConfigParams, ModelSetConfig, ModelSetConfigParams,
@@ -276,6 +278,15 @@ impl Connection {
             }),
             McpRemove::NAME => call::<McpRemove>(request.params, |params| {
                 crate::connectors::remove(&self.state, params)
+            }),
+            BudgetsGet::NAME => call::<BudgetsGet>(request.params, |_: BudgetsGetParams| {
+                crate::budgets::get(&self.state)
+            }),
+            BudgetsSet::NAME => call::<BudgetsSet>(request.params, |params| {
+                crate::budgets::set(&self.state, params)
+            }),
+            BudgetsUsage::NAME => call::<BudgetsUsage>(request.params, |params| {
+                crate::budgets::usage(&self.state, params)
             }),
             PermissionsGet::NAME => {
                 call::<PermissionsGet>(request.params, |_: PermissionsGetParams| {
@@ -499,6 +510,11 @@ impl Connection {
                     crate::onboarding::install_runtime(Arc::clone(&self.state))
                 })
             }
+            RuntimeUpdateExternal::NAME => {
+                call_later::<RuntimeUpdateExternal, _>(request.params, &mut later, |_| {
+                    crate::llama_runtime::update_external(Arc::clone(&self.state))
+                })
+            }
             HfFiles::NAME => call_later::<HfFiles, _>(request.params, &mut later, |params| {
                 crate::downloads::files(Arc::clone(&self.state), params)
             }),
@@ -550,6 +566,17 @@ impl Connection {
             SessionSend::NAME => {
                 call::<SessionSend>(request.params, |params: SessionSendParams| {
                     let session = self.session(&params.session_id)?;
+                    // A message that starts a turn waits on the session's budgets; steering
+                    // joins a running turn, which always finishes.
+                    let steering = params.mode == Some(imperium_protocol::session::SendMode::Steer)
+                        && session.status().0 == imperium_protocol::session::SessionStatus::Working;
+                    if !steering {
+                        crate::budgets::check(
+                            &self.state,
+                            &params.session_id,
+                            params.confirm_budget == Some(true),
+                        )?;
+                    }
                     // A person writing to background work wants an answer now: it stops giving
                     // way to the load.
                     if session.is_background() {
