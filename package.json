@@ -4,5 +4,8 @@
   "packageManager": "pnpm@10.21.0",
   "engines": {
     "node": ">=24"
+  },
+  "scripts": {
+    "build:mods": "pnpm -r --filter \"./mods/*\" --if-present run build"
   }
 }

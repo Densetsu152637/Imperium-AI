@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod daemon;
+mod mod_frames;
 mod store;
 mod update;
 
@@ -24,6 +25,9 @@ fn main() {
                 .build(),
         )
         .manage(daemon::DaemonControl::default())
+        .register_uri_scheme_protocol(mod_frames::SCHEME, |_context, request| {
+            mod_frames::serve(request)
+        })
         .setup(move |app| {
             // The window is made here rather than from the configuration, so the login run
             // never shows one.
