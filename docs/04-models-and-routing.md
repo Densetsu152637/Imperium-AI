@@ -285,7 +285,23 @@ default pool, `pool_tokens = context × parallel`. Every setting can be set per 
 ([10](10-configuration.md#layers)): context, pool, slots, K and V cache types, flash attention, a
 cap on GPU layers, the wait cap, `max_output_tokens`, and extra arguments. Changing the settings
 of a loaded model restarts it once it is free (swap reason `config`); a newcomer waits for the new
-shape while the model's batch carries on. A custom `llama-server` (`runtime.llamacpp.custom_path`)
+shape while the model's batch carries on. Changing settings never waits for a load or an unload:
+the model is marked stale and a background task restarts it when no call lease, queued call or
+claim of any session remains. `max_wait_s` and `max_output_tokens` only shape waits and
+reservations, so they apply to a loaded model without a restart. A load starts its server with the
+settings in effect when it was planned; if they change while it loads, the new server serves the
+call that loaded it and then restarts the same way. A `config` restart saves only the slots its
+new server can restore (same context, pool and cache types); the others are read again.
+
+`models.config` returns, for every local model and every model-table row, what `models.toml`
+saves (`saved`), what is in effect (`effective`, from the daemon's settings snapshot), the memory
+plan and placement, and `reload_pending` when a loaded server was started with a different
+shape. `models.set_config` replaces each named model's saved settings whole (all-null removes
+them), refuses unknown ids, settings a vLLM model cannot use and invalid values with
+`INVALID_PARAMS` (`local model <id>: <reason>` or `model table row <id>: <reason>`), and writes
+nothing then; with `dry_run` it only returns the would-be result, which the desktop dialog uses for
+live memory estimates. Saves are serialised, and so are the settings a rescan after a download
+hands the supervisor, so a save is never undone by an older snapshot. A custom `llama-server` (`runtime.llamacpp.custom_path`)
 must be llama.cpp b12180 or later: it needs `--kv-unified`, `--kv-unified-per-slot` and
 `--no-cache-idle-slots`. This is not probed; an older binary exits at once, its log names the
 unknown argument, and the usual quick-failure error surfaces that.
