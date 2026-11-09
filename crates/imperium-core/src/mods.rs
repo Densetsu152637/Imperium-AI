@@ -37,6 +37,8 @@ struct Contributes {
 struct Panel {
     id: String,
     title: String,
+    #[serde(default)]
+    slot: Option<String>,
 }
 
 fn default_entry() -> String {
@@ -132,6 +134,7 @@ fn load(dir: &Path, bundled: bool) -> Result<ModInfo, String> {
             .map(|panel| ModPanel {
                 id: panel.id,
                 title: panel.title,
+                slot: panel.slot,
             })
             .collect(),
         bundled,
@@ -175,6 +178,7 @@ mod tests {
         let info = &listing.mods[0];
         assert_eq!(info.name, "tokens-per-dollar");
         assert_eq!(info.panels[0].title, "Tokens / $");
+        assert_eq!(info.panels[0].slot.as_deref(), Some("sidebar.right"));
         assert_eq!(info.source, "export default 1;");
         assert_eq!(listing.problems.len(), 2, "{:?}", listing.problems);
         assert!(!info.bundled);

@@ -15,7 +15,8 @@ transitions, `waking` before reacting while asleep, `duck-in`/`pop-out` hiding, 
 sleeping after `pets.sleep_after_minutes`, and fidgets) with injected time. One pet per daemon
 is fed by every session's and subagent's status events (never transcript text) and sends
 `pet.state` to every client with the start time, so all clients draw in phase. The desktop's
-Pet panel draws the strip frame by frame with nearest-neighbour scaling (first frame only with
+Pet panel (closed by default, since the nursery below takes its place; Settings → Panels reopens
+it) draws the strip frame by frame with nearest-neighbour scaling (first frame only with
 reduced motion) and pats the pet on click (`pet.interact`); `pet.list` and `pet.strip` serve
 the metadata (with each pet's drawn animations and raw `pet.json`) and strips; both work with
 `pets.enabled` off (`pet.list` then has no `selected` or `state`, and `pet.strip` takes a
@@ -114,11 +115,12 @@ Pixel Pets ignores unknown top-level fields, so Imperium adds an optional `imper
 
 ## Imperium-Nursery
 
-`mods/imperium-nursery` is an opt-in UI mod (Settings → Mods) that puts many pets on screen,
+`mods/imperium-nursery` is a UI mod, bundled and on by default (Settings → Mods turns it off),
+that puts many pets on screen in place of the single Pet panel,
 each with its own copy of the behaviour arbiter ported from Pixel Pets. It contributes three
 panels: a **Session nursery** (one pet per agent of the selected or pinned session, with a
 count of working subagents), a **Global nursery** (one pet per session, with a badge for its
-working subagents) and **My nursery** (pets you put in with an optional nickname and take out
+working subagents; it docks in the left column where the Pet panel was) and **My nursery** (pets you put in with an optional nickname and take out
 again; residents idle, roam, sleep and play `petted` when clicked). Each panel is one shared room
 that fills it: no cages, the pets walk anywhere in it, nearer ones (lower on screen) drawn in front. It reads session
 snapshots and events, the installed pets and its own storage through the

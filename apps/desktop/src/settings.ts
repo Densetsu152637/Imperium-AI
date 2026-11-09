@@ -82,9 +82,12 @@ export function saveSettings(settings: AppSettings): void {
   setDoc("settings", { ...getDoc<Saved>("settings"), ...settings, version: VERSION });
 }
 
-/** Whether a mod's panels show: the user's choice, else on for installed mods and off for bundled ones. */
+/** Bundled mods that are on until the user turns them off; other bundled mods are opt-in. */
+export const BUNDLED_ON_BY_DEFAULT = ["imperium-nursery"];
+
+/** Whether a mod's panels show: the user's choice, else on for installed mods and the bundled ones above. */
 export function modEnabled(settings: AppSettings, mod: { id: string; bundled: boolean }): boolean {
-  return settings.enabledMods[mod.id] ?? !mod.bundled;
+  return settings.enabledMods[mod.id] ?? (!mod.bundled || BUNDLED_ON_BY_DEFAULT.includes(mod.id));
 }
 
 const DENSITY_SPACE: Record<Density, number> = { compact: 0.7, comfortable: 1, spacious: 1.35 };

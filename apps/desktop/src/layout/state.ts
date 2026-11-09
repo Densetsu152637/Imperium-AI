@@ -22,6 +22,8 @@ export type Layout = {
   environmentsMigrated: boolean;
   /** Panels in their own windows, by panel id. */
   detached: Record<string, DetachedPanel>;
+  /** Set once the single-pet panel has been closed in favour of the nursery mod. */
+  nurseryReplacedPet: boolean;
 };
 
 export type DetachedPanel = {
@@ -33,7 +35,7 @@ export type DetachedPanel = {
 
 const EMPTY: Layout = {
   sizes: {},
-  hidden: [],
+  hidden: ["pet"],
   environment: null,
   session: null,
   projectView: false,
@@ -41,7 +43,11 @@ const EMPTY: Layout = {
   folders: [],
   environmentsMigrated: false,
   detached: {},
+  nurseryReplacedPet: true,
 };
+
+/** Panels closed until the user opens them: the nursery mod takes the single pet's place. */
+const CLOSED_BY_DEFAULT = ["pet"];
 const LEGACY_PREFIX = "imperium.layout.";
 
 let layout: Layout | null = null;
@@ -50,6 +56,13 @@ export function getLayout(): Layout {
   if (!layout) {
     const saved = getDoc<Partial<Layout>>("layout");
     layout = { ...EMPTY, ...saved };
+    if (saved && !saved.nurseryReplacedPet) {
+      // Layouts from before the nursery: close the single-pet panel once; Settings → Panels
+      // reopens it.
+      layout.hidden = [...new Set([...layout.hidden, ...CLOSED_BY_DEFAULT])];
+      layout.nurseryReplacedPet = true;
+      setDoc("layout", layout);
+    }
     if (!saved) {
       // Split sizes used to be kept per key in local storage; bring them over once.
       try {
@@ -78,7 +91,7 @@ export function updateLayout(patch: Partial<Layout>): void {
   setDoc("layout", layout);
 }
 
-/** Forgets sizes, closed panels, and detached windows; the selection and folders stay. */
+/** Forgets sizes, closed panels, and detached windows (back to the defaults); the selection and folders stay. */
 export function resetLayout(): void {
-  updateLayout({ sizes: {}, hidden: [], detached: {} });
+  updateLayout({ sizes: {}, hidden: [...CLOSED_BY_DEFAULT], detached: {} });
 }

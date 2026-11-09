@@ -46,7 +46,7 @@ import { Switch as Toggle } from "./components/Switch";
 import type { DaemonClient } from "./daemon/client";
 import { type Daemon, DaemonSettings } from "./DaemonControl";
 import { preview } from "./notify";
-import { ACCENTS, DEFAULT_SETTINGS, modEnabled, type AppSettings } from "./settings";
+import { ACCENTS, DEFAULT_SETTINGS, BUNDLED_ON_BY_DEFAULT, modEnabled, type AppSettings } from "./settings";
 import { storeFolder } from "./store";
 import { type Updates, UpdateSettings } from "./UpdateControl";
 
@@ -705,7 +705,7 @@ function ConfigRow({ entry, disabled, onSet }: { entry: ConfigEntry; disabled: b
   );
 }
 
-/** Mods the daemon found: installed ones are on until turned off, bundled ones are opt-in. */
+/** Mods the daemon found: installed ones and the nursery are on until turned off, other bundled ones are opt-in. */
 function ModsSection({
   mods,
   settings,
@@ -728,7 +728,7 @@ function ModsSection({
             key={mod.id}
             label={`${mod.name}${mod.version ? ` ${mod.version}` : ""}`}
             badge={<span className="badge">{mod.bundled ? "bundled" : "installed"}</span>}
-            description={`Panels: ${panels}. Permissions: ${permissions}.${mod.bundled ? " Off until you turn it on." : ""}`}
+            description={`Panels: ${panels}. Permissions: ${permissions}.${mod.bundled && !BUNDLED_ON_BY_DEFAULT.includes(mod.id) ? " Off until you turn it on." : ""}`}
           >
             <Toggle checked={modEnabled(settings, mod)} onChange={(on) => toggle(mod.id, on)} label={mod.name} />
           </Row>

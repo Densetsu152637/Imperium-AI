@@ -811,6 +811,9 @@ pub struct ModInfo {
 pub struct ModPanel {
     pub id: String,
     pub title: String,
+    /// Where the panel docks: `sidebar.left` or `sidebar.right` (the default).
+    #[serde(default)]
+    pub slot: Option<String>,
 }
 
 /// `schedules.list`: configured schedules with their next and last runs.

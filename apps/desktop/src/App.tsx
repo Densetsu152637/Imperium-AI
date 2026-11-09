@@ -560,6 +560,18 @@ export function App() {
     }
   }, [sessions, settings, isDetached]);
 
+  // Panels from enabled mods, by the side they dock on (the right unless they ask for the left).
+  const modPanels = (side: "left" | "right"): PanelSpec[] =>
+    (mods?.mods ?? []).filter((mod) => modEnabled(settings, mod)).flatMap((mod) =>
+      mod.panels
+        .filter((panel) => (panel.slot === "sidebar.left" ? "left" : "right") === side)
+        .map((panel) => ({
+          id: `mod:${mod.id}:${panel.id}`,
+          title: panel.title,
+          body: <ModFrame mod={mod} panelId={panel.id} bus={modBus} host={modHost} />,
+        })),
+    );
+
   // Every panel the app has, in the order they are laid out. The main window docks the ones not
   // closed or detached; a detached window shows just its own.
   const leftPanels: PanelSpec[] = [
@@ -638,14 +650,13 @@ export function App() {
         />
       ),
     },
+    ...modPanels("left"),
   ];
-  const approvalsPanel: PanelSpec =
-                            {
-                              id: "approvals",
-                              title: `Approvals (${approvals.length})`,
-                              body: <ApprovalsPanel approvals={approvals} onRespond={respondToApproval} />,
-    }
-  ;
+  const approvalsPanel: PanelSpec = {
+    id: "approvals",
+    title: `Approvals (${approvals.length})`,
+    body: <ApprovalsPanel approvals={approvals} onRespond={respondToApproval} />,
+  };
   const sessionPanel: PanelSpec = {
     id: "session",
     title: "Session",
@@ -674,13 +685,7 @@ export function App() {
     },
     { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
     { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },
-    ...(mods?.mods ?? []).filter((mod) => modEnabled(settings, mod)).flatMap((mod) =>
-      mod.panels.map((panel) => ({
-        id: `mod:${mod.id}:${panel.id}`,
-        title: panel.title,
-        body: <ModFrame mod={mod} panelId={panel.id} bus={modBus} host={modHost} />,
-      })),
-    ),
+    ...modPanels("right"),
   ];
   // Approvals appear in the main window only while something waits, but a detached one stays.
   const everyPanel = [...leftPanels, approvalsPanel, sessionPanel, ...rightPanels];

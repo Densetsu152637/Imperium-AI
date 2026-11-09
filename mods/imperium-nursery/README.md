@@ -7,8 +7,10 @@ sleeps and reacts on its own.
 
 ## Enabling it
 
-The mod is opt-in. Turn it on in **Settings → Mods**, then add its panels from the panel
-menu. Its permissions are:
+The mod ships with Imperium and is on by default, in place of the single Pet panel: the
+Global nursery docks in the left column where the Pet panel was, and the Session nursery and
+My nursery in the right column. Turn it off in **Settings → Mods**; reopen the Pet panel from
+**Settings → Panels**. Its permissions are:
 
 | Permission     | Why |
 |----------------|-----|
