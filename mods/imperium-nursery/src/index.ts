@@ -1,4 +1,4 @@
-// Imperium Nursery: many pets, three nurseries (session, global, mine). Each panel is its own
+// Imperium Nursery: many pets, two panels (the nursery and the session nursery). Each panel is its own
 // frame, so `activate` runs once per panel and branches on `ctx.panelId` (see panels.ts).
 // Pet behaviour is ported from Pixel Pets (MIT; see NOTICE).
 
@@ -12,8 +12,7 @@ export default defineMod({
   contributes: {
     panels: [
       { id: "session", title: "Session nursery" },
-      { id: "global", title: "Global nursery" },
-      { id: "mine", title: "My nursery" },
+      { id: "nursery", title: "Nursery" },
     ],
   },
   activate: startPanel,

@@ -22,7 +22,7 @@ const name = (n: Nursery, key: string, at: number): string => n.view(n.entries.g
 
 /** A "My nursery" of three settled pets: a, b, c. */
 const settled = (): Nursery => {
-  const n = new Nursery("mine", deps);
+  const n = new Nursery("nursery", deps);
   for (const k of ["a", "b", "c"]) n.add(k, "pet", k, T0);
   n.rand = () => 0;
   return n;
@@ -123,7 +123,7 @@ test("the shots of a script reach the pets: greeting waves, high-five jumps", ()
 
 test("a pet that does not draw an animation still plays along: it just stays idle", () => {
   const sparse: Env = { ...env, catalog: Object.fromEntries(Object.entries(allDrawn()).map(([k, a]) => [k, { ...a, drawn: k === "idle" }])) };
-  const n = new Nursery("mine", { envFor: () => sparse, assign: () => "pet" });
+  const n = new Nursery("nursery", { envFor: () => sparse, assign: () => "pet" });
   n.add("a", "pet", "a", T0);
   n.add("b", "pet", "b", T0);
   const t = T0 + 10_000;
@@ -138,7 +138,7 @@ test("a real event ends play for both pets at once", () => {
   const snap: SessionSnapshot = {
     sessionId: "s1",
     title: "S",
-    projectDir: "/p",
+    projectDir: "/p", environmentId: null, archived: false, pet: null,
     status: "idle",
     agents: [
       { agentId: "root", parentId: null, brief: "", status: "idle" },
@@ -173,7 +173,7 @@ test("patting a playing pet ends the play; leaving pets and busy pets never star
   expect(n.playing).toBeNull();
   expect(name(n, "b", t + 100)).toBe("petted");
   const s = new Nursery("session", deps);
-  const base = { sessionId: "s1", title: "S", projectDir: "/p", status: "idle" };
+  const base = { sessionId: "s1", title: "S", projectDir: "/p", environmentId: null, archived: false, pet: null, status: "idle" };
   const root = { agentId: "root", parentId: null, brief: "", status: "idle" as const };
   s.snapshots([{ ...base, agents: [root, { agentId: "t1", parentId: "root", brief: "x", status: "working" }] }], "s1", T0);
   s.snapshots([{ ...base, agents: [root, { agentId: "t1", parentId: "root", brief: "x", status: "finished" }] }], "s1", T0 + 1000);

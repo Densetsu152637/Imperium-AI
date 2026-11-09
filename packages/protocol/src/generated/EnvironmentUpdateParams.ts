@@ -9,4 +9,8 @@ runtime?: EnvironmentRuntime,
 /**
  * Turns the persistent agent session on (started at once) or off (stopped).
  */
-persistent_agent?: boolean, };
+persistent_agent?: boolean, 
+/**
+ * The default pet; an empty id clears it.
+ */
+pet?: string, };

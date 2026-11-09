@@ -32,6 +32,11 @@ runtime: EnvironmentRuntime,
  */
 persistent_agent: boolean, 
 /**
+ * The environment's default pet (an installed pet's id) for the nursery; none lets the
+ * nursery decide.
+ */
+pet: string | null, 
+/**
  * The persistent agent's session id, once it has started; kept when the agent is turned
  * off so turning it on again continues the same conversation.
  */

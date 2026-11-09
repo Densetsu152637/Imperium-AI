@@ -24,8 +24,6 @@ export type Layout = {
   environmentsMigrated: boolean;
   /** Panels in their own windows, by panel id. */
   detached: Record<string, DetachedPanel>;
-  /** Set once the single-pet panel has been closed in favour of the nursery mod. */
-  nurseryReplacedPet: boolean;
 };
 
 export type DetachedPanel = {
@@ -37,7 +35,7 @@ export type DetachedPanel = {
 
 const EMPTY: Layout = {
   sizes: {},
-  hidden: ["pet"],
+  hidden: [],
   environment: null,
   session: null,
   projectView: false,
@@ -46,11 +44,10 @@ const EMPTY: Layout = {
   folders: [],
   environmentsMigrated: false,
   detached: {},
-  nurseryReplacedPet: true,
 };
 
-/** Panels closed until the user opens them: the nursery mod takes the single pet's place. */
-const CLOSED_BY_DEFAULT = ["pet"];
+/** The built-in Pet panel is gone (the Nursery mod's panel replaced it); saved layouts forget it. */
+const REMOVED_PANELS = ["pet"];
 const LEGACY_PREFIX = "imperium.layout.";
 
 let layout: Layout | null = null;
@@ -59,11 +56,9 @@ export function getLayout(): Layout {
   if (!layout) {
     const saved = getDoc<Partial<Layout>>("layout");
     layout = { ...EMPTY, ...saved };
-    if (saved && !saved.nurseryReplacedPet) {
-      // Layouts from before the nursery: close the single-pet panel once; Settings → Panels
-      // reopens it.
-      layout.hidden = [...new Set([...layout.hidden, ...CLOSED_BY_DEFAULT])];
-      layout.nurseryReplacedPet = true;
+    if (layout.hidden.some((id) => REMOVED_PANELS.includes(id)) || REMOVED_PANELS.some((id) => id in layout!.detached)) {
+      layout.hidden = layout.hidden.filter((id) => !REMOVED_PANELS.includes(id));
+      layout.detached = Object.fromEntries(Object.entries(layout.detached).filter(([id]) => !REMOVED_PANELS.includes(id)));
       setDoc("layout", layout);
     }
     if (!saved) {
@@ -96,5 +91,5 @@ export function updateLayout(patch: Partial<Layout>): void {
 
 /** Forgets sizes, closed panels, and detached windows (back to the defaults); the selection and folders stay. */
 export function resetLayout(): void {
-  updateLayout({ sizes: {}, hidden: [...CLOSED_BY_DEFAULT], detached: {} });
+  updateLayout({ sizes: {}, hidden: [], detached: {} });
 }

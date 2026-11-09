@@ -4,14 +4,16 @@
 // own daemon call); name, icon and colour apply with Save. A new environment is created with
 // everything at once, its folders included. The Runtime section says where the environment's
 // tools run (for a remote runtime, folders are paths typed in, inside it) and turns its
-// persistent agent on or off; both apply with Save.
+// persistent agent on or off; both apply with Save. The Pet field picks the environment's
+// default pet for the nursery (its sessions' pets are this kind unless the nursery says otherwise).
 
 import { FolderPlus, Search, Trash, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import type { EnvironmentInfo, RuntimeTestResult } from "@imperium/protocol";
+import type { EnvironmentInfo, PetListResult, RuntimeTestResult } from "@imperium/protocol";
 
+import { Select } from "./components/Select";
 import type { DaemonClient } from "./daemon/client";
 import { pickFolder } from "./daemon/connection";
 import { searchIcons } from "./icons";
@@ -45,6 +47,8 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
   const [runtime, setRuntime] = useState(() => draftOf(environment?.runtime));
   const [persistentAgent, setPersistentAgent] = useState(environment?.persistent_agent ?? false);
   const [typedFolder, setTypedFolder] = useState("");
+  const [pet, setPet] = useState(environment?.pet ?? "");
+  const [installedPets, setInstalledPets] = useState<{ id: string; name: string }[]>([]);
   const runtimeChanged = !creating && !sameRuntime(environment.runtime, runtime);
   const [deleting, setDeleting] = useState(confirmDelete);
   const [busy, setBusy] = useState(false);
@@ -60,6 +64,17 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  useEffect(() => {
+    let live = true;
+    client
+      ?.call<PetListResult>("pet.list")
+      .then((list) => live && setInstalledPets(list.pets.map((p) => ({ id: p.id, name: p.display_name || p.id }))))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [client]);
 
   useEffect(() => {
     if (!confirmDelete) nameInput.current?.focus();
@@ -127,6 +142,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             folders: newFolders,
             runtime: chosen,
             persistent_agent: persistentAgent,
+            ...(pet ? { pet } : {}),
           })
         : c.call<EnvironmentInfo>("environments.update", {
             id: environment.id,
@@ -135,6 +151,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             color: choice.color,
             ...(runtimeChanged ? { runtime: chosen } : {}),
             ...(persistentAgent !== (environment.persistent_agent ?? false) ? { persistent_agent: persistentAgent } : {}),
+            ...(pet !== (environment.pet ?? "") ? { pet } : {}),
           }),
     );
     if (env) {
@@ -242,6 +259,24 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
                   onClick={() => setChoice((current) => ({ ...current, color }))}
                 />
               ))}
+            </div>
+          </section>
+
+          <section className="environment-section" aria-label="Pet">
+            <div className="environment-section-head">
+              <span className="environment-label">Pet</span>
+              <Select
+                aria-label="Pet"
+                value={pet}
+                disabled={busy || !client}
+                options={[
+                  { value: "", label: "Nursery default" },
+                  // A saved pet that is no longer installed stays selectable until changed.
+                  ...(pet && !installedPets.some((p) => p.id === pet) ? [{ value: pet, label: pet }] : []),
+                  ...installedPets.map((p) => ({ value: p.id, label: p.name })),
+                ]}
+                onChange={setPet}
+              />
             </div>
           </section>
 

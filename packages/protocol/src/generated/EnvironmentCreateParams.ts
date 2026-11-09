@@ -14,4 +14,8 @@ runtime?: EnvironmentRuntime,
 /**
  * Start a persistent agent session for the environment (off when left out).
  */
-persistent_agent?: boolean, };
+persistent_agent?: boolean, 
+/**
+ * The environment's default pet, an installed pet's id.
+ */
+pet?: string, };

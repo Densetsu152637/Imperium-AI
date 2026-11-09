@@ -25,8 +25,6 @@ import type {
   SessionEventParams,
   LocalModelListResult,
   ModListResult,
-  PetListResult,
-  PetStateInfo,
   ModelListResult,
   SessionListResult,
   SessionSummary,
@@ -51,7 +49,6 @@ import { AgentsPanel } from "./panels/AgentsPanel";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
 import { BrowserPanel } from "./panels/BrowserPanel";
-import { PetPanel } from "./panels/PetPanel";
 import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
@@ -151,8 +148,6 @@ export function App() {
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
   const [mods, setMods] = useState<ModListResult | null>(null);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
-  const [pets, setPets] = useState<PetListResult | null>(null);
-  const [petState, setPetState] = useState<PetStateInfo | null>(null);
   const modBus = useMemo(() => new ModBus(), []);
   // Icons chosen per folder before environments, carried over when folders become environments.
   const folderIcons = useProjectIcons();
@@ -210,10 +205,6 @@ export function App() {
             : all,
         );
       client.onNotification((notification) => {
-        if (notification.method === "pet.state") {
-          setPetState(notification.params as PetStateInfo);
-          return;
-        }
         if (notification.method === "approval.requested") {
           const approval = notification.params as ApprovalInfo;
           setApprovals((all) => [...all.filter((a) => a.id !== approval.id), approval]);
@@ -287,9 +278,6 @@ export function App() {
       setLocalModels(await client.call<LocalModelListResult>("models.local"));
       setMods(await client.call<ModListResult>("mods.list"));
       setApprovals((await client.call<ApprovalListResult>("approvals.list")).approvals);
-      const petList = await client.call<PetListResult>("pet.list");
-      setPets(petList);
-      setPetState((current) => current ?? petList.state);
       const queued = pending;
       pending = null;
       queued.forEach(apply);
@@ -364,8 +352,8 @@ export function App() {
   const session = selected ? (sessions[selected] ?? null) : null;
   const client = status.kind === "connected" ? status.client : null;
   const modHost = useMemo(
-    () => ({ sessions: snapshotSessions(allSessions), selected, client }),
-    [allSessions, selected, client],
+    () => ({ sessions: snapshotSessions(allSessions, environments), selected, client }),
+    [allSessions, environments, selected, client],
   );
   const environment = environments.find((env) => env.id === envId) ?? null;
   // The session header shows a session's icon by its folder: that of its environment.
@@ -654,17 +642,6 @@ export function App() {
         />
       ),
     },
-    {
-      id: "pet",
-      title: pets?.pets.find((p) => p.id === pets.selected)?.display_name ?? "Pet",
-      body: (
-        <PetPanel
-          client={client}
-          pet={pets?.pets.find((p) => p.id === pets.selected) ?? null}
-          state={petState}
-        />
-      ),
-    },
     ...modPanels("left"),
   ];
   const approvalsPanel: PanelSpec = {
@@ -864,7 +841,6 @@ export function App() {
 const PANELS: { id: string; title: string }[] = [
   { id: "projects", title: "Environments" },
   { id: "sessions", title: "Sessions" },
-  { id: "pet", title: "Pet" },
   { id: "approvals", title: "Approvals" },
   { id: "agents", title: "Agents" },
   { id: "models", title: "Models" },
