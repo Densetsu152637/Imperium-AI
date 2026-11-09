@@ -1763,6 +1763,46 @@ button.danger:hover:not(:disabled) {
   box-shadow: var(--highlight);
 }
 
+.tasks > li.task-row {
+  position: relative;
+}
+
+/* The row's ⋯ menu sits in the corner, outside the summary so it does not toggle it. */
+.task-menu {
+  position: absolute;
+  top: calc(var(--space) * 0.5);
+  right: calc(var(--space) * 0.5);
+}
+
+.task-row summary {
+  padding-right: 2rem;
+}
+
+.task-activity .task-turn {
+  list-style: none;
+  margin-left: -1.1rem;
+  color: var(--text);
+}
+
+.task-follow-up {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 0.5);
+  margin-top: calc(var(--space) * 0.5);
+}
+
+.task-follow-up textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+}
+
+.task-follow-up-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: calc(var(--space) * 0.5);
+}
+
 .tasks summary {
   cursor: pointer;
   display: flex;

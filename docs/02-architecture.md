@@ -56,7 +56,9 @@
   `session.event` notifications. `session.send` takes an optional `mode` (`queue`, the
   default: run now, or after the current turn; `steer`: join the running turn) and `agent_id`
   (a running subagent), and returns the message's `id`; `session.queue` lists, edits, or
-  removes queued messages ([03](03-agent-engine.md#queueing-and-steering)). `session.control` changes a running session between turns:
+  removes queued messages ([03](03-agent-engine.md#queueing-and-steering)). `session.agents`
+  lists a session's agents with their kept state and `session.agent_resume` gives a finished
+  subagent a follow-up ([03](03-agent-engine.md#agent-state)). `session.control` changes a running session between turns:
   its usage-limit policy, what it watches, its model (compacting the conversation to fit,
   [03](03-agent-engine.md#switching-models-and-compaction)), or compaction now, and pins it
   (`set_pinned`, kept across restarts and announced as `session.updated`); model switches and

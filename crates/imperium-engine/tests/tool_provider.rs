@@ -144,6 +144,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
         instructions: None,
         max_steps: 5,
         auto_compact: false,
+        keep_agent_state: true,
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

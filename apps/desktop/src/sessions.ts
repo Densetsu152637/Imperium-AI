@@ -259,6 +259,9 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
       }
       break;
     }
+    case "task_resumed":
+      next.push({ kind: "notice", message: `Continued ${event.task_id} on ${event.model}: ${event.text.split("\n")[0]}` });
+      break;
     case "model_changed":
       next.push({
         kind: "notice",
@@ -351,11 +354,18 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
         },
       };
     }
+    // A finished subagent given a follow-up works again with its earlier conversation.
+    if (event.type === "task_resumed" && tasks[event.task_id]) {
+      const task = tasks[event.task_id];
+      tasks = { ...tasks, [event.task_id]: { ...task, status: "running", model: event.model, report: "" } };
+    }
   } else if (tasks[agentId]) {
     const task = tasks[agentId];
+    // A resumed task's cost adds to what it cost before.
+    const cost = (more: number | null) => (more === null ? task.costUsd : (task.costUsd ?? 0) + more);
     const updated: TaskState =
       event.type === "task_finished"
-        ? { ...task, status: event.ok ? "finished" : "failed", report: event.report, costUsd: event.cost_usd }
+        ? { ...task, status: event.ok ? "finished" : "failed", report: event.report, costUsd: cost(event.cost_usd) }
         : { ...task, entries: applyToEntries(task.entries, agentEvent) };
     tasks = { ...tasks, [agentId]: updated };
   }

@@ -7,13 +7,15 @@ use std::path::PathBuf;
 use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
-    ContextFit, SessionControl, SessionControlParams, SessionCreate, SessionCreateParams,
-    SessionQueue, SessionQueueParams, SessionRespond, SessionRespondParams, SessionSend,
-    SessionSendParams, SessionSuggestionRespond, SuggestionRespondParams,
+    ContextFit, SessionAgentResume, SessionAgentResumeParams, SessionAgents, SessionAgentsParams,
+    SessionControl, SessionControlParams, SessionCreate, SessionCreateParams, SessionQueue,
+    SessionQueueParams, SessionRespond, SessionRespondParams, SessionSend, SessionSendParams,
+    SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
-    AgentEvent, ContextCategory, PermissionDecision, QueuedMessage, ROOT_AGENT, SESSION_EVENT,
-    SendMode, SessionEvent, SessionEventParams, StepStatus, TokenCountMethod,
+    AgentEvent, AgentStatus, AgentSummary, ContextCategory, PermissionDecision, QueuedMessage,
+    ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent, SessionEventParams, StepStatus,
+    TokenCountMethod,
 };
 use tokio::sync::mpsc;
 
@@ -223,6 +225,26 @@ impl Chat {
                     Err(error) => println!("{error}"),
                 }
             }
+            Some(Command::Agents) => {
+                let result = client
+                    .call::<SessionAgents>(SessionAgentsParams {
+                        session_id: session_id.to_string(),
+                    })
+                    .await?;
+                print!("{}", describe_agents(&result.agents));
+            }
+            Some(Command::ResumeAgent(agent_id, text)) => {
+                let result = client
+                    .call::<SessionAgentResume>(SessionAgentResumeParams {
+                        session_id: session_id.to_string(),
+                        agent_id,
+                        text,
+                    })
+                    .await;
+                if let Err(error) = result {
+                    println!("{error}");
+                }
+            }
             Some(Command::Steer(text)) => self.send(client, session_id, text, true).await?,
             Some(Command::Suggestion(action)) => {
                 self.answer_suggestion(client, session_id, action).await?
@@ -374,6 +396,14 @@ impl Chat {
                 "\n{tag}→ {task_id} on {model}: {}",
                 brief.lines().next().unwrap_or_default()
             ),
+            SessionEvent::TaskResumed {
+                task_id,
+                text,
+                model,
+            } => println!(
+                "\n{tag}→ {task_id} resumed on {model}: {}",
+                text.lines().next().unwrap_or_default()
+            ),
             SessionEvent::TaskFinished {
                 task_id,
                 ok,
@@ -518,6 +548,10 @@ enum Command {
     Queue,
     /// `/steer <text>`: a message for the running turn.
     Steer(String),
+    /// `/agents`: the session's agents and their kept state.
+    Agents,
+    /// `/resume-agent <id> <text>`: a follow-up for a finished subagent.
+    ResumeAgent(String, String),
     /// `/download`, `/dismiss`, or `/never`: the answer to a model download suggestion, as
     /// `session.suggestion_respond` names it.
     Suggestion(&'static str),
@@ -528,6 +562,7 @@ fn command(text: &str) -> Option<Command> {
     match text {
         "/context" => return Some(Command::Context),
         "/queue" => return Some(Command::Queue),
+        "/agents" => return Some(Command::Agents),
         "/download" => return Some(Command::Suggestion("download")),
         "/dismiss" => return Some(Command::Suggestion("dismiss")),
         "/never" => return Some(Command::Suggestion("never")),
@@ -537,7 +572,49 @@ fn command(text: &str) -> Option<Command> {
         let steer = steer.trim();
         return (!steer.is_empty()).then(|| Command::Steer(steer.to_string()));
     }
+    if let Some(rest) = text.strip_prefix("/resume-agent ") {
+        let (agent_id, follow_up) = rest.trim().split_once(char::is_whitespace)?;
+        let follow_up = follow_up.trim();
+        return (!follow_up.is_empty())
+            .then(|| Command::ResumeAgent(agent_id.to_string(), follow_up.to_string()));
+    }
     control_command(text).map(Command::Control)
+}
+
+/// The agents as `/agents` prints them.
+fn describe_agents(agents: &[AgentSummary]) -> String {
+    let mut out = String::new();
+    for agent in agents {
+        let status = match agent.status {
+            AgentStatus::Running => "running",
+            AgentStatus::Idle => "idle",
+            AgentStatus::Failed => "failed",
+            AgentStatus::Interrupted => "interrupted",
+        };
+        let resumable = if agent.resumable && agent.status != AgentStatus::Running {
+            ", resumable"
+        } else {
+            ""
+        };
+        let cost = agent
+            .cost_usd
+            .map_or(String::new(), |cost| format!(", ${cost:.4}"));
+        let title = if agent.agent_id == ROOT_AGENT {
+            "the session's agent"
+        } else {
+            agent.title.as_str()
+        };
+        out.push_str(&format!(
+            "  {} ({status}{resumable}) {} · {} turns{cost}: {title}\n",
+            agent.agent_id, agent.model, agent.turns
+        ));
+    }
+    if agents.iter().any(|agent| agent.agent_id != ROOT_AGENT) {
+        out.push_str("  /resume-agent <id> <text> gives a finished subagent a follow-up.\n");
+    } else {
+        out.push_str("  No subagents yet.\n");
+    }
+    out
 }
 
 /// The queue as `/queue` prints it.
@@ -783,6 +860,16 @@ mod tests {
         );
         assert_eq!(command("/steer   "), None);
         assert_eq!(command("/queue"), Some(Command::Queue));
+        assert_eq!(command("/agents"), Some(Command::Agents));
+        assert_eq!(
+            command("/resume-agent t2  now check the tests"),
+            Some(Command::ResumeAgent(
+                "t2".into(),
+                "now check the tests".into()
+            ))
+        );
+        assert_eq!(command("/resume-agent t2"), None);
+        assert_eq!(command("/resume-agent t2   "), None);
         assert_eq!(command("/context"), Some(Command::Context));
         assert_eq!(
             command("/compact"),

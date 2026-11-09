@@ -59,6 +59,7 @@ listed; edit them in the file.
 | `resume.at_time`, `retry_every_minutes`, `max_wait_hours` | none, `5`, `12` | Local `HH:MM` for `at_time`; retry interval; longest wait in one turn |
 | `agents.resume_days` | `7` | Sessions active within this many days continue after the daemon restarts |
 | `sessions.auto_archive_on_pr_close` | `true` | Archive a session once the pull request it watches is merged or closed ([archiving sessions](14-projects-and-automation.md#archiving-sessions)) |
+| `sessions.agent_state_keep` | `true` | Keep each agent's state (a subagent's conversation, plan, and usage) in `<data>/sessions/<id>.agents/`, so finished subagents can be resumed with a follow-up, also after a restart; deleted with the session ([agent state](03-agent-engine.md#agent-state)) |
 | `sessions.auto_archive_after_days` | `0` | Archive an idle session after this many days without activity; `0` never does. Working, waiting, pinned, and agent sessions are never archived |
 | `models.catalog` | none | The model table: `[[models.catalog]]` rows with `id`, `spec`, `location` (`local` or `cloud`), `tier` (`basic`, `standard`, `strong`, `frontier`), optional `tags`, and optional `context_window` (tokens per request, for [context breakdowns](03-agent-engine.md#context-management); llama.cpp models report their own); see [routing](04-models-and-routing.md#routing) |
 | `routing.prefer` | `cheapest` | Tie-breaker among suitable models: `cheapest`, `local`, or `cloud` |
