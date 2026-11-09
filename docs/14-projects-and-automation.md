@@ -114,7 +114,10 @@ also work), then runs it anyway so nothing is postponed forever. The condition
 `conditions = { when_quiet = true }` waits for a quiet machine however long it takes. A waiting
 run shows as `deferred` in `imperium schedule list` and the `schedules.list` row, clients get a
 `schedule.event` with status `deferred`, and `imperium schedule run <id>` (`schedules.run`)
-starts it at once; a person's run never waits. The other conditions listed under
+starts it at once; a person's run never waits. While a run waits, ticks that come due join it
+instead of starting another, also with `overlap = "allow"` (the daemon logs them as skipped). A
+waiting run is not kept across a restart: it was never recorded, so it counts as missed
+(`missed`). The other conditions listed under
 [Behaviour](#behaviour) (AC power, GPU idle, time window, previous run succeeded) are not
 implemented yet.
 
@@ -154,10 +157,16 @@ that reads `quiet`, `busy`, or `saturated`, and the work it starts on its own gi
 - **Deferral.** A project agent's `start_session` creates the session at once, but with
   `prefer_quiet` (default `true` for `[[projects]]`) it gets its brief only when the view is
   `quiet`, or after `max_defer`. Until then it is listed as `paused` with a `deferred` hold.
-  Sessions waiting still count against `max_sessions`. A session released by `max_defer` or by
+  Sessions waiting still count against `max_sessions`. The waiting brief is kept with the
+  session (`deferred_brief` in its `.meta.json`, with the time `max_defer` ends), so after a
+  restart the session waits again for what is left of `max_defer`, then gets its brief and
+  reports to the project's agent; if the project no longer has an agent, it still runs, with
+  nobody to report to. A session released by `max_defer` or by
   *run now* (also a schedule prompt run that waited out its `max_defer`, or one a person started
   with `schedules.run`) does not give way again for the rest of its life: "then run anyway"
-  means it runs to the end.
+  means it runs to the end. This is kept with the session (`run_now`), so a restart does not
+  undo it. A message you write to a background session (`session.send`) releases it the same
+  way; messages from the daemon (a schedule, a project agent) do not.
 - **Yielding mid-run.** A running background session checks the view before each model call. If
   it is `busy` or `saturated`, the call in flight has already finished, so it pauses there: no
   slot held, no tokens spent, like `await_tasks`. It resumes when the view is `quiet`. The pause

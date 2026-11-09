@@ -57,7 +57,44 @@ struct Setup {
     load: Arc<ManualLoad>,
     plain: Arc<AtomicUsize>,
     project: tempfile::TempDir,
-    _home: tempfile::TempDir,
+    home: tempfile::TempDir,
+}
+
+impl Setup {
+    /// A second daemon on the same data, as after a restart, with its own load view (busy).
+    /// The first one keeps running, but its machine stays busy so it does nothing more.
+    fn restart(&self) -> (Arc<imperiumd::DaemonState>, Arc<ManualLoad>) {
+        let daemon = imperiumd::DaemonState::new(
+            imperium_config::Paths::under(self.home.path()),
+            self.daemon.settings().clone(),
+            None,
+        );
+        let load = ManualLoad::new(imperium_core::Load::Busy);
+        daemon.use_load_view(load.clone());
+        (daemon, load)
+    }
+
+    fn meta(&self, id: &str) -> Value {
+        let path = self
+            .home
+            .path()
+            .join("data")
+            .join("sessions")
+            .join(format!("{id}.meta.json"));
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// A background session of the user's project, as a schedule would start.
+    fn background(&self) -> Arc<imperium_core::Session> {
+        let options = imperiumd::SessionOptions {
+            background: true,
+            ..imperiumd::SessionOptions::default()
+        };
+        self.daemon
+            .create_session_with(&self.project.path().display().to_string(), None, options)
+            .unwrap()
+            .0
+    }
 }
 
 /// A daemon whose view stays busy, with `extra` appended to its configuration (`{path}` is the
@@ -98,7 +135,7 @@ async fn setup(extra: &str) -> Setup {
         load,
         plain,
         project,
-        _home: home,
+        home,
     }
 }
 
@@ -253,4 +290,84 @@ async fn quiet_release_running_a_project_agents_session_now_calls_the_model_whil
     })
     .await;
     assert!(session.hold().is_none());
+}
+
+#[tokio::test]
+async fn quiet_release_a_waiting_brief_survives_a_restart_and_runs_when_quiet() {
+    let setup = setup(
+        r#"
+        [[projects]]
+        path = "{path}"
+        agent = true
+        "#,
+    )
+    .await;
+    let session = dispatched(&setup).await;
+    assert!(session.hold().is_some());
+    let id = session.id().to_string();
+    assert_eq!(setup.meta(&id)["deferred_brief"]["text"], "Look around");
+
+    let (daemon, load) = setup.restart();
+    assert_eq!(daemon.resume_sessions(), 1);
+    daemon.start_project_agents();
+    let restored = daemon.session(&id).unwrap();
+    assert!(restored.is_background());
+    assert!(
+        restored.hold().is_some(),
+        "it waits for a quiet machine again"
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(setup.plain.load(Ordering::SeqCst), 0);
+
+    load.set(imperium_core::Load::Quiet);
+    until("the brief is sent", Duration::from_secs(30), || {
+        restored.title() == "Look around"
+    })
+    .await;
+    until("a model call", Duration::from_secs(30), || {
+        setup.plain.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    assert!(setup.meta(&id).get("deferred_brief").is_none(), "sent once");
+}
+
+#[tokio::test]
+async fn quiet_release_a_restart_keeps_background_and_run_now() {
+    let setup = setup("").await;
+    let released = setup.background();
+    setup.daemon.release_run_now(&released);
+    let yielding = setup.background();
+
+    let (daemon, _load) = setup.restart();
+    assert_eq!(daemon.resume_sessions(), 2);
+    let released = daemon.session(released.id()).unwrap();
+    let yielding = daemon.session(yielding.id()).unwrap();
+    assert!(released.is_background() && released.run_now().released());
+    assert!(yielding.is_background() && !yielding.run_now().released());
+}
+
+#[tokio::test]
+async fn quiet_release_a_person_writing_to_background_work_releases_it() {
+    let setup = setup("").await;
+    // Work sent by the daemon (a schedule, a project agent) still gives way.
+    let automatic = setup.background();
+    automatic.send("Audit.".into()).unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(!automatic.run_now().released());
+    assert_eq!(setup.plain.load(Ordering::SeqCst), 0);
+
+    let session = setup.background();
+    let mut connection = imperiumd::Connection::new(Arc::clone(&setup.daemon));
+    let handshake = json!({"jsonrpc":"2.0","id":1,"method":"system.handshake","params":{
+        "client":{"name":"test","version":"0"},"protocol":imperium_protocol::PROTOCOL_VERSION}});
+    connection.handle_text(&handshake.to_string());
+    let send = json!({"jsonrpc":"2.0","id":2,"method":"session.send","params":{
+        "session_id": session.id(), "text": "What did you find?"}});
+    connection.handle_text(&send.to_string());
+    assert!(session.run_now().released());
+    assert_eq!(setup.meta(session.id())["run_now"], true);
+    until("a model call while busy", Duration::from_secs(10), || {
+        setup.plain.load(Ordering::SeqCst) >= 1
+    })
+    .await;
 }

@@ -250,7 +250,12 @@ impl Connection {
                     })?;
                     match params.action.as_str() {
                         "set_resume_policy" => session.set_resume_policy(params.resume_policy),
-                        "resume_now" => session.resume_now(),
+                        "resume_now" => {
+                            session.resume_now();
+                            if session.run_now().released() {
+                                self.state.release_run_now(&session);
+                            }
+                        }
                         "watch" => {
                             let (Some(repo), Some(number)) = (params.repo, params.pull_request)
                             else {
@@ -357,9 +362,13 @@ impl Connection {
             }
             SessionSend::NAME => {
                 call::<SessionSend>(request.params, |params: SessionSendParams| {
-                    self.session(&params.session_id)?
-                        .send(params.text)
-                        .map_err(stopped)?;
+                    let session = self.session(&params.session_id)?;
+                    // A person writing to background work wants an answer now: it stops giving
+                    // way to the load.
+                    if session.is_background() {
+                        self.state.release_run_now(&session);
+                    }
+                    session.send(params.text).map_err(stopped)?;
                     Ok(Accepted {})
                 })
             }

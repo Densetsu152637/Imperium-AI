@@ -48,6 +48,14 @@ struct Deferred {
     run_now: Arc<RunNow>,
 }
 
+/// What a deferred run waits on.
+struct Wait {
+    view: Arc<dyn imperium_core::LoadView>,
+    run_now: Arc<RunNow>,
+    limit: Option<Duration>,
+    reason: String,
+}
+
 pub struct Scheduler {
     entries: Vec<Entry>,
     history: Mutex<History>,
@@ -193,18 +201,20 @@ impl Scheduler {
         Ok(self.spawn_run(daemon, entry, true))
     }
 
-    /// Waits for a quiet machine if the schedule asks for one. True when the run should now
-    /// go ahead whatever the load, because `max_defer` passed or a person released it; the
-    /// session it starts then does not give way again.
-    async fn wait_for_quiet(&self, daemon: &Arc<DaemonState>, index: usize) -> bool {
+    /// Marks a run of the schedule at `index` as waiting for a quiet machine, if the schedule
+    /// asks for one and the machine is not quiet. Called with `deferred` locked, so a tick that
+    /// comes due meanwhile sees the waiting run.
+    fn defer(
+        &self,
+        daemon: &DaemonState,
+        index: usize,
+        deferred: &mut HashMap<String, Deferred>,
+    ) -> Option<Wait> {
         let entry = &self.entries[index];
-        let Some(limit) = entry.quiet else {
-            return false;
-        };
+        let limit = entry.quiet?;
         let view = daemon.load_view();
-        let id = entry.settings.id.as_str();
         if view.level() == Load::Quiet {
-            return false;
+            return None;
         }
         let run_now = Arc::new(RunNow::default());
         let reason = match limit {
@@ -218,33 +228,59 @@ impl Scheduler {
                 view.level().label()
             ),
         };
-        lock(&self.deferred).insert(
-            id.to_string(),
+        deferred.insert(
+            entry.settings.id.clone(),
             Deferred {
                 reason: reason.clone(),
                 run_now: Arc::clone(&run_now),
             },
         );
-        announce(daemon, id, "deferred", None, reason);
-        let waited = wait_for_quiet(&*view, &run_now, limit).await;
-        lock(&self.deferred).remove(id);
-        tracing::info!(schedule = %id, ?waited, "run no longer deferred");
-        waited != Waited::Quiet
+        Some(Wait {
+            view,
+            run_now,
+            limit,
+            reason,
+        })
     }
 
     /// Runs the schedule at `index`. A `manual` run (a person asked for it) does not wait for a
-    /// quiet machine.
+    /// quiet machine. False when the run is skipped: one is still going and overlap is not
+    /// allowed, or (for a run that is not manual) one is already waiting for a quiet machine,
+    /// which this tick then joins.
     fn spawn_run(self: &Arc<Self>, daemon: &Arc<DaemonState>, index: usize, manual: bool) -> bool {
         let entry = &self.entries[index];
         let id = entry.settings.id.clone();
-        if !lock(&self.running).insert(id.clone()) && !entry.allow_overlap {
-            return false;
-        }
+        let wait = {
+            let mut running = lock(&self.running);
+            let mut deferred = lock(&self.deferred);
+            if !manual && deferred.contains_key(&id) {
+                return false;
+            }
+            if !running.insert(id.clone()) && !entry.allow_overlap {
+                return false;
+            }
+            if manual {
+                None
+            } else {
+                self.defer(daemon, index, &mut deferred)
+            }
+        };
         let scheduler = Arc::clone(self);
         let daemon = Arc::clone(daemon);
         tokio::spawn(async move {
             let settings = scheduler.entries[index].settings.clone();
-            let run_now = manual || scheduler.wait_for_quiet(&daemon, index).await;
+            // After `max_defer`, or when a person runs it now, the run goes ahead whatever the
+            // load, and the session it starts does not give way again.
+            let run_now = match wait {
+                Some(wait) => {
+                    announce(&daemon, &settings.id, "deferred", None, wait.reason);
+                    let waited = wait_for_quiet(&*wait.view, &wait.run_now, wait.limit).await;
+                    lock(&scheduler.deferred).remove(&settings.id);
+                    tracing::info!(schedule = %settings.id, ?waited, "run no longer deferred");
+                    waited != Waited::Quiet
+                }
+                None => manual,
+            };
             announce(&daemon, &settings.id, "started", None, String::new());
             let started = Local::now();
             let (ok, summary, session_id) = run(&daemon, &settings, run_now).await;
@@ -297,7 +333,7 @@ async fn run_loop(scheduler: Arc<Scheduler>, daemon: std::sync::Weak<DaemonState
         };
         for index in due {
             if !scheduler.spawn_run(&daemon, index, false) {
-                tracing::info!(schedule = %scheduler.entries[index].settings.id, "previous run still going; skipped");
+                tracing::info!(schedule = %scheduler.entries[index].settings.id, "previous run still going or waiting for a quiet machine; skipped");
             }
         }
         drop(daemon);
@@ -534,6 +570,43 @@ mod tests {
         minutes(1).await;
         let ran = row(&scheduler);
         assert!(ran.deferred.is_none() && ran.last_run.is_some(), "{ran:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn quiet_deferral_with_overlap_allowed_joins_ticks_to_the_waiting_run() {
+        let load = ManualLoad::new(Load::Busy);
+        let (daemon, _home) = start_daemon(
+            "prefer_quiet = true
+overlap = \"allow\"",
+            &load,
+        );
+        let mut announcements = daemon.announcements();
+        let scheduler = Scheduler::start(&daemon);
+        assert!(scheduler.spawn_run(&daemon, 0, false));
+        for _ in 0..3 {
+            minutes(5).await;
+            assert!(
+                !scheduler.spawn_run(&daemon, 0, false),
+                "joins the waiting run"
+            );
+        }
+        assert!(row(&scheduler).deferred.is_some());
+        load.set(Load::Quiet);
+        minutes(1).await;
+        let ran = row(&scheduler);
+        assert!(
+            ran.deferred.is_none() && !ran.running && ran.last_run.is_some(),
+            "{ran:?}"
+        );
+        let mut started = 0;
+        while let Ok(notification) = announcements.try_recv() {
+            if notification.method == SCHEDULE_EVENT && notification.params["status"] == "started" {
+                started += 1;
+            }
+        }
+        assert_eq!(started, 1, "one run, not one per tick");
+        // Once nothing waits, the next tick starts a run again.
+        assert!(scheduler.spawn_run(&daemon, 0, false));
     }
 
     #[tokio::test(start_paused = true)]

@@ -32,6 +32,7 @@ use crate::load::{self, LoadMonitor};
 use crate::local::LocalRuntime;
 use crate::pets::PetEngine;
 use crate::phone::Devices;
+use crate::project_agent::PendingBrief;
 use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
 
@@ -79,6 +80,9 @@ pub struct DaemonState {
     monitor: Arc<LoadMonitor>,
     /// A load view to use instead of the monitor (for tests).
     load_override: OnceLock<Arc<dyn LoadView>>,
+    /// Briefs of project-agent sessions that were waiting for a quiet machine when the daemon
+    /// stopped, until the project agents start and pick them up.
+    pending_briefs: Mutex<Vec<PendingBrief>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -126,6 +130,7 @@ impl DaemonState {
             watches: Mutex::new(HashMap::new()),
             monitor,
             load_override: OnceLock::new(),
+            pending_briefs: Mutex::new(Vec::new()),
         });
         state.apply_load_view();
         if let Some(local) = state.local.get()
@@ -470,14 +475,83 @@ impl DaemonState {
             let options = SessionOptions {
                 resume_id: Some(id.clone()),
                 background: meta["background"].as_bool().unwrap_or(false),
+                run_now: meta["run_now"].as_bool().unwrap_or(false),
                 ..SessionOptions::default()
             };
             match self.create_session_with(project, model, options) {
-                Ok(_) => resumed += 1,
+                Ok((session, events)) => {
+                    resumed += 1;
+                    // A brief still waiting for a quiet machine is sent once the project
+                    // agents start ([`crate::project_agent::start`]).
+                    if let Some(brief) = meta["deferred_brief"]["text"].as_str() {
+                        lock_pending(&self.pending_briefs).push(PendingBrief {
+                            project: project.to_string(),
+                            session,
+                            events,
+                            brief: brief.to_string(),
+                            until_unix_ms: meta["deferred_brief"]["until_unix_ms"]
+                                .as_u64()
+                                .unwrap_or(0),
+                        });
+                    }
+                }
                 Err(error) => tracing::warn!(session = %id, %error, "could not resume the session"),
             }
         }
         resumed
+    }
+
+    /// Briefs restored by [`DaemonState::resume_sessions`] that have not been sent yet.
+    pub(crate) fn take_pending_briefs(&self) -> Vec<PendingBrief> {
+        std::mem::take(&mut *lock_pending(&self.pending_briefs))
+    }
+
+    /// Stops a background session giving way to the load for the rest of its life, after a
+    /// restart too.
+    pub fn release_run_now(&self, session: &Session) {
+        session.run_now().release();
+        self.update_meta(session.id(), |meta| {
+            meta.insert("run_now".into(), true.into());
+        });
+    }
+
+    /// Records the brief a session gets once the machine is quiet (and the time it gets it
+    /// anyway), so a restart does not lose it; `None` once it has been sent.
+    pub(crate) fn set_deferred_brief(&self, id: &str, brief: Option<(&str, u64)>) {
+        self.update_meta(id, |meta| match brief {
+            Some((text, until_unix_ms)) => {
+                meta.insert(
+                    "deferred_brief".into(),
+                    serde_json::json!({ "text": text, "until_unix_ms": until_unix_ms }),
+                );
+            }
+            None => {
+                meta.remove("deferred_brief");
+            }
+        });
+    }
+
+    /// Changes a remembered session's `.meta.json`; sessions that are not remembered have none.
+    fn update_meta(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    ) {
+        let path = self
+            .paths
+            .data_dir()
+            .join("sessions")
+            .join(format!("{id}.meta.json"));
+        let Some(serde_json::Value::Object(mut meta)) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+        else {
+            return;
+        };
+        change(&mut meta);
+        if let Err(error) = std::fs::write(&path, serde_json::Value::Object(meta).to_string()) {
+            tracing::warn!(path = %path.display(), %error, "could not record the session");
+        }
     }
 
     /// The configured resume policy for usage limits.
@@ -760,6 +834,7 @@ impl DaemonState {
                 "project_dir": project_dir,
                 "model": model_spec,
                 "background": options.background,
+                "run_now": options.run_now,
             });
             let path = self
                 .paths
@@ -948,6 +1023,14 @@ fn lock_watches(
     watches: &Mutex<HashMap<String, (String, u64)>>,
 ) -> std::sync::MutexGuard<'_, HashMap<String, (String, u64)>> {
     watches
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn lock_pending(
+    pending: &Mutex<Vec<PendingBrief>>,
+) -> std::sync::MutexGuard<'_, Vec<PendingBrief>> {
+    pending
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
