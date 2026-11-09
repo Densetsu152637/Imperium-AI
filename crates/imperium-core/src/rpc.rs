@@ -55,6 +55,7 @@ use imperium_protocol::methods::{
 use imperium_protocol::methods::{
     ModelAddEndpoint, ModelAddEndpointParams, ModelFolderAdd, ModelFolderRemove, ModelTest,
     ModelUse, ModelUseParams, RuntimeInstall, RuntimeSetServer, RuntimeStatus,
+    RuntimeUpdateExternal,
 };
 use imperium_protocol::methods::{
     ModelConfig, ModelConfigParams, ModelSetConfig, ModelSetConfigParams,
@@ -496,6 +497,11 @@ impl Connection {
             RuntimeInstall::NAME => {
                 call_later::<RuntimeInstall, _>(request.params, &mut later, |_| {
                     crate::onboarding::install_runtime(Arc::clone(&self.state))
+                })
+            }
+            RuntimeUpdateExternal::NAME => {
+                call_later::<RuntimeUpdateExternal, _>(request.params, &mut later, |_| {
+                    crate::llama_runtime::update_external(Arc::clone(&self.state))
                 })
             }
             HfFiles::NAME => call_later::<HfFiles, _>(request.params, &mut later, |params| {

@@ -3,8 +3,15 @@
 //! the digests GitHub publishes for each release asset.
 //!
 //! Which `llama-server` is used, in order: `runtime.llamacpp.custom_path`; an installed build
-//! (the first of [`packs_for`] that is installed); a `llama-server` already on this machine that
-//! starts, takes the flags Imperium passes, and preferably sees the GPU ([`resolve`]).
+//! (the first of [`packs_for`] that is installed for the pinned release, else for the newest
+//! earlier release still installed, until the pinned one is); a `llama-server` already on this
+//! machine that starts, takes the flags Imperium passes, and preferably sees the GPU
+//! ([`resolve`]).
+//!
+//! llama.cpp has no updater of its own, so the build moves with Imperium: when an update pins a
+//! newer release, [`auto_install`] says to install it the next time a local model is needed;
+//! the earlier build is kept (and used) until the new one has passed its checks and loaded a
+//! model once ([`refs_to_remove`]).
 
 use std::future::Future;
 use std::io::Write;
@@ -45,10 +52,74 @@ pub fn pack_dir(data_dir: &Path, pack: &str) -> PathBuf {
 }
 
 fn runtimes_root(data_dir: &Path) -> PathBuf {
-    data_dir
-        .join("runtimes")
-        .join("llama.cpp")
-        .join(llama_cpp_ref())
+    releases_root(data_dir).join(llama_cpp_ref())
+}
+
+/// The folder holding one folder per installed llama.cpp release.
+fn releases_root(data_dir: &Path) -> PathBuf {
+    data_dir.join("runtimes").join("llama.cpp")
+}
+
+/// The build number of a release ref such as `b12180`.
+pub fn ref_build(reference: &str) -> Option<u64> {
+    reference.strip_prefix('b')?.parse().ok()
+}
+
+/// The build number of the pinned release ([`llama_cpp_ref`]).
+pub fn pinned_build() -> Option<u64> {
+    ref_build(llama_cpp_ref())
+}
+
+/// The releases installed under `data_dir`, newest first.
+pub fn installed_refs(data_dir: &Path) -> Vec<String> {
+    let mut refs: Vec<String> = std::fs::read_dir(releases_root(data_dir))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| ref_build(name).is_some())
+        .collect();
+    refs.sort_by_key(|name| std::cmp::Reverse(ref_build(name)));
+    refs
+}
+
+/// The release a `llama-server` installed under `data_dir` belongs to, such as `b12180`;
+/// `None` for one installed elsewhere.
+pub fn installed_ref(data_dir: &Path, server: &Path) -> Option<String> {
+    let rest = server.strip_prefix(releases_root(data_dir)).ok()?;
+    let first = rest.components().next()?;
+    Some(first.as_os_str().to_string_lossy().into_owned())
+}
+
+/// The earlier releases to delete: with the pinned release `current` not yet proven
+/// (`current_started` false: it has not loaded a model), every one but the newest earlier
+/// release, which stays as the fallback; once it has, every earlier one. Later releases (from
+/// a newer Imperium run before) are left alone.
+pub fn refs_to_remove(installed: &[String], current: &str, current_started: bool) -> Vec<String> {
+    let current_build = ref_build(current).unwrap_or(u64::MAX);
+    let mut earlier: Vec<&String> = installed
+        .iter()
+        .filter(|name| ref_build(name).is_some_and(|build| build < current_build))
+        .collect();
+    earlier.sort_by_key(|name| std::cmp::Reverse(ref_build(name)));
+    let keep = usize::from(!current_started);
+    earlier.into_iter().skip(keep).cloned().collect()
+}
+
+/// Deletes the earlier releases [`refs_to_remove`] names; a build whose files are in use
+/// (a model still loaded from it, on Windows) is left for a later try.
+pub fn remove_earlier_releases(data_dir: &Path, current_started: bool) {
+    let installed = installed_refs(data_dir);
+    for old in refs_to_remove(&installed, llama_cpp_ref(), current_started) {
+        let dir = releases_root(data_dir).join(&old);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => tracing::info!(release = %old, "removed an earlier llama.cpp build"),
+            Err(error) => {
+                tracing::debug!(release = %old, %error, "earlier llama.cpp build not removed yet");
+            }
+        }
+    }
 }
 
 /// `llama-server` inside an installed build.
@@ -103,9 +174,21 @@ fn server_for(
         return (SOURCE_CUSTOM.into(), path.to_path_buf());
     }
     let packs = packs_for(backend, hardware);
-    packs
-        .iter()
-        .map(|pack| (pack.clone(), server_in(&pack_dir(data_dir, pack))))
+    let current = llama_cpp_ref();
+    // The pinned release first, then (until it is installed) the newest earlier one.
+    let releases = std::iter::once(current.to_string()).chain(
+        installed_refs(data_dir)
+            .into_iter()
+            .filter(|name| ref_build(name) < ref_build(current)),
+    );
+    releases
+        .flat_map(|release| {
+            let root = releases_root(data_dir).join(release);
+            packs
+                .iter()
+                .map(move |pack| (pack.clone(), server_in(&root.join(archive_name(pack)))))
+                .collect::<Vec<_>>()
+        })
         .find(|(_, server)| server.is_file())
         .unwrap_or_else(|| {
             let pack = packs[0].clone();
@@ -202,23 +285,123 @@ pub async fn detect(
             }
         }
     }
-    let best = best_found(&usable)?;
+    let best = best_found(&usable, hardware)?;
     Some(usable.swap_remove(best))
 }
 
-/// Which of the usable servers found to use: the first that sees the GPU, else the first that
-/// could not say, else the first.
-pub fn best_found(found: &[(PathBuf, RuntimeCheck)]) -> Option<usize> {
+/// Which of the usable servers found to use: one that sees the GPU through the backend that
+/// suits `hardware` (CUDA on an NVIDIA GPU, Metal on Apple Silicon), then one that sees a GPU
+/// otherwise, then one that could not say, then one that sees none; among equals the newest
+/// build (by its `--version` build number), then the first found.
+pub fn best_found(found: &[(PathBuf, RuntimeCheck)], hardware: &Hardware) -> Option<usize> {
+    let family = device_family(hardware.backend_chain()[0]);
     let rank = |check: &RuntimeCheck| match check.gpu_visible {
-        Some(true) => 0,
-        None => 1,
-        Some(false) => 2,
+        Some(true)
+            if family.is_some_and(|family| {
+                check.devices.iter().any(|device| {
+                    device.is_gpu() && device.id.to_ascii_uppercase().starts_with(family)
+                })
+            }) =>
+        {
+            0
+        }
+        Some(true) => 1,
+        None => 2,
+        Some(false) => 3,
     };
     found
         .iter()
         .enumerate()
-        .min_by_key(|(index, (_, check))| (rank(check), *index))
+        .min_by_key(|(index, (_, check))| {
+            (
+                rank(check),
+                std::cmp::Reverse(build_number(check.version.as_deref())),
+                *index,
+            )
+        })
         .map(|(index, _)| index)
+}
+
+/// The prefix of the `--list-devices` ids a backend's GPUs have (`CUDA0`, `MTL0`, `Vulkan0`,
+/// `ROCm0`); `None` for the CPU.
+fn device_family(backend: &str) -> Option<&'static str> {
+    match backend {
+        "cuda12" | "cuda13" => Some("CUDA"),
+        "metal" => Some("MTL"),
+        "vulkan" => Some("VULKAN"),
+        "rocm" => Some("ROCM"),
+        _ => None,
+    }
+}
+
+/// The llama.cpp build number in a `--version` line such as `version: 6000 (58670d1)` (or
+/// `version: b6000 (...)`), comparable with a release ref's ([`ref_build`]).
+pub fn build_number(version: Option<&str>) -> Option<u64> {
+    let word = version?
+        .trim()
+        .strip_prefix("version:")?
+        .split_whitespace()
+        .next()?;
+    word.strip_prefix('b').unwrap_or(word).parse().ok()
+}
+
+/// Whether the daemon installs llama.cpp's build for this machine by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoInstall {
+    /// Keep the `llama-server` in use (or the lack of one).
+    Keep,
+    /// No usable `llama-server` is there: install the build.
+    Missing,
+    /// The one found runs on the CPU only although this machine has a GPU a build supports:
+    /// install the GPU build instead.
+    CpuOnly,
+    /// The build in use was installed for an earlier release than Imperium now pins: install
+    /// the pinned one (the earlier one stays in use until it is in place).
+    Outdated,
+}
+
+impl AutoInstall {
+    pub fn installs(self) -> bool {
+        self != AutoInstall::Keep
+    }
+}
+
+/// Whether to install llama.cpp's build without being asked, from what [`resolve`] chose
+/// (`installed_ref`: the release of the build in use when it is one installed under the data
+/// folder, [`installed_ref`]): never for a custom `llama-server`, with
+/// `runtime.llamacpp.auto_install` off, or once an installation has been tried since the
+/// daemon started (`tried`; a failed one is retried only from the app or
+/// `imperium runtime install`). Otherwise when nothing usable is installed or found, when the
+/// installed build is for an earlier release than the pinned one, or when the server found runs
+/// on the CPU only on a machine whose build of choice ([`pack_for`]) is a GPU one.
+pub fn auto_install(
+    settings: &LlamaCppSettings,
+    resolved: &Resolved,
+    installed_ref: Option<&str>,
+    hardware: &Hardware,
+    tried: bool,
+) -> AutoInstall {
+    if resolved.source == SOURCE_CUSTOM || !settings.auto_install || tried {
+        return AutoInstall::Keep;
+    }
+    if !resolved.server.is_file() {
+        return AutoInstall::Missing;
+    }
+    if resolved.source == SOURCE_PACK
+        && installed_ref.is_some_and(|release| ref_build(release) < pinned_build())
+    {
+        return AutoInstall::Outdated;
+    }
+    let wants_gpu = !pack_for(&settings.backend, hardware).ends_with("-cpu");
+    let cpu_only = resolved
+        .check
+        .as_ref()
+        .is_some_and(|check| check.gpu_visible == Some(false));
+    if resolved.source == SOURCE_DETECTED && wants_gpu && cpu_only {
+        AutoInstall::CpuOnly
+    } else {
+        AutoInstall::Keep
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -632,6 +815,23 @@ pub fn verdict(pack: &str, check: &RuntimeCheck, hardware: &Hardware) -> Verdict
     }
 }
 
+/// [`verdict`], and a build whose `--help` lacks a flag Imperium passes (`missing`) is
+/// broken too, so it is removed and the build in use before stays: the install rolls back.
+pub fn install_verdict(
+    pack: &str,
+    check: &RuntimeCheck,
+    missing: Option<&[&str]>,
+    hardware: &Hardware,
+) -> Verdict {
+    match missing {
+        Some(missing) if !missing.is_empty() && check.runs => Verdict::Broken(format!(
+            "llama-server lacks flags Imperium passes ({})",
+            missing.join(", ")
+        )),
+        _ => verdict(pack, check, hardware),
+    }
+}
+
 /// Checks an installed build: given the build and its `llama-server`.
 pub type Verify<'a> =
     &'a (dyn Fn(String, PathBuf) -> Pin<Box<dyn Future<Output = Verdict> + Send>> + Send + Sync);
@@ -725,7 +925,12 @@ pub async fn install(
         let hardware = checking.clone();
         Box::pin(async move {
             let check = runtime_check::check(&server, &hardware).await;
-            verdict(&pack, &check, &hardware)
+            let missing = if check.runs {
+                runtime_check::missing_flags(&server).await
+            } else {
+                None
+            };
+            install_verdict(&pack, &check, missing.as_deref(), &hardware)
         }) as Pin<Box<dyn Future<Output = Verdict> + Send>>
     };
     install_first_working(http, &release, data_dir, packs, &verify, progress).await
@@ -924,16 +1129,233 @@ mod tests {
 
     #[test]
     fn found_servers_that_see_the_gpu_come_first() {
+        let machine = gpu_machine();
         let found = vec![
             (PathBuf::from("a"), checked(true, Some(false))),
             (PathBuf::from("b"), checked(true, None)),
             (PathBuf::from("c"), checked(true, Some(true))),
             (PathBuf::from("d"), checked(true, Some(true))),
         ];
-        assert_eq!(best_found(&found), Some(2));
-        assert_eq!(best_found(&found[..2]), Some(1));
-        assert_eq!(best_found(&found[..1]), Some(0));
-        assert_eq!(best_found(&[]), None);
+        assert_eq!(best_found(&found, &machine), Some(2));
+        assert_eq!(best_found(&found[..2], &machine), Some(1));
+        assert_eq!(best_found(&found[..1], &machine), Some(0));
+        assert_eq!(best_found(&[], &machine), None);
+    }
+
+    fn on(device: &str, version: Option<&str>) -> RuntimeCheck {
+        RuntimeCheck {
+            devices: vec![runtime_check::Device {
+                id: device.into(),
+                description: "GPU".into(),
+            }],
+            version: version.map(str::to_string),
+            ..checked(true, Some(true))
+        }
+    }
+
+    fn cpu_version(version: &str) -> RuntimeCheck {
+        RuntimeCheck {
+            version: Some(version.into()),
+            ..checked(true, Some(false))
+        }
+    }
+
+    #[test]
+    fn a_build_on_the_gpu_backend_of_the_machine_wins_then_the_newest() {
+        let machine = gpu_machine();
+        let found = vec![
+            (PathBuf::from("cpu"), checked(true, Some(false))),
+            (
+                PathBuf::from("vulkan"),
+                on("Vulkan0", Some("version: 9000 (a)")),
+            ),
+            (
+                PathBuf::from("old-cuda"),
+                on("CUDA0", Some("version: 6000 (b)")),
+            ),
+            (
+                PathBuf::from("new-cuda"),
+                on("CUDA0", Some("version: 7000 (c)")),
+            ),
+        ];
+        assert_eq!(
+            best_found(&found, &machine),
+            Some(3),
+            "CUDA over Vulkan, newest first"
+        );
+        assert_eq!(
+            best_found(&found[..2], &machine),
+            Some(1),
+            "any GPU over the CPU"
+        );
+        let mut no_gpu = machine.clone();
+        no_gpu.gpus.clear();
+        let cpu = vec![
+            (PathBuf::from("old"), cpu_version("version: 5000 (x)")),
+            (PathBuf::from("new"), cpu_version("version: b8000 (y)")),
+        ];
+        assert_eq!(best_found(&cpu, &no_gpu), Some(1));
+    }
+
+    #[test]
+    fn build_numbers_are_read_from_versions_and_refs() {
+        assert_eq!(build_number(Some("version: 6000 (58670d1)")), Some(6000));
+        assert_eq!(build_number(Some("version: b12180 (x)")), Some(12180));
+        assert_eq!(build_number(Some("built with MSVC")), None);
+        assert_eq!(build_number(None), None);
+        assert_eq!(ref_build("b12180"), Some(12180));
+        assert_eq!(ref_build("master"), None);
+        assert_eq!(pinned_build(), ref_build(llama_cpp_ref()));
+    }
+
+    fn llama_settings() -> LlamaCppSettings {
+        imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+            .settings()
+            .unwrap()
+            .runtime
+            .llamacpp
+    }
+
+    fn resolved(source: &'static str, server: PathBuf, check: Option<RuntimeCheck>) -> Resolved {
+        Resolved {
+            source,
+            pack: "windows-x64-cuda13".into(),
+            server,
+            check,
+        }
+    }
+
+    #[test]
+    fn auto_install_runs_when_nothing_usable_is_there_or_only_the_cpu_is_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let present = dir.path().join("llama-server");
+        std::fs::write(&present, "").unwrap();
+        let missing = dir.path().join("none");
+        let machine = gpu_machine();
+        let settings = llama_settings();
+        assert!(settings.auto_install, "on by default");
+        let decide = |resolved: &Resolved, release: Option<&str>, tried: bool| {
+            auto_install(&settings, resolved, release, &machine, tried)
+        };
+        let nothing = resolved(SOURCE_PACK, missing.clone(), None);
+        assert_eq!(decide(&nothing, None, false), AutoInstall::Missing);
+        assert_eq!(
+            decide(&nothing, None, true),
+            AutoInstall::Keep,
+            "tried once"
+        );
+        let cpu_found = resolved(
+            SOURCE_DETECTED,
+            present.clone(),
+            Some(checked(true, Some(false))),
+        );
+        assert_eq!(decide(&cpu_found, None, false), AutoInstall::CpuOnly);
+        let gpu_found = resolved(
+            SOURCE_DETECTED,
+            present.clone(),
+            Some(checked(true, Some(true))),
+        );
+        assert_eq!(decide(&gpu_found, None, false), AutoInstall::Keep);
+        let custom = resolved(SOURCE_CUSTOM, missing.clone(), None);
+        assert_eq!(
+            decide(&custom, None, false),
+            AutoInstall::Keep,
+            "never over a custom path"
+        );
+        let installed = resolved(SOURCE_PACK, present.clone(), None);
+        assert_eq!(
+            decide(&installed, Some(llama_cpp_ref()), false),
+            AutoInstall::Keep
+        );
+        assert_eq!(decide(&installed, Some("b1"), false), AutoInstall::Outdated);
+        // A CPU build found on a machine without a GPU is what it should use.
+        let mut no_gpu = machine.clone();
+        no_gpu.gpus.clear();
+        assert_eq!(
+            auto_install(&settings, &cpu_found, None, &no_gpu, false),
+            AutoInstall::Keep
+        );
+        let off = LlamaCppSettings {
+            auto_install: false,
+            ..settings.clone()
+        };
+        assert_eq!(
+            auto_install(&off, &nothing, None, &machine, false),
+            AutoInstall::Keep
+        );
+        let cpu_backend = LlamaCppSettings {
+            backend: "cpu".into(),
+            ..settings.clone()
+        };
+        assert_eq!(
+            auto_install(&cpu_backend, &cpu_found, None, &machine, false),
+            AutoInstall::Keep
+        );
+    }
+
+    #[test]
+    fn one_earlier_release_is_kept_until_the_pinned_one_has_loaded_a_model() {
+        let installed: Vec<String> = ["b13000", "b12180", "b11000", "b10000", "b9000"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            refs_to_remove(&installed, "b12180", false),
+            ["b10000", "b9000"]
+        );
+        assert_eq!(
+            refs_to_remove(&installed, "b12180", true),
+            ["b11000", "b10000", "b9000"]
+        );
+        assert!(refs_to_remove(&installed[..2], "b12180", true).is_empty());
+    }
+
+    #[test]
+    fn an_earlier_release_is_used_until_the_pinned_one_is_installed() {
+        let data = tempfile::tempdir().unwrap();
+        let machine = gpu_machine();
+        let packs = packs_for("auto", &machine);
+        let old = releases_root(data.path())
+            .join("b1")
+            .join(archive_name(&packs[0]));
+        let old_server = server_in(&old);
+        std::fs::create_dir_all(old_server.parent().unwrap()).unwrap();
+        std::fs::write(&old_server, "").unwrap();
+        let (pack, server) = server_for(None, "auto", data.path(), &machine);
+        assert_eq!((pack.as_str(), &server), (packs[0].as_str(), &old_server));
+        assert_eq!(installed_ref(data.path(), &server).as_deref(), Some("b1"));
+        let new_server = server_in(&pack_dir(data.path(), &packs[0]));
+        std::fs::create_dir_all(new_server.parent().unwrap()).unwrap();
+        std::fs::write(&new_server, "").unwrap();
+        let (_, server) = server_for(None, "auto", data.path(), &machine);
+        assert_eq!(server, new_server);
+        remove_earlier_releases(data.path(), false);
+        assert!(
+            old_server.is_file(),
+            "kept until the new build has loaded a model"
+        );
+        remove_earlier_releases(data.path(), true);
+        assert!(!old_server.exists());
+    }
+
+    #[test]
+    fn a_build_without_the_flags_imperium_passes_is_rolled_back() {
+        let machine = gpu_machine();
+        let good = checked(true, Some(true));
+        let pack = "windows-x64-cuda13";
+        assert_eq!(
+            install_verdict(pack, &good, Some(&[]), &machine),
+            Verdict::Good
+        );
+        let lacking = install_verdict(pack, &good, Some(&["--kv-unified-per-slot"]), &machine);
+        assert!(
+            matches!(&lacking, Verdict::Broken(why) if why.contains("--kv-unified-per-slot")),
+            "{lacking:?}"
+        );
+        assert_eq!(
+            install_verdict(pack, &good, None, &machine),
+            Verdict::Good,
+            "help unreadable: judged by the probe alone"
+        );
     }
 
     #[test]

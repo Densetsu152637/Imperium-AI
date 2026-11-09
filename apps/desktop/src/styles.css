@@ -2419,6 +2419,48 @@ button.sort:hover:not(:disabled) {
   width: 100%;
 }
 
+.runtime-card .runtime-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: calc(var(--space) * 0.2) var(--space);
+  margin: 0 0 calc(var(--space) * 0.5);
+}
+
+.runtime-card .runtime-facts dt {
+  color: var(--muted);
+}
+
+.runtime-card .runtime-facts dd {
+  margin: 0;
+}
+
+.runtime-card .runtime-update,
+.runtime-card .runtime-candidates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space);
+  margin: 0 0 calc(var(--space) * 0.5);
+}
+
+.runtime-card .runtime-update p {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.runtime-card .runtime-candidates > :nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+
+.runtime-card .runtime-output {
+  max-height: 10rem;
+  overflow: auto;
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
 .local-model-table .model-name {
   white-space: normal;
   min-width: 10rem;
