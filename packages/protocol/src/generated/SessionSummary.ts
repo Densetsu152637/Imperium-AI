@@ -27,4 +27,8 @@ title: string, status: SessionStatus,
 /**
  * What it watches, when watching or merged.
  */
-status_detail: string | null, resume_policy: ResumePolicy, };
+status_detail: string | null, resume_policy: ResumePolicy, 
+/**
+ * Pinned sessions are listed first; set with `session.control` `set_pinned`.
+ */
+pinned: boolean, };

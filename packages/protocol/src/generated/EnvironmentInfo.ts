@@ -16,4 +16,8 @@ color: string | null,
 /**
  * Absolute folder paths, the working directory first.
  */
-folders: Array<string>, };
+folders: Array<string>, 
+/**
+ * Pinned environments are listed first.
+ */
+pinned: boolean, };

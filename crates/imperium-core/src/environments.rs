@@ -105,6 +105,7 @@ impl Environments {
             icon: icon.filter(|icon| !icon.is_empty()),
             color: color.filter(|color| !color.is_empty()),
             folders: checked,
+            pinned: false,
         };
         self.change(|list| {
             list.push(env.clone());
@@ -119,6 +120,7 @@ impl Environments {
         name: Option<&str>,
         icon: Option<String>,
         color: Option<String>,
+        pinned: Option<bool>,
     ) -> Result<EnvironmentInfo, EnvironmentError> {
         let name = name.map(valid_name).transpose()?;
         self.change_one(id, |env| {
@@ -130,6 +132,9 @@ impl Environments {
             }
             if let Some(color) = color {
                 env.color = (!color.is_empty()).then_some(color);
+            }
+            if let Some(pinned) = pinned {
+                env.pinned = pinned;
             }
             Ok(())
         })
@@ -339,7 +344,7 @@ mod tests {
         assert_eq!(envs.add_folder(&env.id, &again).unwrap().folders.len(), 2);
         let other = envs.create("Other", None, None, &[]).unwrap();
         let renamed = envs
-            .update(&env.id, Some("Day job"), None, Some("#2f6fdb".into()))
+            .update(&env.id, Some("Day job"), None, Some("#2f6fdb".into()), None)
             .unwrap();
         assert_eq!(renamed.name, "Day job");
         assert_eq!(renamed.icon.as_deref(), Some("code"));

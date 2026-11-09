@@ -82,8 +82,7 @@ pub fn rename(env: String, name: String) -> anyhow::Result<()> {
             .call::<EnvironmentUpdate>(EnvironmentUpdateParams {
                 id,
                 name: Some(name),
-                icon: None,
-                color: None,
+                ..EnvironmentUpdateParams::default()
             })
             .await?;
         print!("{}", describe(&env));
@@ -166,6 +165,7 @@ mod tests {
             icon: None,
             color: None,
             folders: vec!["/a".into(), "/b".into()],
+            pinned: false,
         }
     }
 

@@ -5,11 +5,15 @@ export type SessionControlParams = { session_id: string,
 /**
  * `set_resume_policy` (with `resume_policy`, or none to use the default), `resume_now`,
  * `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
- * for `models.default`; refused while a turn runs), or `compact` (summarise older turns
- * now; refused while a turn runs).
+ * for `models.default`; refused while a turn runs), `compact` (summarise older turns
+ * now; refused while a turn runs), or `set_pinned` (with `pinned`; kept across restarts).
  */
-action: "set_resume_policy" | "resume_now" | "watch" | "unwatch" | "set_model" | "compact", resume_policy: ResumePolicy | null, repo: string | null, pull_request: number | null, 
+action: "set_resume_policy" | "resume_now" | "watch" | "unwatch" | "set_model" | "compact" | "set_pinned", resume_policy: ResumePolicy | null, repo: string | null, pull_request: number | null, 
 /**
  * For `set_model`: a model table id or an `<endpoint>:<model>` spec.
  */
-model: string | null, };
+model: string | null, 
+/**
+ * For `set_pinned`: whether the session is pinned.
+ */
+pinned?: boolean, };
