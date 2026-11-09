@@ -33,6 +33,15 @@ Agents panel). Agent state is kept next to the session's files in the daemon's d
 restart cut off are marked interrupted and resumable
 ([03](03-agent-engine.md#agent-state)).
 
+Implemented: **llama.cpp found, installed, and updated by itself.** The daemon finds
+`llama-server` where package managers, LM Studio, and llama.cpp checkouts usually leave it,
+prefers a build on the machine's own GPU backend and then the newest, and installs llama.cpp's
+official build the first time a local model needs one when none usable is there (or only a CPU
+build on a GPU machine). llama.cpp updates with Imperium: a newer pinned release replaces
+Imperium's build lazily with one earlier build kept for rollback, package-manager installs get
+an *Update* (or an automatic upgrade), and checkouts are never modified
+([04](04-models-and-routing.md#llamacpp-updates)).
+
 Implemented: **resource monitor.** A live view of what the machine and the sessions are using:
 CPU, GPU, RAM, and VRAM usage, plus every active external endpoint and every local model in
 use, including models still loaded or cached for active sessions (and which sessions use

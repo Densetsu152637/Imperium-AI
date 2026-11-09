@@ -93,7 +93,9 @@ listed; edit them in the file.
 | `models.download_dir` | first of `models.folders`, else `<data>/models` | Where [Hugging Face downloads](04-models-and-routing.md#downloading-from-hugging-face) go, as `<owner>/<repo>/` below it; must be absolute; scanned with `models.folders` |
 | `runtime.llamacpp.backend` | `auto` | llama.cpp build to install and use: `auto` (the best that runs here: CUDA 13, CUDA 12, Vulkan, CPU; Metal on Apple Silicon), `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` ([runtimes](04-models-and-routing.md#runtimes)) |
 | `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of an installed build; applies to models loaded from then on, without a restart (*Choose llama-server…* in the app, `imperium runtime use`) |
-| `runtime.llamacpp.find_existing` | `true` | With no build installed and no `custom_path`, use a `llama-server` already on this machine (on `PATH`, or in `~/.unsloth/llama.cpp` or `~/llama.cpp`) that starts and supports the flags Imperium passes, preferring one that sees the GPU |
+| `runtime.llamacpp.find_existing` | `true` | With no build installed and no `custom_path`, use a `llama-server` already on this machine (on `PATH`, package managers, LM Studio, llama.cpp folders in the home or Downloads folder; [where](04-models-and-routing.md#runtimes)) that starts and supports the flags Imperium passes, preferring one that sees the GPU |
+| `runtime.llamacpp.auto_install` | `true` | With no `custom_path` and no usable `llama-server` (or only a CPU build on a machine with a GPU, or Imperium's build of an earlier release), download and verify llama.cpp's official build for this machine the first time a local model is needed ([runtimes](04-models-and-routing.md#runtimes)) |
+| `runtime.llamacpp.update_external` | `ask` | A `llama-server` installed with winget, scoop, Chocolatey, or Homebrew that is older than the pinned release: `off`, `ask` (offer *Update*), or `auto` (run the package manager's upgrade while no model is loaded from it) ([updates](04-models-and-routing.md#llamacpp-updates)) |
 | `runtime.llamacpp.context` | `8192` | Tokens one session may use on a local model (`--kv-unified-per-slot` when below the pool) |
 | `runtime.llamacpp.parallel` | `2` | Deprecated: only sizes the default KV pool, `pool_tokens = context × parallel`. It no longer caps anything: sessions beyond a model's slots queue |
 | `runtime.llamacpp.slots` | the larger of `8` and `parallel` | Default `--parallel` of each model: calls one server decodes at once, `1`-`256`. A CPU-pinned model defaults to `1` |
@@ -199,6 +201,8 @@ base_url = "http://192.168.1.20:8000/v1"
 backend = "auto"          # auto | cpu | cuda12 | cuda13 | vulkan | rocm | metal
 custom_path = ""
 find_existing = true      # use a llama-server already on this machine until one is installed
+auto_install = true       # install the official build the first time a local model needs one
+update_external = "ask"   # off | ask | auto: package-manager llama.cpp updates
 idle_unload_s = 900
 context = 8192            # tokens one session may use
 slots = 8                 # calls one server decodes at once; no cap on sessions
