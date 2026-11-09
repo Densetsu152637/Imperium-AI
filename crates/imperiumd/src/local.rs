@@ -125,6 +125,7 @@ impl LocalRuntime {
 
     pub fn listing(&self) -> LocalModelListResult {
         let loaded = self.supervisor.loaded();
+        let llama = self.supervisor.settings();
         let models = self
             .supervisor
             .models()
@@ -168,6 +169,9 @@ impl LocalRuntime {
                     queued: status.map_or(0, |s| s.queued),
                     cpu_lane,
                     tokens_per_s: self.supervisor.tokens_per_s(&model.id),
+                    context: llama.context,
+                    pool_tokens: llama.context.saturating_mul(llama.parallel),
+                    pool_reserved_tokens: 0,
                 }
             })
             .collect();

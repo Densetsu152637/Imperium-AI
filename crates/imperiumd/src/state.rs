@@ -956,6 +956,7 @@ impl DaemonState {
                     output_usd_per_mtok: pricing.map(|p| p.output_usd_per_mtok),
                     endpoint_configured: endpoint.is_some(),
                     context_window: entry.context_window,
+                    enabled: true,
                 }
             })
             .collect();
