@@ -161,16 +161,15 @@ fn collect(
         });
         return;
     }
-    if cache_repo.is_none() {
-        if let Some(cache) = dir
+    if cache_repo.is_none()
+        && let Some(cache) = dir
             .file_name()
             .and_then(|name| hf_cache_repo(&name.to_string_lossy()))
-        {
-            for snapshot in cache_snapshots(dir) {
-                collect(root, &snapshot, Some(&cache), walk, skipped);
-            }
-            return;
+    {
+        for snapshot in cache_snapshots(dir) {
+            collect(root, &snapshot, Some(&cache), walk, skipped);
         }
+        return;
     }
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
