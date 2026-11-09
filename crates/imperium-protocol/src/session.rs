@@ -603,6 +603,13 @@ pub enum LocalWaitReason {
     Slot,
     /// Another model is in the way: its calls come first, or it must unload to make room.
     OtherModel,
+    /// Waiting for room on the GPU (models in the way finish their calls and are swapped out)
+    /// rather than running on the CPU.
+    MakingRoom,
+    /// Saving the contexts of agents on a model swapped out for this call.
+    SavingContext,
+    /// Restoring this agent's own context, saved while it waited.
+    RestoringContext,
 }
 
 /// Why a session is [`SessionEvent::Paused`].

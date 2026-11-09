@@ -580,6 +580,9 @@ impl Chat {
                     LocalWaitReason::KvRoom => "waiting for room in its KV cache",
                     LocalWaitReason::Slot => "waiting for a free slot",
                     LocalWaitReason::OtherModel => "waiting for another model",
+                    LocalWaitReason::MakingRoom => "making room on the GPU",
+                    LocalWaitReason::SavingContext => "saving the context of a model swapped out",
+                    LocalWaitReason::RestoringContext => "restoring its context",
                 };
                 println!("\n{tag}· {model}: {why}");
             }

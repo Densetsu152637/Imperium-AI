@@ -148,6 +148,13 @@ pub enum LocalWait {
     Slot,
     /// Another model is in the way: its calls come first, or it must unload to make room.
     OtherModel,
+    /// Waiting for room on the GPU: models in the way are finishing their calls before they
+    /// are swapped out, so this call does not run on the CPU.
+    MakingRoom,
+    /// The contexts of agents on a model being swapped out for this call are being saved.
+    SavingContext,
+    /// This agent's own context, saved while it waited, is being restored.
+    RestoringContext,
 }
 
 /// The agent id of a holder, `<session id>/<agent id>`.
@@ -181,6 +188,12 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     /// `None` when it does not wait or the runtime does not say.
     fn wait_reason(&self, _holder: &str) -> Option<LocalWait> {
         None
+    }
+    /// Whether `holder`'s context was saved and its cells freed while it waited (see
+    /// [`LocalModels::waiting`]): its next [`LocalModels::acquire`] restores it before the call,
+    /// so whoever wakes it (subagents done, a steer) needs nothing else.
+    fn suspended(&self, _holder: &str) -> bool {
+        false
     }
     /// Takes a slot on the model for one call, loading the model first if needed (waiting for
     /// room while the models in the way are in use, up to a limit the runtime sets) and queueing

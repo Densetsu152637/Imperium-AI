@@ -70,6 +70,9 @@ fn wait_reason(reason: crate::LocalWait) -> imperium_protocol::session::LocalWai
         Wait::KvRoom => Reason::KvRoom,
         Wait::Slot => Reason::Slot,
         Wait::OtherModel => Reason::OtherModel,
+        Wait::MakingRoom => Reason::MakingRoom,
+        Wait::SavingContext => Reason::SavingContext,
+        Wait::RestoringContext => Reason::RestoringContext,
     }
 }
 
