@@ -149,6 +149,9 @@ pub mod codes {
     pub const SESSION_BUSY: i32 = -32006;
     /// The session's conversation cannot fit the requested model's context window.
     pub const CONTEXT_TOO_LARGE: i32 = -32007;
+    /// A budget in the session's scope is used up and says to ask (repeat with
+    /// `confirm_budget`) or to block; `data` is a `BudgetStop`.
+    pub const BUDGET_EXCEEDED: i32 = -32008;
 }
 
 #[cfg(test)]

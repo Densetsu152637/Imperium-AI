@@ -52,8 +52,12 @@ them), in the desktop's Resources panel and `imperium resources [--watch]`
    presets, carried into the OS sandbox and container mounts
    ([05](05-tools-and-isolation.md#permissions), [07](07-desktop-ui.md#permissions-implemented)).
    Permission modes (ask every time, accept edits, plan only, full access) remain to do.
-3. **Budgets and alerts.** Weekly and monthly budgets per environment, globally, and per
-   endpoint; alerts through notifications, with optional pause or block; a usage dashboard.
+3. **Budgets and alerts** (implemented). Daily, weekly, and monthly token and cost budgets
+   globally, per environment, per endpoint, and per model (configurable week start and monthly
+   reset day, local time), with usage persisted across restarts; alerts at configurable
+   thresholds (default 50/80/100%) through notifications, and warn, ask before each new turn, or
+   block new turns when used up; Settings → Budgets, a Usage dashboard, and a budget mark beside
+   the context meter ([10](10-configuration.md#budgets), [07](07-desktop-ui.md#budgets-and-usage-implemented)).
 4. **Command palette.** One searchable list of every action, session, environment, and setting.
 5. **Attachments and voice.** Images, PDFs, and files in messages; push-to-talk voice input
    through the transcription layer.

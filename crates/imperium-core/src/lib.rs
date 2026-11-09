@@ -3,6 +3,7 @@
 
 mod approvals;
 mod autofix;
+mod budgets;
 mod config;
 mod connectors;
 mod downloads;

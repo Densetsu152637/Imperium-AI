@@ -673,6 +673,10 @@ pub struct SessionSendParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub agent_id: Option<String>,
+    /// Go ahead although a budget in the session's scope is used up and says to ask first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub confirm_budget: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

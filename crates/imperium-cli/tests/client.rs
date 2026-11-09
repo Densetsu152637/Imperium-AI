@@ -100,6 +100,7 @@ async fn a_chat_turn_streams_events_to_the_client() {
             text: "hello".into(),
             mode: None,
             agent_id: None,
+            confirm_budget: None,
         })
         .await
         .unwrap();

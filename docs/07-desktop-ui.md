@@ -377,9 +377,37 @@ session.
 
 Notifications come from the main window only, so detached panel windows do not repeat them.
 Other parts of the app send their own through one internal entry point, `notify(notice,
-settings)` in `apps/desktop/src/notify.ts`, which applies these settings; budget alerts will use
-it. Which events notify is decided in `apps/desktop/src/attention.ts` and covered by
+settings)` in `apps/desktop/src/notify.ts`, which applies these settings; budget alerts use it
+([budgets](#budgets-and-usage-implemented)). Which events notify is decided in `apps/desktop/src/attention.ts` and covered by
 `apps/desktop/test/attention.test.ts`.
+
+## Budgets and usage (implemented)
+
+**Settings → Budgets** edits the daemon's [budgets](10-configuration.md#budgets)
+(`budgets.get` / `budgets.set`, saved to `[budgets]` in the user config): when weekly budgets
+start, the day monthly ones reset, the default alert thresholds, and one card per budget with an
+optional name, its scope (*All usage*, an environment picked from the list, an endpoint, or a
+model, the last two with suggestions from the model table), its window (daily, weekly, monthly),
+a token limit, a cost limit in US dollars (either may be empty), what happens when it is used up
+(*Warn only*, *Ask first*, *Block*), and its own alert thresholds (empty: the defaults). Each
+saved budget shows where it stands in its current window. *Save* applies the budgets at once.
+
+The **Usage** panel (in Settings → Panels, closable and detachable like the others) is the
+dashboard: every budget's current window as a bar with its share, tokens and cost against the
+limits, when it resets, and its action; a bar chart of the last 30 days, by tokens or cost, for
+all usage or, after clicking a budget, that budget's scope; and the top five environments,
+endpoints, and models over the same days. It follows `budgets.changed`, which the daemon sends
+after each model call.
+
+A **budget alert** (`budgets.alert`, once per threshold per window) becomes a *budget* notice
+through `notify`, so it follows *Notify about budgets and usage* and the other notification
+settings, and answering it opens the session whose call crossed the threshold. Beside the context
+meter in the session footer, a small gauge mark shows when a budget over the session (all usage,
+its environment, or its model's endpoint or model) is past an alert threshold: amber with the
+share, red once used up; its tooltip lists each such budget, its usage, when it resets, and
+whether new turns ask or are blocked. Sending a message while a budget that asks is used up opens
+a confirmation; *OK* sends it anyway (`confirm_budget`). A blocked turn says which budget blocks
+it and when it resets.
 
 ## Environments and sessions (implemented)
 

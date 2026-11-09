@@ -154,6 +154,8 @@ pub struct DaemonState {
     /// Global and environment permission rules as running sessions see them, and the global
     /// path grants.
     permissions: crate::permissions::PermissionStore,
+    /// Budgets and the usage ledger they count.
+    budgets: crate::budgets::BudgetBook,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -191,6 +193,10 @@ impl DaemonState {
         let environments = Environments::load(paths.data_dir().join("environments.json"));
         let suggest = settings.models.suggest_downloads;
         let permissions = crate::permissions::PermissionStore::new(&settings.permissions);
+        let budgets = crate::budgets::BudgetBook::load(
+            paths.data_dir().join("usage.json"),
+            settings.budgets.clone(),
+        );
         let state = Arc::new_cyclic(|me| DaemonState {
             me: me.clone(),
             started: Instant::now(),
@@ -224,6 +230,7 @@ impl DaemonState {
             runner: OnceLock::new(),
             resources: Arc::default(),
             permissions,
+            budgets,
         });
         state.apply_load_view();
         if let Some(local) = state.local.get()
@@ -1058,6 +1065,9 @@ impl DaemonState {
             Err(error) => return (false, error.to_string(), None),
         };
         let session_id = Some(session.id().to_string());
+        if let Err(stop) = crate::budgets::check(self, session.id(), false) {
+            return (false, stop.message, session_id);
+        }
         if session.send(prompt).is_err() {
             return (
                 false,
@@ -1290,6 +1300,12 @@ impl DaemonState {
         if let Some(me) = self.me.upgrade() {
             crate::suggestions::watch(&me, id.clone(), session.subscribe());
             crate::resources::watch_session(&me, id.clone(), session.subscribe());
+            crate::budgets::watch_session(
+                &me,
+                id.clone(),
+                placement.environment_id.clone(),
+                session.subscribe(),
+            );
         }
         let session = Arc::new(session);
         self.placements
@@ -1444,6 +1460,10 @@ impl DaemonState {
     }
 
     /// The permission rules running sessions check calls against, and the global grants.
+    pub fn budgets(&self) -> &crate::budgets::BudgetBook {
+        &self.budgets
+    }
+
     pub fn permissions(&self) -> &crate::permissions::PermissionStore {
         &self.permissions
     }
