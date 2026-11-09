@@ -82,6 +82,7 @@ async fn run() -> anyhow::Result<()> {
     daemon.start_project_agents();
     daemon.start_scheduler();
     daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));
+    daemon.start_auto_archive();
     let server = tokio::spawn(imperium_core::serve(
         listener,
         token,

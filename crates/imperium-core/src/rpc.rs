@@ -383,17 +383,22 @@ impl Connection {
                 })
             }
             SessionList::NAME => call::<SessionList>(request.params, |_: SessionListParams| {
-                Ok(SessionListResult {
-                    sessions: self
-                        .state
-                        .sessions()
-                        .iter()
-                        .map(|session| self.state.summary(session))
-                        .collect(),
-                })
+                // Running sessions, then archived ones (marked `archived`).
+                let mut sessions: Vec<_> = self
+                    .state
+                    .sessions()
+                    .iter()
+                    .map(|session| self.state.summary(session))
+                    .collect();
+                sessions.extend(self.state.archived_sessions());
+                Ok(SessionListResult { sessions })
             }),
             SessionSubscribe::NAME => {
                 call::<SessionSubscribe>(request.params, |params: SessionSubscribeParams| {
+                    // An archived session's history comes from its journal; nothing follows.
+                    if let Some(history) = self.state.archived_history(&params.session_id) {
+                        return Ok(SessionSubscribeResult { history });
+                    }
                     let (history, events) =
                         self.session(&params.session_id)?.subscribe_with_history();
                     subscription = Some(Subscription {
@@ -596,6 +601,18 @@ impl Connection {
     ) -> impl Future<Output = Result<SessionControlResult, ErrorObject>> + Send + 'static {
         let state = Arc::clone(&self.state);
         async move {
+            // Archiving works on archived sessions too (which are not running).
+            match params.action.as_str() {
+                "archive" => {
+                    state.archive(&params.session_id).map_err(archive_error)?;
+                    return Ok(SessionControlResult::default());
+                }
+                "unarchive" => {
+                    state.unarchive(&params.session_id).map_err(archive_error)?;
+                    return Ok(SessionControlResult::default());
+                }
+                _ => {}
+            }
             let session = state
                 .session(&params.session_id)
                 .ok_or_else(|| ErrorObject::new(codes::SESSION_NOT_FOUND, "no such session"))?;
@@ -719,6 +736,16 @@ fn queue_error(error: QueueError) -> ErrorObject {
         QueueError::UnknownAgent(_) | QueueError::UnknownMessage(_) | QueueError::Empty => {
             codes::INVALID_PARAMS
         }
+    };
+    ErrorObject::new(code, error.to_string())
+}
+
+fn archive_error(error: crate::state::ArchiveError) -> ErrorObject {
+    use crate::state::ArchiveError;
+    let code = match &error {
+        ArchiveError::NotFound(_) => codes::SESSION_NOT_FOUND,
+        ArchiveError::Persistent(_) => codes::INVALID_PARAMS,
+        ArchiveError::Record(_) | ArchiveError::Resume(_) => codes::INTERNAL_ERROR,
     };
     ErrorObject::new(code, error.to_string())
 }
@@ -1248,6 +1275,86 @@ mod tests {
         let response = unknown.deferred.expect("a deferred reply").await;
         assert!(
             matches!(response.outcome, Outcome::Error(ref error) if error.code == codes::INVALID_PARAMS)
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_are_archived_and_unarchived_over_rpc() {
+        let mut connection = handshaken();
+        let mut notices = connection.state.announcements();
+        let dir = tempfile::tempdir().unwrap();
+        let created = result_of(&connection.handle_text(&request(
+            2,
+            SessionCreate::NAME,
+            json!({"project_dir": dir.path()}),
+        )));
+        let id = created["session_id"].as_str().unwrap().to_string();
+        let control = |connection: &mut Connection, n: i64, action: &str| {
+            connection
+                .handle_text(&request(
+                    n,
+                    SessionControl::NAME,
+                    json!({"session_id": id, "action": action}),
+                ))
+                .deferred
+                .expect("a deferred reply")
+        };
+
+        let archived = control(&mut connection, 3, "archive").await;
+        assert!(
+            matches!(archived.outcome, Outcome::Result(_)),
+            "{archived:?}"
+        );
+        let listed = result_of(&connection.handle_text(&request(4, SessionList::NAME, json!({}))));
+        assert_eq!(listed["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["sessions"][0]["archived"], true);
+        assert!(listed["sessions"][0]["archived_at"].is_u64());
+        // Every client hears of it.
+        let mut updated = false;
+        while let Ok(notice) = notices.try_recv() {
+            if notice.method == imperium_protocol::methods::SESSION_UPDATED
+                && notice.params["archived"] == true
+            {
+                updated = true;
+            }
+        }
+        assert!(updated, "no session.updated for the archive");
+        // Its history is still readable, with nothing live to follow.
+        let subscribed = connection.handle_text(&request(
+            5,
+            SessionSubscribe::NAME,
+            json!({"session_id": id}),
+        ));
+        assert!(subscribed.subscription.is_none());
+        assert!(result_of(&subscribed)["history"].is_array());
+        // It no longer takes messages.
+        let send = connection.handle_text(&request(
+            6,
+            SessionSend::NAME,
+            json!({"session_id": id, "text": "hi"}),
+        ));
+        assert_eq!(error_code(&send), Some(codes::SESSION_NOT_FOUND));
+
+        let unarchived = control(&mut connection, 7, "unarchive").await;
+        assert!(
+            matches!(unarchived.outcome, Outcome::Result(_)),
+            "{unarchived:?}"
+        );
+        let listed = result_of(&connection.handle_text(&request(8, SessionList::NAME, json!({}))));
+        assert_eq!(listed["sessions"][0]["archived"], false);
+        assert!(connection.state.session(&id).is_some());
+
+        let missing = connection
+            .handle_text(&request(
+                9,
+                SessionControl::NAME,
+                json!({"session_id": "nope", "action": "archive"}),
+            ))
+            .deferred
+            .expect("a deferred reply")
+            .await;
+        assert!(
+            matches!(missing.outcome, Outcome::Error(ref error) if error.code == codes::SESSION_NOT_FOUND)
         );
     }
 

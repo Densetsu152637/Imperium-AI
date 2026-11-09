@@ -193,6 +193,14 @@ pub struct SessionSummary {
     /// Pinned sessions are listed first; set with `session.control` `set_pinned`.
     #[serde(default)]
     pub pinned: bool,
+    /// Archived: the session no longer runs or resumes, but its journal is kept and
+    /// `session.subscribe` still returns its history. `session.control` `unarchive` resumes it.
+    #[serde(default)]
+    pub archived: bool,
+    /// When it was archived, in milliseconds since the Unix epoch.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub archived_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1274,9 +1282,11 @@ pub struct SessionControlParams {
     /// `set_resume_policy` (with `resume_policy`, or none to use the default), `resume_now`,
     /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
     /// for `models.default`; refused while a turn runs), `compact` (summarise older turns
-    /// now; refused while a turn runs), or `set_pinned` (with `pinned`; kept across restarts).
+    /// now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
+    /// `archive` (stop the session and keep its journal; announced with `session.updated`), or
+    /// `unarchive` (resume an archived session).
     #[ts(
-        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\""
+        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\" | \"archive\" | \"unarchive\""
     )]
     pub action: String,
     #[serde(default)]

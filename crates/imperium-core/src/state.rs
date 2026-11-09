@@ -34,6 +34,9 @@ use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
 use crate::suggestions::{SuggestTool, Suggestions};
 
+mod archive;
+pub use archive::ArchiveError;
+
 /// Options for [`DaemonState::create_session_with`].
 #[derive(Debug, Default)]
 pub struct SessionOptions {
@@ -59,6 +62,8 @@ struct Placement {
     folders: Vec<String>,
     /// Listed first; recorded in the session's meta file so it survives a restart.
     pinned: bool,
+    /// A project agent: it runs while the daemon does and is never archived.
+    persistent: bool,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -90,6 +95,8 @@ pub struct DaemonState {
     phone_address: OnceLock<std::net::SocketAddr>,
     /// Pull requests sessions watch: session id to (repo, number).
     watches: Mutex<HashMap<String, (String, u64)>>,
+    /// Archived sessions, which no longer run, as lists show them, by session id.
+    archived: Mutex<HashMap<String, SessionSummary>>,
     /// Signalled when a client asks the daemon to stop.
     shutdown: tokio::sync::Notify,
     /// What `mcp.test` last learned about each connector.
@@ -147,6 +154,7 @@ impl DaemonState {
             devices,
             phone_address: OnceLock::new(),
             watches: Mutex::new(HashMap::new()),
+            archived: Mutex::new(HashMap::new()),
             shutdown: tokio::sync::Notify::new(),
             connectors: crate::connectors::StatusCache::default(),
             suggestions: Suggestions::new(suggest),
@@ -427,9 +435,32 @@ impl DaemonState {
             let meta: Option<serde_json::Value> = std::fs::read_to_string(&path)
                 .ok()
                 .and_then(|text| serde_json::from_str(&text).ok());
+            // Archived sessions stay listed, however old, but do not run.
+            if let Some(meta) = meta.as_ref().filter(|meta| meta["archived"] == true) {
+                self.remember_archived(&id, meta, &journal);
+                continue;
+            }
             let (Some(meta), true) = (meta, recent) else {
                 continue;
             };
+            match self.resume_from_meta(&id, &meta, &journal) {
+                Ok(_) => resumed += 1,
+                Err(error) => tracing::warn!(session = %id, %error, "could not resume the session"),
+            }
+        }
+        resumed
+    }
+
+    /// Continues one recorded session from its meta file and journal.
+    fn resume_from_meta(
+        &self,
+        id: &str,
+        meta: &serde_json::Value,
+        journal: &Path,
+    ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
+        let id = id.to_string();
+        {
+            let journal = journal.to_path_buf();
             let project = meta["project_dir"].as_str().unwrap_or_default();
             // A model the session switched to is in its journal; else the one it started with.
             let switched = imperium_engine::journalled_model(&journal);
@@ -440,7 +471,7 @@ impl DaemonState {
                 may_wait_for_model: model.is_none(),
                 ..SessionOptions::default()
             };
-            let resumed_session = match meta["environment_id"].as_str() {
+            match meta["environment_id"].as_str() {
                 // Its environment as it is now, if it still exists.
                 Some(env) if self.environments.get(env).is_some() => {
                     self.create_in_environment(env, model, options)
@@ -467,13 +498,8 @@ impl DaemonState {
                     Ok(env) => self.create_in_environment(&env.id, model, options),
                     Err(_) => self.create_session_with(project, model, options),
                 },
-            };
-            match resumed_session {
-                Ok(_) => resumed += 1,
-                Err(error) => tracing::warn!(session = %id, %error, "could not resume the session"),
             }
         }
-        resumed
     }
 
     /// The configured resume policy for usage limits.
@@ -701,6 +727,7 @@ impl DaemonState {
             environment_id: options.environment_id.clone(),
             folders: workspace.folders_display(),
             pinned: false,
+            persistent: options.launcher.is_some(),
         };
         // A model table id or a spec, as the model pickers offer them.
         let model = match self.resolve_model(model) {
@@ -1104,6 +1131,8 @@ fn summary(session: &Session) -> SessionSummary {
         status_detail,
         resume_policy: session.resume_policy(),
         pinned: false,
+        archived: false,
+        archived_at: None,
     }
 }
 
