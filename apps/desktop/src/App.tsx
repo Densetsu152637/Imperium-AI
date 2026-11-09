@@ -38,6 +38,7 @@ import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { normalizeProject, useProjectIcons } from "./projectIcons";
 import { applyEvent, DEFAULT_RESUME_POLICY, markAnswered, newSession, type SessionState } from "./sessions";
 import { applySettings, loadSettings, saveSettings, type DisplaySettings } from "./settings";
+import { ModelConfigDialog, type ModelDialogTarget } from "./ModelConfigDialog";
 import { SettingsMenu } from "./SettingsMenu";
 import { UpdateControl, useUpdates } from "./UpdateControl";
 
@@ -53,6 +54,7 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [settings, setSettings] = useState<DisplaySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
+  const [modelDialog, setModelDialog] = useState<ModelDialogTarget | null>(null);
   const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
@@ -208,6 +210,11 @@ export function App() {
     client?.call<LocalModelListResult>("models.local").then(setLocalModels, report);
   };
 
+  const refreshModels = () => {
+    client?.call<ModelListResult>("models.list").then(setModelTable, report);
+    refreshLocalModels();
+  };
+
   const openFolder = async () => {
     const folder = await pickFolder();
     if (!folder) return;
@@ -315,7 +322,16 @@ export function App() {
         </button>
       </header>
       {showSettings && (
-        <SettingsMenu settings={settings} onChange={updateSettings} updates={updates} onClose={() => setShowSettings(false)} />
+        <SettingsMenu settings={settings} onChange={updateSettings} updates={updates}
+          onOpenModels={() => {
+            setShowSettings(false);
+            setModelDialog({ tab: "local" });
+          }}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+      {modelDialog && (
+        <ModelConfigDialog client={client} target={modelDialog} onClose={() => setModelDialog(null)} onSaved={refreshModels} />
       )}
       {status.kind === "failed" ? (
         <ConnectScreen message={status.message} onConnect={connect} />
@@ -413,11 +429,14 @@ export function App() {
                 mode: "stack",
                 panels: [
                   { id: "agents", title: "Agents", body: <AgentsPanel session={session} /> },
-                  { id: "models", title: "Models", body: <ModelsPanel table={modelTable} /> },
+                  { id: "models", title: "Models", body: <ModelsPanel table={modelTable} onConfigure={() => setModelDialog({ tab: "table" })} /> },
                   {
                     id: "local-models",
                     title: "Local models",
-                    body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} client={client} />,
+                    body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels}
+                        client={client}
+                        onConfigure={() => setModelDialog({ tab: "local" })}
+                      />,
                   },
                   { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
                   { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },

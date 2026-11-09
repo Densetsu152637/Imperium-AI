@@ -9,6 +9,7 @@ type Props = {
   onChange: (settings: DisplaySettings) => void;
   /** The updater, in the desktop app only. */
   updates: Updates | null;
+  onOpenModels: () => void;
   onClose: () => void;
 };
 
@@ -41,7 +42,7 @@ function Slider({
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
 
-export function SettingsMenu({ settings, onChange, updates, onClose }: Props) {
+export function SettingsMenu({ settings, onChange, updates, onOpenModels, onClose }: Props) {
   const set = (patch: Partial<DisplaySettings>) => onChange({ ...settings, ...patch });
   return (
     <div className="settings-menu" role="dialog" aria-label="Settings">
@@ -75,6 +76,7 @@ export function SettingsMenu({ settings, onChange, updates, onClose }: Props) {
           </label>
         ))}
       </fieldset>
+      <button onClick={onOpenModels}>Models…</button>
       {updates && <UpdateSettings updates={updates} />}
       <button className="primary" onClick={onClose}>
         Done

@@ -2262,3 +2262,142 @@ button.sort:hover:not(:disabled) {
     color: CanvasText;
   }
 }
+
+/* Model configuration dialog (native dialog, opened with showModal) */
+.model-dialog {
+  width: min(60rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  padding: calc(var(--space) * 2);
+  color: var(--fg);
+  background: var(--metal-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--highlight), var(--shadow);
+}
+
+.model-dialog[open] {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 1.5);
+}
+
+.model-dialog::backdrop {
+  background: rgb(0 0 0 / 0.55);
+}
+
+.model-dialog h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.model-tabs {
+  display: flex;
+  gap: var(--space);
+}
+
+.model-dialog-body {
+  display: grid;
+  grid-template-columns: minmax(10rem, 16rem) 1fr;
+  gap: calc(var(--space) * 2);
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.model-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--space) * 0.5);
+  overflow-y: auto;
+}
+
+.model-list button {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+  text-align: left;
+}
+
+.model-form {
+  overflow-y: auto;
+  padding-right: var(--space);
+}
+
+.model-form-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: calc(var(--space) * 1.5);
+}
+
+.model-summary,
+.model-form-actions,
+.model-check,
+.model-field:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+.model-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+
+.model-form-actions {
+  display: flex;
+  gap: var(--space);
+  align-items: center;
+}
+
+.model-field input[type="text"],
+.model-field select,
+.model-field textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: calc(var(--space) * 0.5);
+  font-family: inherit;
+}
+
+.model-field input:focus-visible,
+.model-field select:focus-visible,
+.model-field textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.model-field button.reset {
+  padding: 0 0.4rem;
+  font-size: 0.75rem;
+}
+
+.model-check {
+  text-transform: none;
+}
+
+.model-dialog .warning {
+  color: var(--warn, var(--danger));
+}
+
+.model-dialog-footer {
+  display: flex;
+  gap: var(--space);
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 0.8rem;
+}
+
+.model-dialog-footer .error {
+  margin-right: auto;
+  color: var(--danger);
+}
+
+.models tr.off .badge.off {
+  margin-left: 0.4rem;
+}
