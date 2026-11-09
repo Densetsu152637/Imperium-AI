@@ -15,27 +15,74 @@ const RUNTIMES: Record<LocalModelRow["runtime"], string> = { llamacpp: "llama.cp
 /** The spec a local model is used by: `<runtime>:<id>`. */
 export const localSpec = (row: LocalModelRow): string => `${row.runtime}:${row.id}`;
 
+/** Tokens in words: 32768 → "32k", 1048576 → "1M". */
+export function tokensShort(tokens: number): string {
+  if (tokens >= 1024 * 1024) return `${+(tokens / (1024 * 1024)).toFixed(1)}M`;
+  if (tokens >= 1024) return `${Math.round(tokens / 1024)}k`;
+  return String(tokens);
+}
+
+/** Bytes on disk in words: "2.3 GB", "640 MB". */
+export function sizeShort(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
+const FIT: Record<LocalModelRow["placement"], string> = {
+  gpu: "fits GPU",
+  partial: "GPU + RAM",
+  cpu: "CPU",
+  none: "too large",
+};
+
+/**
+ * A local model in a line: quantisation, context (the trained length, and the per-session
+ * context it is started with when different), size on disk, and how it fits this machine —
+ * such as "Q4_K_M · 256k ctx (32k per session) · 2.3 GB · fits GPU · llama.cpp".
+ */
+export function localDescription(row: LocalModelRow): string {
+  const parts: string[] = [];
+  parts.push(row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?"));
+  if (row.context_length) {
+    const configured = row.context > 0 && row.context !== row.context_length ? ` (${tokensShort(row.context)} per session)` : "";
+    parts.push(`${tokensShort(row.context_length)} ctx${configured}`);
+  } else if (row.context > 0) {
+    parts.push(`${tokensShort(row.context)} ctx`);
+  }
+  parts.push(sizeShort(row.size_bytes));
+  parts.push(row.problem ? "cannot run here" : row.loaded ? "loaded" : FIT[row.placement]);
+  parts.push(RUNTIMES[row.runtime]);
+  return parts.join(" · ");
+}
+
 /**
  * The models a session can use, by spec: table rows first (rows whose endpoint is not configured
  * are listed but cannot be chosen), then local models the table does not already list. A
  * `current` model outside both is listed as is, so the list always shows it.
  */
 export function modelOptions(models: ModelRow[], local: LocalModelRow[], current: string | null): SelectOption[] {
-  const options: SelectOption[] = models.map((row) => ({
-    value: row.spec,
-    label: row.id,
-    disabled: !row.endpoint_configured,
-    description: row.endpoint_configured
-      ? [row.id === row.spec ? null : row.spec, row.location, row.tier].filter(Boolean).join(" · ")
-      : "Endpoint not configured",
-  }));
+  const options: SelectOption[] = models.map((row) => {
+    // A table row that names a local model also says what that model is.
+    const localRow = local.find((candidate) => localSpec(candidate) === row.spec);
+    return {
+      value: row.spec,
+      label: row.id,
+      disabled: !row.endpoint_configured,
+      description: row.endpoint_configured
+        ? [row.id === row.spec ? null : row.spec, localRow ? localDescription(localRow) : row.location, row.tier]
+            .filter(Boolean)
+            .join(" · ")
+        : "Endpoint not configured",
+    };
+  });
   for (const row of local) {
     const spec = localSpec(row);
     if (options.some((option) => option.value === spec)) continue;
     options.push({
       value: spec,
       label: row.id,
-      description: `Local · ${RUNTIMES[row.runtime]}${row.loaded ? " · loaded" : ""}`,
+      description: localDescription(row),
+      disabled: row.problem != null,
     });
   }
   if (current && !options.some((option) => option.value === current)) {

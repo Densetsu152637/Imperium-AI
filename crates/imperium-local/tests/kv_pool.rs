@@ -145,6 +145,7 @@ fn model(id: &str, format: Format) -> LocalModel {
             ..GgufInfo::default()
         },
         mmproj: None,
+        repo: None,
         format,
     }
 }

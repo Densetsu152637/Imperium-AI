@@ -118,6 +118,8 @@ pub struct DaemonState {
     /// Set at start when there are model folders, or after the first download.
     local: OnceLock<LocalRuntime>,
     downloads: Downloads,
+    /// The latest llama.cpp runtime pack installation (`runtime.install`).
+    pub(crate) runtime_install: Mutex<Option<imperium_protocol::methods::RuntimeInstallJob>>,
     /// The Hugging Face Hub to use instead of the one from the environment (for tests).
     hub: OnceLock<imperium_local::hf::Hub>,
     /// Notifications for every connected client, such as schedule runs.
@@ -198,6 +200,7 @@ impl DaemonState {
             environments,
             local: local.map(OnceLock::from).unwrap_or_default(),
             downloads: Downloads::default(),
+            runtime_install: Mutex::new(None),
             hub: OnceLock::new(),
             announcements: broadcast::channel(256).0,
             scheduler: OnceLock::new(),
@@ -873,15 +876,31 @@ impl DaemonState {
     }
 
     /// The local model runtime, when it is running.
+    /// This state as an `Arc`, for work handed to another task; `None` while it is dropped.
+    pub(crate) fn this(&self) -> Option<Arc<DaemonState>> {
+        self.me.upgrade()
+    }
+
     pub(crate) fn local_runtime(&self) -> Option<&LocalRuntime> {
         self.local.get()
     }
 
     /// Local models, the hardware they are planned against, and what is loaded.
     pub fn local_models(&self) -> LocalModelListResult {
-        self.local
-            .get()
-            .map_or_else(crate::local::disabled, LocalRuntime::listing)
+        let settings = self.settings();
+        match self.local.get() {
+            Some(local) => local.listing_with(&settings),
+            None => LocalModelListResult {
+                configured_folders: settings
+                    .models
+                    .folders
+                    .iter()
+                    .map(|folder| folder.display().to_string())
+                    .collect(),
+                default_model: settings.models.default.clone(),
+                ..crate::local::disabled()
+            },
+        }
     }
 
     /// The resource monitor behind `system.resources`.

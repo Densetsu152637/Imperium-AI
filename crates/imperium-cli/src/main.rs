@@ -185,6 +185,35 @@ enum ModelsCommand {
         /// The job id `pull` printed, such as dl-1.
         job_id: String,
     },
+    /// List, add, or remove model folders (models.folders); changes are scanned at once.
+    Folders {
+        #[command(subcommand)]
+        command: Option<FoldersCommand>,
+    },
+    /// Make a model the default for new sessions (models.default).
+    Use {
+        /// A local model id (from `imperium models local`), a model-table id, or
+        /// <endpoint>:<model>.
+        model: String,
+    },
+    /// Load a model and send it one short prompt, showing the reply and its speed.
+    Test {
+        /// As for `use`.
+        model: String,
+        /// The prompt to send instead of a short greeting.
+        #[arg(long)]
+        prompt: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FoldersCommand {
+    /// List the model folders (the default).
+    List,
+    /// Add a folder and scan it.
+    Add { path: PathBuf },
+    /// Stop scanning a folder; nothing in it is touched.
+    Remove { path: PathBuf },
 }
 
 #[derive(Debug, Subcommand)]
@@ -387,6 +416,11 @@ enum RuntimeCommand {
         #[arg(long)]
         pack: Option<String>,
     },
+    /// Show whether llama-server runs and sees the GPU, and what to do when it does not.
+    Status,
+    /// Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back
+    /// to the runtime pack.
+    Use { path: Option<PathBuf> },
 }
 
 #[derive(Debug, Subcommand)]
@@ -490,10 +524,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 mmproj,
             }),
             ModelsCommand::Cancel { job_id } => pull::cancel(job_id),
+            ModelsCommand::Folders { command } => match command {
+                None | Some(FoldersCommand::List) => local::folders(),
+                Some(FoldersCommand::Add { path }) => local::add_folder(&path),
+                Some(FoldersCommand::Remove { path }) => local::remove_folder(&path),
+            },
+            ModelsCommand::Use { model } => local::use_model(model),
+            ModelsCommand::Test { model, prompt } => local::test_model(model, prompt),
         },
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
+        Command::Runtime {
+            command: RuntimeCommand::Status,
+        } => local::runtime_status(),
+        Command::Runtime {
+            command: RuntimeCommand::Use { path },
+        } => local::use_server(path),
         Command::Resources { watch } => resources::show(watch),
         Command::Phone { command } => match command {
             PhoneCommand::Pair => phone::pair(),

@@ -11,7 +11,20 @@ id: string,
 /**
  * `llamacpp` for GGUF files, `vllm` for Hugging Face folders.
  */
-runtime: "llamacpp" | "vllm", path: string, architecture: string | null, quantization: string | null, parts: number, size_bytes: number, context_length: number | null, 
+runtime: "llamacpp" | "vllm", path: string, 
+/**
+ * The repository it came from, such as `unsloth/Qwen3-8B-GGUF`, from the Hugging Face
+ * cache or the `<publisher>/<repo>` folders above the file.
+ */
+repo: string | null, 
+/**
+ * The multimodal projector paired with it, which lets it read images.
+ */
+mmproj: string | null, 
+/**
+ * Why it cannot be used on this machine, when it cannot (such as vLLM models off Linux).
+ */
+problem: string | null, architecture: string | null, quantization: string | null, parts: number, size_bytes: number, context_length: number | null, 
 /**
  * Memory needed with the model's KV pool and settings.
  */

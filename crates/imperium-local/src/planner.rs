@@ -363,6 +363,7 @@ mod tests {
                 ..crate::gguf::GgufInfo::default()
             },
             mmproj: None,
+            repo: None,
             format: crate::scan::Format::Gguf,
         }
     }

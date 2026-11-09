@@ -24,7 +24,7 @@ const POLL: Duration = Duration::from_millis(250);
 #[derive(Debug)]
 pub struct ProcessLauncher {
     /// Runtime id and its executable.
-    programs: Vec<(String, PathBuf)>,
+    programs: Mutex<Vec<(String, PathBuf)>>,
     logs: PathBuf,
     /// Where llama.cpp servers save slots when their model is swapped out.
     slots: Option<PathBuf>,
@@ -36,7 +36,7 @@ impl ProcessLauncher {
     /// models; each model's output goes to `<logs>/llama-<model>.log`.
     pub fn new(server: PathBuf, vllm: PathBuf, logs: PathBuf) -> Self {
         ProcessLauncher {
-            programs: vec![(LLAMA_CPP.into(), server), (VLLM.into(), vllm)],
+            programs: Mutex::new(vec![(LLAMA_CPP.into(), server), (VLLM.into(), vllm)]),
             logs,
             slots: None,
             http: reqwest::Client::new(),
@@ -50,23 +50,34 @@ impl ProcessLauncher {
     }
 
     /// Runs `program` for the runtime with id `runtime`, replacing any executable set for it.
-    pub fn with_program(mut self, runtime: impl Into<String>, program: PathBuf) -> Self {
-        let runtime = runtime.into();
-        self.programs.retain(|(id, _)| *id != runtime);
-        self.programs.push((runtime, program));
+    pub fn with_program(self, runtime: impl Into<String>, program: PathBuf) -> Self {
+        self.set_program(runtime, program);
         self
     }
 
-    fn program(&self, runtime: &str) -> Result<&Path, String> {
+    /// Runs `program` for the runtime with id `runtime` from the next launch on, such as after
+    /// the user picks another `llama-server` or installs a runtime pack. Servers already
+    /// running are not affected.
+    pub fn set_program(&self, runtime: impl Into<String>, program: PathBuf) {
+        let runtime = runtime.into();
+        let mut programs = self.programs.lock().unwrap_or_else(PoisonError::into_inner);
+        programs.retain(|(id, _)| *id != runtime);
+        programs.push((runtime, program));
+    }
+
+    fn program(&self, runtime: &str) -> Result<PathBuf, String> {
         self.programs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .find(|(id, _)| id == runtime)
-            .map(|(_, program)| program.as_path())
+            .map(|(_, program)| program.clone())
             .ok_or_else(|| format!("no executable is set for the {runtime} runtime"))
     }
 
     async fn start(&self, spec: &LaunchSpec) -> Result<Box<dyn Server>, LaunchError> {
         let program = self.program(spec.backend.id())?;
+        let program = program.as_path();
         spec.backend.check_program(program)?;
         let port = free_port()?;
         std::fs::create_dir_all(&self.logs).map_err(|error| error.to_string())?;
@@ -224,7 +235,7 @@ fn free_port() -> Result<u16, String> {
 }
 
 /// Runtime packs keep shared libraries in `lib/` beside `bin/` (Windows finds DLLs in `bin/`).
-fn library_path(command: &mut Command, server: &Path) {
+pub(crate) fn library_path(command: &mut Command, server: &Path) {
     let Some(lib) = server
         .parent()
         .and_then(Path::parent)

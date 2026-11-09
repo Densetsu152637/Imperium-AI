@@ -5,6 +5,7 @@
 //! `.imperium/config.local.toml`, then `IMPERIUM_<SECTION>__<KEY>` environment variables.
 //! Every value remembers which layer set it, for `imperium config explain`.
 
+mod endpoints;
 mod layers;
 mod local_models;
 mod mcp_servers;
@@ -13,6 +14,7 @@ mod registry;
 mod secrets;
 mod settings;
 
+pub use endpoints::{save_endpoint, valid_endpoint_id};
 pub use layers::{
     Config, ConfigError, Explained, Layer, Source, load, load_layers, replace_app_layer,
 };

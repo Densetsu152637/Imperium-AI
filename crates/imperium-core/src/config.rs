@@ -45,6 +45,7 @@ pub fn set(state: &DaemonState, params: ConfigSetParams) -> Result<ConfigSetResu
             .suggestions()
             .set_enabled(updated.value.as_bool().unwrap_or(true));
     }
+    crate::onboarding::apply_setting(state, &params.key);
     Ok(ConfigSetResult {
         restart: updated.def.restart,
         overridden: updated.overridden(),

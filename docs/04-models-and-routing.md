@@ -41,6 +41,48 @@ models panel list what was found and whether each fits. Hugging Face folders (`c
 and safetensors) are found too, for vLLM. Watching folders for changes and network and SSH
 paths are later work.
 
+**Implemented (layouts):** the scanner also understands the layouts models are usually left in.
+
+- **LM Studio and the download folder:** `<publisher>/<repo>/<file>.gguf`. The two folders above
+  a file name its repository (`lmstudio-community/Qwen3.5-9B-GGUF`), shown beside the id.
+- **The Hugging Face cache:** a `models--<org>--<name>` folder (such as
+  `hub/models--unsloth--Qwen3-4B-Instruct-2507-GGUF`) is the repository `<org>/<name>`; only the
+  snapshot `refs/main` names is scanned (every snapshot when there is no `refs/main`), and the
+  cache's `blobs` and `.no_exist` placeholders are skipped. A safetensors model in a snapshot is
+  named after its repository (`Qwen3-0.6B`), not its revision hash.
+- **Projectors:** with one `mmproj` file in a folder it goes with every model there; with
+  several, each model gets the one whose name matches its own best.
+- **Left out, with the reason:** hidden folders (`.locks`, `.cache`), diffusers pipelines (a
+  folder with `model_index.json`, whose `text_encoder` and `vae` folders are not chat models),
+  and GGUF files that are not language models (architectures such as `flux` or `qwen_image`,
+  or a header with neither layers nor context length). These are listed as skipped, not as
+  models that do not fit.
+- A vLLM model on a machine that cannot run vLLM (anything but Linux and WSL2) says so
+  (`problem` in `models.local`) instead of reading *does not fit*.
+
+## Setting up models from the app
+
+**Implemented:** everything needed to use models already on disk is available over the protocol,
+the desktop's Local models panel ([07](07-desktop-ui.md#setting-up-models-implemented)), and the
+CLI. Each change is written to the user's `config.toml` through the settings table and applied to
+the running daemon at once; the configuration layers kept for later model-settings saves are
+read again, so such a save never brings an old value back.
+
+| Method | CLI | Does |
+| --- | --- | --- |
+| `models.add_folder` `{path}` | `imperium models folders add <path>` | Adds an absolute folder to `models.folders` (once), scans at once (starting the local runtime if it was not running), returns `models.local` |
+| `models.remove_folder` `{path}` | `imperium models folders remove <path>` | Removes it and scans again; nothing in the folder is touched |
+| `models.local` | `imperium models folders`, `imperium models local` | Also reports `configured_folders` (removable), `default_model`, and per model `repo`, `mmproj`, and `problem` |
+| `models.use` `{model}` | `imperium models use <id>` | Sets `models.default` from a local model id (`llamacpp:<id>`), a model-table id (its spec), or a spec |
+| `models.test` `{model, prompt?}` | `imperium models test <id>` | Loads the model if needed (as any session would, through the supervisor) and sends one short prompt; returns the reply, completion tokens, seconds, tokens per second (llama.cpp's own measurement when it reports one), and the load wait, or why it failed. Works for hosted models too |
+| `models.add_endpoint` `{id, base_url, api_key?, model?, make_default}` | — | Writes `[endpoints.<id>]` with the key as a keychain reference (`<id>-api-key`), optionally making `<id>:<model>` the default |
+| `runtime.status` | `imperium runtime status` | See [runtime readiness](#runtime-readiness) |
+| `runtime.set_server` `{path}` | `imperium runtime use [<path>]` | Sets (or with null clears) `runtime.llamacpp.custom_path`; models loaded from then on use it |
+| `runtime.install` | `imperium runtime install` | Installs the runtime pack for this machine in the background with `runtime.install_progress` notifications; new loads use it unless a custom server is set |
+
+`models.default`, `models.folders`, and `runtime.llamacpp.custom_path` set with `config.set`
+(Settings) apply at once in the same way.
+
 - Users configure any number of **model folders** (local paths, network shares, or paths on an
   SSH host). The daemon scans them recursively and watches for changes.
 - Recognised: GGUF files (including split `-00001-of-0000N` sets and `mmproj` projectors) for
@@ -172,6 +214,29 @@ checks it against the release's `SHA256SUMS`, and unpacks it under
 loopback port with `--parallel` slots over one shared KV pool, waits for `/health`, logs its output to
 `<data>/logs/llama-<id>.log`, and stops it when it has been idle for `idle_unload_s` or the
 daemon exits. vLLM is later work.
+
+### Runtime readiness
+
+**Implemented:** `runtime.status` runs the `llama-server` in use with `--version` and
+`--list-devices` (neither loads a model) and reads the result with the hardware probe: whether
+the server runs, its version, the devices it sees (`CUDA0: NVIDIA GeForce RTX 5080 ...`), whether
+it sees a GPU, a one-line summary, and, when something is wrong, the problem in words with what
+to do:
+
+- no file at the path: install the runtime pack that suits this machine, or choose your own;
+- it cannot start because a library is missing (Windows `STATUS_DLL_NOT_FOUND`, or "error while
+  loading shared libraries"): for a CUDA build, the CUDA runtime is missing;
+- it runs but lists no GPU on a machine with one: for a CUDA build (a `ggml-cuda` library beside
+  it), *llama-server can't see your GPU — the CUDA runtime is missing or the NVIDIA driver is too
+  old*; otherwise it is a CPU-only build and the GPU pack is suggested;
+- an old build without `--list-devices` runs, and whether it uses the GPU shows once a model
+  loads.
+
+It also lists `llama-server` executables already on the machine (on `PATH`, and in
+`~/.unsloth/llama.cpp` and `~/llama.cpp` build folders) so one can be picked with
+`runtime.set_server`. Choosing a server or installing a pack changes the executable for models
+loaded from then on, without a restart; a model already loaded keeps its server until it
+unloads.
 
 **Implemented (stage 2c):** one loaded local model serves many sessions at once. The daemon has
 one supervisor, loaded models are keyed by id, and every session that asks for `llamacpp:<id>`

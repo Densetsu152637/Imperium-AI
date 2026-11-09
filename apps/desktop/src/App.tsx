@@ -675,8 +675,11 @@ export function App() {
         onSelectEnvironment={setEnvId}
         models={modelTable?.models ?? []}
         localModels={localModels?.models ?? []}
+        defaultModel={localModels ? (localModels.default_model ?? null) : undefined}
         client={client}
         onCreate={createSession}
+        onModelsChanged={refreshModels}
+        onOpenLocalModels={() => togglePanel("local-models", true)}
       />
     ),
   };
@@ -691,7 +694,7 @@ export function App() {
           listing={localModels}
           onRefresh={refreshLocalModels}
           client={client}
-          onConfigure={() => setModelDialog({ tab: "local" })}
+          onConfigure={(id) => setModelDialog({ tab: "local", id })}
         />
       ),
     },

@@ -188,8 +188,8 @@ impl RuntimeBackend for LlamaCpp {
             return Ok(());
         }
         Err(format!(
-            "llama-server not found at {}; run `imperium runtime install` or set \
-             runtime.llamacpp.custom_path",
+            "llama-server not found at {}; install a runtime pack or choose your own \
+             llama-server (Local models → Runtime in the app, or `imperium runtime install`)",
             program.display()
         ))
     }

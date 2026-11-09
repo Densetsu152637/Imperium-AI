@@ -56,7 +56,11 @@ The desktop app's Settings page reads and changes settings through the daemon:
   `overridden: true`, since the variable keeps winning.
 - The daemon reads its configuration once at start, so `restart: true` (nearly every setting)
   means the change applies after a daemon restart, which the app offers. Settings with
-  `restart: false` (`models.suggest_downloads`) apply at once.
+  `restart: false` (`models.suggest_downloads`, `models.default`, `models.folders`, and
+  `runtime.llamacpp.custom_path`) apply at once; a changed `models.folders` is scanned again
+  at once. The desktop app's model setup and `models.add_folder`, `models.use`,
+  `models.add_endpoint`, and `runtime.set_server` write these keys the same way
+  ([setting up models](04-models-and-routing.md#setting-up-models-from-the-app)).
 
 Structured lists and maps (`endpoints`, `models.catalog`, `routing.rules`, `mcp.servers`,
 `projects`, `schedules`, `hooks`, `github.watch`, `media.speech`, `media.transcription`) are not
@@ -78,17 +82,17 @@ listed; edit them in the file.
 | `routing.prefer` | `cheapest` | Tie-breaker among suitable models: `cheapest`, `local`, or `cloud` |
 | `routing.rules` | none | `[[routing.rules]]` delegation rules with optional `when_tier`, `when_tag`, `location`, `tier` (raises the task's minimum tier), and `use` (model table ids in order) |
 | `routing.builtin_rules` | `true` | Whether the built-in [task-class rules](04-models-and-routing.md#task-classes) (hard tags prefer cloud `frontier` rows, menial tags prefer local rows at the task's own tier) apply when none of `routing.rules` matched |
-| `models.default` | none | Model for new sessions, as `<endpoint>:<model>` (split at the first `:`, so `ollama:qwen3:8b` works) |
+| `models.default` | none | Model for new sessions, as `<endpoint>:<model>` (split at the first `:`, so `ollama:qwen3:8b` works); applies without a restart; *Use* in the Local models panel and `imperium models use` set it |
 | `endpoints.<id>.base_url` | — | OpenAI-compatible base URL, ending before `/chat/completions` |
-| `endpoints.<id>.api_key` | none | `{ secret = "<name>" }`, read from the keychain when a session starts |
+| `endpoints.<id>.api_key` | none | `{ secret = "<name>" }`, read from the keychain when a session starts. *Connect an API endpoint* in the app (`models.add_endpoint`) writes `base_url` and this reference, storing the key as `<id>-api-key` |
 | `endpoints.<id>.pricing."<model>"` | none | `{ input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok? }`; models without prices report no cost |
 | `endpoints.<id>.kind` | `openai` | The API the endpoint speaks, choosing its model client: `openai` (OpenAI-compatible Chat Completions; an endpoint on this machine is also tried for llama.cpp's tokenizer) or `llamacpp` (the same, always using llama.cpp's tokenizer for [context breakdowns](03-agent-engine.md#context-management)) |
-| `models.folders` | none | Folders scanned for GGUF models (`llamacpp:<id>`) and Hugging Face folders (`vllm:<id>`); the `llamacpp` and `vllm` endpoint ids are reserved |
+| `models.folders` | none | Folders scanned for GGUF models (`llamacpp:<id>`), including LM Studio and Hugging Face cache layouts, and Hugging Face folders (`vllm:<id>`); the `llamacpp` and `vllm` endpoint ids are reserved. Applies and is scanned at once; *Add folder* in the app and `imperium models folders add` append to it |
 | `models.suggest_downloads` | `true` | Sessions may offer to download a suitable local model from Hugging Face when the best available one is poor for the task ([model download suggestions](04-models-and-routing.md#model-download-suggestions)); applies without a restart, and a suggestion's "Don't ask again" sets it to `false` in the user file |
 | `models.suggestions` | six well-known GGUF repositories (Qwen3 4B and 14B, Qwen2.5-Coder 7B, Qwen3-Coder 30B-A3B, Gemma 3 4B and 12B) | `[[models.suggestions]]` rows suggestions choose from: `repo`, `capabilities` (`chat`, `code`, `tools`, `vision`), `size` (`small`, `medium`, `large`; default `small`), `context` (tokens), and `mmproj` (download the vision projector too); setting any row replaces the built-in list |
 | `models.download_dir` | first of `models.folders`, else `<data>/models` | Where [Hugging Face downloads](04-models-and-routing.md#downloading-from-hugging-face) go, as `<owner>/<repo>/` below it; must be absolute; scanned with `models.folders` |
 | `runtime.llamacpp.backend` | `auto` | Runtime pack: `auto`, `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` |
-| `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of a pack |
+| `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of a pack; applies to models loaded from then on, without a restart (*Choose llama-server…* in the app, `imperium runtime use`) |
 | `runtime.llamacpp.context` | `8192` | Tokens one session may use on a local model (`--kv-unified-per-slot` when below the pool) |
 | `runtime.llamacpp.parallel` | `2` | Deprecated: only sizes the default KV pool, `pool_tokens = context × parallel`. It no longer caps anything: sessions beyond a model's slots queue |
 | `runtime.llamacpp.slots` | the larger of `8` and `parallel` | Default `--parallel` of each model: calls one server decodes at once, `1`-`256`. A CPU-pinned model defaults to `1` |

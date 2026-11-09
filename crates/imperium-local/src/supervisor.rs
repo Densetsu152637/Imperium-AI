@@ -2364,6 +2364,7 @@ mod tests {
                 ..GgufInfo::default()
             },
             mmproj: None,
+            repo: None,
             format: Format::Gguf,
         }
     }
