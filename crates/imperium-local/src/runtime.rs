@@ -1180,7 +1180,12 @@ mod tests {
         ];
         assert_eq!(
             best_found(&found, &machine),
-            Some(3),
+            // macOS has no CUDA build, so any GPU ranks alike there and the newest wins.
+            Some(if machine.backend_chain()[0].starts_with("cuda") {
+                3
+            } else {
+                1
+            }),
             "CUDA over Vulkan, newest first"
         );
         assert_eq!(
@@ -1249,7 +1254,16 @@ mod tests {
             present.clone(),
             Some(checked(true, Some(false))),
         );
-        assert_eq!(decide(&cpu_found, None, false), AutoInstall::CpuOnly);
+        // llama.cpp has no GPU build for an NVIDIA GPU on macOS.
+        let gpu_build = !pack_for("auto", &machine).ends_with("-cpu");
+        assert_eq!(
+            decide(&cpu_found, None, false),
+            if gpu_build {
+                AutoInstall::CpuOnly
+            } else {
+                AutoInstall::Keep
+            }
+        );
         let gpu_found = resolved(
             SOURCE_DETECTED,
             present.clone(),
