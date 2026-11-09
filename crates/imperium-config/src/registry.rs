@@ -117,6 +117,7 @@ const fn live(def: SettingDef) -> SettingDef {
 use SettingKind::{Bool, Integer, Number, Path as PathKind, PathList, SecretRef, StringList};
 const STRING: SettingKind = SettingKind::String;
 const WRITE_POLICY: &[&str] = &["auto", "ask", "off"];
+const SESSION_SEARCH_SCOPE: &[&str] = &["environment", "all"];
 
 /// Every setting an app may show and change, in display order.
 #[rustfmt::skip]
@@ -156,6 +157,9 @@ pub static SETTINGS: &[SettingDef] = &[
     def("memory.recall", "Recall memories", Bool, "Put the best-matching memories before each message."),
     def("memory.max_index_tokens", "Memory index budget", Integer, "Tokens for the memory index in agent instructions."),
     def("memory.max_recall_tokens", "Recall budget", Integer, "Tokens for recalled memories per message."),
+    def("memory.session_search", "Session search", Bool, "Index sessions in the background so they can be searched, and let agents search earlier sessions."),
+    choice("memory.session_search_scope", "Agents search sessions in", SESSION_SEARCH_SCOPE, "environment: only the agent's own environment; all: every environment."),
+    def("memory.embedding_model", "Embedding model", STRING, "Model table id or <endpoint>:<model> of an embedding model for search by meaning; empty searches by keyword only."),
     def("workflow.enabled", "Workflow packs", Bool, "Serve workflow packs and project instruction files to agents."),
     def("workflow.packs", "Workflow folders", PathList, "Workflow folders, such as a clone of Agent-Custom-Workflow."),
     def("workflow.default_pack", "Bundled workflow", Bool, "With no workflow folders, use the bundled Agent-Custom-Workflow snapshot."),

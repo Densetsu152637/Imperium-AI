@@ -43,6 +43,7 @@ use crate::scheduler::Scheduler;
 use crate::suggestions::{SuggestTool, Suggestions};
 
 mod archive;
+mod session_search;
 pub use archive::ArchiveError;
 
 /// Options for [`DaemonState::create_session_with`].
@@ -158,6 +159,8 @@ pub struct DaemonState {
     permissions: crate::permissions::PermissionStore,
     /// Budgets and the usage ledger they count.
     budgets: crate::budgets::BudgetBook,
+    /// The session search index, opened on first use.
+    session_index: OnceLock<Arc<imperium_memory::sessions::SessionIndex>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -234,6 +237,7 @@ impl DaemonState {
             resources: Arc::default(),
             permissions,
             budgets,
+            session_index: OnceLock::new(),
         });
         state.apply_load_view();
         if let Some(local) = state.local.get() {
@@ -1234,6 +1238,12 @@ impl DaemonState {
         }
         if self.suggestions.enabled() {
             tools.push(Arc::new(SuggestTool {
+                daemon: self.me.clone(),
+                session_id: id.clone(),
+            }));
+        }
+        if self.settings().memory.session_search {
+            tools.push(Arc::new(session_search::SessionSearchTool {
                 daemon: self.me.clone(),
                 session_id: id.clone(),
             }));

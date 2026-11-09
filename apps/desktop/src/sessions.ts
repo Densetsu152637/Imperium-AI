@@ -20,7 +20,11 @@ import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
 export const ROOT = "root";
 
-export type Entry =
+/** A transcript entry; `event` is the index of the history event that started it, which
+ * session search hits point at (see sessionSearch.ts). */
+export type Entry = EntryBody & { event?: number };
+
+type EntryBody =
   | { kind: "user"; text: string }
   /** A steering message that joined the running turn. */
   | { kind: "steer"; text: string }
@@ -118,6 +122,8 @@ export type SessionState = {
   pause: { untilMs: number; reason: string; cause: PauseCause } | null;
   /** When this window last saw the session change, for ordering lists. */
   updatedAt: number;
+  /** Events applied so far: the index the next one has in the session's history. */
+  eventCount: number;
 };
 
 /** The daemon's default, for sessions this window creates before their summary arrives. */
@@ -142,6 +148,7 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   statusDetail: summary.status_detail,
   pause: summary.hold ? { untilMs: 0, reason: summary.hold.reason, cause: summary.hold.cause } : null,
   updatedAt,
+  eventCount: 0,
 });
 
 /** A pause time as `HH:MM`, with the weekday when it is not today. */
@@ -403,7 +410,30 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
         : { ...task, entries: applyToEntries(task.entries, agentEvent) };
     tasks = { ...tasks, [agentId]: updated };
   }
-  return { ...state, summary, entries, tasks, plan, calls, breakdowns, busy, queue, browser, status, statusDetail, pause };
+  // Entries this event added start at it; earlier ones are already marked.
+  const eventIndex = state.eventCount ?? 0;
+  if (entries.length > 0 && entries.at(-1)!.event === undefined) {
+    if (entries === state.entries) entries = [...entries];
+    for (let i = entries.length - 1; i >= 0 && entries[i].event === undefined; i--) {
+      entries[i] = { ...entries[i], event: eventIndex };
+    }
+  }
+  return {
+    ...state,
+    summary,
+    entries,
+    tasks,
+    plan,
+    calls,
+    breakdowns,
+    busy,
+    queue,
+    browser,
+    status,
+    statusDetail,
+    pause,
+    eventCount: eventIndex + 1,
+  };
 }
 
 /** Tokens a breakdown's request held: the categories, which add up to the reported size. */

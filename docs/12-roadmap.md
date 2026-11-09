@@ -75,8 +75,13 @@ them), in the desktop's Resources panel and `imperium resources [--watch]`
    conversation.
 7. **Branching and comparison.** Branch a conversation from any message; run best-of-N across
    models and compare the results side by side.
-8. **Session search.** Index session content and search it, integrated with the RAG retrieval
-   layer so agents can recall earlier sessions too.
+8. **Session search** (implemented). Session journals, running and archived, are indexed in the
+   background (incrementally, within a per-pass budget) on the memory crate's retrieval layer:
+   keyword ranking, fused with vector similarity when `memory.embedding_model` is set;
+   `session.search` for clients, a search box in the Sessions panel that opens a session at the
+   match, and the `search_sessions` tool, which reaches only the agent's own environment unless
+   `memory.session_search_scope` is `all` ([17](17-memory.md#session-search-implemented),
+   [07](07-desktop-ui.md#session-search-implemented)).
 9. **Live preview and browser.** A live preview of the app being built and an integrated
    browser the user drives, beside the agent's own browser view.
 10. **Local-model extras.** Speculative decoding with draft models, a local model benchmark,

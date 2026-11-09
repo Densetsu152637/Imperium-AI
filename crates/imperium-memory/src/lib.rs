@@ -1,8 +1,12 @@
 //! Agent memory: one fact per Markdown file with front matter, in three scopes (global, the
 //! project's shared folder, and the user's private notes about a project), with an index,
-//! term-based search, and a redaction check that keeps secrets out.
+//! term-based search, and a redaction check that keeps secrets out; plus the session index
+//! ([`sessions`]) that makes past sessions searchable, on the same retrieval primitives
+//! ([`retrieval`]).
 
+pub mod retrieval;
 mod search;
+pub mod sessions;
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};

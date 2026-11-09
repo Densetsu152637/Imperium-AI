@@ -26,6 +26,7 @@ import type {
 } from "@imperium/protocol";
 
 import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
+import { entryForEvent } from "../sessionSearch";
 import {
   ROOT,
   breakdownUsed,
@@ -81,6 +82,8 @@ type Props = {
   onUnarchive?: () => void;
   /** Where every budget stands (`budgets.get`), for the indicator beside the context meter. */
   budgets?: BudgetStatus[];
+  /** Scrolls to the entry holding this history event (a session search hit); `nonce` repeats it. */
+  focusEvent?: { index: number; nonce: number } | null;
 };
 
 /** What the footer has opened above the composer. */
@@ -104,6 +107,7 @@ export function SessionPanel({
   client = null,
   onUnarchive,
   budgets = [],
+  focusEvent = null,
 }: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
@@ -120,6 +124,26 @@ export function SessionPanel({
   useEffect(() => {
     if (settings.autoScroll) end.current?.scrollIntoView({ block: "end" });
   }, [entryCount, lastLength, settings.autoScroll]);
+
+  // A search hit: after any scroll to the end, bring its entry into view and mark it briefly.
+  const conversation = useRef<HTMLDivElement>(null);
+  const sessionId = session.summary.session_id;
+  useEffect(() => {
+    if (!focusEvent) return;
+    const frame = window.requestAnimationFrame(() => {
+      const index = entryForEvent(
+        session.entries.map((entry) => entry.event),
+        focusEvent.index,
+      );
+      const target = index === null ? null : conversation.current?.children.item(index);
+      if (!(target instanceof HTMLElement)) return;
+      target.scrollIntoView({ block: "center" });
+      target.classList.add("search-focus");
+      window.setTimeout(() => target.classList.remove("search-focus"), 2000);
+    });
+    return () => window.cancelAnimationFrame(frame);
+    // Only a new hit (or another session) scrolls; new entries do not.
+  }, [focusEvent?.nonce, sessionId]);
 
   const sum = totals(session.calls);
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
@@ -153,7 +177,7 @@ export function SessionPanel({
 
       {session.plan && <PlanView plan={session.plan} />}
 
-      <div className="conversation" aria-live="polite">
+      <div className="conversation" aria-live="polite" ref={conversation}>
         {session.entries.map((entry, index) =>
           entry.kind === "suggestion" ? (
             <ModelSuggestionCard
