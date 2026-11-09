@@ -128,8 +128,9 @@ reuses the same `llama-server`. What changed is how long a slot is held:
   `max_wait_s` (stage 2d; default 600 s), after which the call fails. `models.local`,
   `imperium models local`, and the desktop's Local models panel show each loaded model's slots in
   use and `queued` (calls waiting), and each `model_call_completed` event carries `queue_wait_ms`,
-  the time that call waited for a slot (`duration_ms` and the time to first token start after it;
-  absent for hosted models).
+  the time that call waited for a slot or for room to load its model, not counting the load, a
+  swap-out, or a slot restore (`duration_ms` and the time to first token start after it; absent
+  for hosted models).
 - **Slot affinity.** The supervisor remembers which agent (session and agent id) used each slot
   last. A call goes to the free slot its agent used last, whose KV cache still holds the agent's
   prompt, unless another agent has used it since; otherwise to the slot that has been free the

@@ -844,6 +844,9 @@ impl Supervisor {
                 max_wait.as_secs()
             )
         };
+        // Time spent waiting for a slot or for room, which the lease reports; loading the
+        // model, swapping others out, and restoring a saved slot are not counted.
+        let mut waited = Duration::ZERO;
         loop {
             // Listen before looking, so a change between the two is not missed.
             let changed = self.changed.notified();
@@ -851,10 +854,12 @@ impl Supervisor {
             changed.as_mut().enable();
             match self.step(id, holder, &ticket)? {
                 Step::Leased(lease, restore) => {
+                    let lease = lease.with_wait(waited);
                     return Ok(self.restore(holder, lease, restore).await);
                 }
                 Step::Queued(queued) => {
                     let pool = Arc::clone(&queued.0);
+                    let queued_at = Instant::now();
                     let permit = tokio::time::timeout_at(
                         deadline,
                         Arc::clone(&pool.permits).acquire_owned(),
@@ -863,9 +868,11 @@ impl Supervisor {
                     .map_err(|_| too_long())?
                     .map_err(|_| "the model was unloaded".to_string())?;
                     drop(queued);
+                    waited += queued_at.elapsed();
                     if let Some((lease, restore)) =
                         self.lease_if_current(id, &pool, permit, holder, ticket.seq)?
                     {
+                        let lease = lease.with_wait(waited);
                         return Ok(self.restore(holder, lease, restore).await);
                     }
                     // Unloaded meanwhile: wait for it again, keeping the place in line.
@@ -879,7 +886,10 @@ impl Supervisor {
                     match self.plan(&model, &ticket)? {
                         Plan::Retry => continue,
                         Plan::Load(load) => {
-                            return self.swap_in(&model, holder, load, swapping).await;
+                            return self
+                                .swap_in(&model, holder, load, swapping)
+                                .await
+                                .map(|lease| lease.with_wait(waited));
                         }
                         Plan::Wait => drop(swapping),
                     }
@@ -890,7 +900,9 @@ impl Supervisor {
             if now >= deadline {
                 return Err(too_long());
             }
+            let asleep = Instant::now();
             let _ = tokio::time::timeout(RECHECK.min(deadline - now), changed.as_mut()).await;
+            waited += asleep.elapsed();
         }
     }
 
@@ -1547,6 +1559,60 @@ mod tests {
         supervisor.unload_idle_now(Duration::ZERO).await;
         assert!(supervisor.loaded().is_empty());
         assert_eq!(launcher.running.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_model_attached_to_a_turn_stays_loaded_between_its_calls() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = supervisor(Arc::clone(&launcher));
+        // Session A's turn on "a" is between calls: it holds no slot but is still attached, so
+        // "a" is claimed.
+        let attached = supervisor.attach("a", "session-a/root");
+        drop(supervisor.acquire("a", "session-a/root").await.unwrap());
+        assert_eq!(supervisor.loaded()[0].slots_in_use, 0);
+        // "b" is not refused: it waits for A's turn (up to `min_residency_s`), and "a" is not
+        // swapped out for it meanwhile.
+        let b = {
+            let supervisor = Arc::clone(&supervisor);
+            tokio::spawn(async move { supervisor.acquire("b", "session-b/root").await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!b.is_finished(), "b waits while a's turn is attached");
+        assert_eq!(
+            supervisor.loaded()[0].model_id,
+            "a",
+            "an attached model stays loaded"
+        );
+        // A's turn ends, so "a" is free and "b" swaps it out.
+        drop(attached);
+        let b = b.await.unwrap().unwrap();
+        assert_eq!(b.base_url, "http://fake/b/v1");
+        assert_eq!(launcher.running.load(Ordering::SeqCst), 1);
+        assert_eq!(supervisor.loaded()[0].model_id, "b");
+    }
+
+    #[tokio::test]
+    async fn the_queue_wait_leaves_out_loading() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = supervisor(launcher);
+        let first = supervisor.acquire("a", "first").await.unwrap();
+        assert_eq!(
+            first.waited,
+            Duration::ZERO,
+            "a load is not a wait for a slot"
+        );
+        let second = supervisor.acquire("a", "second").await.unwrap();
+        let waiter = {
+            let supervisor = Arc::clone(&supervisor);
+            tokio::spawn(async move { supervisor.acquire("a", "third").await.unwrap().waited })
+        };
+        while supervisor.loaded()[0].queued == 0 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(first);
+        assert!(waiter.await.unwrap() >= Duration::from_millis(20));
+        drop(second);
     }
 
     #[test]

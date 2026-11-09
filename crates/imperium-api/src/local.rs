@@ -5,6 +5,7 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 /// Whether a local model can take work right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -32,6 +33,9 @@ pub struct LocalLease {
     /// `id_slot`); requests sent with the lease are pinned to it so the slot's cached prompt is
     /// reused. `None` for runtimes that choose their own.
     pub slot: Option<u32>,
+    /// How long the call waited for a free slot or for room to load the model, not counting
+    /// time spent loading it, swapping other models out, or restoring a saved slot.
+    pub waited: Duration,
     _release: Box<dyn Send + Sync>,
 }
 
@@ -41,8 +45,16 @@ impl LocalLease {
         LocalLease {
             base_url,
             slot,
+            waited: Duration::ZERO,
             _release: Box::new(release),
         }
+    }
+
+    /// The lease, recording that the call waited `waited` for its slot.
+    #[must_use]
+    pub fn with_wait(mut self, waited: Duration) -> Self {
+        self.waited = waited;
+        self
     }
 }
 
@@ -51,6 +63,7 @@ impl fmt::Debug for LocalLease {
         f.debug_struct("LocalLease")
             .field("base_url", &self.base_url)
             .field("slot", &self.slot)
+            .field("waited", &self.waited)
             .finish_non_exhaustive()
     }
 }
