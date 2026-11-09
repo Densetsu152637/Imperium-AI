@@ -250,7 +250,6 @@ impl Agent {
                 // A local model's slot is held for this one request, not for the turn: tool
                 // calls, `await_tasks`, and usage-limit pauses run without one. The model is
                 // loaded here if needed.
-                let queued = Instant::now();
                 let (client, lease) = match self.client(&holder).await {
                     Ok(taken) => taken,
                     Err(message) => {
@@ -260,7 +259,7 @@ impl Agent {
                         return self.outcome(message, false, total);
                     }
                 };
-                let queue_wait = lease.as_ref().map(|_| queued.elapsed());
+                let queue_wait = lease.as_ref().map(|lease| lease.waited);
                 let request = ChatRequest {
                     model: &self.model.model,
                     messages: &self.messages,
