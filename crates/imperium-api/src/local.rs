@@ -5,6 +5,7 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
 
 /// Whether a local model can take work right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,6 +28,8 @@ pub struct LocalLease {
     /// `id_slot`); requests sent with the lease are pinned to it so the slot's cached prompt is
     /// reused. `None` for runtimes that choose their own.
     pub slot: Option<u32>,
+    /// How long the call waited for a free slot, not counting time spent loading the model.
+    pub waited: Duration,
     _release: Box<dyn Send + Sync>,
 }
 
@@ -36,8 +39,16 @@ impl LocalLease {
         LocalLease {
             base_url,
             slot,
+            waited: Duration::ZERO,
             _release: Box::new(release),
         }
+    }
+
+    /// The lease, recording that the call waited `waited` for its slot.
+    #[must_use]
+    pub fn with_wait(mut self, waited: Duration) -> Self {
+        self.waited = waited;
+        self
     }
 }
 
@@ -46,7 +57,32 @@ impl fmt::Debug for LocalLease {
         f.debug_struct("LocalLease")
             .field("base_url", &self.base_url)
             .field("slot", &self.slot)
+            .field("waited", &self.waited)
             .finish_non_exhaustive()
+    }
+}
+
+/// What an agent told the local runtime about itself ([`LocalModels::attach`]); dropping it
+/// withdraws that.
+pub struct LocalPresence(Option<Box<dyn Send + Sync>>);
+
+impl LocalPresence {
+    /// `withdraw` is dropped with the presence; its `Drop` withdraws it.
+    pub fn new(withdraw: impl Send + Sync + 'static) -> Self {
+        LocalPresence(Some(Box::new(withdraw)))
+    }
+
+    /// A presence the runtime does not track.
+    pub fn untracked() -> Self {
+        LocalPresence(None)
+    }
+}
+
+impl fmt::Debug for LocalPresence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("LocalPresence")
+            .field(&self.0.is_some())
+            .finish()
     }
 }
 
@@ -61,4 +97,9 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     /// the model can give it back the slot it used last, whose cached prompt is still there
     /// unless another agent has overwritten it.
     fn acquire<'a>(&'a self, model: &'a str, holder: &'a str) -> AcquireFuture<'a>;
+    /// Says that `holder` is working on `model` for one turn, so between its calls the model is
+    /// not unloaded, to make room for another or for being idle. Held for the turn.
+    fn attach(&self, _model: &str, _holder: &str) -> LocalPresence {
+        LocalPresence::untracked()
+    }
 }

@@ -237,8 +237,15 @@ impl Agent {
         let mut total = Usage::default();
         let mut reply = String::new();
         let max_steps = self.shared.max_steps;
-        // Names this agent to a local model, which gives it back the slot it used last.
+        // Names this agent to a local model, which gives it back the slot it used last and
+        // keeps the model loaded between its calls.
         let holder = format!("{}/{}", self.shared.session_id, self.id);
+        let _attached = self
+            .shared
+            .local
+            .as_deref()
+            .filter(|_| self.model.local)
+            .map(|local| local.attach(&self.model.model, &holder));
         for step in 1..=max_steps {
             let mut waits = 0;
             let mut waited = std::time::Duration::ZERO;
@@ -246,7 +253,6 @@ impl Agent {
                 // A local model's slot is held for this one request, not for the turn: tool
                 // calls, `await_tasks`, and usage-limit pauses run without one. The model is
                 // loaded here if needed.
-                let queued = Instant::now();
                 let (client, lease) = match self.client(&holder).await {
                     Ok(taken) => taken,
                     Err(message) => {
@@ -256,7 +262,7 @@ impl Agent {
                         return self.outcome(message, false, total);
                     }
                 };
-                let queue_wait = lease.as_ref().map(|_| queued.elapsed());
+                let queue_wait = lease.as_ref().map(|lease| lease.waited);
                 let request = ChatRequest {
                     model: &self.model.model,
                     messages: &self.messages,

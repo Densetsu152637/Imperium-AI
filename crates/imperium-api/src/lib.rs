@@ -9,7 +9,7 @@ mod pricing;
 mod tools;
 
 pub use chat::{ChatMessage, FunctionCall, ToolCall, ToolSpec, Usage};
-pub use local::{AcquireFuture, Availability, LocalLease, LocalModels};
+pub use local::{AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence};
 pub use pricing::Pricing;
 pub use tools::{
     StartFuture, ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,

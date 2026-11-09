@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels};
+use imperium_api::{AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence};
 use imperium_config::{LlamaCppSettings, VllmSettings};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -245,6 +245,9 @@ pub struct Supervisor {
     /// Memory free when the supervisor started, less the RAM headroom.
     budget: Budget,
     loaded: Mutex<HashMap<String, Loaded>>,
+    /// Turns working on each model, by model id: an attached model holds no slot between calls
+    /// but is not unloaded. Locked after `loaded` when both are needed.
+    attached: Arc<Mutex<HashMap<String, u32>>>,
     /// Loads happen one at a time, so two agents asking for the same model load it once.
     loading: tokio::sync::Mutex<()>,
 }
@@ -296,6 +299,7 @@ impl Supervisor {
             launcher,
             budget,
             loaded: Mutex::new(HashMap::new()),
+            attached: Arc::new(Mutex::new(HashMap::new())),
             loading: tokio::sync::Mutex::new(()),
         });
         let weak = Arc::downgrade(&supervisor);
@@ -378,9 +382,11 @@ impl Supervisor {
     /// The budget minus what loaded models hold; with `reclaim_idle`, idle models count as
     /// free because they can be unloaded.
     fn free_budget(&self, loaded: &HashMap<String, Loaded>, reclaim_idle: bool) -> Budget {
+        let attached = lock(&self.attached);
         let held = loaded
-            .values()
-            .filter(|loaded| !reclaim_idle || loaded.in_use() > 0);
+            .iter()
+            .filter(|(id, entry)| !reclaim_idle || !is_idle(id, entry, &attached))
+            .map(|(_, entry)| entry);
         let (vram, ram) = held.fold((0, 0), |(vram, ram), loaded| {
             (
                 vram + loaded.placement.vram_bytes,
@@ -416,6 +422,7 @@ impl Supervisor {
             }
             Arc::clone(&entry.pool)
         };
+        let waiting = Instant::now();
         let permit = {
             let _queued = Queued::new(&pool.waiting);
             Arc::clone(&pool.permits)
@@ -423,13 +430,15 @@ impl Supervisor {
                 .await
                 .map_err(|_| "the model was unloaded".to_string())?
         };
+        let waited = waiting.elapsed();
         let same_server = lock(&self.loaded)
             .get(id)
             .is_some_and(|entry| Arc::ptr_eq(&entry.pool, &pool));
         if !same_server {
             return Ok(None);
         }
-        pool.lease(permit, holder).map(Some)
+        pool.lease(permit, holder)
+            .map(|lease| Some(lease.with_wait(waited)))
     }
 
     async fn acquire_slot(&self, id: &str, holder: &str) -> Result<LocalLease, String> {
@@ -475,8 +484,9 @@ impl Supervisor {
                 .place(footprint, self.free_budget(&loaded, false))
                 .is_none()
             {
+                let attached = lock(&self.attached);
                 loaded.retain(|other, entry| {
-                    let keep = entry.in_use() > 0;
+                    let keep = !is_idle(other, entry, &attached);
                     if !keep {
                         tracing::info!(model = %other, "unloading idle model to make room");
                     }
@@ -532,13 +542,39 @@ impl Supervisor {
     }
 
     fn unload_idle_now(&self, idle_for: Duration) {
-        lock(&self.loaded).retain(|id, entry| {
-            let idle = entry.in_use() == 0 && lock(&entry.pool.last_used).elapsed() >= idle_for;
+        let mut loaded = lock(&self.loaded);
+        let attached = lock(&self.attached);
+        loaded.retain(|id, entry| {
+            let idle =
+                is_idle(id, entry, &attached) && lock(&entry.pool.last_used).elapsed() >= idle_for;
             if idle {
                 tracing::info!(model = %id, "unloading idle model");
             }
             !idle
         });
+    }
+}
+
+/// Whether nothing holds `id` loaded: no call has a slot on it and no turn is attached to it.
+fn is_idle(id: &str, entry: &Loaded, attached: &HashMap<String, u32>) -> bool {
+    entry.in_use() == 0 && !attached.contains_key(id)
+}
+
+/// A turn attached to a model; dropping it detaches the turn.
+struct Attached {
+    counts: Arc<Mutex<HashMap<String, u32>>>,
+    model: String,
+}
+
+impl Drop for Attached {
+    fn drop(&mut self) {
+        let mut counts = lock(&self.counts);
+        if let Some(count) = counts.get_mut(&self.model) {
+            *count -= 1;
+            if *count == 0 {
+                counts.remove(&self.model);
+            }
+        }
     }
 }
 
@@ -595,6 +631,14 @@ impl LocalModels for Supervisor {
 
     fn acquire<'a>(&'a self, id: &'a str, holder: &'a str) -> AcquireFuture<'a> {
         Box::pin(self.acquire_slot(id, holder))
+    }
+
+    fn attach(&self, id: &str, _holder: &str) -> LocalPresence {
+        *lock(&self.attached).entry(id.to_string()).or_default() += 1;
+        LocalPresence::new(Attached {
+            counts: Arc::clone(&self.attached),
+            model: id.to_string(),
+        })
     }
 }
 
@@ -756,6 +800,54 @@ mod tests {
         supervisor.unload_idle_now(Duration::ZERO);
         assert!(supervisor.loaded().is_empty());
         assert_eq!(launcher.running.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_model_attached_to_a_turn_stays_loaded_between_its_calls() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = supervisor(Arc::clone(&launcher));
+        // Session A's turn on "a" is between calls: it holds no slot but is still attached.
+        let attached = supervisor.attach("a", "session-a/root");
+        drop(supervisor.acquire("a", "session-a/root").await.unwrap());
+        assert_eq!(supervisor.loaded()[0].slots_in_use, 0);
+        assert_eq!(supervisor.availability("b"), Availability::Unavailable);
+        let error = supervisor.acquire("b", "session-b/root").await.unwrap_err();
+        assert!(error.contains("not enough free memory"), "{error}");
+        supervisor.unload_idle_now(Duration::ZERO);
+        assert_eq!(
+            supervisor.loaded()[0].model_id,
+            "a",
+            "an attached model stays loaded"
+        );
+        // A's turn ends, so "a" is idle and "b" may replace it.
+        drop(attached);
+        let b = supervisor.acquire("b", "session-b/root").await.unwrap();
+        assert_eq!(b.base_url, "http://fake/b/v1");
+        assert_eq!(launcher.running.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn the_queue_wait_leaves_out_loading() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = supervisor(launcher);
+        let first = supervisor.acquire("a", "first").await.unwrap();
+        assert_eq!(
+            first.waited,
+            Duration::ZERO,
+            "a load is not a wait for a slot"
+        );
+        let second = supervisor.acquire("a", "second").await.unwrap();
+        let waiter = {
+            let supervisor = Arc::clone(&supervisor);
+            tokio::spawn(async move { supervisor.acquire("a", "third").await.unwrap().waited })
+        };
+        while supervisor.loaded()[0].queued == 0 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(first);
+        assert!(waiter.await.unwrap() >= Duration::from_millis(20));
+        drop(second);
     }
 
     #[test]

@@ -124,10 +124,15 @@ reuses the same `llama-server`. What changed is how long a slot is held:
   `await_tasks` leave the slots to the sessions that are working, even on a model with a single
   slot. The model is loaded on the first call, and stays loaded within `idle_unload_s` of the last
   call that used it. Hosted endpoints are unaffected.
+- **Attached turns keep their model loaded.** A turn on a local model attaches to it from start
+  to end (completed, failed, or cancelled). An attached model holds no slot between calls but is
+  never unloaded, neither when idle nor to make room for another model, so a turn's model cannot
+  disappear while its tools run. A model that would need an attached one unloaded is refused for
+  lack of memory, as one that would need a model in use unloaded is.
 - **A queue.** Calls that find every slot busy wait first-come, first-served. `models.local`,
   `imperium models local`, and the desktop's Local models panel show each loaded model's slots in
   use and `queued` (calls waiting), and each `model_call_completed` event carries `queue_wait_ms`,
-  the time that call waited for a slot (`duration_ms` and the time to first token start after it;
+  the time that call waited for a slot, not counting a load (`duration_ms` and the time to first token start after it;
   absent for hosted models).
 - **Slot affinity.** The supervisor remembers which agent (session and agent id) used each slot
   last. A call goes to the free slot its agent used last, whose KV cache still holds the agent's
