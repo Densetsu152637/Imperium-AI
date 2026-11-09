@@ -260,14 +260,17 @@ async fn per_model_settings_reach_the_launch_arguments() {
         (loaded[0].slots, loaded[0].pool_tokens, loaded[0].context),
         (4, 16384, 2048)
     );
-    // A model without settings of its own gets the defaults: the pool is context x parallel.
+    // A model without settings of its own gets the defaults: the pool is context x parallel,
+    // and each slot is capped at the default context.
     drop(supervisor.acquire("b", "s/root").await.unwrap());
     let args = log.args("b");
     assert!(
-        args.contains("--ctx-size 8192 --kv-unified --parallel 8 --no-cache-idle-slots"),
+        args.contains(
+            "--ctx-size 8192 --kv-unified --kv-unified-per-slot 4096 --parallel 8 \
+             --no-cache-idle-slots"
+        ),
         "{args}"
     );
-    assert!(!args.contains("--kv-unified-per-slot"), "{args}");
 }
 
 #[tokio::test]
