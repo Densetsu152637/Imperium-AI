@@ -321,8 +321,16 @@ async fn the_root_delegates_waits_without_model_calls_and_collects_reports() {
     assert_eq!(sub_calls.load(Ordering::SeqCst), 2);
 }
 
-#[tokio::test]
-async fn a_single_call_subagent_makes_one_model_call_with_no_tools_and_its_reply_is_the_report() {
+/// A single-call result: whether the task succeeded, its report, and the tool counts offered
+/// on each subagent model call.
+struct SingleCall {
+    ok: bool,
+    report: String,
+    tools_offered: Vec<usize>,
+}
+
+/// Runs a root that spawns one single-call subagent, which answers with `sub_reply`.
+async fn run_single_call(sub_reply: String) -> SingleCall {
     let tools_offered = Arc::new(std::sync::Mutex::new(Vec::<usize>::new()));
     let sub_calls = Arc::new(AtomicUsize::new(0));
     let root_calls = Arc::new(AtomicUsize::new(0));
@@ -333,6 +341,7 @@ async fn a_single_call_subagent_makes_one_model_call_with_no_tools_and_its_reply
             let sub_calls = Arc::clone(&sub_calls);
             let root_calls = Arc::clone(&root_calls);
             move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let sub_reply = sub_reply.clone();
                 let tools_offered = Arc::clone(&tools_offered);
                 let sub_calls = Arc::clone(&sub_calls);
                 let root_calls = Arc::clone(&root_calls);
@@ -342,7 +351,7 @@ async fn a_single_call_subagent_makes_one_model_call_with_no_tools_and_its_reply
                         sub_calls.fetch_add(1, Ordering::SeqCst);
                         let tools = body["tools"].as_array().map_or(0, Vec::len);
                         tools_offered.lock().unwrap().push(tools);
-                        text_body("the proof is: x = 2")
+                        sub_reply.clone()
                     } else {
                         match root_calls.fetch_add(1, Ordering::SeqCst) {
                             0 => tool_call_body(
@@ -372,25 +381,59 @@ async fn a_single_call_subagent_makes_one_model_call_with_no_tools_and_its_reply
     let mut events = session.subscribe();
     session.send("solve it".into()).unwrap();
 
-    let mut report = None;
+    let mut result = None;
     loop {
         let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
             .await
             .expect("an event within 10 s")
             .unwrap();
         match event.event {
-            SessionEvent::TaskFinished {
-                ok, report: text, ..
-            } => {
-                assert!(ok);
-                report = Some(text);
-            }
+            SessionEvent::TaskFinished { ok, report, .. } => result = Some((ok, report)),
             SessionEvent::TurnCompleted { .. } if event.agent_id == "root" => break,
-            SessionEvent::TurnFailed { message } => panic!("turn failed: {message}"),
+            SessionEvent::TurnFailed { message } if event.agent_id == "root" => {
+                panic!("turn failed: {message}")
+            }
             _ => {}
         }
     }
-    assert_eq!(report.as_deref(), Some("the proof is: x = 2"));
+    // One model call, whatever it returned.
     assert_eq!(sub_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(*tools_offered.lock().unwrap(), vec![0]);
+    let (ok, report) = result.expect("the task finished");
+    let tools_offered = tools_offered.lock().unwrap().clone();
+    SingleCall {
+        ok,
+        report,
+        tools_offered,
+    }
+}
+
+#[tokio::test]
+async fn a_single_call_subagent_makes_one_model_call_with_no_tools_and_its_reply_is_the_report() {
+    let result = run_single_call(text_body("the proof is: x = 2")).await;
+    assert!(result.ok);
+    assert_eq!(result.report, "the proof is: x = 2");
+    assert_eq!(result.tools_offered, [0]);
+}
+
+#[tokio::test]
+async fn a_single_call_subagent_with_a_blank_reply_fails() {
+    for reply in ["", " \n\t "] {
+        let result = run_single_call(text_body(reply)).await;
+        assert!(!result.ok, "{reply:?} counted as a report");
+        assert!(result.report.contains("no reply"), "{}", result.report);
+    }
+}
+
+#[tokio::test]
+async fn a_single_call_subagent_ignores_stray_tool_calls() {
+    let text = serde_json::json!({"choices":[{"delta":{"content":"x = 2"}}]});
+    let call = serde_json::json!({"choices":[{"delta":{"tool_calls":[{
+        "index":0,"id":"call-1","function":{"name":"read_file","arguments":"{}"}}]}}]});
+    let body = format!(
+        "data: {text}\n\ndata: {call}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        r#"{"choices":[],"usage":{"prompt_tokens":150,"completion_tokens":10}}"#
+    );
+    let result = run_single_call(body).await;
+    assert!(result.ok);
+    assert_eq!(result.report, "x = 2");
 }

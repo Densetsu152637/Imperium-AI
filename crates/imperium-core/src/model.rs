@@ -131,9 +131,9 @@ pub struct TaskRequest<'a> {
 /// 2. the first `[[routing.rules]]` entry matching the task's tier and tags decides: its `use`
 ///    list is tried in order (an explicit choice, so tier is not checked; location is), then
 ///    its location restriction applies to the rest. When no rule matched and
-///    `routing.builtin_rules` is on, the built-in task-class rules are checked the same way,
-///    except that their location is only a preference: with no suitable model there, every
-///    location is considered;
+///    `routing.builtin_rules` is on, the first matching built-in task-class rule applies, but
+///    its location and tier are preferences: with no suitable model there, its tier is tried in
+///    every allowed location, then the task's own tier;
 /// 3. otherwise the suitable models (at or above the tier, in the requested location) are
 ///    ranked by `routing.prefer`, then by price, with unpriced models counted as free;
 /// 4. otherwise `fallback`, the session's model.
@@ -184,8 +184,8 @@ pub fn route(
         .and_then(|rule| rule.tier)
         .map_or(tier, |floor| floor.max(tier));
     // An agent's or user rule's location is a requirement; a built-in rule's is a preference.
-    // If no model fits a built-in rule's location and tier, the task's own tier applies in
-    // every location.
+    // If no model fits a built-in rule's location and tier, its tier is tried in every allowed
+    // location, then the task's own tier.
     let location = request
         .location
         .or_else(|| user_rule.and_then(|rule| rule.location));
@@ -229,6 +229,7 @@ pub fn route(
             })
     };
     best(preferred_location, preferred_tier)
+        .or_else(|| best(None, preferred_tier))
         .or_else(|| best(None, tier))
         .map_or_else(|| fallback.clone(), |chosen| chosen.model.clone())
 }
@@ -534,6 +535,62 @@ mod tests {
         // No local row: the normal router picks the cheapest hosted standard-or-better model.
         let chosen = route(&hosted_only, &routing, &fallback(), request(tests), None).model;
         assert_eq!(chosen, "mid");
+    }
+
+    #[test]
+    fn a_hard_class_without_a_cloud_frontier_row_tries_frontier_elsewhere() {
+        let routing = RoutingSettings::default();
+        let mut rows = catalog();
+        let mut local_frontier = rows[2].clone();
+        local_frontier.id = "local-frontier".into();
+        local_frontier.model.model = "local-frontier".into();
+        local_frontier.tier = Tier::Frontier;
+        rows.push(local_frontier);
+        let tags = ["proof".to_string()];
+        let request = TaskRequest {
+            tags: &tags,
+            ..TaskRequest::default()
+        };
+        // The frontier floor holds in another location before the task's own tier is used.
+        assert_eq!(
+            route(&rows, &routing, &fallback(), request, None).model,
+            "local-frontier"
+        );
+        // An explicit location still binds: in the cloud there is no frontier row.
+        let cloud = TaskRequest {
+            location: Some(Location::Cloud),
+            ..request
+        };
+        assert_eq!(
+            route(&rows, &routing, &fallback(), cloud, None).model,
+            "mid"
+        );
+    }
+
+    #[test]
+    fn a_user_rule_tier_is_a_floor() {
+        let routing = RoutingSettings {
+            rules: vec![RoutingRule {
+                when_tag: Some("code".into()),
+                tier: Some(Tier::Strong),
+                ..RoutingRule::default()
+            }],
+            ..RoutingSettings::default()
+        };
+        let code = ["code".to_string()];
+        let coding = TaskRequest {
+            tier: Tier::Basic,
+            tags: &code,
+            ..TaskRequest::default()
+        };
+        assert_eq!(pick(&routing, coding), "big");
+        // Unlike a built-in floor, it is a requirement: with nothing at or above it in the
+        // allowed location, the session model is used.
+        let local = TaskRequest {
+            location: Some(Location::Local),
+            ..coding
+        };
+        assert_eq!(pick(&routing, local), "session");
     }
 
     /// Local models with fixed availability, standing in for the llama.cpp supervisor.

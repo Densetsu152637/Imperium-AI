@@ -211,8 +211,9 @@ A subagent's model is chosen as follows:
 2. The first rule whose `when_tier` (exact) and `when_tag` match the task: its `use` ids are
    tried in order (tier is not checked for an explicit choice; the location restriction is),
    then its `location` restricts the remaining choice, and its optional `tier` raises the
-   task's minimum tier to at least that one. If none of your rules matched, the
-   [built-in task-class rules](#task-classes) are checked the same way.
+   task's minimum tier to at least that one. If none of your rules matched, the first matching
+   [built-in task-class rule](#task-classes) applies instead, but its location and tier are
+   preferences rather than restrictions.
 3. The suitable rows (at or above the requested tier, default `standard`, and in the requested
    or rule location) ranked by `prefer`, then by input plus output price, with unpriced rows
    counted as free.
@@ -237,7 +238,8 @@ same tag (or a catch-all) replaces them:
 
 A task with tags from both rows counts as hard. A built-in rule's location and tier floor are
 preferences, not restrictions: the router first looks for a row in that location at the floor,
-and when there is none (no local row, memory is short, or no cloud `frontier` row) it ranks the
+then (for a hard task with no cloud `frontier` row) for a `frontier` row in any location, and
+when there is none (no local row, memory is short, or no `frontier` row at all) it ranks the
 rows of every location at the task's own tier by the usual steps. An explicit `location` on the
 call, and a `location` or `tier` in a rule of yours, remain requirements. Set
 `routing.builtin_rules = false` to turn the built-ins off.

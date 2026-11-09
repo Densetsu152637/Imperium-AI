@@ -788,7 +788,8 @@ impl RoutingSettings {
     /// and a menial class counts as hard. Hard tags prefer cloud `frontier` models; menial
     /// tags prefer local models and keep the task's own tier. They are checked only when no
     /// entry of `rules` matched, and their location and tier floor are preferences: when no
-    /// model fits, the normal router chooses from every location at the task's own tier.
+    /// model fits, the tier floor is tried in every location, then the normal router chooses
+    /// from every location at the task's own tier.
     pub fn builtin_rules() -> Vec<RoutingRule> {
         let class = |tag: &str, location, tier| RoutingRule {
             when_tag: Some(tag.to_string()),

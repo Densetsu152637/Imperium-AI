@@ -351,11 +351,18 @@ impl Agent {
             if !completion.text.is_empty() {
                 reply = completion.text.clone();
             }
+            // A single-call agent runs no tools, so stray calls are dropped from the transcript
+            // rather than left without results.
+            let tool_calls = if self.single_call {
+                Vec::new()
+            } else {
+                completion.tool_calls.clone()
+            };
             self.messages.push(ChatMessage::Assistant {
                 content: Some(completion.text).filter(|text| !text.is_empty()),
-                tool_calls: completion.tool_calls.clone(),
+                tool_calls,
             });
-            if self.single_call && reply.is_empty() {
+            if self.single_call && reply.trim().is_empty() {
                 let message = "the model returned no reply to a single-call task".to_string();
                 self.emit(SessionEvent::TurnFailed {
                     message: message.clone(),
