@@ -176,6 +176,15 @@ pub enum SessionEvent {
     },
     /// The wait ended and the turn continues.
     Resumed {},
+    /// The user stopped the session (`session.control` `stop`): the root and every subagent
+    /// halt at their next safe point (a tool call in flight finishes, a model request in
+    /// flight is cancelled and is sent again on resume), their state is kept, local models may
+    /// release their slots, and queued messages wait. The status is `paused` until
+    /// `work_resumed`; a restart keeps it stopped. Emitted by the root.
+    WorkStopped {},
+    /// The user resumed a stopped session (`session.control` `resume`): every agent goes on
+    /// from where it halted, and queued messages run. Emitted by the root.
+    WorkResumed {},
     /// The session's status changed. `detail` names what it watches, such as `owner/repo#12`.
     StatusChanged {
         status: SessionStatus,

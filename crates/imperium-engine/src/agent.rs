@@ -406,6 +406,27 @@ impl Agent {
         )
     }
 
+    /// While the user has the session stopped: waits here, at a safe point, holding no
+    /// local-model slot (asleep to the runtime, which may swap the model out and save the slot),
+    /// then takes the model back and goes on.
+    async fn hold_while_stopped(&self, attached: &mut Option<LocalPresence>, holder: &str) {
+        let mut stop = self.shared.controls.stop_signal();
+        if !*stop.borrow_and_update() {
+            return;
+        }
+        *attached = None;
+        let asleep = self
+            .local_models()
+            .map(|local| local.waiting(&self.model.model, holder));
+        // INTEGRATION POINT: an explicit slot release / save from the local runtime goes here
+        // (and its restore in `ensure_resident`); `waiting` already lets it reclaim the slot.
+        let _ = stop.wait_for(|stopped| !*stopped).await;
+        drop(asleep);
+        *attached = self
+            .local_models()
+            .map(|local| local.attach(&self.model.model, holder));
+    }
+
     /// Makes this subagent pause when the user steers the root agent from now on.
     fn pausable(mut self) -> Self {
         self.pause = Some(self.shared.inboxes.open(ROOT_AGENT).steering_signal());
@@ -591,6 +612,8 @@ impl Agent {
             self.yield_to_user(&mut attached, &holder).await;
             // The safe point for steering: the last model response's tool calls all have
             // their results. A subagent stops here when the user steered the root.
+            // A session the user stopped halts here, holding no slot, until resumed.
+            self.hold_while_stopped(&mut attached, &holder).await;
             if self.pause_requested() {
                 return self.pause_turn(total, step - 1, &reply);
             }
@@ -638,17 +661,26 @@ impl Agent {
                         },
                     );
                 };
-                // A pausable subagent's request is cancelled when the user steers the root.
-                let streamed = match self.pause.as_mut() {
-                    Some(pause) => tokio::select! {
-                        result = client.stream(request, &mut on_text) => Some(result),
-                        () = signalled(pause) => None,
-                    },
-                    None => Some(client.stream(request, &mut on_text).await),
+                // The request is cancelled when the user stops the session (it is sent again on
+                // resume) or, for a pausable subagent, steers the root.
+                let mut stop = self.shared.controls.stop_signal();
+                let streamed = tokio::select! {
+                    result = client.stream(request, &mut on_text) => Streamed::Done(result),
+                    () = maybe_signalled(self.pause.as_mut()) => Streamed::Paused,
+                    Ok(_) = stop.wait_for(|stopped| *stopped) => Streamed::Stopped,
                 };
                 drop(lease);
-                let Some(result) = streamed else {
-                    return self.pause_turn(total, step - 1, &reply);
+                let result = match streamed {
+                    Streamed::Done(result) => result,
+                    Streamed::Paused => return self.pause_turn(total, step - 1, &reply),
+                    Streamed::Stopped => {
+                        self.emit(SessionEvent::Notice {
+                            message: "the model call was cancelled because the session was                                       stopped; it is sent again on resume"
+                                .into(),
+                        });
+                        self.hold_while_stopped(&mut attached, &holder).await;
+                        continue;
+                    }
                 };
                 // A capped local reply that hit its reservation (or overflowed the KV pool) starts
                 // again with the whole context; one sent uncapped would only fail the same way.
@@ -2664,6 +2696,23 @@ async fn run_subagent(
         ok: outcome.ok,
         paused: false,
         report: truncate(&outcome.text, REPORT_CHARS),
+    }
+}
+
+/// How a model request ended.
+enum Streamed<T> {
+    Done(T),
+    /// The user steered the root: a pausable subagent stops its turn.
+    Paused,
+    /// The user stopped the session: the request is sent again on resume.
+    Stopped,
+}
+
+/// [`signalled`] for an agent that may have no pause signal (then never).
+async fn maybe_signalled(signal: Option<&mut watch::Receiver<u64>>) {
+    match signal {
+        Some(signal) => signalled(signal).await,
+        None => std::future::pending().await,
     }
 }
 

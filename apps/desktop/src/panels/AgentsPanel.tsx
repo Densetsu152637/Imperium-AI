@@ -11,6 +11,7 @@ import remarkGfm from "remark-gfm";
 import { RowMenu } from "../components/RowMenu";
 import { ToolState } from "../components/ToolState";
 import { formatCost, type SessionState, type TaskState } from "../sessions";
+import { isStopped, shownTaskStatus } from "../stop";
 
 /** What a paused subagent is told when the user resumes it without a follow-up of their own. */
 const RESUME_TEXT = "Continue where you left off.";
@@ -28,12 +29,15 @@ export function AgentsPanel({ session, onResume, onCancel }: { session: SessionS
     return <p className="empty">Subagents appear here when the agent delegates work.</p>;
   }
   const archived = session?.summary.archived ?? false;
+  // While the session is stopped its running subagents are halted: shown as paused.
+  const stopped = session ? isStopped(session) : false;
   return (
     <ul className="tasks">
       {tasks.map((task) => (
         <TaskRow
           key={task.taskId}
           task={task}
+          stopped={stopped}
           onResume={archived ? undefined : onResume}
           onCancel={archived ? undefined : onCancel}
         />
@@ -42,7 +46,7 @@ export function AgentsPanel({ session, onResume, onCancel }: { session: SessionS
   );
 }
 
-function TaskRow({ task, onResume, onCancel }: { task: TaskState } & Actions) {
+function TaskRow({ task, stopped, onResume, onCancel }: { task: TaskState; stopped: boolean } & Actions) {
   const [composing, setComposing] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -87,7 +91,12 @@ function TaskRow({ task, onResume, onCancel }: { task: TaskState } & Actions) {
       )}
       <details open={task.status === "running" || paused || composing}>
         <summary>
-          <span className={`badge ${task.status}`}>{task.status}</span> <strong>{task.taskId}</strong>{" "}
+          <span
+            className={`badge ${shownTaskStatus(task.status, stopped)}`}
+            title={stopped && task.status === "running" ? "Halted while the session is stopped" : undefined}
+          >
+            {shownTaskStatus(task.status, stopped)}
+          </span> <strong>{task.taskId}</strong>{" "}
           <span className="muted">
             {task.model} · {formatCost(task.costUsd)}
           </span>

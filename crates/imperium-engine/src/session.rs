@@ -347,6 +347,28 @@ impl Session {
         self.controls.resume_now();
     }
 
+    /// Stops all of the session's work: the root and every subagent halt at their next safe
+    /// point (a tool call in flight finishes; a model request in flight is cancelled and sent
+    /// again on resume), holding no local-model slot, and queued messages wait. The stop is
+    /// journalled, so it survives a restart. Stopping a stopped session changes nothing.
+    pub fn stop(&self) {
+        if !self.controls.is_stopped() {
+            self.emitter.emit(ROOT_AGENT, SessionEvent::WorkStopped {});
+        }
+    }
+
+    /// Resumes a stopped session: every agent goes on from where it halted.
+    pub fn resume_work(&self) {
+        if self.controls.is_stopped() {
+            self.emitter.emit(ROOT_AGENT, SessionEvent::WorkResumed {});
+        }
+    }
+
+    /// Whether the user stopped the session.
+    pub fn is_stopped(&self) -> bool {
+        self.controls.is_stopped()
+    }
+
     /// Marks the session as watching something (a pull request), as merged, or neither.
     pub fn set_watch(&self, overlay: Option<(SessionStatus, String)>) {
         if let Some(event) = self.controls.set_overlay(overlay) {
@@ -678,11 +700,23 @@ async fn run(
     }
     let queue = shared.inboxes.open(ROOT_AGENT);
     let auto_compact = config.auto_compact;
+    let mut stop = shared.controls.stop_signal();
     loop {
-        // Messages that waited for the last turn run first, in order.
-        let text = match queue.pop() {
+        // Messages that waited for the last turn run first, in order; while the user has the
+        // session stopped they keep waiting, and new ones join them.
+        let stopped = *stop.borrow_and_update();
+        let next = if stopped { None } else { queue.pop() };
+        let text = match next {
             Some(message) => message.text,
-            None => match commands.recv().await {
+            None => match tokio::select! {
+                // Resumed: the queue runs.
+                _ = stop.changed(), if stopped => continue,
+                command = commands.recv() => command,
+            } {
+                Some(Command::Message(message)) if stopped => {
+                    shared.inboxes.queue_for_root(message);
+                    continue;
+                }
                 Some(Command::Message(message)) => message.text,
                 // Subagents still running after their parent's turn may be waiting for this.
                 Some(Command::Respond {
@@ -786,6 +820,9 @@ async fn run(
                         Some(Command::SetModel { reply, .. } | Command::Compact { reply }) => {
                             let _ = reply.send(Err(SwitchError::Busy));
                         }
+                        // Every handle is gone and the session is stopped: its agents would
+                        // wait forever, so the turn is dropped (a restart reports it as cut off).
+                        None if shared.controls.is_stopped() => return,
                         // Every handle is gone: nobody can answer, so deny what is pending.
                         None => {
                             handles_open = false;

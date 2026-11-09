@@ -471,6 +471,38 @@ wait, or join the running turn when the user asks.
 steers, and `/queue` lists the queue. The desktop composer stays enabled while the agent works
 ([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
+## Stopping a session
+
+**Implemented:** the user can stop all of a session's work and resume it later.
+
+- **Stop:** `session.control` with `action: "stop"` emits `work_stopped` from the root. The
+  root and every subagent (including `delegate_chunks` agents) halt at their next safe point,
+  before their next model call. A tool call in flight finishes first. A model request in
+  flight is cancelled (a notice says so) and sent again on resume. While halted, an agent
+  holds no local-model slot: it is asleep to the runtime (`waiting`), which may swap the model
+  out and save the slot. `hold_while_stopped` in the engine is the single place where an
+  explicit slot release from the local runtime will be wired in, and `ensure_resident` is
+  where the restore goes. State is kept: a subagent's conversation is saved at each safe
+  point, and the root's after its turn.
+- **Queue:** queued messages do not start while the session is stopped, and messages sent
+  meanwhile (to an idle root too) join the queue. Steering a stopped session takes effect on
+  resume.
+- **Status:** `paused`, with the detail `stopped` (unlike a usage-limit wait, which has no
+  detail). Subagents keep the status `running` in `session.agents`; clients show them as
+  paused while the session is stopped.
+- **Resume:** `session.control` with `action: "resume"` emits `work_resumed`. Every agent
+  goes on from where it halted, and the queue runs in order. `resume_now` is different: it
+  ends a usage-limit wait. Stopping a stopped session, or resuming a running one, changes
+  nothing.
+- **Restarts:** the stop is journalled, so a resumed session starts stopped and does not
+  resume on its own; its queue waits for `resume`. As with any restart, a turn the restart
+  cut off is reported failed, and subagents that were working are marked interrupted
+  ([agent state](#agent-state)). If every handle to a stopped session is dropped mid-turn,
+  that turn is abandoned rather than left waiting forever.
+- **Archiving:** a stopped session is not idle-done. It is never archived when its pull
+  request closes, and the inactivity check archives it only after
+  `sessions.auto_archive_after_days`, like an idle one (still not with queued messages).
+
 ## Agent state
 
 **Implemented:** every agent of a session (the root and each subagent) keeps its state, so a
