@@ -27,7 +27,7 @@ value: unknown,
 /**
  * The layer that set `value`.
  */
-source: "default" | "user" | "project" | "env", 
+source: "default" | "user" | "app" | "project" | "env", 
 /**
  * Whether the daemon must restart before a change applies.
  */

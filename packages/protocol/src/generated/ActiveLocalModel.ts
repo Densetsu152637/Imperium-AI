@@ -13,26 +13,47 @@ runtime: string,
  */
 placement: "gpu" | "partial" | "cpu", gpu_layers: number, 
 /**
- * Total context the server was started with (every slot together).
+ * Tokens one session may use.
  */
 context: number, 
+/**
+ * Tokens of KV cache its slots share (the KV pool).
+ */
+pool_tokens: number, 
+/**
+ * Of those, tokens reserved by calls running now.
+ */
+pool_reserved_tokens: number, 
 /**
  * Memory planned for it.
  */
 vram_bytes: number, ram_bytes: number, slots: number, slots_in_use: number, 
 /**
+ * Calls waiting for a slot or for room in the pool.
+ */
+queued: number, 
+/**
+ * Pinned to the CPU lane.
+ */
+cpu_pinned: boolean, 
+/**
+ * An agent is mid-turn on it (between its calls), so it stays loaded.
+ */
+claimed: boolean, 
+/**
  * Live sessions on this model: as their model, or with calls on it in the last 15 minutes.
  */
 sessions: Array<string>, pid: number | null, 
 /**
- * How long it has been idle; absent while a slot is in use.
+ * How long it has been idle; absent while it is in use (a slot in use, a call queued, or
+ * an agent mid-turn on it).
  */
 idle_ms: number | null, 
 /**
- * When it unloads if it stays idle; absent while a slot is in use.
+ * When it unloads if it stays idle; absent while it is in use.
  */
 unload_in_ms: number | null, 
 /**
- * `models.unload` can release it now (no slot is in use).
+ * `models.unload` can release it now (nothing is using it).
  */
 can_unload: boolean, };

@@ -5,6 +5,7 @@ use imperium_api::Pricing;
 use serde::{Deserialize, Serialize};
 
 use crate::SecretName;
+use crate::local_models::{LocalModelSettings, TableOverride};
 
 /// Built-in defaults: the first configuration layer.
 pub(crate) const DEFAULTS: &str = r#"
@@ -23,13 +24,43 @@ resume_days = 7
 backend = "auto"
 # Seconds a loaded model may sit unused before it is unloaded.
 idle_unload_s = 900
-# Context length and parallel slots each loaded model is started with.
+# Tokens one session may use on a local model (per-model override: [runtime.llamacpp.models."<id>"]).
 context = 8192
+# Deprecated: only sizes the default KV pool, pool_tokens = context x parallel. Slots are set by
+# `slots` (default: the larger of 8 and parallel), and no number of sessions is capped.
 parallel = 2
-# KV cache type: f16, q8_0, or q4_0.
+# slots = 8
+# Tokens of KV cache all slots of a model share (default: context x parallel).
+# pool_tokens = 65536
+# KV cache type of keys and values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, or q5_1.
 cache_type = "f16"
+# Flash attention: auto, on, or off.
+flash_attn = "auto"
+# Most tokens one local reply may generate before it is retried without a cap; 0 = no cap.
+max_output_tokens = 8192
 # System memory kept free for everything else when placing models.
 ram_headroom_mb = 2048
+# Host memory (MiB) for llama.cpp's prompt cache, which keeps the prompts of agents that lost
+# their slot to another so they are restored instead of read again. It is capped to the memory
+# left after the model and the models loaded beside it, counts against the budget, and 0 turns
+# it off.
+cache_ram_mb = 8192
+# Disk (MiB) for the slots of models swapped out to make room for another, so an agent's context
+# is restored instead of read again when its model comes back. Oldest files go first, starting
+# with the session holding the most; 0 turns saving off.
+swap_cache_mb = 8192
+# Seconds a model with an agent mid-turn on it stays loaded before a model another agent has
+# been waiting for may swap it out; a model nothing is waiting for can go at once.
+min_residency_s = 30
+# Swaps allowed per minute; beyond it, a call for a model that does not fit beside the loaded
+# ones waits for the minute to move on, and routing sends new work to a hosted model. 0 turns
+# swapping off: such a call fails at once.
+max_swaps_per_min = 6
+# Idle models are swapped out for a model that fits beside them only when it gets this many
+# times the GPU memory alone; 1.0 swaps whenever it gets more, so subagents run fully on the GPU.
+swap_gain = 2.0
+# Longest a call waits for room or a slot on a local model before it fails.
+max_wait_s = 600
 "#;
 
 /// Typed view of the merged configuration. Keys this build does not know are ignored, so a
@@ -70,6 +101,9 @@ pub struct Settings {
     pub phone: PhoneSettings,
     #[serde(default)]
     pub resume: ResumeSettings,
+    /// How busy the machine must be before autonomous work yields (see docs/14).
+    #[serde(default)]
+    pub load: LoadSettings,
     #[serde(default)]
     pub sessions: SessionSettings,
     /// `[[projects]]`: per-project settings, such as the project agent.
@@ -114,6 +148,65 @@ impl Settings {
                 return Err(format!(
                     "models.catalog: {:?} runs on this machine, so its location must be local",
                     entry.id
+                ));
+            }
+            if entry.placement == ModelPlacement::Cpu {
+                if entry.location != Location::Local {
+                    return Err(format!(
+                        "models.catalog: {:?} has placement = \"cpu\", which needs location = \"local\"",
+                        entry.id
+                    ));
+                }
+                if entry.llamacpp_model().is_none() {
+                    return Err(format!(
+                        "models.catalog: {:?} has placement = \"cpu\", which needs a llama.cpp model (spec = \"{LLAMACPP_ENDPOINT}:<id>\"), not {:?}",
+                        entry.id, entry.spec
+                    ));
+                }
+            } else if let Some(key) = entry.lane_key_set() {
+                return Err(format!(
+                    "models.catalog: {:?} sets {key}, which only applies to placement = \"cpu\"",
+                    entry.id
+                ));
+            }
+            for (key, value) in [
+                ("parallel", entry.parallel.map(u64::from)),
+                ("context", entry.context.map(u64::from)),
+                ("max_wait_s", entry.max_wait_s),
+            ] {
+                if value == Some(0) {
+                    return Err(format!(
+                        "models.catalog: {:?} needs {key} of at least 1",
+                        entry.id
+                    ));
+                }
+            }
+        }
+        for pinned in self
+            .models
+            .catalog
+            .iter()
+            .filter(|entry| entry.placement == ModelPlacement::Cpu)
+        {
+            if let Some(other) =
+                self.models.catalog.iter().find(|entry| {
+                    entry.spec == pinned.spec && entry.placement != ModelPlacement::Cpu
+                })
+            {
+                return Err(format!(
+                    "models.catalog: {:?} and {:?} name the same model {:?}, so both must use placement = \"cpu\" or neither",
+                    pinned.id, other.id, pinned.spec
+                ));
+            }
+            // The model is served once, so rows naming it cannot ask for different shapes.
+            if let Some(other) = self.models.catalog.iter().find(|entry| {
+                entry.spec == pinned.spec
+                    && (entry.parallel, entry.context, entry.max_wait_s)
+                        != (pinned.parallel, pinned.context, pinned.max_wait_s)
+            }) {
+                return Err(format!(
+                    "models.catalog: {:?} and {:?} name the same model {:?} with different parallel, context, or max_wait_s; a model is served once, so set them the same",
+                    pinned.id, other.id, pinned.spec
                 ));
             }
         }
@@ -182,6 +275,12 @@ impl Settings {
                 dir.display().to_string()
             ));
         }
+        let swap_gain = self.runtime.llamacpp.swap_gain;
+        if !swap_gain.is_finite() || swap_gain < 1.0 {
+            return Err(format!(
+                "runtime.llamacpp.swap_gain must be a number of at least 1.0, not {swap_gain}"
+            ));
+        }
         for (name, server) in &self.mcp.servers {
             if server.command.is_some() == server.url.is_some() {
                 return Err(format!(
@@ -189,7 +288,7 @@ impl Settings {
                 ));
             }
         }
-        Ok(())
+        self.validate_models()
     }
 }
 
@@ -418,6 +517,48 @@ impl Default for IsolationSettings {
     }
 }
 
+/// When the machine counts as `quiet`, `busy`, or `saturated` for autonomous work: sessions a
+/// schedule or a project agent started defer to the user's own sessions (see docs/14).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LoadSettings {
+    /// How often (seconds) the daemon looks at the machine.
+    pub sample_s: u64,
+    /// How long (seconds) the machine must look calmer before the level drops, so a pause
+    /// between two of the user's messages does not count as quiet.
+    pub settle_s: u64,
+    /// Overall CPU use (percent) at which the machine is busy.
+    pub busy_cpu_pct: f32,
+    /// Overall CPU use (percent) at which it is saturated.
+    pub saturated_cpu_pct: f32,
+    /// Available memory (MiB) below which the machine is busy. Keep it below
+    /// `runtime.llamacpp.ram_headroom_mb`: placing models leaves that much free, so a machine
+    /// with models loaded to the budget sits near it all day and would never be quiet.
+    pub busy_free_ram_mb: u64,
+    /// Available memory (MiB) below which it is saturated.
+    pub saturated_free_ram_mb: u64,
+    /// Local models swapped out in the last minute at which the machine is saturated.
+    pub saturated_swaps_per_min: u32,
+    /// Minutes after an interactive session last used a local model during which background
+    /// work may not swap that model out.
+    pub interactive_hold_min: u64,
+}
+
+impl Default for LoadSettings {
+    fn default() -> Self {
+        LoadSettings {
+            sample_s: 5,
+            settle_s: 60,
+            busy_cpu_pct: 70.0,
+            saturated_cpu_pct: 95.0,
+            busy_free_ram_mb: 1024,
+            saturated_free_ram_mb: 512,
+            saturated_swaps_per_min: 3,
+            interactive_hold_min: 5,
+        }
+    }
+}
+
 /// One `[[projects]]` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ProjectSettings {
@@ -434,6 +575,14 @@ pub struct ProjectSettings {
     /// Sessions the agent may start per day.
     #[serde(default = "default_max_sessions_per_day")]
     pub max_sessions_per_day: u32,
+    /// Hold the agent's sessions back until the machine is quiet (default on), for at most
+    /// `max_defer`.
+    #[serde(default = "enabled")]
+    pub prefer_quiet: bool,
+    /// Longest the agent's sessions wait for a quiet machine, such as `90m` or `2h` (default
+    /// 2 h); after that they run anyway.
+    #[serde(default)]
+    pub max_defer: Option<String>,
 }
 
 fn default_max_sessions() -> usize {
@@ -461,6 +610,25 @@ pub struct ScheduleSettings {
     /// `os` shows a system notification when a run finishes.
     #[serde(default)]
     pub notify: Vec<String>,
+    /// Hold a run back until the machine is quiet, for at most `max_defer`, then run anyway.
+    #[serde(default)]
+    pub prefer_quiet: bool,
+    /// Longest a `prefer_quiet` run waits for a quiet machine, such as `90m` or `2h` (default
+    /// 2 h).
+    #[serde(default)]
+    pub max_defer: Option<String>,
+    /// Conditions that must hold for a run to start.
+    #[serde(default)]
+    pub conditions: ConditionSettings,
+}
+
+/// What must be true for a scheduled run to start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ConditionSettings {
+    /// Wait for a quiet machine however long it takes (unlike `prefer_quiet`, which gives up
+    /// after `max_defer`). A person can still start the run from a client.
+    #[serde(default)]
+    pub when_quiet: bool,
 }
 
 /// Exactly one of `cron` (five fields, local time), `every` (`30m`), or `at` (a local time).
@@ -677,7 +845,7 @@ pub struct AgentSettings {
     pub resume_days: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ModelSettings {
     /// Model for new sessions, as `<endpoint>:<model>`, for example `openrouter:qwen/qwen3-coder`.
     #[serde(default)]
@@ -691,6 +859,9 @@ pub struct ModelSettings {
     /// Where models downloaded from Hugging Face go; see [`ModelSettings::download_dir`].
     #[serde(default)]
     pub download_dir: Option<PathBuf>,
+    /// `[models.overrides."<id>"]`: what the app changes on model-table rows.
+    #[serde(default)]
+    pub overrides: BTreeMap<String, TableOverride>,
     /// Sessions may offer to download a suitable local model from Hugging Face when the best
     /// model available is poor for the task (see docs/04-models-and-routing.md). Nothing is
     /// downloaded without the user's consent.
@@ -709,6 +880,7 @@ impl Default for ModelSettings {
             catalog: Vec::new(),
             folders: Vec::new(),
             download_dir: None,
+            overrides: BTreeMap::new(),
             suggest_downloads: true,
             suggestions: default_suggestions(),
         }
@@ -836,20 +1008,60 @@ impl Default for VllmSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct LlamaCppSettings {
     pub backend: String,
     /// A `llama-server` executable to use instead of a runtime pack.
     #[serde(default)]
     pub custom_path: Option<PathBuf>,
     pub idle_unload_s: u64,
+    /// Tokens one session may use on a local model.
     pub context: u32,
+    /// Deprecated: only sizes the default KV pool (`context × parallel`).
     pub parallel: u32,
+    /// Default `--parallel` of each model; unset takes the larger of 8 and `parallel`.
+    #[serde(default)]
+    pub slots: Option<u32>,
+    /// Default tokens of KV cache all slots of a model share.
+    #[serde(default)]
+    pub pool_tokens: Option<u32>,
+    /// Default type of the K and V cache.
     pub cache_type: String,
+    /// `auto`, `on`, or `off`.
+    #[serde(default = "default_flash_attn")]
+    pub flash_attn: String,
+    /// Most tokens one reply may generate before it is retried without a cap; 0 = no cap.
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: u32,
+    /// Settings of single local models, by model id.
+    #[serde(default)]
+    pub models: BTreeMap<String, LocalModelSettings>,
     pub ram_headroom_mb: u64,
+    /// Host memory for llama.cpp's prompt cache (`--cache-ram`), before it is capped to the RAM
+    /// the model leaves free; 0 disables it.
+    pub cache_ram_mb: u64,
+    /// Disk for the saved slots of swapped-out models (`--slot-save-path`); 0 turns saving off.
+    pub swap_cache_mb: u64,
+    /// How long a model with an agent mid-turn on it is kept before another may swap it out.
+    pub min_residency_s: u64,
+    /// Swaps per minute before swapping pauses; 0 turns swapping off.
+    pub max_swaps_per_min: u32,
+    /// How many times the GPU memory a model must get alone, over beside idle models, for them
+    /// to be swapped out for it.
+    pub swap_gain: f64,
+    /// Longest a call waits for room or a slot on a local model.
+    pub max_wait_s: u64,
     /// Extra arguments passed to every `llama-server`.
     #[serde(default)]
     pub extra_args: Vec<String>,
+}
+
+fn default_flash_attn() -> String {
+    "auto".into()
+}
+
+fn default_max_output_tokens() -> u32 {
+    8192
 }
 
 /// Overrides for the hardware probe, for machines it cannot read (or to plan as if memory were
@@ -879,6 +1091,74 @@ pub struct CatalogEntry {
     /// their own; for other models the window is unknown unless given here.
     #[serde(default)]
     pub context_window: Option<u32>,
+    /// `cpu` pins a llama.cpp model to the CPU lane: its own server with no GPU layers, its
+    /// weights and KV cache in system RAM, never taking VRAM or part in GPU swaps.
+    #[serde(default)]
+    pub placement: ModelPlacement,
+    /// Slots of a CPU-pinned model (model calls served at once). A CPU lane is slow, so it
+    /// serves one call at a time unless the cores allow more; only valid with
+    /// `placement = "cpu"`.
+    #[serde(default)]
+    pub parallel: Option<u32>,
+    /// Context (tokens) per slot of a CPU-pinned row; default `runtime.llamacpp.context`. Only
+    /// valid with `placement = "cpu"`.
+    #[serde(default)]
+    pub context: Option<u32>,
+    /// Longest (seconds) a call waits for a slot on, or room to load, a CPU-pinned row; the
+    /// default is an hour or `runtime.llamacpp.max_wait_s` if longer, since calls queue behind
+    /// tasks that take minutes. Only valid with `placement = "cpu"`.
+    #[serde(default)]
+    pub max_wait_s: Option<u64>,
+    /// False leaves the row out of routing.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+impl CatalogEntry {
+    /// The name of a CPU-lane-only key this row sets, if any.
+    fn lane_key_set(&self) -> Option<&'static str> {
+        if self.parallel.is_some() {
+            Some("parallel")
+        } else if self.context.is_some() {
+            Some("context")
+        } else if self.max_wait_s.is_some() {
+            Some("max_wait_s")
+        } else {
+            None
+        }
+    }
+
+    /// The id of the local llama.cpp model a `llamacpp:<id>` spec names.
+    pub fn llamacpp_model(&self) -> Option<&str> {
+        self.spec
+            .strip_prefix(LLAMACPP_ENDPOINT)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .filter(|id| !id.is_empty())
+    }
+}
+
+/// Where a local model is placed in memory.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelPlacement {
+    /// The memory planner decides: the GPU when it fits, otherwise split with system memory.
+    #[default]
+    Auto,
+    /// The CPU lane: entirely in system RAM, served on the CPU.
+    Cpu,
+}
+
+impl ModelPlacement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelPlacement::Auto => "auto",
+            ModelPlacement::Cpu => "cpu",
+        }
+    }
 }
 
 /// Where a model runs.

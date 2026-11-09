@@ -47,6 +47,13 @@ impl Trigger {
     }
 }
 
+/// Parses a length of time such as `90s`, `30m`, `2h`, or `1d`.
+pub fn parse_duration(text: &str) -> Result<std::time::Duration, String> {
+    parse_interval(text)?
+        .to_std()
+        .map_err(|_| format!("{text:?} is not a valid length of time"))
+}
+
 fn parse_interval(text: &str) -> Result<Duration, String> {
     let text = text.trim();
     let split = text
@@ -179,6 +186,11 @@ mod tests {
         assert!(Trigger::parse(Some("* * * * *"), Some("5m"), None).is_err());
         assert!(Trigger::parse(None, Some("5 parsecs"), None).is_err());
         assert!(Trigger::parse(None, Some("0s"), None).is_err());
+        assert_eq!(
+            parse_duration("2h"),
+            Ok(std::time::Duration::from_secs(2 * 3600))
+        );
+        assert!(parse_duration("soon").is_err());
     }
 
     #[test]

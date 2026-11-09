@@ -13,9 +13,9 @@ use imperium_protocol::methods::{
     SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
-    AgentEvent, AgentStatus, AgentSummary, ContextCategory, PermissionDecision, QueuedMessage,
-    ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent, SessionEventParams, StepStatus,
-    TokenCountMethod,
+    AgentEvent, AgentStatus, AgentSummary, ContextCategory, PauseCause, PermissionDecision,
+    QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent, SessionEventParams,
+    StepStatus, TokenCountMethod,
 };
 use tokio::sync::mpsc;
 
@@ -456,8 +456,17 @@ impl Chat {
                 );
             }
             SessionEvent::Paused {
+                reason,
+                cause: PauseCause::Load | PauseCause::Deferred,
+                ..
+            } => println!(
+                "
+{tag}· background work waiting: {reason}"
+            ),
+            SessionEvent::Paused {
                 until_unix_ms,
                 reason,
+                ..
             } => {
                 let until = chrono::DateTime::from_timestamp_millis(
                     i64::try_from(until_unix_ms).unwrap_or(0),

@@ -7,19 +7,28 @@
 //! `persistent_agent` on keeps one session that is always available, dispatches into the same
 //! environment, resumes its conversation after restarts (its id is kept with the environment),
 //! and compacts its conversation when a turn starts over the model's budget.
+//!
+//! The sessions an agent starts are background sessions: they rank below the user's sessions
+//! and pause while the machine is busy. With `prefer_quiet` (the default) a session is created
+//! at once but gets its brief only when the machine is quiet, or after `max_defer`. The waiting
+//! brief is kept with the session, so a restart resumes the wait instead of losing it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, NaiveDate};
+use imperium_automation::parse_duration;
 use imperium_config::ProjectSettings;
-use imperium_engine::{LaunchFuture, Session, SessionLauncher};
-use imperium_protocol::session::SessionEvent;
+use imperium_engine::{
+    LaunchFuture, Load, LoadView, Session, SessionLauncher, Waited, wait_for_quiet,
+};
+use imperium_protocol::session::{AgentEvent, SessionEvent};
 use tokio::sync::broadcast;
 
+use crate::scheduler::DEFAULT_MAX_DEFER;
 use crate::{DaemonState, SessionOptions};
 
 /// Longest a dispatched session may run before its report is given up on.
@@ -105,21 +114,83 @@ fn canonical(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Starts an agent for every `[[projects]]` entry with `agent = true`.
+/// A dispatched session's brief that was waiting for a quiet machine when the daemon stopped
+/// (restored by [`DaemonState::resume_sessions`]).
+#[derive(Debug)]
+pub(crate) struct PendingBrief {
+    pub project: String,
+    pub session: Arc<Session>,
+    pub events: broadcast::Receiver<AgentEvent>,
+    pub brief: String,
+    /// When it gets its brief whatever the load.
+    pub until_unix_ms: u64,
+}
+
+/// Starts an agent for every `[[projects]]` entry with `agent = true`, then sends the briefs that
+/// were waiting before a restart.
 pub fn start(daemon: &Arc<DaemonState>) {
+    let mut launchers = HashMap::new();
     for project in daemon.settings().projects.clone() {
         if !project.agent {
             continue;
         }
-        if let Err(error) = start_one(daemon, &project) {
-            tracing::warn!(project = %project.path.display(), %error, "project agent did not start");
+        match start_one(daemon, &project) {
+            Ok(launcher) => {
+                launchers.insert(canonical(&project.path), launcher);
+            }
+            Err(error) => {
+                tracing::warn!(project = %project.path.display(), %error, "project agent did not start");
+            }
         }
+    }
+    for pending in daemon.take_pending_briefs() {
+        let launcher = launchers.get(&canonical(Path::new(&pending.project)));
+        if launcher.is_none() {
+            tracing::warn!(
+                session = %pending.session.id(),
+                "the project no longer has an agent; the waiting brief is sent with nobody to report to"
+            );
+        }
+        let wait = Duration::from_millis(pending.until_unix_ms.saturating_sub(unix_ms()));
+        dispatch(
+            Arc::clone(daemon),
+            pending.session,
+            pending.events,
+            pending.brief,
+            launcher
+                .map(|launcher| launcher.prefer_quiet)
+                .unwrap_or(true),
+            wait,
+            launcher.and_then(|launcher| launcher.agent.get().cloned()),
+            launcher.map(|launcher| launcher.claim()),
+        );
     }
 }
 
-fn start_one(daemon: &Arc<DaemonState>, project: &ProjectSettings) -> Result<(), String> {
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+fn start_one(
+    daemon: &Arc<DaemonState>,
+    project: &ProjectSettings,
+) -> Result<Arc<Launcher>, String> {
     let path = project.path.display().to_string();
+    let max_defer = match project.max_defer.as_deref().map(parse_duration) {
+        Some(Ok(length)) => length,
+        Some(Err(error)) => {
+            tracing::warn!(project = %path, %error, "max_defer is not a length of time; using 2 h");
+            DEFAULT_MAX_DEFER
+        }
+        None => DEFAULT_MAX_DEFER,
+    };
     let launcher = Arc::new(Launcher {
+        prefer_quiet: project.prefer_quiet,
+        max_defer,
         daemon: Arc::downgrade(daemon),
         target: Target::Folder(path.clone()),
         agent: OnceLock::new(),
@@ -146,7 +217,7 @@ fn start_one(daemon: &Arc<DaemonState>, project: &ProjectSettings) -> Result<(),
         .insert(canonical(&project.path), Arc::clone(&session));
     tokio::spawn(answer_permissions(Arc::downgrade(daemon), session, events));
     tracing::info!(project = %path, "project agent started");
-    Ok(())
+    Ok(launcher)
 }
 
 /// The agent's own permission requests go to the approval queue: nobody may be watching.
@@ -214,6 +285,10 @@ fn start_environment_agent(
 ) -> Result<(), String> {
     let launcher = Arc::new(Launcher {
         daemon: Arc::downgrade(daemon),
+        // An environment has no settings for deferring: its agent's sessions wait for a quiet
+        // machine, up to the default deferral.
+        prefer_quiet: true,
+        max_defer: DEFAULT_MAX_DEFER,
         target: Target::Environment(env.id.clone()),
         agent: OnceLock::new(),
         active: Arc::new(AtomicUsize::new(0)),
@@ -287,6 +362,9 @@ struct Launcher {
     today: Mutex<(NaiveDate, u32)>,
     max_sessions: usize,
     max_per_day: u32,
+    /// Hold a session back until the machine is quiet, for at most `max_defer`.
+    prefer_quiet: bool,
+    max_defer: Duration,
 }
 
 impl Launcher {
@@ -312,6 +390,13 @@ impl Launcher {
         self.active.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+
+    /// Counts a session restored after a restart as running, whatever the limits: it was
+    /// already allowed to start.
+    fn claim(&self) -> Release {
+        self.active.fetch_add(1, Ordering::SeqCst);
+        Release(Arc::clone(&self.active))
+    }
 }
 
 impl SessionLauncher for Launcher {
@@ -320,42 +405,90 @@ impl SessionLauncher for Launcher {
             let daemon = self.daemon.upgrade().ok_or("the daemon is stopping")?;
             self.reserve()?;
             let release = Release(Arc::clone(&self.active));
+            // What it starts is background work: it ranks below the user's sessions.
+            let options = SessionOptions {
+                background: true,
+                ..SessionOptions::default()
+            };
             let created = match &self.target {
-                Target::Folder(project) => {
-                    daemon.create_session_with(project, model, SessionOptions::default())
-                }
-                Target::Environment(env) => {
-                    daemon.create_in_environment(env, model, SessionOptions::default())
-                }
+                Target::Folder(project) => daemon.create_session_with(project, model, options),
+                Target::Environment(env) => daemon.create_in_environment(env, model, options),
             };
             let (session, events) = created.map_err(|error| error.to_string())?;
             let id = session.id().to_string();
-            session
-                .send(brief.to_string())
-                .map_err(|_| "the session closed before it started".to_string())?;
-            // The agent is not waiting: the report arrives as a message when the session ends.
-            let agent = self.agent.get().cloned();
-            let report_id = id.clone();
-            tokio::spawn(async move {
-                let result = daemon
-                    .wait_for_turn(&session, events, SESSION_TIMEOUT)
-                    .await;
-                drop(release);
-                let message = match result {
-                    Ok(report) => format!(
-                        "Session {report_id} finished. Its report:
-
-{report}"
-                    ),
-                    Err(error) => format!("Session {report_id} did not finish: {error}"),
-                };
-                if let Some(agent) = agent.and_then(|agent| agent.upgrade()) {
-                    let _ = agent.send(message);
-                }
-            });
+            dispatch(
+                daemon,
+                session,
+                events,
+                brief.to_string(),
+                self.prefer_quiet,
+                self.max_defer,
+                self.agent.get().cloned(),
+                Some(release),
+            );
             Ok(id)
         })
     }
+}
+
+/// Gives a dispatched session its brief, once the machine is quiet if `prefer_quiet` (for at
+/// most `max_defer`), and reports the outcome to the agent, if there is one. The agent is not
+/// waiting: the report arrives as a message when the session ends.
+#[allow(clippy::too_many_arguments)]
+fn dispatch(
+    daemon: Arc<DaemonState>,
+    session: Arc<Session>,
+    events: broadcast::Receiver<AgentEvent>,
+    brief: String,
+    prefer_quiet: bool,
+    max_defer: Duration,
+    agent: Option<Weak<Session>>,
+    release: Option<Release>,
+) {
+    let id = session.id().to_string();
+    // The session exists at once, but while the machine is busy it waits to start.
+    let view: Arc<dyn LoadView> = daemon.load_view();
+    let waiting = prefer_quiet && view.level() != Load::Quiet && !session.run_now().released();
+    if waiting {
+        session.defer(format!(
+            "waiting for a quiet machine (it is {}; starts anyway after {} min)",
+            view.level().label(),
+            max_defer.as_secs().div_ceil(60)
+        ));
+        let until =
+            unix_ms().saturating_add(u64::try_from(max_defer.as_millis()).unwrap_or(u64::MAX));
+        daemon.set_deferred_brief(&id, Some((&brief, until)));
+    }
+    tokio::spawn(async move {
+        if waiting {
+            // After `max_defer`, or when a person runs it now, it runs whatever the load, and
+            // does not give way again.
+            if wait_for_quiet(&*view, session.run_now(), Some(max_defer)).await != Waited::Quiet {
+                daemon.release_run_now(&session);
+            }
+            session.undefer();
+        }
+        let result = if session.send(brief).is_ok() {
+            daemon.set_deferred_brief(&id, None);
+            daemon
+                .wait_for_turn(&session, events, SESSION_TIMEOUT)
+                .await
+        } else {
+            Err("the session closed before it started".to_string())
+        };
+        drop(release);
+        let message = match result {
+            Ok(report) => format!(
+                "Session {id} finished. Its report:
+
+{report}"
+            ),
+            Err(error) => format!("Session {id} did not finish: {error}"),
+        };
+        if let Some(agent) = agent.and_then(|agent| agent.upgrade()) {
+            let _ = agent.send(message);
+        }
+    });
 }
 
 /// Frees a running-session slot when dropped, however the session ends.

@@ -37,13 +37,20 @@ impl GgufInfo {
     /// Bytes of KV cache per token of context at the given cache element size, when the
     /// header has what it takes: layers × KV heads × (key + value head size) × element bytes.
     pub fn kv_bytes_per_token(&self, cache_element_bytes: f64) -> Option<u64> {
+        self.kv_bytes_per_token_kv(cache_element_bytes, cache_element_bytes)
+    }
+
+    /// Like [`GgufInfo::kv_bytes_per_token`], with separate element sizes for the key and the
+    /// value cache.
+    pub fn kv_bytes_per_token_kv(&self, key_bytes: f64, value_bytes: f64) -> Option<u64> {
         let layers = self.block_count?;
         let heads = self.head_count?;
         let kv_heads = self.head_count_kv.unwrap_or(heads);
         let head_dim = self.embedding_length? / heads.max(1);
         let key = self.key_length.unwrap_or(head_dim);
         let value = self.value_length.unwrap_or(head_dim);
-        let bytes = (layers * kv_heads * (key + value)) as f64 * cache_element_bytes;
+        let bytes =
+            (layers * kv_heads) as f64 * (key as f64 * key_bytes + value as f64 * value_bytes);
         Some(bytes.ceil() as u64)
     }
 

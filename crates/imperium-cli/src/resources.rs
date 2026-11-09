@@ -156,11 +156,15 @@ pub fn render(snapshot: &ResourceSnapshot) -> String {
         let _ = writeln!(out, "  none loaded");
     }
     for model in &snapshot.local_models {
-        let state = match (model.slots_in_use, model.unload_in_ms) {
+        let mut state = match (model.slots_in_use, model.unload_in_ms) {
             (0, Some(left)) => format!("idle, unloads in {}", seconds(left)),
+            (0, None) if model.claimed => "held by a turn in progress".into(),
             (0, None) => "idle".into(),
             (busy, _) => format!("{busy}/{} slots busy", model.slots),
         };
+        if model.queued > 0 {
+            state.push_str(&format!(", {} queued", model.queued));
+        }
         let sessions = if model.sessions.is_empty() {
             String::new()
         } else {
@@ -168,12 +172,15 @@ pub fn render(snapshot: &ResourceSnapshot) -> String {
         };
         let _ = writeln!(
             out,
-            "  {}:{}  {} ({} GPU layers)  ctx {}  VRAM {}  RAM {}  {}{}",
+            "  {}:{}  {}{} ({} GPU layers)  ctx {}  KV pool {}/{}  VRAM {}  RAM {}  {}{}",
             model.runtime,
             model.model,
             model.placement,
+            if model.cpu_pinned { ", CPU lane" } else { "" },
             model.gpu_layers,
             model.context,
+            model.pool_reserved_tokens,
+            model.pool_tokens,
             gib(model.vram_bytes),
             gib(model.ram_bytes),
             state,
@@ -263,10 +270,15 @@ mod tests {
                 placement: "gpu".into(),
                 gpu_layers: 99,
                 context: 8192,
+                pool_tokens: 16384,
+                pool_reserved_tokens: 0,
                 vram_bytes: 3 * gib,
                 ram_bytes: 0,
                 slots: 2,
                 slots_in_use: 0,
+                queued: 0,
+                cpu_pinned: false,
+                claimed: false,
                 sessions: vec!["s1".into()],
                 pid: Some(7),
                 idle_ms: Some(1000),

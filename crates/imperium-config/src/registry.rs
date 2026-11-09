@@ -208,10 +208,13 @@ pub struct SettingState {
 }
 
 impl SettingState {
-    /// Whether a layer above the user file (a project or an environment variable) sets it, so
-    /// the user file's value does not apply.
+    /// Whether a layer above the user file (the app's model settings, a project, or an
+    /// environment variable) sets it, so the user file's value does not apply.
     pub fn overridden(&self) -> bool {
-        matches!(self.source, Source::Project(_) | Source::Environment(_))
+        matches!(
+            self.source,
+            Source::App(_) | Source::Project(_) | Source::Environment(_)
+        )
     }
 }
 

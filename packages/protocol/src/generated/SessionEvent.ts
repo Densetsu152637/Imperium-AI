@@ -2,6 +2,7 @@
 import type { ContextCategory } from "./ContextCategory";
 import type { ContextItem } from "./ContextItem";
 import type { ContextPointer } from "./ContextPointer";
+import type { PauseCause } from "./PauseCause";
 import type { Plan } from "./Plan";
 import type { QueuedMessage } from "./QueuedMessage";
 import type { SessionStatus } from "./SessionStatus";
@@ -12,6 +13,11 @@ import type { TokenUsage } from "./TokenUsage";
  * Something that happened in a session, in order.
  */
 export type SessionEvent = { "type": "turn_started", text: string, } | { "type": "text_delta", text: string, } | { "type": "tool_started", call_id: string, tool: string, summary: string, } | { "type": "permission_requested", request_id: number, tool: string, summary: string, } | { "type": "tool_finished", call_id: string, ok: boolean, output: string, } | { "type": "model_call_completed", model: string, usage: TokenUsage, duration_ms: number, 
+/**
+ * Time the call waited for a slot on a local model before it started, which
+ * `duration_ms` leaves out; absent for hosted models.
+ */
+queue_wait_ms: number | null, 
 /**
  * Time to the first streamed text; absent when the call produced no text.
  */
@@ -53,7 +59,11 @@ cost_usd: number | null,
 /**
  * Model calls made in this turn.
  */
-steps: number, } | { "type": "turn_failed", message: string, } | { "type": "notice", message: string, } | { "type": "memory_used", names: Array<string>, } | { "type": "memory_saved", name: string, scope: string, } | { "type": "context_manifest", role: string, items: Array<ContextItem>, documentation: Array<ContextPointer>, } | { "type": "context_loaded", references: Array<string>, } | { "type": "browser_view", url: string, title: string, screenshot: string, } | { "type": "paused", until_unix_ms: number, reason: string, } | { "type": "resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "context_compacted", 
+steps: number, } | { "type": "turn_failed", message: string, } | { "type": "notice", message: string, } | { "type": "memory_used", names: Array<string>, } | { "type": "memory_saved", name: string, scope: string, } | { "type": "context_manifest", role: string, items: Array<ContextItem>, documentation: Array<ContextPointer>, } | { "type": "context_loaded", references: Array<string>, } | { "type": "browser_view", url: string, title: string, screenshot: string, } | { "type": "paused", until_unix_ms: number, reason: string, 
+/**
+ * Why it waits; older journals have no cause and mean a usage limit.
+ */
+cause: PauseCause, } | { "type": "resumed", } | { "type": "status_changed", status: SessionStatus, detail: string | null, } | { "type": "media_created", path: string, kind: "image" | "speech", prompt: string, } | { "type": "context_compacted", 
 /**
  * The model whose window the conversation was fitted to.
  */

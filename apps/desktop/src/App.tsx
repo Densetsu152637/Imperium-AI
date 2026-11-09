@@ -67,6 +67,7 @@ import { EnvironmentWindow } from "./EnvironmentWindow";
 import { Select } from "./components/Select";
 import { getDoc, setDoc, subscribeDoc } from "./store";
 import { type Daemon, useDaemon } from "./DaemonControl";
+import { ModelConfigDialog, type ModelDialogTarget } from "./ModelConfigDialog";
 import { UpdateControl, useUpdates } from "./UpdateControl";
 
 type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
@@ -147,6 +148,7 @@ export function App() {
   // Panels whose windows this session has opened, so each opens once.
   const opened = useRef(new Set<string>());
   const [showSettings, setShowSettings] = useState(false);
+  const [modelDialog, setModelDialog] = useState<ModelDialogTarget | null>(null);
   const [showConnectors, setShowConnectors] = useState(false);
   const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
@@ -395,6 +397,11 @@ export function App() {
     client?.call<LocalModelListResult>("models.local").then(setLocalModels, report);
   };
 
+  const refreshModels = () => {
+    client?.call<ModelListResult>("models.list").then(setModelTable, report);
+    refreshLocalModels();
+  };
+
   /** Puts a changed environment in the list (the daemon's notice may arrive later). */
   const replaceEnvironment = (env: EnvironmentInfo) =>
     setEnvironments((all) => (all.some((e) => e.id === env.id) ? all.map((e) => (e.id === env.id ? env : e)) : [...all, env]));
@@ -450,6 +457,8 @@ export function App() {
         status: "idle",
         status_detail: null,
         resume_policy: DEFAULT_RESUME_POLICY,
+        background: false,
+        hold: null,
         persistent: false,
         archived: false,
         archived_at: null,
@@ -705,11 +714,18 @@ export function App() {
   };
   const rightPanels: PanelSpec[] = [
     { id: "agents", title: "Agents", body: <AgentsPanel session={session} onResume={client && selected ? resumeAgent : undefined} /> },
-    { id: "models", title: "Models", body: <ModelsPanel table={modelTable} /> },
+    { id: "models", title: "Models", body: <ModelsPanel table={modelTable} onConfigure={() => setModelDialog({ tab: "table" })} /> },
     {
       id: "local-models",
       title: "Local models",
-      body: <LocalModelsPanel listing={localModels} onRefresh={refreshLocalModels} client={client} />,
+      body: (
+        <LocalModelsPanel
+          listing={localModels}
+          onRefresh={refreshLocalModels}
+          client={client}
+          onConfigure={() => setModelDialog({ tab: "local" })}
+        />
+      ),
     },
     { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
     { id: "resources", title: "Resources", body: <ResourcesPanel client={client} /> },
@@ -837,12 +853,19 @@ export function App() {
             setShowSettings(false);
             setShowConnectors(true);
           }}
+          onOpenModels={() => {
+            setShowSettings(false);
+            setModelDialog({ tab: "local" });
+          }}
           onResetLayout={() => {
             resetLayout();
             window.location.reload();
           }}
           onClose={() => setShowSettings(false)}
         />
+      )}
+      {modelDialog && (
+        <ModelConfigDialog client={client} target={modelDialog} onClose={() => setModelDialog(null)} onSaved={refreshModels} />
       )}
       {envWindow && (envWindow.id === null || environments.some((env) => env.id === envWindow.id)) && (
         <EnvironmentWindow

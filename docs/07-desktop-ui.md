@@ -50,8 +50,10 @@ continued the same way.
 The Resources panel (in Settings → Panels, closable and detachable like the others) shows what
 the machine and the sessions are using: CPU, RAM, and per GPU its utilisation and VRAM as bars
 with a two-minute sparkline each (hover a bar for per-core figures or swap), a table of the
-local models loaded, in use or idle, with placement, memory, busy slots or the idle-unload
-countdown, the sessions on each, and an Unload button for idle ones, and a table of the hosted
+local models loaded, in use or idle, with placement (or the CPU lane), the context per session
+and the KV pool's reserved and total tokens, memory, busy slots and queued calls (or "held by a
+turn" while an agent is mid-turn on it) or the idle-unload countdown, the sessions on each, and
+an Unload button for idle ones, and a table of the hosted
 endpoints sessions use with requests, tokens, latency, and errors over the last 15 minutes.
 The panel subscribes to `system.resources_changed` only while it is open and its window is
 visible, so the daemon samples nothing otherwise
@@ -401,3 +403,21 @@ segment and swatch is named. Below it, the counting method in words (*Exact, cou
 model's tokenizer*; *Calibrated to the provider's count*; *Estimated; the provider reported no
 usage*) and the prompt tokens served from cache. A negative template overhead is listed but not
 drawn. Session totals and recent outputs follow.
+
+## Model configuration dialog (implemented)
+
+A modal (a native `<dialog>`, so Esc and the backdrop close it) edits model settings. It opens
+from *Models…* in the settings menu, from *Configure* in the Local models panel (Local tab) and
+from *Configure* in the Models panel (Model table tab). The Local tab lists the models in
+`models.folders`; each form field is optional, shows the effective value as its placeholder and
+has a *reset* that clears the saved value. Fields: context per session, KV pool tokens, slots, K
+and V cache types, flash attention, max GPU layers, max wait, max output tokens (0 is uncapped)
+and extra arguments (one per line). For a vLLM model the cache types, flash attention and GPU
+layers are disabled. A debounced (500 ms) `models.set_config` dry run shows the memory the model
+would need, its KV pool and its placement, or the server's error. The Model table tab edits
+existing rows only (enabled, tier, tags, context window, prices; both prices or neither); it
+does not add or remove rows. *Save* sends only the models that differ from what is saved, each
+as a whole-settings update, then closes and refreshes the panels; a failure keeps the dialog
+open with the message. *Reset model* clears all of a model's saved settings. A loaded model's
+badge reads `loaded · <in use>/<slots> busy · pool <reserved>/<pool>`, and a disabled table row
+is dimmed with an *off* badge.

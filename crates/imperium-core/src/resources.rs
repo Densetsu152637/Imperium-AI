@@ -294,15 +294,20 @@ pub(crate) fn assemble(inputs: &Inputs<'_>) -> ResourceSnapshot {
                 placement: placement(model, inputs.unified_memory).into(),
                 gpu_layers: model.gpu_layers,
                 context: model.context,
+                pool_tokens: model.pool_tokens,
+                pool_reserved_tokens: model.pool_reserved_tokens,
                 vram_bytes: model.vram_bytes,
                 ram_bytes: model.ram_bytes,
                 slots: model.slots,
                 slots_in_use: model.slots_in_use,
+                queued: model.queued,
+                cpu_pinned: model.cpu_pinned,
+                claimed: model.claimed,
                 sessions: sessions.into_iter().map(str::to_string).collect(),
                 pid: model.pid,
                 idle_ms: model.idle_for.map(millis),
                 unload_in_ms: model.unload_in.map(millis),
-                can_unload: model.slots_in_use == 0,
+                can_unload: model.idle_for.is_some(),
             }
         })
         .collect();
@@ -507,13 +512,19 @@ mod tests {
             pid,
             slots: 2,
             slots_in_use: in_use,
-            context: 8192,
+            queued: 0,
+            context: 4096,
+            pool_tokens: 8192,
+            pool_reserved_tokens: in_use * 1024,
             gpu_layers: 20,
             all_layers_on_gpu: false,
             vram_bytes: 5 * GIB,
             ram_bytes: GIB,
             idle_for: idle,
             unload_in: idle.map(|idle| Duration::from_secs(900) - idle),
+            claimed: false,
+            cpu_pinned: false,
+            stale: false,
         }
     }
 

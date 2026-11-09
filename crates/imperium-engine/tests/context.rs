@@ -176,9 +176,9 @@ impl LocalModels for FakeLocal {
         Availability::Loaded
     }
 
-    fn acquire<'a>(&'a self, _model: &'a str) -> AcquireFuture<'a> {
+    fn acquire<'a>(&'a self, _model: &'a str, _holder: &'a str) -> AcquireFuture<'a> {
         let base_url = self.0.clone();
-        Box::pin(async move { Ok(LocalLease::new(base_url, ())) })
+        Box::pin(async move { Ok(LocalLease::new(base_url, None, None, ())) })
     }
 }
 
@@ -215,6 +215,7 @@ fn start(dir: &std::path::Path, base_url: String, local: bool) -> Session {
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: Some(INSTRUCTIONS.into()),
         max_steps: 5,
+        background: None,
         auto_compact: false,
         keep_agent_state: true,
         journal_path: dir.join(".journal/context.jsonl"),

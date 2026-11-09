@@ -67,9 +67,17 @@ pub fn list() -> anyhow::Result<()> {
         }
         for model in &listing.models {
             let state = if model.loaded {
-                format!("loaded, {}/{} slots busy", model.slots_in_use, model.slots)
+                let queue = match model.queued {
+                    0 => String::new(),
+                    queued => format!(", {queued} waiting"),
+                };
+                format!(
+                    "loaded, {}/{} slots busy{queue}",
+                    model.slots_in_use, model.slots
+                )
             } else {
                 match model.placement.as_str() {
+                    "cpu" if model.cpu_lane => "CPU lane (pinned to RAM)".into(),
                     "partial" => format!(
                         "fits partially ({} GPU layers)",
                         model.gpu_layers.unwrap_or(0)
@@ -78,13 +86,17 @@ pub fn list() -> anyhow::Result<()> {
                     placement => format!("fits on {placement}"),
                 }
             };
+            let speed = model
+                .tokens_per_s
+                .map_or_else(String::new, |rate| format!(", {rate:.1} tok/s"));
             println!(
-                "{:<40} {:>8} {:>7.1} GiB  needs {:>6.1} GiB  {}",
+                "{:<40} {:>8} {:>7.1} GiB  needs {:>6.1} GiB  {}{}",
                 format!("{}:{}", model.runtime, model.id),
                 model.quantization.as_deref().unwrap_or("?"),
                 model.size_bytes as f64 / GIB,
                 model.required_bytes as f64 / GIB,
-                state
+                state,
+                speed
             );
         }
         for skipped in &listing.skipped {

@@ -152,8 +152,15 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
                   >
                     <td>{`${model.runtime}:${model.model}`}</td>
                     <td>
-                      {model.placement === "partial" ? `partial · ${model.gpu_layers} layers` : model.placement}
-                      <span className="muted"> · ctx {model.context}</span>
+                      {model.cpu_pinned
+                        ? "CPU lane"
+                        : model.placement === "partial"
+                          ? `partial · ${model.gpu_layers} layers`
+                          : model.placement}
+                      <span className="muted" title="Tokens one session may use · KV pool reserved by running calls / its size">
+                        {" "}
+                        · ctx {model.context} · pool {model.pool_reserved_tokens}/{model.pool_tokens}
+                      </span>
                     </td>
                     <td>
                       {model.vram_bytes > 0 && `${gib(model.vram_bytes)} VRAM`}
@@ -163,7 +170,11 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
                     <td>
                       {model.slots_in_use > 0 ? (
                         <span className="badge running">
-                          {model.slots_in_use}/{model.slots} busy
+                          {model.slots_in_use}/{model.slots} busy{model.queued > 0 ? ` · ${model.queued} queued` : ""}
+                        </span>
+                      ) : model.queued > 0 || model.claimed ? (
+                        <span className="badge running" title="An agent is mid-turn on it, so it stays loaded">
+                          {model.queued > 0 ? `${model.queued} queued` : "held by a turn"}
                         </span>
                       ) : (
                         <span className="badge">

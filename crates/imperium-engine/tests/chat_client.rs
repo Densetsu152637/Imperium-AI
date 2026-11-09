@@ -35,11 +35,13 @@ impl ChatClient for Scripted {
             Ok(Completion {
                 text: "Hello from the client.".into(),
                 tool_calls: Vec::new(),
+                finish_reason: None,
                 usage: Some(Usage {
                     prompt_tokens: 900,
                     completion_tokens: 4,
                     cached_tokens: 0,
                 }),
+                first_token: None,
             })
         })
     }
@@ -112,6 +114,7 @@ async fn a_session_calls_the_client_registered_for_its_endpoint_kind() {
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 3,
+        background: None,
         auto_compact: false,
         keep_agent_state: true,
         journal_path: dir.path().join("journal.jsonl"),
@@ -189,6 +192,7 @@ async fn an_unknown_endpoint_kind_fails_the_turn() {
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 3,
+        background: None,
         auto_compact: false,
         keep_agent_state: true,
         journal_path: dir.path().join("journal.jsonl"),

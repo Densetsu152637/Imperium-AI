@@ -15,16 +15,19 @@ const ENV_SEPARATOR: &str = "__";
 pub enum Source {
     Default,
     User(PathBuf),
+    /// The file the desktop app writes model settings to.
+    App(PathBuf),
     Project(PathBuf),
     Environment(String),
 }
 
 impl Source {
-    /// The layer's kind without its location: `default`, `user`, `project`, or `env`.
+    /// The layer's kind without its location: `default`, `user`, `app`, `project`, or `env`.
     pub fn kind(&self) -> &'static str {
         match self {
             Source::Default => "default",
             Source::User(_) => "user",
+            Source::App(_) => "app",
             Source::Project(_) => "project",
             Source::Environment(_) => "env",
         }
@@ -36,6 +39,7 @@ impl fmt::Display for Source {
         match self {
             Source::Default => write!(f, "built-in default"),
             Source::User(path) => write!(f, "user config {}", path.display()),
+            Source::App(path) => write!(f, "app settings {}", path.display()),
             Source::Project(path) => write!(f, "project config {}", path.display()),
             Source::Environment(var) => write!(f, "environment variable {var}"),
         }
@@ -70,6 +74,14 @@ pub struct Layer {
 impl Layer {
     pub fn new(source: Source, table: Table) -> Self {
         Layer { source, table }
+    }
+
+    pub fn source(&self) -> &Source {
+        &self.source
+    }
+
+    pub fn table(&self) -> &Table {
+        &self.table
     }
 
     pub fn defaults() -> Self {
@@ -150,6 +162,9 @@ fn nested_table(keys: &[String], leaf: Value) -> Table {
 pub struct Config {
     merged: Table,
     origins: BTreeMap<String, Source>,
+    warnings: Vec<String>,
+    /// The layers merged, in order, so a caller can rebuild with one of them replaced.
+    layers: Vec<Layer>,
 }
 
 /// A value and, for a leaf, the layer that set it. Tables mix origins and have none.
@@ -163,9 +178,12 @@ impl Config {
     /// Merges layers in order: later layers override earlier ones key by key; arrays and
     /// other non-table values are replaced whole.
     pub fn from_layers(layers: impl IntoIterator<Item = Layer>) -> Self {
+        let layers: Vec<Layer> = layers.into_iter().collect();
         let mut config = Config {
             merged: Table::new(),
             origins: BTreeMap::new(),
+            warnings: Vec::new(),
+            layers: layers.clone(),
         };
         for layer in layers {
             merge_into(
@@ -192,10 +210,23 @@ impl Config {
         })
     }
 
+    /// Parts of the app's settings file that were left out because they were invalid.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// The layers this configuration merged, invalid app entries already left out. With
+    /// [`replace_app_layer`], a caller rebuilds these settings with another app file without
+    /// reading the other files again.
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers
+    }
+
     pub fn settings(&self) -> Result<Settings, ConfigError> {
-        let settings: Settings = Value::Table(self.merged.clone())
+        let mut settings: Settings = Value::Table(self.merged.clone())
             .try_into()
             .map_err(|error| ConfigError::Invalid(Box::new(error)))?;
+        settings.apply_overrides();
         settings.validate().map_err(ConfigError::Inconsistent)?;
         Ok(settings)
     }
@@ -252,12 +283,17 @@ fn record_leaves(
     }
 }
 
-/// Loads every layer for a user and, optionally, a project directory.
-pub fn load(
+/// The sections of the app layer that hold one entry per model.
+const APP_SECTIONS: [&[&str]; 2] = [&["runtime", "llamacpp", "models"], &["models", "overrides"]];
+
+/// Reads every layer for a user and, optionally, a project directory, in order. An app settings
+/// file that is not valid TOML is skipped with a warning.
+fn read_layers(
     paths: &Paths,
     project: Option<&Path>,
     env: impl IntoIterator<Item = (String, String)>,
-) -> Result<Config, ConfigError> {
+    warnings: &mut Vec<String>,
+) -> Result<Vec<Layer>, ConfigError> {
     let mut layers = vec![Layer::defaults()];
     let user = paths.user_config_file();
     layers.extend(Layer::from_file(&user, Source::User(user.clone()))?);
@@ -267,8 +303,129 @@ pub fn load(
             layers.extend(Layer::from_file(&file, Source::Project(file.clone()))?);
         }
     }
+    let app = paths.app_models_file();
+    match Layer::from_file(&app, Source::App(app.clone())) {
+        Ok(layer) => layers.extend(layer),
+        Err(error @ ConfigError::Parse { .. }) => {
+            warnings.push(format!("ignored the app settings file: {error}"));
+        }
+        Err(error) => return Err(error),
+    }
     layers.extend(Layer::from_env(env));
-    Ok(Config::from_layers(layers))
+    Ok(layers)
+}
+
+/// Loads every layer for a user and, optionally, a project directory. Entries of the app
+/// settings file that do not validate are dropped and listed in [`Config::warnings`].
+pub fn load(
+    paths: &Paths,
+    project: Option<&Path>,
+    env: impl IntoIterator<Item = (String, String)>,
+) -> Result<Config, ConfigError> {
+    let mut warnings = Vec::new();
+    let layers = read_layers(paths, project, env, &mut warnings)?;
+    let layers = drop_invalid_app_entries(layers, &mut warnings);
+    let mut config = Config::from_layers(layers);
+    config.warnings = warnings;
+    Ok(config)
+}
+
+/// The layers [`load`] would merge, with the app layer exactly as written, so a caller can
+/// validate a candidate app file strictly with [`replace_app_layer`].
+pub fn load_layers(
+    paths: &Paths,
+    project: Option<&Path>,
+    env: impl IntoIterator<Item = (String, String)>,
+) -> Result<Vec<Layer>, ConfigError> {
+    read_layers(paths, project, env, &mut Vec::new())
+}
+
+/// `layers` with the app layer replaced by `table` (added before the environment layers when
+/// there is none).
+pub fn replace_app_layer(mut layers: Vec<Layer>, file: PathBuf, table: Table) -> Vec<Layer> {
+    let layer = Layer::new(Source::App(file), table);
+    match layers
+        .iter()
+        .position(|layer| matches!(layer.source, Source::App(_)))
+    {
+        Some(index) => layers[index] = layer,
+        None => {
+            let at = layers
+                .iter()
+                .position(|layer| matches!(layer.source, Source::Environment(_)))
+                .unwrap_or(layers.len());
+            layers.insert(at, layer);
+        }
+    }
+    layers
+}
+
+fn section<'a>(table: &'a Table, path: &[&str]) -> Option<&'a Table> {
+    let mut table = table;
+    for key in path {
+        table = table.get(*key)?.as_table()?;
+    }
+    Some(table)
+}
+
+fn section_mut<'a>(table: &'a mut Table, path: &[&str]) -> Option<&'a mut Table> {
+    let mut table = table;
+    for key in path {
+        table = table.get_mut(*key)?.as_table_mut()?;
+    }
+    Some(table)
+}
+
+/// A table holding only `id = value` under `path`.
+fn single_entry(path: &[&str], id: &str, value: Value) -> Table {
+    let mut table = Table::from_iter([(id.to_string(), value)]);
+    for key in path.iter().rev() {
+        table = Table::from_iter([((*key).to_string(), Value::Table(table))]);
+    }
+    table
+}
+
+/// Removes the entries of the app layer that fail validation on their own against the other
+/// layers, so one bad entry never stops the daemon or discards the good ones.
+fn drop_invalid_app_entries(layers: Vec<Layer>, warnings: &mut Vec<String>) -> Vec<Layer> {
+    let Some(index) = layers
+        .iter()
+        .position(|layer| matches!(layer.source, Source::App(_)))
+    else {
+        return layers;
+    };
+    let mut baseline = layers.clone();
+    let app = baseline.remove(index);
+    // When the rest is invalid, the error belongs to the caller, not to the app's entries.
+    if Config::from_layers(baseline.clone()).settings().is_err() {
+        return layers;
+    }
+    let mut kept = app.table.clone();
+    for path in APP_SECTIONS {
+        let Some(entries) = section(&app.table, path) else {
+            continue;
+        };
+        for (id, value) in entries {
+            let mut test = baseline.clone();
+            test.insert(
+                index,
+                Layer::new(app.source.clone(), single_entry(path, id, value.clone())),
+            );
+            if let Err(error) = Config::from_layers(test).settings() {
+                warnings.push(format!(
+                    "{}: ignored {}.{id:?}: {error}",
+                    app.source,
+                    path.join(".")
+                ));
+                if let Some(entries) = section_mut(&mut kept, path) {
+                    entries.remove(id);
+                }
+            }
+        }
+    }
+    let mut layers = layers;
+    layers[index] = Layer::new(app.source, kept);
+    layers
 }
 
 #[cfg(test)]
@@ -474,6 +631,131 @@ api_key = { secret = 'Bad Name' }",
     }
 
     #[test]
+    fn cpu_lane_placement_needs_a_local_llama_cpp_row() {
+        let load = |table: &str| {
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), table)])
+                .settings()
+        };
+        let row = |spec: &str, location: &str, extra: &str| {
+            format!(
+                "[[models.catalog]]
+id = \"critic\"
+spec = \"{spec}\"
+location = \"{location}\"
+                 tier = \"strong\"
+{extra}"
+            )
+        };
+        let settings = load(&row(
+            "llamacpp:qwen3-30b",
+            "local",
+            "placement = \"cpu\"
+parallel = 2",
+        ))
+        .unwrap();
+        let entry = &settings.models.catalog[0];
+        assert_eq!(entry.placement, crate::ModelPlacement::Cpu);
+        assert_eq!(
+            (entry.parallel, entry.llamacpp_model()),
+            (Some(2), Some("qwen3-30b"))
+        );
+        // Rows without a placement are planned by the memory planner.
+        let plain = load(&row("llamacpp:qwen3-30b", "local", "")).unwrap();
+        assert_eq!(
+            plain.models.catalog[0].placement,
+            crate::ModelPlacement::Auto
+        );
+
+        let cloud = load(&row("openrouter:big", "cloud", "placement = \"cpu\"")).unwrap_err();
+        assert!(cloud.to_string().contains("needs location"), "{cloud}");
+        let hosted_local = load(&row("llama:qwen", "local", "placement = \"cpu\"")).unwrap_err();
+        assert!(
+            hosted_local.to_string().contains("needs a llama.cpp model"),
+            "{hosted_local}"
+        );
+        let vllm = load(&row("vllm:Qwen3-8B", "local", "placement = \"cpu\"")).unwrap_err();
+        assert!(
+            vllm.to_string().contains("needs a llama.cpp model"),
+            "{vllm}"
+        );
+        for key in ["parallel = 2", "context = 4096", "max_wait_s = 60"] {
+            let stray = load(&row("llamacpp:q", "local", key)).unwrap_err();
+            assert!(stray.to_string().contains("only applies"), "{key}: {stray}");
+        }
+        for key in ["context", "max_wait_s"] {
+            let extra = format!("placement = \"cpu\"\n{key} = 0");
+            let zero = load(&row("llamacpp:q", "local", &extra)).unwrap_err();
+            assert!(zero.to_string().contains("at least 1"), "{key}: {zero}");
+        }
+        let lane = load(&row(
+            "llamacpp:q",
+            "local",
+            "placement = \"cpu\"\ncontext = 32768\nmax_wait_s = 7200",
+        ))
+        .unwrap();
+        let entry = &lane.models.catalog[0];
+        assert_eq!((entry.context, entry.max_wait_s), (Some(32768), Some(7200)));
+        let zero = load(&row(
+            "llamacpp:q",
+            "local",
+            "placement = \"cpu\"
+parallel = 0",
+        ))
+        .unwrap_err();
+        assert!(zero.to_string().contains("at least 1"), "{zero}");
+        let unknown = load(&row("llamacpp:q", "local", "placement = \"gpu\"")).unwrap_err();
+        assert!(
+            unknown.to_string().contains("placement") || unknown.to_string().contains("variant"),
+            "{unknown}"
+        );
+        let split = format!(
+            "{}
+[[models.catalog]]
+id = \"other\"
+spec = \"llamacpp:q\"
+location = \"local\"
+tier = \"basic\"",
+            row("llamacpp:q", "local", "placement = \"cpu\"")
+        );
+        let error = load(&split).unwrap_err();
+        assert!(error.to_string().contains("same model"), "{error}");
+        // Two lane rows for one model serve it once, so they must agree on how.
+        let twin = |extra: &str| {
+            format!(
+                "{}
+[[models.catalog]]
+id = \"twin\"
+spec = \"llamacpp:q\"
+location = \"local\"
+tier = \"basic\"
+placement = \"cpu\"
+{extra}",
+                row(
+                    "llamacpp:q",
+                    "local",
+                    "placement = \"cpu\"
+parallel = 2"
+                )
+            )
+        };
+        for extra in [
+            "parallel = 3",
+            "",
+            "parallel = 2
+context = 4096",
+            "parallel = 2
+max_wait_s = 9",
+        ] {
+            let error = load(&twin(extra)).unwrap_err();
+            assert!(
+                error.to_string().contains("different parallel"),
+                "{extra}: {error}"
+            );
+        }
+        assert!(load(&twin("parallel = 2")).is_ok());
+    }
+
+    #[test]
     fn local_model_settings_have_defaults() {
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
         let llamacpp = &settings.runtime.llamacpp;
@@ -481,6 +763,20 @@ api_key = { secret = 'Bad Name' }",
         assert_eq!((llamacpp.context, llamacpp.parallel), (8192, 2));
         assert!(settings.models.folders.is_empty());
         assert_eq!(settings.hardware.vram_mb, None);
+    }
+
+    #[test]
+    fn the_swap_gain_must_be_a_number_of_at_least_one() {
+        let with_gain = |gain: &str| {
+            let toml = format!("[runtime.llamacpp]\nswap_gain = {gain}");
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), &toml)])
+                .settings()
+        };
+        assert_eq!(with_gain("1.0").unwrap().runtime.llamacpp.swap_gain, 1.0);
+        for bad in ["0.5", "nan", "inf"] {
+            let error = with_gain(bad).unwrap_err();
+            assert!(error.to_string().contains("swap_gain"), "{bad}: {error}");
+        }
     }
 
     #[test]

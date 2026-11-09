@@ -145,6 +145,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         max_steps: 8,
         auto_compact: false,
         keep_agent_state: true,
+        background: None,
         journal_path: dir.join(".sessions/s.jsonl"),
     })
     .unwrap()

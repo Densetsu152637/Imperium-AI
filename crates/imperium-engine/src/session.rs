@@ -5,9 +5,10 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use imperium_api::ToolProvider;
 use imperium_config::RoutingSettings;
+use imperium_protocol::methods::SessionHold;
 use imperium_protocol::session::{
-    AgentEvent, AgentSummary, PermissionDecision, QueuedMessage, ROOT_AGENT, ResumePolicy,
-    SendMode, SessionEvent, SessionStatus,
+    AgentEvent, AgentSummary, PauseCause, PermissionDecision, QueuedMessage, ROOT_AGENT,
+    ResumePolicy, SendMode, SessionEvent, SessionStatus,
 };
 use imperium_tools::Workspace;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -28,6 +29,7 @@ use crate::breakdown::TokenCounter;
 use crate::compact::SwitchError;
 use crate::journal::Journal;
 use crate::queue::{Inboxes, QueueError};
+use crate::quiet::{Background, RunNow};
 use crate::status::Controls;
 use crate::{CatalogModel, LocalModels, ResolvedModel, SessionLauncher};
 
@@ -81,6 +83,9 @@ pub struct SessionConfig {
     /// (`sessions.agent_state_keep`). Off, it is kept in memory while the session runs.
     pub keep_agent_state: bool,
     pub journal_path: PathBuf,
+    /// Set for a session a schedule or a project agent started: its local model calls rank below
+    /// the user's, and it pauses at a step boundary while the machine is busy.
+    pub background: Option<Background>,
 }
 
 /// The answer to a model switch or a compaction.
@@ -124,6 +129,7 @@ pub struct Session {
     events: broadcast::Sender<AgentEvent>,
     /// Every event so far, so late subscribers can catch up.
     history: History,
+    background: bool,
     inboxes: Arc<Inboxes>,
     agents: Arc<AgentStore>,
     shared: SharedSlot,
@@ -180,6 +186,9 @@ impl Session {
         for event in history.lock().iter() {
             controls.observe(event);
         }
+        // Nothing waits for a quiet machine after a restart.
+        controls.clear_hold();
+        let background = config.background.is_some();
         let emitter = Arc::new(Emitter {
             session_id: id.clone(),
             journal: Mutex::new(journal),
@@ -211,6 +220,7 @@ impl Session {
             commands,
             events,
             history,
+            background,
             inboxes,
             agents,
             shared,
@@ -283,6 +293,38 @@ impl Session {
 
     pub fn resume_policy(&self) -> ResumePolicy {
         self.controls.policy()
+    }
+
+    /// Started by a schedule or a project agent: it gives way to the user's own sessions.
+    pub fn is_background(&self) -> bool {
+        self.background
+    }
+
+    /// Why background work is waiting for a quiet machine, if it is.
+    pub fn hold(&self) -> Option<SessionHold> {
+        self.controls.hold()
+    }
+
+    /// Marks the session as waiting, before its first turn, for a quiet machine.
+    pub fn defer(&self, reason: String) {
+        self.emitter.emit(
+            ROOT_AGENT,
+            SessionEvent::Paused {
+                until_unix_ms: 0,
+                reason,
+                cause: PauseCause::Deferred,
+            },
+        );
+    }
+
+    /// Ends [`Session::defer`].
+    pub fn undefer(&self) {
+        self.emitter.emit(ROOT_AGENT, SessionEvent::Resumed {});
+    }
+
+    /// Released when a person says to run the session now, whatever the load.
+    pub fn run_now(&self) -> &RunNow {
+        self.controls.run_now()
     }
 
     /// Overrides how this session waits for usage resets; `None` restores the default.
@@ -447,6 +489,8 @@ pub(crate) struct Shared {
     pub enforce: Enforce,
     pub launcher: Option<Arc<dyn SessionLauncher>>,
     pub instructions: Option<String>,
+    /// Set for a background session: what it yields to.
+    pub background: Option<Background>,
     /// Token counts for context breakdowns, shared so agents on one model count text once.
     pub tokens: TokenCounter,
     /// Messages waiting for each agent.
@@ -514,6 +558,7 @@ async fn run(
         enforce: config.enforce,
         launcher: config.launcher,
         instructions: config.instructions,
+        background: config.background,
         tokens: TokenCounter::default(),
         inboxes,
         // Task ids continue after those of earlier runs, whose state is kept.

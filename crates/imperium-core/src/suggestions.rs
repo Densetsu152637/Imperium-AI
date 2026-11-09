@@ -223,7 +223,7 @@ pub async fn offer(state: &Arc<DaemonState>, session_id: &str, detected: Detecte
         None => {
             let probing = Arc::clone(state);
             match tokio::task::spawn_blocking(move || {
-                crate::local::probed_budget(probing.settings())
+                crate::local::probed_budget(&probing.settings())
             })
             .await
             {

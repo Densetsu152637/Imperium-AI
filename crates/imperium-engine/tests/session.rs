@@ -99,6 +99,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         max_steps: 5,
+        background: None,
         auto_compact: false,
         keep_agent_state: true,
         journal_path: dir.join(".journal/test.jsonl"),
