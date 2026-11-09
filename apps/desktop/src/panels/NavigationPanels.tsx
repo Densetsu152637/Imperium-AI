@@ -2,16 +2,20 @@
 // its sessions' tools may use every folder, and the first is the working directory. Each row
 // is an icon and a title with a "more" menu; environments are created and edited in the
 // environment window (EnvironmentWindow.tsx). Pinned environments and sessions come first;
-// archived sessions are kept apart in a collapsed Archived group at the bottom.
+// archived sessions are kept apart in a collapsed Archived group at the bottom. A search box above
+// the sessions searches what was said and done in them (SessionSearch.tsx).
 
 import { Archive, ArchiveRestore, ArrowLeft, FolderOpen, Pencil, Pin, PinOff, Trash } from "lucide-react";
+import { useState } from "react";
 
 import type { EnvironmentInfo, SessionStatus } from "@imperium/protocol";
 
 import { RowMenu } from "../components/RowMenu";
 import { Select } from "../components/Select";
 import { ProjectIcon, environmentIcon, projectName, sameFolder } from "../projectIcons";
+import type { SearchClient } from "../sessionSearch";
 import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
+import { SessionSearch } from "./SessionSearch";
 import { StatusBadge } from "./StatusBadge";
 
 /** The environment a session works in: the one it names, else the one whose first folder it uses. */
@@ -164,6 +168,8 @@ export function SessionsPanel({
   onSetArchived,
   onShowEnvironment,
   onShowAll,
+  client = null,
+  onOpenHit,
 }: {
   /** Every session; filtered to `scope` when one is given. */
   sessions: SessionState[];
@@ -178,7 +184,14 @@ export function SessionsPanel({
   onSetArchived: (sessionId: string, archived: boolean) => void;
   onShowEnvironment: (id: string) => void;
   onShowAll: () => void;
+  /** Searches sessions; no search box without one. */
+  client?: SearchClient | null;
+  /** Opens a session at a search hit's history event. */
+  onOpenHit?: (sessionId: string, eventIndex: number) => void;
 }) {
+  const [searchActive, setSearching] = useState(false);
+  // While a query is entered, its results stand in for the list.
+  const searching = searchActive && !!client && !!onOpenHit;
   const inScope = scope ? sessions.filter((s) => environmentOf(s, environments)?.id === scope.id) : sessions;
   const active = inScope.filter((s) => !s.summary.archived);
   const archived = sortSessions(inScope.filter((s) => s.summary.archived)).sort(
@@ -283,7 +296,15 @@ export function SessionsPanel({
           options={SORT_OPTIONS}
         />
       </div>
-      {active.length === 0 ? (
+      {client && onOpenHit && (
+        <SessionSearch
+          client={client}
+          environmentId={scope?.id ?? null}
+          onOpen={onOpenHit}
+          onActiveChange={setSearching}
+        />
+      )}
+      {searching ? null : active.length === 0 ? (
         <p className="empty">{scope ? "No sessions in this environment." : "No sessions yet."}</p>
       ) : (
         groups.map((group) => (
@@ -304,7 +325,7 @@ export function SessionsPanel({
           </section>
         ))
       )}
-      {archived.length > 0 && (
+      {!searching && archived.length > 0 && (
         <details className="session-group archived-sessions">
           <summary className="session-group-label">
             <Archive aria-hidden="true" />

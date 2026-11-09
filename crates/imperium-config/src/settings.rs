@@ -727,6 +727,15 @@ pub struct MemorySettings {
     pub recall: bool,
     pub max_index_tokens: usize,
     pub max_recall_tokens: usize,
+    /// Index session journals in the background for `session.search` and offer agents the
+    /// `search_sessions` tool.
+    pub session_search: bool,
+    /// Which sessions an agent's `search_sessions` reaches: its own environment, or every
+    /// environment.
+    pub session_search_scope: SessionSearchScope,
+    /// A model table id (or `<endpoint>:<model>`) of an embedding model on an OpenAI-compatible
+    /// endpoint; empty means keyword search only.
+    pub embedding_model: String,
 }
 
 impl Default for MemorySettings {
@@ -737,8 +746,21 @@ impl Default for MemorySettings {
             recall: true,
             max_index_tokens: 1500,
             max_recall_tokens: 1500,
+            session_search: true,
+            session_search_scope: SessionSearchScope::Environment,
+            embedding_model: String::new(),
         }
     }
+}
+
+/// Which sessions an agent's `search_sessions` tool reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSearchScope {
+    /// Sessions in the agent's own environment (or, outside any environment, its folder).
+    Environment,
+    /// Sessions in every environment.
+    All,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

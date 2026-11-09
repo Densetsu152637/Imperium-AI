@@ -82,6 +82,8 @@ type Props = {
   onOpenModels: () => void;
   onResetLayout: () => void;
   onClose: () => void;
+  /** A section to show, as asked for (by the command palette); each new request switches to it. */
+  request?: { section: string } | null;
 };
 
 // ---- App settings, described as data so they render and search the same way ----
@@ -114,6 +116,13 @@ const FIELDS: Field[] = [
     control: { type: "toggle" },
   },
   // Appearance
+  {
+    key: "theme",
+    section: "appearance",
+    label: "Theme",
+    description: "Light or dark surfaces; System follows the operating system.",
+    control: { type: "select", options: choices([["system", "System"], ["light", "Light"], ["dark", "Dark"]]) },
+  },
   {
     key: "accent",
     section: "appearance",
@@ -351,7 +360,18 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
   "config:daemon": Network,
 };
 
+/** Sections by id and label, for the command palette's "Settings: …" commands. */
+export const SETTINGS_SECTIONS: { id: string; label: string }[] = [
+  ...APP_SECTIONS,
+  ...Object.entries(CONFIG_SECTIONS).map(([id, label]) => ({ id: `config:${id}`, label })),
+  PERMISSIONS_SECTION,
+  BUDGETS_SECTION,
+  ...TAIL_SECTIONS,
+];
+
 const SHORTCUTS: [string, string][] = [
+  ["Ctrl+K (Cmd+K on macOS)", "Open or close the command palette, in the main window and panel windows"],
+  ["↑ / ↓, Enter, Tab, Esc", "In the palette: move, run the command, jump to the next group (Shift+Tab: previous), close"],
   ["Ctrl+,", "Open or close Settings"],
   ["Esc", "Close Settings"],
   ["Enter / Ctrl+Enter", "Send a message (see Chat)"],
@@ -366,8 +386,14 @@ function matches(query: string, ...texts: string[]): boolean {
 
 export function SettingsWindow(props: Props) {
   const { settings, onChange, client, onClose } = props;
-  const [section, setSection] = useState("general");
+  const [section, setSection] = useState(props.request?.section ?? "general");
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (!props.request) return;
+    setSection(props.request.section);
+    setQuery("");
+  }, [props.request]);
   const [config, setConfig] = useState<ConfigDescribeResult | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
   const [needsRestart, setNeedsRestart] = useState(false);

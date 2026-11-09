@@ -25,9 +25,12 @@ export type Accent =
 export type UpdateInterval = 1 | 7 | 28;
 export type ProseFont = "sans" | "serif" | "mono";
 export type SendKey = "enter" | "mod-enter";
+/** Light or dark surfaces; "system" follows the operating system. */
+export type Theme = "system" | "light" | "dark";
 
 export type AppSettings = {
   // Appearance
+  theme: Theme;
   uiScale: number;
   proseScale: number;
   codeScale: number;
@@ -67,6 +70,7 @@ export type AppSettings = {
 export type DisplaySettings = AppSettings;
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  theme: "system",
   uiScale: 1,
   proseScale: 1,
   codeScale: 1,
@@ -156,10 +160,37 @@ function wash(hex: string, alpha: number): string {
   return `rgb(${(value >> 16) & 255} ${(value >> 8) & 255} ${value & 255} / ${alpha})`;
 }
 
+const LIGHT_QUERY = "(prefers-color-scheme: light)";
+
+/** The theme in effect: the chosen one, or the operating system's under "system". */
+export function resolvedTheme(theme: Theme): "light" | "dark" {
+  if (theme === "light" || theme === "dark") return theme;
+  return typeof window !== "undefined" && window.matchMedia?.(LIGHT_QUERY).matches ? "light" : "dark";
+}
+
+/** Stops following the operating system's theme (set while the setting is "system"). */
+let stopFollowingSystem: (() => void) | null = null;
+
+/** Sets `data-theme` on the root, which styles.css keys the light tokens on. */
+function applyTheme(theme: Theme): void {
+  const root = document.documentElement;
+  root.dataset.theme = resolvedTheme(theme);
+  stopFollowingSystem?.();
+  stopFollowingSystem = null;
+  if (theme !== "system" || !window.matchMedia) return;
+  const query = window.matchMedia(LIGHT_QUERY);
+  const follow = () => {
+    root.dataset.theme = resolvedTheme("system");
+  };
+  query.addEventListener("change", follow);
+  stopFollowingSystem = () => query.removeEventListener("change", follow);
+}
+
 /** Writes the settings to the CSS custom properties and classes every component styles from. */
 export function applySettings(settings: AppSettings): void {
   const root = document.documentElement;
   const style = root.style;
+  applyTheme(settings.theme);
   style.setProperty("--ui-scale", String(settings.uiScale));
   style.setProperty("--prose-scale", String(settings.proseScale));
   style.setProperty("--code-scale", String(settings.codeScale));

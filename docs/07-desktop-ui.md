@@ -260,6 +260,48 @@ Enter or Space chooses; Escape or a click outside closes without closing the dia
 it. Settings, the context breakdown's agent picker, and the Hugging Face quantisation picker
 use it.
 
+**Theme (implemented):** Settings → Appearance → Theme picks System (the default, following the
+operating system and its changes), Light, or Dark. `settings.ts` sets `data-theme` on the root
+element and `styles.css` keys the light tokens on `:root[data-theme="light"]`; the command
+palette's *Switch to light/dark theme* flips it. Mod panels pick up the tokens when they open.
+
+## Command palette (implemented)
+
+**Ctrl+K** (Cmd+K on macOS) opens the command palette in the main window and in detached panel
+windows; pressing it again closes it. It is a modal dialog near the top of the window with one
+search box over:
+
+- **Actions:** new session, new session in each environment, new environment, Open Settings,
+  Open Connectors, Configure models, switch to the light or dark theme, check for updates, and
+  for the open session: compact the conversation, archive or unarchive, pin or unpin.
+- **Sessions** by title (with the environment's name), and **Archived sessions** in a group of
+  their own; choosing one opens it.
+- **Environments:** show one (its sessions and new sessions there), or edit it.
+- **Models:** switch the open session's model to any usable model-table row or local model
+  (`session.control` `set_model`, as the model selector does).
+- **Panels:** open a closed panel, close or detach a docked one, show or dock a detached one
+  (the Usage and Local models panels among them; mod panels too).
+- **Settings:** every section by name (*Settings: Budgets*, *Settings: Keyboard*, …), opened
+  directly.
+
+Matching is fuzzy: every typed word must match the title, a subtitle (a session's
+environment, a model's details), or a command's keywords, as a substring (best at a word start)
+or as letters in order. With nothing typed, the last few commands run lead under **Recent**;
+while typing, recently run commands are lifted above equal matches. The last 20 are kept in the
+layout document. Arrow keys and Page Up/Down move, Enter runs, Tab and Shift+Tab jump between
+groups, Escape (or a click outside) closes, and the mouse works too. Commands with a shortcut
+show it (Open Settings: Ctrl+,).
+
+**Registry:** `src/commands/registry.ts` holds named command sources; a feature registers one
+with `useRegisterCommands(name, build)`, and the palette calls each source when it opens, so
+commands always run the feature's current handlers. The app's own commands
+(`commands/appCommands.ts`) are built from the handlers `App.tsx` already uses for the same
+buttons. Ranking and grouping are pure functions in `commands/rank.ts`, tested in
+`test/rank.test.ts`. A panel window's palette lists the same commands but sends the chosen one's
+id to the main window (a `command` panel-window event), which runs it, records it as recent, and
+comes forward; theme changes leave the panel window in front. The shortcut is listed under
+Settings → Keyboard; shortcuts are not rebindable yet.
+
 ## Accessibility
 
 Full keyboard navigation, visible focus, screen-reader labels, reduced-motion support, and
@@ -294,11 +336,11 @@ methods and the directory comes from the daemon; see
 every setting:
 
 - **Imperium:** General (reopen where you left off, start imperium-core with the app), Appearance
-  (accent colour, interface, message, and code scale, line length, density, message font,
+  (theme, accent colour, interface, message, and code scale, line length, density, message font,
   reduce motion), Chat (send key, Markdown, code wrapping, following new output),
   Notifications (sounds, a title badge, and system notifications; see
   [notifications](#notifications-implemented)), Panels (show or
-  hide each panel, reset the layout), Keyboard, Daemon (start, stop, restart, log, keep
+  hide each panel, reset the layout), Keyboard (the shortcuts, the command palette's among them), Daemon (start, stop, restart, log, keep
   running), Updates (installed version with **Check for updates** and **Check and install**,
   channel, how often to check, and checking when the computer starts; see
   [desktop updates](11-ci-cd.md#desktop-updates)), and Connectors (opens the Connectors
@@ -530,6 +572,21 @@ ceiling, not near the current reservation. The Local models panel shows the laye
 (*36/36 layers on GPU*), says when the rest run on the CPU, and when a fixed KV pool was cut to
 fit the GPU. A local model that cannot run here (a vLLM folder off Linux) is
 listed but cannot be chosen. The new-session composer's model list is the same.
+
+### Session search (implemented)
+
+A search box sits at the top of the Sessions panel (*Search sessions*, or *Search this
+environment's sessions* in an environment's view). Typing searches what was said and done in
+every session, running and archived, with `session.search` (after a short pause in typing; Escape
+clears it); while a query is entered its results replace the list. Each result is one session:
+its title (with an archive mark when archived), the best excerpt with the matched words marked,
+and what matched (*You*, *Reply*, *Tool*, *Subagent brief*, *Subagent report*, or *Title*), when,
+how many more matches the session has, and *related* for a match found by meaning rather than by
+its words. Choosing a result opens the session scrolled to that point of the conversation, the
+entry outlined for a moment: each transcript entry remembers the index of the history event it
+started at, and the hit's `event_index` picks the entry holding it. The search call is exported
+as `searchSessions` (`apps/desktop/src/sessionSearch.ts`) for the command palette. How the index
+is built and ranked is in [17](17-memory.md#session-search-implemented).
 
 ## Setting up models (implemented)
 

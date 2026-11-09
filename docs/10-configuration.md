@@ -124,6 +124,9 @@ listed; edit them in the file.
 | `memory.write.global`, `.project`, `.project_private` | `ask`, `ask`, `auto` | Whether agents may save memories in each scope: `auto`, `ask`, or `off` |
 | `memory.recall` | `true` | Put the best-matching memories before each message |
 | `memory.max_index_tokens`, `memory.max_recall_tokens` | `1500`, `1500` | Budgets for the index in agent instructions and for recalled memories |
+| `memory.session_search` | `true` | Index sessions in the background for `session.search`, and offer agents `search_sessions` ([17](17-memory.md#session-search-implemented)) |
+| `memory.session_search_scope` | `environment` | Which sessions an agent's `search_sessions` reaches: `environment` (its own environment, or outside any, its folder) or `all` |
+| `memory.embedding_model` | empty | Model table id or `<endpoint>:<model>` of an embedding model on an OpenAI-compatible endpoint, for search by meaning; empty searches by keyword only |
 | `workflow.enabled` | `true` | Serve workflow packs and project instruction files to agents ([18](18-workflow-contract.md)) |
 | `workflow.packs` | none | Workflow folders, such as a clone of Agent-Custom-Workflow |
 | `workflow.default_pack` | `true` | With no `packs`, use the bundled Agent-Custom-Workflow snapshot |

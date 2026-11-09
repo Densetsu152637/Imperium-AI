@@ -26,6 +26,8 @@ export type Layout = {
   environmentsMigrated: boolean;
   /** Panels in their own windows, by panel id. */
   detached: Record<string, DetachedPanel>;
+  /** Command palette commands by id, most recently run first. */
+  recentCommands: string[];
 };
 
 export type DetachedPanel = {
@@ -47,6 +49,7 @@ const EMPTY: Layout = {
   folders: [],
   environmentsMigrated: false,
   detached: {},
+  recentCommands: [],
 };
 
 /** The built-in Pet panel is gone (the Nursery mod's panel replaced it); saved layouts forget it. */

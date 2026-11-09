@@ -47,6 +47,10 @@
     {
       "name": "ask_user",
       "status": "available"
+    },
+    {
+      "name": "search_sessions",
+      "status": "available"
     }
   ]
 }

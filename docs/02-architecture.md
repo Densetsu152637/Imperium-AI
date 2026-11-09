@@ -53,7 +53,10 @@
 - **Sessions (implemented):** `session.create` (the caller is subscribed), `session.list`
   (each summary carries `created_at`, from when the session's journal was started),
   `session.subscribe` (returns the session's full event history so far, then streams new
-  events with no gap or duplicate), `session.send`, and `session.respond`. Events arrive as
+  events with no gap or duplicate), `session.search` (searches running and archived sessions'
+  content: the best match per session with an excerpt, highlights, and the history event to
+  open at; see [17](17-memory.md#session-search-implemented)), `session.send`, and
+  `session.respond`. Events arrive as
   `session.event` notifications. `session.send` takes an optional `mode` (`queue`, the
   default: run now, or after the current turn; `steer`: join the running turn) and `agent_id`
   (a running subagent), and returns the message's `id`; `session.queue` lists, edits, or
