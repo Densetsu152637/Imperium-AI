@@ -253,7 +253,7 @@ async fn a_persistent_agent_is_listed_first_class_and_continues_after_a_restart(
     assert_eq!(agent.title(), "remember this", "its history came back");
     assert!(state.summary(&agent).persistent);
 
-    // Turned off, it stops; the environment keeps its id for next time.
+    // Turned off, it stops and is archived; the environment keeps its id for next time.
     let mut connection = connect(&state);
     let env = call(
         &mut connection,
@@ -263,4 +263,19 @@ async fn a_persistent_agent_is_listed_first_class_and_continues_after_a_restart(
     assert_eq!(env["agent_session_id"], agent_id.as_str());
     assert!(state.session(&agent_id).is_none());
     assert!(state.project_agents().environments().is_empty());
+    let archived = state.archived_sessions();
+    assert_eq!(archived.len(), 1);
+    assert_eq!(archived[0].session_id, agent_id);
+    assert!(archived[0].archived);
+
+    // Turned back on, the same session leaves the archive and continues.
+    call(
+        &mut connection,
+        "environments.update",
+        json!({"id": id, "persistent_agent": true}),
+    );
+    assert!(state.archived_sessions().is_empty());
+    let agent = state.session(&agent_id).unwrap();
+    assert_eq!(agent.title(), "remember this");
+    assert!(state.summary(&agent).persistent);
 }
