@@ -16,6 +16,9 @@ importers:
       '@tauri-apps/plugin-dialog':
         specifier: 2.7.3
         version: 2.7.3
+      lucide-react:
+        specifier: 1.61.0
+        version: 1.61.0(@types/react@19.3.0)(react@19.3.1)
       react:
         specifier: 19.3.1
         version: 19.3.1
@@ -29,6 +32,9 @@ importers:
         specifier: ^4.0.1
         version: 4.0.1
     devDependencies:
+      '@imperium/mod-sdk':
+        specifier: workspace:*
+        version: link:../../packages/mod-sdk
       '@imperium/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -46,6 +52,18 @@ importers:
         version: 6.2.1(vite@8.3.6)
       typescript:
         specifier: 7.0.2
+        version: 7.0.2
+      vite:
+        specifier: 8.3.6
+        version: 8.3.6
+
+  mods/imperium-nursery:
+    devDependencies:
+      '@imperium/mod-sdk':
+        specifier: workspace:*
+        version: link:../../packages/mod-sdk
+      typescript:
+        specifier: ^7.0.2
         version: 7.0.2
       vite:
         specifier: 8.3.6
@@ -580,6 +598,15 @@ packages:
 
   longest-streak@3.1.0:
     resolution: {integrity: sha512-9Ri+o0JYgehTaVBBDoMqIl8GXtbWg711O3srftcHhZ0dqnETqLaoIK0x17fUw9rFSlK/0NlsKe0Ahhyl5pXE2g==}
+
+  lucide-react@1.61.0:
+    resolution: {integrity: sha512-v2SQPPPNjnr+BlhL9Spuzmo5yR+hLkftfuE4E3jaxdNPgSH0hJKPcLJBP7yAta87jQNPsSERS59PJjCJ/CorBA==}
+    peerDependencies:
+      '@types/react': '*'
+      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
 
   markdown-table@3.1.0:
     resolution: {integrity: sha512-xpeSCdM+B+6P3ncfgaB7FoDbtJ30xAe6Z18TGT7AgXJsHqCElCICZovQqdRMm7kHgpTyYv36EupqewoFFSB8vw==}
@@ -1213,6 +1240,12 @@ snapshots:
       lightningcss-win32-x64-msvc: 1.33.0
 
   longest-streak@3.1.0: {}
+
+  lucide-react@1.61.0(@types/react@19.3.0)(react@19.3.1):
+    dependencies:
+      react: 19.3.1
+    optionalDependencies:
+      '@types/react': 19.3.0
 
   markdown-table@3.1.0: {}
 

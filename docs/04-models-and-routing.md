@@ -103,6 +103,65 @@ imperium models cancel dl-1
   `models.download_cancel` (`job_id`) stops one. The desktop's Local models panel has the same
   form, with progress bars.
 
+## Model download suggestions
+
+**Implemented:** when a session needs a model and the best one available is poor for the task,
+the daemon offers to download a suitable local model from Hugging Face. Nothing is downloaded
+without the user's consent, and `models.suggest_downloads = false`
+([configuration](10-configuration.md#implemented-settings)) turns it off.
+
+**When.** The daemon watches each session's root agent when a turn starts (with the user's
+message) and after each model call (with its prompt size), and checks, in order
+(`imperium_local::suggest::detect`):
+
+1. Nothing is suggested unless local models are wanted: `routing.prefer = "local"`, or the
+   session's own model is local (`llamacpp:` or `vllm:`).
+2. No local model is installed: a general model (`need = "local"`).
+3. The message names an image file (a word ending in `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`,
+   or `.bmp`) and no local model has a vision projector: a vision model (`vision`).
+4. The prompt is longer than every local model's context length (from its GGUF header): a
+   model that reads that much (`context`).
+5. `routing.prefer = "local"` but routing an ordinary task (default tier, no tags) picks a cloud
+   model, because no local row in the model table can run: a general model (`local`).
+
+Agents can also ask with the `suggest_local_model` tool (`task`, `needs` from `chat`, `code`,
+`vision`, `tools`, `context`, and `context_tokens` for `context`); the most specific need named
+is used (vision, code, tools, context, then chat). The tool only proposes: it never asks for
+permission, and the user still decides. Tool-calling and code needs come only from the tool,
+since the model table records no capabilities yet.
+
+At most one suggestion is made per need per session, whether it was accepted, dismissed, or
+nothing fitted (a failed Hub listing also counts, so the Hub is not asked on every turn).
+
+**What.** Candidates are the `[[models.suggestions]]` rows whose `capabilities` cover the need
+(`chat` for `local` and `context`, which also needs `context` at least the prompt size). Each
+candidate's file listing is read from the Hub (the same `/api/models/<repo>/tree/main` listing
+as `models.hf_files`; no other network use), and every GGUF quantisation is sized against this
+machine as `models.hf_files` does (`gpu`, `partial`, `cpu`, `none`), counting a vision
+candidate's projector (the F16 one when there are several). The best is chosen by fit (GPU,
+then partial offload, then CPU; never one that does not fit), then size class (larger first),
+then the candidate's place in the list, then quantisation preference (`Q4_K_M`, `Q5_K_M`,
+`Q6_K`, `Q8_0`, `Q4_K_S`, `IQ4_XS`, ... then others), then smaller size.
+
+**Asking.** The session gets a `model_suggestion` event (`id`, `need`, `repo`, `quant`,
+`model` it will be as `llamacpp:<id>`, `size_bytes`, `fit`, `reason`, `mmproj`). Clients answer
+with `session.suggestion_respond` (`session_id`, `suggestion_id`, `action`):
+
+- `download` starts the download as `models.download` would (same job, progress
+  notifications, and rescan when done) and returns the job. A `model_suggestion_update` follows
+  with `state = "downloading"` and the `job_id`, then `ready` with the `model` once the folders
+  were rescanned (switch with `session.control` `set_model`), or `failed` / `cancelled` with a
+  `message`.
+- `dismiss` (not now): `dismissed`; that need is not suggested again in the session.
+- `never` (don't ask again): turns `models.suggest_downloads` off at once and writes `false` to
+  the user config file, so it stays off after restarts; `disabled`. This is a global switch,
+  not a per-need dismissal list; turn it on again in Settings.
+
+The suggestion events are journalled with the session, but which suggestions wait for an answer
+is kept in memory, so after a daemon restart an old suggestion can no longer be answered. The
+desktop shows a card ([07](07-desktop-ui.md)); `imperium chat` prints the suggestion and reads
+`/download`, `/dismiss`, or `/never`.
+
 ## Runtimes
 
 **Implemented (phase 4):** `imperium runtime install [--pack <id>]` downloads the pack for
@@ -202,6 +261,34 @@ is a fixed 512 MiB). AMD/Intel/Metal probes, live re-measurement, and calibratio
 measured usage are later work. `backend = "auto"` picks `cuda13` for an NVIDIA driver of the
 580 series or newer, `cuda12` for older drivers, `metal` on Apple Silicon, and `cpu`
 otherwise; set `vulkan` or `rocm` explicitly.
+
+## Active models and resource monitor
+
+**Implemented:** `system.resources` returns a snapshot of what the machine and the sessions
+are using, and `system.resources_subscribe {on}` sends the same snapshot as
+`system.resources_changed` about every two seconds to the connections that asked. The daemon
+samples only while at least one connection is subscribed (closing the connection
+unsubscribes it), so an idle daemon reads nothing. A snapshot holds:
+
+- **Machine:** CPU total and per core, RAM and swap used and total (`sysinfo`), and per NVIDIA
+  GPU its utilisation, VRAM used and total, and temperature, read through `nvidia-smi` (NVML's
+  counters). Without an NVIDIA driver the GPU list is empty; other vendors are later work.
+- **Processes:** `imperium-core` itself and each model server (`llama-server`, `vllm`) with
+  its pid, CPU share of the whole machine, RAM, and VRAM when the driver reports it per
+  process (it does not on Windows under WDDM).
+- **Local models:** every model the supervisor holds, in use or idle (cached until it
+  unloads): runtime, placement (`gpu`, `partial` with its GPU layers, or `cpu`), context,
+  planned VRAM and RAM, slots in use, the live sessions on it (their model, or calls on it in
+  the last 15 minutes), and while idle how long until `idle_unload_s` unloads it.
+  `models.unload {model}` (or `imperium models unload <id>`) unloads an idle model now; a model
+  with a slot in use is refused.
+- **Endpoints:** each hosted `<endpoint>:<model>` that a live session uses or called in the
+  last 15 minutes, with the endpoint's host, the sessions, requests and tokens in that window
+  (from `model_call_completed` events, so subagents on catalogue models count), the latest
+  call's latency, and failed turns with the latest error.
+
+`imperium resources` prints a snapshot and `imperium resources --watch` keeps printing them;
+the desktop's [Resources panel](07-desktop-ui.md#resources-panel-implemented) shows them live.
 
 The daemon maintains a live **resource map**:
 

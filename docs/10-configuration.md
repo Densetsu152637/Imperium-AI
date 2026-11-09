@@ -25,8 +25,29 @@ them.
 - `imperium config explain <key> [--project <dir>]` shows the effective value and the layer
   that set it (for example `set by environment variable IMPERIUM_DAEMON__PORT`).
 
-The desktop settings UI will edit the same files; every setting will have a schema entry
-(published as JSON Schema for editor completion).
+### Editing settings from the app
+
+The desktop app's Settings page reads and changes settings through the daemon:
+
+- `config.describe` lists every user-settable scalar and list setting (one table in
+  `imperium-config`, `registry.rs`) with its `key`, `section`, `label`, `description`, `kind`
+  (`bool`, `integer`, `number`, `string`, `path`, `path_list`, `string_list`, `enum` with
+  `options`, or `secret_ref`), `default`, effective `value`, the `source` layer that set it
+  (`default`, `user`, `project`, or `env`), and `restart`. A `secret_ref` shows the secret's
+  name only, never its value.
+- `config.set { key, value }` writes the value into the **user** config file (created when
+  missing), keeping its comments, formatting, and unknown keys; a `null` value removes the key so
+  the default applies. The whole configuration is then loaded and validated, and an invalid
+  change is undone and reported as an error. Project files are never written. When an
+  environment variable sets the key, the file is still written but the result says
+  `overridden: true`, since the variable keeps winning.
+- The daemon reads its configuration once at start, so `restart: true` (nearly every setting)
+  means the change applies after a daemon restart, which the app offers. Settings with
+  `restart: false` (`models.suggest_downloads`) apply at once.
+
+Structured lists and maps (`endpoints`, `models.catalog`, `routing.rules`, `mcp.servers`,
+`projects`, `schedules`, `hooks`, `github.watch`, `media.speech`, `media.transcription`) are not
+listed; edit them in the file.
 
 ### Implemented settings
 
@@ -37,6 +58,8 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `resume.mode` | `wait_for_reset` | When a provider's usage runs out: `wait_for_reset`, `at_time`, `retry_every`, or `stop` (each session can override it) |
 | `resume.at_time`, `retry_every_minutes`, `max_wait_hours` | none, `5`, `12` | Local `HH:MM` for `at_time`; retry interval; longest wait in one turn |
 | `agents.resume_days` | `7` | Sessions active within this many days continue after the daemon restarts |
+| `sessions.auto_archive_on_pr_close` | `true` | Archive a session once the pull request it watches is merged or closed ([archiving sessions](14-projects-and-automation.md#archiving-sessions)) |
+| `sessions.auto_archive_after_days` | `0` | Archive an idle session after this many days without activity; `0` never does. Working, waiting, pinned, and agent sessions are never archived |
 | `models.catalog` | none | The model table: `[[models.catalog]]` rows with `id`, `spec`, `location` (`local` or `cloud`), `tier` (`basic`, `standard`, `strong`, `frontier`), optional `tags`, and optional `context_window` (tokens per request, for [context breakdowns](03-agent-engine.md#context-management); llama.cpp models report their own); see [routing](04-models-and-routing.md#routing) |
 | `routing.prefer` | `cheapest` | Tie-breaker among suitable models: `cheapest`, `local`, or `cloud` |
 | `routing.rules` | none | `[[routing.rules]]` delegation rules with optional `when_tier`, `when_tag`, `location`, and `use` (model table ids in order) |
@@ -46,6 +69,8 @@ The desktop settings UI will edit the same files; every setting will have a sche
 | `endpoints.<id>.pricing."<model>"` | none | `{ input_usd_per_mtok, output_usd_per_mtok, cached_input_usd_per_mtok? }`; models without prices report no cost |
 | `endpoints.<id>.kind` | `openai` | The API the endpoint speaks, choosing its model client: `openai` (OpenAI-compatible Chat Completions; an endpoint on this machine is also tried for llama.cpp's tokenizer) or `llamacpp` (the same, always using llama.cpp's tokenizer for [context breakdowns](03-agent-engine.md#context-management)) |
 | `models.folders` | none | Folders scanned for GGUF models (`llamacpp:<id>`) and Hugging Face folders (`vllm:<id>`); the `llamacpp` and `vllm` endpoint ids are reserved |
+| `models.suggest_downloads` | `true` | Sessions may offer to download a suitable local model from Hugging Face when the best available one is poor for the task ([model download suggestions](04-models-and-routing.md#model-download-suggestions)); applies without a restart, and a suggestion's "Don't ask again" sets it to `false` in the user file |
+| `models.suggestions` | six well-known GGUF repositories (Qwen3 4B and 14B, Qwen2.5-Coder 7B, Qwen3-Coder 30B-A3B, Gemma 3 4B and 12B) | `[[models.suggestions]]` rows suggestions choose from: `repo`, `capabilities` (`chat`, `code`, `tools`, `vision`), `size` (`small`, `medium`, `large`; default `small`), `context` (tokens), and `mmproj` (download the vision projector too); setting any row replaces the built-in list |
 | `models.download_dir` | first of `models.folders`, else `<data>/models` | Where [Hugging Face downloads](04-models-and-routing.md#downloading-from-hugging-face) go, as `<owner>/<repo>/` below it; must be absolute; scanned with `models.folders` |
 | `runtime.llamacpp.backend` | `auto` | Runtime pack: `auto`, `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` |
 | `runtime.llamacpp.custom_path` | none | Your own `llama-server` executable, used instead of a pack |

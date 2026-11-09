@@ -191,7 +191,7 @@ impl Invocation {
 
 /// Definitions of every built-in tool, as offered to the model.
 pub fn specs() -> Vec<ToolSpec> {
-    let path = json!({"type": "string", "description": "Path relative to the project root"});
+    let path = json!({"type": "string", "description": "Path relative to the project root, or an absolute path inside any of the environment's folders"});
     vec![
         ToolSpec {
             name: "read_file".into(),

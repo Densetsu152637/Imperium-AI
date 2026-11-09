@@ -160,6 +160,114 @@ pub enum SessionEvent {
         kind: String,
         prompt: String,
     },
+    /// The agent's conversation was compacted to fit `model`'s context window: the system
+    /// prompt and the most recent turns were kept verbatim and the older messages replaced by a
+    /// summary that `summary_model` wrote.
+    ContextCompacted {
+        /// The model whose window the conversation was fitted to.
+        model: String,
+        /// The conversation's size for `model` before and after, counted by `method`.
+        #[ts(type = "number")]
+        before_tokens: u64,
+        #[ts(type = "number")]
+        after_tokens: u64,
+        /// Messages replaced by the summary.
+        summarised_messages: u32,
+        /// The tokens the conversation may use: the window less room for the reply.
+        #[ts(type = "number")]
+        budget: u64,
+        #[ts(type = "number | null")]
+        context_window: Option<u64>,
+        method: TokenCountMethod,
+        summary_model: String,
+    },
+    /// The session's model changed; turns from now on use `to`. `compacted` says whether the
+    /// conversation was compacted first (a `context_compacted` event precedes this one). `from`
+    /// is empty when the session had no model before.
+    ModelChanged {
+        from: String,
+        to: String,
+        compacted: bool,
+    },
+    /// A message arrived while the agent was busy and waits for it: a queued message runs as
+    /// the agent's next turn, a steering one joins its running turn at the next safe point.
+    /// `queue_changed` follows with the whole queue.
+    MessageQueued {
+        id: String,
+        text: String,
+        steer: bool,
+    },
+    /// The agent's queue after a message was queued, edited, removed, delivered, or joined the
+    /// running turn. The latest one is the queue; a resumed session restores it.
+    QueueChanged { messages: Vec<QueuedMessage> },
+    /// A steering message joined the running turn: the model reads it, as a user message
+    /// marked as steering, on its next call. The turn goes on; nothing was cancelled.
+    Steered { id: String, text: String },
+    /// The daemon offers to download a local model better suited to what the session needs.
+    /// Nothing is downloaded unless the user accepts with `session.suggestion_respond`.
+    ModelSuggestion {
+        /// Names the suggestion in `session.suggestion_respond` and `model_suggestion_update`.
+        id: String,
+        /// `local` (a general local model), `vision`, `tools`, `code`, or `context`.
+        need: String,
+        /// The Hugging Face repository, `owner/name`.
+        repo: String,
+        /// The GGUF quantisation chosen to fit this machine.
+        quant: String,
+        /// What the session can switch to once it is downloaded, such as `llamacpp:Qwen3-4B-Q4_K_M`.
+        model: String,
+        /// The download's size, a vision projector included.
+        #[ts(type = "number")]
+        size_bytes: u64,
+        /// How it would load here: `gpu`, `partial` (split with system memory), or `cpu`.
+        #[ts(type = "\"gpu\" | \"partial\" | \"cpu\"")]
+        fit: String,
+        /// Why it is suggested, in words for the user.
+        reason: String,
+        /// The multimodal projector is downloaded too.
+        mmproj: bool,
+    },
+    /// What became of a model suggestion.
+    ModelSuggestionUpdate {
+        id: String,
+        /// `downloading` (with `job_id`; follow `models.download_progress`), `ready` (with
+        /// `model`; switch with `session.control` `set_model`), `failed` or `cancelled` (with
+        /// `message`), `dismissed` (not now), or `disabled` (don't ask again: suggestions are
+        /// off).
+        #[ts(
+            type = "\"downloading\" | \"ready\" | \"failed\" | \"cancelled\" | \"dismissed\" | \"disabled\""
+        )]
+        state: String,
+        job_id: Option<String>,
+        model: Option<String>,
+        message: Option<String>,
+    },
+}
+
+/// A message waiting for an agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QueuedMessage {
+    /// `q1`, `q2`, ...: unique in the session.
+    pub id: String,
+    pub text: String,
+    /// Joins the agent's running turn at its next safe point instead of waiting for the turn
+    /// to end; when no turn is running it starts one.
+    pub steer: bool,
+}
+
+/// How `session.send` delivers a message.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SendMode {
+    /// Start a turn now when the agent is idle; otherwise wait in its queue and run as a new
+    /// turn after the current one, in order.
+    #[default]
+    Queue,
+    /// Join the running turn after its current model response and tool calls, before the next
+    /// model call, without cancelling it. Like `queue` when no turn is running.
+    Steer,
 }
 
 /// An instruction file or section in a context manifest.
@@ -197,8 +305,9 @@ pub struct TokenUsage {
 #[ts(export)]
 pub struct ContextCategory {
     /// A stable id: `system_base`, `system_skills`, `system_memory`, `system_citations`,
-    /// `system_project`, `tools_builtin`, `tools_mcp`, `manifest`, `memories`, `user`,
-    /// `assistant`, `tool_results`, or `overhead`. Clients show unknown keys by their label.
+    /// `system_project`, `tools_builtin`, `tools_mcp`, `summary` (a compacted conversation's
+    /// summary), `manifest`, `memories`, `user`, `assistant`, `tool_results`, or `overhead`.
+    /// Clients show unknown keys by their label.
     pub key: String,
     pub label: String,
     /// Only `overhead` can be negative.
@@ -316,6 +425,8 @@ pub enum SessionStatus {
     NeedsAttention,
     /// Waiting for a usage limit to reset.
     Paused,
+    /// A message is waiting, but the session has no model yet; it runs once one is set.
+    NeedsModel,
     /// Idle, watching a pull request's checks so failures are fixed reactively.
     Watching,
     /// Its pull request merged.

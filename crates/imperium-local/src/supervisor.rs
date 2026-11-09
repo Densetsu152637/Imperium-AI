@@ -82,6 +82,11 @@ impl PartialEq for LaunchSpec {
 pub trait Server: Send + Sync {
     /// OpenAI-compatible base URL, ending in `/v1`.
     fn base_url(&self) -> &str;
+
+    /// The server's process id, for the resource monitor; `None` for in-process servers.
+    fn pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 pub type LaunchFuture<'a> =
@@ -109,14 +114,34 @@ pub struct Runtimes {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadedStatus {
     pub model_id: String,
+    /// The runtime serving it (`llamacpp`, `vllm`, ...).
+    pub runtime: String,
     pub base_url: String,
+    /// The server's process id, when it runs as a process.
+    pub pid: Option<u32>,
     pub slots: u32,
     pub slots_in_use: u32,
     /// Calls waiting for a slot.
     pub queued: u32,
+    /// Total context the server was started with (every slot together).
+    pub context: u32,
     pub gpu_layers: u32,
+    pub all_layers_on_gpu: bool,
     pub vram_bytes: u64,
     pub ram_bytes: u64,
+    /// How long every slot has been free; `None` while a slot is in use.
+    pub idle_for: Option<Duration>,
+    /// When it will be unloaded if it stays idle; `None` while a slot is in use.
+    pub unload_in: Option<Duration>,
+}
+
+/// Why [`Supervisor::unload`] did not unload a model.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum UnloadError {
+    #[error("{0} is not loaded")]
+    NotLoaded(String),
+    #[error("{0} is in use by {1} slot(s); it unloads once they are released")]
+    InUse(String, u32),
 }
 
 /// Which slots of a server are free, and who used each last.
@@ -223,7 +248,9 @@ impl Drop for Queued<'_> {
 
 struct Loaded {
     /// Held so the server keeps running; dropping it stops the server.
-    _server: Box<dyn Server>,
+    server: Box<dyn Server>,
+    runtime: String,
+    context: u32,
     pool: Arc<SlotPool>,
     placement: Placement,
 }
@@ -362,21 +389,51 @@ impl Supervisor {
     }
 
     pub fn loaded(&self) -> Vec<LoadedStatus> {
-        let mut loaded: Vec<_> = lock(&self.loaded)
+        let idle_unload = Duration::from_secs(self.settings.idle_unload_s);
+        let entries = lock(&self.loaded);
+        let attached = lock(&self.attached);
+        let mut loaded: Vec<_> = entries
             .iter()
-            .map(|(id, loaded)| LoadedStatus {
-                model_id: id.clone(),
-                base_url: loaded.pool.base_url.clone(),
-                slots: loaded.pool.slots,
-                slots_in_use: loaded.in_use(),
-                queued: loaded.pool.waiting.load(Ordering::SeqCst),
-                gpu_layers: loaded.placement.gpu_layers,
-                vram_bytes: loaded.placement.vram_bytes,
-                ram_bytes: loaded.placement.ram_bytes,
+            .map(|(id, loaded)| {
+                let in_use = loaded.in_use();
+                // An attached model is not idle between its turn's calls.
+                let idle_for =
+                    is_idle(id, loaded, &attached).then(|| lock(&loaded.pool.last_used).elapsed());
+                LoadedStatus {
+                    model_id: id.clone(),
+                    runtime: loaded.runtime.clone(),
+                    base_url: loaded.pool.base_url.clone(),
+                    pid: loaded.server.pid(),
+                    slots: loaded.pool.slots,
+                    slots_in_use: in_use,
+                    queued: loaded.pool.waiting.load(Ordering::SeqCst),
+                    context: loaded.context,
+                    gpu_layers: loaded.placement.gpu_layers,
+                    all_layers_on_gpu: loaded.placement.all_layers_on_gpu,
+                    vram_bytes: loaded.placement.vram_bytes,
+                    ram_bytes: loaded.placement.ram_bytes,
+                    idle_for,
+                    unload_in: idle_for.map(|idle| idle_unload.saturating_sub(idle)),
+                }
             })
             .collect();
         loaded.sort_by(|a, b| a.model_id.cmp(&b.model_id));
         loaded
+    }
+
+    /// Unloads `id` now if no slot on it is in use, stopping its server.
+    pub fn unload(&self, id: &str) -> Result<(), UnloadError> {
+        let mut loaded = lock(&self.loaded);
+        let entry = loaded
+            .get(id)
+            .ok_or_else(|| UnloadError::NotLoaded(id.to_string()))?;
+        let in_use = entry.in_use();
+        if in_use > 0 {
+            return Err(UnloadError::InUse(id.to_string(), in_use));
+        }
+        tracing::info!(model = %id, "unloading model on request");
+        loaded.remove(id);
+        Ok(())
     }
 
     /// The budget minus what loaded models hold; with `reclaim_idle`, idle models count as
@@ -533,7 +590,9 @@ impl Supervisor {
         lock(&self.loaded).insert(
             id.to_string(),
             Loaded {
-                _server: server,
+                server,
+                runtime: spec.backend.id().to_string(),
+                context: spec.context,
                 pool,
                 placement,
             },
@@ -848,6 +907,33 @@ mod tests {
         drop(first);
         assert!(waiter.await.unwrap() >= Duration::from_millis(20));
         drop(second);
+    }
+
+    #[tokio::test]
+    async fn status_reports_idle_countdown_and_unload_spares_models_in_use() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = supervisor(Arc::clone(&launcher));
+        let lease = supervisor.acquire("a", "session/root").await.unwrap();
+        let status = &supervisor.loaded()[0];
+        assert_eq!(status.runtime, "llamacpp");
+        assert_eq!(status.context, 4096 * 2);
+        assert_eq!(status.slots_in_use, 1);
+        assert_eq!((status.idle_for, status.unload_in), (None, None));
+        assert_eq!(status.pid, None);
+        assert_eq!(
+            supervisor.unload("a"),
+            Err(UnloadError::InUse("a".into(), 1))
+        );
+        drop(lease);
+        let status = &supervisor.loaded()[0];
+        assert!(status.idle_for.is_some());
+        assert!(status.unload_in.unwrap() <= Duration::from_secs(900));
+        assert_eq!(supervisor.unload("a"), Ok(()));
+        assert_eq!(launcher.running.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            supervisor.unload("a"),
+            Err(UnloadError::NotLoaded("a".into()))
+        );
     }
 
     #[test]

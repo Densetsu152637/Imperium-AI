@@ -1,13 +1,16 @@
 mod approvals;
 mod autostart;
 mod chat;
+mod env;
 mod local;
 mod memory;
 mod phone;
 mod project;
 mod pull;
 mod remote;
+mod resources;
 mod schedule;
+mod session;
 mod workflow;
 
 use std::io::{IsTerminal, Read};
@@ -19,7 +22,9 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use imperium_cli::client::{Client, read_endpoint};
 use imperium_config::{Paths, SecretName};
-use imperium_protocol::methods::{ModelDownloadParams, Peer, Ping, PingParams};
+use imperium_protocol::methods::{
+    ModelDownloadParams, Peer, Ping, PingParams, Shutdown, ShutdownParams,
+};
 
 /// Command-line client for the Imperium daemon.
 #[derive(Debug, Parser)]
@@ -36,20 +41,33 @@ static REMOTE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Check that imperiumd is running and measure a round trip.
+    /// Check that imperium-core is running and measure a round trip.
     Ping,
-    /// Chat with an agent in a project folder.
+    /// Chat with an agent in an environment or a project folder.
     Chat {
-        /// Project folder the agent works in; defaults to the current directory.
+        /// Environment (name or id) the agent works in: all its folders are open to it.
+        #[arg(long, conflicts_with = "project")]
+        env: Option<String>,
+        /// Project folder the agent works in (its environment, made if needed); defaults to the
+        /// current directory.
         #[arg(long)]
         project: Option<PathBuf>,
-        /// Model as `<endpoint>:<model>`; defaults to `models.default`.
+        /// Model as `<endpoint>:<model>` or a model table id; defaults to `models.default`.
         #[arg(long)]
         model: Option<String>,
         /// After each turn, print one line on how full the model's context is (type /context
         /// for the full breakdown at any time).
         #[arg(long)]
         context: bool,
+        /// Start on git worktrees: each folder in a git repository gets a new worktree on a new
+        /// branch (`imperium/<session id>`, or the branch given).
+        #[arg(long, value_name = "BRANCH", num_args = 0..=1, default_missing_value = "")]
+        worktree: Option<String>,
+    },
+    /// Manage running sessions.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
     },
     /// Inspect configuration.
     Config {
@@ -89,6 +107,11 @@ enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
+    /// Environments: named sets of folders sessions work in.
+    Env {
+        #[command(subcommand)]
+        command: EnvCommand,
+    },
     /// Project agents.
     Project {
         #[command(subcommand)]
@@ -114,12 +137,23 @@ enum Command {
         #[command(subcommand)]
         command: RuntimeCommand,
     },
+    /// CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use.
+    Resources {
+        /// Keep printing a fresh snapshot every two seconds until Ctrl+C.
+        #[arg(long)]
+        watch: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum ModelsCommand {
     /// List GGUF models in models.folders, whether each fits in memory, and what is loaded.
     Local,
+    /// Unload an idle local model now, freeing its memory.
+    Unload {
+        /// The local model id, as `imperium resources` lists it.
+        model: String,
+    },
     /// List the quantisations a Hugging Face repository offers, with sizes and whether each
     /// fits this machine.
     Files {
@@ -172,13 +206,15 @@ enum MemoryCommand {
 
 #[derive(Debug, Subcommand)]
 enum DaemonCommand {
-    /// Start imperiumd when you log in (enable, disable, or status).
+    /// Start imperium-core when you log in (enable, disable, or status).
     Autostart {
         #[arg(value_parser = ["enable", "disable", "status"])]
         action: String,
     },
-    /// Start imperiumd in the background.
+    /// Start imperium-core in the background.
     Start,
+    /// Stop the running imperium-core gracefully.
+    Stop,
     /// Print the running daemon's endpoint as JSON (used by `imperium remote connect`).
     Endpoint,
 }
@@ -195,7 +231,7 @@ enum PhoneCommand {
 
 #[derive(Debug, Subcommand)]
 enum RemoteCommand {
-    /// Forward a host's imperiumd over SSH (starting it there if needed) until Ctrl+C.
+    /// Forward a host's imperium-core over SSH (starting it there if needed) until Ctrl+C.
     Connect {
         /// An SSH destination: user@host, or a Host from ~/.ssh/config.
         destination: String,
@@ -205,6 +241,91 @@ enum RemoteCommand {
         /// Local port for the forward; a free one by default.
         #[arg(long)]
         local_port: Option<u16>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionCommand {
+    /// List running sessions (with --archived, the archived ones).
+    List {
+        /// Show archived sessions instead.
+        #[arg(long)]
+        archived: bool,
+    },
+    /// Archive a session: it stops, keeps its history, and does not resume after a restart.
+    Archive { session_id: String },
+    /// Resume an archived session.
+    Unarchive { session_id: String },
+    /// Stop and forget a session so it does not continue after a restart.
+    Delete {
+        session_id: String,
+        /// Also remove the session's git worktrees (their branches are kept).
+        #[arg(long)]
+        remove_worktrees: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum EnvCommand {
+    /// List environments and their folders.
+    List,
+    /// Create an environment, optionally with folders (the first is the working directory).
+    Create { name: String, folders: Vec<PathBuf> },
+    /// Add a folder to an environment.
+    AddFolder {
+        /// Environment name or id.
+        env: String,
+        folder: PathBuf,
+    },
+    /// Remove a folder from an environment (the folder itself is untouched).
+    RemoveFolder {
+        /// Environment name or id.
+        env: String,
+        folder: PathBuf,
+    },
+    /// Rename an environment.
+    Rename {
+        /// Environment name or id.
+        env: String,
+        name: String,
+    },
+    /// Delete an environment (its folders are untouched).
+    Delete {
+        /// Environment name or id.
+        env: String,
+    },
+    /// Choose where an environment's tools run: local, docker, wsl, or ssh. For a remote
+    /// runtime, its folders are paths inside it.
+    SetRuntime {
+        /// Environment name or id.
+        env: String,
+        /// `local`, `docker`, `wsl`, or `ssh`.
+        kind: String,
+        /// docker: the image (each command runs in a fresh container with the folders mounted).
+        #[arg(long)]
+        image: Option<String>,
+        /// docker: a running container to `docker exec` into instead.
+        #[arg(long)]
+        container: Option<String>,
+        /// wsl: the distribution.
+        #[arg(long)]
+        distro: Option<String>,
+        /// ssh: a host alias from your SSH config, or user@host[:port].
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// Check that an environment's runtime can be reached.
+    Test {
+        /// Environment name or id.
+        env: String,
+    },
+    /// Turn an environment's persistent agent session on or off.
+    Agent {
+        /// Environment name or id.
+        env: String,
+        /// `on` or `off`.
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
     },
 }
 
@@ -303,10 +424,45 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Ping => ping(),
         Command::Chat {
+            env,
             project,
             model,
             context,
-        } => chat::run(project, model, context),
+            worktree,
+        } => chat::run(
+            env,
+            project,
+            model,
+            context,
+            worktree.map(|branch| (!branch.is_empty()).then_some(branch)),
+        ),
+        Command::Session { command } => match command {
+            SessionCommand::List { archived } => session::list(archived),
+            SessionCommand::Archive { session_id } => session::set_archived(session_id, true),
+            SessionCommand::Unarchive { session_id } => session::set_archived(session_id, false),
+            SessionCommand::Delete {
+                session_id,
+                remove_worktrees,
+            } => env::delete_session(session_id, remove_worktrees),
+        },
+        Command::Env { command } => match command {
+            EnvCommand::List => env::list(),
+            EnvCommand::Create { name, folders } => env::create(name, folders),
+            EnvCommand::AddFolder { env: id, folder } => env::add_folder(id, folder),
+            EnvCommand::RemoveFolder { env: id, folder } => env::remove_folder(id, folder),
+            EnvCommand::Rename { env: id, name } => env::rename(id, name),
+            EnvCommand::Delete { env: id } => env::delete(id),
+            EnvCommand::SetRuntime {
+                env: id,
+                kind,
+                image,
+                container,
+                distro,
+                host,
+            } => env::set_runtime(id, env::runtime(&kind, image, container, distro, host)?),
+            EnvCommand::Test { env: id } => env::test(id),
+            EnvCommand::Agent { env: id, state } => env::set_agent(id, state == "on"),
+        },
         Command::Config {
             command: ConfigCommand::Explain { key, project },
         } => explain(&key, project),
@@ -318,6 +474,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => delete_secret(&name),
         Command::Models { command } => match command {
             ModelsCommand::Local => local::list(),
+            ModelsCommand::Unload { model } => resources::unload(model),
             ModelsCommand::Files { repo, revision } => pull::files(repo, revision),
             ModelsCommand::Pull {
                 repo,
@@ -337,6 +494,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
         } => local::install_runtime(pack),
+        Command::Resources { watch } => resources::show(watch),
         Command::Phone { command } => match command {
             PhoneCommand::Pair => phone::pair(),
             PhoneCommand::Devices => phone::devices(),
@@ -353,6 +511,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Daemon {
             command: DaemonCommand::Start,
         } => remote::start_daemon(),
+        Command::Daemon {
+            command: DaemonCommand::Stop,
+        } => stop_daemon(),
         Command::Daemon {
             command: DaemonCommand::Endpoint,
         } => remote::print_endpoint(),
@@ -415,6 +576,15 @@ fn ping() -> anyhow::Result<()> {
     })
 }
 
+fn stop_daemon() -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, url) = connect().await?;
+        let stopped = client.call::<Shutdown>(ShutdownParams {}).await?;
+        println!("imperium-core (pid {}) at {url} is stopping", stopped.pid);
+        Ok(())
+    })
+}
+
 /// Runs a future on a single-threaded runtime; the CLI does one thing at a time.
 fn block_on<T>(future: impl std::future::Future<Output = anyhow::Result<T>>) -> anyhow::Result<T> {
     tokio::runtime::Builder::new_current_thread()
@@ -438,7 +608,7 @@ async fn connect() -> anyhow::Result<(Client, String)> {
     };
     let client = Client::connect(&endpoint, me).await.with_context(|| {
         format!(
-            "imperiumd at {} did not answer; it may have stopped without removing {}",
+            "imperium-core at {} did not answer; it may have stopped without removing {}",
             endpoint.url,
             file.display()
         )

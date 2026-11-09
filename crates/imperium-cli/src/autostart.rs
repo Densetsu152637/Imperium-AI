@@ -1,4 +1,4 @@
-//! `imperium daemon autostart`: start `imperiumd` when the user logs in, so schedules, project
+//! `imperium daemon autostart`: start `imperium-core` when the user logs in, so schedules, project
 //! agents, and auto-fix run without the desktop window. Per-user only: a `Run` registry value
 //! on Windows, a LaunchAgent on macOS, an XDG autostart entry on Linux.
 
@@ -10,13 +10,20 @@ use anyhow::{Context, bail};
 const NAME: &str = "Imperium";
 const LABEL: &str = "ai.imperium.daemon";
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+/// The XDG autostart file name the daemon had before it was renamed `imperium-core`. Enabling
+/// replaces it, disabling removes it, and status still counts it. (The Windows registry value
+/// and the macOS LaunchAgent label did not change, so enabling simply rewrites them.)
+const LEGACY_DESKTOP_ENTRY: &str = "imperiumd.desktop";
 
-/// `imperiumd` next to the running `imperium` binary.
+/// `imperium-core` next to the running `imperium` binary.
 fn daemon_path() -> anyhow::Result<PathBuf> {
     let exe = std::env::current_exe().context("could not find the imperium binary")?;
-    let daemon = exe.with_file_name(format!("imperiumd{}", std::env::consts::EXE_SUFFIX));
+    let daemon = exe.with_file_name(format!("imperium-core{}", std::env::consts::EXE_SUFFIX));
     if !daemon.is_file() {
-        bail!("imperiumd is not next to imperium at {}", daemon.display());
+        bail!(
+            "imperium-core is not next to imperium at {}",
+            daemon.display()
+        );
     }
     Ok(daemon)
 }
@@ -60,17 +67,41 @@ fn home() -> anyhow::Result<PathBuf> {
         .context("HOME is not set")
 }
 
+fn xdg_autostart_dir() -> anyhow::Result<PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .map_or_else(|| home().map(|home| home.join(".config")), Ok)?;
+    Ok(config.join("autostart"))
+}
+
 fn entry_file() -> anyhow::Result<PathBuf> {
     Ok(if cfg!(target_os = "macos") {
         home()?
             .join("Library/LaunchAgents")
             .join(format!("{LABEL}.plist"))
     } else {
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .map_or_else(|| home().map(|home| home.join(".config")), Ok)?;
-        config.join("autostart").join("imperiumd.desktop")
+        xdg_autostart_dir()?.join("imperium-core.desktop")
     })
+}
+
+/// The pre-rename autostart entry, on systems that use XDG autostart files.
+fn legacy_entry_file() -> anyhow::Result<Option<PathBuf>> {
+    if cfg!(windows) || cfg!(target_os = "macos") {
+        return Ok(None);
+    }
+    Ok(Some(xdg_autostart_dir()?.join(LEGACY_DESKTOP_ENTRY)))
+}
+
+/// Removes the pre-rename autostart entry; whether there was one.
+fn remove_legacy_entry() -> anyhow::Result<bool> {
+    let Some(file) = legacy_entry_file()? else {
+        return Ok(false);
+    };
+    match std::fs::remove_file(&file) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("could not remove {}", file.display())),
+    }
 }
 
 fn reg(args: &[&str]) -> anyhow::Result<std::process::Output> {
@@ -93,7 +124,7 @@ pub fn enable() -> anyhow::Result<()> {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        println!("imperiumd will start when you log in (registry {RUN_KEY}\\{NAME})");
+        println!("imperium-core will start when you log in (registry {RUN_KEY}\\{NAME})");
         return Ok(());
     }
     let file = entry_file()?;
@@ -108,7 +139,11 @@ pub fn enable() -> anyhow::Result<()> {
     }
     std::fs::write(&file, contents)
         .with_context(|| format!("could not write {}", file.display()))?;
-    println!("imperiumd will start when you log in ({})", file.display());
+    remove_legacy_entry()?;
+    println!(
+        "imperium-core will start when you log in ({})",
+        file.display()
+    );
     Ok(())
 }
 
@@ -118,22 +153,25 @@ pub fn disable() -> anyhow::Result<()> {
         println!(
             "{}",
             if output.status.success() {
-                "imperiumd will no longer start at login"
+                "imperium-core will no longer start at login"
             } else {
-                "imperiumd was not set to start at login"
+                "imperium-core was not set to start at login"
             }
         );
         return Ok(());
     }
     let file = entry_file()?;
-    match std::fs::remove_file(&file) {
-        Ok(()) => println!("imperiumd will no longer start at login"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            println!("imperiumd was not set to start at login");
-        }
+    let removed = match std::fs::remove_file(&file) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => {
             return Err(error).with_context(|| format!("could not remove {}", file.display()));
         }
+    };
+    if remove_legacy_entry()? || removed {
+        println!("imperium-core will no longer start at login");
+    } else {
+        println!("imperium-core was not set to start at login");
     }
     Ok(())
 }
@@ -142,7 +180,7 @@ pub fn status() -> anyhow::Result<()> {
     let enabled = if cfg!(windows) {
         reg(&["query", RUN_KEY, "/v", NAME])?.status.success()
     } else {
-        entry_file()?.is_file()
+        entry_file()?.is_file() || legacy_entry_file()?.is_some_and(|file| file.is_file())
     };
     println!(
         "start at login: {}",
@@ -157,12 +195,12 @@ mod tests {
 
     #[test]
     fn entries_point_at_the_daemon() {
-        let daemon = Path::new("/opt/imperium/imperiumd");
-        assert!(launch_agent(daemon).contains("<string>/opt/imperium/imperiumd</string>"));
-        assert!(desktop_entry(daemon).contains("Exec=\"/opt/imperium/imperiumd\""));
-        let windows = windows_command(Path::new(r"C:\Imperium\imperiumd.exe"));
+        let daemon = Path::new("/opt/imperium/imperium-core");
+        assert!(launch_agent(daemon).contains("<string>/opt/imperium/imperium-core</string>"));
+        assert!(desktop_entry(daemon).contains("Exec=\"/opt/imperium/imperium-core\""));
+        let windows = windows_command(Path::new(r"C:\Imperium\imperium-core.exe"));
         assert!(
-            windows.contains(r"-FilePath 'C:\Imperium\imperiumd.exe'"),
+            windows.contains(r"-FilePath 'C:\Imperium\imperium-core.exe'"),
             "{windows}"
         );
         assert!(windows.contains("-WindowStyle Hidden"));
