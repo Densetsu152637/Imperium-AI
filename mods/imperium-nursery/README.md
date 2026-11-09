@@ -33,7 +33,7 @@ transcript text.
     (any installed pet; the first one is the default, stored as `resident`). It reacts to every
     unarchived session's activity combined (working while any session works, waiting while any
     asks for permission), as the old single pet panel did.
-  - **One pet per unarchived session**, labelled with the session title, with a badge for its
+  - **One pet per unarchived session** (not for persistent agent sessions), labelled with the session title, with a badge for its
     working subagents. It hears all of its session's events, so a subagent that needs you makes
     it show `alert`. A new session's pet pops in; archiving the session makes its pet walk out
     and fade; unarchiving brings it back. The summary line reads "4 sessions, 2 working, 5

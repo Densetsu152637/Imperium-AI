@@ -263,8 +263,9 @@ pub fn start_environment_agents(daemon: &Arc<DaemonState>) {
 }
 
 /// Starts an environment's persistent agent when it is on and not running, and stops it when
-/// it is off (or the environment is gone). A start that fails (no folders yet, no model) is
-/// logged; the next change to the environment tries again.
+/// it is off (or the environment is gone), archiving its session so its history stays listed
+/// with the other archived sessions. A start that fails (no folders yet, no model) is logged;
+/// the next change to the environment tries again.
 pub fn sync_environment_agent(daemon: &Arc<DaemonState>, environment_id: &str) {
     let env = daemon.environments().get(environment_id);
     let wanted = env.as_ref().is_some_and(|env| env.persistent_agent);
@@ -279,7 +280,10 @@ pub fn sync_environment_agent(daemon: &Arc<DaemonState>, environment_id: &str) {
         }
         (false, Some(session)) => {
             daemon.project_agents().forget_environment(environment_id);
-            daemon.forget_session(session.id());
+            if let Err(error) = daemon.archive_retired_agent(session.id()) {
+                tracing::warn!(environment = environment_id, %error, "could not archive the environment agent");
+                daemon.forget_session(session.id());
+            }
             tracing::info!(environment = environment_id, "environment agent stopped");
         }
         _ => {}
@@ -303,14 +307,20 @@ fn start_environment_agent(
         max_sessions: ENVIRONMENT_MAX_SESSIONS,
         max_per_day: ENVIRONMENT_MAX_PER_DAY,
     });
-    // The same session as before when its journal is still there.
+    // The same session as before when its journal is still there and it is not running as an
+    // ordinary session (unarchived by hand); archived when the agent was turned off, it comes
+    // back out of the archive.
     let resume_id = env.agent_session_id.clone().filter(|id| {
         daemon
             .data_dir()
             .join("sessions")
             .join(format!("{id}.jsonl"))
             .is_file()
+            && daemon.session(id).is_none()
     });
+    if let Some(id) = &resume_id {
+        daemon.reclaim_archived(id);
+    }
     let model = resume_id.as_ref().and_then(|id| {
         imperium_engine::journalled_model(
             &daemon

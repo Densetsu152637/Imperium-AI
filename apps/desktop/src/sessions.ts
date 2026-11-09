@@ -495,6 +495,7 @@ export function snapshotSessions(sessions: SessionState[], environments: Environ
       status: session.status,
       environmentId: session.summary.environment_id,
       archived: session.summary.archived,
+      persistent: session.summary.persistent,
       pet: environments.find((env) => env.id === session.summary.environment_id)?.pet ?? null,
       createdAt: session.summary.created_at ?? null,
       agents,

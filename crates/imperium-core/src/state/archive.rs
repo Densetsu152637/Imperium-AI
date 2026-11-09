@@ -130,10 +130,41 @@ impl DaemonState {
     /// Archives a running session: records it, stops it, and tells every client. Archiving an
     /// archived session changes nothing.
     pub fn archive(&self, id: &str) -> Result<SessionSummary, ArchiveError> {
-        self.archive_at(id, SystemTime::now())
+        self.archive_at(id, SystemTime::now(), false)
     }
 
-    fn archive_at(&self, id: &str, now: SystemTime) -> Result<SessionSummary, ArchiveError> {
+    /// Archives an environment's persistent agent session that was turned off, so it keeps its
+    /// history like any other session. Turning the agent back on takes it out of the archive.
+    pub fn archive_retired_agent(&self, id: &str) -> Result<SessionSummary, ArchiveError> {
+        self.archive_at(id, SystemTime::now(), true)
+    }
+
+    /// Takes an archived session out of the archive without resuming it, for a persistent agent
+    /// that is turned back on and resumes it itself. False when it was not archived.
+    pub fn reclaim_archived(&self, id: &str) -> bool {
+        if self.take_archived(id).is_none() {
+            return false;
+        }
+        let path = self.meta_path(id);
+        if let Some(mut meta) = read_meta(&path) {
+            if let Some(fields) = meta.as_object_mut() {
+                for key in ["archived", "archived_at", "status", "status_detail"] {
+                    fields.remove(key);
+                }
+            }
+            if let Err(error) = std::fs::write(&path, meta.to_string()) {
+                tracing::warn!(session = %id, %error, "could not unarchive the session's metadata");
+            }
+        }
+        true
+    }
+
+    fn archive_at(
+        &self,
+        id: &str,
+        now: SystemTime,
+        retired_agent: bool,
+    ) -> Result<SessionSummary, ArchiveError> {
         if let Some(summary) = self.archived_map().get(id) {
             return Ok(summary.clone());
         }
@@ -141,7 +172,7 @@ impl DaemonState {
             .session(id)
             .ok_or_else(|| ArchiveError::NotFound(id.to_string()))?;
         let placement = self.placement(id);
-        if placement.persistent || placement.project_agent {
+        if !retired_agent && (placement.persistent || placement.project_agent) {
             return Err(ArchiveError::Persistent(id.to_string()));
         }
         let mut summary = self.summary(&session);
@@ -275,7 +306,7 @@ impl DaemonState {
             let idle = now.duration_since(last).unwrap_or_default() >= idle_for;
             if idle
                 && self.may_archive(&session, true)
-                && self.archive_at(session.id(), now).is_ok()
+                && self.archive_at(session.id(), now, false).is_ok()
             {
                 archived.push(session.id().to_string());
             }
