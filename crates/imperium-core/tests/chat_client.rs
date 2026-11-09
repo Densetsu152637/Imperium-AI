@@ -40,6 +40,7 @@ impl ChatClient for Scripted {
                     completion_tokens: 4,
                     cached_tokens: 0,
                 }),
+                first_token: None,
             })
         })
     }

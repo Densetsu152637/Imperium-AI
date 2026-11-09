@@ -320,7 +320,12 @@ impl Agent {
             total.prompt_tokens += usage.prompt_tokens;
             total.completion_tokens += usage.completion_tokens;
             total.cached_tokens += usage.cached_tokens;
-            self.emit(self.call_telemetry(&usage, started, first_text, queue_wait));
+            // A thinking model's reasoning streams before any reply text; the client marks it.
+            let first_token = match (completion.first_token, first_text) {
+                (Some(marked), Some(text)) => Some(marked.min(text)),
+                (marked, text) => marked.or(text),
+            };
+            self.emit(self.call_telemetry(&usage, started, first_token, queue_wait));
             // What this call read: the messages before its reply is appended, and the tools.
             let breakdown = self
                 .shared
@@ -726,23 +731,18 @@ impl Agent {
         &self,
         usage: &Usage,
         started: Instant,
-        first_text: Option<Instant>,
+        first_token: Option<Instant>,
         queue_wait: Option<std::time::Duration>,
     ) -> SessionEvent {
         let duration = started.elapsed();
-        // Generation speed after the first token, unless the endpoint delivered everything at
-        // once (a buffered response), where only the whole call's duration is meaningful.
-        let after_first = first_text.map(|first| first.elapsed());
-        let generating = after_first
-            .filter(|window| window.as_millis() >= 100)
-            .unwrap_or(duration);
-        let tokens_per_sec = (usage.completion_tokens > 0 && !generating.is_zero())
-            .then(|| usage.completion_tokens as f64 / generating.as_secs_f64());
+        let (tokens_per_sec, measured) = generation_speed(
+            usage.completion_tokens,
+            duration,
+            first_token.map(|first| first.elapsed()),
+        );
         // The local runtime keeps the measured speed per model, which routing and the model
-        // listing report. A reply that streamed no text (a tool call alone) has no generation
-        // window to measure: its time is mostly reading the prompt.
-        if tokens_per_sec.is_some()
-            && first_text.is_some()
+        // listing report; only a real generation window goes into it.
+        if let Some(generating) = measured
             && let Some(local) = self.local_models()
         {
             local.record_throughput(&self.model.model, usage.completion_tokens, generating);
@@ -752,7 +752,7 @@ impl Agent {
             usage: token_usage(usage),
             duration_ms: millis(duration),
             queue_wait_ms: queue_wait.map(millis),
-            time_to_first_token_ms: first_text.map(|first| millis(first - started)),
+            time_to_first_token_ms: first_token.map(|first| millis(first - started)),
             tokens_per_sec,
             cost_usd: self.cost(usage),
         }
@@ -1195,6 +1195,26 @@ fn token_usage(usage: &Usage) -> TokenUsage {
     }
 }
 
+/// A call's generation speed in tokens/s for its event, and the generation window to record as
+/// the model's measured speed. The window runs from the first generated token (reasoning or
+/// text) to the end. When it is under 100 ms, or nothing streamed (a tool call alone), the
+/// event's speed falls back to the whole call's duration, prompt reading included; that is
+/// shown but not recorded, since a short reply after a long prompt would understate the model.
+fn generation_speed(
+    completion_tokens: u64,
+    duration: std::time::Duration,
+    after_first: Option<std::time::Duration>,
+) -> (Option<f64>, Option<std::time::Duration>) {
+    let measured = after_first.filter(|window| window.as_millis() >= 100);
+    let generating = measured.unwrap_or(duration);
+    let tokens_per_sec = (completion_tokens > 0 && !generating.is_zero())
+        .then(|| completion_tokens as f64 / generating.as_secs_f64());
+    (
+        tokens_per_sec,
+        measured.filter(|_| tokens_per_sec.is_some()),
+    )
+}
+
 fn millis(duration: std::time::Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
@@ -1216,4 +1236,29 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
         },
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn a_streamed_window_is_shown_and_recorded() {
+        let (shown, recorded) =
+            generation_speed(40, Duration::from_secs(5), Some(Duration::from_secs(2)));
+        assert_eq!(shown, Some(20.0));
+        assert_eq!(recorded, Some(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_short_reply_is_shown_over_the_whole_call_but_not_recorded() {
+        let (shown, recorded) =
+            generation_speed(2, Duration::from_secs(10), Some(Duration::from_millis(50)));
+        assert_eq!(shown, Some(0.2));
+        assert_eq!(recorded, None);
+        let (shown, recorded) = generation_speed(30, Duration::from_secs(3), None);
+        assert_eq!(shown, Some(10.0));
+        assert_eq!(recorded, None);
+    }
 }

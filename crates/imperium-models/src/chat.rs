@@ -1,4 +1,5 @@
 use std::fmt;
+use std::time::Instant;
 
 use futures_util::StreamExt;
 use imperium_api::{ChatMessage, FunctionCall, ToolCall, ToolSpec, Usage};
@@ -42,6 +43,10 @@ pub struct Completion {
     pub tool_calls: Vec<ToolCall>,
     /// Absent when the endpoint does not report usage for streamed responses.
     pub usage: Option<Usage>,
+    /// When the first generated text arrived, answer or reasoning. A thinking model streams
+    /// its reasoning before the answer and counts it in `completion_tokens`, so generation
+    /// speed is measured from here; the reasoning itself is not kept.
+    pub first_token: Option<Instant>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -214,6 +219,12 @@ struct StreamChoice {
 struct Delta {
     #[serde(default)]
     content: Option<String>,
+    /// A thinking model's reasoning: llama.cpp sends `reasoning_content` (b12180,
+    /// `server_chat_msg_diff_to_json_oaicompat`); some OpenAI-compatible services `reasoning`.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Vec<ToolCallDelta>,
 }
@@ -262,6 +273,7 @@ struct Assembler {
     text: String,
     tool_calls: Vec<ToolCall>,
     usage: Option<Usage>,
+    first_token: Option<Instant>,
 }
 
 impl Assembler {
@@ -277,6 +289,14 @@ impl Assembler {
             });
         }
         let delta = chunk.choices.into_iter().next()?.delta;
+        let generated =
+            |text: &Option<String>| text.as_deref().is_some_and(|text| !text.is_empty());
+        if generated(&delta.content)
+            || generated(&delta.reasoning_content)
+            || generated(&delta.reasoning)
+        {
+            self.first_token.get_or_insert_with(Instant::now);
+        }
         for fragment in delta.tool_calls {
             while self.tool_calls.len() <= fragment.index {
                 self.tool_calls.push(ToolCall {
@@ -311,6 +331,7 @@ impl Assembler {
             text: self.text,
             tool_calls: self.tool_calls,
             usage: self.usage,
+            first_token: self.first_token,
         }
     }
 }
@@ -381,6 +402,44 @@ mod tests {
                 cached_tokens: 4
             })
         );
+    }
+
+    #[tokio::test]
+    async fn reasoning_marks_the_first_token_without_becoming_reply_text() {
+        let endpoint = fake_endpoint(concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Let me think\"}}]}
+
+",
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\" more\"}}]}
+
+",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":40}}
+
+",
+            "data: [DONE]
+
+",
+        ))
+        .await;
+
+        let mut streamed = String::new();
+        let before = Instant::now();
+        let completion = stream_chat(
+            &reqwest::Client::new(),
+            &endpoint,
+            ChatRequest {
+                model: "m",
+                messages: &[],
+                tools: &[],
+                slot: None,
+            },
+            |text| streamed.push_str(text),
+        )
+        .await
+        .unwrap();
+
+        assert!(streamed.is_empty() && completion.text.is_empty());
+        assert!(completion.first_token.is_some_and(|first| first >= before));
     }
 
     #[tokio::test]

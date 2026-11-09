@@ -1669,6 +1669,12 @@ mod tests {
         let lane_args = lane.args().join(" ");
         assert!(lane_args.contains("--n-gpu-layers 0"), "{lane_args}");
         assert!(lane_args.contains("--device none"), "{lane_args}");
+        // The lane's projector stays off the GPU too; a GPU row's is offloaded as usual.
+        assert!(
+            lane_args.contains("--mmproj proj.gguf --no-mmproj-offload"),
+            "{lane_args}"
+        );
+        assert!(!args.contains("--no-mmproj-offload"), "{args}");
         assert!(args.contains("--cache-type-k q8_0"), "{args}");
         assert!(args.contains("--cache-ram 2048"), "{args}");
         assert!(args.contains("--slot-save-path slots"), "{args}");

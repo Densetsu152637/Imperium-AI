@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
+use futures_util::StreamExt;
 use imperium_config::{LlamaCppSettings, Location, Preference, RoutingSettings, Tier};
 use imperium_core::{CatalogModel, LocalModels, ResolvedModel, Session, SessionConfig};
 use imperium_local::gguf::GgufInfo;
@@ -31,6 +32,25 @@ fn text(text: &str) -> String {
     sse(serde_json::json!({"choices":[{"delta":{"content":text}}]}))
 }
 
+/// A reply whose text is generated over 150 ms, as a real server streams it: the first token,
+/// then the rest. A call that streams for under 100 ms is not recorded as the model's speed.
+fn generated(first: &str, rest: &str) -> axum::body::Body {
+    let first = format!(
+        "data: {}
+
+",
+        serde_json::json!({"choices":[{"delta":{"content":first}}]})
+    );
+    let rest = text(rest);
+    let parts =
+        futures_util::stream::iter([(first, Duration::ZERO), (rest, Duration::from_millis(150))])
+            .then(|(part, pause)| async move {
+                tokio::time::sleep(pause).await;
+                Ok::<_, std::convert::Infallible>(part)
+            });
+    axum::body::Body::from_stream(parts)
+}
+
 fn tool(name: &str, arguments: &str) -> String {
     sse(serde_json::json!({"choices":[{"delta":{"tool_calls":[{
         "index":0,"id":"c","function":{"name":name,"arguments":arguments}}]}}]}))
@@ -49,13 +69,13 @@ async fn serve(root_script: bool, sub_calls: Arc<AtomicUsize>) -> String {
                 let system = body["messages"][0]["content"].as_str().unwrap_or_default();
                 let body = if !root_script || system.contains("subagent") {
                     sub_calls.fetch_add(1, Ordering::SeqCst);
-                    text("report")
+                    generated("re", "port")
                 } else {
-                    match root_calls.fetch_add(1, Ordering::SeqCst) {
+                    axum::body::Body::from(match root_calls.fetch_add(1, Ordering::SeqCst) {
                         0 | 2 => tool("spawn_agent", r#"{"brief":"summarise the docs"}"#),
                         1 | 3 => tool("await_tasks", "{}"),
                         _ => text("All done."),
-                    }
+                    })
                 };
                 ([("content-type", "text/event-stream")], body)
             }
