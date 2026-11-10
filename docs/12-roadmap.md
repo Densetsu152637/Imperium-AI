@@ -134,6 +134,9 @@ the wait reason in the desktop.
     - use tools and delegate rather than pasting code at the user;
     - few emojis, and plain explanations instead of many tables;
     - search for information rather than relying on what was learned in training.
+20. **Free scroll while streaming.** Scrolling up while an agent is writing stops following
+    the output and keeps the user's place; a *Jump to latest* button (and scrolling back to
+    the bottom) resumes following the newest text.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
