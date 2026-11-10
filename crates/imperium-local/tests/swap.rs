@@ -141,6 +141,13 @@ impl Server for FakeServer {
         })
     }
 
+    fn erase_slot(&self, slot: u32) -> SlotFuture<'_> {
+        Box::pin(async move {
+            self.log.push(format!("erase {} {slot}", self.model));
+            Ok(SlotTransfer::default())
+        })
+    }
+
     /// Takes a moment to exit, so a launch that does not wait for it would come first.
     fn stop(&self) -> StopFuture<'_> {
         Box::pin(async move {
@@ -261,6 +268,11 @@ fn settings() -> LlamaCppSettings {
 
 /// A 10 GiB GPU and no spare RAM: one of the two 6 GiB models at a time.
 fn start(settings: LlamaCppSettings) -> (Arc<Supervisor>, Arc<Log>) {
+    start_with_ram(settings, 0)
+}
+
+/// A 10 GiB GPU and `ram_gib` of spare RAM, so a model can also run partly on the CPU.
+fn start_with_ram(settings: LlamaCppSettings, ram_gib: u64) -> (Arc<Supervisor>, Arc<Log>) {
     let log = Arc::new(Log::default());
     let slots = tempfile::tempdir().unwrap();
     log.dir.set(slots.path().to_path_buf()).unwrap();
@@ -276,8 +288,8 @@ fn start(settings: LlamaCppSettings) -> (Arc<Supervisor>, Arc<Log>) {
             vram_free_bytes: 10 * GIB,
             driver: None,
         }],
-        ram_total_bytes: 0,
-        ram_available_bytes: 0,
+        ram_total_bytes: ram_gib * GIB,
+        ram_available_bytes: ram_gib * GIB,
         cpu_cores: 8,
         unified_memory: false,
         overridden: true,
@@ -929,4 +941,223 @@ async fn swap_restores_a_saved_slot_only_into_its_own_agent() {
     );
     assert_eq!(log.file("save emperor"), log.file("restore emperor"));
     assert_eq!(log.files(), Vec::<String>::new());
+}
+
+/// Waits until the log has `step`, for work done in the background.
+async fn logged(log: &Log, step: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !log.steps().iter().any(|done| done == step) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no {step:?} in {:?}", log.steps()));
+}
+
+fn quick() -> LlamaCppSettings {
+    LlamaCppSettings {
+        min_residency_s: 0,
+        ..settings()
+    }
+}
+
+#[tokio::test]
+async fn a_waiting_root_gives_its_kv_cells_to_its_subagents_on_the_same_model() {
+    // Slots enough for the root and its three subagents: what they share is the KV pool.
+    let (supervisor, log) = start(LlamaCppSettings {
+        slots: Some(4),
+        ..quick()
+    });
+    let root = "s/root";
+    let turn = supervisor.attach("emperor", root);
+    let (_, slot) = call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert_eq!(slot, Some(0));
+    // The root waits for three subagents on its own model: the first of them to take a slot
+    // has the root's prompt saved and its cells freed.
+    let waiting = supervisor.waiting("emperor", root);
+    let subagents: Vec<_> = (1..=3)
+        .map(|n| {
+            let (supervisor, log) = (Arc::clone(&supervisor), Arc::clone(&log));
+            tokio::spawn(async move {
+                let holder = format!("s/t{n}");
+                call(
+                    &supervisor,
+                    &log,
+                    "emperor",
+                    &holder,
+                    Duration::from_millis(20),
+                )
+                .await
+            })
+        })
+        .collect();
+    logged(&log, "erase emperor 0").await;
+    for subagent in subagents {
+        subagent.await.unwrap();
+    }
+    assert!(supervisor.suspended(root));
+    let steps = log.steps();
+    let saved = steps.iter().position(|s| s == "save emperor 0").unwrap();
+    let erased = steps.iter().position(|s| s == "erase emperor 0").unwrap();
+    assert!(saved < erased, "{steps:?}");
+    // Woken (its subagents are done, or a steer): its prompt is restored before its call.
+    drop(waiting);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert!(
+        log.steps().iter().any(|s| s.starts_with("restore emperor")),
+        "{:?}",
+        log.steps()
+    );
+    assert!(!supervisor.suspended(root));
+    assert_eq!(log.files(), Vec::<String>::new());
+    drop(turn);
+}
+
+#[tokio::test]
+async fn a_subagent_swaps_its_waiting_root_out_rather_than_run_on_the_cpu() {
+    // With RAM to spare the worker could run beside the emperor, part of it on the CPU; the
+    // root on the emperor only waits for it, so the emperor gives way.
+    let (supervisor, log) = start_with_ram(quick(), 32);
+    let root = "s/root";
+    let _turn = supervisor.attach("emperor", root);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    let waiting = supervisor.waiting("emperor", root);
+    let lease = supervisor.acquire("worker", "s/t1").await.unwrap();
+    let loaded = supervisor.loaded();
+    assert_eq!(loaded.len(), 1, "{loaded:?}");
+    assert_eq!(loaded[0].model_id, "worker");
+    assert!(loaded[0].all_layers_on_gpu);
+    assert_eq!(
+        log.steps()[1..4],
+        ["save emperor 0", "stop emperor", "launch worker"]
+    );
+    drop(lease);
+    // The root comes back with its prompt restored, ahead of the idle subagent's model.
+    drop(waiting);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert!(log.steps().contains(&"restore emperor 0".to_string()));
+    assert_eq!(supervisor.loaded()[0].model_id, "emperor");
+}
+
+#[tokio::test]
+async fn a_call_runs_on_the_cpu_only_beside_a_generating_agent_and_moves_to_the_gpu_after() {
+    let (supervisor, _log) = start_with_ram(quick(), 32);
+    let mut swaps = supervisor.swap_events();
+    // Another session generates on the emperor: the worker may run beside it, partly on the
+    // CPU, rather than wait.
+    let generating = supervisor.acquire("emperor", "a/root").await.unwrap();
+    let lease = supervisor.acquire("worker", "b/root").await.unwrap();
+    let worker = |supervisor: &Supervisor| {
+        supervisor
+            .loaded()
+            .into_iter()
+            .find(|m| m.model_id == "worker")
+            .unwrap()
+    };
+    assert!(!worker(&supervisor).all_layers_on_gpu);
+    assert_eq!(supervisor.loaded().len(), 2);
+    drop(lease);
+    drop(generating);
+    // The GPU went idle: at its next call the worker is placed on the GPU (the idle emperor
+    // gives way) instead of running on the CPU alone.
+    let lease = tokio::time::timeout(
+        Duration::from_secs(5),
+        supervisor.acquire("worker", "b/root"),
+    )
+    .await
+    .expect("the worker moves to the GPU")
+    .unwrap();
+    assert!(worker(&supervisor).all_layers_on_gpu);
+    assert_eq!(supervisor.loaded().len(), 1);
+    let mut reasons = Vec::new();
+    while let Ok(event) = swaps.try_recv() {
+        reasons.push((event.model_id, event.reason));
+    }
+    assert!(
+        reasons.contains(&("worker".to_string(), "promote")),
+        "{reasons:?}"
+    );
+    drop(lease);
+}
+
+#[tokio::test]
+async fn the_critic_gets_the_gpu_while_its_session_waits_on_it_and_nobody_else_works() {
+    let (supervisor, log) = start_with_ram(quick(), 32);
+    supervisor.set_cpu_pinned(HashMap::from([(
+        "helper".to_string(),
+        imperium_local::supervisor::CpuLane::default(),
+    )]));
+    let root = "s/root";
+    let _turn = supervisor.attach("emperor", root);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    // The root waits for the critic's review and no other session works: the emperor is
+    // swapped out (its slot saved) and the critic runs on the GPU.
+    let waiting = supervisor.waiting("emperor", root);
+    let review = supervisor.acquire("helper", "s/critic").await.unwrap();
+    let loaded = supervisor.loaded();
+    assert_eq!(loaded.len(), 1, "{loaded:?}");
+    assert_eq!(loaded[0].model_id, "helper");
+    assert!(!loaded[0].cpu_pinned && loaded[0].all_layers_on_gpu);
+    assert!(log.steps().contains(&"save emperor 0".to_string()));
+    drop(review);
+    // The root resumes with its prompt restored.
+    drop(waiting);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert!(log.steps().contains(&"restore emperor 0".to_string()));
+}
+
+#[tokio::test]
+async fn the_critic_stays_on_the_cpu_lane_while_another_session_works() {
+    let (supervisor, log) = start_with_ram(quick(), 32);
+    supervisor.set_cpu_pinned(HashMap::from([(
+        "helper".to_string(),
+        imperium_local::supervisor::CpuLane::default(),
+    )]));
+    let root = "s/root";
+    let _turn = supervisor.attach("emperor", root);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    let _waiting = supervisor.waiting("emperor", root);
+    // Another session is mid-turn on the worker.
+    let _other = supervisor.attach("worker", "other/root");
+    let review = supervisor.acquire("helper", "s/critic").await.unwrap();
+    let helper = supervisor
+        .loaded()
+        .into_iter()
+        .find(|m| m.model_id == "helper")
+        .unwrap();
+    assert!(helper.cpu_pinned);
+    assert_eq!(helper.gpu_layers, 0);
+    assert!(
+        supervisor.loaded().iter().any(|m| m.model_id == "emperor"),
+        "the emperor stays"
+    );
+    drop(review);
+}
+
+#[tokio::test]
+async fn a_stopped_agents_slot_is_released_at_once_and_comes_back_on_resume() {
+    let (supervisor, log) = start(quick());
+    let root = "s/root";
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    // The session is stopped: the engine suspends the agent's slot explicitly.
+    let stopped = supervisor.waiting("emperor", root);
+    LocalModels::suspend(supervisor.as_ref(), "emperor", root).await;
+    assert!(supervisor.suspended(root));
+    assert_eq!(log.steps()[1..], ["save emperor 0", "erase emperor 0"]);
+    // Resumed: the engine's near-empty call restores it before the agent goes on.
+    drop(stopped);
+    let lease = supervisor
+        .acquire_with(
+            "emperor",
+            root,
+            imperium_api::LocalRequest {
+                prompt_tokens: Some(0),
+                ..imperium_api::LocalRequest::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(log.steps().contains(&"restore emperor 0".to_string()));
+    assert!(!supervisor.suspended(root));
+    drop(lease);
 }

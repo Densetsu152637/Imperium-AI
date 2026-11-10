@@ -3,9 +3,15 @@
 //! servers.
 //!
 //! - A model with a slot in use, or a call queued for one, is never swapped out ([`Use::Busy`]).
+//! - The GPU rule: no call runs (partly) on the CPU while nothing generates. When the newcomer
+//!   would run partly on the CPU beside the loaded models and no model has a call running
+//!   ([`Resident::generating`]), every model not generating (and not protected for the user)
+//!   gives way, mid-turn agents included and past `min_residency` and the swaps of the
+//!   minute. While another agent generates, a call may run beside it on the CPU.
 //! - A model whose agents are all waiting for subagents, or done, is swapped out when the
-//!   newcomer does not fit beside it, or gets `swap_gain` times the GPU memory once the model is
-//!   gone that it would get beside it ([`Use::Free`]). Otherwise the newcomer loads beside it.
+//!   newcomer does not fit beside it, would get more of its layers on the GPU once the model is
+//!   gone, or `swap_gain` times the GPU memory ([`Use::Free`]). Otherwise the newcomer loads
+//!   beside it.
 //! - A model with an agent mid-turn on it ([`Use::Claimed`]) is expected back soon: the newcomer
 //!   waits for that agent to finish or start waiting, up to `min_residency`. After that it loads
 //!   beside the model if it can, and swaps it out only when nothing else fits and the model has
@@ -43,6 +49,10 @@ pub(crate) struct Resident {
     /// The part of `ram_bytes` that is its prompt cache.
     pub cache_bytes: u64,
     pub use_: Use,
+    /// A call is running on it now (a slot is in use): an agent is generating.
+    pub generating: bool,
+    /// The user used it lately and the newcomer is background work: it never gives way.
+    pub protected: bool,
     /// Pinned to the CPU lane: it holds RAM only, and is evicted after every other candidate.
     pub cpu_pinned: bool,
     /// Time since it was loaded.
@@ -121,10 +131,28 @@ pub(crate) fn decide(
     if policy.may_swap() && worth_swapping(&best_now, &beside, policy.gain) {
         return evict_fewest(&place, budget, residents, &free, &best_now);
     }
+    // Nothing generates anywhere: no call may run on the CPU while the GPU is idle. When the
+    // newcomer would run (partly) on the CPU beside the loaded models, everything not
+    // generating gives way (agents mid-turn between calls included; their slots are saved),
+    // past `min_residency` and the swaps of this minute, so it gets the most GPU layers it can.
+    // A newcomer that does not fit beside them at all follows the usual rules below.
+    let generating = residents.iter().any(|r| r.generating);
+    let yieldable = candidates(residents, |r| !r.generating && !r.protected);
+    if !generating && policy.swaps != Swaps::Off && beside.is_some() {
+        let most = place(left_after(budget, residents, &yieldable));
+        if better(&most, &beside) {
+            return evict_fewest(&place, budget, residents, &yieldable, &most);
+        }
+    }
     let aged = waited >= policy.min_residency;
     let idle = candidates(residents, |r| r.use_ != Use::Busy);
     let settled = place(left_after(budget, residents, &idle));
-    if policy.may_swap() && !aged && worth_swapping(&settled, &beside, policy.gain) {
+    // While another agent generates, a call may run beside it on the CPU rather than wait.
+    if policy.may_swap()
+        && !aged
+        && worth_swapping(&settled, &beside, policy.gain)
+        && (beside.is_none() || !generating)
+    {
         // An agent mid-turn, such as an orchestrator about to wait for this subagent, holds a
         // model that is in the way; it is usually moments from letting go.
         return Decision::Wait;
@@ -203,6 +231,12 @@ pub(crate) fn cache_room(
     room
 }
 
+/// The budget left once every resident not generating (and not protected) has given way.
+pub(crate) fn room_after_yield(budget: Budget, residents: &[Resident]) -> Budget {
+    let yieldable = candidates(residents, |r| !r.generating && !r.protected);
+    left_after(budget, residents, &yieldable)
+}
+
 /// Residents matching `keep`, the longest idle first.
 fn candidates(residents: &[Resident], keep: impl Fn(&Resident) -> bool) -> Vec<&Resident> {
     let mut chosen: Vec<&Resident> = residents.iter().filter(|r| keep(r)).collect();
@@ -257,10 +291,13 @@ fn evict_fewest(
 }
 
 /// Whether swapping models out to reach `gain` is worth it over `base`: the model does not fit
-/// otherwise, or gets more than `factor` times the GPU memory (with 1, any more at all).
+/// otherwise, gets more of its layers on the GPU (a newcomer never runs on the CPU for want of
+/// what a model nobody uses holds), or gets more than `factor` times the GPU memory (with 1,
+/// any more at all).
 fn worth_swapping(gain: &Option<Placement>, base: &Option<Placement>, factor: f64) -> bool {
     match (gain, base) {
         (Some(_), None) => true,
+        (Some(gain), Some(base)) if gain.gpu_layers > base.gpu_layers => true,
         (Some(gain), Some(base)) => (base.vram_bytes as f64) * factor < gain.vram_bytes as f64,
         (None, _) => false,
     }
@@ -307,6 +344,9 @@ mod tests {
             ram_bytes: 0,
             cache_bytes: 0,
             use_,
+            // A busy model has a call running unless a test says otherwise.
+            generating: use_ == Use::Busy,
+            protected: false,
             cpu_pinned: false,
             resident_for: Duration::from_secs(60),
             idle_for: Duration::from_secs(5),
@@ -351,21 +391,18 @@ mod tests {
     }
 
     #[test]
-    fn a_model_nobody_is_working_on_stays_when_the_newcomer_fits_beside_it_well_enough() {
-        // Beside a 5 GiB model the newcomer keeps most of its layers on the GPU.
-        let residents = [resident("small", Use::Free, 5)];
+    fn a_model_nobody_is_working_on_stays_only_while_the_newcomer_fits_beside_it_on_the_gpu() {
+        // Beside a 3 GiB model the newcomer has every layer on the GPU: nothing moves.
+        let residents = [resident("small", Use::Free, 3)];
         let decision = decide(six_gib, budget(), &residents, Duration::ZERO, policy());
         assert_eq!(evicted(&decision), Some(Vec::new()));
         assert_eq!(
             outlook(six_gib, budget(), &residents, policy()),
             Outlook::Fits
         );
-        // With a gain of 1, any more GPU memory alone is worth the swap.
-        let eager = Policy {
-            gain: 1.0,
-            ..policy()
-        };
-        let decision = decide(six_gib, budget(), &residents, Duration::ZERO, eager);
+        // Beside a 5 GiB one some of its layers would run on the CPU: the idle model goes.
+        let residents = [resident("small", Use::Free, 5)];
+        let decision = decide(six_gib, budget(), &residents, Duration::ZERO, policy());
         assert_eq!(evicted(&decision), Some(vec!["small".into()]));
     }
 
@@ -387,23 +424,49 @@ mod tests {
         );
     }
 
+    /// A 1 GiB model with a call running on it.
+    fn generator() -> Resident {
+        resident("generator", Use::Busy, 1)
+    }
+
     #[test]
-    fn a_model_mid_turn_is_waited_for_then_kept_when_the_newcomer_fits_beside_it() {
-        let residents = [resident("orchestrator", Use::Claimed, 8)];
-        assert_eq!(
-            decide(six_gib, budget(), &residents, Duration::ZERO, policy()),
-            Decision::Wait,
-            "the orchestrator is moments from waiting"
-        );
-        // Once the newcomer has waited long, it loads beside the model, partly in RAM.
-        let aged = decide(
+    fn with_the_gpu_idle_nothing_runs_on_the_cpu_and_a_waiting_root_gives_way() {
+        // The orchestrator is mid-turn between calls (or waiting on this very subagent) and
+        // nothing generates: the subagent does not run partly on the CPU, it swaps the
+        // orchestrator out at once, whatever its residency.
+        let mut orchestrator = resident("orchestrator", Use::Claimed, 8);
+        orchestrator.resident_for = Duration::ZERO;
+        let decision = decide(
             six_gib,
             budget(),
-            &residents,
-            Duration::from_secs(30),
+            &[orchestrator.clone()],
+            Duration::ZERO,
             policy(),
         );
-        assert_eq!(evicted(&aged), Some(Vec::new()));
+        assert_eq!(evicted(&decision), Some(vec!["orchestrator".into()]));
+        let Decision::Load { placement, .. } = decision else {
+            unreachable!()
+        };
+        assert!(placement.all_layers_on_gpu);
+        // Even when the swaps of this minute are spent.
+        let spent = Policy {
+            swaps: Swaps::Spent,
+            ..policy()
+        };
+        let decision = decide(six_gib, budget(), &[orchestrator], Duration::ZERO, spent);
+        assert_eq!(evicted(&decision), Some(vec!["orchestrator".into()]));
+    }
+
+    #[test]
+    fn while_another_agent_generates_a_call_may_run_on_the_cpu_beside_it() {
+        let residents = [resident("orchestrator", Use::Claimed, 8), generator()];
+        // With the GPU busy, the newcomer loads beside both, partly in RAM, rather than wait.
+        let decision = decide(six_gib, budget(), &residents, Duration::ZERO, policy());
+        assert_eq!(evicted(&decision), Some(Vec::new()));
+        let Decision::Load { placement, .. } = decision else {
+            unreachable!()
+        };
+        assert!(!placement.all_layers_on_gpu);
         assert_eq!(
             outlook(six_gib, budget(), &residents, policy()),
             Outlook::Swap
@@ -412,6 +475,7 @@ mod tests {
 
     #[test]
     fn a_model_mid_turn_is_swapped_out_only_when_nothing_else_fits_and_after_its_residency() {
+        // Another agent generates, so the GPU rule does not apply and the usual one does.
         let no_ram = Budget {
             ram_bytes: 0,
             ..budget()
@@ -420,13 +484,53 @@ mod tests {
         claimed.resident_for = Duration::from_secs(10);
         let aged = Duration::from_secs(40);
         assert_eq!(
-            decide(six_gib, no_ram, &[claimed.clone()], aged, policy()),
+            decide(
+                six_gib,
+                no_ram,
+                &[claimed.clone(), generator()],
+                aged,
+                policy()
+            ),
             Decision::Wait,
             "loaded too recently"
         );
         claimed.resident_for = Duration::from_secs(30);
-        let decision = decide(six_gib, no_ram, &[claimed], aged, policy());
+        let decision = decide(six_gib, no_ram, &[claimed, generator()], aged, policy());
         assert_eq!(evicted(&decision), Some(vec!["other".into()]));
+    }
+
+    #[test]
+    fn a_model_too_big_for_an_empty_gpu_still_offloads_part_of_its_layers() {
+        // 14 GiB of weights on a 10 GiB GPU: partial offload is the best there is, so it is
+        // allowed even with the GPU idle; an idle model in the way still gives way.
+        let big = |budget: Budget| {
+            place(
+                Footprint {
+                    weights_bytes: 14 * GIB,
+                    kv_bytes: GIB / 2,
+                    layers: Some(32),
+                    max_gpu_layers: None,
+                },
+                budget,
+            )
+        };
+        let roomy = Budget {
+            ram_bytes: 32 * GIB,
+            ..budget()
+        };
+        let decision = decide(big, roomy, &[], Duration::ZERO, policy());
+        let Decision::Load { placement, .. } = decision else {
+            panic!("{decision:?}")
+        };
+        assert!(!placement.all_layers_on_gpu && placement.gpu_layers > 0);
+        let decision = decide(
+            big,
+            roomy,
+            &[resident("idle", Use::Free, 4)],
+            Duration::ZERO,
+            policy(),
+        );
+        assert_eq!(evicted(&decision), Some(vec!["idle".into()]));
     }
 
     #[test]
@@ -435,7 +539,8 @@ mod tests {
             swaps: Swaps::Spent,
             ..policy()
         };
-        let residents = [resident("orchestrator", Use::Free, 8)];
+        // Another agent generates, so the newcomer may run beside the idle model on the CPU.
+        let residents = [resident("orchestrator", Use::Free, 8), generator()];
         assert_eq!(
             evicted(&decide(
                 six_gib,

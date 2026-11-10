@@ -14,7 +14,7 @@ pub use chat::{ChatMessage, FunctionCall, ToolCall, ToolSpec, Usage};
 pub use load::{Load, LoadView};
 pub use local::{
     AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence, LocalRequest, LocalWait,
-    Priority, holder, holder_session,
+    Priority, SuspendFuture, holder, holder_session,
 };
 pub use permissions::{PathGrant, PathMode, PermissionRule, RuleAction};
 pub use pricing::Pricing;

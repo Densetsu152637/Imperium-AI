@@ -592,8 +592,11 @@ model and the machine allow (`imperium-local/src/context.rs`):
   claims and KV pool code are the same; nothing runs beside them.
 - **Why a call waits.** While a model call waits for a local model the agent emits
   `local_model_waiting` (`agent_id`, `model`, `reason`) each time the reason changes: `loading`,
-  `growing_pool`, `kv_room`, `slot`, or `other_model` (another model's calls come first, or it
-  must unload to make room). The CLI prints it; the desktop does not show it yet.
+  `growing_pool`, `kv_room`, `slot`, `other_model` (another model's calls come first, or it
+  must unload to make room), `making_room` (models in the way finish before they give way, so
+  the call does not run on the CPU), `saving_context` (the contexts on a model swapped out for
+  it are saved), or `restoring_context` (its own context, saved while it waited, comes back).
+  The CLI prints it; the desktop does not show it yet.
 - **What the lists show.** `models.local` rows carry the loader's own estimate for each model
   under its settings (the same placer and pool sizing, beside the models loaded now, against the
   budget measured at start): layers on the GPU (`gpu_layers` of `layers`), `vram_bytes`,
@@ -614,6 +617,53 @@ A growth restart reads the prompts of agents whose slots could not be restored a
 server start; doubling keeps restarts to a few per session. Not measured on hardware yet: the
 restore of a slot into a larger pool, and the compute buffers llama.cpp allocates for large
 contexts (the planner still counts a flat runtime overhead).
+
+**Implemented: KV residency and the GPU rule.** What sits on the GPU follows who is working, at
+the grain of one agent's slot as well as one model:
+
+- **The GPU rule.** No agent runs on the CPU alone while no other agent is generating, so every
+  agent gets a turn on the GPU. A call that would run on the CPU, or split across GPU and RAM,
+  beside the loaded models while none of them has a call running makes everything not
+  generating give way: idle models, models of agents mid-turn between calls, and models of
+  agents waiting. Their slots are saved first. `min_residency_s` and the swaps per minute do
+  not hold this up; `max_swaps_per_min = 0` still does, and so does a model the user used
+  lately when the newcomer is background work. CPU or partial placement is allowed in two
+  cases: while another agent generates on the GPU, or when the model cannot fit an empty GPU
+  (it then gets the most layers it can). A newcomer also never takes fewer GPU layers than it
+  would get once idle models gave way (the `swap_gain` comparison now only breaks ties
+  between placements with the same layers on the GPU).
+- **Checked at every call.** When a call starts on a loaded model that runs partly or wholly on
+  the CPU while nothing generates anywhere, and it would get more layers on the GPU once the
+  models not generating gave way, the model is not used as it is. A warning is logged and it
+  restarts between calls (swap reason `promote`, wait reason `making_room`) to be placed again.
+  So an agent that ran on the CPU beside a generating one moves to the GPU at its next call
+  once that agent is done.
+- **Waiting agents give up their cells.** While an agent waits (for its subagents in
+  `await_tasks`, an approval, an answer) and another agent takes a slot on the same model, the
+  waiting agent's slot is saved to the slot files and its cells are freed
+  (`POST /slots/{id}?action=erase`), so its subagents use the GPU pool. Its next call restores
+  the prompt before it is sent (`restoring_context`). A session the user stops releases its
+  agents' slots at once (`LocalModels::suspend` at the safe point where each halts). When an
+  agent goes on, after Resume or after a steering message wakes the root, the engine
+  (`ensure_resident`) checks `LocalModels::suspended` and restores the context ahead of the
+  next call with a near-empty interactive call. That loads the model if it was swapped out and
+  puts the agent ahead of idle subagents. A waiting agent was already no claim on its
+  model, so a subagent on another model that does not fit beside it swaps it out (slots saved)
+  rather than running on the CPU, and it comes back with its slots restored when it resumes.
+- **The critic.** A CPU-lane model (`placement = "cpu"`) runs on the CPU beside the agents
+  generating on the GPU. When an agent of its own session is waiting on it, nothing generates,
+  and no other session is working, it is placed on the GPU for that load. The waiting root's
+  model gives way (slots saved) and comes back with its context restored when the root
+  resumes. When another session is working it stays on the CPU lane.
+- **Order.** Calls running now are never interrupted; an agent that resumes comes back on its
+  next call (restoring its context, loading its model if it was swapped out); subagents and
+  other newcomers take what the idle and waiting leave. `min_residency_s` and the swaps per
+  minute still damp swapping between agents that are all working.
+
+Not done yet: a resuming root does not jump the queue of a model whose slots are all busy; a
+waiting agent's slot is only suspended when a free slot permit lets it be taken (with every
+slot busy, llama-server may reuse it and its prompt then comes from the prompt cache or is read
+again).
 
 `models.config` returns, for every local model and every model-table row, what `models.toml`
 saves (`saved`), what is in effect (`effective`, from the daemon's settings snapshot), the memory

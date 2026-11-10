@@ -3,4 +3,4 @@
 /**
  * Why a model call waits for a local model ([`SessionEvent::LocalModelWaiting`]).
  */
-export type LocalWaitReason = "loading" | "growing_pool" | "kv_room" | "slot" | "other_model";
+export type LocalWaitReason = "loading" | "growing_pool" | "kv_room" | "slot" | "other_model" | "making_room" | "saving_context" | "restoring_context";

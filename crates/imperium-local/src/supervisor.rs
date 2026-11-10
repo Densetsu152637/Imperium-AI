@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use imperium_api::{
     AcquireFuture, Availability, Load as MachineLoad, LoadView, LocalLease, LocalModels,
-    LocalPresence, LocalRequest, LocalWait, Priority, holder_session,
+    LocalPresence, LocalRequest, LocalWait, Priority, SuspendFuture, holder_session,
 };
 pub use imperium_config::{CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS};
 use imperium_config::{LaneRow, LlamaCppSettings, LocalModelSettings, ModelLaunch, VllmSettings};
@@ -198,6 +198,11 @@ pub trait Server: Send + Sync {
     /// Loads `file` from the server's [`LaunchSpec::slot_save_path`] into `slot`.
     fn restore_slot<'a>(&'a self, _slot: u32, _file: &'a str) -> SlotFuture<'a> {
         Box::pin(async { Err("this runtime cannot restore slots".to_string()) })
+    }
+
+    /// Frees `slot`'s KV cells (its prompt is gone from the server until restored).
+    fn erase_slot(&self, _slot: u32) -> SlotFuture<'_> {
+        Box::pin(async { Err("this runtime cannot erase slots".to_string()) })
     }
 
     /// Stops the server and returns once it has exited, so its memory is free before the next
@@ -382,6 +387,26 @@ impl SlotTable {
         let slot = self.free.remove(own.or_else(unreserved).unwrap_or(0))?;
         self.reserved[slot as usize] = false;
         Some(slot)
+    }
+
+    /// Takes the free slot holding `holder`'s prompt, if one does, to suspend it.
+    fn take_own(&mut self, holder: &str) -> Option<u32> {
+        let at = self.free.iter().position(|&slot| {
+            !self.reserved[slot as usize]
+                && self.last_holder[slot as usize].as_deref() == Some(holder)
+        })?;
+        self.free.remove(at)
+    }
+
+    /// Returns a slot taken by [`SlotTable::take_own`]: when its cells were freed it holds
+    /// nobody's prompt and is the first one handed out; otherwise it is `holder`'s as before.
+    fn give_back_suspended(&mut self, slot: u32, holder: &str, freed: bool) {
+        if freed {
+            self.last_holder[slot as usize] = None;
+            self.free.push_front(slot);
+        } else {
+            self.give_back(slot, holder);
+        }
     }
 
     fn give_back(&mut self, slot: u32, holder: &str) {
@@ -628,6 +653,9 @@ struct Loaded {
     /// Started with a smaller pool than `launch` asks for, to keep every layer on the GPU beside
     /// the models loaded then.
     squeezed: bool,
+    /// It runs (partly) on the CPU while the GPU went idle: no call takes a slot on it, and it
+    /// restarts once its calls are done, to be placed on the GPU (swap reason `promote`).
+    promoting: bool,
 }
 
 impl Loaded {
@@ -1336,9 +1364,20 @@ impl Supervisor {
         model: &LocalModel,
         backend: Arc<dyn RuntimeBackend>,
     ) -> impl Fn(Budget) -> Option<Placement> {
+        let cpu = self.cpu_slots(&model.id).is_some();
+        self.placer_on(model, backend, cpu)
+    }
+
+    /// Like [`Supervisor::placer`], on the CPU lane (`cpu`) or wherever the runtime places it,
+    /// whatever the model's pin.
+    fn placer_on(
+        &self,
+        model: &LocalModel,
+        backend: Arc<dyn RuntimeBackend>,
+        cpu: bool,
+    ) -> impl Fn(Budget) -> Option<Placement> {
         let launch = self.launch(&model.id);
         let model = model.clone();
-        let cpu = self.cpu_slots(&model.id).is_some();
         // The pool may give way down to a working context (or what the launch starts with, if
         // less); the weights never give way for it.
         let floor = launch
@@ -1573,26 +1612,32 @@ impl Supervisor {
         let residents = state
             .loaded
             .iter()
-            .map(|(id, loaded)| Resident {
-                id: id.clone(),
-                vram_bytes: loaded.placement.vram_bytes,
-                ram_bytes: loaded.placement.ram_bytes,
-                cache_bytes: loaded.cache_bytes,
-                cpu_pinned: loaded.cpu_pinned,
-                use_: if loaded.busy() {
-                    Use::Busy
-                } else if protect.is_some_and(|within| loaded.pool.used_interactively(within)) {
-                    protected = true;
-                    Use::Busy
-                } else {
-                    match Presence::claims(users, id, &loaded.batch, requester) {
-                        Claim::Others => Use::Busy,
-                        Claim::Own => Use::Claimed,
-                        Claim::None => Use::Free,
-                    }
-                },
-                resident_for: loaded.loaded_at.elapsed(),
-                idle_for: lock(&loaded.pool.last_used).elapsed(),
+            .map(|(id, loaded)| {
+                let guarded = !loaded.busy()
+                    && protect.is_some_and(|within| loaded.pool.used_interactively(within));
+                Resident {
+                    id: id.clone(),
+                    vram_bytes: loaded.placement.vram_bytes,
+                    ram_bytes: loaded.placement.ram_bytes,
+                    cache_bytes: loaded.cache_bytes,
+                    cpu_pinned: loaded.cpu_pinned,
+                    generating: loaded.in_use() > 0,
+                    protected: guarded,
+                    use_: if loaded.busy() {
+                        Use::Busy
+                    } else if guarded {
+                        protected = true;
+                        Use::Busy
+                    } else {
+                        match Presence::claims(users, id, &loaded.batch, requester) {
+                            Claim::Others => Use::Busy,
+                            Claim::Own => Use::Claimed,
+                            Claim::None => Use::Free,
+                        }
+                    },
+                    resident_for: loaded.loaded_at.elapsed(),
+                    idle_for: lock(&loaded.pool.last_used).elapsed(),
+                }
             })
             .collect();
         (residents, protected)
@@ -1677,6 +1722,9 @@ impl Supervisor {
             } else {
                 self.step(id, holder, &request, &ticket)?
             };
+            if matches!(step, Step::Leased(..) | Step::Queued(_)) {
+                self.suspend_waiters(id, holder);
+            }
             match step {
                 Step::Leased(lease, restore) => {
                     let lease = lease.with_wait(waited);
@@ -1740,7 +1788,11 @@ impl Supervisor {
                     match self.plan(&model, holder, priority, &ticket)? {
                         Plan::Retry => continue,
                         Plan::Load(load) => {
-                            waiting.set(LocalWait::Loading);
+                            waiting.set(if load.victims.is_empty() {
+                                LocalWait::Loading
+                            } else {
+                                LocalWait::SavingContext
+                            });
                             return self
                                 .swap_in(&model, holder, &request, *load, swapping)
                                 .await
@@ -1748,6 +1800,7 @@ impl Supervisor {
                         }
                         Plan::Wait { yielded } => {
                             drop(swapping);
+                            waiting.set(LocalWait::MakingRoom);
                             if yielded {
                                 deadline = tokio::time::Instant::now() + max_wait;
                             }
@@ -1771,6 +1824,48 @@ impl Supervisor {
         }
     }
 
+    /// Whether the loaded model `id` runs (partly) on the CPU although nothing generates on any
+    /// model and it would get more of its layers on the GPU once everything not generating gave
+    /// way. A CPU-lane model is only moved when no other session is working either. The runtime
+    /// check of the GPU rule: it corrects the placement by re-planning, never by failing.
+    fn promotes(&self, state: &State, id: &str, holder: &str, priority: Priority) -> bool {
+        let Some(entry) = state.loaded.get(id) else {
+            return false;
+        };
+        let lane = self.cpu_lane(id).is_some();
+        if entry.in_use() > 0
+            || entry.growing
+            || entry.promoting
+            || (entry.placement.all_layers_on_gpu && !entry.cpu_pinned)
+            || state.loaded.values().any(|other| other.in_use() > 0)
+        {
+            return false;
+        }
+        let Some(model) = self.model(id) else {
+            return false;
+        };
+        let Some(backend) = self.backend(model.format).map(Arc::clone) else {
+            return false;
+        };
+        let users = lock(&self.presence.users);
+        let session = holder_session(holder);
+        if lane && !critic_may_have_gpu(&users, session) {
+            return false;
+        }
+        let protect = (priority == Priority::Background).then(|| lock(&self.background).hold);
+        let (residents, _) = self.residents(state, &users, protect, Some(session));
+        let mut others: Vec<Resident> = residents.into_iter().filter(|r| r.id != id).collect();
+        if self.settings.max_swaps_per_min == 0 {
+            // Nothing may be swapped out for it: only the room left as it is counts.
+            for other in &mut others {
+                other.generating = true;
+            }
+        }
+        let room = arbiter::room_after_yield(self.budget, &others);
+        let now = entry.placement.gpu_layers;
+        self.placer_on(&model, backend, false)(room).is_some_and(|best| best.gpu_layers > now)
+    }
+
     /// Takes a slot and tokens on `id` if it is loaded and takes this call, queues for them, or
     /// says whether the call may load the model or must wait its turn.
     fn step(
@@ -1787,11 +1882,29 @@ impl Supervisor {
             state.set_admitted(ticket.seq, false);
             return Ok(if behind { Step::Wait } else { Step::Load });
         }
+        // At a request boundary, a model running on the CPU while nothing generates is moved
+        // to the GPU: no agent runs on the CPU alone while the GPU is idle.
+        let promote = self.promotes(&state, id, holder, priority);
         let Some(entry) = state.loaded.get_mut(id) else {
             return Ok(Step::Wait);
         };
-        // Growing: nothing new starts on it, so the calls running drain and it restarts.
-        if entry.growing {
+        // Growing or moving: nothing new starts on it, so the calls running drain and it
+        // restarts.
+        if entry.growing || entry.promoting {
+            return Ok(Step::Wait);
+        }
+        if promote {
+            tracing::warn!(model = %id, gpu_layers = entry.placement.gpu_layers, "a call would run on the CPU while the GPU is idle; the model is placed on the GPU again");
+            entry.stale = true;
+            entry.promoting = true;
+            state.set_admitted(ticket.seq, false);
+            let spawn = !state.stale_task;
+            state.stale_task = true;
+            drop(state);
+            self.changed.notify_waiters();
+            if spawn {
+                tokio::spawn(unload_stale(Weak::clone(&self.me)));
+            }
             return Ok(Step::Wait);
         }
         if let Some(target) = entry.growth(request) {
@@ -1936,8 +2049,15 @@ impl Supervisor {
         let requester = Some(holder_session(holder));
         let (residents, protected) = self.residents(&state, &users, protect, requester);
         let policy = self.policy(&mut state);
+        // A CPU-lane model (the critic) runs on the CPU beside the agents generating on the
+        // GPU; when the agent it reviews waits on it, nothing generates and no other session
+        // is working, it gets the GPU too: the models in the way give way like any (their
+        // agents' slots saved, restored when they resume).
+        let on_cpu = self.cpu_lane(&model.id).is_some()
+            && (residents.iter().any(|r| r.generating)
+                || !critic_may_have_gpu(&users, holder_session(holder)));
         let decision = arbiter::decide(
-            self.placer(model, Arc::clone(&backend)),
+            self.placer_on(model, Arc::clone(&backend), on_cpu),
             self.budget,
             &residents,
             ticket.since.elapsed(),
@@ -1959,7 +2079,7 @@ impl Supervisor {
                     let (unprotected, _) = self.residents(&state, &users, None, requester);
                     !matches!(
                         arbiter::decide(
-                            self.placer(model, Arc::clone(&backend)),
+                            self.placer_on(model, Arc::clone(&backend), on_cpu),
                             self.budget,
                             &unprotected,
                             ticket.since.elapsed(),
@@ -1994,7 +2114,7 @@ impl Supervisor {
             priority,
             served_pool: Self::placed_pool(model, &launch, &placement),
             launch,
-            cpu_pinned: self.cpu_lane(&model.id).is_some(),
+            cpu_pinned: on_cpu,
         })))
     }
 
@@ -2036,6 +2156,7 @@ impl Supervisor {
         }
         let replaced = !victims.is_empty();
         let swapping = self.swap_out_detached(victims, "room", swapping).await?;
+        lock(&self.waits).insert(holder.to_string(), LocalWait::Loading);
         // The prompt cache takes what the setting asks of the RAM left after the model, and
         // counts against the budget like the model does.
         let cache_ram_mb = if backend.slot_aware() {
@@ -2154,6 +2275,7 @@ impl Supervisor {
                     stale,
                     growing: false,
                     squeezed,
+                    promoting: false,
                 },
             );
             let spawn = stale && !state.stale_task;
@@ -2292,6 +2414,95 @@ impl Supervisor {
         (bytes, slots)
     }
 
+    /// Suspends, in the background, the slots of the agents waiting (for subagents, an
+    /// approval, an answer) whose prompts sit on `model`, now that `holder` uses it: they
+    /// hold cells nobody uses until they resume.
+    fn suspend_waiters(&self, model: &str, holder: &str) {
+        if self.slot_files.is_none() {
+            return;
+        }
+        let Some(me) = self.me.upgrade() else {
+            return;
+        };
+        let waiting: Vec<String> = lock(&self.presence.users)
+            .iter()
+            .filter(|(other, user)| {
+                other.as_str() != holder && user.model == model && user.waiting > 0
+            })
+            .map(|(other, _)| other.clone())
+            .collect();
+        for other in waiting {
+            let (me, model) = (Arc::clone(&me), model.to_string());
+            tokio::spawn(async move { me.suspend_slot(&model, &other).await });
+        }
+    }
+
+    /// Suspends `holder`'s slot on the loaded model `model` while it waits (for subagents, an
+    /// approval, an answer): saves its prompt to the slot files and frees its cells, so the
+    /// other agents on the model use the pool. Its next call restores the prompt into whatever
+    /// slot it gets ([`Supervisor::restore`]). Nothing happens when slots are not saved, the
+    /// model is not loaded, or the holder holds no idle slot on it.
+    pub async fn suspend_slot(&self, model: &str, holder: &str) {
+        let Some(files) = &self.slot_files else {
+            return;
+        };
+        // The slot is taken like a call takes one, so nobody uses it while it is saved.
+        let found = {
+            let state = lock(&self.state);
+            state.loaded.get(model).and_then(|entry| {
+                let key = entry.key?;
+                let permit = Arc::clone(&entry.pool.permits).try_acquire_owned().ok()?;
+                let slot = lock(&entry.pool.table).take_own(holder)?;
+                Some((
+                    Arc::clone(&entry.server),
+                    Arc::clone(&entry.pool),
+                    key,
+                    slot,
+                    permit,
+                ))
+            })
+        };
+        let Some((server, pool, key, slot, _permit)) = found else {
+            return;
+        };
+        let present: HashSet<String> = lock(&self.presence.users).keys().cloned().collect();
+        let present = |holder: &str| present.contains(holder);
+        let file = SlotFiles::file_name(key, holder);
+        let unrecorded = Forget { files, holder, key };
+        let kept = match server.save_slot(slot, &file).await {
+            Ok(saved) => {
+                lock(files).record(
+                    Saved {
+                        holder: holder.to_string(),
+                        key,
+                        slot,
+                        file,
+                        bytes: saved.bytes,
+                    },
+                    present,
+                );
+                unrecorded.keep();
+                match server.erase_slot(slot).await {
+                    Ok(_) => {
+                        tracing::info!(%holder, model, slot, tokens = saved.tokens, "suspended a waiting agent's slot");
+                        true
+                    }
+                    Err(error) => {
+                        tracing::debug!(%holder, slot, %error, "could not free a suspended slot's cells");
+                        false
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%holder, slot, %error, "could not save a waiting agent's slot");
+                false
+            }
+        };
+        // Erased, the slot holds nobody's prompt: anyone may take it first.
+        lock(&pool.table).give_back_suspended(slot, holder, kept);
+        self.changed.notify_waiters();
+    }
+
     /// Restores `holder`'s saved slot, if it has one for this server's model, into the slot it
     /// was just leased, before the lease is used.
     async fn restore(&self, holder: &str, lease: LocalLease, restore: Restore) -> LocalLease {
@@ -2302,6 +2513,8 @@ impl Supervisor {
         let Some(saved) = lock(files).find(holder, key) else {
             return lease;
         };
+        // Cleared when the call's wait ends (see `Waiting`).
+        lock(&self.waits).insert(holder.to_string(), LocalWait::RestoringContext);
         // It stays recorded while it is read, and is forgotten with its file once read, failed,
         // or cancelled, so no file is left on disk outside the index.
         let _forget = Forget { files, holder, key };
@@ -2372,6 +2585,7 @@ impl Supervisor {
                     entry.stale
                         && !entry.busy()
                         && (entry.growing
+                            || entry.promoting
                             || Presence::claims(&users, id, &entry.batch, None) == Claim::None)
                 })
                 .map(|(id, _)| id.clone())
@@ -2395,8 +2609,17 @@ impl Supervisor {
                 (id, entry)
             })
             .collect::<Vec<_>>();
+        let (promote, victims): (Vec<_>, Vec<_>) =
+            victims.into_iter().partition(|(_, entry)| entry.promoting);
         let (grow, config): (Vec<_>, Vec<_>) =
             victims.into_iter().partition(|(_, entry)| entry.growing);
+        let swapping = match self.swap_out_detached(promote, "promote", swapping).await {
+            Ok(swapping) => swapping,
+            Err(error) => {
+                tracing::warn!(%error, "could not restart models to place them on the GPU");
+                return;
+            }
+        };
         let swapping = match self.swap_out_detached(grow, "grow", swapping).await {
             Ok(swapping) => swapping,
             Err(error) => {
@@ -2413,6 +2636,7 @@ impl Supervisor {
     fn why_waiting(&self, id: &str) -> LocalWait {
         match lock(&self.state).loaded.get(id) {
             Some(entry) if entry.growing => LocalWait::GrowingPool,
+            Some(entry) if entry.promoting => LocalWait::MakingRoom,
             // Stale: it restarts with new settings once free.
             Some(entry) if entry.stale => LocalWait::Loading,
             _ => LocalWait::OtherModel,
@@ -2422,6 +2646,22 @@ impl Supervisor {
     fn any_stale(&self) -> bool {
         lock(&self.state).loaded.values().any(|entry| entry.stale)
     }
+}
+
+/// Whether the CPU-lane model a call of `session` asks for (the critic) may have the GPU: an
+/// agent of its own session is waiting on it (for its review), and no other session is working.
+fn critic_may_have_gpu(users: &HashMap<String, User>, session: &str) -> bool {
+    let waited_on = users
+        .iter()
+        .any(|(holder, user)| holder_session(holder) == session && user.waiting > 0);
+    waited_on && !other_session_working(users, session)
+}
+
+/// Whether an agent of a session other than `session` is mid-turn and not waiting.
+fn other_session_working(users: &HashMap<String, User>, session: &str) -> bool {
+    users.iter().any(|(holder, user)| {
+        holder_session(holder) != session && user.working > 0 && user.waiting == 0
+    })
 }
 
 /// What a holder's call waits for, while it waits; dropping it says it no longer does.
@@ -2623,9 +2863,21 @@ impl LocalModels for Supervisor {
             .enter(&self.changed, model, holder, Mark::Working)
     }
 
+    /// While it waits, `holder`'s slot on `model` is suspended as soon as another agent takes a
+    /// slot on the same model ([`Supervisor::suspend`]); its next call restores it.
     fn waiting(&self, model: &str, holder: &str) -> LocalPresence {
         self.presence
             .enter(&self.changed, model, holder, Mark::Waiting)
+    }
+
+    fn suspended(&self, holder: &str) -> bool {
+        self.slot_files
+            .as_ref()
+            .is_some_and(|files| lock(files).holds(holder))
+    }
+
+    fn suspend<'a>(&'a self, model: &'a str, holder: &'a str) -> SuspendFuture<'a> {
+        Box::pin(self.suspend_slot(model, holder))
     }
 
     fn record_throughput(&self, model: &str, completion_tokens: u64, generating: Duration) {
@@ -3352,9 +3604,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_model_beside_an_idle_one_is_placed_in_the_memory_actually_left() {
-        // 32 GiB of RAM: "b" keeps over half its layers on the GPU beside idle "a", so "a" is
-        // not swapped out, and "b" is placed in the VRAM "a" leaves.
+    async fn an_idle_model_gives_way_rather_than_a_newcomer_running_on_the_cpu() {
+        // 32 GiB of RAM: beside idle "a", "b" would run part of its layers on the CPU, so "a"
+        // is swapped out and "b" gets every layer on the GPU.
         let hardware = Hardware {
             ram_available_bytes: 32 * GIB,
             ..hardware()
@@ -3371,14 +3623,10 @@ mod tests {
         let loaded = supervisor.loaded();
         let vram: u64 = loaded.iter().map(|model| model.vram_bytes).sum();
         assert!(vram <= 10 * GIB, "{vram} bytes of VRAM committed");
-        assert_eq!(loaded.len(), 2, "a stays loaded");
-        let b = loaded.iter().find(|model| model.model_id == "b").unwrap();
-        assert!(
-            b.gpu_layers > 0 && b.gpu_layers < 32,
-            "{} layers",
-            b.gpu_layers
-        );
-        assert!(b.ram_bytes > 0, "the rest of b is in RAM");
+        assert_eq!(loaded.len(), 1, "a was swapped out");
+        assert_eq!(loaded[0].model_id, "b");
+        assert!(loaded[0].all_layers_on_gpu);
+        assert_eq!(loaded[0].ram_bytes, 0);
     }
 
     #[tokio::test]
