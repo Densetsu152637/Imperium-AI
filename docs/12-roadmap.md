@@ -137,6 +137,11 @@ the wait reason in the desktop.
 20. **Free scroll while streaming.** Scrolling up while an agent is writing stops following
     the output and keeps the user's place; a *Jump to latest* button (and scrolling back to
     the bottom) resumes following the newest text.
+21. **Model awareness for the root agent.** The root agent can list the local models it may
+    use (only those visible to the session, with whether each fits in memory now). It can also
+    retrieve, through the RAG layer, what each model is good at (coding, writing, research,
+    and so on), from model cards and Imperium's own measurements. The root agent uses this to
+    pick a model when it delegates.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
