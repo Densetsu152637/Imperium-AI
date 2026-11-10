@@ -108,6 +108,36 @@ the wait reason in the desktop.
 11. **Sharing and sync (design).** Design plans for session sharing and export, and for team
     sync.
 
+Next, from use of the app so far (bugs first):
+
+12. **Environment file access** (bug). Agents fail to read paths an environment grants them:
+    an agent could not open the Imperium-AI checkout given as the environment's first project
+    path. Start from `list_dir` and the path checks behind it (environment roots, path
+    normalisation on Windows, the sandbox grant), then add a test that every project path is
+    readable from inside the environment.
+13. **Worktrees by default.** An environment's sessions get its project-specific worktrees
+    without extra setup.
+14. **Visible tool calls.** The transcript shows each tool call, with arguments and result, for
+    the session and for every subagent, collapsed by default.
+15. **Reasoning effort.** Models that can reason get a per-session effort setting (low,
+    medium, high, max), mapped to each backend's reasoning controls and hidden for models
+    without them.
+16. **Memory control in core.** Review loading and unloading end to end: imperium-core
+    should own every decision about which models and KV caches are resident, loaded, or
+    unloaded (the local runtime only carries them out), with the reason for each move visible.
+    The KV-residency work and the GPU rule are the starting point; measure on real hardware.
+17. **Session titles and list.** Titles are generated automatically from the first exchange
+    and can be renamed; session rows are compact, one line, as in the Claude interface.
+18. **Quieter interface.** Panels carry too many buttons. Keep the primary action visible,
+    move the rest into overflow menus or hover actions, and tighten spacing and type for a
+    sleeker look.
+19. **Emperor behaviour.** Train Emperor towards the working style of frontier agent models,
+    and reinforce it in the system and root prompts:
+    - concise, structured answers; the big picture first, more detail only when asked;
+    - use tools and delegate rather than pasting code at the user;
+    - few emojis, and plain explanations instead of many tables;
+    - search for information rather than relying on what was learned in training.
+
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
 
