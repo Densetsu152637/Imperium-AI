@@ -107,10 +107,7 @@ the wait reason in the desktop.
     and an OpenAI-compatible local API server for other tools.
 11. **Sharing and sync (design).** Design plans for session sharing and export, and for team
     sync.
-
-Next, from use of the app so far (bugs first):
-
-12. **Environment file access** (bug). Agents fail to read paths an environment grants them:
+12. **Environment file access** (bug, from use of the app so far, like the items after it). Agents fail to read paths an environment grants them:
     an agent could not open the Imperium-AI checkout given as the environment's first project
     path. Start from `list_dir` and the path checks behind it (environment roots, path
     normalisation on Windows, the sandbox grant), then add a test that every project path is
