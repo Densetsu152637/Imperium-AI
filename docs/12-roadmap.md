@@ -142,6 +142,14 @@ the wait reason in the desktop.
     retrieve, through the RAG layer, what each model is good at (coding, writing, research,
     and so on), from model cards and Imperium's own measurements. The root agent uses this to
     pick a model when it delegates.
+22. **Agents manage the app config.** By default, and outside configured environment
+    projects too, agents may add to the user's local app config: filling in model cards, and
+    downloading and installing mods, plugins, and skills. Each change goes through the
+    permission rules, so the user can narrow it to *ask* or *deny*, and is recorded so it can be
+    undone. Installs show where they came from.
+23. **Lazy skills and plugins.** Only each skill's and plugin's name and short description are
+    loaded up front. The rest (instructions, tools, hooks) is loaded when an agent first uses
+    it, keeping context and start-up cost low.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
