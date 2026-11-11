@@ -1639,6 +1639,13 @@ impl Agent {
             AgentTool::MemoryRead => "read a memory",
             AgentTool::MemoryRemember => "save a memory",
         };
+        // Plan mode only reads: starting a session (which would not be in plan mode) or saving
+        // a memory changes things.
+        if matches!(tool, AgentTool::StartSession | AgentTool::MemoryRemember)
+            && self.shared.workspace.permissions().mode() == PermissionMode::Plan
+        {
+            return self.tool_finished(call, name, false, refused(Refusal::Plan, summary), None);
+        }
         let started = self.tool_started(call, name, summary.to_string());
         let result = match tool {
             AgentTool::UpdatePlan => self.update_plan(arguments),

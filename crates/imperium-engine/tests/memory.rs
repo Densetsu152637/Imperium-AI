@@ -137,6 +137,30 @@ async fn turn(session: &Session, text: &str) -> Vec<SessionEvent> {
 }
 
 #[tokio::test]
+async fn plan_mode_refuses_to_save_a_memory() {
+    let data = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let url = model(Arc::new(Mutex::new(String::new()))).await;
+    let session = start("planned", &url, data.path(), project.path());
+    session.set_permission_mode(imperium_api::PermissionMode::Plan);
+    let events = turn(&session, "Remember how we cut releases.").await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::PermissionRequested { .. })),
+        "plan mode refuses without asking"
+    );
+    assert!(events.iter().any(|e| matches!(e,
+        SessionEvent::ToolFinished { ok: false, output, .. } if output.contains("plan mode"))));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::MemorySaved { .. }))
+    );
+    assert!(!project.path().join(".imperium/memory").exists());
+}
+
+#[tokio::test]
 async fn a_memory_saved_in_one_session_is_recalled_in_the_next() {
     let data = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();

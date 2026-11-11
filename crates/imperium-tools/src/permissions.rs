@@ -239,46 +239,7 @@ pub fn decide_call(
     }
 }
 
-/// Built-in ask rules for destructive commands. They ask in every mode but plan (which refuses
-/// commands anyway), even when an allow rule, full access, or "always this session" would let
-/// the command run. Like rules, they see only the command line, not what a script does.
-const FLOOR_COMMANDS: &[&str] = &[
-    "rm -r*",
-    "rm -R*",
-    "rm -f*",
-    "rm --recursive*",
-    "rm --force*",
-    "rmdir /s*",
-    "rmdir /S*",
-    "rd /s*",
-    "rd /S*",
-    "del /s*",
-    "del /S*",
-    "del /q*",
-    "del /Q*",
-    "Remove-Item *",
-    "format",
-    "mkfs*",
-    "dd",
-    "diskpart",
-    "shutdown",
-    "reboot",
-    "sudo",
-    "su",
-    "git push --force*",
-    "git push -f",
-    "git push --delete*",
-    "git reset --hard*",
-    "git clean*",
-    "git branch -D*",
-    "git checkout -- *",
-    "git checkout .",
-    "git restore *",
-    "git stash drop*",
-    "git stash clear",
-];
-
-/// Built-in ask rules for writing files that hold secrets or git's own records.
+/// Built-in ask rules for writing files that hold secrets.
 const FLOOR_PATHS: &[&str] = &[
     ".env",
     ".env.*",
@@ -290,34 +251,32 @@ const FLOOR_PATHS: &[&str] = &[
     ".npmrc",
     ".pypirc",
     ".netrc",
-    "**/.git/**",
-    ".git",
 ];
 
-/// Whether the built-in safety floor covers a call: a destructive command, or writing a file
-/// that holds secrets or git's records. Reads are never covered.
+/// Whether the built-in safety floor covers a call: a destructive command (see
+/// [`crate::floor`]), or writing a file that holds secrets or lies under any `.git` folder
+/// (a repository's own, or a linked worktree's main repository's). Reads are never covered.
+///
+/// The floor is a best-effort guard against an agent's mistakes, not a security boundary: it
+/// reads the command line, unwrapping common shells and wrappers, but cannot see what a script
+/// or program does.
 pub fn safety_floor(kind: CallKind, target: &Target) -> bool {
-    let rules = |patterns: &[&str], tool: &str| -> Vec<PermissionRule> {
-        patterns
-            .iter()
-            .map(|pattern| PermissionRule {
-                tool: tool.into(),
-                pattern: (*pattern).into(),
-                action: RuleAction::Ask,
-            })
-            .collect()
-    };
     match (kind, target) {
-        (CallKind::Execute, Target::Command(_)) => {
-            evaluate(
-                &rules(FLOOR_COMMANDS, COMMAND_TOOL),
-                &[],
-                COMMAND_TOOL,
-                target,
-            ) == Some(RuleAction::Ask)
-        }
-        (CallKind::Edit, Target::Path { .. }) => {
-            evaluate(&rules(FLOOR_PATHS, "*"), &[], "write_file", target) == Some(RuleAction::Ask)
+        (CallKind::Execute, Target::Command(line)) => crate::floor::dangerous_command(line),
+        (CallKind::Edit, Target::Path { absolute, .. }) => {
+            let fold = cfg!(any(windows, target_os = "macos"));
+            let in_git = absolute.split('/').any(|part| {
+                if fold {
+                    part.eq_ignore_ascii_case(".git")
+                } else {
+                    part == ".git"
+                }
+            });
+            in_git
+                || FLOOR_PATHS.iter().any(|pattern| {
+                    path_matches(pattern, absolute, None)
+                        || (fold && path_matches(pattern, &absolute.to_lowercase(), None))
+                })
         }
         _ => false,
     }
@@ -468,7 +427,7 @@ fn risky(line: &str) -> bool {
 
 /// The line's commands, split at `;`, `&&`, `||`, `|`, `&`, and newlines. Quotes are not
 /// parsed: a separator inside quotes still splits, which only makes rules stricter.
-fn split_command(line: &str) -> Vec<String> {
+pub(crate) fn split_command(line: &str) -> Vec<String> {
     without_harmless_redirects(line)
         .split([';', '&', '|', '\n', '\r'])
         .map(str::trim)
@@ -856,6 +815,38 @@ mod tests {
         assert!(safety_floor(CallKind::Edit, &path("certs/server.pem")));
         assert!(!safety_floor(CallKind::Edit, &path("src/main.rs")));
         assert!(!safety_floor(CallKind::Read, &path(".env")));
+        assert!(!safety_floor(
+            CallKind::Edit,
+            &path(".github/workflows/ci.yml")
+        ));
+    }
+
+    #[test]
+    fn writes_under_any_git_folder_are_floored_wherever_they_are() {
+        // A linked worktree's main repository lies outside the working directory: its hooks
+        // are reached by absolute path, with no relative path at all.
+        let outside = |absolute: &str| Target::Path {
+            absolute: absolute.into(),
+            relative: None,
+        };
+        assert!(safety_floor(
+            CallKind::Edit,
+            &outside("/home/me/repo/.git/hooks/pre-commit")
+        ));
+        assert!(safety_floor(
+            CallKind::Edit,
+            &outside("D:/Git Repositories/repo/.git/worktrees/feature/HEAD")
+        ));
+        assert!(safety_floor(CallKind::Edit, &outside("/srv/repo/.git")));
+        assert!(safety_floor(
+            CallKind::Edit,
+            &outside("/srv/keys/deploy.pem")
+        ));
+        assert!(!safety_floor(
+            CallKind::Edit,
+            &outside("/srv/repo/.gitignore")
+        ));
+        assert!(!safety_floor(CallKind::Edit, &outside("/srv/repo.git/x")));
     }
 
     #[test]

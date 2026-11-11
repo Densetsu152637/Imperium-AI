@@ -59,8 +59,9 @@ Both are read-only, so they never ask (an ask rule still asks, a deny rule still
   and git's exclude files leave out, also outside a git repository; `include_ignored` lists
   those too. Hidden files are included. Symbolic links are not followed into folders, and a link
   to a file counts only when its target is inside the workspace.
-- Files a deny rule covers, for the tool itself or for `read_file`, are left out, so a
-  `deny * **/.env` rule keeps secrets out of searches too.
+- Files an ask or deny rule covers, for the tool itself or for `read_file`, are left out (a
+  search cannot ask per file), and the output says how many; so `deny * **/.env` or
+  `ask read_file .env` keeps secrets out of searches too, and `read_file` still asks for one.
 - A pattern without `/` matches the file name at any depth (`*.rs`); one with `/` matches the
   path relative to the searched folder (`src/**/*.ts`); `{a,b}` gives alternatives. `grep`'s
   `glob` filters the files searched the same way.
@@ -82,15 +83,20 @@ approval: a background command is a command) and returns its id (`p1`, `p2`, …
 servers and watchers. `command_output(id, since?)` returns the process's status (`running for
 N s`, `exited with code N`, or `stopped`) and what it wrote to standard output and error since
 the last read, or from byte `since`, at most 30,000 bytes per call with the offset to continue
-from; `command_stop(id)` kills it with every process it started (`taskkill /T` on Windows, its
-process group elsewhere, `docker rm -f` for the container tier, whose containers are named for
-the purpose) and waits up to 10 s for it to end. Reading and stopping touch only what the
-session started, so they count as reads and never ask.
+from; `command_stop(id)` kills it with every process it started and waits up to 10 s for it to
+end. Everything a command starts stays reachable after the command itself exits (`sh -c 'x &'`,
+`start /b x`): on Unix the command leads its own process group, which is killed as a whole; on
+Windows it runs in a Job Object that kills every process in it when closed; a container-tier
+command's container (named uniquely per daemon, session, and command) is removed with
+`docker rm -f`. A command that exited but left processes running says so in its status and
+still counts as running. Reading and stopping touch only what the session started, so they
+count as reads and never ask.
 
 A session runs at most 8 background commands at once and keeps the last 32 (finished ones are
 dropped oldest first); each keeps the last 1 MiB of output and says how much was dropped before
-it. Its processes are killed when the session is stopped, archived, or deleted, and when its
-handle is dropped (the daemon stopping). Remote runtimes do not run background commands yet.
+it. Its processes are killed when the session is stopped, archived, or deleted, when its handle
+is dropped, and when the daemon shuts down (which waits up to 5 s for the kills). Remote
+runtimes do not run background commands yet.
 
 ### `ask_user`
 
@@ -287,8 +293,9 @@ turn a global `deny run_command cargo publish` into an allow with the same rule.
 matching rule the tool's default applies. A rule is checked before `tool.before` hooks run; an
 allow rule skips the approval but not the required-context check of
 [workflow enforcement](18-workflow-contract.md).
-*Always this session* still allows a tool for the session, including calls an ask rule would
-ask about. Rules apply to running sessions from their next call.
+*Always this session* allows a tool for the session where its default would ask, but an ask
+rule asks every time, whatever the session allowed (an allow rule is how to stop the asking).
+Rules apply to running sessions from their next call.
 
 Approval requests carry a `suggested_rule` (`permission_requested`): the command and its
 subcommand for a simple command line (none for a line of several commands, substitution, or
@@ -319,24 +326,42 @@ the session summary's `permission_mode`.
 | `plan` (plan only) | run | refused | refused | refused |
 | `full` (full access) | run | run | run | run |
 
-In every mode, deny rules refuse first and ask rules ask. "Ask, every call" means allow rules
-and *Always this session* approvals are ignored (tools an unattended session was started with
-pre-approved still run). Plan mode refuses without asking, whatever the rules allow, and tells
-the model to present its plan; tools that never ask (searching the web or earlier sessions,
-`ask_user`, delegation) still run, and the app-config tools (`set_model_card`,
-`install_extension`, `uninstall_extension`) count as tools that ask in `ask` and `plan`.
+In every mode, deny rules refuse first and ask rules ask, every time. "Ask, every call" means
+allow rules and *Always this session* approvals are ignored (tools an unattended session was
+started with pre-approved still run). Plan mode refuses without asking, whatever the rules
+allow, and tells the model to present its plan; it also refuses `start_session` (the session
+started would not be in plan mode) and `memory_remember`. Tools that never ask (searching the
+web or earlier sessions, `ask_user`, delegation) still run, and the app-config tools
+(`set_model_card`, `install_extension`, `uninstall_extension`) count as tools that ask in `ask`
+and `plan`.
 
-**The safety floor** is a built-in set of ask rules that no mode, allow rule, or session
-approval lifts (only plan mode, which refuses the call anyway, and an unattended session's
-pre-approved tools pass it): commands that delete recursively or force (`rm -r`, `rm -f`,
-`rmdir /s`, `del /s`, `Remove-Item`), format or partition disks (`format`, `mkfs`, `dd`,
-`diskpart`), shut down (`shutdown`, `reboot`), raise privileges (`sudo`, `su`), or rewrite git
-history or discard work (`git push --force` / `-f` / `--delete`, `git reset --hard`,
-`git clean`, `git branch -D`, `git checkout -- …`, `git checkout .`, `git restore`,
-`git stash drop` / `clear`), matched per command of a line like command rules; and writing
-files that hold secrets or git's records (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
-`id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`, anything under `.git/`). Each such
-call asks every time. Like rules, the floor sees only the command line, not what a script runs.
+**The safety floor** is a built-in check that no mode, allow rule, or session approval lifts
+(only plan mode, which refuses the call anyway, and an unattended session's pre-approved tools
+pass it); each call it covers asks every time:
+
+- Commands that delete recursively or by force (`rm` with `-r`, `-R`, `-f`, `--recursive`,
+  `--force` anywhere in its arguments; `rmdir` / `rd` / `del` / `erase` with `/s` or `/q`;
+  PowerShell `Remove-Item` / `ri` / `rm` with `-Recurse` or `-Force`, also abbreviated;
+  `find -delete`), format or partition disks (`format`, `mkfs*`, `dd`, `diskpart`,
+  `Format-Volume`, `Clear-Disk`, `shred`), shut down (`shutdown`, `reboot`, `halt`,
+  `poweroff`), raise privileges (`sudo`, `su`, `doas`, `runas`), or rewrite git history or
+  discard work (`git push` with `--force`, `-f`, `--force-with-lease`, `--delete`, `--mirror`,
+  `--prune`, or a `+ref` / `:ref` refspec; `git reset --hard` / `--merge` / `--keep`;
+  `git clean` other than a dry run; `git branch -D`; `git checkout -- …`, `git checkout .`,
+  `git checkout -f`; `git restore`; `git stash drop` / `clear`; `filter-branch`), with git's
+  global options (`-C dir`, `-c k=v`, `--git-dir`) skipped. Each command of a line is checked,
+  including inside `$( )`, backticks, and parentheses; shells running a command string
+  (`sh`/`bash`/`zsh -c`, `cmd /c`, `powershell`/`pwsh -Command`; an encoded PowerShell command
+  always asks) and wrappers (`env`, `nice`, `nohup`, `time`, `timeout`, `command`, `exec`,
+  `xargs`, `find -exec`) are unwrapped; program names are compared without folder, extension,
+  or case, and cmd's `^` escapes are dropped.
+- Writing files that hold secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
+  `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`) or anything with a `.git` folder
+  in its absolute path, such as a linked worktree's main repository's hooks.
+
+The floor is a **best-effort guard against an agent's mistakes, not a security boundary**: it
+reads the command line, so a script, an alias, or a program that deletes files itself passes
+it. The folder sandbox and the isolation tiers are what confine commands.
 
 ## Isolation tiers
 
