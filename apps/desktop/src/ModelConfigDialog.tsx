@@ -1,8 +1,10 @@
 // Model configuration: llama.cpp / vLLM settings of local models and the editable settings of
 // model-table rows. Edits are saved through `models.set_config`; a debounced dry run supplies the
-// live memory estimate and the server's validation message.
+// live memory estimate and the server's validation message. It uses the Settings window's shell
+// (SettingsModal): the models are its navigation, local ones and model-table rows in two groups.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Boxes, Cpu, Search } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
   LocalLaunchSettings,
   LocalModelConfig,
@@ -11,6 +13,7 @@ import type {
   TableModelConfig,
   TableModelSettings,
 } from "@imperium/protocol";
+import { matches, ModalNavGroup, ModalNavItem, SettingsModal } from "./components/SettingsModal";
 import type { DaemonClient } from "./daemon/client";
 import { arrangeModels, markOf } from "./modelPrefs";
 import { useSettings } from "./settings";
@@ -224,11 +227,11 @@ export function ModelConfigDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null);
   const { modelMarks } = useSettings();
   const [config, setConfig] = useState<ModelConfigResult | null>(null);
   const [tab, setTab] = useState(target.tab);
   const [selected, setSelected] = useState<string | null>(target.id ?? null);
+  const [query, setQuery] = useState("");
   const [localDrafts, setLocalDrafts] = useState<Record<string, LocalDraft>>({});
   const [tableDrafts, setTableDrafts] = useState<Record<string, TableDraft>>({});
   const [preview, setPreview] = useState<LocalModelConfig | null>(null);
@@ -238,11 +241,6 @@ export function ModelConfigDialog({
   const [applied, setApplied] = useState(false);
 
   useEffect(() => {
-    const element = dialog.current;
-    if (element && !element.open) element.showModal();
-  }, []);
-
-  useEffect(() => {
     if (!client) return;
     client.call<ModelConfigResult>("models.config").then(setConfig, (e) => setError(message(e)));
   }, [client]);
@@ -250,11 +248,18 @@ export function ModelConfigDialog({
   const localById = useMemo(() => new Map((config?.local ?? []).map((m) => [m.id, m])), [config]);
   const tableById = useMemo(() => new Map((config?.table ?? []).map((m) => [m.id, m])), [config]);
 
-  // Keep a valid selection for the current tab.
+  // Keep a valid selection: the asked-for kind first, else the other when that has no models.
   useEffect(() => {
     if (!config) return;
     const ids = (tab === "local" ? config.local : config.table).map((m) => m.id);
-    if (!selected || !ids.includes(selected)) setSelected(ids[0] ?? null);
+    if (selected && ids.includes(selected)) return;
+    const other = tab === "local" ? config.table : config.local;
+    if (ids.length === 0 && other.length > 0) {
+      setTab(tab === "local" ? "table" : "local");
+      setSelected(other[0].id);
+    } else {
+      setSelected(ids[0] ?? null);
+    }
   }, [config, tab, selected]);
 
   const selectedLocal = tab === "local" && selected ? localById.get(selected) : undefined;
@@ -392,120 +397,139 @@ export function ModelConfigDialog({
 
   // Favourites first and hidden models last, as in the model panels (modelPrefs.ts).
   const specOf = (item: LocalModelConfig | TableModelConfig) => ("spec" in item ? item.spec : `${item.runtime}:${item.id}`);
-  const arranged = arrangeModels<LocalModelConfig | TableModelConfig>(
-    tab === "local" ? (config?.local ?? []) : (config?.table ?? []),
-    specOf,
-    modelMarks,
+  const arrange = <T extends LocalModelConfig | TableModelConfig>(list: T[]): T[] => {
+    const arranged = arrangeModels<T>(
+      list.filter((item) => matches(query, item.id, specOf(item))),
+      specOf,
+      modelMarks,
+    );
+    return [...arranged.favourites, ...arranged.normal, ...arranged.hidden];
+  };
+
+  const navItem = (item: LocalModelConfig | TableModelConfig, kind: "local" | "table") => {
+    const local = kind === "local" ? (item as LocalModelConfig) : undefined;
+    const row = kind === "table" ? (item as TableModelConfig) : undefined;
+    const mark = markOf(modelMarks, specOf(item));
+    return (
+      <ModalNavItem
+        key={`${kind}:${item.id}`}
+        icon={kind === "local" ? Cpu : Boxes}
+        active={tab === kind && selected === item.id}
+        dimmed={mark === "hidden"}
+        title={item.id}
+        onClick={() => {
+          setTab(kind);
+          setSelected(item.id);
+        }}
+        badges={
+          <>
+            {mark === "favourite" && <span className="badge">favourite</span>}
+            {mark === "hidden" && <span className="badge off">hidden</span>}
+            {local && <span className="badge">{local.runtime}</span>}
+            {row && <span className={`badge ${row.location}`}>{row.location}</span>}
+            {local?.loaded && <span className="badge local">loaded</span>}
+            {local?.reload_pending && <span className="badge">reload pending</span>}
+            {changed(item.id, kind) && <span className="badge">edited</span>}
+          </>
+        }
+      >
+        {item.id}
+      </ModalNavItem>
+    );
+  };
+
+  const localItems = arrange(config?.local ?? []);
+  const tableItems = arrange(config?.table ?? []);
+  const nav = (
+    <>
+      <label className="search-field settings-search">
+        <Search aria-hidden="true" />
+        <input
+          type="search"
+          placeholder="Search models"
+          aria-label="Search models"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          autoFocus
+        />
+      </label>
+      <ModalNavGroup label="Local models">
+        {localItems.map((item) => navItem(item, "local"))}
+        {config && localItems.length === 0 && (
+          <span className="settings-nav-empty">{query.trim() ? "No matches." : "No local models found."}</span>
+        )}
+      </ModalNavGroup>
+      <ModalNavGroup label="Model table">
+        {tableItems.map((item) => navItem(item, "table"))}
+        {config && tableItems.length === 0 && (
+          <span className="settings-nav-empty">{query.trim() ? "No matches." : "The model table is empty."}</span>
+        )}
+      </ModalNavGroup>
+    </>
   );
-  const items = [...arranged.favourites, ...arranged.normal, ...arranged.hidden];
+
+  const footer = (
+    <>
+      {error && (
+        <span className="error" role="alert">
+          {error}
+        </span>
+      )}
+      {config && !error && <span className="muted">saved to {config.file}</span>}
+      {applied && (
+        <span className="muted" role="status">
+          Saved
+        </span>
+      )}
+      <button onClick={onClose}>{applied || !dirty ? "Close" : "Cancel"}</button>
+      <button onClick={() => void save(false)} disabled={saving || !config || !dirty} title="Save without closing (Ctrl+S)">
+        Apply
+      </button>
+      <button className="primary" onClick={() => void save(true)} disabled={saving || !config || !dirty}>
+        {saving ? "Saving…" : "Save"}
+      </button>
+    </>
+  );
 
   return (
-    <dialog
-      ref={dialog}
-      className="model-dialog"
-      aria-labelledby="model-dialog-title"
-      onCancel={onClose}
-      onClick={(e) => e.target === dialog.current && onClose()}
-      onKeyDown={(e) => {
+    <SettingsModal
+      label="Models"
+      title={selected ?? "Models"}
+      nav={nav}
+      footer={footer}
+      onClose={onClose}
+      onKeyDown={(event) => {
         // Ctrl+S (Cmd+S on macOS) applies without closing.
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-          e.preventDefault();
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+          event.preventDefault();
           if (dirty) void save(false);
         }
       }}
     >
-      <h2 id="model-dialog-title">Models</h2>
-      <div className="model-tabs" role="tablist">
-        {(["local", "table"] as const).map((name) => (
-          <button
-            key={name}
-            role="tab"
-            aria-selected={tab === name}
-            className={tab === name ? "primary" : "ghost"}
-            onClick={() => setTab(name)}
-          >
-            {name === "local" ? "Local" : "Model table"}
-          </button>
-        ))}
-      </div>
-      <div className="model-dialog-body">
-        <ul className="model-list">
-          {items.map((item) => {
-            const local = "runtime" in item ? item : undefined;
-            const row = "spec" in item ? item : undefined;
-            return (
-              <li key={item.id} className={markOf(modelMarks, specOf(item)) === "hidden" ? "model-hidden" : undefined}>
-                <button
-                  className={selected === item.id ? "primary" : "ghost"}
-                  onClick={() => setSelected(item.id)}
-                  aria-pressed={selected === item.id}
-                >
-                  <span>{item.id}</span>
-                  {markOf(modelMarks, specOf(item)) === "favourite" && <span className="badge">favourite</span>}
-                  {markOf(modelMarks, specOf(item)) === "hidden" && <span className="badge off">hidden</span>}
-                  {local && <span className="badge">{local.runtime}</span>}
-                  {row && <span className={`badge ${row.location}`}>{row.location}</span>}
-                  {local?.loaded && <span className="badge local">loaded</span>}
-                  {local?.reload_pending && <span className="badge">reload pending</span>}
-                  {changed(item.id, tab) && <span className="badge">edited</span>}
-                </button>
-              </li>
-            );
-          })}
-          {config && items.length === 0 && (
-            <li className="empty">{tab === "local" ? "No local models found." : "The model table is empty."}</li>
-          )}
-        </ul>
-        <div className="model-form">
-          {!config && !error && <p className="muted">Loading…</p>}
-          {selectedLocal && config && (
-            <LocalForm
-              model={selectedLocal}
-              draft={localDrafts[selectedLocal.id] ?? localDraft(selectedLocal.saved)}
-              defaults={config.defaults}
-              cacheTypes={config.cache_types}
-              preview={preview}
-              previewError={previewError}
-              onChange={(patch) => setLocal(selectedLocal, patch)}
-              onResetAll={() => setLocalDrafts((all) => ({ ...all, [selectedLocal.id]: EMPTY_LOCAL }))}
-            />
-          )}
-          {selectedTable && (
-            <TableForm
-              row={selectedTable}
-              draft={tableDrafts[selectedTable.id] ?? tableDraft(selectedTable.saved)}
-              previewError={previewError}
-              onChange={(patch) => setTable(selectedTable, patch)}
-              onResetAll={() => setTableDrafts((all) => ({ ...all, [selectedTable.id]: EMPTY_TABLE }))}
-            />
-          )}
-        </div>
-      </div>
-      <footer className="model-dialog-footer">
-        {error && (
-          <span className="error" role="alert">
-            {error}
-          </span>
-        )}
-        {config && <span className="muted">saved to {config.file}</span>}
-        {applied && (
-          <span className="muted" role="status">
-            Saved
-          </span>
-        )}
-        <button onClick={onClose}>{applied || !dirty ? "Close" : "Cancel"}</button>
-        <button
-          onClick={() => void save(false)}
-          disabled={saving || !config || !dirty}
-          title="Save without closing (Ctrl+S)"
-        >
-          Apply
-        </button>
-        <button className="primary" onClick={() => void save(true)} disabled={saving || !config || !dirty}>
-          {saving ? "Saving…" : "Save"}
-        </button>
-      </footer>
-    </dialog>
+      {!config && !error && <p className="muted">Loading…</p>}
+      {config && !selectedLocal && !selectedTable && <p className="muted">No models to configure.</p>}
+      {selectedLocal && config && (
+        <LocalForm
+          model={selectedLocal}
+          draft={localDrafts[selectedLocal.id] ?? localDraft(selectedLocal.saved)}
+          defaults={config.defaults}
+          cacheTypes={config.cache_types}
+          preview={preview}
+          previewError={previewError}
+          onChange={(patch) => setLocal(selectedLocal, patch)}
+          onResetAll={() => setLocalDrafts((all) => ({ ...all, [selectedLocal.id]: EMPTY_LOCAL }))}
+        />
+      )}
+      {selectedTable && (
+        <TableForm
+          row={selectedTable}
+          draft={tableDrafts[selectedTable.id] ?? tableDraft(selectedTable.saved)}
+          previewError={previewError}
+          onChange={(patch) => setTable(selectedTable, patch)}
+          onResetAll={() => setTableDrafts((all) => ({ ...all, [selectedTable.id]: EMPTY_TABLE }))}
+        />
+      )}
+    </SettingsModal>
   );
 }
 
@@ -568,7 +592,6 @@ function LocalForm({
   return (
     <div className="model-form-fields">
       <div className="model-summary">
-        <strong>{model.id}</strong>
         <span className="muted">
           {model.runtime}
           {model.cpu_lane ? " · CPU lane" : ""}
@@ -668,7 +691,6 @@ function TableForm({
   return (
     <div className="model-form-fields">
       <div className="model-summary">
-        <strong>{row.id}</strong>
         <span className="muted">{row.spec}</span>
         {!row.endpoint_configured && <span className="warning">This row names an endpoint that is not configured.</span>}
       </div>

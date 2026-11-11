@@ -7,7 +7,8 @@
   browser (development preview) it asks for the URL and token instead.
 - The default view below, built from columns of spanning or stacked panels with draggable
   dividers; sizes are remembered, and stacked panels fold to their header
-  ([folding](#columns-spanning-and-stacking)).
+  ([folding](#columns-spanning-and-stacking)). The [panel editor](#panel-editor-implemented)
+  moves panels between columns and adds or removes columns.
 - Session panel: the title and status at the top, conversation with assistant replies rendered
   as Markdown (GitHub-flavoured, raw HTML disabled; an option shows the raw text), inline
   permission prompts (allow, always this session, always allow by a rule, deny; see
@@ -130,8 +131,8 @@ when it is done the card offers **Switch to it** (`session.control` `set_model`)
 downloaded until Download is clicked. The answers go through `session.suggestion_respond`
 ([04](04-models-and-routing.md#model-download-suggestions)).
 
-Not yet: dragging panels and modules between columns, the edit-layout mode, project layout
-overrides, mods, and themes beyond light and dark.
+Not yet: dragging modules between panels, project layout overrides, and themes beyond light
+and dark.
 
 ## Shell
 
@@ -228,7 +229,7 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
   **stack** of panels.
 - A panel declares its height behaviour:
   - `span` — always takes the full height of its column (default for the main session panel).
-    Other panels cannot be stacked above or below it.
+    Other panels share its column only when the panel editor puts them there; it never folds.
   - `stack` — shares its column with other stackable panels, split by draggable dividers,
     collapsible to a title bar, and tabbable when space is short (default for projects and
     sessions).
@@ -253,7 +254,33 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
 - Built-in sections (environment header, context breakdown, outputs, worktrees, ...) are
   modules too, so users can reorder, remove, or swap them with mod-provided modules.
 
-### Rearranging
+### Panel editor (implemented)
+
+- The toggle at the top right of the main window, beside **Settings**, uses the icon of
+  Settings → Panels and turns the panel editor on and off (`aria-pressed`). Outside the editor
+  panels cannot be moved: there are no handles or drop zones, only the panels' own buttons and
+  the resize dividers.
+- In the editor a slim bar under the title bar says what to do and has **+ Column** (an empty
+  column at the right) and **Done**; Esc leaves the editor too (when no dialog is open). Panel
+  bodies are dimmed and inert, and each header becomes a handle with a grip, the panel's buttons
+  hidden. The session panel shows its header there as well.
+- Drag a panel by its header (it starts after a few pixels): a ghost with its title follows the
+  pointer, and an accent line shows where it lands — above another panel, at the end of a
+  column, or at a column's left or right edge, which makes a new column there with that panel.
+  Esc during a drag cancels it. An empty column reads *Drop a panel here* and offers
+  **Remove column**; panels it still lists (closed, detached, or a mod not loaded) move to the
+  column beside it. Outside the editor empty columns are not drawn.
+- The session spans its column when it is alone there; stacked with other panels it does not
+  fold. Columns left of the session's are drawn as left rails, the others as right rails.
+- The arrangement (each column's id and its panels' ids, in order) is saved as `arrangement` in
+  the local `layout` document with the sizes and closed panels ([persistence](#settings-and-persistence-implemented));
+  until the editor changes it, it is `null` and the default applies. Panels the saved
+  arrangement does not list (new built-ins, newly enabled mods) join their default column.
+  Column widths are kept per set of columns, and a new set gives the session's column the most
+  room. Settings → *Reset layout* restores the default arrangement. The rules are pure
+  functions (`layout/arrangement.ts`) with tests (`test/arrangement.test.ts`).
+
+### Rearranging (planned)
 
 - Everything is drag-and-drop: drag a panel's title bar to another column, into a stack, or
   out into a new window; drag a module between panels. Drop targets preview the result.
@@ -639,7 +666,7 @@ local model marked in either panel is marked in both; they are app settings, sav
 `settings` document in `desktop/` ([persistence](#settings-and-persistence-implemented)), and
 survive updates and reinstalls. In the model panels favourites come first, then the other
 models in the panel's own order, then the hidden ones in a collapsed *Hidden (n)* group at the
-end, dimmed, each with its eye to show it again. The model configuration dialog's list follows
+end, dimmed, each with its eye to show it again. The model configuration dialog's navigation follows
 the same order with *favourite* and *hidden* badges. The session's model selector, the
 new-session composer's model list, and the command palette's *Use …* commands list favourites
 first (under *Favourites*, the rest under *Models*, when any model is marked) and leave hidden
@@ -829,10 +856,13 @@ drawn. Session totals and recent outputs follow.
 
 ## Model configuration dialog (implemented)
 
-A modal (a native `<dialog>`, so Esc and the backdrop close it) edits model settings. It opens
-from *Models…* in the settings menu, from *Configure* in the Local models panel (Local tab) and
-from *Configure* in the Models panel (Model table tab). The Local tab lists the models in
-`models.folders`; each form field is optional, shows the effective value as its placeholder and
+A modal edits model settings. It uses the Settings window's shell (`SettingsModal`: the same
+sheet, sizing, header with the title and ×, navigation column, and Esc or a click on the backdrop
+to close), with a footer for its actions. It opens from *Configure models* in Settings (Models and
+Local runtime), from *Configure* in the Local models panel (on that model) and from *Configure* in
+the Models panel (on the model table). The navigation column has a *Search models* field and two
+groups, *Local models* (the models in `models.folders`) and *Model table*, each model with its
+badges; the selected model's id is the heading. Each local form field is optional, shows the effective value as its placeholder and
 has a *reset* that clears the saved value. Fields: max context per agent (a number of tokens or
 *auto*, offered in the field's list; the placeholder shows the sized ceiling, such as *auto
 (131072)*), KV pool tokens (empty: starts small and grows on demand; a number fixes it), slots, K
@@ -844,9 +874,10 @@ shows "Saved" for a moment and the values now in effect (such as a cut pool or t
 GPU), and closing it afterwards keeps what was applied; *Save* saves and closes. Both are
 disabled while nothing has changed. For a vLLM model the cache types, flash attention and GPU
 layers are disabled. A debounced (500 ms) `models.set_config` dry run shows the memory the model
-would need, its KV pool and its placement, or the server's error. The Model table tab edits
+would need, its KV pool and its placement, or the server's error. A model-table row's form edits
 existing rows only (enabled, tier, tags, context window, prices; both prices or neither); it
-does not add or remove rows. *Save* sends only the models that differ from what is saved, each
+does not add or remove rows. The footer shows the file the settings are saved to, *Cancel* (or
+*Close* once nothing is pending), *Apply* and *Save*. *Save* sends only the models that differ from what is saved, each
 as a whole-settings update, then closes and refreshes the panels; a failure keeps the dialog
 open with the message. *Reset model* clears all of a model's saved settings. A loaded model's
 badge reads `loaded · <in use>/<slots> busy · pool <reserved>/<pool>`, and a disabled table row

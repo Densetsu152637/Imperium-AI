@@ -1,12 +1,15 @@
-// The workspace as the user left it: panel sizes, which panels are closed, and the selected
+// The workspace as the user left it: which panels sit in which columns, panel sizes, which panels are closed, and the selected
 // environment and session. Kept in the local `layout` document (store.ts), so
 // the window reopens the same way after a restart, an update, or a reinstall.
 
 import { getDoc, setDoc, subscribeDoc } from "../store";
+import type { Arrangement } from "./arrangement";
 
 export type Layout = {
   /** Proportions per split, by key ("columns", "stack.left", ...). */
   sizes: Record<string, number[]>;
+  /** Which panels sit in which columns, as the panel editor left them; null for the default. */
+  arrangement: Arrangement | null;
   /** Panels the user closed. */
   hidden: string[];
   /** Stacked panels folded to their header; the others in the column take their room. */
@@ -39,6 +42,7 @@ export type DetachedPanel = {
 
 const EMPTY: Layout = {
   sizes: {},
+  arrangement: null,
   hidden: [],
   collapsed: [],
   environment: null,
@@ -95,7 +99,7 @@ export function updateLayout(patch: Partial<Layout>): void {
   setDoc("layout", layout);
 }
 
-/** Forgets sizes, closed and collapsed panels, and detached windows (back to the defaults); the selection and folders stay. */
+/** Forgets the arrangement, sizes, closed and collapsed panels, and detached windows (back to the defaults); the selection and folders stay. */
 export function resetLayout(): void {
-  updateLayout({ sizes: {}, hidden: [], collapsed: [], detached: {} });
+  updateLayout({ sizes: {}, arrangement: null, hidden: [], collapsed: [], detached: {} });
 }

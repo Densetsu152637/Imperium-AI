@@ -434,6 +434,15 @@ pre {
   min-height: 0;
 }
 
+/* One column of the workspace (Columns.tsx): a spanning panel, a stack, or (in the editor) an empty column. */
+.layout-column {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+
 .split-column > .split-cell + .split-cell {
   border-top: 1px solid var(--border);
 }
@@ -628,12 +637,12 @@ pre {
   padding: calc(var(--space) * 0.5) var(--space) var(--space);
 }
 
-/* The spanning panel is the canvas: no header bar, edge to edge. Its title stays for screen readers. */
-.split-row > .split-cell > .panel {
+/* The session is the canvas: no header bar, edge to edge. Its title stays for screen readers. */
+.panel[data-panel="session"] {
   background: var(--bg);
 }
 
-.split-row > .split-cell > .panel > .panel-body {
+.panel[data-panel="session"] > .panel-body {
   display: flex;
   flex-direction: column;
   padding: 0;
@@ -4126,6 +4135,62 @@ button.colour-choice[aria-checked="true"]::after {
   margin: 0.6rem 1.4rem 0;
 }
 
+/* Actions under a modal's content (Cancel, Apply, Save), for editors that do not save as they change. */
+.settings-footer {
+  display: flex;
+  gap: var(--space);
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0.7rem 1.4rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+
+.settings-footer .error,
+.settings-footer .muted {
+  margin-right: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-footer .error {
+  color: var(--danger);
+}
+
+/* A navigation item with badges under its label (a model and its state). */
+.settings-nav-item-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.settings-nav-item-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.settings-nav-item.dimmed {
+  opacity: 0.55;
+}
+
+.settings-nav-empty {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
 .reset-link {
   padding: 0 0.3rem;
   font-size: 0.72rem;
@@ -5238,72 +5303,9 @@ button.select.open .select-chevron {
   color: var(--ok);
 }
 
-/* Model configuration dialog (native dialog, opened with showModal) */
-.model-dialog {
-  width: min(60rem, calc(100vw - 2rem));
-  max-height: calc(100vh - 2rem);
-  padding: calc(var(--space) * 2);
-  color: var(--fg);
-  background: var(--metal-card);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  box-shadow: var(--highlight), var(--shadow);
-}
-
-.model-dialog[open] {
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--space) * 1.5);
-}
-
-.model-dialog::backdrop {
-  background: rgb(0 0 0 / 0.55);
-}
-
-.model-dialog h2 {
-  margin: 0;
-  font-size: 1.1rem;
-}
-
-.model-tabs {
-  display: flex;
-  gap: var(--space);
-}
-
-.model-dialog-body {
-  display: grid;
-  grid-template-columns: minmax(10rem, 16rem) 1fr;
-  gap: calc(var(--space) * 2);
-  min-height: 0;
-  flex: 1;
-  overflow: hidden;
-}
-
-.model-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--space) * 0.5);
-  overflow-y: auto;
-}
-
-.model-list button {
-  width: 100%;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-  align-items: center;
-  text-align: left;
-}
-
-.model-form {
-  overflow-y: auto;
-  padding-right: var(--space);
-}
-
+/* Model configuration: the Settings shell (SettingsModal) with a form of two columns. */
 .model-form-fields {
+  padding-top: 0.9rem;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: calc(var(--space) * 1.5);
@@ -5356,32 +5358,8 @@ button.select.open .select-chevron {
   text-transform: none;
 }
 
-.model-dialog .warning {
+.model-summary .warning {
   color: var(--warn, var(--danger));
-}
-
-.model-dialog-footer {
-  display: flex;
-  gap: var(--space);
-  align-items: center;
-  justify-content: flex-end;
-  font-size: 0.8rem;
-}
-
-.model-dialog-footer .error,
-.model-dialog-footer .muted {
-  margin-right: auto;
-}
-
-.model-dialog-footer .error {
-  color: var(--danger);
-}
-
-/* Badges on the selected (accent-filled) model take the button's text colour. */
-.model-dialog button.primary .badge {
-  background: transparent;
-  border-color: currentColor;
-  color: inherit;
 }
 
 .models tr.off .badge.off {
@@ -5732,6 +5710,169 @@ button.select.open .select-chevron {
   padding: calc(var(--space) * 0.75) calc(var(--space) * 1.5);
   border-top: 1px solid var(--border);
   font-size: 0.75rem;
+}
+
+/* ---- Panel editor (the layout toggle beside Settings): quiet handles, drop lines, Done. ---- */
+.titlebar-button.layout-toggle.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.layout-editor-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space);
+  padding: 0.35rem 1rem;
+  font-size: 0.8rem;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--border);
+  animation: fade-in var(--fast, 120ms) ease-out;
+}
+
+.layout-editor-bar > span {
+  margin-right: auto;
+}
+
+.editing-layout .panel {
+  position: relative;
+}
+
+.editing-layout .panel-header {
+  justify-content: flex-start;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.editing-layout .panel-header:hover {
+  background: var(--hover);
+}
+
+.editing-layout .panel-body {
+  opacity: 0.45;
+}
+
+/* The session's header is hidden outside the editor; in it, it is the handle like any other. */
+.editing-layout .panel[data-panel="session"] > .panel-header {
+  position: static;
+  width: auto;
+  height: auto;
+  min-height: 2.6rem;
+  padding: calc(var(--space) * 0.75) calc(var(--space) * 1.5) calc(var(--space) * 0.25);
+  overflow: visible;
+  clip-path: none;
+  justify-content: flex-start;
+}
+
+.panel-grip {
+  flex: none;
+  width: 0.9rem;
+  height: 0.9rem;
+  color: var(--muted);
+}
+
+.panel.drag-source {
+  opacity: 0.4;
+}
+
+/* Where a dragged panel lands: a line above a panel, at a column's end, or at a column's edge. */
+.panel.drop-before::before,
+.layout-column.drop-end::after {
+  content: "";
+  position: absolute;
+  left: 0.5rem;
+  right: 0.5rem;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.panel.drop-before::before {
+  top: 0;
+}
+
+.layout-column.drop-end::after {
+  bottom: 2px;
+}
+
+.layout-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0.8rem;
+  z-index: 4;
+}
+
+.layout-edge.left {
+  left: 0;
+}
+
+.layout-edge.right {
+  right: 0;
+}
+
+.layout-edge::after {
+  content: "";
+  position: absolute;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  left: 50%;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: opacity var(--fast, 120ms) ease-out;
+}
+
+.layout-edge.active::after {
+  opacity: 1;
+}
+
+.layout-empty-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  border-style: dashed;
+}
+
+.layout-column.drop-end > .layout-empty-column {
+  background: var(--accent-soft);
+}
+
+.layout-column.drop-end:has(> .layout-empty-column)::after {
+  display: none;
+}
+
+.layout-drag-ghost {
+  position: fixed;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg);
+  background: var(--metal-card, var(--surface));
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  transform: translate(12px, 12px);
+  pointer-events: none;
+}
+
+.layout-drag-ghost .lucide {
+  width: 0.85rem;
+  height: 0.85rem;
 }
 
 /* Composer tools: attach and push-to-talk */
