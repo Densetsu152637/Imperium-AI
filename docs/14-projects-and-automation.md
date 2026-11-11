@@ -16,15 +16,16 @@ RPC:
 | Method | Params | Result |
 | --- | --- | --- |
 | `environments.list` | `{}` | `{ environments: EnvironmentInfo[], git: string[] }` (`git`: ids of local environments with a folder inside a git repository, which can start sessions on worktrees; also sent with `environments.changed`) |
-| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent?, pet? }` | `EnvironmentInfo` |
-| `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent?, pet? }` (empty icon/colour/pet clears it) | `EnvironmentInfo` |
+| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent?, pet?, project_worktrees? }` | `EnvironmentInfo` |
+| `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent?, pet?, project_worktrees? }` (empty icon/colour/pet clears it) | `EnvironmentInfo` |
 | `environments.test_runtime` | `{ id }` | `{ ok, message }` |
 | `environments.delete` | `{ id }` | `{}` (folders and running sessions are left alone) |
 | `environments.add_folder` | `{ id, folder }` (an existing absolute folder) | `EnvironmentInfo` |
 | `environments.remove_folder` | `{ id, folder }` | `EnvironmentInfo` |
 
 `EnvironmentInfo` is `{ id, name, icon, color, folders, pinned, runtime, persistent_agent,
-agent_session_id, pet }`, where `pet` is the environment's default pet (an installed pet's id) for the
+agent_session_id, pet, project_worktrees }`, where `project_worktrees` (on unless turned off)
+opens the folders' [git worktrees](#worktrees) to its sessions, and `pet` is the environment's default pet (an installed pet's id) for the
 [nursery](16-pets.md#imperium-nursery), or none to let the nursery decide; folders first-to-last with the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
 (the full list). `session.create` takes `environment_id`; `project_dir` still works and maps to
 the environment whose first folder it is, created (named after the folder) when there is none.
@@ -111,6 +112,35 @@ resumes after a restart, and `session.delete { session_id, remove_worktrees }` (
 session delete <id> --remove-worktrees`) stops and forgets the session and removes its
 worktrees, keeping their branches. Worktrees are made only for local folders (not remote
 runtimes).
+
+**Implemented: project worktrees by default.** An environment's sessions can also use the git
+worktrees of the repositories its folders are in, with no folders or grants to add: the main
+checkout and every linked worktree, the ones `git worktree list` shows. A folder below the top
+of its repository opens the same subfolder of each worktree. They are discovered, never guessed:
+
+- The repository is pinned when the session starts, from the folder's `.git` (a linked
+  worktree's `.git` file counts only when its entry in the repository's `worktrees/` names it
+  back).
+- Discovery reads git's own records (`<repo>/.git/worktrees/<name>/gitdir`) rather than running
+  git, so nothing in the repository's configuration runs, and a worktree counts only when its
+  own `.git` file points back at that entry. A session can add entries to a repository inside
+  its folders, but cannot write a `.git` file where it could not already write, so a forged
+  entry opens nothing.
+- The list is read again whenever a path falls outside every folder and grant, and before each
+  command, so worktrees added while the session runs (by the agent with `git worktree add`, or
+  by you) are covered at once and removed ones drop out.
+
+**Access.** Worktrees get the same access as the project folder they come from: environment
+folders are writable, so the worktrees are too, for the file tools and for commands under the
+OS-sandbox and container tiers (mounted like further folders). Everything else is unchanged:
+paths go through the same checks as folders (`..` and links resolved, the deepest folder or
+grant decides, so a read-only grant inside a worktree still makes that part read-only), and
+deny rules still win. The system prompt names the worktrees beside the environment's folders.
+
+The **Project worktrees** switch in the environment's window (`project_worktrees: false` in
+`environments.update`) turns this off for sessions started afterwards. A session started on its
+own worktree (above) keeps to its worktrees, so its edits stay apart from your checkout, and
+remote runtimes do not get project worktrees.
 
 **Planned:** parallel writing subagents can each work in their own Git worktree, so concurrent
 edits never collide. Worktree behaviour is explicit configuration, set globally and overridable

@@ -62,6 +62,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
   const [newFolders, setNewFolders] = useState<string[]>([]);
   const [runtime, setRuntime] = useState(() => draftOf(environment?.runtime));
   const [persistentAgent, setPersistentAgent] = useState(environment?.persistent_agent ?? false);
+  const [projectWorktrees, setProjectWorktrees] = useState(environment?.project_worktrees ?? true);
   const [typedFolder, setTypedFolder] = useState("");
   const [pet, setPet] = useState(environment?.pet ?? "");
   const [installedPets, setInstalledPets] = useState<{ id: string; name: string }[]>([]);
@@ -166,6 +167,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             folders: newFolders,
             runtime: chosen,
             persistent_agent: persistentAgent,
+            project_worktrees: projectWorktrees,
             ...(pet ? { pet } : {}),
             permissions: cleaned(permissions),
           })
@@ -176,6 +178,9 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             color: choice.color,
             ...(runtimeChanged ? { runtime: chosen } : {}),
             ...(persistentAgent !== (environment.persistent_agent ?? false) ? { persistent_agent: persistentAgent } : {}),
+            ...(projectWorktrees !== (environment.project_worktrees ?? true)
+              ? { project_worktrees: projectWorktrees }
+              : {}),
             ...(pet !== (environment.pet ?? "") ? { pet } : {}),
             ...(permissionsChanged ? { permissions: cleaned(permissions) } : {}),
           }),
@@ -381,6 +386,8 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             onChange={setRuntime}
             persistentAgent={persistentAgent}
             onPersistentAgent={setPersistentAgent}
+            projectWorktrees={projectWorktrees}
+            onProjectWorktrees={setProjectWorktrees}
             disabled={busy || !client}
             testBlocked={
               creating ? "Create the environment first" : runtimeChanged ? "Save the runtime first" : null
