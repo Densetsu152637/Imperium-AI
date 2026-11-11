@@ -39,7 +39,7 @@ a conversation (not offered today, [12](12-roadmap.md) item 7).
 | Session files | `<data>/sessions/<id>.jsonl` (journal), `<id>.meta.json`, `<id>.messages.json`, `<id>.turns.jsonl`, `<id>.agents/`, `<id>.checkpoints/` | [03](03-agent-engine.md#persistence) |
 | Branching | `session.branch` copies the journal and root conversation up to a message into a new session (`branched_from`), using the `<id>.turns.jsonl` index | [03](03-agent-engine.md#persistence), [14](14-projects-and-automation.md#branching-and-comparison) |
 | Checkpoints | Commits on private refs `refs/imperium/checkpoints/<session>/<n>` in the user's own repository, linked by `<id>.checkpoints/<n>.json` to the journal and saved conversation; `git push` does not send them | [14](14-projects-and-automation.md#checkpoints-and-rewinding) |
-| Secret check | `imperium_memory::looks_secret`: known key prefixes (private key, `sk-`, `ghp_`, `github_pat_`, `xox`, `AKIA`, `AIza`, `hf_`) and long key-like tokens. Memory writes already refuse text that trips it | [17](17-memory.md) |
+| Secret checks | Two separate detectors, each returning only the first reason found, never a span. Export uses `credential_in` (`crates/imperium-core/src/export.rs`): 14 key prefixes with a body of 16+ key characters, a private-key header, and JWTs; git hashes do not count. Memory writes use `imperium_memory::looks_secret`: 8 prefixes, a private-key header, and a long token-like-string rule | [02](02-architecture.md#protocol), [07](07-desktop-ui.md#exporting-transcripts-implemented), [17](17-memory.md) |
 | Config layers | Defaults, user `config.toml`, app `models.toml`, host, project `.imperium/config.toml` (shareable) and `.imperium/config.local.toml` (git-ignored), session, environment variables | [10](10-configuration.md#layers) |
 | Shareable project files | `<project>/.imperium/memory/` ("can be committed"), `.imperium/config.toml`, `.imperium/policy/`, `.imperium/skills/` | [17](17-memory.md#scopes), [10](10-configuration.md#layers), [08](08-agent-policy.md#layering-and-overrides), [06](06-extensibility.md) |
 | Environments, permissions | `environments.json` in the data folder, with each environment's folders, runtime and permission rules; global rules in `[permissions]` | [14](14-projects-and-automation.md#environments-implemented), [05](05-tools-and-isolation.md#permissions) |
@@ -108,7 +108,7 @@ Raw journals hold everything an agent read or ran. Redaction classes:
 
 | Class | Examples | Default |
 | --- | --- | --- |
-| Secrets | Anything `looks_secret` flags; values of secrets resolved from the keychain during the session; `.env`-style assignments | Replace with `[redacted: <reason>]`; cannot be switched off for a bundle (the user may still export raw Markdown/JSON, as today) |
+| Secrets | Anything the merged detector flags; values of secrets resolved from the keychain during the session; `.env`-style assignments | Replace with `[redacted: <reason>]`; cannot be switched off for a bundle (the user may still export raw Markdown/JSON, as today) |
 | Local paths | Home folder, environment folders, worktree locations, the data folder | Rewrite to placeholders: `~` for the home folder and `<env>/relative` for paths inside an environment folder, with the mapping kept only in the exporter's memory |
 | Personal data | Username, hostname, email addresses, machine name in tool output | Pattern-based replacement; on by default, switchable |
 | Remote content | URLs with tokens in the query string, `Authorization` headers in `web_fetch` results | Strip credentials from URLs; drop headers |
@@ -120,12 +120,18 @@ Raw journals hold everything an agent read or ran. Redaction classes:
 | **B. Regex plus known-value redaction, then a mandatory preview** (recommended) | Known-value matching (every keychain value the daemon resolved in this session, and values of the user's configured endpoint keys) removes secrets the regexes cannot see; the preview lets a human catch the rest |
 | **C. Model-assisted redaction** | Catches prose secrets and names; sends the transcript to a model (a leak if the model is a cloud one), non-deterministic, costs tokens. Only acceptable with a local model, as an opt-in extra pass |
 
-**Recommendation: B.** Reuse `looks_secret` rather than fork it, extracting it into a shared
-function in `imperium-memory` (or a small crate both depend on) so memory, export and bundles
-cannot drift. Extend it with known-value matching, which lives in the daemon because only it
-knows which secrets a session resolved. Redaction changes the bytes, so the manifest records
-what was done (counts per class, not the matches) and the file hashes are over the *redacted*
-content.
+**Recommendation: B.** The two existing detectors disagree (export's `credential_in` knows 14
+prefixes and JWTs; memory's `looks_secret` knows 8 prefixes plus a long-token rule), so reusing
+either alone would miss what the other catches. Phase 0 *merges* them into one detector in a
+shared place, covering the union of prefixes and rules, and carries over the tests of both.
+Both today return only a first reason, not where it is, so the merged matcher must also return
+**spans** so redaction can replace exactly the matched text. It keeps the existing exemption
+for git commit hashes and other SHAs: redacting those would break transcripts, checkpoint
+links and the manifest's own hashes. Known-value matching lives in the daemon, because only
+it knows which secrets a session resolved. Redaction changes the bytes, so the manifest
+records what was done (counts per class, not the matches) and the file hashes are over the
+*redacted* content. Redaction replaces text inside events and messages and must never add,
+drop or merge them: the event and message counts recorded in `turns.jsonl` stay valid.
 
 **Preview before share.** `session.bundle { dry_run: true }` returns the redaction report and a
 diff-style list of replaced spans with surrounding context. The desktop shows it in a dialog
@@ -145,9 +151,14 @@ the ask becomes a review. As today, no finding does not mean no secrets, and the
 
 **Recommendation: B.** An imported session is stored like an archived session with an
 `imported_from` field (bundle id, signer, hash) and cannot receive messages. *Fork* reuses
-`session.branch`: the bundle carries `turns.jsonl`, so the importer can fork at any recorded
+`session.branch`: the bundle carries `turns.jsonl`, so the importer can fork at a recorded
 point, and the fork "is an ordinary session that resumes from the copied files"
-([03](03-agent-engine.md#persistence)). Safety rules for forks:
+([03](03-agent-engine.md#persistence)). Fork limits, inherited from branching: only points after the last compaction can be forked
+(a later compaction rewrites the conversation), and a bundle from a session that predates the
+turn index can only be forked at its latest point
+([03](03-agent-engine.md#persistence)). A fork carries no subagents (branching does not copy
+them), even though the bundle ships `agents/` for reading them in the read-only view. Safety
+rules for forks:
 
 - The fork binds to an environment of the importer's choosing; no path from the bundle is
   trusted. File paths in the conversation are display text only.
@@ -168,7 +179,11 @@ point, and the fork "is an ordinary session that resumes from the copied files"
 | **B. Optional detached signature with a per-install key** (recommended) | Ed25519 key generated on first use, private half in the OS keychain (the same place as all secrets, D7), public key shown as a fingerprint. Importers see "signed by fingerprint X", can pin a fingerprint to a name, and a changed file fails verification. No PKI or server |
 | **C. Mandatory signing with team-issued keys or Sigstore** | Strong identity; needs infrastructure or an online service, which conflicts with local-first for the smallest team |
 
-**Recommendation: B, optional.** Unsigned bundles import with a visible "unsigned" label; a
+**Recommendation: B, optional.** The signature covers the manifest bytes, and the manifest
+lists every file's hash, so one signature covers the whole bundle. Without a signature the
+hashes are self-attested: they catch accidental corruption only, since whoever alters a file
+can recompute them. A fingerprint is only as trustworthy as the channel it was learned over
+(a message from the colleague, a team page), and the importer is told so. Unsigned bundles import with a visible "unsigned" label; a
 signature never makes content trusted, it only says who produced it and that it is unchanged.
 The same key can sign team-sync commits later ([trust](#decision-23-trust-model)). The Tauri updater
 key ([11](11-ci-cd.md)) is for releases and is not reused.
@@ -178,7 +193,7 @@ key ([11](11-ci-cd.md)) is for releases and is not reused.
 | Decision | Recommendation |
 | --- | --- |
 | Format | Bundle (B) alongside existing Markdown/JSON |
-| Redaction | Shared `looks_secret` plus known-value matching, mandatory preview |
+| Redaction | One merged detector (union of export's and memory's) plus known-value matching, mandatory preview |
 | Import | Read-only by default, explicit Fork |
 | Integrity | SHA-256 manifest always; optional Ed25519 signature |
 
@@ -212,6 +227,15 @@ key ([11](11-ci-cd.md)) is for releases and is not reused.
 | Global memory | **Never** | Private by design ([17](17-memory.md#privacy)) |
 | Daemon files (`daemon.json`, `daemon.lock`) | **Never** | Per-process |
 
+**Direction of each synced key.** Every allow-listed key has one of three directions, which
+decide how a pull or an import applies it ([2.3](#decision-23-trust-model)):
+
+| Direction | Meaning | Keys |
+| --- | --- | --- |
+| Narrow-only | Applies automatically | Deny and ask rules; budget limits that lower an allowance or set `ask`/`block`; model-card text and alias changes that do not retarget a model |
+| Widen-needs-review | Shown as a diff; applied only after the user accepts, per machine | Allow rules and any ask-to-allow or deny-to-ask change; new or changed endpoints and **any `base_url` change**; raised budgets; **runtime kind or image changes** in an environment template; **policy pack pin changes** (a new URL or revision); **alias retargeting** (an alias pointing at a different model); new skills, plugins and mods |
+| Never | Not in the allow-list | Everything in the "never" rows above |
+
 The rule that makes this enforceable: sync works on an **allow-listed set of keys and
 files**, not a deny-list. A new setting does not sync until someone marks it syncable in the
 settings table ([10](10-configuration.md#implemented-settings)), so adding a setting can never
@@ -243,9 +267,11 @@ Mechanics:
   dialog) that commits the allow-listed changes with a message and pushes. Agents never push
   to the sync repository; it is not reachable from agent tools, in the spirit of D16 (automation that pushes
   stays narrow and reviewable).
-- **Where it sits in the layers.** Team config is a new layer between *user config* and
-  *app settings*, which users can override locally: the order becomes defaults, team, user
-  config, app settings, and so on ([10](10-configuration.md#layers)). `config explain` reports
+- **Where it sits in the layers.** Team config is a new layer directly after the built-in
+  defaults and before the user's `config.toml`, so every local layer overrides it: the order
+  becomes defaults, team, user config, app settings, host, project, session, environment
+  ([10](10-configuration.md#layers)). The project's `.imperium/config.toml` therefore
+  outranks team values for that project, as it outranks the user's own file today. `config explain` reports
   "set by team layer `<name>` @ `<commit>`". Dropping a key from the team repository removes
   its effect on the next pull.
 
@@ -262,13 +288,25 @@ the user's files, most conflicts do not occur.
 
 **Recommendation: B.** Specifics:
 
-- Local override wins for ordinary keys; a *locked* team key (marked in `team.toml`) cannot be
-  overridden locally and is shown as managed. Locks exist for safety-relevant values only
-  (denied tools, budgets set to `block`), never for preferences.
-- Lists (permission rules, model rows) merge by identity: model rows by id, rules by
-  (tool, pattern), the same keys `permissions.add_rule` already replaces on
-  ([05](05-tools-and-isolation.md#permissions)), budgets by `id`. The evaluation rule stays
-  the existing one: deny wins over ask, ask over allow, across every source.
+- Local override wins for ordinary keys. A *locked* team key (marked in `team.toml`) cannot
+  be overridden locally and is shown as managed; locks are for safety-relevant values only
+  (budgets set to `block`, denied tools), never preferences.
+- Lists merge by identity: model rows by id, budgets by `id`, permission rules by
+  (tool, pattern), the key `permissions.add_rule` already replaces on
+  ([05](05-tools-and-isolation.md#permissions)). An identity collision between a team and a
+  local entry resolves to the *stricter* action (deny over ask over allow); a team entry that
+  would turn a local ask or deny into an allow is a widening proposal
+  ([2.3](#decision-23-trust-model)), not an automatic change.
+- **Evaluation is not "deny always wins".** Permission evaluation today collects every
+  matching rule of both scopes; an environment rule overrides a global rule of *equal
+  specificity*, and only among what is left does deny win over ask and ask over allow
+  ([05](05-tools-and-isolation.md#rules)). A team rule enters as one more source, ordered by
+  that same specificity and scope logic, so a team deny does not beat a more specific local
+  allow. Making a team deny binding needs **a new evaluation tier above specificity and
+  scope** (a "managed" tier that only locked rules occupy), which changes the engine and its
+  docs. Phase 4 must either build that tier or drop the claim that a lock enforces a deny;
+  until then a team deny is a default, and the review rule in 2.3 is what stops silent
+  widening.
 - A push is a fast-forward only. If the remote moved, the pusher pulls, sees the diff, and
   pushes again. No force-push, no rebase is performed on their behalf.
 
@@ -338,11 +376,11 @@ Principles:
 
 | Phase | Delivers | Why this order |
 | --- | --- | --- |
-| **0. Shared redaction** | Extract `looks_secret` into a shared function; add known-value matching; `redaction report` type in the protocol; export uses it for its warning | Both parts need it; no new format, so smallest risk. **Smallest useful first slice** |
-| **1. Settings export/import** | `imperium config export` / `import` of the allow-listed syncable keys as one file (secrets by name only, local paths excluded), with a preview diff; the "whole configuration, secrets excluded" item in [10](10-configuration.md#other-recommended-options) | Gives a manual, offline form of team sync and defines the allow-list that every later phase needs. A teammate can be onboarded with a file today |
+| **0. Shared redaction** | Merge `credential_in` (export) and `looks_secret` (memory) into one detector covering the union of their prefixes and rules, carrying over both test sets; add a span-returning matcher with a git-hash/SHA exemption; add known-value matching; a redaction report type in the protocol; export uses it for its warning | Both parts need it; no new format, so smallest risk. **Smallest useful first slice** |
+| **1. Settings export/import** | `imperium config export` / `import` of the allow-listed syncable keys as one file (secrets by name only, local paths excluded), with a preview diff; import applies the same narrow/widen rule as a team pull (narrow-only keys apply, widening keys need review); the "whole configuration, secrets excluded" item in [10](10-configuration.md#other-recommended-options). **Blocked on** deciding the day-one syncable keys (open questions) | Gives a manual, offline form of team sync and defines the allow-list that every later phase needs. A teammate can be onboarded with a file today |
 | **2. Session bundle** | `session.bundle` with dry-run preview, read-only import, SHA-256 manifest | Real sharing; no checkpoints or signing yet |
 | **3. Fork from import, checkpoint pack, signing** | Fork at a recorded point, optional `git bundle`, Ed25519 signatures | Needs the trust rules for imported conversations tested first |
-| **4. Team sync over git** | `imperium team join/pull/push/status`, the team layer, consent flow, extension lock lists using the PR #122 install path | Builds on phase 1's allow-list and the install path; the largest slice |
+| **4. Team sync over git** | `imperium team join/pull/push/status`, the team layer, consent flow, extension lock lists using the PR #122 install path | Builds on phase 1's allow-list and the install path; the largest slice. `require_signed` depends on phase 3's signing key, so it ships only after phase 3 |
 | **5. Optional server** | Documented sync API and a self-hostable implementation | Only if phase 4 shows polling or access control to be a problem |
 
 Phases 0–1 are the "smallest useful first phase": they need no new transport, no new file
@@ -351,7 +389,7 @@ Each phase updates the owning documents in the same pull request as its code (pr
 [02](02-architecture.md#protocol), settings in [10](10-configuration.md#implemented-settings),
 the export UI in [07](07-desktop-ui.md#exporting-transcripts-implemented)).
 
-Validation criteria per phase: redaction has tests for every class and for a secret resolved
+Validation criteria per phase: a settings file exported and imported on a clean profile applies the narrow-only keys, leaves every widening key as a pending proposal, and carries no secret value or local path; redaction has tests for every class and for a secret resolved
 from the keychain during the session; an exported bundle re-imports to an identical read-only
 transcript; a bundle with a flipped byte fails verification; a team layer that adds a plugin
 with hooks leaves it disabled; a pull with no network leaves the daemon and sessions working.
@@ -385,7 +423,7 @@ with hooks leaves it disabled; a pull with no network leaves the daemon and sess
 | --- | --- | --- |
 | Should imported bundles be searchable by [session search](17-memory.md#session-search-implemented) alongside the user's own sessions, or kept out of the index? | Maintainers | Phase 2 |
 | Is a per-install Ed25519 key enough, or do teams need to name signers (a fingerprint-to-name list in `team.toml`)? | User | Phase 3 |
-| Which settings are syncable on day one? The proposed start: model table, aliases, cards, budgets, permission rules, policy pack pin, environment templates | User | Phase 1 |
+| Which settings are syncable on day one? The proposed start: model table, aliases, cards, budgets, permission rules, policy pack pin, environment templates. **Blocks phase 1** | User | Before phase 1 |
 | Should environment templates bind folders by name slot, or by a `.imperium/` marker file in each repository? | Maintainers | Phase 4 |
 | Do teams want shared (not private) cost reporting? It would need `usage.json` aggregates, which this design excludes | User | Phase 5 |
 | Offer a hosted sync/relay service, or self-host only (tied to the open relay question in [13](13-decisions.md#open-questions))? | User | Phase 5 |
