@@ -7,4 +7,8 @@ export type TableModelEffective = {
 /**
  * The display name in effect, if any.
  */
-alias: string | null, enabled: boolean, tier: "basic" | "standard" | "strong" | "frontier", tags: Array<string>, context_window: number | null, input_usd_per_mtok: number | null, output_usd_per_mtok: number | null, };
+alias: string | null, 
+/**
+ * The model card in effect, if any.
+ */
+card: string | null, enabled: boolean, tier: "basic" | "standard" | "strong" | "frontier", tags: Array<string>, context_window: number | null, input_usd_per_mtok: number | null, output_usd_per_mtok: number | null, };

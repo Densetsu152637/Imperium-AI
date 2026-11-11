@@ -99,6 +99,16 @@ share the session's permission approvals. Events carry an `agent_id` (`root`, or
 and the session emits `task_spawned` and `task_finished` (status, report, tokens, cost).
 Not yet: `send_to_task`, budgets per task, deeper trees, and cancellation.
 
+### Choosing a model
+
+**Implemented:** the root agent has `list_models`, which lists the models it may delegate to,
+with each model's card and, for local models, whether it fits in memory now; with a `query`,
+the models whose cards best match the task come first
+([04](04-models-and-routing.md#model-awareness-and-model-cards-implemented)). It passes the
+chosen id as `spawn_agent`'s `model`. Tool providers can be kept to the root agent
+(`ToolProvider::for_subagents`): subagents are then offered neither their tools nor their
+instructions. `list_models` is, unless `models.list_models = "all"`.
+
 ### Subagent titles
 
 **Implemented:** every subagent has a short title that clients show instead of its task id

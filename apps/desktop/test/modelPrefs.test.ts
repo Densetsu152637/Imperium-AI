@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { arrangeModels, chooserModels, markOf, toggleMark, withMark, type ModelMarks } from "../src/modelPrefs.ts";
+import { arrangeModels, chooserModels, hiddenSpecs, markOf, toggleMark, withMark, type ModelMarks } from "../src/modelPrefs.ts";
 
 const specs = ["openai:gpt", "llamacpp:qwen", "anthropic:claude", "llamacpp:gemma", "vllm:mistral"];
 const self = (spec: string) => spec;
@@ -53,4 +53,9 @@ test("without marks the chooser keeps the list as it was", () => {
     chooserModels(specs, self, {}).map((entry) => entry.item),
     specs,
   );
+});
+
+test("the hidden specs the daemon keeps a copy of are sorted and leave favourites out", () => {
+  assert.deepEqual(hiddenSpecs(undefined), []);
+  assert.deepEqual(hiddenSpecs({ ...marks, "anthropic:old": "hidden" }), ["anthropic:old", "openai:gpt"]);
 });

@@ -43,6 +43,7 @@ use crate::scheduler::Scheduler;
 use crate::suggestions::{SuggestTool, Suggestions};
 
 mod archive;
+mod model_awareness;
 mod session_search;
 mod titles;
 pub use archive::ArchiveError;
@@ -168,6 +169,10 @@ pub struct DaemonState {
     budgets: crate::budgets::BudgetBook,
     /// The session search index, opened on first use.
     session_index: OnceLock<Arc<imperium_memory::sessions::SessionIndex>>,
+    /// What calls to each model measured, for model cards.
+    measurements: model_awareness::Measurements,
+    /// Model card vectors for `list_models` searches by meaning.
+    model_cards: imperium_memory::models::CardIndex,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -245,6 +250,8 @@ impl DaemonState {
             permissions,
             budgets,
             session_index: OnceLock::new(),
+            measurements: model_awareness::Measurements::default(),
+            model_cards: imperium_memory::models::CardIndex::new(),
         });
         state.apply_load_view();
         if let Some(local) = state.local.get() {
@@ -1257,7 +1264,7 @@ impl DaemonState {
             Err(ModelError::NoDefault) if options.may_wait_for_model => None,
             Err(error) => return Err(error.into()),
         };
-        let catalog = self.catalog();
+        let catalog = self.session_catalog();
         // Connectors added or changed in the app since the daemon started apply to new sessions.
         let fresh = crate::connectors::saved_settings(&self.paths);
         let (mut mcp, mut notices) = crate::mcp::session_servers(
@@ -1328,6 +1335,14 @@ impl DaemonState {
             tools.push(Arc::new(session_search::SessionSearchTool {
                 daemon: self.me.clone(),
                 session_id: id.clone(),
+            }));
+        }
+        let list_models = self.settings().models.list_models;
+        if list_models != imperium_config::ListModelsScope::Off {
+            tools.push(Arc::new(model_awareness::ListModelsTool {
+                daemon: self.me.clone(),
+                catalog: catalog.clone(),
+                subagents: list_models == imperium_config::ListModelsScope::All,
             }));
         }
         let model_spec = model.as_ref().map(|model| model.spec.clone());
@@ -1791,7 +1806,7 @@ impl DaemonState {
                         tier: entry.tier,
                         location: entry.location,
                         tags: entry.tags.clone(),
-                        cpu_lane: entry.placement == ModelPlacement::Cpu,
+                        named_only: entry.placement == ModelPlacement::Cpu,
                     }),
                     Err(error) => {
                         tracing::warn!(model = %entry.spec, %error, "skipping catalog model");
@@ -1800,6 +1815,16 @@ impl DaemonState {
                 }
             })
             .collect()
+    }
+
+    /// Records a completed model call's speed for the model's card.
+    pub(crate) fn record_model_call(
+        &self,
+        spec: &str,
+        tokens_per_s: Option<f64>,
+        first_token_ms: Option<u64>,
+    ) {
+        self.measurements.record(spec, tokens_per_s, first_token_ms);
     }
 
     /// The configured model table, with prices from each endpoint's pricing.

@@ -1448,6 +1448,33 @@ impl Supervisor {
         Some((placement, Self::placed_pool(model, &launch, &placement)))
     }
 
+    /// Whether `model` fits in memory now: loaded, fitting beside the loaded models, fitting
+    /// once loaded models nobody is using are unloaded, or not; with the placement it would get.
+    /// An estimate from the planner, as the loader would place it: nothing is loaded.
+    pub fn fit_now(&self, model: &LocalModel) -> (planner::Fit, Option<Placement>) {
+        let Some(backend) = self.backend(model.format).map(Arc::clone) else {
+            return (planner::Fit::DoesNotFit, None);
+        };
+        let held: Vec<planner::Held> = {
+            let state = lock(&self.state);
+            if let Some(loaded) = state.loaded.get(&model.id) {
+                return (planner::Fit::Loaded, Some(loaded.placement));
+            }
+            let users = lock(&self.presence.users);
+            state
+                .loaded
+                .iter()
+                .map(|(id, loaded)| planner::Held {
+                    vram_bytes: loaded.placement.vram_bytes,
+                    ram_bytes: loaded.placement.ram_bytes,
+                    idle: !loaded.busy()
+                        && Presence::claims(&users, id, &loaded.batch, None) == Claim::None,
+                })
+                .collect()
+        };
+        planner::fit_beside(&held, self.budget, self.placer(model, backend))
+    }
+
     /// The KV pool `placement` (from [`Supervisor::placer`]) was made with: the launch's pool,
     /// or less when it was cut to keep the layers on the GPU.
     fn placed_pool(model: &LocalModel, launch: &ModelLaunch, placement: &Placement) -> u32 {

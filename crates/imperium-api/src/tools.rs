@@ -74,6 +74,12 @@ pub trait ToolProvider: Send + Sync + fmt::Debug {
         ToolGroup::Builtin
     }
 
+    /// Whether subagents are offered the tools too; false keeps them (and their instructions)
+    /// to the root agent, the one that delegates.
+    fn for_subagents(&self) -> bool {
+        true
+    }
+
     /// Prepares the tools before the session's first turn (such as starting servers).
     fn start(&self) -> StartFuture<'_> {
         Box::pin(async { Vec::new() })

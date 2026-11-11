@@ -118,6 +118,7 @@ use SettingKind::{Bool, Integer, Number, Path as PathKind, PathList, SecretRef, 
 const STRING: SettingKind = SettingKind::String;
 const WRITE_POLICY: &[&str] = &["auto", "ask", "off"];
 const SESSION_SEARCH_SCOPE: &[&str] = &["environment", "all"];
+const LIST_MODELS: &[&str] = &["root", "all", "off"];
 
 /// Every setting an app may show and change, in display order.
 #[rustfmt::skip]
@@ -131,6 +132,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("models.download_dir", "Download folder", PathKind, "Where Hugging Face downloads go (absolute). Defaults to the first model folder, else <data>/models."),
     live(choice("models.effort", "Reasoning effort", &["low", "medium", "high", "max"], "How hard models that can reason think before answering, for new sessions; each session can change its own. Models that cannot reason are sent nothing.")),
     live(def("models.suggest_downloads", "Suggest model downloads", Bool, "Sessions offer to download a suitable local model from Hugging Face when the best one available is poor for the task. Nothing downloads without your consent.")),
+    live(choice("models.list_models", "Model list for agents", LIST_MODELS, "Which agents of new sessions get list_models, which lists the models they may delegate to with their cards and whether each fits in memory: root (the agent that delegates), all (subagents too), or off.")),
     choice("routing.prefer", "Routing preference", &["cheapest", "local", "cloud"], "Tie-breaker among suitable models for subagents."),
     choice("runtime.llamacpp.backend", "llama.cpp backend", &["auto", "cpu", "vulkan", "cuda12", "cuda13", "rocm", "metal"], "Runtime pack used to run local GGUF models."),
     live(def("runtime.llamacpp.custom_path", "Custom llama-server", PathKind, "Your own llama-server executable, used instead of an installed runtime for models loaded from then on.")),

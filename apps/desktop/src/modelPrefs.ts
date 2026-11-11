@@ -37,6 +37,16 @@ export function arrangeModels<T>(items: readonly T[], specOf: (item: T) => strin
   return arranged;
 }
 
+/**
+ * The specs marked hidden, sorted: the daemon keeps a copy (`models.hidden`) so agents'
+ * `list_models` leaves them out too.
+ */
+export const hiddenSpecs = (marks: ModelMarks | undefined): string[] =>
+  Object.entries(marks ?? {})
+    .filter(([, mark]) => mark === "hidden")
+    .map(([spec]) => spec)
+    .sort();
+
 /** Which part of a list a model is in. */
 export type ModelGroup = "favourite" | "normal" | "hidden";
 

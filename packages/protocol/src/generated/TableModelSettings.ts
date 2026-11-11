@@ -9,6 +9,10 @@ export type TableModelSettings = {
  */
 alias: string | null, 
 /**
+ * The model card agents read when they choose a model; null keeps the row's own `card`.
+ */
+card: string | null, 
+/**
  * False leaves the row out of routing.
  */
 enabled: boolean | null, tier: "basic" | "standard" | "strong" | "frontier" | null, tags: Array<string> | null, 

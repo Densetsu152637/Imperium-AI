@@ -23,4 +23,9 @@ cache_types: Array<string>,
 /**
  * The file saved settings are written to.
  */
-file: string, };
+file: string, 
+/**
+ * Specs of the models the user hid (`models.hidden`), which agents' `list_models` leaves
+ * out.
+ */
+hidden: Array<string>, };

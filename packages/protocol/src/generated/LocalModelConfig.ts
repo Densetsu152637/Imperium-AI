@@ -41,4 +41,9 @@ cpu_lane: boolean,
 /**
  * The context the model was trained for, from its header.
  */
-context_length: number | null, };
+context_length: number | null, 
+/**
+ * What the model's own metadata says (its GGUF header, a vision projector, a Hugging Face
+ * model card beside it); agents read it after the user's card.
+ */
+metadata_card: string, };

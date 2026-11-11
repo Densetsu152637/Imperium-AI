@@ -133,6 +133,26 @@ session_search_scope = "environment"  # environment | all: what agents may searc
 embedding_model = ""                  # e.g. "openai:text-embedding-3-small"; empty: keywords only
 ```
 
+## Model cards (implemented)
+
+Model cards are a retrieval source too: `list_models` with a `query` ranks the models a session
+may delegate to by how well their cards match the task
+([04](04-models-and-routing.md#model-awareness-and-model-cards-implemented)). It is built in
+`imperium_memory::models` on the same primitives as the other searches.
+
+- **What is indexed:** one document per model: its id, display name, tags, abilities and card
+  (the user's card, what its metadata says, and Imperium's measurements). The cards are few, so
+  they are ranked in memory on each search; nothing is written to disk.
+- **Keywords:** words are reduced to a rough stem (`coding`, `coder` and `code` match), and task
+  words map to the strengths cards name: a `refactor`, `bug` or `rust` task is coding; an
+  `essay`, `blog` or `draft` is writing; `literature`, `sources` or `citations` is research;
+  `screenshot` or `diagram` is reading images; and so on. Each shared concept adds its inverse
+  document frequency, so words every card has count for little. Without an embedding model,
+  only cards that share a concept with the query match.
+- **Meaning:** with `memory.embedding_model` set, cards and the query are embedded (5 second
+  limit) and the two rankings are fused by reciprocal rank. Card vectors are kept in memory by
+  model and text, so a card is embedded again only when it changes.
+
 ## Project documentation retrieval
 
 Environment memory also covers what a project already documents. Each project keeps a

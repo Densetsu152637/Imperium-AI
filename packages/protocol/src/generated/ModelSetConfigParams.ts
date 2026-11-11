@@ -4,6 +4,10 @@ import type { TableModelUpdate } from "./TableModelUpdate";
 
 export type ModelSetConfigParams = { local: Array<LocalModelUpdate>, table: Array<TableModelUpdate>, 
 /**
+ * Replaces `models.hidden`, the specs of the models the user hid; null leaves it alone.
+ */
+hidden: Array<string> | null, 
+/**
  * Check and compute the result without saving or applying anything.
  */
 dry_run: boolean, };
