@@ -51,7 +51,7 @@ pub async fn test(
                 Some(container) => {
                     let spec = ProcessSpec::new(
                         "docker",
-                        ["inspect", "--format", "{{.State.Running}}", container],
+                        ["inspect", "--format", "{{.State.Running}}", "--", container],
                     );
                     match run(runner, spec).await {
                         Ok(output) if output.success() => {
@@ -76,7 +76,7 @@ pub async fn test(
                 None => {
                     let spec = ProcessSpec::new(
                         "docker",
-                        ["image", "inspect", "--format", "{{.Id}}", image],
+                        ["image", "inspect", "--format", "{{.Id}}", "--", image],
                     );
                     match run(runner, spec).await {
                         Ok(output) if output.success() => {
@@ -135,7 +135,7 @@ pub async fn test(
             if let Some(port) = port {
                 args.extend(["-p".into(), port]);
             }
-            args.extend([destination, "true".into()]);
+            args.extend(["--".into(), destination, "true".into()]);
             let spec = ProcessSpec {
                 program: "ssh".into(),
                 args,
@@ -228,7 +228,7 @@ mod tests {
         );
 
         let no_image = Scripted::default().on(VERSION, 0, "27.0").on(
-            "docker image inspect --format {{.Id}} rust:1",
+            "docker image inspect --format {{.Id}} -- rust:1",
             1,
             "No such image",
         );
@@ -239,20 +239,20 @@ mod tests {
         );
 
         let present = Scripted::default().on(VERSION, 0, "27.0").on(
-            "docker image inspect --format {{.Id}} rust:1",
+            "docker image inspect --format {{.Id}} -- rust:1",
             0,
             "sha256:1",
         );
         assert!(test(&docker("rust:1", None), &present, false).await.ok);
 
         let running = Scripted::default().on(VERSION, 0, "27.0").on(
-            "docker inspect --format {{.State.Running}} web",
+            "docker inspect --format {{.State.Running}} -- web",
             0,
             "true\n",
         );
         assert!(test(&docker("x", Some("web")), &running, false).await.ok);
         let idle = Scripted::default().on(VERSION, 0, "27.0").on(
-            "docker inspect --format {{.State.Running}} web",
+            "docker inspect --format {{.State.Running}} -- web",
             0,
             "false\n",
         );
@@ -294,7 +294,7 @@ mod tests {
         let ssh = EnvironmentRuntime::Ssh {
             host: "me@box:2222".into(),
         };
-        let line = "ssh -o BatchMode=yes -o ConnectTimeout=10 -T -p 2222 me@box true";
+        let line = "ssh -o BatchMode=yes -o ConnectTimeout=10 -T -p 2222 -- me@box true";
         let up = Scripted::default().on(line, 0, "");
         assert!(test(&ssh, &up, false).await.ok);
         let refused = Scripted::default().on(line, 255, "Permission denied (publickey).");

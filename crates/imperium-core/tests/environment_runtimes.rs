@@ -153,7 +153,7 @@ async fn an_ssh_environment_runs_commands_over_ssh_and_its_runtime_can_be_tested
     assert_eq!(tested["ok"], true, "{tested}");
     assert_eq!(
         fake.ran.lock().unwrap().last().unwrap().to_string(),
-        "ssh -o BatchMode=yes -o ConnectTimeout=10 -T -p 2222 me@box true"
+        "ssh -o BatchMode=yes -o ConnectTimeout=10 -T -p 2222 -- me@box true"
     );
 
     let created = call(

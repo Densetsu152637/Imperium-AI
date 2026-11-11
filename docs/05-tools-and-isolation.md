@@ -305,12 +305,12 @@ session's tools off this machine. With a remote runtime the workspace's folders 
 inside it, and every file and command tool is a short `sh -c` script run through the runtime's
 own client, so the runtime needs nothing but a POSIX shell:
 
-- **Docker container** (`docker` with `container`): `docker exec -i -w <folder> <container> sh -c …`.
+- **Docker container** (`docker` with `container`): `docker exec -i -w <folder> -- <container> sh -c …`.
 - **WSL** (`wsl` with `distro`, Windows only): `wsl.exe -d <distro> --cd <folder> --exec sh -c …`
   (`--exec` hands the script to `sh` as one argument; after a plain `--`, wsl.exe would join the
   arguments for the login shell). Windows paths given as folders or to tools (`C:\work\app`,
   `\\wsl$\<distro>\…`) are translated (`/mnt/c/work/app`).
-- **SSH** (`ssh` with `host`): `ssh -o BatchMode=yes -T [-p port] <host> "sh -c 'cd <folder> && …'"`
+- **SSH** (`ssh` with `host`): `ssh -o BatchMode=yes -T [-p port] -- <host> "sh -c 'cd <folder> && …'"`
   with the system client, so `~/.ssh/config` aliases, keys, and agents apply and no password is
   ever asked for. `user@host:port` is split into the destination and `-p`.
 
