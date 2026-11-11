@@ -12,6 +12,7 @@ import {
   Clock,
   Cpu,
   Download,
+  FolderPlus,
   Gauge,
   Globe,
   HardDrive,
@@ -38,7 +39,7 @@ import {
   Workflow,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 
 import type {
   ConfigDescribeResult,
@@ -57,6 +58,7 @@ import { Row } from "./components/SettingsRow";
 import { Switch as Toggle } from "./components/Switch";
 import type { DaemonClient } from "./daemon/client";
 import { type Daemon, DaemonSettings } from "./DaemonControl";
+import { addModelFolder } from "./panels/ModelSetup";
 import { preview, testNotification } from "./notify";
 import { ACCENTS, DEFAULT_SETTINGS, BUNDLED_ON_BY_DEFAULT, modEnabled, type AppSettings } from "./settings";
 import { storeFolder } from "./store";
@@ -79,6 +81,8 @@ type Props = {
   onOpenConnectors: () => void;
   /** Opens the model configuration dialog (local models and model-table rows). */
   onOpenModels: () => void;
+  /** The model folders changed: refresh the model lists. */
+  onModelsChanged?: () => void;
   onResetLayout: () => void;
   onClose: () => void;
   /** A section to show, as asked for (by the command palette); each new request switches to it. */
@@ -411,13 +415,27 @@ export function SettingsWindow(props: Props) {
   const [configError, setConfigError] = useState<string | null>(null);
   const [needsRestart, setNeedsRestart] = useState(false);
 
-  useEffect(() => {
+  const loadConfig = useCallback(() => {
     if (!client) return;
     client
       .call<ConfigDescribeResult>("config.describe", {})
       .then(setConfig)
       .catch((error: unknown) => setConfigError(String(error instanceof Error ? error.message : error)));
   }, [client]);
+  useEffect(loadConfig, [loadConfig]);
+
+  /** Picks a folder of models and adds it to `models.folders` (scanned at once). */
+  const addFolder = async () => {
+    if (!client) return;
+    setConfigError(null);
+    try {
+      if (!(await addModelFolder(client))) return;
+      loadConfig();
+      props.onModelsChanged?.();
+    } catch (error) {
+      setConfigError(String(error instanceof Error ? error.message : error));
+    }
+  };
 
   const configSections: Section[] = useMemo(() => {
     const present = new Set((config?.entries ?? []).map((entry) => entry.section));
@@ -481,6 +499,13 @@ export function SettingsWindow(props: Props) {
               Configure models
             </button>
           </Row>
+          {id === "models" && (
+            <Row label="Add a model folder" description="Choose a folder of models to scan; it is added to Model folders below.">
+              <button onClick={() => void addFolder()}>
+                <FolderPlus aria-hidden="true" /> Add folder…
+              </button>
+            </Row>
+          )}
           {rows}
         </>
       );
