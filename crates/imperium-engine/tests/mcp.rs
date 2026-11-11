@@ -141,6 +141,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 5,
         background: None,
         checkpoints: None,

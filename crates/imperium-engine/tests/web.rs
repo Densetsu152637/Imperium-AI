@@ -132,6 +132,7 @@ async fn agents_research_and_cite_sources() {
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         tools: vec![Arc::new(WebTools {
             web: Web::new(Some(Arc::new(Searxng { url: searxng }))),
             allow_domains: vec!["127.0.0.1".into()],
@@ -268,6 +269,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         tools: vec![Arc::new(WebTools {
             web: Web::new(None),
             allow_domains: vec!["127.0.0.1".into()],

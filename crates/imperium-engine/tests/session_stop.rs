@@ -135,6 +135,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         resume,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 8,
         auto_compact: false,
         auto_compact_at: None,

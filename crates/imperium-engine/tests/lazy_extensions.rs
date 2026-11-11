@@ -180,6 +180,7 @@ fn start(
         resume,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 10,
         background: None,
         checkpoints: None,

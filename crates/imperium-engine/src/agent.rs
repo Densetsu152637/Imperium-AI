@@ -241,10 +241,15 @@ impl Agent {
                 grants.join(", ")
             ));
         }
-        // How the root agent answers the user; it closes the base instruction.
+        // How the root agent answers the user; it closes the base instruction. The personality
+        // follows the reply rules, so it sets the tone without replacing them.
         if can_delegate {
             system.push_str("\n\n");
             system.push_str(RESPONSE_STYLE);
+            if let Some(personality) = &shared.personality {
+                system.push_str("\n\n");
+                system.push_str(personality);
+            }
         }
         // Each part is kept with its label, so context breakdowns count them separately.
         let mut parts = vec![(Category::SystemBase, system)];

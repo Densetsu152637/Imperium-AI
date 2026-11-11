@@ -109,6 +109,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 5,
         background: None,
         checkpoints: None,

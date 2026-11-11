@@ -12,6 +12,7 @@ mod remote;
 mod resources;
 mod schedule;
 mod session;
+mod settings;
 mod workflow;
 
 use std::io::{IsTerminal, Read};
@@ -451,6 +452,21 @@ enum ConfigCommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Set a setting in your config file, such as `imperium config set policy.personality
+    /// luxion`. Keys are those in the desktop Settings window (docs/10-configuration.md). With a
+    /// daemon running the change goes through it, so settings it applies at once take effect.
+    Set {
+        /// Dotted key, for example `policy.personality`.
+        key: String,
+        /// The value; several for a list setting.
+        #[arg(required = true, num_args = 1..)]
+        value: Vec<String>,
+    },
+    /// Remove a setting from your config file, so its default applies.
+    Unset {
+        /// Dotted key, for example `policy.personality`.
+        key: String,
+    },
     /// List the changes agents made to the app config (model cards, installed and removed
     /// mods, plugins, and skills), newest first.
     Changes,
@@ -529,6 +545,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Config {
             command: ConfigCommand::Explain { key, project },
         } => explain(&key, project),
+        Command::Config {
+            command: ConfigCommand::Set { key, value },
+        } => settings::set(&key, value),
+        Command::Config {
+            command: ConfigCommand::Unset { key },
+        } => settings::unset(&key),
         Command::Config {
             command: ConfigCommand::Changes,
         } => changes::list(),

@@ -175,6 +175,7 @@ fn start(local: Arc<OneSlot>, load: Arc<Manual>, dir: &std::path::Path) -> Sessi
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 6,
         background: Some(Background { load }),
         checkpoints: None,

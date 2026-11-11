@@ -68,6 +68,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         resume,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 3,
         background: None,
         checkpoints: None,

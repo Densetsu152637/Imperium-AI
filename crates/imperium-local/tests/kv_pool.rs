@@ -678,6 +678,7 @@ async fn a_session_parked_on_an_approval_holds_no_claim() {
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 10,
         background: None,
         checkpoints: None,

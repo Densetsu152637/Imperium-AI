@@ -138,6 +138,7 @@ fn start_with(
         resume,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 5,
         auto_compact,
         auto_compact_at: None,

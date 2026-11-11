@@ -6,8 +6,9 @@
 [workflow contract](18-workflow-contract.md). With no packs listed, the bundled snapshot of
 Agent-Custom-Workflow in `policy/agent-custom-workflow` (pinned commit in its `PINNED` file,
 MIT, shipped beside the daemon) is used; `workflow.default_pack = false` turns that off, and
-`workflow.enabled = false` turns off packs and project instruction files entirely. Fetching
-updates, the diff-and-accept flow, and personality selection are later work.
+`workflow.enabled = false` turns off packs and project instruction files entirely. Root
+personality selection is implemented ([Personalities](#personalities)), with Marcus Aurelius as
+the default. Fetching updates and the diff-and-accept flow are later work.
 
 Imperium ships with [Agent-Custom-Workflow](https://github.com/Densetsu152637/Agent-Custom-Workflow)
 as its default **policy pack**: the root/manager/leaf roles, delegation defaults, validation,
@@ -49,6 +50,34 @@ the effective policy and which layer each rule came from.
 
 ## Personalities
 
+**Status:** implemented: selection, the default, local overrides, the Settings select, and
+`personalities.list`. The editor for local personalities (creating, duplicating, previewing)
+is later work; until then, put Markdown files in `<config>/personalities/` by hand.
+
+- **Default:** Marcus Aurelius (`policy.personality = "marcus_aurelius"`, written in the
+  built-in defaults). The pack's own rule ("there is no default personality"; a `Personality:`
+  line in the user's instruction file) does not apply under Imperium: the setting is the
+  selection. `none` (or an empty value) turns personalities off; an id that is not found
+  falls back to the default (not to none), with a notice in the session and a warning in the
+  daemon log.
+- **Lookup**, first match wins: `<config>/personalities/<id>.md`, then each folder in
+  `workflow.packs` (its `personalities/<id>.md`), then the bundled snapshot, then a copy of the
+  default compiled into the daemon, so the default works offline and with no pack.
+  `marcus_aurelius.md` in the bundled snapshot comes from a newer upstream commit than the rest
+  (recorded in its `PINNED` file).
+- **Where it goes:** only the root agent's system prompt, after the reply rules
+  ([response style](03-agent-engine.md#response-style)), with a short frame saying it sets tone only: the reply
+  rules still hold, deliverables (code, commits, pull requests, documentation, tool inputs)
+  stay plain, and warnings come first. Subagents, chunk agents, titles, and
+  compaction summaries never get it.
+- **When a change applies:** the daemon applies `policy.personality` at once (no restart), and
+  each session reads it when it starts, so new sessions use the new choice. A running session
+  keeps the personality it started with until it is resumed after a daemon restart, when it
+  takes the current one; the conversation so far is kept, so the voice may shift mid-thread.
+- **Picking one:** Settings → Personality lists every personality the daemon finds
+  (`personalities.list`: id, name from the file's heading, source `local`, `pack`, or
+  `builtin`, and whether a local one overrides), marks the default, and offers None. From the
+  command line: `imperium config set policy.personality <id>`.
 - Personalities come from two places: those shipped in the active pack (`personalities/`) and
   **local personalities** the user creates, stored in `<config>/personalities/<id>.md`
   (outside any repository, never uploaded).
@@ -58,8 +87,8 @@ the effective policy and which layer each rule came from.
   copy.
 - A local personality with the same id as a pack one takes precedence, and the list marks it as
   overriding.
-- Selection is a setting (`policy.personality`), global with an optional project override, and
-  applies only to the root agent, as the pack's personality rules require.
+- Selection is a setting (`policy.personality`), global (a per-project override is later work),
+  and applies only to the root agent, as the pack's personality rules require.
 
 ## Local paths come from app settings
 
