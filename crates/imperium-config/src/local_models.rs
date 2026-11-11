@@ -153,6 +153,9 @@ const OWNED_FLAGS: [&str; 28] = [
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LocalModelSettings {
+    /// A display name clients show instead of the id, such as `Qwen 3 (4B)`. The id stays
+    /// what config, routing and `--model` use.
+    pub alias: Option<String>,
     /// Most tokens one agent may use: `auto` or a number.
     pub context: Option<ContextLimit>,
     /// Fixes the tokens of KV cache all slots share (at least `context`); unset, the pool
@@ -179,6 +182,8 @@ pub struct LocalModelSettings {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TableOverride {
+    /// A display name for the row, over the row's own `alias`.
+    pub alias: Option<String>,
     pub enabled: Option<bool>,
     pub tier: Option<Tier>,
     pub tags: Option<Vec<String>>,
@@ -313,7 +318,32 @@ impl LlamaCppSettings {
 }
 
 /// Checks one local model's settings on their own; the message names the problem, not the model.
+/// Longest display alias, in characters.
+pub const MAX_ALIAS_CHARS: usize = 80;
+
+/// Checks a model's display alias: when set, non-blank, without control characters or
+/// surrounding spaces, and at most [`MAX_ALIAS_CHARS`] characters.
+pub fn check_alias(alias: Option<&str>) -> Result<(), String> {
+    let Some(alias) = alias else {
+        return Ok(());
+    };
+    if alias.trim().is_empty() {
+        return Err("alias is blank; leave it out to show the id".into());
+    }
+    if alias.trim() != alias {
+        return Err(format!("alias {alias:?} starts or ends with a space"));
+    }
+    if alias.chars().any(char::is_control) {
+        return Err(format!("alias {alias:?} has a control character"));
+    }
+    if alias.chars().count() > MAX_ALIAS_CHARS {
+        return Err(format!("alias is longer than {MAX_ALIAS_CHARS} characters"));
+    }
+    Ok(())
+}
+
 pub fn check_local_model(settings: &LocalModelSettings) -> Result<(), String> {
+    check_alias(settings.alias.as_deref())?;
     for (key, value) in [
         (
             "context",
@@ -437,7 +467,13 @@ impl Settings {
             check_launch(&llama.launch(id, row))
                 .map_err(|e| format!("runtime.llamacpp.models.{id:?}: {e}"))?;
         }
+        for entry in &self.models.catalog {
+            check_alias(entry.alias.as_deref())
+                .map_err(|e| format!("models.catalog row {:?}: {e}", entry.id))?;
+        }
         for (id, over) in &self.models.overrides {
+            check_alias(over.alias.as_deref())
+                .map_err(|e| format!("models.overrides.{id:?}: {e}"))?;
             if over.input_usd_per_mtok.is_some() != over.output_usd_per_mtok.is_some() {
                 return Err(format!(
                     "models.overrides.{id:?}: set both input_usd_per_mtok and output_usd_per_mtok, or neither"
@@ -480,6 +516,9 @@ impl Settings {
             let Some(over) = overrides.get(&entry.id) else {
                 continue;
             };
+            if over.alias.is_some() {
+                entry.alias.clone_from(&over.alias);
+            }
             if let Some(enabled) = over.enabled {
                 entry.enabled = enabled;
             }
@@ -748,6 +787,75 @@ enabled = false
             ])
             .settings()
             .is_err()
+        );
+    }
+
+    #[test]
+    fn aliases_are_kept_per_model_and_checked() {
+        let table = r#"
+[[models.catalog]]
+id = "coder"
+spec = "cloud:coder-1"
+location = "cloud"
+tier = "basic"
+alias = "Coder One"
+[[models.catalog]]
+id = "plain"
+spec = "cloud:plain-1"
+location = "cloud"
+tier = "basic"
+[endpoints.cloud]
+base_url = "https://example.invalid/v1"
+"#;
+        // A row's own alias, then the app's override over it; the id is unchanged.
+        let own = config(&[(user(), table)]).settings().unwrap();
+        assert_eq!(own.models.catalog[0].alias.as_deref(), Some("Coder One"));
+        assert_eq!(own.models.catalog[1].alias, None);
+        let overridden = config(&[
+            (user(), table),
+            (
+                app(),
+                r#"
+[models.overrides.coder]
+alias = "Coder"
+[models.overrides.plain]
+alias = "Plain"
+"#,
+            ),
+        ])
+        .settings()
+        .unwrap();
+        assert_eq!(overridden.models.catalog[0].id, "coder");
+        assert_eq!(overridden.models.catalog[0].alias.as_deref(), Some("Coder"));
+        assert_eq!(overridden.models.catalog[1].alias.as_deref(), Some("Plain"));
+        // A local model's alias sits with its other settings and leaves its launch alone.
+        let id = "Qwen3-4B-Instruct-2507-Q4_K_M";
+        let text = format!("[runtime.llamacpp.models.{id:?}]\nalias = \"Qwen 3 (4B)\"\n");
+        let local = config(&[(app(), text.as_str())]).settings().unwrap();
+        assert_eq!(
+            local.runtime.llamacpp.models[id].alias.as_deref(),
+            Some("Qwen 3 (4B)")
+        );
+        assert_eq!(
+            local.launch_of(id),
+            config(&[]).settings().unwrap().launch_of(id)
+        );
+        // Blank, padded, multi-line and overlong aliases are refused.
+        let bad = |text: &str| config(&[(app(), text)]).settings().unwrap_err().to_string();
+        for alias in ["", " ", " x", "a\nb"] {
+            let text = format!("[runtime.llamacpp.models.x]\nalias = {alias:?}\n");
+            assert!(bad(&text).contains("alias"), "{alias:?}");
+        }
+        let long = "x".repeat(super::MAX_ALIAS_CHARS + 1);
+        assert!(bad(&format!("[models.overrides.coder]\nalias = {long:?}\n")).contains("alias"));
+        let long_row = table.replace("\"Coder One\"", &format!("{long:?}"));
+        let refused = config(&[(user(), long_row.as_str())])
+            .settings()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("alias"),
+            "a row's own alias is checked too"
         );
     }
 

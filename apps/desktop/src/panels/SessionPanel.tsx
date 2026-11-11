@@ -61,6 +61,7 @@ import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
 import { canStop, isStopShortcut, isStopped } from "../stop";
 import { editStillValid, queueActions, queueLabel, steeredLabel, type QueueChange } from "../queue";
+import { ModelName } from "../components/ModelName";
 
 type Props = {
   session: SessionState;
@@ -619,7 +620,7 @@ function EntryView({
     case "task":
       return (
         <div className="task-line">
-          → <strong>{entry.taskId}</strong> on {entry.model}: {entry.brief.split("\n")[0]}
+          → <strong>{entry.taskId}</strong> on <ModelName name={entry.model} />: {entry.brief.split("\n")[0]}
         </div>
       );
     case "permission":

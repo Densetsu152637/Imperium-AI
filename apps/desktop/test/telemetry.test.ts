@@ -24,6 +24,7 @@ const tableRow = (id: string, spec: string, location: "local" | "cloud"): ModelR
   id,
   spec,
   location,
+  alias: null,
   tier: "standard",
   tags: [],
   input_usd_per_mtok: null,
@@ -104,10 +105,20 @@ test("cost is dollars with two decimals, an em dash for local models or no repor
   assert.equal(formatTelemetryCost(null, false), "—");
 });
 
-test("models go by their table id, else the spec without its endpoint", () => {
+test("models go by their alias, else their table id, else the spec without its endpoint", () => {
   assert.equal(modelLabel("anthropic:claude-sonnet-4-5", MODELS), "claude-sonnet");
   assert.equal(modelLabel("llamacpp:Qwen3-4B-Q4_K_M", MODELS), "Qwen3-4B-Q4_K_M");
   assert.equal(modelLabel("bare", MODELS), "bare");
+  // A row's own alias, then a published one (a local model's) for the spec or the row.
+  const aliased = [{ ...MODELS[0], alias: "Sonnet" }, MODELS[1]];
+  assert.equal(modelLabel("anthropic:claude-sonnet-4-5", aliased), "Sonnet");
+  const aliases = new Map([
+    ["llamacpp:Qwen3-4B-Q4_K_M", "Qwen 3 (4B)"],
+    ["box", "Box Qwen"],
+  ]);
+  assert.equal(modelLabel("llamacpp:Qwen3-4B-Q4_K_M", MODELS, aliases), "Qwen 3 (4B)");
+  assert.equal(modelLabel("ollama:qwen3:4b", MODELS, aliases), "Box Qwen");
+  assert.equal(modelLabel("bare", MODELS, aliases), "bare");
 });
 
 test("local runtimes and table rows marked local are local", () => {

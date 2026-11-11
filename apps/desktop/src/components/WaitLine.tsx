@@ -6,6 +6,7 @@ import { LoaderCircle, Play, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { formatElapsed, type WaitView } from "../waits";
+import { modelAliases } from "../modelNames";
 
 /** The current time, every second while `active`. */
 function useNow(active: boolean): number {
@@ -30,11 +31,17 @@ export type WaitHandlers = {
   onBudget?: (confirm: boolean) => void;
 };
 
+/** The model a wait is about, for its hover text: "Qwen 3 (4B) (llamacpp:Qwen3-4B…)" when it has an alias. */
+function modelLabel(model: string): string {
+  const alias = modelAliases().get(model);
+  return alias ? `${alias} (${model})` : model;
+}
+
 export function WaitLine({ view, compact = false, ...handlers }: { view: WaitView; compact?: boolean } & WaitHandlers) {
   const now = useNow(true);
   const elapsed = formatElapsed(now - view.since);
   return (
-    <div className={`wait-line${compact ? " compact" : ""}`} role="status" title={view.model ?? undefined}>
+    <div className={`wait-line${compact ? " compact" : ""}`} role="status" title={view.model ? modelLabel(view.model) : undefined}>
       <LoaderCircle className="wait-spinner" aria-hidden="true" />
       <span className="wait-text">{view.text}</span>
       <span className="wait-elapsed muted" aria-label={`waiting for ${elapsed}`}>

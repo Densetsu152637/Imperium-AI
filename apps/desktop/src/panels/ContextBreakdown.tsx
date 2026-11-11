@@ -15,6 +15,7 @@ import {
   type ContextBreakdown as Breakdown,
   type SessionState,
 } from "../sessions";
+import { ModelName } from "../components/ModelName";
 
 const METHODS: Record<TokenCountMethod, string> = {
   exact: "Exact, counted with the model's tokenizer",
@@ -76,7 +77,10 @@ function BreakdownDetail({ breakdown }: { breakdown: Breakdown }) {
       <p className="context-use">
         <strong>{describeUse(breakdown)}</strong>
         {limit !== null && <span className="muted"> · {percent(used, limit)} of the window</span>}
-        <span className="muted"> · {breakdown.model}</span>
+        <span className="muted">
+          {" · "}
+          <ModelName name={breakdown.model} />
+        </span>
       </p>
       <div
         className="context-bar"

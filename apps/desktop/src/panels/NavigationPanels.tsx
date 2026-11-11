@@ -20,6 +20,7 @@ import { formatAgo } from "../ago";
 import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
 import { SessionSearch } from "./SessionSearch";
 import { statusText } from "./StatusBadge";
+import { modelAliases, modelName } from "../modelNames";
 
 /** The environment a session works in: the one it names, else the one whose first folder it uses. */
 export function environmentOf(session: SessionState, environments: EnvironmentInfo[]): EnvironmentInfo | null {
@@ -225,7 +226,7 @@ export function SessionsPanel({
       title,
       status,
       place,
-      `${session.summary.model ?? "No model"} · ${formatCost(totals(session.calls).costUsd)}`,
+      `${session.summary.model ? modelName(modelAliases(), session.summary.model) : "No model"} · ${formatCost(totals(session.calls).costUsd)}`,
       persistent ? "Persistent: always available, keeps its conversation across restarts" : null,
       ...(session.summary.worktrees ?? []).map((tree) => `Worktree ${tree.path} (${tree.branch})`),
     ]

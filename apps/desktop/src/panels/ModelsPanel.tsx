@@ -43,7 +43,7 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
   const rows = useMemo(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
     const matching = (table?.models ?? []).filter((row) => {
-      const text = [row.id, row.spec, row.location, row.tier, ...row.tags].join(" ").toLowerCase();
+      const text = [row.id, row.alias ?? "", row.spec, row.location, row.tier, ...row.tags].join(" ").toLowerCase();
       return words.every((word) => text.includes(word));
     });
     const sorted = [...matching].sort((a, b) => compare(a, b, sort.key));
@@ -75,10 +75,10 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
     <tr
       key={row.id}
       className={[row.endpoint_configured && row.enabled ? null : "unusable", hidden ? "model-hidden" : null].filter(Boolean).join(" ") || undefined}
-      title={row.spec}
+      title={row.alias ? `${row.id} · ${row.spec}` : row.spec}
     >
       <td>
-        {row.id}
+        {row.alias ?? row.id}
         {!row.enabled && <span className="badge off">off</span>}
       </td>
       <td>

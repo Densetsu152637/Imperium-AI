@@ -11,6 +11,8 @@
 
 import type { ModelRow } from "@imperium/protocol";
 
+import type { ModelAliases } from "./modelNames";
+
 import type { ModelCall, SessionState } from "./sessions";
 
 /** How long a model stays listed after its work ends. */
@@ -39,11 +41,14 @@ const findRow = (spec: string, models: ModelRow[]): ModelRow | undefined =>
   models.find((row) => row.spec === spec) ?? models.find((row) => row.id === spec);
 
 /**
- * The name a model goes by in telemetry: its id in the model table, or the spec without its
- * endpoint. The one place to switch to a model's alias.
+ * The name a model goes by in telemetry: its alias (the table row's, else one of `aliases` for
+ * the spec or the row, which covers local models; see modelNames.ts), else its id in the model
+ * table, else the spec without its endpoint.
  */
-export function modelLabel(spec: string, models: ModelRow[]): string {
+export function modelLabel(spec: string, models: ModelRow[], aliases: ModelAliases = new Map()): string {
   const row = findRow(spec, models);
+  const alias = row?.alias ?? aliases.get(spec) ?? (row ? aliases.get(row.id) : undefined);
+  if (alias) return alias;
   if (row) return row.id;
   const colon = spec.indexOf(":");
   return colon > 0 && colon < spec.length - 1 ? spec.slice(colon + 1) : spec;
@@ -75,7 +80,7 @@ function activeWork(session: SessionState): Work[] {
 }
 
 /** One row per model the sessions use now, in the order they first appear. */
-export function liveTelemetry(sessions: SessionState[], models: ModelRow[]): TelemetryRow[] {
+export function liveTelemetry(sessions: SessionState[], models: ModelRow[], aliases: ModelAliases = new Map()): TelemetryRow[] {
   const rows = new Map<string, TelemetryRow>();
   const latestAt = new Map<string, number>();
   const row = (model: string) => {
@@ -83,7 +88,7 @@ export function liveTelemetry(sessions: SessionState[], models: ModelRow[]): Tel
     if (!found) {
       found = {
         model,
-        label: modelLabel(model, models),
+        label: modelLabel(model, models, aliases),
         tokensPerSec: null,
         tokensIn: 0,
         tokensOut: 0,

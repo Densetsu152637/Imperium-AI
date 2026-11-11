@@ -1754,6 +1754,7 @@ impl DaemonState {
                 ModelRow {
                     id: entry.id.clone(),
                     spec: entry.spec.clone(),
+                    alias: entry.alias.clone(),
                     location: entry.location.as_str().into(),
                     tier: entry.tier.as_str().into(),
                     tags: entry.tags.clone(),

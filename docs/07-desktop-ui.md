@@ -895,7 +895,11 @@ to close), with a footer for its actions. It opens from *Configure models* in Se
 Local runtime), from *Configure* in the Local models panel (on that model) and from *Configure* in
 the Models panel (on the model table). The navigation column has a *Search models* field and two
 groups, *Local models* (the models in `models.folders`) and *Model table*, each model with its
-badges; the selected model's id is the heading. Each local form field is optional, shows the effective value as its placeholder and
+badges; a model with an [alias](10-configuration.md#model-aliases) is listed by it, with its id
+beside it and on hover, and the search matches either. The selected model's alias (or id) is the
+heading. Both forms start with *Display name*: the alias shown instead of the id everywhere a
+model is named, with the id as the placeholder; empty (or *reset*) shows the id again (or a
+table row's alias from config.toml). Each local form field is optional, shows the effective value as its placeholder and
 has a *reset* that clears the saved value. Fields: max context per agent (a number of tokens or
 *auto*, offered in the field's list; the placeholder shows the sized ceiling, such as *auto
 (131072)*), KV pool tokens (empty: starts small and grows on demand; a number fixes it), slots, K
@@ -908,10 +912,18 @@ GPU), and closing it afterwards keeps what was applied; *Save* saves and closes.
 disabled while nothing has changed. For a vLLM model the cache types, flash attention and GPU
 layers are disabled. A debounced (500 ms) `models.set_config` dry run shows the memory the model
 would need, its KV pool and its placement, or the server's error. A model-table row's form edits
-existing rows only (enabled, tier, tags, context window, prices; both prices or neither); it
+existing rows only (display name, enabled, tier, tags, context window, prices; both prices or neither); it
 does not add or remove rows. The footer shows the file the settings are saved to, *Cancel* (or
 *Close* once nothing is pending), *Apply* and *Save*. *Save* sends only the models that differ from what is saved, each
 as a whole-settings update, then closes and refreshes the panels; a failure keeps the dialog
 open with the message. *Reset model* clears all of a model's saved settings. A loaded model's
 badge reads `loaded · <in use>/<slots> busy · pool <reserved>/<pool>`, and a disabled table row
 is dimmed with an *off* badge.
+
+A model's alias (`modelNames.ts`, from `models.list` and `models.local`) is what the interface
+names it by: the session model list and the command palette's *Use …* entries (the id in the
+description, and the palette's search matches either), the Models and Local models panels, the
+Resources panel's loaded models, the session list's hover, the context breakdown, the telemetry table,
+the Agents panel and task lines, and notices such as *Switched model from … to …*. The real id or
+spec is the secondary text or hover. Ids and specs sent to the daemon and stored in settings are
+unchanged. A notice already shown keeps the name it was written with.

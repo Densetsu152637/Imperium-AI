@@ -244,3 +244,61 @@ slots = 3
 "
     );
 }
+
+#[tokio::test]
+async fn aliases_are_saved_and_shown_by_every_listing() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    let paths = Paths::under(home.path());
+
+    let update = json!({
+        "local": [{"id": "tiny", "settings": {"alias": "Tiny (test)"}}],
+        "table": [{"id": "coder", "settings": {"alias": "Coder One"}}],
+    });
+    let result = call(&mut socket, "models.set_config", update)
+        .await
+        .unwrap();
+    assert_eq!(result["local"][0]["saved"]["alias"], "Tiny (test)");
+    assert_eq!(result["local"][0]["reload_pending"], false);
+    assert_eq!(result["table"][0]["saved"]["alias"], "Coder One");
+    assert_eq!(result["table"][0]["effective"]["alias"], "Coder One");
+    // The ids are unchanged; the listings carry the alias beside them.
+    let table = call(&mut socket, "models.list", json!({})).await.unwrap();
+    assert_eq!(table["models"][0]["id"], "coder");
+    assert_eq!(table["models"][0]["alias"], "Coder One");
+    let local = call(&mut socket, "models.local", json!({})).await.unwrap();
+    assert_eq!(local["models"][0]["id"], "tiny");
+    assert_eq!(local["models"][0]["alias"], "Tiny (test)");
+    // It persists in the app file, which the configuration layers read back.
+    let loaded = imperium_config::load(&paths, None, [])
+        .unwrap()
+        .settings()
+        .unwrap();
+    assert_eq!(
+        loaded.runtime.llamacpp.models["tiny"].alias.as_deref(),
+        Some("Tiny (test)")
+    );
+    assert_eq!(loaded.models.catalog[0].alias.as_deref(), Some("Coder One"));
+
+    // A blank alias is refused; clearing it removes the saved alias.
+    let error = call(
+        &mut socket,
+        "models.set_config",
+        json!({"table": [{"id": "coder", "settings": {"alias": "  "}}]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error["message"].as_str().unwrap().contains("alias"),
+        "{error}"
+    );
+    let cleared = json!({
+        "local": [{"id": "tiny", "settings": {}}],
+        "table": [{"id": "coder", "settings": {}}],
+    });
+    call(&mut socket, "models.set_config", cleared)
+        .await
+        .unwrap();
+    assert_eq!(daemon.model_table().models[0].alias, None);
+    assert_eq!(daemon.local_models().models[0].alias, None);
+}

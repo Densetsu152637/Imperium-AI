@@ -29,6 +29,7 @@ const FULL_PRECISION_V = ["f16", "bf16", "f32"];
 
 /** Local form fields as typed: an empty string means "not set" (sent as null). */
 type LocalDraft = {
+  alias: string;
   context: string;
   pool_tokens: string;
   slots: string;
@@ -42,6 +43,7 @@ type LocalDraft = {
 };
 
 type TableDraft = {
+  alias: string;
   enabled: boolean | null;
   tier: string;
   tags: string;
@@ -54,6 +56,7 @@ const num = (value: number | null): string => (value === null ? "" : String(valu
 
 function localDraft(saved: LocalLaunchSettings): LocalDraft {
   return {
+    alias: saved.alias ?? "",
     context: saved.context_auto ? "auto" : num(saved.context),
     pool_tokens: num(saved.pool_tokens),
     slots: num(saved.slots),
@@ -69,6 +72,7 @@ function localDraft(saved: LocalLaunchSettings): LocalDraft {
 
 function tableDraft(saved: TableModelSettings): TableDraft {
   return {
+    alias: saved.alias ?? "",
     enabled: saved.enabled,
     tier: saved.tier ?? "",
     tags: (saved.tags ?? []).join(", "),
@@ -79,6 +83,7 @@ function tableDraft(saved: TableModelSettings): TableDraft {
 }
 
 const EMPTY_LOCAL: LocalDraft = localDraft({
+  alias: null,
   context: null,
   context_auto: false,
   pool_tokens: null,
@@ -93,6 +98,7 @@ const EMPTY_LOCAL: LocalDraft = localDraft({
 });
 
 const EMPTY_TABLE: TableDraft = tableDraft({
+  alias: null,
   enabled: null,
   tier: null,
   tags: null,
@@ -100,6 +106,17 @@ const EMPTY_TABLE: TableDraft = tableDraft({
   input_usd_per_mtok: null,
   output_usd_per_mtok: null,
 });
+
+/** Longest alias the daemon accepts, in characters (imperium-config's MAX_ALIAS_CHARS). */
+const MAX_ALIAS_CHARS = 80;
+
+/** An alias from its field: trimmed, null when empty; throws a message when too long. */
+export function aliasValue(text: string): string | null {
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  if (trimmed === "") return null;
+  if ([...trimmed].length > MAX_ALIAS_CHARS) throw new Error(`Display name must be at most ${MAX_ALIAS_CHARS} characters`);
+  return trimmed;
+}
 
 /** A whole number from a field, or null when empty; throws a message for anything else. */
 function integer(text: string, label: string, min: number): number | null {
@@ -132,6 +149,7 @@ function localSettings(draft: LocalDraft, config: LocalModelConfig): LocalLaunch
     .filter(Boolean);
   const vllm = config.runtime === "vllm";
   const settings: LocalLaunchSettings = {
+    alias: aliasValue(draft.alias),
     context,
     context_auto: contextAuto,
     pool_tokens: pool,
@@ -166,6 +184,7 @@ function tableSettings(draft: TableDraft): TableModelSettings {
     .map((tag) => tag.trim())
     .filter(Boolean);
   return {
+    alias: aliasValue(draft.alias),
     enabled: draft.enabled,
     tier: (draft.tier || null) as TableModelSettings["tier"],
     tags: tags.length > 0 ? tags : null,
@@ -264,6 +283,7 @@ export function ModelConfigDialog({
 
   const selectedLocal = tab === "local" && selected ? localById.get(selected) : undefined;
   const selectedTable = tab === "table" && selected ? tableById.get(selected) : undefined;
+  const selectedAlias = selectedLocal?.saved.alias ?? selectedTable?.effective.alias ?? null;
 
   /** One model's settings if its form differs from what is saved; throws a validation message. */
   const localChange = (model: LocalModelConfig): LocalLaunchSettings | null => {
@@ -397,9 +417,10 @@ export function ModelConfigDialog({
 
   // Favourites first and hidden models last, as in the model panels (modelPrefs.ts).
   const specOf = (item: LocalModelConfig | TableModelConfig) => ("spec" in item ? item.spec : `${item.runtime}:${item.id}`);
+  const aliasOf = (item: LocalModelConfig | TableModelConfig): string | null => ("spec" in item ? item.effective.alias : item.saved.alias);
   const arrange = <T extends LocalModelConfig | TableModelConfig>(list: T[]): T[] => {
     const arranged = arrangeModels<T>(
-      list.filter((item) => matches(query, item.id, specOf(item))),
+      list.filter((item) => matches(query, item.id, specOf(item), aliasOf(item) ?? "")),
       specOf,
       modelMarks,
     );
@@ -410,13 +431,14 @@ export function ModelConfigDialog({
     const local = kind === "local" ? (item as LocalModelConfig) : undefined;
     const row = kind === "table" ? (item as TableModelConfig) : undefined;
     const mark = markOf(modelMarks, specOf(item));
+    const alias = aliasOf(item);
     return (
       <ModalNavItem
         key={`${kind}:${item.id}`}
         icon={kind === "local" ? Cpu : Boxes}
         active={tab === kind && selected === item.id}
         dimmed={mark === "hidden"}
-        title={item.id}
+        title={alias ? `${alias} (${item.id})` : item.id}
         onClick={() => {
           setTab(kind);
           setSelected(item.id);
@@ -433,7 +455,13 @@ export function ModelConfigDialog({
           </>
         }
       >
-        {item.id}
+        {alias ? (
+          <>
+            {alias} <span className="muted">{item.id}</span>
+          </>
+        ) : (
+          item.id
+        )}
       </ModalNavItem>
     );
   };
@@ -494,7 +522,7 @@ export function ModelConfigDialog({
   return (
     <SettingsModal
       label="Models"
-      title={selected ?? "Models"}
+      title={selected ? (selectedAlias ?? selected) : "Models"}
       nav={nav}
       footer={footer}
       onClose={onClose}
@@ -530,6 +558,33 @@ export function ModelConfigDialog({
         />
       )}
     </SettingsModal>
+  );
+}
+
+/**
+ * The model's display name: shown instead of its id wherever a model is named. The id stays what
+ * config, routing and `--model` use. `fallback` is an alias the row has from config.toml.
+ */
+function AliasField({
+  id,
+  value,
+  fallback,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  fallback: string | null;
+  onChange: (alias: string) => void;
+}) {
+  return (
+    <Field
+      label="Display name"
+      hint={`Shown instead of the id everywhere; the id (${id}) is unchanged in config and routing. Empty shows ${fallback ? "the configured alias" : "the id"}.`}
+      filled={value !== ""}
+      onReset={() => onChange("")}
+    >
+      <input type="text" value={value} placeholder={fallback ?? id} maxLength={MAX_ALIAS_CHARS} spellCheck={false} onChange={(e) => onChange(e.target.value)} />
+    </Field>
   );
 }
 
@@ -593,6 +648,7 @@ function LocalForm({
     <div className="model-form-fields">
       <div className="model-summary">
         <span className="muted">
+          {model.saved.alias ? `${model.id} · ` : ""}
           {model.runtime}
           {model.cpu_lane ? " · CPU lane" : ""}
           {model.context_length ? ` · trained for ${model.context_length.toLocaleString()} tokens` : ""}
@@ -614,6 +670,7 @@ function LocalForm({
           <span className="warning">The weights do not fit on the GPU: some layers run on the CPU, which is much slower.</span>
         )}
       </div>
+      <AliasField id={model.id} value={draft.alias} fallback={null} onChange={(alias) => onChange({ alias })} />
       <Field
         label="Max context per agent (tokens)"
         hint="A number, or auto: what the model was trained for, capped to what fits in memory beside it."
@@ -691,9 +748,15 @@ function TableForm({
   return (
     <div className="model-form-fields">
       <div className="model-summary">
-        <span className="muted">{row.spec}</span>
+        <span className="muted">{eff.alias ? `${row.id} · ${row.spec}` : row.spec}</span>
         {!row.endpoint_configured && <span className="warning">This row names an endpoint that is not configured.</span>}
       </div>
+      <AliasField
+        id={row.id}
+        value={draft.alias}
+        fallback={row.saved.alias === null ? eff.alias : null}
+        onChange={(alias) => onChange({ alias })}
+      />
       <label className="radio model-check">
         <input type="checkbox" checked={draft.enabled ?? eff.enabled} onChange={(e) => onChange({ enabled: e.target.checked })} />
         Enabled (routing may use this model)

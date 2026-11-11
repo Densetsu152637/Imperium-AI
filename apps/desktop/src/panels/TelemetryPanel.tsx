@@ -7,11 +7,13 @@ import remarkGfm from "remark-gfm";
 
 import type { ModelRow } from "@imperium/protocol";
 
+import { useModelNames } from "../modelNames";
 import type { SessionState } from "../sessions";
 import { LINGER_MS, liveTelemetry, telemetryTable, withLingering, type Lingering, type TelemetryRow } from "../telemetry";
 
 export function TelemetryPanel({ sessions, models }: { sessions: SessionState[]; models: ModelRow[] }) {
-  const active = useMemo(() => liveTelemetry(sessions, models), [sessions, models]);
+  const aliases = useModelNames();
+  const active = useMemo(() => liveTelemetry(sessions, models, aliases), [sessions, models, aliases]);
   // Rows that went idle stay for a minute; a tick drops them once that passes.
   const [now, setNow] = useState(() => Date.now());
   const previous = useRef<{ rows: TelemetryRow[]; lingering: Lingering }>({ rows: [], lingering: new Map() });

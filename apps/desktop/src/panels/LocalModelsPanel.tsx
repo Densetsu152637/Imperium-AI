@@ -585,8 +585,11 @@ function ModelRows({
     <>
       <tr className={[unusable ? "unusable" : null, hidden ? "model-hidden" : null].filter(Boolean).join(" ") || undefined} title={row.path}>
         <td className="model-name">
-          <span className="model-id">{row.id}</span>
+          <span className="model-id" title={row.alias ? row.id : undefined}>
+            {row.alias ?? row.id}
+          </span>
           <span className="model-meta">
+            {row.alias && <span className="muted">{row.id}</span>}
             {row.repo && <span className="muted">{row.repo}</span>}
             {row.runtime === "vllm" && <span className="badge">vLLM</span>}
             {row.mmproj && (
@@ -628,7 +631,7 @@ function ModelRows({
           <button onClick={onTest} disabled={busy || unusable} title="Load it and send one short prompt">
             <FlaskConical aria-hidden="true" /> {testing ? "Testing…" : "Test"}
           </button>
-          <button className="ghost icon" onClick={onSettings} aria-label={`Settings for ${row.id}`} title="Context, slots, GPU layers…">
+          <button className="ghost icon" onClick={onSettings} aria-label={`Settings for ${row.alias ?? row.id}`} title="Context, slots, GPU layers…">
             <SlidersHorizontal aria-hidden="true" />
           </button>
           <ModelMarkButtons name={row.id} mark={mark} onToggle={onMark} />
@@ -644,7 +647,7 @@ function ModelRows({
       {testing && (
         <tr className="model-note">
           <td colSpan={6} className="muted" role="status">
-            Loading {row.id} and sending a short prompt…
+            Loading {row.alias ?? row.id} and sending a short prompt…
           </td>
         </tr>
       )}

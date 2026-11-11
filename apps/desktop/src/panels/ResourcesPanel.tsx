@@ -6,6 +6,7 @@ import { Cpu, Globe, Gpu, MemoryStick, PowerOff, Server } from "lucide-react";
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import type { ResourceSnapshot } from "@imperium/protocol";
 import type { DaemonClient } from "../daemon/client";
+import { ModelName } from "../components/ModelName";
 
 /** Samples kept for the sparklines: two minutes at one every two seconds. */
 const HISTORY = 60;
@@ -150,7 +151,9 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
                         : undefined
                     }
                   >
-                    <td>{`${model.runtime}:${model.model}`}</td>
+                    <td>
+                      <ModelName name={`${model.runtime}:${model.model}`} />
+                    </td>
                     <td>
                       {model.cpu_pinned
                         ? "CPU lane"

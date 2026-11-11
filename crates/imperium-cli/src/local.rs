@@ -264,6 +264,9 @@ pub fn list() -> anyhow::Result<()> {
                 state,
                 speed
             );
+            if let Some(alias) = &model.alias {
+                println!("    \"{alias}\"");
+            }
             if let Some(repo) = &model.repo {
                 println!(
                     "    {repo}{}{}",
