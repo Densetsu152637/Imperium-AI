@@ -580,7 +580,7 @@ async fn run_turn(
         } = &event
         {
             asked.push(tool.clone());
-            session.respond(request_id.clone(), answer).unwrap();
+            session.respond(*request_id, answer).unwrap();
         }
         let done = matches!(
             event,
