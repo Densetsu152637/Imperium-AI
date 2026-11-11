@@ -44,9 +44,10 @@
   columns are brushed-metal rails; the conversation is a centred column with the user's turns
   as pills on the right.
 
-- Detachable panels: every panel, built-in or from a mod, has a Detach button (⧉) that moves it
-  to a window of its own. A detached window shows only that panel under a slim header with the
-  panel's actions, a Pin toggle (always on top), and Dock. Many can be open at once; each keeps
+- Detachable panels: every panel, built-in or from a mod, has *Open in its own window* in its
+  header's ⋯ menu, which moves it to a window of its own. A detached window shows only that
+  panel under a slim header with the panel's primary action, its ⋯ menu when it has secondary
+  actions, and two icon buttons: Pin (always on top) and Dock. Many can be open at once; each keeps
   its position, size, and pin in the saved layout, and all reopen at the next start (moved onto
   a visible monitor if theirs is gone). Closing one with the OS button docks it; quitting from
   the main window leaves them detached. Only the main window writes the layout, so detached
@@ -88,7 +89,8 @@ The view's composer messages the subagent directly, as the root composer does th
   up across runs. A subagent a daemon restart cut off is shown as failed and is continued the
   same way. Files attached to a follow-up are named in its text, since follow-ups carry none.
 - A paused subagent (stopped for a steering message to the root) shows **Resume** (continues
-  from its saved conversation) and **Cancel** in the view's header; a message re-briefs it.
+  from its saved conversation) in the view's header, with **Cancel** in the ⋯ menu beside it; a
+  message re-briefs it.
 - A message sent just as the subagent finished is sent again as a follow-up.
 
 ### Tool calls (implemented)
@@ -289,7 +291,7 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
   its header (double-clicking the header's title or empty space does the same); the open panels
   in its column take the room it gives back, and a divider between two open panels still
   resizes them across folded ones. The first header of a column also has *Collapse all* /
-  *Expand all* for the column (dim until the header is hovered or the button has focus). The
+  *Expand all in this column* in its ⋯ menu (see [Quiet interface](#quiet-interface-implemented)). The
   chevron is a button with `aria-expanded` naming its panel, so folding works from the keyboard.
   The fold animates briefly and not at all under the system's or the app's *Reduce motion*.
   Folded panels stay mounted (a mod's frame keeps its state) and are kept in the local layout
@@ -397,6 +399,36 @@ operating system and its changes), Light, or Dark. `settings.ts` sets `data-them
 element and `styles.css` keys the light tokens on `:root[data-theme="light"]`; the command
 palette's *Switch to light/dark theme* flips it. Mod panels pick up the tokens when they open.
 
+### Quiet interface (implemented)
+
+Panels and windows show their content and at most one primary action; everything else is one
+click away, never removed.
+
+- **Panel headers:** the fold chevron, the title, the primary action, and one ⋯ menu
+  (`RowMenu`, the same menu button session rows use) that stays invisible until the header is
+  hovered or holds focus (always shown on touch screens). The menu lists the panel's own
+  secondary actions (`PanelSpec.menu`) first, then *Collapse all / Expand all in this column* on
+  a stack's first panel, *Open in its own window*, and *Close panel* (`layout/panelMenu.ts`).
+  Header actions are small icon-only buttons with an `aria-label` and tooltip: *+* for New
+  environment and New session (beside the Sessions sort), the sliders for *Configure models*.
+- **Title bar:** Connectors, the panel editor toggle, and Settings are one group of icon buttons.
+- **Rows:** a row's secondary actions show on hover or focus: a model row's favourite and hide
+  toggles (shown while set), a queued message's *Edit* and *Remove* (*Steer* stays visible), an
+  environment folder's remove. Connector rows keep their on/off switch and put *Test
+  connection*, *Configure*, and *Remove* in a ⋯ menu.
+- **Decisions:** a permission request shows *Allow* and *Deny*; *Always this session* and
+  *Always allow <rule>* are in its ⋯ menu. A paused subagent's view shows *Resume* with *Cancel*
+  in a ⋯ menu. The environment window's delete is an icon button beside Cancel and Save, and
+  Settings → Notifications plays its three sounds from one *Play* menu.
+- **Tokens:** control heights (`--control-h`, `--control-h-sm`), paddings, icon sizes (`--icon`,
+  `--icon-sm`) and type steps (`--fs-xs`, `--fs-sm`, `--fs-md`) are shared custom properties in
+  `styles.css`; `.icon-only`, `.small`, `.panel-tool`, and `.row-tool` buttons use them instead
+  of one-off sizes.
+
+Every moved action keeps its accessible name: menu buttons follow the WAI-ARIA menu button
+pattern (arrows, Home/End, Enter or Space, Escape), and hover-revealed buttons appear when
+tabbed to.
+
 ## Command palette (implemented)
 
 **Ctrl+K** (Cmd+K on macOS) opens the command palette in the main window and in detached panel
@@ -442,7 +474,7 @@ WCAG AA contrast for shipped themes.
 
 ## Connectors (implemented)
 
-**Connectors** in the title bar (or Settings → Connectors) opens a window like Claude's and
+**Connectors** (the plug icon in the title bar, or Settings → Connectors) opens a window like Claude's and
 ChatGPT's connector directories, with a search box and two tabs:
 
 - **Installed:** MCP servers, each with its icon, command or URL, and status (*Not tested*,
@@ -597,7 +629,7 @@ environment's icon and name, a pin mark when pinned, and a *⋯* menu on the rig
 environment (new sessions start there) and shows its sessions; double-clicking opens it for
 editing.
 
-*New environment* and *Edit* open the **environment window**, a sheet over the workspace like
+*New environment* (the *+* in the Environments header) and *Edit* open the **environment window**, a sheet over the workspace like
 Settings (Escape or a click outside closes it): the name; the icon, picked from a searchable grid
 of every icon the app uses (`icons.ts`, the shared registry — Settings sections, Connectors, the
 titlebar, and project glyphs; older saved names still resolve); the tile colour, picked from a
@@ -624,7 +656,7 @@ with *Create* or *Save*. For a remote runtime the folders are paths inside it
 ([runtimes](14-projects-and-automation.md#runtimes-implemented)), typed in with *Add path*
 instead of the folder picker.
 
-**New session (implemented):** *New session* in the Sessions panel's header (disabled while
+**New session (implemented):** *New session* (the *+* in the Sessions panel's header; disabled while
 disconnected) opens the new-session composer in the middle panel, which is also what the middle
 panel shows whenever no session is open. It is a message box for the first message with the
 session's options under it, in the same footer row an open session uses: the *Environment*

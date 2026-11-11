@@ -1,5 +1,6 @@
-// A row's "more" menu: a three-dots button that opens a small menu of actions. It follows the
-// WAI-ARIA menu button pattern: arrows and Home/End move, Enter or Space runs an item, Escape or a
+// A "more" menu: a three-dots button that opens a small menu of actions. Rows, panel headers and
+// windows use it as their one overflow menu, so only the primary action stays on screen. It follows
+// the WAI-ARIA menu button pattern: arrows and Home/End move, Enter or Space runs an item, Escape or a
 // click outside closes. Like Select, the menu is rendered into the body so panels that clip their
 // content do not cut it off.
 
@@ -13,9 +14,27 @@ export type RowMenuItem = {
   onSelect: () => void;
   danger?: boolean;
   disabled?: boolean;
+  /** A longer explanation, shown as the item's tooltip. */
+  title?: string;
 };
 
-export function RowMenu({ label, items }: { label: string; items: RowMenuItem[] }) {
+export function RowMenu({
+  label,
+  items,
+  className,
+  icon: TriggerIcon = Ellipsis,
+  text,
+}: {
+  /** The button's accessible name and tooltip, and the menu's name. */
+  label: string;
+  items: RowMenuItem[];
+  /** Extra classes for the button (e.g. `panel-menu-button`). */
+  className?: string;
+  /** The button's icon: three dots unless the menu is better named by an icon of its own. */
+  icon?: LucideIcon;
+  /** Words beside the icon, for a menu that reads better with a visible label. */
+  text?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [position, setPosition] = useState<{ right: number; top: number; above: boolean } | null>(null);
@@ -111,7 +130,7 @@ export function RowMenu({ label, items }: { label: string; items: RowMenuItem[] 
       <button
         ref={button}
         type="button"
-        className={`ghost icon-only row-menu-button${open ? " open" : ""}`}
+        className={`ghost${text ? "" : " icon-only"} row-menu-button${className ? ` ${className}` : ""}${open ? " open" : ""}`}
         aria-label={label}
         title={label}
         aria-haspopup="menu"
@@ -124,7 +143,8 @@ export function RowMenu({ label, items }: { label: string; items: RowMenuItem[] 
           }
         }}
       >
-        <Ellipsis aria-hidden="true" />
+        <TriggerIcon aria-hidden="true" />
+        {text}
       </button>
       {open &&
         position &&
@@ -150,6 +170,7 @@ export function RowMenu({ label, items }: { label: string; items: RowMenuItem[] 
                   key={item.label}
                   role="menuitem"
                   aria-disabled={item.disabled || undefined}
+                  title={item.title}
                   className={`row-menu-item${index === active ? " active" : ""}${item.danger ? " danger" : ""}`}
                   onPointerMove={() => enabled(index) && index !== active && setActive(index)}
                   onClick={() => run(index)}

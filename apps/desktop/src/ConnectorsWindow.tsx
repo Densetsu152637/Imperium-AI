@@ -37,6 +37,7 @@ import type {
   PluginInfo,
 } from "@imperium/protocol";
 
+import { RowMenu } from "./components/RowMenu";
 import { Select } from "./components/Select";
 import { Switch } from "./components/Switch";
 import { ConnectorIcon } from "./connectorIcons";
@@ -543,34 +544,27 @@ function InstalledView({
                     )}
                   </div>
                   <div className="connector-row-actions">
-                    <button
-                      className="ghost icon-only"
-                      onClick={() => onTest(server.name)}
-                      disabled={busy || !server.config.enabled}
-                      aria-label={`Test ${server.name}`}
-                      title="Test the connection"
-                    >
-                      <RefreshCw />
-                    </button>
-                    <button
-                      className="ghost icon-only"
-                      onClick={() => onConfigure(server)}
-                      aria-label={`Configure ${server.name}`}
-                      title="Configure"
-                    >
-                      <Pencil />
-                    </button>
-                    <button
-                      className="ghost icon-only"
-                      onClick={() => {
-                        setForget(true);
-                        setConfirming(server.name);
-                      }}
-                      aria-label={`Remove ${server.name}`}
-                      title="Remove"
-                    >
-                      <Trash />
-                    </button>
+                    <RowMenu
+                      label={`More for ${server.name}`}
+                      items={[
+                        {
+                          label: "Test connection",
+                          icon: RefreshCw,
+                          disabled: busy || !server.config.enabled,
+                          onSelect: () => onTest(server.name),
+                        },
+                        { label: "Configure", icon: Pencil, onSelect: () => onConfigure(server) },
+                        {
+                          label: "Remove",
+                          icon: Trash,
+                          danger: true,
+                          onSelect: () => {
+                            setForget(true);
+                            setConfirming(server.name);
+                          },
+                        },
+                      ]}
+                    />
                     <Switch
                       checked={server.config.enabled}
                       onChange={(enabled) => onEnable(server.name, enabled)}

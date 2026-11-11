@@ -8,18 +8,26 @@
 // A stacked panel folds to its header with the chevron before its title (or a double-click on
 // the header); the others in its column take its room. The first header of a stack also offers
 // collapse all / expand all for the column. Folded panels are kept in the layout too.
+// A header shows the chevron, the title and the panel's primary action; the panel's secondary
+// actions, collapse all, detach and close sit in one ⋯ menu (panelMenu.ts) that stays quiet until
+// the header is hovered or focused.
 
 import { ChevronDown, ChevronsDownUp, ChevronsUpDown, ExternalLink, GripVertical, X } from "lucide-react";
 import { useState, useRef, type MouseEvent, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
 
+import { RowMenu, type RowMenuItem } from "../components/RowMenu";
 import type { DropTarget } from "./arrangement";
+import { panelMenuEntries } from "./panelMenu";
 import { getLayout, updateLayout } from "./state";
 
 export type PanelSpec = {
   id: string;
   title: string;
   body: ReactNode;
+  /** The panel's primary action (at most one button, or a control and its button), always shown. */
   actions?: ReactNode;
+  /** The panel's secondary actions, listed first in the header's ⋯ menu. */
+  menu?: RowMenuItem[];
   onClose?: () => void;
   onDetach?: () => void;
   /** The canvas (the session): spans its column when alone there, and never folds. */
@@ -152,6 +160,31 @@ type Edit = {
   dragging: boolean;
 };
 
+/** The header's ⋯ menu: the panel's own secondary actions, then collapse all, detach and close. */
+function PanelMenu({ panel, fold, collapsed }: { panel: PanelSpec; fold?: Fold; collapsed: boolean }) {
+  const own = collapsed ? [] : (panel.menu ?? []);
+  const column = fold?.column;
+  const items: RowMenuItem[] = panelMenuEntries({
+    own: own.length,
+    column,
+    canDetach: !!panel.onDetach,
+    canClose: !!panel.onClose,
+  }).map((entry) => {
+    switch (entry.kind) {
+      case "panel":
+        return own[entry.index];
+      case "fold-all":
+        return { label: entry.label, icon: column?.allCollapsed ? ChevronsUpDown : ChevronsDownUp, onSelect: () => column?.onToggleAll() };
+      case "detach":
+        return { label: entry.label, icon: ExternalLink, onSelect: () => panel.onDetach?.() };
+      case "close":
+        return { label: entry.label, icon: X, onSelect: () => panel.onClose?.() };
+    }
+  });
+  if (items.length === 0) return null;
+  return <RowMenu label={`${panel.title} options`} items={items} className="panel-menu-button" />;
+}
+
 function Panel({ panel, fold, edit }: { panel: PanelSpec; fold?: Fold; edit?: Edit }) {
   const bodyId = `panel-body-${panel.id}`;
   const collapsed = fold?.collapsed ?? false;
@@ -180,31 +213,7 @@ function Panel({ panel, fold, edit }: { panel: PanelSpec; fold?: Fold; edit?: Ed
         )}
         <h2 id={`panel-${panel.id}`}>{panel.title}</h2>
         {!edit && !collapsed && panel.actions}
-        {!edit && fold?.column && (
-          <button
-            className="ghost panel-close panel-fold-all icon-only"
-            onClick={fold.column.onToggleAll}
-            aria-label={fold.column.allCollapsed ? "Expand all panels in this column" : "Collapse all panels in this column"}
-            title={fold.column.allCollapsed ? "Expand all" : "Collapse all"}
-          >
-            {fold.column.allCollapsed ? <ChevronsUpDown aria-hidden="true" /> : <ChevronsDownUp aria-hidden="true" />}
-          </button>
-        )}
-        {!edit && panel.onDetach && (
-          <button
-            className="ghost panel-close panel-detach icon-only"
-            onClick={panel.onDetach}
-            aria-label={`Detach ${panel.title}`}
-            title="Open in its own window"
-          >
-            <ExternalLink />
-          </button>
-        )}
-        {!edit && panel.onClose && (
-          <button className="ghost panel-close icon-only" onClick={panel.onClose} aria-label={`Close ${panel.title}`} title="Close panel">
-            <X />
-          </button>
-        )}
+        {!edit && <PanelMenu panel={panel} fold={fold} collapsed={collapsed} />}
       </header>
       {/* Folded bodies stay mounted (mod frames keep their state), just out of view and reach.
           In the editor they are inert, so a drag over a mod's frame or a text field still lands. */}
