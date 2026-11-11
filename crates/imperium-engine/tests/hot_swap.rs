@@ -141,6 +141,7 @@ fn start_with(
         max_steps: 5,
         auto_compact,
         background: None,
+        checkpoints: None,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),

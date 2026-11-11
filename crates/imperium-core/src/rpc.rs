@@ -73,6 +73,9 @@ use imperium_protocol::methods::{
     SessionAgentsResult,
 };
 use imperium_protocol::methods::{SessionAttach, SessionAttachParams, VoiceTranscribe};
+use imperium_protocol::methods::{
+    SessionCheckpoints, SessionCheckpointsParams, SessionRewind, SessionRewindParams,
+};
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 use imperium_protocol::methods::{
     SessionQueue, SessionQueueParams, SessionQueueResult, SessionSendResult,
@@ -657,6 +660,24 @@ impl Connection {
                     })
                 })
             }
+            SessionCheckpoints::NAME => call_later::<SessionCheckpoints, _>(
+                request.params,
+                &mut later,
+                |params: SessionCheckpointsParams| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        blocking(move || crate::checkpoints::list(&state, &params.session_id)).await
+                    }
+                },
+            ),
+            SessionRewind::NAME => call_later::<SessionRewind, _>(
+                request.params,
+                &mut later,
+                |params: SessionRewindParams| {
+                    let state = Arc::clone(&self.state);
+                    async move { blocking(move || crate::checkpoints::rewind(&state, &params)).await }
+                },
+            ),
             SessionAgentCancel::NAME => {
                 call::<SessionAgentCancel>(request.params, |params: SessionAgentCancelParams| {
                     self.session(&params.session_id)?
@@ -1138,6 +1159,17 @@ fn call<M: Method>(
     run: impl FnOnce(M::Params) -> Result<M::Result, ErrorObject>,
 ) -> Result<Value, ErrorObject> {
     run(decode::<M>(params)?).map(|result| to_value(&result))
+}
+
+/// Runs blocking work (git, file reads) on the blocking pool; its error message becomes an
+/// invalid-params error.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, ErrorObject> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| ErrorObject::new(codes::INTERNAL_ERROR, error.to_string()))?
+        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
 }
 
 /// Like [`call`] for a method whose result takes a while: decodes the params now and leaves

@@ -139,6 +139,7 @@ fn start(
         instructions: None,
         max_steps: 5,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: false,
         journal_path: dir.join("journal.jsonl"),

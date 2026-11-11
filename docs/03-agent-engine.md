@@ -669,4 +669,12 @@ journal changed within `agents.resume_days`, replays the journal so clients see 
 restores the conversation under the current instructions, and reports a turn the restart cut
 off as failed. Subagents keep their state in `<id>.agents/` and can be resumed with a
 follow-up ([agent state](#agent-state)); project-agent sessions start afresh. Every client is told about new sessions (`session.created`), whoever started them.
+
+**Checkpoints (implemented):** the engine tells the daemon when each root turn starts (after
+any compaction, before the message joins the conversation) and ends, through
+`SessionConfig.checkpoints` (`TurnCheckpoints`, run on the blocking pool). The daemon uses it
+to record git checkpoints of the session's files before turns that change them, each linked to
+the journal's length and the saved conversation at that point, and `session.rewind` puts the
+files back, forks the conversation there into a new session (the original is kept), or both
+([checkpoints and rewinding](14-projects-and-automation.md#checkpoints-and-rewinding)).
 Planned: transcripts, task trees, and artefacts browsable and exportable.

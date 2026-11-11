@@ -372,6 +372,9 @@ pub struct SessionSettings {
     /// Keep every agent's state (a subagent's conversation, plan, and usage) in
     /// `<data>/sessions/<id>.agents/`, so finished subagents can be resumed after a restart.
     pub agent_state_keep: bool,
+    /// Record a git checkpoint of a session's files before each root turn that changes them, so
+    /// the files and the conversation can be rewound (folders in git repositories only).
+    pub checkpoints: bool,
     /// The largest file that can be attached to a message, in MiB.
     pub attachment_max_mib: u32,
 }
@@ -383,6 +386,7 @@ impl Default for SessionSettings {
             auto_archive_after_days: 0,
             auto_archive_on_pr_close: true,
             agent_state_keep: true,
+            checkpoints: true,
             attachment_max_mib: 10,
         }
     }

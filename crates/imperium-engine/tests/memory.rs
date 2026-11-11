@@ -99,6 +99,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         instructions: None,
         max_steps: 5,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),

@@ -79,6 +79,7 @@ fn start(url: &str, dir: &std::path::Path, policy: ResumePolicy) -> Session {
         instructions: None,
         max_steps: 3,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),
