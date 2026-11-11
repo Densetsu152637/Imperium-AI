@@ -2550,6 +2550,7 @@ dependencies = [
  "futures-util",
  "imperium-api",
  "imperium-protocol",
+ "imperium-tools",
  "reqwest",
  "serde",
  "serde_json",
@@ -2557,6 +2558,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "url",
 ]
 
 [[package]]

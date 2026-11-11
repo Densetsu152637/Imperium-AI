@@ -278,6 +278,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
                 profile_dir: dir.path().join("profile"),
                 headless: true,
                 instance: Arc::default(),
+                takeover: Arc::default(),
             }),
         })],
         max_steps: 8,

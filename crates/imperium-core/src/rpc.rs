@@ -37,7 +37,6 @@ use tokio::sync::broadcast;
 use crate::environments::EnvironmentError;
 use crate::state::{CreateError, DaemonState, SessionOptions};
 use imperium_engine::ModelError;
-use imperium_protocol::methods::SessionSuggestionRespond;
 use imperium_protocol::methods::{
     ConfigChanges, ConfigChangesParams, ConfigChangesResult, ConfigDescribe, ConfigDescribeParams,
     ConfigSet, ConfigSetParams, ConfigUndo, ConfigUndoParams, PersonalitiesList,
@@ -74,6 +73,9 @@ use imperium_protocol::methods::{
     SessionAgentsResult,
 };
 use imperium_protocol::methods::{SessionAttach, SessionAttachParams, VoiceTranscribe};
+use imperium_protocol::methods::{
+    SessionBrowserAct, SessionBrowserControl, SessionSuggestionRespond,
+};
 use imperium_protocol::methods::{
     SessionCheckpoints, SessionCheckpointsParams, SessionReview, SessionReviewCommit,
     SessionReviewCommitParams, SessionReviewHunk, SessionReviewHunkParams, SessionReviewParams,
@@ -732,6 +734,16 @@ impl Connection {
                         .cancel_agent(&params.agent_id)
                         .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
                     Ok(SessionAgentCancelResult {})
+                })
+            }
+            SessionBrowserControl::NAME => {
+                call_later::<SessionBrowserControl, _>(request.params, &mut later, |params| {
+                    crate::browser_control::control(Arc::clone(&self.state), params)
+                })
+            }
+            SessionBrowserAct::NAME => {
+                call_later::<SessionBrowserAct, _>(request.params, &mut later, |params| {
+                    crate::browser_control::act(Arc::clone(&self.state), params)
                 })
             }
             SessionSuggestionRespond::NAME => {

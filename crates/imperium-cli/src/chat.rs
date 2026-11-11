@@ -682,6 +682,18 @@ impl Chat {
             SessionEvent::BrowserView { url, title, .. } => {
                 println!("\n{tag}· browser: {title} ({url})");
             }
+            SessionEvent::BrowserControl { user } => {
+                let who = if user {
+                    "you drive"
+                } else {
+                    "the agent drives"
+                };
+                println!("\n{tag}· browser: {who}");
+            }
+            SessionEvent::PreviewChanged { url, .. } => match url {
+                Some(url) => println!("\n{tag}· preview: {url}"),
+                None => println!("\n{tag}· preview closed"),
+            },
             SessionEvent::ContextLoaded { references } => {
                 println!("\n{tag}· loaded {}", references.join(", "));
             }

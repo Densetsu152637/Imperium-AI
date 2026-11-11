@@ -57,6 +57,12 @@ pub enum ToolEvent {
         title: String,
         screenshot: String,
     },
+    /// The live preview changed: `url` is the loopback page now shown, or `None` once it is
+    /// closed. `command` is the process serving it, when the session started one.
+    PreviewChanged {
+        url: Option<String>,
+        command: Option<String>,
+    },
 }
 
 /// What a call may use from the session.

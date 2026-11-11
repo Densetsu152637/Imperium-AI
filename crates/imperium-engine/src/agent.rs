@@ -3360,6 +3360,7 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
             title,
             screenshot,
         },
+        ToolEvent::PreviewChanged { url, command } => SessionEvent::PreviewChanged { url, command },
         _ => return None,
     })
 }

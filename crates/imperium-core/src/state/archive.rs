@@ -243,6 +243,7 @@ impl DaemonState {
             .lock()
             .expect("session map lock is never poisoned by a panic while held")
             .remove(id);
+        self.forget_browser(id);
         super::lock_watches(&self.watches).remove(id);
         self.placements
             .lock()

@@ -213,6 +213,17 @@ pub enum SessionEvent {
         title: String,
         screenshot: String,
     },
+    /// Who drives the session's browser changed: the user took it over (`user` true; the
+    /// agent's browser tools are refused meanwhile) or gave it back.
+    BrowserControl { user: bool },
+    /// The live preview changed: `url` is the loopback page the Preview panel shows, or
+    /// absent once it is closed; `command` is the process the session started to serve it.
+    PreviewChanged {
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        command: Option<String>,
+    },
     /// The session waits: a model call hit a usage or rate limit (the turn waits until
     /// `until_unix_ms`, or until resumed early, following the session's resume policy), or
     /// background work is giving way to the user (`until_unix_ms` is 0; it resumes when the

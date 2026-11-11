@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
+use imperium_protocol::methods::BrowserAction;
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
@@ -299,6 +300,110 @@ impl Browser {
         self.wait_until_loaded().await?;
         Ok(outcome)
     }
+
+    /// Does what the user did (`session.browser_act`): navigates, goes back or forward, reloads,
+    /// clicks at a fraction of the visible page, types into the focused element, presses a key,
+    /// or scrolls; then waits for the page to settle.
+    pub async fn act(&mut self, action: &BrowserAction) -> Result<(), String> {
+        match action {
+            BrowserAction::Navigate { url } => {
+                let url = http_url(url)?;
+                let result = self.call("Page.navigate", json!({"url": url})).await?;
+                if let Some(error) = result["errorText"].as_str() {
+                    return Err(format!("could not open {url}: {error}"));
+                }
+            }
+            BrowserAction::Back => self.go_in_history(-1).await?,
+            BrowserAction::Forward => self.go_in_history(1).await?,
+            BrowserAction::Reload => {
+                self.call("Page.reload", json!({})).await?;
+            }
+            BrowserAction::Click { x, y } => {
+                let size = self
+                    .evaluate("JSON.stringify([innerWidth, innerHeight])")
+                    .await?;
+                let [width, height]: [f64; 2] =
+                    serde_json::from_str(size.as_str().unwrap_or("[0,0]"))
+                        .map_err(|error| error.to_string())?;
+                let (x, y) = (x.clamp(0.0, 1.0) * width, y.clamp(0.0, 1.0) * height);
+                for kind in ["mousePressed", "mouseReleased"] {
+                    self.call(
+                        "Input.dispatchMouseEvent",
+                        json!({"type": kind, "x": x, "y": y, "button": "left", "clickCount": 1}),
+                    )
+                    .await?;
+                }
+            }
+            BrowserAction::Type { text } => {
+                self.call("Input.insertText", json!({"text": text})).await?;
+            }
+            BrowserAction::Key { key } => {
+                let (code, virtual_key, text) = key_parts(key)
+                    .ok_or_else(|| format!("{key} is not a key the browser can press"))?;
+                for kind in ["keyDown", "keyUp"] {
+                    let mut params = json!({
+                        "type": kind, "key": key, "code": code,
+                        "windowsVirtualKeyCode": virtual_key,
+                    });
+                    if kind == "keyDown" && !text.is_empty() {
+                        params["text"] = json!(text);
+                    }
+                    self.call("Input.dispatchKeyEvent", params).await?;
+                }
+            }
+            BrowserAction::Scroll { dy } => {
+                let dy = if dy.is_finite() { *dy } else { 0.0 };
+                self.evaluate(&format!("window.scrollBy(0, {dy})")).await?;
+            }
+        }
+        // A navigation the action started may not have replaced the old document yet.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        self.wait_until_loaded().await
+    }
+
+    /// Moves `step` entries through the page's history; a page at the end of it stays put.
+    async fn go_in_history(&mut self, step: i64) -> Result<(), String> {
+        let history = self.call("Page.getNavigationHistory", json!({})).await?;
+        let current = history["currentIndex"].as_i64().unwrap_or(0);
+        let entry = history["entries"]
+            .as_array()
+            .and_then(|entries| entries.get(usize::try_from(current + step).ok()?))
+            .and_then(|entry| entry["id"].as_i64());
+        if let Some(id) = entry {
+            self.call("Page.navigateToHistoryEntry", json!({"entryId": id}))
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+/// `url` when it is an http or https URL the browser can open.
+fn http_url(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    match reqwest::Url::parse(url) {
+        Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => Ok(parsed.to_string()),
+        _ => Err(format!("{url} is not an http or https URL")),
+    }
+}
+
+/// The DOM `code`, Windows virtual key code, and typed text of the keys a user can press.
+fn key_parts(key: &str) -> Option<(&'static str, u32, &'static str)> {
+    Some(match key {
+        "Enter" => ("Enter", 13, "\r"),
+        "Tab" => ("Tab", 9, ""),
+        "Backspace" => ("Backspace", 8, ""),
+        "Delete" => ("Delete", 46, ""),
+        "Escape" => ("Escape", 27, ""),
+        "ArrowUp" => ("ArrowUp", 38, ""),
+        "ArrowDown" => ("ArrowDown", 40, ""),
+        "ArrowLeft" => ("ArrowLeft", 37, ""),
+        "ArrowRight" => ("ArrowRight", 39, ""),
+        "Home" => ("Home", 36, ""),
+        "End" => ("End", 35, ""),
+        "PageUp" => ("PageUp", 33, ""),
+        "PageDown" => ("PageDown", 34, ""),
+        _ => return None,
+    })
 }
 
 /// A port nothing is listening on right now.
@@ -497,5 +602,81 @@ mod tests {
                 .contains("no element matches")
         );
         assert!(browser.open("file:///etc/passwd").await.is_err());
+    }
+
+    /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
+    #[tokio::test]
+    async fn the_user_clicks_types_presses_keys_and_navigates() {
+        let Some(program) = find_browser() else {
+            eprintln!("no Chrome, Chromium, or Edge found; skipping");
+            return;
+        };
+        // A page that is one big button, then a field to type in, then a second page.
+        let first = r#"<html><head><title>First</title></head><body style="margin:0">
+            <button style="position:fixed;inset:0;width:100%;height:100%"
+              onclick="document.title = 'Clicked'">Big</button></body></html>"#;
+        let second = r#"<html><head><title>Second</title></head><body>
+            <input id="f" autofocus oninput="document.title = 'Typed ' + this.value"
+              onkeydown="if (event.key === 'Enter') document.title += ' Enter'"></body></html>"#;
+        let app = Router::new()
+            .route("/", get(move || async move { axum::response::Html(first) }))
+            .route(
+                "/second",
+                get(move || async move { axum::response::Html(second) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let profile = tempfile::tempdir().unwrap();
+        let mut browser = Browser::launch(&program, profile.path(), true)
+            .await
+            .unwrap();
+        let navigate = BrowserAction::Navigate {
+            url: format!("{base}/"),
+        };
+        browser.act(&navigate).await.unwrap();
+        browser
+            .act(&BrowserAction::Click { x: 0.5, y: 0.5 })
+            .await
+            .unwrap();
+        assert_eq!(browser.view().await.unwrap().title, "Clicked");
+
+        let second_page = BrowserAction::Navigate {
+            url: format!("{base}/second"),
+        };
+        browser.act(&second_page).await.unwrap();
+        browser
+            .evaluate("document.getElementById('f').focus()")
+            .await
+            .unwrap();
+        browser
+            .act(&BrowserAction::Type { text: "Ada".into() })
+            .await
+            .unwrap();
+        browser
+            .act(&BrowserAction::Key {
+                key: "Enter".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(browser.view().await.unwrap().title, "Typed Ada Enter");
+
+        browser.act(&BrowserAction::Back).await.unwrap();
+        assert!(browser.view().await.unwrap().url.ends_with('/'));
+        browser.act(&BrowserAction::Forward).await.unwrap();
+        assert!(browser.view().await.unwrap().url.ends_with("/second"));
+        browser
+            .act(&BrowserAction::Scroll { dy: 10.0 })
+            .await
+            .unwrap();
+        browser.act(&BrowserAction::Reload).await.unwrap();
+
+        let file = BrowserAction::Navigate {
+            url: "file:///etc/passwd".into(),
+        };
+        assert!(browser.act(&file).await.is_err());
+        let bad_key = BrowserAction::Key { key: "F13".into() };
+        assert!(browser.act(&bad_key).await.is_err());
     }
 }
