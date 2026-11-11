@@ -317,7 +317,7 @@ async fn a_comparison_runs_each_model_on_its_own_branch_and_a_pick_archives_the_
     )
     .unwrap();
     assert_eq!(picked.kept, keep);
-    assert_eq!(picked.archived, [other.clone()]);
+    assert_eq!(picked.archived, std::slice::from_ref(&other));
     assert!(state.session(&keep).is_some());
     assert!(state.session(&other).is_none());
     let archived = state.archived_sessions();
