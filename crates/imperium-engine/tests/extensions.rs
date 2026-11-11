@@ -135,7 +135,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
             .unwrap()
             .event;
         match event {
-            SessionEvent::TurnStarted { text } => started = Some(text),
+            SessionEvent::TurnStarted { text, .. } => started = Some(text),
             SessionEvent::PermissionRequested { .. } => panic!("the hook should block first"),
             SessionEvent::ToolFinished { ok, output, .. } => finished.push((ok, output)),
             SessionEvent::TurnCompleted { .. } => break,

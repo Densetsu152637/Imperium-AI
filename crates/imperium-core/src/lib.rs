@@ -2,6 +2,7 @@
 //! app, remote hosts) talk to it over JSON-RPC on a local, token-protected WebSocket.
 
 mod approvals;
+mod attachments;
 mod autofix;
 mod budgets;
 mod config;

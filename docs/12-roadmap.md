@@ -72,8 +72,15 @@ them), in the desktop's Resources panel and `imperium resources [--watch]`
    session, panels, and settings sections, recently run first, from a typed command registry
    features register into; plus a light, dark, or system theme setting
    ([07](07-desktop-ui.md#command-palette-implemented)). Rebindable shortcuts remain to do.
-5. **Attachments and voice.** Images, PDFs, and files in messages; push-to-talk voice input
-   through the transcription layer.
+5. **Attachments and voice** (implemented). Images, PDFs, and files attached to messages by
+   paperclip, paste, or drop, as chips in the composer and the transcript: images as image parts
+   for vision models (else a path), PDF text (and embedded page images for vision models), text
+   inlined up to a limit with a truncation marker, other files as paths the agent reads; files
+   from outside the session's folders copied into its attachments folder; journalled and counted
+   in the context breakdown. Push-to-talk (a held key or the mic button) transcribes into the
+   composer through `[media.transcription]`
+   ([07](07-desktop-ui.md#attachments-and-voice-input-implemented)). Describing images for models
+   without vision, rendering drawn PDF pages, and a supervised local whisper remain to do.
 6. **Review pane and checkpoints.** Diffs of an agent's changes with accept or reject per hunk,
    then commit or open a pull request; git-based checkpoints to rewind a session's files and
    conversation.

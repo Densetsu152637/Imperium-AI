@@ -32,6 +32,11 @@ use crate::session::lock;
 const TOKENIZE_BUDGET: Duration = Duration::from_secs(5);
 /// Cached token counts kept before the cache starts over.
 const CACHE_LIMIT: usize = 100_000;
+/// What one attached image is counted as: providers charge by size and detail (OpenAI's
+/// high-detail 1024x1024 tile set is 765, llama.cpp vision projectors a few hundred to a
+/// thousand), and the image is not decoded here, so this is a middling estimate that the
+/// reported prompt size calibrates when there is one.
+pub(crate) const IMAGE_TOKENS: u64 = 800;
 /// What joins the labelled parts of one message.
 pub(crate) const PART_SEPARATOR: &str = "\n\n";
 
@@ -48,6 +53,7 @@ pub(crate) enum Category {
     Summary,
     Manifest,
     Memories,
+    Attachments,
     User,
     Assistant,
     ToolResults,
@@ -55,7 +61,7 @@ pub(crate) enum Category {
 }
 
 impl Category {
-    const ALL: [Category; 14] = [
+    const ALL: [Category; 15] = [
         Category::SystemBase,
         Category::SystemSkills,
         Category::SystemMemory,
@@ -66,6 +72,7 @@ impl Category {
         Category::Summary,
         Category::Manifest,
         Category::Memories,
+        Category::Attachments,
         Category::User,
         Category::Assistant,
         Category::ToolResults,
@@ -84,6 +91,7 @@ impl Category {
             Category::Summary => "summary",
             Category::Manifest => "manifest",
             Category::Memories => "memories",
+            Category::Attachments => "attachments",
             Category::User => "user",
             Category::Assistant => "assistant",
             Category::ToolResults => "tool_results",
@@ -103,6 +111,7 @@ impl Category {
             Category::Summary => "Conversation summary",
             Category::Manifest => "Workflow context manifest",
             Category::Memories => "Recalled memories",
+            Category::Attachments => "Attachments",
             Category::User => "User messages",
             Category::Assistant => "Assistant messages",
             Category::ToolResults => "Tool results",
@@ -155,6 +164,7 @@ pub(crate) fn restored_spans(content: &str) -> Spans {
             "<relevant-memories>",
             "</relevant-memories>",
         ),
+        (Category::Attachments, "<attachments>", "</attachments>"),
     ] {
         let rest = &content[start..];
         if rest.starts_with(open)
@@ -227,7 +237,7 @@ impl<'a> Request<'a> {
                     Some(spans) => slices(content, spans, &mut parts),
                     None => parts.push((Category::SystemBase, content)),
                 },
-                ChatMessage::User { content } => match recorded {
+                ChatMessage::User { content, .. } => match recorded {
                     Some(spans) => slices(content, spans, &mut parts),
                     None => slices(content, &restored_spans(content), &mut parts),
                 },
@@ -281,7 +291,20 @@ impl<'a> Request<'a> {
             .iter()
             .map(|(_, text)| estimate_tokens(text))
             .sum();
-        text + self.formatting_estimate()
+        text + self.image_tokens() + self.formatting_estimate()
+    }
+
+    /// The attached images' estimated tokens ([`IMAGE_TOKENS`] each).
+    fn image_tokens(&self) -> u64 {
+        self.messages.iter().map(message_images).sum::<u64>() * IMAGE_TOKENS
+    }
+}
+
+/// How many images a message carries.
+fn message_images(message: &ChatMessage) -> u64 {
+    match message {
+        ChatMessage::User { images, .. } => images.len() as u64,
+        _ => 0,
     }
 }
 
@@ -467,6 +490,8 @@ impl TokenCounter {
                 }
             }
         }
+        // Images have no text to count; they are estimated with the attachments.
+        totals[Category::Attachments.index()] += request.image_tokens();
         let overhead = Category::Overhead.index();
         let (method, overhead_tokens) = match (reported, &exact) {
             (Some(usage), Some(_)) => {
@@ -638,7 +663,11 @@ fn assemble(
             (counts, method)
         }
     };
-    let mut messages: Vec<u64> = request.messages.iter().map(message_formatting).collect();
+    let mut messages: Vec<u64> = request
+        .messages
+        .iter()
+        .map(|message| message_formatting(message) + message_images(message) * IMAGE_TOKENS)
+        .collect();
     let mut tools = [0u64; 2];
     for ((index, category, _), count) in indexed.iter().zip(&counts) {
         match index {
@@ -829,7 +858,7 @@ mod tests {
         ]);
         let messages = vec![
             ChatMessage::System { content: system },
-            ChatMessage::User { content: user },
+            ChatMessage::user(user),
             ChatMessage::Assistant {
                 content: Some("Reading.".into()),
                 tool_calls: vec![ToolCall {

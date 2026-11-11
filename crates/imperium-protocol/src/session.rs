@@ -30,8 +30,13 @@ pub struct AgentEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum SessionEvent {
-    /// The agent started working on a user message.
-    TurnStarted { text: String },
+    /// The agent started working on a user message, with the files attached to it.
+    TurnStarted {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(as = "Option<Vec<Attachment>>", optional)]
+        attachments: Vec<Attachment>,
+    },
     /// A fragment of the agent's reply.
     TextDelta { text: String },
     /// A tool call is about to run (after any approval).
@@ -246,6 +251,9 @@ pub enum SessionEvent {
         text: String,
         #[serde(default)]
         paused: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(as = "Option<Vec<Attachment>>", optional)]
+        attachments: Vec<Attachment>,
     },
     /// The daemon offers to download a local model better suited to what the session needs.
     /// Nothing is downloaded unless the user accepts with `session.suggestion_respond`.
@@ -310,6 +318,58 @@ pub struct QueuedMessage {
     /// Joins the agent's running turn at its next safe point instead of waiting for the turn
     /// to end; when no turn is running it starts one.
     pub steer: bool,
+    /// Files attached to the message (`session.attach`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<Attachment>>", optional)]
+    pub attachments: Vec<Attachment>,
+}
+
+/// A file attached to a user message: staged with `session.attach`, then sent with
+/// `session.send`. Text files are inlined into the message (up to a limit, with a truncation
+/// marker), a PDF's text is extracted, an image goes to the model as an image when the
+/// session's model has vision, and anything else is a path the agent can read with its tools.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Attachment {
+    /// `a<time>-<n>`: unique in the session.
+    pub id: String,
+    /// The file name shown, such as `report.pdf`.
+    pub name: String,
+    pub kind: AttachmentKind,
+    /// The media type, such as `image/png`.
+    pub mime: String,
+    #[ts(type = "number")]
+    pub size: u64,
+    /// Where the file is: inside one of the session's folders or path grants, or in the
+    /// session's attachments folder under the data directory (`copied`).
+    pub path: String,
+    /// The file was copied into the session's attachments folder (pasted, uploaded, or dropped
+    /// from outside the session's folders).
+    #[serde(default)]
+    pub copied: bool,
+    /// Images (an image, or a PDF's embedded page images) go to the model as images. Set by
+    /// the daemon when the message is sent, from whether the session's model has vision;
+    /// without it an image is a path reference.
+    #[serde(default)]
+    pub vision: bool,
+    /// A small `data:image/...` thumbnail for transcripts (at most 64 KiB), made by the client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preview: Option<String>,
+}
+
+/// What an attachment is, which decides how the model receives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AttachmentKind {
+    /// PNG, JPEG, GIF, or WebP.
+    Image,
+    Pdf,
+    /// UTF-8 text: inlined into the message.
+    Text,
+    /// Anything else: a path the agent reads with its tools.
+    File,
 }
 
 /// How `session.send` delivers a message.
@@ -513,6 +573,74 @@ pub enum PermissionDecision {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn attachment() -> Attachment {
+        Attachment {
+            id: "a1".into(),
+            name: "shot.png".into(),
+            kind: AttachmentKind::Image,
+            mime: "image/png".into(),
+            size: 42,
+            path: "/data/attachments/s1/a1-shot.png".into(),
+            copied: true,
+            vision: true,
+            preview: Some("data:image/jpeg;base64,AA==".into()),
+        }
+    }
+
+    #[test]
+    fn attachments_round_trip_and_older_events_still_read() {
+        let started = SessionEvent::TurnStarted {
+            text: "look".into(),
+            attachments: vec![attachment()],
+        };
+        let wire = serde_json::to_value(&started).unwrap();
+        assert_eq!(wire["attachments"][0]["kind"], "image");
+        assert_eq!(
+            serde_json::from_value::<SessionEvent>(wire).unwrap(),
+            started
+        );
+        // A message without attachments serialises as before, and journals written before
+        // attachments existed still read.
+        let plain = SessionEvent::TurnStarted {
+            text: "hi".into(),
+            attachments: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            json!({"type": "turn_started", "text": "hi"})
+        );
+        let old: QueuedMessage =
+            serde_json::from_value(json!({"id": "q1", "text": "hi", "steer": false})).unwrap();
+        assert!(old.attachments.is_empty());
+        let minimal: Attachment = serde_json::from_value(json!({
+            "id": "a2", "name": "notes.txt", "kind": "text", "mime": "text/plain",
+            "size": 3, "path": "/p/notes.txt"
+        }))
+        .unwrap();
+        assert!(!minimal.copied && !minimal.vision && minimal.preview.is_none());
+    }
+
+    #[test]
+    fn send_params_carry_attachments() {
+        let params = crate::methods::SessionSendParams {
+            session_id: "s1".into(),
+            text: String::new(),
+            mode: None,
+            agent_id: None,
+            confirm_budget: None,
+            attachments: vec![attachment()],
+        };
+        let wire = serde_json::to_value(&params).unwrap();
+        assert_eq!(wire["attachments"][0]["id"], "a1");
+        assert_eq!(
+            serde_json::from_value::<crate::methods::SessionSendParams>(wire).unwrap(),
+            params
+        );
+        let bare: crate::methods::SessionSendParams =
+            serde_json::from_value(json!({"session_id": "s1", "text": "hi"})).unwrap();
+        assert!(bare.attachments.is_empty());
+    }
 
     #[test]
     fn events_are_tagged_by_type() {

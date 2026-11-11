@@ -5,12 +5,13 @@
 // small budget mark shows when a budget over the session (its environment, endpoint, or model, or
 // all usage) has passed an alert threshold.
 
-import { ArrowUp, CornerDownRight, Gauge, ListPlus, Pencil, Play, SlidersHorizontal, Square, Trash, X } from "lucide-react";
+import { CornerDownRight, Gauge, Paperclip, Pencil, Play, SlidersHorizontal, Square, Trash, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type {
+  Attachment,
   BudgetStatus,
   LocalModelRow,
   ModelRow,
@@ -45,6 +46,8 @@ import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { ToolState } from "../components/ToolState";
 import type { DaemonClient } from "../daemon/client";
+import { SentAttachments } from "../components/AttachmentChips";
+import { Composer } from "./Composer";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { ModelSuggestionCard } from "./ModelSuggestionCard";
 import { SessionModelSelect } from "./ModelSelect";
@@ -57,7 +60,7 @@ type Props = {
   session: SessionState;
   icons: ProjectIcons;
   /** Sends a message: `queue` starts a turn, or waits while one runs; `steer` joins the running turn. */
-  onSend: (text: string, mode: SendMode) => void;
+  onSend: (text: string, mode: SendMode, attachments: Attachment[]) => void;
   /** Edits, removes, or steers a queued message (`session.queue`). */
   onChangeQueued: (id: string, change: QueueChange) => void;
   onRespond: (requestId: number, decision: PermissionDecision) => void;
@@ -115,7 +118,6 @@ export function SessionPanel({
   focusEvent = null,
 }: Props) {
   const settings = useSettings();
-  const [draft, setDraft] = useState("");
   const [rendered, setRendered] = useState(settings.renderMarkdown);
   const [drawer, setDrawer] = useState<Drawer>(null);
   const drawerId = useId();
@@ -153,15 +155,6 @@ export function SessionPanel({
   const sum = totals(session.calls);
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
   const archived = session.summary.archived;
-  // While the agent works the composer stays open and sending always queues the message for
-  // after the turn; a queued message's Steer button moves it into the running turn. The one
-  // shortcut that steers directly is Ctrl+Shift+Enter.
-  const send = (mode: SendMode = "queue") => {
-    const text = draft.trim();
-    if (!text) return;
-    onSend(text, mode);
-    setDraft("");
-  };
   const toggle = (next: Exclude<Drawer, null>) => setDrawer((open) => (open === next ? null : next));
   const stopped = isStopped(session);
   const runningTasks = Object.values(session.tasks).filter((task) => task.status === "running").length;
@@ -345,45 +338,14 @@ export function SessionPanel({
         </section>
       )}
 
-      <form
-        className="composer"
+      <Composer
+        sessionId={session.summary.session_id}
+        busy={session.busy}
         hidden={archived}
-        onSubmit={(event) => {
-          event.preventDefault();
-          send();
-        }}
-      >
-        <textarea
-          value={draft}
-          aria-label="Message"
-          placeholder={composerHint(settings.sendKey === "enter", session.busy)}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter") return;
-            const modified = event.ctrlKey || event.metaKey;
-            if (modified && event.shiftKey) {
-              event.preventDefault();
-              send("steer");
-              return;
-            }
-            const sends = settings.sendKey === "enter" ? !event.shiftKey && !modified : modified;
-            if (sends) {
-              event.preventDefault();
-              send();
-            }
-          }}
-          rows={1}
-        />
-        <button
-          type="submit"
-          className="send"
-          disabled={!draft.trim()}
-          aria-label={session.busy ? "Queue" : "Send"}
-          title={session.busy ? "Queue for after this turn (Enter)" : "Send (Enter)"}
-        >
-          {session.busy ? <ListPlus aria-hidden="true" /> : <ArrowUp aria-hidden="true" />}
-        </button>
-      </form>
+        client={client}
+        placeholder={composerHint(settings.sendKey === "enter", session.busy)}
+        onSend={onSend}
+      />
 
       <footer className="session-footer" aria-label="Session status">
         <SessionModelSelect
@@ -590,11 +552,17 @@ function EntryView({
 }) {
   switch (entry.kind) {
     case "user":
-      return <div className="message user prose">{entry.text}</div>;
+      return (
+        <div className="message user prose">
+          {entry.attachments && <SentAttachments attachments={entry.attachments} />}
+          {entry.text}
+        </div>
+      );
     case "steer":
       return (
         <div className="message user steer prose" title="Steered: joined the running turn here">
           <span className="steer-label">{steeredLabel(entry.paused)}</span>
+          {entry.attachments && <SentAttachments attachments={entry.attachments} />}
           {entry.text}
         </div>
       );
@@ -726,6 +694,14 @@ function QueueView({
               />
             ) : (
               <span className="queue-text" title={message.text}>
+                {(message.attachments?.length ?? 0) > 0 && (
+                  <span
+                    className="queue-attachments muted"
+                    title={message.attachments?.map((attachment) => attachment.name).join("\n")}
+                  >
+                    <Paperclip aria-hidden="true" /> {message.attachments?.length}{" "}
+                  </span>
+                )}
                 {message.text}
               </span>
             )}

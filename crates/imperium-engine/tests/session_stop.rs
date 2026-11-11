@@ -307,7 +307,7 @@ async fn a_stop_survives_a_restart_and_keeps_the_queue_waiting() {
     let mut started = Vec::new();
     while started.len() < 2 {
         for event in until(&mut events, "root", root_turn_ended).await {
-            if let SessionEvent::TurnStarted { text } = event.event {
+            if let SessionEvent::TurnStarted { text, .. } = event.event {
                 started.push(text);
             }
         }

@@ -329,7 +329,10 @@ mod tests {
         };
         assert!(
             controls
-                .observe(&root(SessionEvent::TurnStarted { text: "x".into() }))
+                .observe(&root(SessionEvent::TurnStarted {
+                    text: "x".into(),
+                    attachments: Vec::new()
+                }))
                 .is_some()
         );
         assert_eq!(controls.status().0, SessionStatus::Working);
@@ -374,7 +377,10 @@ mod tests {
             })
         ));
         // Working again hides the overlay; idle shows it.
-        controls.observe(&root(SessionEvent::TurnStarted { text: "y".into() }));
+        controls.observe(&root(SessionEvent::TurnStarted {
+            text: "y".into(),
+            attachments: Vec::new(),
+        }));
         assert_eq!(controls.status().0, SessionStatus::Working);
         controls.observe(&root(SessionEvent::TurnFailed {
             message: "x".into(),

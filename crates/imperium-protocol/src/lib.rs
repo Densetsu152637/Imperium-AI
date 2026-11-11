@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// The protocol version this build speaks.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 6 };
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 7 };
 
 /// Protocol version exchanged in the handshake. Peers are compatible when majors match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

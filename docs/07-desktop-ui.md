@@ -337,7 +337,8 @@ every setting:
 
 - **Imperium:** General (reopen where you left off, start imperium-core with the app), Appearance
   (theme, accent colour, interface, message, and code scale, line length, density, message font,
-  reduce motion), Chat (send key, Markdown, code wrapping, following new output),
+  reduce motion), Chat (send key, Markdown, code wrapping, following new output, the
+  [push-to-talk](#attachments-and-voice-input-implemented) key),
   Notifications (sounds, a title badge, and system notifications; see
   [notifications](#notifications-implemented)), Panels (show or
   hide each panel, reset the layout), Keyboard (the shortcuts, the command palette's among them), Daemon (start, stop, restart, log, keep
@@ -580,6 +581,72 @@ entry outlined for a moment: each transcript entry remembers the index of the hi
 started at, and the hit's `event_index` picks the entry holding it. The search call is exported
 as `searchSessions` (`apps/desktop/src/sessionSearch.ts`) for the command palette. How the index
 is built and ranked is in [17](17-memory.md#session-search-implemented).
+
+### Attachments and voice input (implemented)
+
+**Attaching files.** The session composer takes files three ways: the paperclip button (a native
+file picker in the app, the browser's in a browser), pasting (a screenshot or copied files), and
+dropping them on the composer, which shows a dashed ring while files are over it. In the app the
+window reports dropped files by path; in a browser the files themselves are uploaded (up to
+12 MB each, the most one daemon message carries). Each file is staged with `session.attach` and
+shows as a chip above the message box: a thumbnail for images, an icon otherwise, its size, a
+spinner while it uploads, and a warning with the reason when the daemon refused it (too large,
+unreadable). Its tooltip names the file's path and how the model will receive it. Chips can be
+removed before sending; a message can be sent with attachments and no text. The chips go with
+the message (`session.send`'s `attachments`, also when it waits in the queue, where a paperclip
+and count mark it) and show on the message in the transcript, from the journal, so resumed and
+archived sessions show them too.
+
+What the daemon does with a file depends on what it is (read from its first bytes, not its
+name) and where it is:
+
+- **Where it lives.** A file inside the session's folders or path grants is referenced where it
+  is. Anything else (pasted, uploaded, or dropped from elsewhere) is copied into the session's
+  attachments folder, `<data>/attachments/<session id>/`, which the session's tools may read
+  (a read-only grant) and which is deleted with the session. Files over
+  `sessions.attachment_max_mib` (default 10) are refused. When the message is sent the daemon
+  checks each attachment again: it must still be in the attachments folder or inside the
+  session's folders and grants (a client cannot point it elsewhere), and its kind and size are
+  read again from the file.
+- **Images** (PNG, JPEG, GIF, WebP) go to the model as image parts when the session's model has
+  vision: its model table row is tagged `vision`, or it is a local llama.cpp model with a
+  multimodal projector (`mmproj`) beside it. Otherwise the chip says *path only* and the agent
+  gets the image's path to use with its tools. Describing or OCR-ing an image with another
+  (vision) model for a model without vision is not done yet.
+- **PDFs**: the text is extracted (the `pdf-extract` crate) and included, up to 100,000
+  characters with a truncation marker; for a vision model the JPEG page images embedded in the
+  PDF (what scanned pages usually are) go along as images, up to eight. Pages that are drawn
+  rather than embedded are not rendered to images.
+- **Text files** (UTF-8 without NUL bytes) are included up to 100 KiB, cut at a character
+  boundary with a marker naming how much was left out and the path to read the rest from.
+- **Anything else** is a path the agent reads with its tools.
+
+The model reads the files in an `<attachments>` block before the message's text, read again at
+the start of the turn. The context breakdown counts that block and the images (estimated at 800
+tokens each, calibrated by the reported prompt size) as **Attachments**. In a remote runtime
+(Docker container, WSL, SSH) the attachments folder is not reachable by the agent's tools; text,
+PDF text, and images still go in the message.
+
+**Push-to-talk.** Hold the push-to-talk key (Settings → Chat: Ctrl+Space by default, Alt+Space,
+Ctrl+Shift+Space, F8, or *Off*; on macOS Cmd counts as Ctrl, and where the system keeps a
+combination for itself, such as Spotlight's, pick another) while
+focus is in a session, or hold the mic button beside the message box, to record from the
+microphone; release to transcribe. A status line above the composer shows a pulsing dot and
+the time while recording, then *Transcribing…*. The words go into the message box at the caret
+(not sent), so they can be checked first. Esc cancels a recording; a tap shorter than 0.3 s is
+discarded. A keyboard press of the mic button (Enter or Space) toggles recording instead.
+
+Recording uses the browser's MediaRecorder (Opus in WebM where supported), the same in the app
+and a browser. The audio goes to the daemon (`voice.transcribe`), which sends it to the
+OpenAI-compatible `/audio/transcriptions` endpoint configured as `[media.transcription]` (see
+[media](09-media-generation.md)); without one the status line says speech-to-text is not set up.
+A local whisper.cpp server works when it is configured as that endpoint; the local runtime has
+no whisper slot of its own yet, so starting one for you is follow-up work.
+
+The microphone needs the operating system's permission. macOS asks the first time (the app's
+`Info.plist` carries the usage description); on Windows, WebView2 asks; a refusal shows how to
+allow it in the system's privacy settings. No Tauri capability is involved (recording is a web
+API), and on Linux it depends on WebKitGTK's media support.
 
 ## Setting up models (implemented)
 

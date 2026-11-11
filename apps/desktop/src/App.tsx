@@ -10,6 +10,7 @@ import { Plug, Plus, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
+  Attachment,
   EnvironmentInfo,
   EnvironmentListResult,
   ApprovalInfo,
@@ -535,9 +536,14 @@ export function App() {
   const newSessionView = () => setSelected(null);
 
   /** Sends a message: it starts a turn, waits in the queue while one runs, or (steer) joins it. */
-  const send = (text: string, mode: SendMode) => {
+  const send = (text: string, mode: SendMode, attachments: Attachment[] = []) => {
     if (!client || !selected) return;
-    const params: SessionSendParams = { session_id: selected, text, mode };
+    const params: SessionSendParams = {
+      session_id: selected,
+      text,
+      mode,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
     void sendWithBudget(client, params);
   };
 

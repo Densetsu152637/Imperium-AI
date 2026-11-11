@@ -283,11 +283,12 @@ async fn send_modes_and_queue_actions() {
         id: steering.id.clone(),
         text: "mind the tests".into(),
         paused: Vec::new(),
+        attachments: Vec::new(),
     }));
     let turns: Vec<&String> = root
         .iter()
         .filter_map(|event| match event {
-            SessionEvent::TurnStarted { text } => Some(text),
+            SessionEvent::TurnStarted { text, .. } => Some(text),
             _ => None,
         })
         .collect();
