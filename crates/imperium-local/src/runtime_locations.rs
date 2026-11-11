@@ -1,7 +1,8 @@
 //! Where `llama-server` builds are usually left on each OS: `PATH`, package managers (winget,
 //! scoop, Chocolatey, Homebrew), LM Studio's bundled llama.cpp backends, and llama.cpp checkouts
-//! in fixed, conventional folders. The home and Downloads folders are deliberately not globbed:
-//! an unverified binary unpacked there must not be run automatically.
+//! in fixed, conventional folders. Checkouts and unpacked release archives in the home and
+//! Downloads folders ([`unverified_places`]) are only ever *listed*, never run or chosen
+//! automatically: an unverified download becomes the runtime only when the user adopts it.
 //!
 //! [`places`] is pure: it is given the OS, the home folder and the environment, and lists the
 //! folders to look in, some of them as "every child of this folder whose name starts with ..."
@@ -137,6 +138,26 @@ pub fn places(os: Os, home: Option<&Path>, var: &dyn Fn(&str) -> Option<OsString
     places
 }
 
+/// Folders where an unverified `llama.cpp` checkout or unpacked release archive
+/// (`llama-b12180-bin-win-cuda-13.5-x64`) is often left: the home and Downloads folders. These
+/// are offered to the user as candidates and are never probed or used automatically.
+pub fn unverified_places(home: Option<&Path>) -> Vec<Place> {
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    let mut places = Vec::new();
+    for parent in [home.to_path_buf(), home.join("Downloads")] {
+        for prefix in ["llama.cpp", "llama-b"] {
+            places.push(Place::Children {
+                parent: parent.clone(),
+                prefix,
+                subdirs: CHECKOUT,
+            });
+        }
+    }
+    places
+}
+
 /// The `llama-server` files at `places` (in order, once each) for an OS whose executable is
 /// called `server`. A [`Place::Children`] parent is read one level deep, newest first, and only
 /// its first [`MAX_CHILDREN`] matching children are looked in.
@@ -247,21 +268,23 @@ mod tests {
     }
 
     #[test]
-    fn a_fake_download_is_not_among_the_expanded_places() {
+    fn unverified_downloads_are_only_in_the_unverified_places() {
         let dir = tempfile::tempdir().unwrap();
         let server = Os::Linux.server_name();
-        let fake = dir.path().join("Downloads").join("llama-b99999");
-        std::fs::create_dir_all(&fake).unwrap();
-        std::fs::write(fake.join(server), "").unwrap();
-        let home_fake = dir.path().join("llama.cpp-b1");
-        std::fs::create_dir_all(&home_fake).unwrap();
-        std::fs::write(home_fake.join(server), "").unwrap();
-        let places = places(Os::Linux, Some(dir.path()), &env(&[]));
-        let found: Vec<_> = expand(&places, server)
+        let download = dir.path().join("Downloads").join("llama-b99999");
+        std::fs::create_dir_all(&download).unwrap();
+        std::fs::write(download.join(server), "").unwrap();
+        let checkout = dir.path().join("llama.cpp-b1").join("build/bin");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(checkout.join(server), "").unwrap();
+        let automatic: Vec<_> = expand(&places(Os::Linux, Some(dir.path()), &env(&[])), server)
             .into_iter()
             .filter(|path| path.starts_with(dir.path()))
             .collect();
-        assert!(found.is_empty(), "{found:?}");
+        assert!(automatic.is_empty(), "{automatic:?}");
+        let listed = expand(&unverified_places(Some(dir.path())), server);
+        assert_eq!(listed, [checkout.join(server), download.join(server)]);
+        assert!(unverified_places(None).is_empty());
     }
 
     #[test]

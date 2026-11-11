@@ -151,6 +151,26 @@ pub fn runtime_status() -> anyhow::Result<()> {
     })
 }
 
+pub fn runtime_candidates() -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let status = client.call::<RuntimeStatus>(RuntimeStatusParams {}).await?;
+        if status.candidates.is_empty() {
+            println!("No other llama-server found on this machine.");
+        } else {
+            println!("Found llama-server (none is run until you adopt it):");
+            for candidate in &status.candidates {
+                println!("  {candidate}");
+            }
+            println!(
+                "
+Adopt one with `imperium runtime use <path>`."
+            );
+        }
+        Ok(())
+    })
+}
+
 pub fn use_server(path: Option<std::path::PathBuf>) -> anyhow::Result<()> {
     let path = path.as_deref().map(absolute).transpose()?;
     block_on(async {

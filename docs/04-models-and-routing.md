@@ -246,9 +246,15 @@ source `detected` and the app says so on the runtime card. Installing a build re
   `Packages\ggml.llamacpp*`), scoop (`~/scoop/apps/llama*/current`, its shims, and the global
   scoop), Chocolatey's `bin`, and `%LOCALAPPDATA%\llama.cpp`; on macOS `/opt/homebrew/bin`,
   `/usr/local/bin`, and `~/.local/bin`; on Linux `/usr/local/bin`, `/usr/bin`, Linuxbrew,
-  `~/.local/bin`, and `/opt/llama.cpp`. The home and Downloads folders are not scanned for
-  unpacked releases, so an unverified download is never run automatically. Folders with many builds (LM Studio's) are read newest
+  `~/.local/bin`, and `/opt/llama.cpp`. Folders with many builds (LM Studio's) are read newest
   first, eight at most.
+- **Unverified downloads are listed, never run.** A `llama.cpp*` checkout or unpacked release
+  (`llama-b<N>-bin-*`) directly in the home or Downloads folder is only offered as a candidate
+  (the runtime card's "Use detected…" list, `imperium runtime candidates`): it is not started
+  with `--version`, never chosen by itself, and never preferred over an installed build. Using
+  one (the card's "Use this", `imperium runtime use <path>`, or
+  `imperium config set runtime.llamacpp.custom_path <path>`) sets `runtime.llamacpp.custom_path`,
+  and only then is it run.
 - **Which one.** Of those that start and take the flags: one that sees the GPU through the
   backend that suits this machine (CUDA on an NVIDIA GPU, Metal on Apple Silicon), then one that
   sees another GPU, then one that could not say, then a CPU-only one; among equals the newest
