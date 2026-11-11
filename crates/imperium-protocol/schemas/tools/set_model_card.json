@@ -1,0 +1,25 @@
+{
+  "description": "Write the card of a model in the user's Imperium settings: what it is good at (coding, writing, research, reading images, long inputs) and notes, which list_models shows when choosing a model to delegate to. Base it on evidence such as the model's documentation or how it did on real work. Replaces the card the settings hold; null clears it. The change is recorded and the user can undo it.",
+  "name": "set_model_card",
+  "parameters": {
+    "properties": {
+      "card": {
+        "description": "The card, up to 4,000 characters, such as \"Good at: coding, refactoring, tests. Weak at: long documents.\"; null clears it",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "model": {
+        "description": "The model: a model table id or a local model id, as list_models shows it",
+        "type": "string"
+      }
+    },
+    "required": [
+      "model",
+      "card"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

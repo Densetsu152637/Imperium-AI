@@ -1,5 +1,6 @@
 mod approvals;
 mod autostart;
+mod changes;
 mod chat;
 mod env;
 mod local;
@@ -435,6 +436,11 @@ enum ConfigCommand {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// List the changes agents made to the app config (model cards, installed and removed
+    /// mods, plugins, and skills), newest first.
+    Changes,
+    /// Undo a change listed by `imperium config changes`.
+    Undo { id: u64 },
 }
 
 #[derive(Debug, Subcommand)]
@@ -502,6 +508,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Config {
             command: ConfigCommand::Explain { key, project },
         } => explain(&key, project),
+        Command::Config {
+            command: ConfigCommand::Changes,
+        } => changes::list(),
+        Command::Config {
+            command: ConfigCommand::Undo { id },
+        } => changes::undo(id),
         Command::Secret {
             command: SecretCommand::Set { name },
         } => set_secret(&name),

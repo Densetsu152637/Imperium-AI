@@ -55,6 +55,18 @@
     {
       "name": "list_models",
       "status": "available"
+    },
+    {
+      "name": "set_model_card",
+      "status": "available"
+    },
+    {
+      "name": "install_extension",
+      "status": "available"
+    },
+    {
+      "name": "uninstall_extension",
+      "status": "available"
     }
   ]
 }

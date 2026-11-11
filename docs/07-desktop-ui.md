@@ -481,7 +481,8 @@ ChatGPT's connector directories, with a search box and two tabs:
   *Connected · N tools* with the tool names, *Error* with the reason, or *Off*), and buttons
   to test the connection, configure, remove (optionally deleting its saved secrets), and a
   switch to turn it off. Missing keychain secrets are flagged. Below them, plugins (skills,
-  commands, hooks, and servers they bring, with an on/off switch) and skills.
+  commands, hooks, and servers they bring, with an on/off switch) and skills; one an agent
+  installed says where it came from (the URL and commit, or the folder).
 - **Browse:** a card grid of the connector directory, filtered by category chips and search,
   each card with an icon, publisher, description, category, local or remote, and *Add* (or
   *Added*). *Add* opens a form for the connector's settings: a name, then its fields (folders,
@@ -523,6 +524,12 @@ every setting:
   the daemon restarts; the window offers the restart.
 - **Permissions** (under Agent and daemon): the global path grants and permission rules; see
   [permissions](#permissions-implemented).
+- **Changes by agents** (under Agent and daemon): what agents changed in the app config
+  (`config.changes`), newest first: model cards with the card before and after, and mods,
+  plugins, and skills installed or removed with their folder and source. Each has **Undo**
+  (`config.undo`); undone ones are marked. See
+  [agents manage the app config](06-extensibility.md#agents-manage-the-app-config-implemented).
+- **Mods** lists each mod's source when an agent installed it; such a mod is off until turned on.
 - **Data and storage** shows where everything is kept and resets app settings or the layout.
 
 App settings, the layout (panel sizes, closed panels, the selected environment and session),

@@ -136,6 +136,7 @@ pub fn list(state: &DaemonState) -> McpListResult {
                 .iter()
                 .map(|server| server.name.clone())
                 .collect(),
+            installed_from: crate::extension_install::read_source(&plugin.root),
         })
         .collect();
     McpListResult {
@@ -146,6 +147,7 @@ pub fn list(state: &DaemonState) -> McpListResult {
             .map(|skill| SkillInfo {
                 name: skill.name,
                 description: skill.description,
+                installed_from: crate::extension_install::read_source(&skill.dir),
                 origin: skill.origin,
                 dir: skill.dir.display().to_string(),
             })

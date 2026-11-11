@@ -1107,8 +1107,9 @@ card = "Good at: coding, refactoring, tests. Weak at long documents."
 card = "Good at: reading screenshots and diagrams; short answers."
 ```
 
-Not yet: measurements are kept in memory only (they start again with the daemon), and agents
-cannot edit cards themselves (roadmap item 22).
+Agents write cards with `set_model_card`, recorded and undoable
+([06](06-extensibility.md#agents-manage-the-app-config-implemented)). Not yet: measurements are
+kept in memory only (they start again with the daemon).
 
 ## Cost accounting
 
