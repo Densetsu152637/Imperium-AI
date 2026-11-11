@@ -14,7 +14,8 @@ use tokio::process::{Child, Command};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-const START_TIMEOUT: Duration = Duration::from_secs(20);
+/// From starting the browser to having a page to drive; cold starts on CI runners are slow.
+const START_TIMEOUT: Duration = Duration::from_secs(30);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 /// Longest page text returned by `read`.
 const MAX_TEXT: usize = 20_000;
@@ -108,21 +109,9 @@ impl Browser {
         let process = command
             .spawn()
             .map_err(|error| format!("could not start {}: {error}", program.display()))?;
-        let port = wait_for_port(&port_file).await?;
-        let pages: Value = reqwest::get(format!("http://127.0.0.1:{port}/json/list"))
-            .await
-            .map_err(|error| error.to_string())?
-            .json()
-            .await
-            .map_err(|error| error.to_string())?;
-        let socket_url = pages
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|target| target["type"] == "page")
-            .and_then(|target| target["webSocketDebuggerUrl"].as_str())
-            .ok_or("the browser has no page to drive")?
-            .to_string();
+        let deadline = Instant::now() + START_TIMEOUT;
+        let port = wait_for_port(&port_file, deadline).await?;
+        let socket_url = wait_for_page(port, deadline).await?;
         let (socket, _) = tokio_tungstenite::connect_async(socket_url.as_str())
             .await
             .map_err(|error| format!("could not connect to the browser: {error}"))?;
@@ -286,9 +275,37 @@ impl Browser {
     }
 }
 
+/// Waits for the browser to list its first page and returns that page's debugger socket. The
+/// port file can appear before the page target is registered (slow starts, notably Edge on
+/// Windows), so an empty list or a refused connection is retried until `deadline`.
+async fn wait_for_page(port: u16, deadline: Instant) -> Result<String, String> {
+    let list = format!("http://127.0.0.1:{port}/json/list");
+    let mut last_error = "the browser has no page to drive".to_string();
+    while Instant::now() < deadline {
+        match reqwest::get(&list).await {
+            Ok(response) => match response.json::<Value>().await {
+                Ok(pages) => {
+                    if let Some(url) = pages
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|target| target["type"] == "page")
+                        .and_then(|target| target["webSocketDebuggerUrl"].as_str())
+                    {
+                        return Ok(url.to_string());
+                    }
+                }
+                Err(error) => last_error = error.to_string(),
+            },
+            Err(error) => last_error = error.to_string(),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(last_error)
+}
+
 /// Waits for the browser to write the port it listens on.
-async fn wait_for_port(file: &Path) -> Result<u16, String> {
-    let deadline = Instant::now() + START_TIMEOUT;
+async fn wait_for_port(file: &Path, deadline: Instant) -> Result<u16, String> {
     while Instant::now() < deadline {
         if let Ok(text) = std::fs::read_to_string(file)
             && let Some(port) = text

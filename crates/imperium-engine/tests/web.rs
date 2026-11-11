@@ -288,10 +288,12 @@ async fn browser_actions_are_mirrored_as_screenshots() {
     session.send("Go to the next page".into()).unwrap();
     let mut views = Vec::new();
     let mut asked = Vec::new();
+    let mut failed = Vec::new();
     loop {
-        let event = tokio::time::timeout(Duration::from_secs(30), events.recv())
+        // Generous: the first browser call includes a cold browser start.
+        let event = tokio::time::timeout(Duration::from_secs(90), events.recv())
             .await
-            .expect("an event within 30 s")
+            .expect("an event within 90 s")
             .unwrap()
             .event;
         match event {
@@ -308,11 +310,16 @@ async fn browser_actions_are_mirrored_as_screenshots() {
             SessionEvent::BrowserView {
                 title, screenshot, ..
             } => views.push((title, screenshot.len())),
+            SessionEvent::ToolFinished {
+                ok: false, output, ..
+            } => failed.push(output),
             SessionEvent::TurnCompleted { .. } => break,
             SessionEvent::TurnFailed { message } => panic!("{message}"),
             _ => {}
         }
     }
+    // A browser that failed to start shows here rather than as a bare count mismatch.
+    assert!(failed.is_empty(), "browser tools failed: {failed:?}");
     // Opening an allowed domain did not ask; clicking did.
     assert_eq!(asked, ["click #next in the browser"]);
     assert_eq!(views.len(), 2);
