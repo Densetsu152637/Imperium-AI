@@ -567,6 +567,11 @@ pub struct SessionExportResult {
     pub filename: String,
     /// The transcript as text (a JSON document for `json`).
     pub content: String,
+    /// Set when the transcript looks like it holds a credential. Exports are verbatim: they
+    /// include whatever the agents read and ran, so check before sharing one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub warning: Option<String>,
 }
 
 /// `session.search`: searches what was said and done in sessions, running and archived. The

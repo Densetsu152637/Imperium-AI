@@ -104,6 +104,9 @@ pub fn export(
                 include_subagents: no_subagents.then_some(false),
             })
             .await?;
+        if let Some(warning) = &exported.warning {
+            eprintln!("warning: {warning}");
+        }
         match output {
             Some(path) => {
                 std::fs::write(&path, exported.content)?;

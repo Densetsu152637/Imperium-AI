@@ -352,22 +352,25 @@ turn. The desktop shows it in the session's *Context and outputs* section
 
 - **Mid-turn compaction (implemented):** each agent, the root and every subagent, checks before
   each model call whether the next request would reach `context.auto_compact_at` (default
-  `0.85`; `0` turns it off) of its model's context window. The size is the latest call's reported
+  `0.85`, never taken below `0.5`; `0` turns it off) of its model's context window. The size is the latest call's reported
   prompt tokens plus an estimate of the messages added since, or an estimate of the whole request
   before any call has reported. At or past it, the agent runs the [same
   compaction](#switching-models-and-compaction) a model switch uses, emits `compaction_started`
   and `context_compacted`, and carries on with the turn. It needs a known window (the model
   table's, a local model's planned one); without one nothing happens. It never loops: another
   attempt waits for at least two new messages, a compaction that did not shrink the conversation
-  stops further attempts for that turn, and a failed one is a notice while the turn continues
-  with the conversation as it is. The session's `auto_compact` flag stays what it was: also fit
+  stops further attempts for that turn, and a failed one is a notice (not tried again until the
+  conversation has grown) while the turn continues with the conversation as it is. A
+  compaction aims at 80% of the trigger at most, so the next call does not trigger it again. The session's `auto_compact` flag stays what it was: also fit
   the root conversation at the start of each turn (environment agents).
 - **What compaction never touches:** the system prompt (the policy index and role instructions,
   project instruction files such as `AGENTS.md`, eager skills, memory and web rules) is always
   kept as it was. Workflow context loaded during the conversation is carried over verbatim
-  too, next to the summary, in a `<context-manifest kept="true">` block: the turns' context
-  manifests, what `context_load` returned (workflow companions), and what `load_skill`
-  returned (skill instructions; a skill therefore stays loaded). Everything else is up for
+  too, next to the summary, in a `<context-manifest kept="true">` block (recognised again after a restart): the latest
+  context manifest, what `context_load` returned (each result once; one that holds an earlier
+  one replaces it) (workflow companions), and what `load_skill`
+  returned (skill instructions; a skill therefore stays loaded; journals written before this carried nothing over, and
+  replay still drops their skills at such a compaction). Everything else is up for
   summarising: messages, tool calls and results, subagent reports, attachments. The carried
   context counts against the budget, so a conversation whose kept context alone is too large is
   refused like one whose system prompt is.

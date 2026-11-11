@@ -814,8 +814,11 @@ Routing still sees a hidden model that is in the model table.
 A session's ⋯ menu in the Sessions panel has **Export as Markdown** and **Export as JSON**,
 for running and archived sessions alike. The app asks the daemon for `session.export`, which
 builds the transcript from the session's journal, and saves it through the native save dialog
-(a download in a browser build; the dialog's file is written by the shell's `export_write`
-command). The transcript holds every message, each tool call with its arguments and result, the
+(a download in a browser build). In the app the shell opens the save dialog itself and
+writes only the file picked there (`save_export`; the page cannot name a path, only a `.md` or
+`.json` file name to suggest, and transcripts over 64 MiB are refused). Exports are verbatim,
+so they can hold anything an agent read or ran, secrets included: when one looks like it
+holds a credential the app asks before saving, and the CLI prints a warning. The transcript holds every message, each tool call with its arguments and result, the
 subagent task tree with each subagent's own log under the task that started it, compaction
 notices, and the files attached to messages or created by agents. Subagents of an archived
 session open in the agent view like any other (read-only: no *Resume* or *Cancel*, no

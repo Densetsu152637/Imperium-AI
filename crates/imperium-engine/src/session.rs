@@ -653,7 +653,8 @@ impl Shared {
 
 /// What a resumed session had loaded, from its journal: skills each agent loaded, as (agent id,
 /// skill name), and the plugins activated, in order.
-/// A compaction keeps loaded skills' instructions verbatim, so it drops none.
+/// A compaction that carried context over (`kept_context`) keeps skills loaded; older journals' compactions
+/// summarised their instructions, so those drop the agent's skills.
 fn replay_extensions(history: &[AgentEvent]) -> (HashSet<(String, String)>, Vec<String>) {
     let mut skills = HashSet::new();
     let mut plugins = Vec::new();
@@ -671,6 +672,11 @@ fn replay_extensions(history: &[AgentEvent]) -> (HashSet<(String, String)>, Vec<
                 name,
                 ..
             } if !plugins.contains(name) => plugins.push(name.clone()),
+            // Compactions before workflow context was carried over summarised the skills.
+            SessionEvent::ContextCompacted {
+                kept_context: false,
+                ..
+            } => skills.retain(|(agent, _)| agent != agent_id),
             _ => {}
         }
     }
@@ -1310,5 +1316,50 @@ impl Emitter {
                 _ => None,
             })
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use imperium_protocol::session::TokenCountMethod;
+
+    fn compacted(agent: &str, kept_context: bool) -> AgentEvent {
+        AgentEvent {
+            agent_id: agent.into(),
+            event: SessionEvent::ContextCompacted {
+                model: "m".into(),
+                before_tokens: 10,
+                after_tokens: 5,
+                summarised_messages: 2,
+                budget: 100,
+                context_window: Some(120),
+                method: TokenCountMethod::Estimated,
+                summary_model: "m".into(),
+                kept_context,
+            },
+        }
+    }
+
+    fn skill(agent: &str) -> AgentEvent {
+        AgentEvent {
+            agent_id: agent.into(),
+            event: SessionEvent::ExtensionLoaded {
+                kind: ExtensionKind::Skill,
+                name: "review".into(),
+                tools: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn old_compactions_drop_loaded_skills_and_new_ones_keep_them() {
+        let (old, _) = replay_extensions(&[skill("root"), compacted("root", false)]);
+        assert!(old.is_empty());
+        let (kept, _) = replay_extensions(&[skill("root"), compacted("root", true)]);
+        assert!(kept.contains(&("root".to_string(), "review".to_string())));
+        // Another agent's old compaction leaves this one's skills.
+        let (other, _) = replay_extensions(&[skill("root"), compacted("t1", false)]);
+        assert_eq!(other.len(), 1);
     }
 }

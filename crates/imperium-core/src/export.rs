@@ -394,6 +394,29 @@ fn push_assistant(node: &mut Agent, text: String) {
 }
 
 /// Markdown for one agent's log and, where each was started, its subagents'.
+/// `text` on one line, for a heading.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `text` as a block quote: every line keeps its `>`, so a multi-line message cannot leak out.
+fn quote(label: &str, text: &str) -> String {
+    let mut out = String::new();
+    for (index, line) in text.trim_end().lines().enumerate() {
+        let lead = if index == 0 {
+            format!("{label}: ")
+        } else {
+            String::new()
+        };
+        let _ = writeln!(out, "> {lead}{line}");
+    }
+    if out.is_empty() {
+        let _ = writeln!(out, "> {label}");
+    }
+    out.push('\n');
+    out
+}
+
 fn markdown(out: &mut String, agent: &Agent, depth: usize) {
     let hashes = "#".repeat((depth + 2).min(6));
     for entry in &agent.entries {
@@ -459,18 +482,24 @@ fn markdown(out: &mut String, agent: &Agent, depth: usize) {
             } => {
                 let _ = writeln!(
                     out,
-                    "> Context compacted for {model}: {summarised_messages} messages summarised, \
-                     {before_tokens} to {after_tokens} tokens.\n"
+                    "> Context compacted for {}: {summarised_messages} messages summarised, \
+                     {before_tokens} to {after_tokens} tokens.\n",
+                    one_line(model)
                 );
             }
             Entry::ModelChanged { from, to } => {
-                let _ = writeln!(out, "> Model changed from {from} to {to}.\n");
+                let _ = writeln!(
+                    out,
+                    "> Model changed from {} to {}.\n",
+                    one_line(from),
+                    one_line(to)
+                );
             }
             Entry::Notice { message } => {
-                let _ = writeln!(out, "> Notice: {message}\n");
+                out.push_str(&quote("Notice", message));
             }
             Entry::Failure { message } => {
-                let _ = writeln!(out, "> Turn failed: {message}\n");
+                out.push_str(&quote("Turn failed", message));
             }
         }
     }
@@ -486,7 +515,8 @@ fn subagent(out: &mut String, agent: &Agent, depth: usize) {
     let _ = writeln!(
         out,
         "{hashes} Subagent {}: {} ({state})\n",
-        agent.agent_id, agent.title
+        one_line(&agent.agent_id),
+        one_line(&agent.title)
     );
     if let Some(model) = &agent.model {
         let _ = writeln!(out, "Model: `{model}`\n");
@@ -509,10 +539,11 @@ fn fenced(text: &str, language: &str) -> String {
 }
 
 fn render_markdown(transcript: &Transcript) -> String {
-    let title = if transcript.title.is_empty() {
+    let title = one_line(&transcript.title);
+    let title = if title.is_empty() {
         transcript.session_id.as_str()
     } else {
-        transcript.title.as_str()
+        title.as_str()
     };
     let mut out = format!("# {title}\n\nSession `{}`\n\n", transcript.session_id);
     markdown(&mut out, &transcript.root, 0);
@@ -577,10 +608,17 @@ pub(crate) fn render(
             serde_json::to_string_pretty(&transcript).unwrap_or_else(|_| "{}".into())
         }
     };
+    let warning = imperium_memory::looks_secret(&content).map(|reason| {
+        format!(
+            "This transcript looks like it contains {reason}. Exports are verbatim, including \
+             everything the agents read and ran, so check it before sharing."
+        )
+    });
     SessionExportResult {
         format,
         filename: filename(title, session_id, format),
         content,
+        warning,
     }
 }
 
@@ -716,6 +754,40 @@ mod tests {
         assert!(tool < sub && sub < done);
         assert!(text.contains("\"brief\":\"look\""));
         assert!(text.contains("found it"));
+    }
+
+    #[test]
+    fn multi_line_titles_and_notices_cannot_break_the_markdown() {
+        let mut list = events();
+        list.push(at(
+            "root",
+            SessionEvent::Notice {
+                message: "first\n# Injected heading\nthird".into(),
+            },
+        ));
+        let result = render("s1", "Two\n# lines", &list, ExportFormat::Markdown, true);
+        assert!(result.content.starts_with("# Two # lines\n"));
+        assert!(
+            result
+                .content
+                .contains("> Notice: first\n> # Injected heading\n> third\n")
+        );
+        assert!(!result.content.contains("\n# Injected heading"));
+    }
+
+    #[test]
+    fn a_transcript_with_a_credential_carries_a_warning() {
+        let mut list = events();
+        list.push(at(
+            "root",
+            SessionEvent::TextDelta {
+                text: "the key is ghp_abcdefghijklmnopqrstuvwxyz0123".into(),
+            },
+        ));
+        let result = render("s1", "t", &list, ExportFormat::Json, true);
+        assert!(result.warning.unwrap().contains("GitHub token"));
+        let clean = render("s1", "t", &events(), ExportFormat::Json, true);
+        assert!(clean.warning.is_none());
     }
 
     #[test]

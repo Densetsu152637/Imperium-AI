@@ -155,6 +155,11 @@ pub(crate) fn join_parts(parts: Vec<(Category, String)>) -> (String, Spans) {
     (content, spans)
 }
 
+/// The tags of the block a compaction carries workflow context in (see `compact`); its items
+/// may hold manifests of their own, so it closes only at its own marker.
+pub(crate) const KEPT_OPEN: &str = "<context-manifest kept=\"true\">";
+pub(crate) const KEPT_CLOSE: &str = "\n[end of kept context]\n</context-manifest>";
+
 /// The preamble of a user message the agent did not build in this process (a conversation
 /// restored after a restart): the summary, manifest, and recalled memories it wrote are
 /// recognised by the tags it wraps them in.
@@ -167,6 +172,7 @@ pub(crate) fn restored_spans(content: &str) -> Spans {
             "<conversation-summary>",
             "</conversation-summary>",
         ),
+        (Category::Manifest, KEPT_OPEN, KEPT_CLOSE),
         (
             Category::Manifest,
             "<context-manifest",

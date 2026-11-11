@@ -32,16 +32,8 @@ export function exportMediaType(format: ExportFormat): string {
 /** Saves an export: the save dialog in the desktop app, a download otherwise. False when cancelled. */
 export async function saveExport(result: SessionExportResult): Promise<boolean> {
   if (isTauri()) {
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const extension = result.format === "json" ? "json" : "md";
-    const path = await save({
-      title: "Export transcript",
-      defaultPath: result.filename,
-      filters: [{ name: result.format === "json" ? "JSON" : "Markdown", extensions: [extension] }],
-    });
-    if (!path) return false;
-    await invoke("export_write", { path, contents: result.content });
-    return true;
+    // The shell opens the save dialog and writes only the file picked there.
+    return invoke<boolean>("save_export", { filename: result.filename, contents: result.content });
   }
   const url = URL.createObjectURL(new Blob([result.content], { type: exportMediaType(result.format) }));
   const link = document.createElement("a");
@@ -60,5 +52,10 @@ export async function exportSession(
   sessionId: string,
   format: ExportFormat,
 ): Promise<boolean> {
-  return saveExport(await requestExport(client, sessionId, format));
+  const result = await requestExport(client, sessionId, format);
+  // Exports are verbatim; when one looks like it holds a credential, the user decides.
+  if (result.warning && !window.confirm(`${result.warning}
+
+Save it anyway?`)) return false;
+  return saveExport(result);
 }

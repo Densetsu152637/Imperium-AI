@@ -52,7 +52,7 @@ fn stream(chunk: Value) -> String {
 }
 
 /// Reads a.txt until its conversation holds a summary (or eight results), then finishes.
-async fn serve(fake: Arc<Fake>) -> String {
+async fn serve(fake: Arc<Fake>, finish_on_summary: bool) -> String {
     let app = Router::new().route(
         "/v1/chat/completions",
         post(move |axum::Json(body): axum::Json<Value>| {
@@ -68,7 +68,7 @@ async fn serve(fake: Arc<Fake>) -> String {
                 let reads = messages.iter().filter(|m| m["role"] == "tool").count();
                 let reply = if is_summary(&body) {
                     stream(json!({"choices": [{"delta": {"content": SUMMARY}}]}))
-                } else if summarised || reads >= 8 {
+                } else if (summarised && finish_on_summary) || fake.turns().len() > 8 {
                     stream(json!({"choices": [{"delta": {"content": "finished"}}]}))
                 } else {
                     stream(json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
@@ -154,7 +154,7 @@ async fn turn(session: &Session, text: &str) -> Vec<SessionEvent> {
 #[tokio::test]
 async fn a_turn_that_crosses_the_threshold_compacts_mid_turn_and_completes() {
     let fake = Arc::new(Fake::default());
-    let url = serve(Arc::clone(&fake)).await;
+    let url = serve(Arc::clone(&fake), true).await;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "word ".repeat(1_500)).unwrap();
     let session = start(&url, dir.path(), Some(0.85));
@@ -216,7 +216,7 @@ async fn a_turn_that_crosses_the_threshold_compacts_mid_turn_and_completes() {
 #[tokio::test]
 async fn nothing_compacts_with_the_threshold_off() {
     let fake = Arc::new(Fake::default());
-    let url = serve(Arc::clone(&fake)).await;
+    let url = serve(Arc::clone(&fake), true).await;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "word ".repeat(1_500)).unwrap();
     let session = start(&url, dir.path(), None);
@@ -229,4 +229,41 @@ async fn nothing_compacts_with_the_threshold_off() {
             .any(|event| matches!(event, SessionEvent::ContextCompacted { .. }))
     );
     assert_eq!(fake.summaries(), 0);
+}
+
+#[tokio::test]
+async fn a_low_threshold_is_clamped_and_compaction_cannot_loop() {
+    let fake = Arc::new(Fake::default());
+    // The model keeps reading even after a summary, so the conversation keeps growing.
+    let url = serve(Arc::clone(&fake), false).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "word ".repeat(1_500)).unwrap();
+    // 0.1 is clamped to 0.5 of the 8,000-token window.
+    let session = start(&url, dir.path(), Some(0.1));
+
+    let events = turn(&session, "read a.txt until you are done").await;
+
+    let compactions: Vec<(u64, u64)> = events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::ContextCompacted {
+                before_tokens,
+                after_tokens,
+                ..
+            } => Some((*before_tokens, *after_tokens)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !compactions.is_empty(),
+        "the clamped threshold still compacts"
+    );
+    // Never more than one compaction per model call; the window is so small that each read
+    // reaches the trigger again, yet every compaction shrinks the conversation.
+    assert!(compactions.len() <= fake.turns().len(), "{compactions:?}");
+    for (before, after) in compactions {
+        assert!(after < before, "{before} -> {after}");
+        // Aimed well under the 4,000-token trigger.
+        assert!(after <= 3_200 + 400, "{after}");
+    }
 }

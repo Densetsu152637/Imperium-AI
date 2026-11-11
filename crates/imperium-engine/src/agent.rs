@@ -2389,7 +2389,7 @@ impl Agent {
         let Some(window) = self.known_window(&self.model) else {
             return;
         };
-        let trigger = (window as f64 * at.min(1.0)) as u64;
+        let trigger = compact::trigger_tokens(window, at);
         let tokens = self.context_tokens(tools);
         if tokens < trigger {
             return;
@@ -2397,16 +2397,18 @@ impl Agent {
         self.compact_mark = Some(self.messages.len());
         let model = self.model.clone();
         match self.fit_with(&model, false, Some(trigger)).await {
-            Ok(fit) => match fit.compaction {
-                Some(compaction) => {
+            Ok(fit) => {
+                if let Some(compaction) = fit.compaction {
                     self.compact_mark = Some(self.messages.len());
+                    // Only a compaction that ran and did not shrink the conversation stops
+                    // the attempts for the turn.
                     self.compact_stalled = compaction.after_tokens >= compaction.before_tokens;
                     self.checkpoint();
                 }
-                None => self.compact_stalled = true,
-            },
+            }
             Err(error) => {
-                self.compact_stalled = true;
+                // A failed summary is not tried again until the conversation has grown.
+                self.compact_mark = Some(self.messages.len() + 4);
                 self.emit(SessionEvent::Notice {
                     message: format!("the conversation could not be compacted: {error}"),
                 });
@@ -2605,7 +2607,12 @@ impl Agent {
         };
         // Aim well under the budget so the conversation can go on; a third of that room goes
         // to the summary and the rest to the most recent messages.
-        let free = (budget * compact::TARGET_PERCENT / 100).saturating_sub(base);
+        let mut aim = budget * compact::TARGET_PERCENT / 100;
+        if let Some(trigger) = trigger {
+            // Well under the trigger, or the next call would trigger it again.
+            aim = aim.min(trigger * compact::BELOW_TRIGGER_PERCENT / 100);
+        }
+        let free = aim.saturating_sub(base);
         let allowance = (free / 3).clamp(compact::MIN_SUMMARY_TOKENS, compact::MAX_SUMMARY_TOKENS);
         let mut cut = compact::choose_cut(
             &self.messages,
@@ -2641,6 +2648,7 @@ impl Agent {
                     context_window: Some(window),
                     method: after.method,
                     summary_model: summary_model.clone(),
+                    kept_context: true,
                 });
                 return Ok(ContextFit {
                     tokens: after_tokens,

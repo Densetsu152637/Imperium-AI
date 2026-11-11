@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use imperium_api::truncate_chars;
 use imperium_models::ChatMessage;
 
-use crate::breakdown::{Category, Measured, PART_SEPARATOR, Spans, restored_spans};
+use crate::breakdown::{
+    Category, KEPT_CLOSE, KEPT_OPEN, Measured, PART_SEPARATOR, Spans, restored_spans,
+};
 
 /// Share of a context window held back for the model's reply (no per-model output limit is
 /// configured, so a fixed share stands in for one).
@@ -18,6 +20,11 @@ pub(crate) const REPLY_RESERVE_PERCENT: u64 = 15;
 /// When compacting, the conversation aims to use at most this share of the budget, so it can
 /// keep going for a while before it is full again.
 pub(crate) const TARGET_PERCENT: u64 = 60;
+/// The lowest share of the window `context.auto_compact_at` may be: lower, compaction could
+/// not get the conversation under its own trigger.
+pub(crate) const MIN_TRIGGER: f64 = 0.5;
+/// A mid-turn compaction aims at this share of its trigger.
+pub(crate) const BELOW_TRIGGER_PERCENT: u64 = 80;
 /// The longest summary asked for, in tokens.
 pub(crate) const MAX_SUMMARY_TOKENS: u64 = 2_048;
 /// The shortest summary worth keeping, in tokens.
@@ -69,6 +76,12 @@ pub enum SwitchError {
     NoModel,
     #[error("the session has stopped")]
     Closed,
+}
+
+/// The tokens at which a mid-turn compaction starts: `at` (kept between [`MIN_TRIGGER`] and 1)
+/// of `window`.
+pub(crate) fn trigger_tokens(window: u64, at: f64) -> u64 {
+    (window as f64 * at.clamp(MIN_TRIGGER, 1.0)) as u64
 }
 
 /// The tokens a conversation may use in `window`: the window less the reply's reserve.
@@ -205,18 +218,22 @@ fn transcript(messages: &[ChatMessage]) -> String {
     out
 }
 
-/// Opens the workflow context a compaction carries over verbatim.
-const PINNED_OPEN: &str = "<context-manifest kept=\"true\">\n";
+/// The block a compaction carries workflow context in; `restored_spans` recognises it by the
+/// same tags, so a conversation restored after a restart reads it as one part.
 const PINNED_HEAD: &str = "<context-manifest kept=\"true\">\nWorkflow context loaded earlier in this conversation, kept verbatim:\n\n";
-const PINNED_CLOSE: &str = "\n[end of kept context]\n</context-manifest>";
+const PINNED_CLOSE: &str = KEPT_CLOSE;
+/// Between the items in the block, so a later compaction can take them apart again.
+const ITEM_SEP: &str = "\n[next kept item]\n";
 /// The tools whose results are workflow context: loaded workflow companions and skills.
 const PINNED_TOOLS: [&str; 2] = ["context_load", "load_skill"];
 
 /// The workflow context in `messages[1..cut]`, which a compaction keeps verbatim instead of
-/// summarising: the context manifest of a turn, the references `context_load` returned, and
+/// summarising: the latest context manifest, the references `context_load` returned, and
 /// the instructions `load_skill` returned (the system prompt, which holds the policy index,
 /// project instruction files, and eager skills, is never summarised at all). Context carried
-/// over by an earlier compaction is carried again. Empty when there is none.
+/// over by an earlier compaction is carried again, each item once: a manifest replaces the
+/// one before it, and a result that holds an earlier one replaces it. Empty when there is
+/// none.
 pub(crate) fn pinned_context(
     messages: &[ChatMessage],
     spans: &HashMap<usize, Spans>,
@@ -224,14 +241,25 @@ pub(crate) fn pinned_context(
 ) -> String {
     let mut names: HashMap<&str, &str> = HashMap::new();
     let mut items: Vec<String> = Vec::new();
-    let mut keep = |text: &str| {
-        let text = text
-            .strip_prefix(PINNED_HEAD)
-            .and_then(|inner| inner.strip_suffix(PINNED_CLOSE))
-            .unwrap_or(text);
-        if !text.trim().is_empty() && !items.iter().any(|item| item.contains(text)) {
-            items.push(text.to_string());
+    let mut add = |item: &str| {
+        if item.trim().is_empty() {
+            return;
         }
+        if item.starts_with("<context-manifest") {
+            items.retain(|kept| !kept.starts_with("<context-manifest"));
+        } else if items.iter().any(|kept| kept.contains(item)) {
+            return;
+        } else {
+            items.retain(|kept| !item.contains(kept.as_str()));
+        }
+        items.push(item.to_string());
+    };
+    let mut keep = |text: &str| match text
+        .strip_prefix(PINNED_HEAD)
+        .and_then(|inner| inner.strip_suffix(PINNED_CLOSE))
+    {
+        Some(inner) => inner.split(ITEM_SEP).for_each(&mut add),
+        None => add(text),
     };
     for (index, message) in messages.iter().enumerate().take(cut).skip(1) {
         match message {
@@ -273,12 +301,12 @@ pub(crate) fn pinned_context(
     if items.is_empty() {
         return String::new();
     }
-    format!("{PINNED_HEAD}{}{PINNED_CLOSE}", items.join("\n\n"))
+    format!("{PINNED_HEAD}{}{PINNED_CLOSE}", items.join(ITEM_SEP))
 }
 
 /// `content` without a block of carried-over workflow context.
 fn without_pinned(content: &str) -> String {
-    if let Some(start) = content.find(PINNED_OPEN)
+    if let Some(start) = content.find(KEPT_OPEN)
         && let Some(end) = content[start..].find(PINNED_CLOSE)
     {
         let end = start + end + PINNED_CLOSE.len();
@@ -510,6 +538,13 @@ mod tests {
     }
 
     #[test]
+    fn the_trigger_is_kept_in_a_sane_range() {
+        assert_eq!(trigger_tokens(10_000, 0.85), 8_500);
+        assert_eq!(trigger_tokens(10_000, 0.1), 5_000);
+        assert_eq!(trigger_tokens(10_000, 7.0), 10_000);
+    }
+
+    #[test]
     fn the_budget_leaves_room_for_the_reply() {
         assert_eq!(budget(1_000), 850);
         assert_eq!(budget(32_768), 27_852);
@@ -620,6 +655,78 @@ mod tests {
         }
         // The summariser is not shown the carried context.
         assert!(!transcript(&rebuilt[1..2]).contains("Read the diff first"));
+    }
+
+    #[test]
+    fn carried_context_survives_restarts_and_repeated_compactions() {
+        let (messages, spans, [manifest, loaded, skill]) = with_context();
+        let pinned = pinned_context(&messages, &spans, 9);
+        let (rebuilt, _) = rebuild(&messages, &spans, 9, &summary_block("s"), &pinned);
+        // After a restart the parts are recognised from the text alone.
+        let restored = HashMap::new();
+        assert_eq!(pinned_context(&rebuilt, &restored, 2), pinned);
+        let ChatMessage::User { content, .. } = &rebuilt[1] else {
+            panic!("a user message")
+        };
+        let parts = restored_spans(content);
+        let kept = parts
+            .iter()
+            .find(|(category, _)| *category == Category::Manifest)
+            .expect("the kept block is one manifest part");
+        assert!(content[kept.1.clone()].ends_with("</context-manifest>"));
+        assert!(content[kept.1.clone()].contains(&skill));
+
+        // Twice more, each time from the restored text.
+        let mut conversation = rebuilt;
+        for round in 0..2 {
+            conversation.push(user("more"));
+            conversation.push(reply("fine"));
+            let carried = pinned_context(&conversation, &restored, conversation.len() - 2);
+            assert_eq!(carried, pinned, "round {round}");
+            let (next, _) = rebuild(
+                &conversation,
+                &restored,
+                conversation.len() - 2,
+                &summary_block("t"),
+                &carried,
+            );
+            assert_eq!(next[0], messages[0]);
+            let ChatMessage::User { content, .. } = &next[1] else {
+                panic!("a user message")
+            };
+            for text in [&manifest, &loaded, &skill] {
+                assert_eq!(content.matches(text.as_str()).count(), 1, "{text}");
+            }
+            conversation = next;
+        }
+    }
+
+    #[test]
+    fn only_the_latest_manifest_and_the_fullest_load_are_carried() {
+        let old = "<context-manifest role=\"root\">\n- old\n</context-manifest>";
+        let new = "<context-manifest role=\"root\">\n- new\n</context-manifest>";
+        let small = "<loaded reference=\"a.md\">\nA\n</loaded>\n";
+        let big = format!("{small}<loaded reference=\"b.md\">\nB\n</loaded>\n");
+        let messages = vec![
+            ChatMessage::System {
+                content: "sys".into(),
+            },
+            user(old),
+            calling_tool("a", "context_load"),
+            tool_result("a", small),
+            user(new),
+            calling_tool("b", "context_load"),
+            tool_result("b", &big),
+            reply("done"),
+        ];
+        let restored = HashMap::from([
+            (1, vec![(Category::Manifest, 0..old.len())]),
+            (4, vec![(Category::Manifest, 0..new.len())]),
+        ]);
+        let pinned = pinned_context(&messages, &restored, messages.len());
+        assert!(pinned.contains("- new") && !pinned.contains("- old"));
+        assert_eq!(pinned.matches("<loaded reference=\"a.md\">").count(), 1);
+        assert!(pinned.contains("<loaded reference=\"b.md\">"));
     }
 
     #[test]
