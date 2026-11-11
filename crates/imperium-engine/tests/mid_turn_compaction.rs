@@ -117,6 +117,7 @@ fn start(url: &str, dir: &std::path::Path, auto_compact_at: Option<f64>) -> Sess
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 12,
         auto_compact: false,
         auto_compact_at,
