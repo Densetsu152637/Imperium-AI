@@ -25,19 +25,59 @@ permissions, UI mod entry points, and router hints.
 
 - **Skills:** folders with a `SKILL.md` (front matter `name` and `description`) in
   `<config>/skills/`, the project's `.imperium/skills/` and `.claude/skills/`, and plugins'
-  `skills/`; the first of a name wins. Every agent's instructions list each skill's
-  description, and agents call `load_skill` (`name`, optional `file` for a resource inside the
-  skill folder) to load one.
+  `skills/`; the first of a name wins. Every agent's instructions index each skill's name and
+  description (and front matter `when_to_use`, when present), and agents call `load_skill`
+  (`name`, optional `file` for a resource inside the skill folder) to load one; see
+  [lazy skills and plugins](#lazy-skills-and-plugins-implemented).
 - **Slash commands:** Markdown templates in `<config>/commands/`, the project's
   `.imperium/commands/` and `.claude/commands/`, and plugins' `commands/` (also reachable as
   `/<plugin>:<name>`; subfolders give `/<folder>:<name>`). A message starting with
   `/<name> args` is replaced by the template with `$ARGUMENTS` and `$1`, `$2`, ... filled in.
 - **Plugins:** folders with `.claude-plugin/plugin.json` in `<config>/plugins/` or
   `extensions.plugin_dirs` contribute skills, commands, `hooks/hooks.json`, and `.mcp.json`
-  servers (named `<plugin>_<server>`), with `${CLAUDE_PLUGIN_ROOT}` expanded. `agents/` and
-  `imperium-plugin.toml` are reported as not yet supported.
+  servers (named `<plugin>_<server>`), with `${CLAUDE_PLUGIN_ROOT}` expanded. A plugin's
+  servers start when an agent activates it (below). `agents/` and `imperium-plugin.toml` are
+  reported as not yet supported.
 - **Hooks:** see below. Problems (a skill without a description, an unsupported hook event)
   are shown as session notices.
+
+### Lazy skills and plugins (implemented)
+
+Only each skill's and plugin's name and short description are loaded up front; the rest loads
+when an agent first uses it, keeping context and start-up cost low.
+
+- **Index.** The system prompt holds one line per skill (`- name: description (use when:
+  hint)`) and one per plugin with MCP servers (`- name: description (servers: ...)`), with how
+  to load them. No skill body is read and no plugin server starts when a session opens.
+- **Skills.** `load_skill` returns a skill's instructions, once per agent conversation: a
+  second call says the skill is already loaded. Each first load is journalled as
+  `extension_loaded` (`kind: skill`). A compaction that summarises the conversation forgets
+  the agent's loaded skills, so they can be loaded again.
+- **Plugins.** `activate_plugin` (offered while some plugin is inactive) starts the plugin's
+  MCP servers for the session; their tools are offered from the agent's next model call, as
+  `mcp__<plugin>_<server>__<tool>`, to every agent of the session. Activation is journalled
+  as `extension_loaded` (`kind: plugin`, with the tools it added). A plugin whose servers all
+  fail is not activated and can be tried again.
+- **Resume.** A resumed session replays its journal: plugins it had activated start again
+  before the first turn, and skills an agent had loaded (since its last compaction) are not
+  loaded twice.
+- **Hooks are eager.** Plugin and user hooks are active from the session's start, whatever
+  `extensions.lazy` says: a `tool.before` or `prompt.submit` hook can be a security check that
+  must see every call, and hooks cost no context and run nothing until their event.
+  Slash commands are expanded by the daemon, never shown to the model, so they need no index.
+- **Eager loading.** `extensions.eager` names skills and plugins to load up front (an eager
+  skill's instructions are in the system prompt; an eager plugin's servers start with the
+  session); `extensions.lazy = false` makes everything eager ([10](10-configuration.md)).
+- **Cost.** Context breakdowns count the index as `system_skills` ("Skill and plugin index"),
+  loaded skill instructions (eager ones and `load_skill` results) as `skills_loaded`, and
+  activated plugins' tool definitions as `tools_plugins`
+  ([03](03-agent-engine.md#context-management)).
+
+```toml
+[extensions]
+lazy = true                 # the default
+eager = ["house-style"]     # always loaded
+```
 
 ## Hooks
 

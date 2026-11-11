@@ -13,8 +13,8 @@ use imperium_api::{
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
 use imperium_protocol::session::{
-    AgentStatus, Attachment, ContextItem, ContextPointer, PauseCause, PermissionDecision, Plan,
-    PlanStep, Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
+    AgentStatus, Attachment, ContextItem, ContextPointer, ExtensionKind, PauseCause,
+    PermissionDecision, Plan, PlanStep, Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
 };
 use imperium_protocol::tools as contract;
 use imperium_tools::permissions::{PermissionRule, RuleAction, Target, suggest};
@@ -26,7 +26,7 @@ use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
 
 use imperium_config::{Enforce, WritePolicy};
-use imperium_extensions::{HookEvent, Verdict};
+use imperium_extensions::{Activation, HookEvent, Verdict};
 use imperium_memory::{NewEntry, Scope};
 
 use imperium_protocol::methods::{Compaction, ContextFit};
@@ -34,7 +34,8 @@ use imperium_protocol::methods::{Compaction, ContextFit};
 use crate::agents::task_number;
 use crate::artefacts::{self, handle_message};
 use crate::breakdown::{
-    Call, Category, Measured, Request, Spans, TokenCounter, estimate_tokens, join_parts, tool_texts,
+    Call, Category, LOAD_SKILL, Measured, Request, Spans, TokenCounter, estimate_tokens,
+    join_parts, tool_texts,
 };
 use crate::compact::{self, SwitchError};
 use crate::queue::{Inbox, QueueError, steering_text};
@@ -101,6 +102,7 @@ enum AgentTool {
     DelegateChunks,
     AskUser,
     LoadSkill,
+    ActivatePlugin,
     MemorySearch,
     MemoryRead,
     MemoryRemember,
@@ -256,11 +258,14 @@ impl Agent {
         }
         // Each part is kept with its label, so context breakdowns count them separately.
         let mut parts = vec![(Category::SystemBase, system)];
-        if !shared.extensions.skills.is_empty() {
-            parts.push((
-                Category::SystemSkills,
-                imperium_extensions::skills::listing(&shared.extensions.skills),
-            ));
+        // Skills and plugins load on use: only their index is here, plus eager skills.
+        if let Some(index) = shared.extensions.index() {
+            parts.push((Category::SystemSkills, index));
+        }
+        if let Some(eager) =
+            imperium_extensions::skills::eager_instructions(&shared.extensions.skills)
+        {
+            parts.push((Category::SkillsLoaded, eager));
         }
         if let Some(memory) = &shared.memory {
             parts.push((
@@ -607,16 +612,29 @@ impl Agent {
     /// The provider that runs the tool called `name`: outside servers' tools first, as they
     /// are offered first.
     fn provider_for(&self, name: &str) -> Option<Arc<dyn ToolProvider>> {
+        let plugins = &self.shared.extensions.plugins;
+        if plugins.handles(name) {
+            return Some(Arc::clone(plugins) as Arc<dyn ToolProvider>);
+        }
         self.providers(ToolGroup::External)
             .chain(self.providers(ToolGroup::Builtin))
             .find(|provider| provider.handles(name))
             .cloned()
     }
 
-    /// The tools offered to the model, and where the MCP tools sit among them.
-    fn tool_specs(&self) -> (Vec<ToolSpec>, Range<usize>) {
+    /// The tools offered to the model, and their definitions by breakdown category. Activated
+    /// plugins' tools join from the call after their activation.
+    fn offered_tools(&self) -> (Vec<ToolSpec>, Vec<(Category, String)>) {
+        let (specs, groups) = self.tool_specs();
+        let texts = tool_texts(&specs, &groups);
+        (specs, texts)
+    }
+
+    /// The tools offered to the model, and where the outside tools (MCP servers', activated
+    /// plugins') sit among them.
+    fn tool_specs(&self) -> (Vec<ToolSpec>, Vec<(Category, Range<usize>)>) {
         if self.single_call {
-            return (Vec::new(), 0..0);
+            return (Vec::new(), Vec::new());
         }
         let mut tools = specs();
         let mcp_start = tools.len();
@@ -624,9 +642,19 @@ impl Agent {
             tools.extend(provider.specs());
         }
         let mcp = mcp_start..tools.len();
+        tools.extend(self.shared.extensions.plugins.specs());
+        let plugins = mcp.end..tools.len();
         tools.push(update_plan_spec());
         if !self.shared.extensions.skills.is_empty() {
             tools.push(load_skill_spec());
+        }
+        let lazy = &self.shared.extensions.plugins;
+        if lazy
+            .plugins()
+            .iter()
+            .any(|plugin| !lazy.is_active(&plugin.name))
+        {
+            tools.push(activate_plugin_spec());
         }
         if self.shared.context.is_some() {
             tools.push(context_load_spec());
@@ -655,7 +683,10 @@ impl Agent {
                 ask_user_spec(),
             ]);
         }
-        (tools, mcp)
+        (
+            tools,
+            vec![(Category::ToolsMcp, mcp), (Category::ToolsPlugins, plugins)],
+        )
     }
 
     /// Runs one turn: model calls and tool calls until the model answers without tools.
@@ -708,8 +739,7 @@ impl Agent {
             images: rendered.images,
         });
         self.checkpoint();
-        let (tools, mcp) = self.tool_specs();
-        let tool_texts = tool_texts(&tools, mcp);
+        let (mut tools, mut tool_texts) = self.offered_tools();
         let mut total = Usage::default();
         let mut reply = String::new();
         let max_steps = self.shared.max_steps;
@@ -937,6 +967,10 @@ impl Agent {
             } else {
                 u64::MAX
             };
+            let activates = completion
+                .tool_calls
+                .iter()
+                .any(|call| call.function.name == ACTIVATE_PLUGIN);
             for call in completion.tool_calls {
                 let output = self.run_tool(&call).await;
                 let output = self.guard_input(output, window);
@@ -944,6 +978,10 @@ impl Agent {
                     tool_call_id: call.id,
                     content: output,
                 });
+            }
+            // A plugin activated in this round offers its tools from the next call.
+            if activates {
+                (tools, tool_texts) = self.offered_tools();
             }
             // A safe point: every tool call has its result.
             self.checkpoint();
@@ -1174,7 +1212,67 @@ impl Agent {
             .iter()
             .find(|skill| skill.name == args.name)
             .ok_or_else(|| format!("no skill named {:?}", args.name))?;
-        imperium_extensions::skills::load(skill, args.file.as_deref())
+        let file = args.file.as_deref().filter(|file| !file.is_empty());
+        if file.is_some() {
+            return imperium_extensions::skills::load(skill, file);
+        }
+        // Each skill's instructions enter a conversation once.
+        let key = (self.id.clone(), skill.name.clone());
+        if skill.eager || lock(&self.shared.loaded_skills).contains(&key) {
+            return Ok(format!(
+                "The {} skill is already loaded: its instructions are earlier in this \
+                 conversation. Follow them.",
+                skill.name
+            ));
+        }
+        let text = imperium_extensions::skills::load(skill, None)?;
+        lock(&self.shared.loaded_skills).insert(key);
+        self.emit(SessionEvent::ExtensionLoaded {
+            kind: ExtensionKind::Skill,
+            name: skill.name.clone(),
+            tools: Vec::new(),
+        });
+        Ok(text)
+    }
+
+    /// Starts a plugin's MCP servers for the session; their tools are offered from the next
+    /// model call.
+    async fn activate_plugin(&self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            name: String,
+        }
+        let args: Args = parse(arguments)?;
+        match self.shared.extensions.plugins.activate(&args.name).await? {
+            Activation::AlreadyActive { tools } => Ok(format!(
+                "Plugin {} is already active. Its tools: {}",
+                args.name,
+                tools.join(", ")
+            )),
+            Activation::Started { tools, failed } => {
+                self.emit(SessionEvent::ExtensionLoaded {
+                    kind: ExtensionKind::Plugin,
+                    name: args.name.clone(),
+                    tools: tools.clone(),
+                });
+                let mut text = format!(
+                    "Plugin {} is active. Its tools, offered from now on: {}",
+                    args.name,
+                    if tools.is_empty() {
+                        "none".to_string()
+                    } else {
+                        tools.join(", ")
+                    }
+                );
+                if !failed.is_empty() {
+                    text.push_str(&format!(
+                        "\nThese servers did not start: {}",
+                        failed.join("; ")
+                    ));
+                }
+                Ok(text)
+            }
+        }
     }
 
     /// What the global and environment permission rules say about a call.
@@ -1517,7 +1615,10 @@ impl Agent {
             "resume_agent" if self.can_delegate => AgentTool::ResumeAgent,
             "delegate_chunks" if self.can_delegate => AgentTool::DelegateChunks,
             "ask_user" if self.can_delegate => AgentTool::AskUser,
-            "load_skill" if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
+            LOAD_SKILL if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
+            ACTIVATE_PLUGIN if !self.shared.extensions.plugins.is_empty() => {
+                AgentTool::ActivatePlugin
+            }
             "context_load" if self.shared.context.is_some() => AgentTool::ContextLoad,
             "start_session" if self.can_delegate && self.shared.launcher.is_some() => {
                 AgentTool::StartSession
@@ -1545,6 +1646,7 @@ impl Agent {
             AgentTool::DelegateChunks => "split an artefact across subagents",
             AgentTool::AskUser => "ask the user",
             AgentTool::LoadSkill => "load a skill",
+            AgentTool::ActivatePlugin => "activate a plugin",
             AgentTool::ContextLoad => "load workflow context",
             AgentTool::StartSession => "start a session",
             AgentTool::MemorySearch => "search memory",
@@ -1563,6 +1665,7 @@ impl Agent {
             AgentTool::DelegateChunks => self.delegate_chunks(arguments),
             AgentTool::AskUser => self.ask_user(arguments).await,
             AgentTool::LoadSkill => self.load_skill(arguments),
+            AgentTool::ActivatePlugin => self.activate_plugin(arguments).await,
             AgentTool::ContextLoad => self.context_load(arguments),
             AgentTool::StartSession => self.start_session(arguments).await,
             AgentTool::MemorySearch => self.memory_search(arguments),
@@ -2294,8 +2397,7 @@ impl Agent {
     /// without asking its server anything: the model table's window, else (for a local model)
     /// what the runtime would start it with.
     fn estimate_fit(&self) -> ContextFit {
-        let (specs, mcp) = self.tool_specs();
-        let tools = tool_texts(&specs, mcp);
+        let (_, tools) = self.offered_tools();
         let window = self.model.context_window.or_else(|| {
             self.local_models()
                 .and_then(|local| local.planned_context(&self.model.model))
@@ -2342,8 +2444,7 @@ impl Agent {
         target: &ResolvedModel,
         force: bool,
     ) -> Result<ContextFit, SwitchError> {
-        let (specs, mcp) = self.tool_specs();
-        let tools = tool_texts(&specs, mcp);
+        let (_, tools) = self.offered_tools();
         let scale = self.calibration(&tools);
         let before = self
             .measure_for(target, &self.messages, &self.spans, &tools, scale)
@@ -2417,6 +2518,9 @@ impl Agent {
                 self.spans = spans;
                 self.last_reported = None;
                 self.last_call = None;
+                // The summary replaced any skill instructions loaded before: they may be
+                // loaded again (the replayed journal does the same after a restart).
+                lock(&self.shared.loaded_skills).retain(|(agent, _)| *agent != self.id);
                 self.emit(SessionEvent::ContextCompacted {
                     model: target.spec.clone(),
                     before_tokens,
@@ -2679,10 +2783,26 @@ fn memory_remember_spec() -> ToolSpec {
     }
 }
 
+/// The tool that starts a plugin's servers.
+const ACTIVATE_PLUGIN: &str = "activate_plugin";
+
+fn activate_plugin_spec() -> ToolSpec {
+    ToolSpec {
+        name: ACTIVATE_PLUGIN.into(),
+        description: "Activate a plugin from the plugin index by name: its servers start and its \
+                      tools are offered from the next step."
+            .into(),
+        parameters: json!({"type": "object", "properties": {
+            "name": {"type": "string"}
+        }, "required": ["name"]}),
+    }
+}
+
 fn load_skill_spec() -> ToolSpec {
     ToolSpec {
-        name: "load_skill".into(),
-        description: "Load a skill's instructions by name, or one of its resource files with file."
+        name: LOAD_SKILL.into(),
+        description: "Load a skill's instructions by name (once per conversation), or one of its \
+                      resource files with file."
             .into(),
         parameters: json!({"type": "object", "properties": {
             "name": {"type": "string"},

@@ -1267,14 +1267,14 @@ impl DaemonState {
         let catalog = self.session_catalog();
         // Connectors added or changed in the app since the daemon started apply to new sessions.
         let fresh = crate::connectors::saved_settings(&self.paths);
-        let (mut mcp, mut notices) = crate::mcp::session_servers(
+        let (mcp, mut notices) = crate::mcp::session_servers(
             fresh.as_ref().unwrap_or(&*self.settings()),
             project_dir_path,
             |name| self.secrets.load(name),
         );
+        // Plugins' servers are not among `mcp`: they start when an agent activates the plugin.
         let mut extensions = self.extensions(project_dir_path);
         let context = self.context(project_dir_path, &mut notices);
-        mcp.append(&mut extensions.servers);
         notices.append(&mut extensions.notices);
         let resume = options.resume_id.is_some();
         let id = match options.resume_id.clone().or_else(|| options.id.clone()) {
@@ -1747,6 +1747,8 @@ impl DaemonState {
                 })
                 .collect(),
             server_timeout: Duration::from_secs(60),
+            lazy: self.settings().extensions.lazy,
+            eager: self.settings().extensions.eager.clone(),
         })
     }
 

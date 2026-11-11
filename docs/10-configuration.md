@@ -124,6 +124,8 @@ listed; edit them in the file.
 | `mcp.servers.<name>` | none | An MCP server: `command`, `args`, `env` for stdio, or `url`, `headers`, `bearer_token` for HTTP; `allow` (tools that run without asking), `enabled`, `timeout_s` (default 60); see [MCP](05-tools-and-isolation.md#mcp) |
 | `mcp.trusted_projects` | none | Project folders whose `.mcp.json` servers may start |
 | `extensions.plugin_dirs` | none | More plugin folders (Claude Code layout), besides `<config>/plugins` |
+| `extensions.lazy` | `true` | Load skills and plugins on first use: agents start with only each one's name and description ([06](06-extensibility.md#lazy-skills-and-plugins-implemented)). `false` puts every skill's instructions in the prompt and starts every plugin's servers with the session |
+| `extensions.eager` | none | Skills and plugins, by name, loaded up front even when `extensions.lazy` is on |
 | `memory.enabled` | `true` | Global and project memory ([17](17-memory.md)) |
 | `memory.write.global`, `.project`, `.project_private` | `ask`, `ask`, `auto` | Whether agents may save memories in each scope: `auto`, `ask`, or `off` |
 | `memory.recall` | `true` | Put the best-matching memories before each message |

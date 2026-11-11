@@ -14,6 +14,8 @@ use crate::hooks::{Hook, parse_hooks_json};
 #[derive(Debug, Clone)]
 pub struct Plugin {
     pub name: String,
+    /// The manifest's description; empty when it has none.
+    pub description: String,
     pub root: PathBuf,
     pub hooks: Vec<Hook>,
     pub servers: Vec<ServerSpec>,
@@ -36,6 +38,8 @@ impl Plugin {
 #[derive(Deserialize)]
 struct Manifest {
     name: String,
+    #[serde(default)]
+    description: String,
 }
 
 /// Loads each plugin folder in `dirs` (folders that themselves hold plugins are searched one
@@ -123,6 +127,7 @@ fn load(root: &Path, server_timeout: Duration) -> Result<(Plugin, Vec<String>), 
     Ok((
         Plugin {
             name: manifest.name,
+            description: manifest.description,
             root: root.to_path_buf(),
             hooks,
             servers,
@@ -150,7 +155,7 @@ mod tests {
         }
         std::fs::write(
             root.join(".claude-plugin/plugin.json"),
-            r#"{"name": "reviewer", "version": "1.0.0"}"#,
+            r#"{"name": "reviewer", "version": "1.0.0", "description": "Reviews code"}"#,
         )
         .unwrap();
         std::fs::write(
@@ -166,6 +171,7 @@ mod tests {
         let (plugins, problems) = discover(&[dir.path().to_path_buf()], Duration::from_secs(5));
         assert_eq!(plugins.len(), 1);
         let plugin = &plugins[0];
+        assert_eq!(plugin.description, "Reviews code");
         assert_eq!(plugin.hooks.len(), 1);
         assert!(plugin.hooks[0].command.ends_with("fmt.sh"));
         assert_eq!(plugin.servers[0].name, "reviewer_lint");

@@ -194,6 +194,18 @@ pub enum SessionEvent {
     },
     /// The agent loaded workflow or documentation references.
     ContextLoaded { references: Vec<String> },
+    /// A skill's instructions entered this agent's conversation, or a plugin's tools were
+    /// activated for the session, on first use. A resumed session replays these to restore
+    /// what was loaded: its activated plugins start again, and skills an agent already has are
+    /// not loaded twice.
+    ExtensionLoaded {
+        kind: ExtensionKind,
+        name: String,
+        /// For a plugin: the tools it added (`mcp__<server>__<tool>`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(as = "Option<Vec<String>>", optional)]
+        tools: Vec<String>,
+    },
     /// The agent's browser after an action: page, title, and a JPEG screenshot (base64), so
     /// clients can mirror it.
     BrowserView {
@@ -477,8 +489,10 @@ pub struct TokenUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ContextCategory {
-    /// A stable id: `system_base`, `system_skills`, `system_memory`, `system_citations`,
-    /// `system_project`, `tools_builtin`, `tools_mcp`, `summary` (a compacted conversation's
+    /// A stable id: `system_base`, `system_skills` (the skill and plugin index),
+    /// `skills_loaded` (skill instructions loaded on use, or eagerly), `system_memory`,
+    /// `system_citations`, `system_project`, `tools_builtin`, `tools_mcp`, `tools_plugins`
+    /// (tools of activated plugins), `summary` (a compacted conversation's
     /// summary), `manifest`, `memories`, `user`, `assistant`, `tool_results`, or `overhead`.
     /// Clients show unknown keys by their label.
     pub key: String,
@@ -486,6 +500,15 @@ pub struct ContextCategory {
     /// Only `overhead` can be negative.
     #[ts(type = "number")]
     pub tokens: i64,
+}
+
+/// What an `extension_loaded` event loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ExtensionKind {
+    Skill,
+    Plugin,
 }
 
 /// How a context breakdown was counted.

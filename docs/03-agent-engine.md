@@ -269,18 +269,22 @@ window, like Claude Code's `/context`. Each agent (the root and every subagent) 
 calls, under its agent id.
 
 The agent records what each part of a message is as it builds it, so the request divides into
-labelled segments without guessing: the system prompt's parts (base instruction, skills
-listing, memory instructions, web citation rules, project instructions), the tool definitions
-as the JSON actually sent (built-in and MCP tools separately), and, for each user message, its
-workflow context manifest, recalled memories, and the user's own text. Assistant messages
-count their text plus each tool call's name and arguments; tool results count their content.
+labelled segments without guessing: the system prompt's parts (base instruction, skill and
+plugin index, eager skills' instructions, memory instructions, web citation rules, project
+instructions), the tool definitions as the JSON actually sent (built-in, MCP, and activated
+plugins' tools separately), and, for each user message, its workflow context manifest,
+recalled memories, and the user's own text. Assistant messages count their text plus each
+tool call's name and arguments; tool results count their content, and `load_skill` results
+count as loaded skills, so the index's cost and the cost of what was loaded on use show apart
+([lazy skills and plugins](06-extensibility.md#lazy-skills-and-plugins-implemented)).
 Conversations restored after a daemon restart recognise the manifest and memories by the tags
 they are wrapped in.
 
 | Category key | Label |
 | --- | --- |
-| `system_base`, `system_skills`, `system_memory`, `system_citations`, `system_project` | The system prompt's parts |
-| `tools_builtin`, `tools_mcp` | Tool definitions |
+| `system_base`, `system_skills`, `system_memory`, `system_citations`, `system_project` | The system prompt's parts (`system_skills` is the skill and plugin index) |
+| `skills_loaded` | Skill instructions: eager skills' in the system prompt and `load_skill` results |
+| `tools_builtin`, `tools_mcp`, `tools_plugins` | Tool definitions (`tools_plugins`: activated plugins' tools) |
 | `summary` | A [compacted](#switching-models-and-compaction) conversation's summary of its older turns |
 | `manifest`, `memories` | Workflow context manifest and recalled memories, from user-message preambles |
 | `user`, `assistant`, `tool_results` | The conversation |
@@ -296,7 +300,8 @@ Empty categories are left out. Counting uses the best method available, named in
   definitions count as the chat template renders them, not as the JSON sent: templates add
   their own tool instructions and re-serialise the JSON (Qwen3's spends about 2.6 times the
   sent JSON's tokens on one tool). Each tool set is measured once with `POST /apply-template`,
-  as the difference it makes to a minimal conversation. The
+  as the difference it makes to a minimal conversation; the outside tools' share is split
+  between MCP and plugin tools as their sent JSON is. The
   overhead is the provider's reported `prompt_tokens` minus the segments; it absorbs token
   merges across part boundaries, and is negative when the template drops text the request
   carried (such as earlier reasoning). The context window is the server's per-request context
