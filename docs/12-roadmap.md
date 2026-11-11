@@ -160,6 +160,10 @@ the wait reason in the desktop.
     - use tools and delegate rather than pasting code at the user;
     - few emojis, and plain explanations instead of many tables;
     - search for information rather than relying on what was learned in training.
+
+    The prompt half is implemented: the engine's root and subagent prompts and
+    `emperor-root.md` carry these rules, pinned by tests
+    ([03](03-agent-engine.md#response-style)). Training Emperor on them remains.
 20. **Free scroll while streaming** (implemented). Scrolling up while an agent is writing stops
     following the output and keeps the user's place; a *Jump to latest* button (and scrolling
     back to the bottom, or sending a message) resumes following the newest text, in the session
