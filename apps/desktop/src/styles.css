@@ -4303,15 +4303,19 @@ button.colour-choice[aria-checked="true"]::after {
 }
 
 /* A navigation item with badges under its label (a model and its state). */
+/* Fill the rest of the row so every label starts at the same edge, however long it is. */
 .settings-nav-item-text {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   align-items: flex-start;
   gap: 0.2rem;
   min-width: 0;
+  text-align: left;
 }
 
 .settings-nav-item-label {
+  display: block;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4810,9 +4814,13 @@ button.select.open .select-chevron {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+  width: 100%;
+  min-width: 0;
 }
 
+/* The icon keeps its size, so a long label can't squeeze it and shift the text. */
 .settings-nav-item .lucide {
+  flex: none;
   width: 1rem;
   height: 1rem;
   color: var(--muted);
