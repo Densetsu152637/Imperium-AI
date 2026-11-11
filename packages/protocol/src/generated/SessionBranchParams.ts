@@ -9,7 +9,7 @@ at?: number,
 /**
  * The branch's title; by default the source's with " (branch)".
  */
-title: string | null, 
+title?: string, 
 /**
  * Give the branch its own git worktree, with the files as they were at that point.
  */

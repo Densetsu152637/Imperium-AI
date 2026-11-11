@@ -12,4 +12,4 @@ models: Array<string>,
 /**
  * Whether each branch gets its own worktree; by default whenever the folders allow it.
  */
-worktree: boolean | null, };
+worktree?: boolean, };

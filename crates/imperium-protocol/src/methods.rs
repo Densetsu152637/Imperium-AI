@@ -561,6 +561,7 @@ pub struct SessionBranchParams {
     pub at: Option<u32>,
     /// The branch's title; by default the source's with " (branch)".
     #[serde(default)]
+    #[ts(optional)]
     pub title: Option<String>,
     /// Give the branch its own git worktree, with the files as they were at that point.
     #[serde(default)]
@@ -605,6 +606,7 @@ pub struct SessionCompareParams {
     pub models: Vec<String>,
     /// Whether each branch gets its own worktree; by default whenever the folders allow it.
     #[serde(default)]
+    #[ts(optional)]
     pub worktree: Option<bool>,
 }
 
