@@ -92,7 +92,60 @@ fn parse<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T, ToolError> 
     } else {
         arguments
     };
-    serde_json::from_str(arguments).map_err(|error| ToolError::Invalid(error.to_string()))
+    serde_json::from_str(arguments).or_else(|error| {
+        // Models often leave a Windows path's backslashes unescaped (`"D:\Git Repositories"`),
+        // which is not JSON; read such a backslash as itself.
+        serde_json::from_str(&escape_backslashes(arguments, true))
+            .map_err(|_| ToolError::Invalid(error.to_string()))
+    })
+}
+
+/// Arguments that name only a path. A path never holds control characters, so one that does
+/// came from unescaped backslashes that happen to form JSON escapes (`D:\new\tools` holds a
+/// newline and a tab); read every backslash in it as itself instead.
+fn parse_path_args(arguments: &str) -> Result<PathArgs, ToolError> {
+    let args: PathArgs = parse(arguments)?;
+    if !args.path.chars().any(char::is_control) {
+        return Ok(args);
+    }
+    match serde_json::from_str::<PathArgs>(&escape_backslashes(arguments, false)) {
+        Ok(literal) if !literal.path.chars().any(char::is_control) => Ok(literal),
+        _ => Ok(args),
+    }
+}
+
+/// `text` with each backslash that does not already start an escaped backslash or quote
+/// doubled, so it reads as a literal backslash. With `keep_escapes`, valid JSON escapes
+/// (`\n`, `\t`, `\u0041`, …) are kept too.
+fn escape_backslashes(text: &str, keep_escapes: bool) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut index = 0;
+    while index < chars.len() {
+        let c = chars[index];
+        if c != '\\' {
+            out.push(c);
+            index += 1;
+            continue;
+        }
+        let next = chars.get(index + 1).copied();
+        let unicode = next == Some('u')
+            && chars
+                .get(index + 2..index + 6)
+                .is_some_and(|hex| hex.iter().all(char::is_ascii_hexdigit));
+        let kept = matches!(next, Some('\\' | '"'))
+            || (keep_escapes
+                && (unicode || matches!(next, Some('/' | 'b' | 'f' | 'n' | 'r' | 't'))));
+        if kept {
+            out.push('\\');
+            out.extend(next);
+            index += 2;
+        } else {
+            out.push_str("\\\\");
+            index += 1;
+        }
+    }
+    out
 }
 
 impl Invocation {
@@ -100,7 +153,7 @@ impl Invocation {
     pub fn parse(name: &str, arguments: &str) -> Result<Self, ToolError> {
         Ok(match name {
             "read_file" => {
-                let args: PathArgs = parse(arguments)?;
+                let args = parse_path_args(arguments)?;
                 Invocation::ReadFile {
                     path: args.path,
                     offset: args.offset,
@@ -123,7 +176,7 @@ impl Invocation {
                 }
             }
             "list_dir" => {
-                let args: PathArgs = parse(arguments)?;
+                let args = parse_path_args(arguments)?;
                 Invocation::ListDir { path: args.path }
             }
             "run_command" => {
@@ -273,6 +326,44 @@ mod tests {
             Invocation::RunCommand {
                 command: "x".into(),
                 timeout_s: 3600
+            }
+        );
+    }
+
+    fn path_of(name: &str, arguments: &str) -> String {
+        match Invocation::parse(name, arguments).unwrap() {
+            Invocation::ReadFile { path, .. } | Invocation::ListDir { path } => path,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn unescaped_windows_paths_are_read_as_written() {
+        let spaced = r"D:\Git Repositories\Imperium-AI";
+        assert_eq!(
+            path_of("list_dir", &format!(r#"{{"path": "{spaced}"}}"#)),
+            spaced
+        );
+        // `\n` and `\t` are JSON escapes, but a path never holds a newline or a tab.
+        assert_eq!(
+            path_of("read_file", r#"{"path": "D:\new\tools.rs", "limit": 5}"#),
+            r"D:\new\tools.rs"
+        );
+        // Properly escaped arguments are untouched.
+        assert_eq!(
+            path_of("read_file", r#"{"path": "D:\\Git Repositories\\a.txt"}"#),
+            r"D:\Git Repositories\a.txt"
+        );
+        // Content keeps its escapes: only the unparseable backslash is read literally.
+        assert_eq!(
+            Invocation::parse(
+                "write_file",
+                r#"{"path": "C:\Temp\a.txt", "content": "one\ntwo"}"#
+            )
+            .unwrap(),
+            Invocation::WriteFile {
+                path: r"C:\Temp\a.txt".into(),
+                content: "one\ntwo".into()
             }
         );
     }

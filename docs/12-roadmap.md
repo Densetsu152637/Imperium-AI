@@ -107,11 +107,14 @@ the wait reason in the desktop.
     and an OpenAI-compatible local API server for other tools.
 11. **Sharing and sync (design).** Design plans for session sharing and export, and for team
     sync.
-12. **Environment file access** (bug, from use of the app so far, like the items after it). Agents fail to read paths an environment grants them:
-    an agent could not open the Imperium-AI checkout given as the environment's first project
-    path. Start from `list_dir` and the path checks behind it (environment roots, path
-    normalisation on Windows, the sandbox grant), then add a test that every project path is
-    readable from inside the environment.
+12. **Environment file access** (implemented; bug, from use of the app so far, like the items
+    after it). Agents failed to read paths an environment grants them: an agent could not open
+    the Imperium-AI checkout given as the environment's first project path. The folder checks
+    held for exact spellings; the file tools now also read the spellings models write for a
+    Windows path with spaces (quoted or padded, backslashes left unescaped in the JSON
+    arguments, `file://`, Git Bash and WSL forms), each still checked against the folders and
+    grants, and a session test lists and reads an environment's first folder whose path has
+    spaces ([05](05-tools-and-isolation.md#isolation-tiers)).
 13. **Worktrees by default.** An environment's sessions get its project-specific worktrees
     without extra setup.
 14. **Visible tool calls.** The transcript shows each tool call, with arguments and result, for

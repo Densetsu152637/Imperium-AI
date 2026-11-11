@@ -395,7 +395,24 @@ impl Workspace {
         self.locate_checked(path).ok().flatten()
     }
 
+    /// Tries each way of reading what the model wrote ([`spellings`]) and keeps the first that
+    /// lands inside a folder or grant, else the first reading. Every reading is checked the same
+    /// way, so the looser spellings open nothing the exact one would not.
     fn locate_checked(&self, path: &str) -> Result<Option<PathBuf>, ToolError> {
+        let mut first = None;
+        for spelling in spellings(path) {
+            let located = self.locate_one(&spelling);
+            if let Ok(Some(resolved)) = &located
+                && self.writable(resolved).is_some()
+            {
+                return located;
+            }
+            first.get_or_insert(located);
+        }
+        first.unwrap_or(Ok(None))
+    }
+
+    fn locate_one(&self, path: &str) -> Result<Option<PathBuf>, ToolError> {
         let candidate = self.root.join(path);
         let mut existing = candidate.as_path();
         let mut missing = Vec::new();
@@ -453,6 +470,47 @@ fn existing_dir(path: &Path) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// The ways to read a path a model wrote for this machine, the likeliest first: as written
+/// without surrounding whitespace, quotes, or a `file://` scheme, then (on Windows) a Git Bash
+/// (`/d/…`), WSL (`/mnt/d/…`), or URL-style (`/D:/…`) path as the drive path it names.
+fn spellings(path: &str) -> Vec<String> {
+    let mut written = path.trim();
+    for quote in ['"', '\'', '`'] {
+        if written.len() >= 2 && written.starts_with(quote) && written.ends_with(quote) {
+            written = written[1..written.len() - 1].trim();
+            break;
+        }
+    }
+    if let Some(rest) = written.strip_prefix("file://") {
+        written = rest;
+    }
+    let mut found = vec![written.to_string()];
+    if cfg!(windows)
+        && let Some(drive) = drive_path(written)
+    {
+        found.push(drive);
+    }
+    found
+}
+
+/// A POSIX-style spelling of a Windows drive path (`/d/x`, `/mnt/d/x`, `/D:/x`) as `D:/x`.
+fn drive_path(written: &str) -> Option<String> {
+    let rest = written.strip_prefix('/')?;
+    let rest = rest.strip_prefix("mnt/").unwrap_or(rest);
+    let mut chars = rest.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    let tail = chars.as_str();
+    let tail = tail.strip_prefix(':').unwrap_or(tail);
+    if !(tail.is_empty() || tail.starts_with('/') || tail.starts_with('\\')) {
+        return None;
+    }
+    Some(format!(
+        "{}:/{}",
+        letter.to_ascii_uppercase(),
+        tail.get(1..).unwrap_or("")
+    ))
+}
+
 /// A path as people write it: without Windows' `\\?\` verbatim prefix on drive paths.
 fn plain(path: &Path) -> String {
     let shown = path.display().to_string();
@@ -494,6 +552,62 @@ mod tests {
             workspace.resolve(&absolute),
             Err(ToolError::OutsideWorkspace(_))
         ));
+    }
+
+    #[test]
+    fn a_folder_with_spaces_resolves_however_the_model_spells_it() {
+        let base = tempfile::tempdir().unwrap();
+        let project = base.path().join("Git Repositories").join("Imperium AI");
+        std::fs::create_dir_all(project.join("docs")).unwrap();
+        let workspace = Workspace::new(&project).unwrap();
+        let root = workspace.root().to_path_buf();
+        let written = project.display().to_string();
+        let forward = written.replace('\\', "/");
+        let mut spellings = vec![
+            ".".to_string(),
+            written.clone(),
+            forward.clone(),
+            workspace.root_display(),
+            format!("\"{written}\""),
+            format!("'{forward}'"),
+            format!("  {written}\n"),
+            format!("file://{forward}"),
+        ];
+        if cfg!(windows) {
+            let drive = written[..1].to_lowercase();
+            let rest = &forward[2..];
+            spellings.push(format!("/{drive}{rest}"));
+            spellings.push(format!("/mnt/{drive}{rest}"));
+            spellings.push(format!("/{}:{rest}", &written[..1]));
+            spellings.push(format!("file:///{forward}"));
+        }
+        for spelling in &spellings {
+            assert_eq!(workspace.resolve(spelling).unwrap(), root, "{spelling:?}");
+        }
+        assert_eq!(
+            workspace.resolve(&format!("\"{forward}/docs\"")).unwrap(),
+            root.join("docs")
+        );
+        // A looser spelling of a path outside is still refused.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let outside = elsewhere.path().display().to_string();
+        assert!(matches!(
+            workspace.resolve(&format!("\"{outside}\"")),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+    }
+
+    #[test]
+    fn posix_spellings_of_drive_paths() {
+        assert_eq!(
+            drive_path("/d/Git Repositories/x").as_deref(),
+            Some("D:/Git Repositories/x")
+        );
+        assert_eq!(drive_path("/mnt/c/Users").as_deref(), Some("C:/Users"));
+        assert_eq!(drive_path("/D:/x").as_deref(), Some("D:/x"));
+        assert_eq!(drive_path("/e").as_deref(), Some("E:/"));
+        assert_eq!(drive_path("/docs/x"), None);
+        assert_eq!(drive_path("src/x"), None);
     }
 
     #[test]
