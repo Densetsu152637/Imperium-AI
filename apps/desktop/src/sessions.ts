@@ -3,6 +3,7 @@
 
 import type {
   AgentEvent,
+  Attachment,
   EnvironmentInfo,
   ContextCategory,
   PauseCause,
@@ -27,9 +28,9 @@ export const ROOT = "root";
 export type Entry = EntryBody & { event?: number };
 
 type EntryBody =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; attachments?: Attachment[] }
   /** A steering message that joined the running turn; `paused` lists the subagents it paused. */
-  | { kind: "steer"; text: string; paused: string[] }
+  | { kind: "steer"; text: string; paused: string[]; attachments?: Attachment[] }
   | { kind: "assistant"; text: string }
   | { kind: "tool"; callId: string; summary: string; ok: boolean | null; output: string }
   | {
@@ -183,10 +184,15 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
   const last = next.at(-1);
   switch (event.type) {
     case "turn_started":
-      next.push({ kind: "user", text: event.text });
+      next.push({ kind: "user", text: event.text, ...(event.attachments?.length ? { attachments: event.attachments } : {}) });
       break;
     case "steered":
-      next.push({ kind: "steer", text: event.text, paused: event.paused ?? [] });
+      next.push({
+        kind: "steer",
+        text: event.text,
+        paused: event.paused ?? [],
+        ...(event.attachments?.length ? { attachments: event.attachments } : {}),
+      });
       break;
     case "text_delta":
       if (last?.kind === "assistant") next[next.length - 1] = { ...last, text: last.text + event.text };

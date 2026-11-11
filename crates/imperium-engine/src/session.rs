@@ -7,8 +7,8 @@ use imperium_api::ToolProvider;
 use imperium_config::RoutingSettings;
 use imperium_protocol::methods::SessionHold;
 use imperium_protocol::session::{
-    AgentEvent, AgentSummary, PauseCause, PermissionDecision, QueuedMessage, ROOT_AGENT,
-    ResumePolicy, SendMode, SessionEvent, SessionStatus,
+    AgentEvent, AgentSummary, Attachment, PauseCause, PermissionDecision, QueuedMessage,
+    ROOT_AGENT, ResumePolicy, SendMode, SessionEvent, SessionStatus,
 };
 use imperium_tools::Workspace;
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
@@ -130,6 +130,8 @@ pub struct Session {
     model: Arc<Mutex<Option<String>>>,
     project_dir: String,
     isolation: String,
+    /// The folders, grants, and sandbox the session's tools work in.
+    workspace: Workspace,
     controls: Arc<Controls>,
     emitter: Arc<Emitter>,
     commands: mpsc::UnboundedSender<Command>,
@@ -186,6 +188,7 @@ impl Session {
         ));
         let project_dir = config.workspace.root_display();
         let isolation = config.workspace.isolation_label();
+        let workspace = config.workspace.clone();
         let history = History::default();
         history.lock().extend(previous);
         let controls = Arc::new(Controls::new(config.resume_policy.clone()));
@@ -222,6 +225,7 @@ impl Session {
             model,
             project_dir,
             isolation,
+            workspace,
             controls,
             emitter,
             commands,
@@ -283,13 +287,18 @@ impl Session {
         &self.isolation
     }
 
+    /// The folders, path grants, and sandbox the session's tools work in.
+    pub fn workspace(&self) -> &Workspace {
+        &self.workspace
+    }
+
     /// The session's first message, for lists.
     pub fn title(&self) -> String {
         self.history
             .lock()
             .iter()
             .find_map(|event| match &event.event {
-                SessionEvent::TurnStarted { text } if event.agent_id == ROOT_AGENT => {
+                SessionEvent::TurnStarted { text, .. } if event.agent_id == ROOT_AGENT => {
                     Some(text.chars().take(80).collect())
                 }
                 _ => None,
@@ -401,6 +410,7 @@ impl Session {
                 id: self.inboxes.next_id(),
                 text,
                 steer: false,
+                attachments: Vec::new(),
             }))
             .map_err(|_| SessionClosed)
     }
@@ -416,7 +426,19 @@ impl Session {
         mode: SendMode,
         agent_id: Option<&str>,
     ) -> Result<String, QueueError> {
-        if text.trim().is_empty() {
+        self.send_with_attachments(text, Vec::new(), mode, agent_id)
+    }
+
+    /// [`send_message`](Self::send_message) with files attached (checked by the caller). A
+    /// message with attachments may have empty text.
+    pub fn send_with_attachments(
+        &self,
+        text: String,
+        attachments: Vec<Attachment>,
+        mode: SendMode,
+        agent_id: Option<&str>,
+    ) -> Result<String, QueueError> {
+        if text.trim().is_empty() && attachments.is_empty() {
             return Err(QueueError::Empty);
         }
         let id = self.inboxes.next_id();
@@ -425,7 +447,7 @@ impl Session {
             // A subagent is busy until it reports, so its messages always wait in its inbox.
             Some(agent) => self
                 .inboxes
-                .send(agent, id, text, steer)
+                .send(agent, id, text, steer, attachments)
                 .map(|message| message.id),
             None => {
                 self.commands
@@ -433,6 +455,7 @@ impl Session {
                         id: id.clone(),
                         text,
                         steer,
+                        attachments,
                     }))
                     .map_err(|_| QueueError::Closed)?;
                 Ok(id)
@@ -706,8 +729,8 @@ async fn run(
         // session stopped they keep waiting, and new ones join them.
         let stopped = *stop.borrow_and_update();
         let next = if stopped { None } else { queue.pop() };
-        let text = match next {
-            Some(message) => message.text,
+        let (text, attachments) = match next {
+            Some(message) => (message.text, message.attachments),
             None => match tokio::select! {
                 // Resumed: the queue runs.
                 _ = stop.changed(), if stopped => continue,
@@ -717,7 +740,7 @@ async fn run(
                     shared.inboxes.queue_for_root(message);
                     continue;
                 }
-                Some(Command::Message(message)) => message.text,
+                Some(Command::Message(message)) => (message.text, message.attachments),
                 // Subagents still running after their parent's turn may be waiting for this.
                 Some(Command::Respond {
                     request_id,
@@ -770,7 +793,7 @@ async fn run(
                     let spec = root.model().spec.clone();
                     shared
                         .emitter
-                        .emit(ROOT_AGENT, SessionEvent::TurnStarted { text });
+                        .emit(ROOT_AGENT, SessionEvent::TurnStarted { text, attachments });
                     shared.emitter.emit(
                         ROOT_AGENT,
                         SessionEvent::TurnFailed {
@@ -800,7 +823,7 @@ async fn run(
         }
         let recalled = shared.recall(&text);
         let handles_open = {
-            let turn = root.run_turn(text, recalled);
+            let turn = root.run_turn_with(text, attachments, recalled);
             tokio::pin!(turn);
             let mut handles_open = true;
             loop {

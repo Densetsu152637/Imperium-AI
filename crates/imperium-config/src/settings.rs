@@ -372,6 +372,8 @@ pub struct SessionSettings {
     /// Keep every agent's state (a subagent's conversation, plan, and usage) in
     /// `<data>/sessions/<id>.agents/`, so finished subagents can be resumed after a restart.
     pub agent_state_keep: bool,
+    /// The largest file that can be attached to a message, in MiB.
+    pub attachment_max_mib: u32,
 }
 
 impl Default for SessionSettings {
@@ -381,6 +383,7 @@ impl Default for SessionSettings {
             auto_archive_after_days: 0,
             auto_archive_on_pr_close: true,
             agent_state_keep: true,
+            attachment_max_mib: 10,
         }
     }
 }

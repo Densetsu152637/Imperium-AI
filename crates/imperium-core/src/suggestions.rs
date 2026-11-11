@@ -132,7 +132,7 @@ pub fn watch(
                 continue;
             }
             let (text, prompt_tokens) = match event.event {
-                SessionEvent::TurnStarted { text } => (Some(text), None),
+                SessionEvent::TurnStarted { text, .. } => (Some(text), None),
                 SessionEvent::ContextBreakdown {
                     prompt_tokens: Some(tokens),
                     ..

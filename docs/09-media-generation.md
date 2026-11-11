@@ -13,7 +13,8 @@ queued with `/prompt`, polled through `/history`, downloaded from `/view`). Both
 an implementation and a `register` call; an unknown `backend` uses the images API.
 `media_speak` uses an OpenAI-compatible speech API and `media_transcribe` an OpenAI-compatible
 transcription API (LocalAI, whisper.cpp front-ends, or hosted services); transcription reads
-only files inside the project. Generated files are written to the project's `media/` folder with a `.json`
+only files inside the project. The same transcription service serves the app's push-to-talk
+(`voice.transcribe`, [07](07-desktop-ui.md#attachments-and-voice-input-implemented)). Generated files are written to the project's `media/` folder with a `.json`
 provenance file beside each (prompt or text, model, size, time), and the session reports a
 `media_created` event. Every media call asks first unless allowed for the session, since it can
 cost money or send data to a service. Not yet: the managed Python sidecar, video, editing,

@@ -134,7 +134,7 @@ async fn a_scheduled_event_wakes_the_project_agent_which_dispatches_and_hears_ba
             .await
             .expect("the report within 20 s")
             .unwrap();
-        if let SessionEvent::TurnStarted { text } = event.event
+        if let SessionEvent::TurnStarted { text, .. } = event.event
             && text.contains("finished")
         {
             break text;

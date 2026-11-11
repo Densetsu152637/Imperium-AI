@@ -101,6 +101,7 @@ async fn a_chat_turn_streams_events_to_the_client() {
             mode: None,
             agent_id: None,
             confirm_budget: None,
+            attachments: Vec::new(),
         })
         .await
         .unwrap();

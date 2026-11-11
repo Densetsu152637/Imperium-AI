@@ -207,6 +207,23 @@ const FIELDS: Field[] = [
     description: "Scroll to the newest message as the agent writes.",
     control: { type: "toggle" },
   },
+  {
+    key: "pushToTalkKey",
+    section: "chat",
+    label: "Push-to-talk key",
+    description:
+      "Hold it in a session to record, release to put the words in the message box (not sent); Esc cancels. The mic button does the same. Needs speech-to-text set up ([media.transcription]).",
+    control: {
+      type: "select",
+      options: choices([
+        ["Ctrl+Space", "Ctrl+Space"],
+        ["Alt+Space", "Alt+Space"],
+        ["Ctrl+Shift+Space", "Ctrl+Shift+Space"],
+        ["F8", "F8"],
+        ["off", "Off (mic button only)"],
+      ]),
+    },
+  },
   // Notifications
   {
     key: "soundOnApproval",

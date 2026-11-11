@@ -779,6 +779,82 @@ pub struct SessionSendParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub confirm_budget: Option<bool>,
+    /// Files staged with `session.attach`. The daemon checks each again (it must still be in
+    /// the session's attachments folder or inside its folders and grants) and sets `vision`
+    /// from the session's model. A message with attachments may have empty text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<crate::session::Attachment>>", optional)]
+    pub attachments: Vec<crate::session::Attachment>,
+}
+
+/// `session.attach`: stages a file for the next message. Give `path` (a file on the daemon's
+/// machine) or `data` (the file's bytes, base64). A file inside the session's folders or path
+/// grants is referenced where it is; anything else is copied into the session's attachments
+/// folder under the data directory, which the session's agents may read. Files over
+/// `sessions.attachment_max_mib` are refused.
+#[derive(Debug)]
+pub struct SessionAttach;
+
+impl Method for SessionAttach {
+    const NAME: &'static str = "session.attach";
+    type Params = SessionAttachParams;
+    type Result = SessionAttachResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAttachParams {
+    pub session_id: String,
+    /// The file name to show; for `path`, its last component when empty.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub path: Option<String>,
+    /// The file's bytes, base64 (standard alphabet, padded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub data: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionAttachResult {
+    pub attachment: crate::session::Attachment,
+    /// Whether the session's model can view images now; without vision an image is sent as a
+    /// path reference.
+    pub vision: bool,
+    /// For an image of at most 4 MiB given by `path`: its bytes as a `data:` URL, so the client
+    /// can draw a thumbnail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub image_data: Option<String>,
+}
+
+/// `voice.transcribe`: turns recorded speech into text through `[media.transcription]` (an
+/// OpenAI-compatible `/audio/transcriptions` endpoint). The text is returned, not sent.
+#[derive(Debug)]
+pub struct VoiceTranscribe;
+
+impl Method for VoiceTranscribe {
+    const NAME: &'static str = "voice.transcribe";
+    type Params = VoiceTranscribeParams;
+    type Result = VoiceTranscribeResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct VoiceTranscribeParams {
+    /// The recording, base64.
+    pub audio: String,
+    /// Its media type, such as `audio/webm` or `audio/wav`.
+    pub mime: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct VoiceTranscribeResult {
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

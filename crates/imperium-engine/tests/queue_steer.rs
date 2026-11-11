@@ -215,7 +215,7 @@ fn started_texts(events: &[AgentEvent]) -> Vec<String> {
         .iter()
         .filter(|event| event.agent_id == "root")
         .filter_map(|event| match &event.event {
-            SessionEvent::TurnStarted { text } => Some(text.clone()),
+            SessionEvent::TurnStarted { text, .. } => Some(text.clone()),
             _ => None,
         })
         .collect()
@@ -287,12 +287,14 @@ async fn messages_sent_during_a_turn_wait_and_run_in_order() {
             QueuedMessage {
                 id: first.clone(),
                 text: "first".into(),
-                steer: false
+                steer: false,
+                attachments: Vec::new(),
             },
             QueuedMessage {
                 id: second.clone(),
                 text: "second, edited".into(),
-                steer: false
+                steer: false,
+                attachments: Vec::new(),
             },
         ]
     );
@@ -360,6 +362,7 @@ async fn steering_joins_the_running_turn_after_its_tool_round() {
                     id: id.clone(),
                     text: "use b.txt instead".into(),
                     paused: Vec::new(),
+                    attachments: Vec::new(),
                 }
         })
         .expect("the steering message was delivered");
@@ -469,7 +472,7 @@ async fn the_root_agent_steers_and_queues_for_its_subagent() {
     let turns: Vec<&String> = sub
         .iter()
         .filter_map(|event| match event {
-            SessionEvent::TurnStarted { text } => Some(text),
+            SessionEvent::TurnStarted { text, .. } => Some(text),
             _ => None,
         })
         .collect();
@@ -632,6 +635,7 @@ async fn a_queued_message_steers_in_place_and_the_rest_keep_their_order() {
             id: b.clone(),
             text: "b".into(),
             paused: Vec::new(),
+            attachments: Vec::new(),
         }]
     );
     assert!(started_texts(&turn).is_empty());

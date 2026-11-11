@@ -12,7 +12,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use imperium_protocol::session::{AgentEvent, QueuedMessage, ROOT_AGENT, SessionEvent};
+use imperium_protocol::session::{AgentEvent, Attachment, QueuedMessage, ROOT_AGENT, SessionEvent};
 
 use tokio::sync::watch;
 
@@ -269,18 +269,25 @@ impl Inboxes {
             .ok_or_else(|| QueueError::UnknownAgent(agent_id.to_string()))
     }
 
-    /// Queues `text` for a running subagent, or as steering for its running turn.
+    /// Queues `text` (and its attachments) for a running subagent, or as steering for its
+    /// running turn.
     pub fn send(
         &self,
         agent_id: &str,
         id: String,
         text: String,
         steer: bool,
+        attachments: Vec<Attachment>,
     ) -> Result<QueuedMessage, QueueError> {
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && attachments.is_empty() {
             return Err(QueueError::Empty);
         }
-        let message = QueuedMessage { id, text, steer };
+        let message = QueuedMessage {
+            id,
+            text,
+            steer,
+            attachments,
+        };
         self.get(agent_id)?.push(message.clone())?;
         Ok(message)
     }
@@ -345,6 +352,7 @@ mod tests {
             id: format!("q-{text}"),
             text: text.into(),
             steer,
+            attachments: Vec::new(),
         }
     }
 
