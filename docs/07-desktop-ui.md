@@ -90,6 +90,7 @@ The view's composer messages the subagent directly, as the root composer does th
 - A paused subagent (stopped for a steering message to the root) shows **Resume** (continues
   from its saved conversation) and **Cancel** in the view's header; a message re-briefs it.
 - A message sent just as the subagent finished is sent again as a follow-up.
+
 ### Tool calls (implemented)
 
 Every tool call, the session's own in the transcript and each subagent's in its log

@@ -58,7 +58,7 @@ fn tidy(text: &str, max_words: usize) -> String {
         .map(strip_markers)
         .find(|line| !line.is_empty())
         .unwrap_or_default();
-    let line = line.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '*' | '_'));
+    let line = line.trim_matches(['"', '\'', '`', '*', '_']);
     finish(line.split_whitespace().take(max_words).collect())
 }
 
@@ -148,7 +148,7 @@ fn without_lead_ins(mut sentence: &str) -> &str {
 /// Joins `words` into a title: no trailing filler or punctuation, capitalised, capped.
 fn finish(mut words: Vec<&str>) -> String {
     let bare = |word: &str| -> String {
-        word.trim_end_matches(|c: char| matches!(c, ',' | '.' | ';' | ':' | '!' | '?' | '—' | '-'))
+        word.trim_end_matches([',', '.', ';', ':', '!', '?', '—', '-'])
             .to_string()
     };
     while let Some(last) = words.last() {
