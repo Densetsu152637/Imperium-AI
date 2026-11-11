@@ -94,6 +94,7 @@ async fn attachments_reach_the_model_and_the_journal() {
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 3,
         background: None,
         checkpoints: None,

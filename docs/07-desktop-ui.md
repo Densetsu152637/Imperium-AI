@@ -520,7 +520,8 @@ every setting:
   setting, are indented one step with a rule on the left.
 - **Agent and daemon:** every setting the daemon exposes through `config.describe`, grouped by
   section (models, local runtime, memory, workflow, web, media, isolation, GitHub, pets, phone,
-  resuming, network). Changes go to the user config file through `config.set` and apply when
+  resuming, network). *Personality* is a select of the personalities `personalities.list`
+  returns, by name, with the default marked, local ones labelled, and None. Changes go to the user config file through `config.set` and apply when
   the daemon restarts; the window offers the restart.
 - **Permissions** (under Agent and daemon): the global path grants and permission rules; see
   [permissions](#permissions-implemented).

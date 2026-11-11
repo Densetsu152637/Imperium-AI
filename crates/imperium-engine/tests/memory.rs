@@ -97,6 +97,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 5,
         background: None,
         checkpoints: None,
