@@ -122,7 +122,8 @@ start, and an agent's `activate_plugin` would start its servers: downloaded code
 user with no approval, which is the same as the install running it. So the install adds the
 plugin to `extensions.disabled_plugins` and tells the agent so. A disabled plugin is not offered
 to sessions, `activate_plugin` cannot start it, and nothing in it runs until the user turns it on
-in Connectors, where its source (URL, commit, and the installing session) is shown. A plugin
+in Connectors (a setting the daemon reads at start, so it applies after a restart), where its
+source (URL, commit, and the installing session) is shown. A plugin
 with neither (skills and commands only) is listed at once. Agent-installed plugins also never
 read the daemon's environment through `${VAR}` in `.mcp.json` (see [Compatibility](#compatibility-with-existing-formats)),
 even after the user turns them on.
