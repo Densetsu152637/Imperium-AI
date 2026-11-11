@@ -39,6 +39,7 @@ import type {
 
 import { Select } from "./components/Select";
 import { Switch } from "./components/Switch";
+import { installedByAgent, sourceLabel } from "./configChanges";
 import { ConnectorIcon } from "./connectorIcons";
 import type { DaemonClient } from "./daemon/client";
 
@@ -620,6 +621,12 @@ function InstalledView({
                   <code className="connector-row-where" title={plugin.root}>
                     {plugin.root}
                   </code>
+                  {plugin.installed_from && (
+                    <span className="muted connector-row-source" title={plugin.installed_from.location}>
+                      {installedByAgent(plugin) ? "Installed by an agent from " : "Installed from "}
+                      {sourceLabel(plugin.installed_from)}
+                    </span>
+                  )}
                 </div>
                 <div className="connector-row-actions">
                   <Switch checked={plugin.enabled} onChange={(enabled) => onPluginEnable(plugin, enabled)} label={`${plugin.name} enabled`} />
@@ -646,6 +653,12 @@ function InstalledView({
                 <div>
                   <strong>{skill.name}</strong> <span className="tag">{skill.origin}</span>
                   <p className="muted">{skill.description}</p>
+                  {skill.installed_from && (
+                    <p className="muted connector-row-source" title={skill.installed_from.location}>
+                      {installedByAgent(skill) ? "Installed by an agent from " : "Installed from "}
+                      {sourceLabel(skill.installed_from)}
+                    </p>
+                  )}
                 </div>
               </li>
             ))}

@@ -321,6 +321,12 @@ which wins. A card may span lines; it must not be blank, have control characters
 breaks and tabs, or be longer than 4,000 characters. `models.config` reports each local model's
 `metadata_card` (what its header and Hugging Face model card say), which agents read after it.
 
+Agents write cards too, with `set_model_card`: the card goes to the app settings file
+(`models.overrides."<id>".card` for a table row, `runtime.llamacpp.models."<id>".card` for a local
+model), applies at once, and is recorded in the config change journal with what the file held
+before, so Settings → *Changes by agents* or `imperium config undo <id>` puts it back
+([06](06-extensibility.md#agents-manage-the-app-config-implemented)).
+
 ## Other recommended options
 
 - Per-endpoint rate limits, timeouts, and retry policy (spend caps with alerts are

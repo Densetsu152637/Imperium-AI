@@ -5191,6 +5191,15 @@ button.select.open .select-chevron {
   color: var(--muted);
 }
 
+.connector-row-source {
+  display: block;
+  margin-top: 0.15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
 .connector-row-counts {
   display: block;
   font-size: 0.8rem;

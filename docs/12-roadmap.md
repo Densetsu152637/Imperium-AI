@@ -171,11 +171,14 @@ the wait reason in the desktop.
     and so on), from model cards and Imperium's own measurements. The root agent uses this to
     pick a model when it delegates
     ([04](04-models-and-routing.md#model-awareness-and-model-cards-implemented)).
-22. **Agents manage the app config.** By default, and outside configured environment
-    projects too, agents may add to the user's local app config: filling in model cards, and
-    downloading and installing mods, plugins, and skills. Each change goes through the
-    permission rules, so the user can narrow it to *ask* or *deny*, and is recorded so it can be
-    undone. Installs show where they came from.
+22. **Agents manage the app config** (implemented). By default, and outside configured
+    environment projects too, agents may add to the user's local app config: filling in model
+    cards (`set_model_card`), and downloading and installing mods, plugins, and skills
+    (`install_extension`, `uninstall_extension`) from a git URL or a local folder. Each change
+    goes through the permission rules, so the user can narrow it to *ask* or *deny*, and is
+    recorded in a change journal so it can be undone (Settings → *Changes by agents*,
+    `imperium config changes` / `undo`). Installs show where they came from
+    ([06](06-extensibility.md#agents-manage-the-app-config-implemented)).
 23. **Lazy skills and plugins** (implemented). Only each skill's and plugin's name and short
     description are loaded up front. The rest is loaded when an agent first uses it, keeping
     context and start-up cost low: `load_skill` brings in a skill's instructions once per

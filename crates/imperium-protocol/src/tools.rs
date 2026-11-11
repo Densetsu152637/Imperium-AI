@@ -61,6 +61,9 @@ pub fn all() -> Vec<ToolDefinition> {
         ask_user(),
         search_sessions(),
         list_models(),
+        set_model_card(),
+        install_extension(),
+        uninstall_extension(),
     ]
 }
 
@@ -270,6 +273,47 @@ pub fn list_models() -> ToolDefinition {
             "location": {"type": "string", "enum": ["local", "cloud"], "description": "Only models on this machine, or only hosted ones"},
             "limit": {"type": "integer", "description": "Most models to list (default all, at most 50)"}
         }}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Write the user's card for a model: what it is good at, which `list_models` shows.
+pub fn set_model_card() -> ToolDefinition {
+    ToolDefinition {
+        name: "set_model_card",
+        description: "Write the card of a model in the user's Imperium settings: what it is good at (coding, writing, research, reading images, long inputs) and notes, which list_models shows when choosing a model to delegate to. Base it on evidence such as the model's documentation or how it did on real work. Replaces the card the settings hold; null clears it. The change is recorded and the user can undo it.",
+        parameters: json!({"type": "object", "properties": {
+            "model": {"type": "string", "description": "The model: a model table id or a local model id, as list_models shows it"},
+            "card": {"type": ["string", "null"], "description": "The card, up to 4,000 characters, such as \"Good at: coding, refactoring, tests. Weak at: long documents.\"; null clears it"}
+        }, "required": ["model", "card"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Install a mod, plugin, or skill into the user's Imperium config folder.
+pub fn install_extension() -> ToolDefinition {
+    ToolDefinition {
+        name: "install_extension",
+        description: "Install a skill (a folder with SKILL.md), a plugin (a folder with .claude-plugin/plugin.json), or a UI mod (a folder with mod.json) into the user's Imperium config, from a git repository or a folder on this machine. Nothing in it runs at install: skills and plugins are listed for agents and load when first used, a plugin with hooks stays off until the user turns it on, and a mod shows only after the user turns it on. Where it came from (URL and commit, or folder) is recorded, and the user can undo the install. Install only from sources the user asked for or that you have good reason to trust.",
+        parameters: json!({"type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["skill", "plugin", "mod"], "description": "What to install"},
+            "source": {"type": "string", "description": "A git URL (https://, ssh://, git@host:path, or file://) or a folder on this machine"},
+            "revision": {"type": "string", "description": "For a git source: the branch, tag, or commit to install (default: the default branch)"},
+            "path": {"type": "string", "description": "The folder inside the source that holds the extension, when it is not at the top, such as \"skills/pdf\""}
+        }, "required": ["kind", "source"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Remove a mod, plugin, or skill from the user's Imperium config folder.
+pub fn uninstall_extension() -> ToolDefinition {
+    ToolDefinition {
+        name: "uninstall_extension",
+        description: "Remove a skill, plugin, or UI mod from the user's Imperium config folder. Its folder is kept aside, so the user can undo the removal. Removing one an agent did not install asks the user first.",
+        parameters: json!({"type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["skill", "plugin", "mod"], "description": "What to remove"},
+            "name": {"type": "string", "description": "Its name: the skill's, plugin's, or mod's id"}
+        }, "required": ["kind", "name"]}),
         status: ToolStatus::Available,
     }
 }

@@ -79,6 +79,58 @@ lazy = true                 # the default
 eager = ["house-style"]     # always loaded
 ```
 
+## Agents manage the app config (implemented)
+
+Agents add to the user's own Imperium config through three tools the daemon runs, so they work
+in every session, whether or not it is in an environment's folders: they never write through the
+session's file tools.
+
+| Tool | Does | Without a rule |
+| --- | --- | --- |
+| `set_model_card(model, card)` | Writes a model's card (a model table id or a local model id; `null` clears it) to the app settings file, as the model dialog does, and applies it at once ([10](10-configuration.md#model-cards)) | Runs |
+| `install_extension(kind, source, revision?, path?)` | Installs a `skill`, `plugin`, or `mod` from a git URL (`https://`, `ssh://`, `git@host:path`, `file://`) at a branch, tag, or commit, or from a folder on this machine (relative to the session's folder); `path` picks a folder inside the source | Runs; the tool notice (and an approval, when a rule asks) names the source |
+| `uninstall_extension(kind, name)` | Moves an installed skill, plugin, or mod out of the config folder | Runs for something an agent installed; asks otherwise |
+
+Each tool is its own permission key, so `[permissions]` rules (global or per environment) allow,
+ask about, or deny it ([05](05-tools-and-isolation.md#rules)):
+
+```toml
+[permissions]
+rules = [
+  { tool = "install_extension", action = "ask" },
+  { tool = "uninstall_extension", action = "deny" },
+]
+```
+
+**Installing runs nothing.** A git source is cloned with `git clone` (shallow, no submodules, no
+Git LFS downloads, no prompts, the `ext::` transport refused, five-minute limit); a folder is
+copied. Either way `.git` and symbolic links are left out, the copy is limited to 256 MiB, and the
+result must be the kind asked for (`SKILL.md` with a description, `.claude-plugin/plugin.json`
+that loads, or a valid `mod.json`). It lands in `<config>/skills/<name>`, `<config>/plugins/<name>`
+or `<config>/mods/<id>`, never over an existing one, and no install script, build, or hook runs.
+After that, the usual rules apply: skills and plugins are listed in the index of new sessions
+and load when an agent first uses them ([lazy loading](#lazy-skills-and-plugins-implemented)); a
+plugin with hooks is added to `extensions.disabled_plugins`, since hooks are active from a
+session's start, and stays off until the user turns it on in Connectors; a mod an agent
+installed is opt-in in Settings → Mods, like the bundled ones. Imperium has no extension
+registry yet, so a bare name is refused.
+
+**Provenance.** Each install writes `.imperium-source.json` into its folder: `kind` (`git` or
+`path`), `location` (the URL or folder), `revision` (the commit installed) and `requested` (the
+branch or tag asked for), `subdir`, `installed_at_unix_ms`, and the `session_id` of the agent.
+`mods.list` and `mcp.list` report it as `installed_from` on each mod, plugin, and skill, and the
+desktop shows it in Settings → Mods and the Connectors window.
+
+**Change journal and undo.** Every change is appended to `<data>/config-changes.json` (the
+newest 1,000 are kept) with an id, the time, the session, a summary, and what undo needs: a
+card's `before` and `after` (what the app settings file held), or an extension's folder and
+source (and for a removal, where its folder was kept, `<data>/config-trash/`). `config.changes`
+lists them newest first and `config.undo { id }` reverses one: a card goes back to what it was
+(refused if it was edited since), an install is removed (only if its folder still records the
+same source; a plugin is also taken off `extensions.disabled_plugins`), and a removed extension
+is put back (refused if something of that name was installed since). Settings → *Changes by
+agents* and `imperium config changes` / `imperium config undo <id>` show and undo them.
+
 ## Hooks
 
 Hook events: `session.start`, `session.end`, `prompt.submit`, `tool.before`, `tool.after`,

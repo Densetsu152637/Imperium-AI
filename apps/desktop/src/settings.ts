@@ -131,9 +131,17 @@ export function saveSettings(settings: AppSettings): void {
 /** Bundled mods that are on until the user turns them off; other bundled mods are opt-in. */
 export const BUNDLED_ON_BY_DEFAULT = ["imperium-nursery"];
 
-/** Whether a mod's panels show: the user's choice, else on for installed mods and the bundled ones above. */
-export function modEnabled(settings: AppSettings, mod: { id: string; bundled: boolean }): boolean {
-  return settings.enabledMods[mod.id] ?? (!mod.bundled || BUNDLED_ON_BY_DEFAULT.includes(mod.id));
+/**
+ * Whether a mod's panels show: the user's choice, else on for mods the user installed and the
+ * bundled ones above. Mods an agent installed (their source names a session) are opt-in, like
+ * other bundled ones.
+ */
+export function modEnabled(
+  settings: AppSettings,
+  mod: { id: string; bundled: boolean; installed_from?: { session_id: string | null } | null },
+): boolean {
+  const byAgent = Boolean(mod.installed_from?.session_id);
+  return settings.enabledMods[mod.id] ?? (mod.bundled ? BUNDLED_ON_BY_DEFAULT.includes(mod.id) : !byAgent);
 }
 
 const DENSITY_SPACE: Record<Density, number> = { compact: 0.7, comfortable: 1, spacious: 1.35 };
