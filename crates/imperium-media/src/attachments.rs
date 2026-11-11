@@ -418,26 +418,64 @@ fn attribute(value: &str) -> String {
     value.replace('"', "&quot;")
 }
 
+/// Opens the file an attachment names, which [`verify`] checked when the message was sent.
+/// Messages queue, so the file can have changed since: the path must still be the canonical
+/// one that was checked (a link or junction put in its place, or in a folder above it, makes
+/// it resolve elsewhere) and must still be a regular file, so a queued attachment cannot be
+/// swapped for a file outside the session's folders or for a device that never ends.
+fn open_verified(attachment: &Attachment) -> std::io::Result<std::fs::File> {
+    let canonical = Path::new(&attachment.path).canonicalize()?;
+    if plain(&canonical) != attachment.path {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "it is no longer where it was attached (it was replaced by a link or moved); attach it again",
+        ));
+    }
+    let file = std::fs::File::open(&canonical)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "it is no longer a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+/// The whole of an image or PDF attachment, at most the size [`verify`] saw: a file that has
+/// grown since is refused rather than read without bound.
+fn read_verified(attachment: &Attachment) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    open_verified(attachment)?
+        .take(attachment.size.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > attachment.size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "it has grown since it was attached; attach it again",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn render_one(attachment: &Attachment, images: &mut Vec<String>) -> std::io::Result<String> {
-    let path = Path::new(&attachment.path);
     Ok(match attachment.kind {
         AttachmentKind::Text => {
             let mut bytes = Vec::new();
-            std::fs::File::open(path)?
-                .take(INLINE_TEXT_BYTES as u64 + 1)
+            let file = open_verified(attachment)?;
+            let size = file.metadata().map_or(attachment.size, |m| m.len());
+            file.take(INLINE_TEXT_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)?;
-            let size = std::fs::metadata(path).map_or(attachment.size, |m| m.len());
             inline_text(&bytes, size, &attachment.path)
         }
         AttachmentKind::Image if attachment.vision => {
-            images.push(data_url(&attachment.mime, &std::fs::read(path)?));
+            images.push(data_url(&attachment.mime, &read_verified(attachment)?));
             "[Image attached: it is shown to you with this message.]".into()
         }
         AttachmentKind::Image => "[Image attached. Your model cannot view images, so it is not \
              shown; the file is at the path above for tools that can read it.]"
             .into(),
         AttachmentKind::Pdf => {
-            let bytes = std::fs::read(path)?;
+            let bytes = read_verified(attachment)?;
             let (text, pages) = pdf_text(&bytes);
             let mut body = match text {
                 Some(text) if !text.trim().is_empty() => {
@@ -803,7 +841,8 @@ mod tests {
         let write = |name: &str, bytes: &[u8]| {
             let path = dir.path().join(name);
             std::fs::write(&path, bytes).unwrap();
-            path.display().to_string()
+            // As `verify` keeps it: canonical.
+            plain(&path.canonicalize().unwrap())
         };
         let item = |name: &str, kind, mime: &str, path: String, vision| Attachment {
             id: name.into(),
@@ -863,6 +902,99 @@ mod tests {
         assert_eq!(rendered.images.len(), 1);
         assert!(rendered.images[0].starts_with("data:image/png;base64,"));
         assert_eq!(render(&[]), Rendered::default());
+    }
+
+    /// Makes `link` a link to the folder `target` (a junction on Windows, which needs no
+    /// privilege); `false` where links cannot be made.
+    fn link_dir(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(target, link).or_else(|_| {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()?
+                .status;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("mklink failed"))
+            }
+        });
+        made.is_ok()
+    }
+
+    #[test]
+    fn a_queued_attachment_swapped_for_a_link_out_of_the_folders_is_not_read() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let readable = move |path: &Path| path.starts_with(&root);
+        let staging = staging(store.path(), &readable);
+        std::fs::create_dir(project.path().join("docs")).unwrap();
+        std::fs::write(project.path().join("docs/spec.txt"), "the spec").unwrap();
+        std::fs::write(outside.path().join("spec.txt"), "SECRET outside text").unwrap();
+        let sent = stage(
+            &staging,
+            "a1",
+            "",
+            Source::Path(project.path().join("docs/spec.txt")),
+        )
+        .unwrap();
+        let verified = verify(&staging, &sent, false).unwrap();
+        assert!(
+            render(std::slice::from_ref(&verified))
+                .text
+                .contains("the spec")
+        );
+
+        // Before the turn starts, `docs` becomes a link to a folder outside the session.
+        std::fs::remove_dir_all(project.path().join("docs")).unwrap();
+        if !link_dir(outside.path(), &project.path().join("docs")) {
+            return;
+        }
+        let rendered = render(std::slice::from_ref(&verified));
+        assert!(
+            rendered.text.contains("could not be read"),
+            "{}",
+            rendered.text
+        );
+        assert!(!rendered.text.contains("SECRET"), "{}", rendered.text);
+    }
+
+    #[test]
+    fn an_attachment_that_grew_or_stopped_being_a_file_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.png");
+        std::fs::write(&path, PNG).unwrap();
+        let canonical = plain(&path.canonicalize().unwrap());
+        let png = Attachment {
+            id: "a1".into(),
+            name: "big.png".into(),
+            kind: AttachmentKind::Image,
+            mime: "image/png".into(),
+            size: PNG.len() as u64,
+            path: canonical.clone(),
+            copied: false,
+            vision: true,
+            preview: None,
+        };
+        assert_eq!(render(std::slice::from_ref(&png)).images.len(), 1);
+
+        std::fs::write(&path, vec![0_u8; PNG.len() + 1000]).unwrap();
+        let grown = render(std::slice::from_ref(&png));
+        assert!(grown.images.is_empty());
+        assert!(grown.text.contains("grown since"), "{}", grown.text);
+
+        // A folder in its place is not a file.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let folder = render(std::slice::from_ref(&png));
+        assert!(folder.images.is_empty());
+        assert!(folder.text.contains("could not be read"), "{}", folder.text);
     }
 
     #[test]

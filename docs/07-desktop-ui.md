@@ -908,7 +908,9 @@ name) and where it is:
 - **Anything else** is a path the agent reads with its tools.
 
 The model reads the files in an `<attachments>` block before the message's text, read again at
-the start of the turn. The context breakdown counts that block and the images (estimated at 800
+the start of the turn, but only while the path is still the one checked when the message was
+sent and is a regular file no larger than it was then; a file replaced by a link (or moved, or
+grown) in the meantime is reported as unreadable instead. The context breakdown counts that block and the images (estimated at 800
 tokens each, calibrated by the reported prompt size) as **Attachments**. In a remote runtime
 (Docker container, WSL, SSH) the attachments folder is not reachable by the agent's tools; text,
 PDF text, and images still go in the message.

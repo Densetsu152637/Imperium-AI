@@ -219,7 +219,8 @@ action: `allow` (run without asking), `ask` (ask even where the tool would not),
   stricter), and each command is matched on its own: any command denied denies the line, any
   asked asks, and the line is allowed only when every command is. Allow rules with a pattern
   never match a line with command substitution (`` ` ``, `$(`, `<(`, `>(`) or output redirection
-  into a file (`2>&1` and redirection to `/dev/null` or `nul` are fine).
+  into a file (`2>&1` and redirection to `/dev/null` or `nul` are fine, but only as whole
+  words: `>nul.txt` and `>&1out` name files).
 - **File tools** (`read_file`, `write_file`, `edit_file`, `list_dir`): a path glob. `*` and `?`
   stay within a path segment, `**` crosses segments, and `dir/**` also matches `dir`. A pattern
   without `/` matches the file name at any depth (`.env`, `*.pem`); an absolute pattern (or one
