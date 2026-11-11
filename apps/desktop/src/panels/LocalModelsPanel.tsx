@@ -1,8 +1,9 @@
-// Local models: the model folders (added and removed here), the llama.cpp runtime and whether it
-// sees the GPU, the models found with one-click Use / Test / Settings, and downloads from Hugging
-// Face. With nothing set up it shows the first-run choices instead.
+// Local models: the models found with one-click Use / Test / Settings, downloads from Hugging
+// Face, and at the bottom the llama.cpp runtime and whether it sees the GPU. Model folders are
+// set in Settings → Models (the Resources panel shows free memory). With nothing set up it shows
+// the first-run choices instead.
 
-import { Check, Download, FlaskConical, FolderPlus, RefreshCw, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { Check, Download, FlaskConical, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
 import type {
   DownloadJob,
@@ -19,7 +20,7 @@ import type {
 import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
 import { pickFile } from "../daemon/connection";
-import { addModelFolder, ModelSetup } from "./ModelSetup";
+import { ModelSetup } from "./ModelSetup";
 import { arrangeModels, markOf, type ModelMark } from "../modelPrefs";
 import { useModelMarks } from "../settings";
 import { HiddenGroupRow, ModelMarkButtons } from "./ModelMarks";
@@ -93,30 +94,21 @@ export function LocalModelsPanel({
     return (
       <div className="models local-models">
         <ModelSetup client={client} onChanged={onRefresh} onDownload={showDownload} />
-        {client && <RuntimeCard client={client} onChanged={onRefresh} />}
         {download}
+        {client && <RuntimeCard client={client} onChanged={onRefresh} />}
       </div>
     );
   }
-  const { hardware } = listing;
   return (
     <div className="models local-models">
-      <div className="models-toolbar">
-        {hardware && (
-          <span className="muted">
-            {hardware.gpus.map((gpu) => `${gpu.name} ${gib(gpu.vram_free_bytes)} free`).join(" · ") || "no GPU"} · RAM{" "}
-            {gib(hardware.ram_available_bytes)} free{hardware.overridden ? " (overridden)" : ""}
-          </span>
-        )}
-        <button onClick={onRefresh} title="Scan the model folders again">
+      <div className="models-toolbar local-models-toolbar">
+        <button className="ghost" onClick={onRefresh} title="Scan the model folders again (set them in Settings → Models)">
           <RefreshCw aria-hidden="true" /> Rescan
         </button>
-        <button onClick={() => onConfigure()}>
+        <button className="ghost" onClick={() => onConfigure()}>
           <SlidersHorizontal aria-hidden="true" /> Configure
         </button>
       </div>
-      <FolderList client={client} listing={listing} onChanged={onRefresh} />
-      {client && <RuntimeCard client={client} onChanged={onRefresh} />}
       <ModelTable listing={listing} client={client} onChanged={onRefresh} onConfigure={onConfigure} />
       {listing.skipped.length > 0 && (
         <details className="skipped">
@@ -133,75 +125,8 @@ export function LocalModelsPanel({
         </details>
       )}
       {download}
+      {client && <RuntimeCard client={client} onChanged={onRefresh} />}
     </div>
-  );
-}
-
-/** The model folders, each removable, and the button that adds one. */
-function FolderList({
-  client,
-  listing,
-  onChanged,
-}: {
-  client: DaemonClient | null;
-  listing: LocalModelListResult;
-  onChanged: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const run = async (work: () => Promise<unknown>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await work();
-      onChanged();
-    } catch (failure) {
-      setError(message(failure));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const extra = listing.folders.filter((folder) => !listing.configured_folders.includes(folder));
-  return (
-    <section className="folder-list" aria-labelledby="model-folders-title">
-      <div className="section-head">
-        <h3 id="model-folders-title">Model folders</h3>
-        <button onClick={() => client && run(() => addModelFolder(client))} disabled={!client || busy}>
-          <FolderPlus aria-hidden="true" /> Add folder
-        </button>
-      </div>
-      <ul>
-        {listing.configured_folders.map((folder) => (
-          <li key={folder}>
-            <code title={folder}>{folder}</code>
-            <button
-              className="ghost icon"
-              onClick={() => client && run(() => client.call("models.remove_folder", { path: folder }))}
-              disabled={!client || busy}
-              aria-label={`Stop scanning ${folder}`}
-              title="Stop scanning this folder (nothing in it is deleted)"
-            >
-              <Trash2 aria-hidden="true" />
-            </button>
-          </li>
-        ))}
-        {extra.map((folder) => (
-          <li key={folder} className="muted">
-            <code title={folder}>{folder}</code> <span>downloads</span>
-          </li>
-        ))}
-      </ul>
-      {busy && (
-        <p className="muted" role="status">
-          Scanning…
-        </p>
-      )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-    </section>
   );
 }
 

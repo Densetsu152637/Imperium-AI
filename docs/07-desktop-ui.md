@@ -801,9 +801,14 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   panel's download form), and *Connect an API endpoint* (a name, base URL, API key, and an
   optional model, which then becomes the default; the key goes to the system keychain,
   `models.add_endpoint`).
-- **Model folders.** The Local models panel lists `models.folders`, each with a remove button
-  (*Stop scanning this folder*; nothing in it is deleted), the download folder when it is separate,
-  and *Add folder*. *Rescan* scans again.
+- **Layout.** The Local models panel lists the models first, with a small, quiet *Rescan* (scan
+  the folders again) and *Configure* above them; then the skipped items and the Hugging Face
+  download form; and the *llama.cpp runtime* card at the bottom. It shows no free-memory summary
+  (the [Resources panel](#resources-panel-implemented) does).
+- **Model folders.** Model folders are set in Settings → *Models*: *Add folder…* (the native
+  folder picker; the folder is added to `models.folders` and scanned at once) and the *Model
+  folders* list, one path per line, where a folder is removed (nothing in it is deleted). The
+  first-run choices above also add one.
 - **Runtime.** A *llama.cpp runtime* card runs `runtime.status` when the panel opens: which
   `llama-server` is used and where it comes from (*Your llama-server*, *Found on this computer*
   with how it was installed, such as winget or LM Studio, or *Imperium's build* with its

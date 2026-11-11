@@ -1150,6 +1150,7 @@ export function App() {
             setShowSettings(false);
             setModelDialog({ tab: "local" });
           }}
+          onModelsChanged={refreshModels}
           onResetLayout={() => {
             setArrangement(null);
             resetLayout();
