@@ -276,6 +276,12 @@ pub enum SessionEvent {
         context_window: Option<u64>,
         method: TokenCountMethod,
         summary_model: String,
+        /// The compaction carried workflow context (loaded skills, workflow references) over
+        /// verbatim, so a skill an agent loaded is still loaded. Absent in journals written
+        /// before that, whose compactions summarised them.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        kept_context: bool,
     },
     /// The session's model changed; turns from now on use `to`. `compacted` says whether the
     /// conversation was compacted first (a `context_compacted` event precedes this one). `from`
