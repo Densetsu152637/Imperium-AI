@@ -75,6 +75,10 @@ pub struct SessionConfig {
     pub launcher: Option<Arc<dyn SessionLauncher>>,
     /// Extra instructions for the root agent, after its standard ones.
     pub instructions: Option<String>,
+    /// The root agent's personality block (`imperium_workflow::Personality::instructions`),
+    /// placed after its reply rules. Subagents and side calls never get it. Fixed for the
+    /// session's run; a resumed session gets the one current when it resumes.
+    pub personality: Option<String>,
     /// Continue a session from its journal and saved conversation (after a daemon restart).
     pub resume: bool,
     /// How turns wait when usage runs out, unless the session overrides it.
@@ -636,6 +640,8 @@ pub(crate) struct Shared {
     pub enforce: Enforce,
     pub launcher: Option<Arc<dyn SessionLauncher>>,
     pub instructions: Option<String>,
+    /// The root agent's personality block; see [`SessionConfig::personality`].
+    pub personality: Option<String>,
     /// Set for a background session: what it yields to.
     pub background: Option<Background>,
     /// Token counts for context breakdowns, shared so agents on one model count text once.
@@ -754,6 +760,7 @@ async fn run(
         enforce: config.enforce,
         launcher: config.launcher,
         instructions: config.instructions,
+        personality: config.personality,
         background: config.background,
         tokens: TokenCounter::default(),
         artefacts: Artefacts::default(),

@@ -37,6 +37,10 @@ them.
   key with the wrong type is an error naming the problem.
 - `imperium config explain <key> [--project <dir>]` shows the effective value and the layer
   that set it (for example `set by environment variable IMPERIUM_DAEMON__PORT`).
+- `imperium config set <key> <value>...` and `imperium config unset <key>` change a setting from
+  the same table the app uses (below), such as `imperium config set policy.personality luxion`.
+  With a daemon running they go through `config.set`, so settings it applies at once take
+  effect; otherwise they write the user file directly.
 
 ### Editing settings from the app
 
@@ -56,8 +60,8 @@ The desktop app's Settings page reads and changes settings through the daemon:
   `overridden: true`, since the variable keeps winning.
 - The daemon reads its configuration once at start, so `restart: true` (nearly every setting)
   means the change applies after a daemon restart, which the app offers. Settings with
-  `restart: false` (`models.suggest_downloads`, `models.default`, `models.effort`, `models.folders`, and
-  `runtime.llamacpp.custom_path`) apply at once; a changed `models.folders` is scanned again
+  `restart: false` (`models.suggest_downloads`, `models.default`, `models.effort`, `models.folders`,
+  `runtime.llamacpp.custom_path`, and `policy.personality`) apply at once; a changed `models.folders` is scanned again
   at once. The desktop app's model setup and `models.add_folder`, `models.use`,
   `models.add_endpoint`, and `runtime.set_server` write these keys the same way
   ([setting up models](04-models-and-routing.md#setting-up-models-from-the-app)).
@@ -137,6 +141,7 @@ listed; edit them in the file.
 | `workflow.enabled` | `true` | Serve workflow packs and project instruction files to agents ([18](18-workflow-contract.md)) |
 | `workflow.packs` | none | Workflow folders, such as a clone of Agent-Custom-Workflow |
 | `workflow.default_pack` | `true` | With no `packs`, use the bundled Agent-Custom-Workflow snapshot |
+| `policy.personality` | `marcus_aurelius` | The root agent's personality, by id: `<config>/personalities/<id>.md` wins over a workflow pack's `personalities/<id>.md`, then the bundled one. `none` (or empty) turns it off; an id that is not found falls back to `marcus_aurelius` with a notice in the session. Applies to new sessions without a restart ([personalities](08-agent-policy.md#personalities)) |
 | `workflow.enforce` | `warn` | `required-before-action` refuses writes and commands until required context is loaded; `warn` and `off` do not |
 | `<config>/mods/<id>/` | none | UI mods (folders with `mod.json`), shown as panels; see [UI mods](06-extensibility.md#ui-mods) |
 | `schedules` | none | `[[schedules]]` with `id`, `trigger` (`cron`, `every`, or `at`), `action` (`project` and one of `prompt`, `command`, or `agent` (a message for the project agent), optional `model`, `timeout_s`), `missed`, `overlap`, `notify`, `enabled`, `prefer_quiet` (default `false`: hold a due run until the machine is quiet, for at most `max_defer`, default `2h`, then run anyway) and `conditions = { when_quiet = true }` (wait for a quiet machine however long it takes); see [schedules](14-projects-and-automation.md#schedules) |
@@ -292,7 +297,7 @@ location = "data"
 
 [policy]
 pack = "builtin:agent-custom-workflow"
-personality = "luxion"
+personality = "marcus_aurelius"   # the default; "none" turns personalities off
 
 [telemetry]
 otlp_endpoint = ""

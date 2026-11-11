@@ -71,7 +71,7 @@ async fn set_permission_mode_changes_the_session_and_survives_a_restart() {
 
     let mut connection = Connection::new(Arc::clone(&state));
     let handshake = json!({"client": {"name": "test", "version": "0"},
-                           "protocol": {"major": 0, "minor": 13}});
+                           "protocol": {"major": 0, "minor": 14}});
     result(call(&mut connection, 1, "system.handshake", handshake).await);
     let listed = result(call(&mut connection, 2, "session.list", json!({})).await);
     assert_eq!(listed["sessions"][0]["permission_mode"], "accept_edits");

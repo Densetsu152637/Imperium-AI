@@ -181,6 +181,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 8,
         background: None,
         checkpoints: None,

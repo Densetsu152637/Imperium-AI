@@ -13,6 +13,12 @@ pub(crate) const DEFAULTS: &str = r#"
 # Port for the local WebSocket listener; 0 picks a free port at each start.
 port = 0
 
+[policy]
+# The root agent's personality: the id of a file in <config>/personalities/ or a workflow pack's
+# personalities/ folder, such as luxion. "none" (or empty) turns personalities off. An id that
+# is not found falls back to this default.
+personality = "marcus_aurelius"
+
 [agents]
 # Model calls an agent may make in one turn before it stops.
 max_steps = 50
@@ -102,6 +108,9 @@ pub struct Settings {
     pub memory: MemorySettings,
     #[serde(default)]
     pub workflow: WorkflowSettings,
+    /// `[policy]`: the root agent's personality (see docs/08-agent-policy.md#personalities).
+    #[serde(default)]
+    pub policy: PolicySettings,
     #[serde(default)]
     pub github: GithubSettings,
     #[serde(default)]
@@ -710,6 +719,25 @@ impl Default for WorkflowSettings {
             packs: Vec::new(),
             enforce: Enforce::Warn,
             default_pack: true,
+        }
+    }
+}
+
+/// The pack-level policy choices Imperium makes for the user.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PolicySettings {
+    /// The root agent's personality id; empty or `none` turns personalities off. Resolved when
+    /// a session starts: an id that is not found (or cannot name a file) falls back to
+    /// the default with a notice, so a typo never stops the config from loading.
+    pub personality: String,
+}
+
+impl Default for PolicySettings {
+    fn default() -> Self {
+        PolicySettings {
+            // imperium_workflow::DEFAULT_PERSONALITY, which resolves without any pack.
+            personality: "marcus_aurelius".into(),
         }
     }
 }

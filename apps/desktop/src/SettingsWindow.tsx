@@ -12,6 +12,7 @@ import {
   Clock,
   Cpu,
   Download,
+  Feather,
   FolderPlus,
   Gauge,
   Globe,
@@ -53,6 +54,7 @@ import type {
   ConfigUndoResult,
   ModListResult,
   PermissionSet,
+  PersonalitiesListResult,
   PermissionsResult,
 } from "@imperium/protocol";
 
@@ -314,6 +316,7 @@ const FIELDS: Field[] = [
 
 const CONFIG_SECTIONS: Record<string, string> = {
   agents: "Agents",
+  policy: "Personality",
   models: "Models",
   routing: "Routing",
   runtime: "Local runtime",
@@ -375,6 +378,7 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
   "agent-changes": History,
   about: Info,
   "config:agents": Bot,
+  "config:policy": Feather,
   "config:models": Boxes,
   "config:routing": Route,
   "config:runtime": Cpu,
@@ -479,7 +483,13 @@ export function SettingsWindow(props: Props) {
 
   const fieldRows = (fields: Field[]) => fields.map((field) => <FieldRow key={field.key} field={field} value={settings[field.key]} onChange={set} />);
   const configRows = (entries: ConfigEntry[]) =>
-    entries.map((entry) => <ConfigRow key={entry.key} entry={entry} disabled={!client} onSet={setConfigValue} />);
+    entries.map((entry) =>
+      entry.key === "policy.personality" && client ? (
+        <PersonalityRow key={entry.key} entry={entry} client={client} onSet={setConfigValue} />
+      ) : (
+        <ConfigRow key={entry.key} entry={entry} disabled={!client} onSet={setConfigValue} />
+      ),
+    );
 
   const body = (): ReactNode => {
     if (query.trim()) {
@@ -772,6 +782,72 @@ const SOURCE_LABEL: Record<ConfigEntry["source"], string> = {
   project: "set by the project",
   env: "set by an environment variable",
 };
+
+/** The value of `policy.personality` that turns personalities off. */
+const NO_PERSONALITY = "none";
+
+/**
+ * `policy.personality` as a select of the personalities the daemon finds (local ones, which win,
+ * then the workflow packs' and the built-in ones), the default marked, plus None. A value the
+ * daemon does not find stays listed, marked as falling back to the default.
+ */
+function PersonalityRow({
+  entry,
+  client,
+  onSet,
+}: {
+  entry: ConfigEntry;
+  client: DaemonClient;
+  onSet: (key: string, value: unknown) => void;
+}) {
+  const [list, setList] = useState<PersonalitiesListResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    client
+      .call<PersonalitiesListResult>("personalities.list", {})
+      .then(setList)
+      .catch((reason: unknown) => setError(String(reason instanceof Error ? reason.message : reason)));
+  }, [client]);
+
+  const fallback = list?.default ?? String(entry.default ?? "");
+  const raw = typeof entry.value === "string" ? entry.value.trim() : "";
+  const value = raw === "" || raw.toLowerCase() === NO_PERSONALITY ? NO_PERSONALITY : raw;
+  const options = [
+    ...(list?.personalities ?? []).map((personality) => ({
+      value: personality.id,
+      label: personality.name,
+      description: [
+        personality.id === fallback ? "Default" : null,
+        personality.source === "local" ? (personality.overrides ? "Local, overrides the pack's" : "Local") : null,
+      ]
+        .filter(Boolean)
+        .join(" · ") || undefined,
+    })),
+    { value: NO_PERSONALITY, label: "None", description: "Plain replies with no personality" },
+  ];
+  if (list && !options.some((option) => option.value === value)) {
+    options.unshift({ value, label: value, description: `Not found: ${fallback} is used` });
+  }
+  const badge =
+    entry.source === "user" ? (
+      <button className="ghost reset-link" onClick={() => onSet(entry.key, null)} title="Remove from your config file">
+        reset
+      </button>
+    ) : null;
+  const description = `${entry.description} (${entry.key})${error ? ` Could not list personalities: ${error}` : ""}`;
+  return (
+    <Row label={entry.label} description={description} badge={badge}>
+      <Select
+        value={value}
+        options={options}
+        onChange={(next) => onSet(entry.key, next)}
+        disabled={!list}
+        placeholder={list ? "—" : "Loading…"}
+        aria-label={entry.label}
+      />
+    </Row>
+  );
+}
 
 /** One daemon setting; text fields save when they lose focus or on Enter. */
 function ConfigRow({ entry, disabled, onSet }: { entry: ConfigEntry; disabled: boolean; onSet: (key: string, value: unknown) => void }) {

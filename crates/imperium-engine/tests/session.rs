@@ -74,7 +74,11 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
 }
 
 fn start_in(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> Session {
-    Session::spawn(SessionConfig {
+    Session::spawn(config(endpoint, dir, workspace)).unwrap()
+}
+
+fn config(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> SessionConfig {
+    SessionConfig {
         id: "test".into(),
         workspace,
         model: Some(ResolvedModel {
@@ -106,6 +110,7 @@ fn start_in(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> 
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 5,
         background: None,
         checkpoints: None,
@@ -113,8 +118,7 @@ fn start_in(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> 
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.join(".journal/test.jsonl"),
-    })
-    .unwrap()
+    }
 }
 
 #[tokio::test]
@@ -711,4 +715,86 @@ async fn background_commands_are_killed_when_the_session_stops() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(processes.running(), 0, "stopping the session kills it");
+}
+
+/// The personality joins the root agent's system prompt after its reply rules, and never a
+/// subagent's.
+#[tokio::test]
+async fn only_the_root_prompt_carries_the_personality_after_the_reply_rules() {
+    const PERSONALITY: &str = "Personality: speak as Marcus Aurelius. MARKER-7f3a";
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let sub_calls = Arc::new(AtomicUsize::new(0));
+    let systems = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = Arc::clone(&systems);
+    let (roots, subs) = (Arc::clone(&root_calls), Arc::clone(&sub_calls));
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let (roots, subs, seen) = (Arc::clone(&roots), Arc::clone(&subs), Arc::clone(&seen));
+            async move {
+                let system = body["messages"][0]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                let reply = if system.starts_with("You are an Imperium subagent") {
+                    subs.fetch_add(1, Ordering::SeqCst);
+                    text_body("report")
+                } else if system.starts_with("You are Imperium, a coding agent") {
+                    match roots.fetch_add(1, Ordering::SeqCst) {
+                        0 => tool_call_body("spawn_agent", r#"{"brief":"check docs"}"#),
+                        1 => tool_call_body("await_tasks", "{}"),
+                        _ => text_body("Done."),
+                    }
+                } else {
+                    text_body("Title")
+                };
+                seen.lock().unwrap().push(system);
+                ([("content-type", "text/event-stream")], reply)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let endpoint = Endpoint {
+        base_url,
+        api_key: None,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = config(endpoint, dir.path(), Workspace::new(dir.path()).unwrap());
+    config.personality = Some(PERSONALITY.into());
+    let session = Session::spawn(config).unwrap();
+    let mut events = session.subscribe();
+    session.send("check the docs".into()).unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap();
+        match event.event {
+            SessionEvent::TurnCompleted { .. } if event.agent_id == "root" => break,
+            SessionEvent::TurnFailed { message } => panic!("{} failed: {message}", event.agent_id),
+            _ => {}
+        }
+    }
+    assert_eq!(sub_calls.load(Ordering::SeqCst), 1);
+    let systems = systems.lock().unwrap().clone();
+    let (root, others): (Vec<_>, Vec<_>) = systems
+        .iter()
+        .partition(|system| system.starts_with("You are Imperium, a coding agent"));
+    assert_eq!(root.len(), 3);
+    for system in root {
+        let style = system
+            .find("lead with the result")
+            .expect("the reply rules");
+        let personality = system.find(PERSONALITY).expect("the personality");
+        assert!(
+            style < personality,
+            "the personality follows the reply rules"
+        );
+    }
+    assert!(!others.is_empty());
+    for system in others {
+        assert!(!system.contains("MARKER-7f3a"), "{system}");
+    }
 }
