@@ -165,6 +165,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("memory.session_search", "Session search", Bool, "Index sessions in the background so they can be searched, and let agents search earlier sessions."),
     choice("memory.session_search_scope", "Agents search sessions in", SESSION_SEARCH_SCOPE, "environment: only the agent's own environment; all: every environment."),
     def("memory.embedding_model", "Embedding model", STRING, "Model table id or <endpoint>:<model> of an embedding model for search by meaning; empty searches by keyword only."),
+    live(def("policy.personality", "Personality", STRING, "The root agent's voice with the user, by id: a file in <config>/personalities/ (which wins) or a workflow pack's personalities/ folder. none turns it off; an id that is not found uses marcus_aurelius. Applies to new sessions; subagents never get one.")),
     def("workflow.enabled", "Workflow packs", Bool, "Serve workflow packs and project instruction files to agents."),
     def("workflow.packs", "Workflow folders", PathList, "Workflow folders, such as a clone of Agent-Custom-Workflow."),
     def("workflow.default_pack", "Bundled workflow", Bool, "With no workflow folders, use the bundled Agent-Custom-Workflow snapshot."),
@@ -687,6 +688,24 @@ mod tests {
         set_user_setting(&paths, "pets.enabled", &Json::from(false), []).unwrap();
         let text = std::fs::read_to_string(paths.user_config_file()).unwrap();
         assert_eq!(text, "[pets]\nenabled = false\n");
+    }
+
+    #[test]
+    fn the_personality_defaults_to_marcus_aurelius_and_can_be_set() {
+        let (_home, paths) = home();
+        let state = entry(&paths, "policy.personality", &[]);
+        assert_eq!(state.default, Json::from("marcus_aurelius"));
+        assert_eq!(
+            (state.value, state.source.kind()),
+            (Json::from("marcus_aurelius"), "default")
+        );
+        for id in ["luxion", "none"] {
+            let state =
+                set_user_setting(&paths, "policy.personality", &Json::from(id), []).unwrap();
+            assert_eq!((state.value, state.source.kind()), (Json::from(id), "user"));
+        }
+        let text = std::fs::read_to_string(paths.user_config_file()).unwrap();
+        assert_eq!(text, "[policy]\npersonality = \"none\"\n");
     }
 
     #[test]

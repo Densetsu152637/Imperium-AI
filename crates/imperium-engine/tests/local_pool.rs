@@ -146,6 +146,7 @@ fn start(pool: &Arc<Pool>, script: &Arc<Script>, dir: &std::path::Path) -> Sessi
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
+        personality: None,
         max_steps: 5,
         background: None,
         checkpoints: None,

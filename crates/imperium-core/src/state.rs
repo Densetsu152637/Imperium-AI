@@ -27,7 +27,7 @@ use imperium_protocol::session::{
 };
 use imperium_tools::{ProcessRunner, Remote, Runner, Sandbox, Workspace};
 use imperium_web::{BrowserSetup, SearchConfig, SearchProviders, Web, WebTools};
-use imperium_workflow::{ContextIndex, Pack};
+use imperium_workflow::{ContextIndex, Pack, personality};
 use tokio::sync::broadcast;
 
 use crate::approvals::Approvals;
@@ -1317,6 +1317,7 @@ impl DaemonState {
         // Plugins' servers are not among `mcp`: they start when an agent activates the plugin.
         let mut extensions = self.extensions(project_dir_path);
         let context = self.context(project_dir_path, &mut notices);
+        let personality = self.personality(&mut notices);
         notices.append(&mut extensions.notices);
         let resume = options.resume_id.is_some();
         let id = match options.resume_id.clone().or_else(|| options.id.clone()) {
@@ -1443,6 +1444,7 @@ impl DaemonState {
             resume_policy: self.resume_policy(),
             launcher: options.launcher,
             instructions: options.instructions,
+            personality,
             background: options.background.then(|| Background {
                 load: self.load_view(),
             }),
@@ -1805,6 +1807,31 @@ impl DaemonState {
         Some(Arc::new(ContextIndex::new(packs, project_dir)))
     }
 
+    /// Where personalities are looked up: `<config>/personalities/`, the workflow folders,
+    /// then the bundled pack (with the default compiled in as the last resort).
+    pub(crate) fn personality_sources(&self) -> personality::Sources {
+        personality::Sources {
+            config_dir: Some(self.paths.config_dir().to_path_buf()),
+            packs: self.settings().workflow.packs.clone(),
+            built_in: bundled_pack(),
+        }
+    }
+
+    /// The root agent's personality block for a new session, from `policy.personality`. An id
+    /// that is not found falls back to the default, with a notice in `notices`.
+    fn personality(&self, notices: &mut Vec<String>) -> Option<String> {
+        let selection = self
+            .personality_sources()
+            .select(&self.settings().policy.personality);
+        if let Some(warning) = selection.warning {
+            tracing::warn!("{warning}");
+            notices.push(warning);
+        }
+        selection
+            .personality
+            .map(|personality| personality.instructions())
+    }
+
     /// Skills, hooks, slash commands, and plugins for a session in `project_dir`.
     fn extensions(&self, project_dir: &Path) -> Extensions {
         imperium_extensions::load(&Sources {
@@ -2142,6 +2169,71 @@ pub fn answer_with_recommendations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn state_with(home: &Path, extra: &str) -> Arc<DaemonState> {
+        let settings = imperium_config::Config::from_layers([
+            imperium_config::Layer::defaults(),
+            imperium_config::Layer::new(
+                imperium_config::Source::User("test".into()),
+                extra.parse().unwrap(),
+            ),
+        ])
+        .settings()
+        .unwrap();
+        DaemonState::new(imperium_config::Paths::under(home), settings, None)
+    }
+
+    /// The root agent's personality block for a new session, and its notices.
+    fn personality(home: &Path, extra: &str) -> (Option<String>, Vec<String>) {
+        let mut notices = Vec::new();
+        let block = state_with(home, extra).personality(&mut notices);
+        (block, notices)
+    }
+
+    #[test]
+    fn with_no_configuration_the_root_personality_is_marcus_aurelius() {
+        let home = tempfile::tempdir().unwrap();
+        let (block, notices) = personality(home.path(), "");
+        let block = block.unwrap();
+        assert!(
+            block.contains("<personality name=\"Marcus Aurelius\">"),
+            "{block}"
+        );
+        assert!(block.contains("Stoic"));
+        assert!(notices.is_empty());
+    }
+
+    #[test]
+    fn the_configured_personality_wins_and_none_turns_it_off() {
+        let home = tempfile::tempdir().unwrap();
+        let (block, _) = personality(home.path(), "[policy]\npersonality = \"luxion\"\n");
+        assert!(block.unwrap().contains("<personality name=\"Luxion\">"));
+        for off in ["none", ""] {
+            let (block, notices) =
+                personality(home.path(), &format!("[policy]\npersonality = \"{off}\"\n"));
+            assert!(block.is_none() && notices.is_empty(), "{off:?}");
+        }
+    }
+
+    #[test]
+    fn a_local_personality_overrides_the_pack_one() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = imperium_config::Paths::under(home.path());
+        let local = paths.config_dir().join("personalities");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("luxion.md"), "# Luxion\n\nMY OWN LUXION\n").unwrap();
+        let (block, _) = personality(home.path(), "[policy]\npersonality = \"luxion\"\n");
+        assert!(block.unwrap().contains("MY OWN LUXION"));
+    }
+
+    #[test]
+    fn an_unknown_personality_falls_back_to_the_default_with_a_notice() {
+        let home = tempfile::tempdir().unwrap();
+        let (block, notices) = personality(home.path(), "[policy]\npersonality = \"nobody\"\n");
+        assert!(block.unwrap().contains("Marcus Aurelius"));
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("nobody"), "{notices:?}");
+    }
 
     #[test]
     fn the_bundled_workflow_pack_is_found_and_loads() {
