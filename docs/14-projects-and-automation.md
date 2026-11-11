@@ -232,6 +232,40 @@ chat`) puts a session back, refused while a turn is running. `mode` is one of:
 
 The result lists the files written back and removed, the undo checkpoint, and the new session.
 
+### Review pane (implemented)
+
+The checkpoints are also what a session's changes are reviewed against
+([Review panel](07-desktop-ui.md#review-panel-implemented), `/diff [n]` in `imperium chat`):
+
+- `session.review { session_id, since? }` lists the files the session's turns changed since a
+  checkpoint (its first, the session's start, by default), each with its status (`added`,
+  `modified`, `deleted`) and unified diff hunks (three lines of context) computed by the daemon
+  from the stored contents, so no diff driver or filter runs. Only files a turn changed are
+  listed: each `turn` checkpoint records the files its turn changed, so edits you make between
+  turns are not taken for the session's. Binary files and files over 2 MiB are listed without
+  hunks.
+- `session.review_hunk { repo, path, hunk, action }` accepts a hunk (it is kept and no longer
+  shown: it joins the review's base, a commit on `refs/imperium/review/<session>` whose parent is
+  the checkpoint) or rejects it (the hunk is reverted in the working tree; an emptied file the
+  checkpoint did not have is removed). `hunk: "file"` acts on the whole file. A hunk is named by
+  a digest of its place and lines, so one that changed since it was shown is refused.
+- `session.review_commit { repo, message }` commits, on the repository's current branch, every
+  file the session changed since the checkpoint as it now is (accepted hunks kept, rejected ones
+  reverted, unreviewed ones included), and nothing else you have staged or changed:
+  `git add -A -- <files>` and `git commit --no-verify -- <files>` with hooks and fsmonitor off.
+  A repository whose own config (`.git/config` and its includes, or the worktree's config) names
+  filter drivers or a signing program is refused, so nothing a repository's config names runs
+  in the daemon; your global config (Git LFS, signing) applies as usual. The commit message is
+  prefilled with the session's title (written by its model) and the files.
+- `session.review_pull_request { repo, title, body, base? }` pushes the current branch to
+  `origin` (`push -u`) and runs `gh pr create`; without `gh` on the PATH it returns the two
+  commands to run instead.
+- Committing and opening a pull request are gated by the permission rules `git_commit` and
+  `open_pull_request` ([rules](05-tools-and-isolation.md#rules)): without a rule they return
+  `needs_confirmation` until called again with `confirmed: true` (the pane asks), an `allow`
+  rule runs them at once, and `deny` refuses them. Accepting, rejecting, committing, and
+  opening a pull request are refused while a turn runs.
+
 ## Project agent
 
 A long-lived agent per project that watches for work and **dispatches it into new sessions**.

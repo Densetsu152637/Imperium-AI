@@ -159,6 +159,32 @@ session turns out to need a model). The line reads, from the session's events
 
 A message sent while the agent is busy waits in the queue, which already shows it.
 
+### Review panel (implemented)
+
+The Review panel (beside Agents; closable and detachable like the others) shows what the open
+session changed and puts it back or commits it (roadmap item 6):
+
+- **Since:** a picker of the session's checkpoints, the first (*session start*) by default, each
+  named by the message it came before; the list follows new checkpoints
+  (`session.checkpoint`) and is read again whenever a turn ends.
+- **Files:** one line per changed file (status letter, path, `+added −removed`), open to its
+  unified diff, added and removed lines tinted. Each hunk header, and each file line, has
+  *Accept* (keep it; it stops being shown) and *Reject* (revert it in the working tree) as row
+  tools that appear on hover or focus. Binary and large files are accepted or rejected whole.
+- **Commit:** a message box prefilled with the session's title and its files, *Commit*, and
+  *Open pull request* (the message's first line is the title, the rest the body). Both ask
+  first, inline, unless a permission rule allows them (`git_commit`, `open_pull_request`);
+  without `gh` the pull request's commands are shown to copy. A repository picker appears when
+  the session has several.
+- **Rewind:** the history menu beside the picker rewinds to a checkpoint: the files, the files
+  and the conversation, or only the conversation; a conversation rewind opens the new session it
+  makes. Everything is disabled while a turn runs.
+
+It uses `session.review`, `session.review_hunk`, `session.review_commit`,
+`session.review_pull_request`, and `session.rewind`
+([review pane](14-projects-and-automation.md#review-pane-implemented)). Sessions outside git say
+why there is nothing to review.
+
 ### Resources panel (implemented)
 
 The Resources panel (in Settings → Panels, closable and detachable like the others) shows what

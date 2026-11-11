@@ -410,6 +410,27 @@ struct Record {
     /// The journal's length in bytes when the turn started.
     #[serde(default)]
     journal_offset: u64,
+    /// For `turn`: the files the turn changed, by repository root, so a review lists the
+    /// session's changes and not edits made between turns.
+    #[serde(default)]
+    touched: BTreeMap<String, Vec<String>>,
+}
+
+/// The paths whose entries differ between `before` and `after`, submodules aside.
+pub(crate) fn differing(before: &Files, after: &Files) -> Vec<String> {
+    let mut paths: BTreeSet<&String> = BTreeSet::new();
+    paths.extend(before.keys());
+    paths.extend(after.keys());
+    paths
+        .into_iter()
+        .filter(|path| {
+            let (a, b) = (before.get(*path), after.get(*path));
+            a != b
+                && a.is_none_or(|entry| entry.mode != "160000")
+                && b.is_none_or(|entry| entry.mode != "160000")
+        })
+        .cloned()
+        .collect()
 }
 
 /// One repository's files when a turn started.
@@ -509,6 +530,12 @@ impl SessionCheckpoints {
         tops
     }
 
+    /// The files git would see in the working tree at `top`, with the session's hash cache.
+    pub(crate) fn working_files(&self, top: &Path) -> Result<Files, String> {
+        let mut inner = self.lock();
+        working_files(top, inner.caches.entry(top.to_path_buf()).or_default())
+    }
+
     /// Whether a root turn is running (between `before_turn` and `after_turn`).
     pub(crate) fn turn_running(&self) -> bool {
         self.lock().pending.is_some()
@@ -571,6 +598,7 @@ impl SessionCheckpoints {
         journal_offset: u64,
         messages: Option<&[u8]>,
         snapshots: &[Snapshot],
+        touched: BTreeMap<String, Vec<String>>,
     ) -> Result<SessionCheckpoint, String> {
         let number = self.next_number();
         let headline = prompt.lines().next().unwrap_or_default();
@@ -611,6 +639,7 @@ impl SessionCheckpoints {
         let record = Record {
             checkpoint: checkpoint.clone(),
             journal_offset,
+            touched,
         };
         let text = serde_json::to_string_pretty(&record).map_err(|error| error.to_string())?;
         std::fs::write(self.dir.join(format!("{number}.json")), text)
@@ -634,7 +663,29 @@ impl SessionCheckpoints {
             snapshots.push(self.snapshot(inner, top)?);
         }
         let offset = std::fs::metadata(&self.journal).map_or(0, |meta| meta.len());
-        self.keep("rewind", String::new(), now_ms(), offset, None, &snapshots)
+        self.keep(
+            "rewind",
+            String::new(),
+            now_ms(),
+            offset,
+            None,
+            &snapshots,
+            BTreeMap::new(),
+        )
+    }
+
+    /// The files the session's turns changed from checkpoint `since` on, by repository root.
+    pub(crate) fn touched_since(&self, since: u32) -> HashMap<String, BTreeSet<String>> {
+        let mut touched: HashMap<String, BTreeSet<String>> = HashMap::new();
+        for record in self.records() {
+            if record.checkpoint.number < since {
+                continue;
+            }
+            for (root, paths) in record.touched {
+                touched.entry(root).or_default().extend(paths);
+            }
+        }
+        touched
     }
 
     /// Puts the files back to checkpoint `record`, first keeping them as they are as a `rewind`
@@ -693,18 +744,22 @@ impl imperium_engine::TurnCheckpoints for SessionCheckpoints {
         let Some(pending) = inner.pending.take() else {
             return;
         };
-        let mut changed = false;
+        let mut touched = BTreeMap::new();
         for snapshot in &pending.snapshots {
             let cache = inner.caches.entry(snapshot.top.clone()).or_default();
             match working_files(&snapshot.top, cache) {
-                Ok(files) if files != snapshot.files => changed = true,
-                Ok(_) => {}
+                Ok(files) => {
+                    let changed = differing(&snapshot.files, &files);
+                    if !changed.is_empty() {
+                        touched.insert(snapshot.top.display().to_string(), changed);
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(session = %self.session_id, %error, "could not list the repository's files after the turn");
                 }
             }
         }
-        if !changed {
+        if touched.is_empty() {
             return;
         }
         if let Err(error) = self.keep(
@@ -714,6 +769,7 @@ impl imperium_engine::TurnCheckpoints for SessionCheckpoints {
             pending.journal_offset,
             pending.messages.as_deref(),
             &pending.snapshots,
+            touched,
         ) {
             tracing::warn!(session = %self.session_id, %error, "could not record a checkpoint");
         }
@@ -739,14 +795,21 @@ pub(crate) fn forget(data_dir: &Path, session_id: &str) {
         }
     }
     let prefix = format!("{REF_PREFIX}/{session_id}/");
+    // The review's bases: `refs/imperium/review/<session>` and `<session>-<k>`.
+    let review = format!("{}/{session_id}", crate::review::REF_PREFIX);
     for root in repos {
         let top = Path::new(&root);
-        let Ok(out) = run(command(top).args(["for-each-ref", "--format=%(refname)", &prefix]))
-        else {
+        let Ok(out) = run(command(top).args([
+            "for-each-ref",
+            "--format=%(refname)",
+            &prefix,
+            crate::review::REF_PREFIX,
+        ])) else {
             continue;
         };
         for name in String::from_utf8_lossy(&out).lines() {
-            if name.starts_with(&prefix) {
+            let reviewed = name == review || name.starts_with(&format!("{review}-"));
+            if name.starts_with(&prefix) || reviewed {
                 let _ = run(command(top).args(["update-ref", "-d", name]));
             }
         }

@@ -230,6 +230,12 @@ action: `allow` (run without asking), `ask` (ask even where the tool would not),
   match. The app config tools run without asking by default (removing an extension an agent
   did not install asks); a rule narrows them to *ask* or *deny*
   ([06](06-extensibility.md#agents-manage-the-app-config-implemented)).
+- **The review pane's steps** `git_commit` (commit a session's changes) and
+  `open_pull_request` (push the branch and open a pull request with `gh`): not agent tools but
+  the user's own actions from the review pane, gated the same way with rules without a
+  pattern. Without a rule they ask (the pane asks for a yes before running); `allow` runs them
+  at once, `deny` refuses them
+  ([review pane](14-projects-and-automation.md#review-pane-implemented)).
 
 Evaluation: every matching rule of both scopes is collected; an environment rule overrides the
 global rules of equal specificity (both name the tool exactly or both use a wildcard, and their

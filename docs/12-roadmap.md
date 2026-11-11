@@ -96,7 +96,7 @@ the wait reason in the desktop.
    composer through `[media.transcription]`
    ([07](07-desktop-ui.md#attachments-and-voice-input-implemented)). Describing images for models
    without vision, rendering drawn PDF pages, and a supervised local whisper remain to do.
-6. **Review pane and checkpoints** (checkpoints implemented). Diffs of an agent's changes with
+6. **Review pane and checkpoints** (implemented). Diffs of an agent's changes with
    accept or reject per hunk, then commit or open a pull request; git-based checkpoints to
    rewind a session's files and conversation. Checkpoints: before each root turn that changes
    files in a git repository, the session's files (tracked and untracked, not ignored) are kept
@@ -105,8 +105,15 @@ the wait reason in the desktop.
    linked to the journal and the saved conversation; `session.checkpoints` lists them and
    `session.rewind` (`/rewind`) puts the files back (undoable), forks the conversation at that
    point into a new session, or both. Folders outside git have none
-   ([14](14-projects-and-automation.md#checkpoints-and-rewinding)). The review pane remains to
-   do.
+   ([14](14-projects-and-automation.md#checkpoints-and-rewinding)). Review pane: the desktop's
+   Review panel and `/diff` list the files the session's turns changed since a checkpoint (the
+   session's start by default) as unified diffs computed by the daemon; each hunk or file is
+   accepted (kept and hidden, on a private review ref) or rejected (reverted in the working
+   tree), then *Commit* (message prefilled from the session's title; only the session's files,
+   hooks off) and *Open pull request* (`gh`, or the commands to run), both gated by the
+   `git_commit` and `open_pull_request` permission rules and asking by default
+   ([14](14-projects-and-automation.md#review-pane-implemented),
+   [07](07-desktop-ui.md#review-panel-implemented)).
 7. **Branching and comparison.** Branch a conversation from any message; run best-of-N across
    models and compare the results side by side.
 8. **Session search** (implemented). Session journals, running and archived, are indexed in the
