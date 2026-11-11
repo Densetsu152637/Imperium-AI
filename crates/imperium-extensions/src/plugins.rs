@@ -99,9 +99,12 @@ fn installed_by_agent(root: &Path) -> bool {
         return path.exists();
     };
     match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(value) => value
-            .get("session_id")
-            .is_some_and(|session| !session.is_null()),
+        // Anything but an object (`[]`, `null`, `123`) is a damaged record too.
+        Ok(value) => value.as_object().is_none_or(|record| {
+            record
+                .get("session_id")
+                .is_some_and(|session| !session.is_null())
+        }),
         Err(_) => true,
     }
 }
@@ -272,11 +275,14 @@ mod tests {
 
     #[test]
     fn a_damaged_provenance_file_still_restricts_expansion() {
-        let dir = tempfile::tempdir().unwrap();
-        let plugins = plugin_with_vars(dir.path(), "PATH", Some("not json"));
-        assert_eq!(
-            url_and_root(&plugins[0]).0,
-            "https://example.test//fallback"
-        );
+        for damaged in ["not json", "[]", "null", "123"] {
+            let dir = tempfile::tempdir().unwrap();
+            let plugins = plugin_with_vars(dir.path(), "PATH", Some(damaged));
+            assert_eq!(
+                url_and_root(&plugins[0]).0,
+                "https://example.test//fallback",
+                "{damaged}"
+            );
+        }
     }
 }

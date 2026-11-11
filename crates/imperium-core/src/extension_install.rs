@@ -263,7 +263,6 @@ async fn install_in(
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
     }
-    move_tree(&out, &dest)?;
     let mut disabled = false;
     if request.kind == ExtensionKind::Plugin && (hooks > 0 || servers > 0) {
         let has = match (hooks, servers) {
@@ -273,23 +272,32 @@ async fn install_in(
                 format!("{hooks} hook(s) and {servers} MCP server(s), which would run its code")
             }
         };
-        match set_plugin_disabled(state, &name, true) {
-            Ok(()) => {
-                disabled = true;
-                notes.push(format!(
-                    "It has {has}, so it is installed turned off and activate_plugin cannot \
-                     start it; only the user can turn it on, in Connectors."
-                ));
-            }
-            Err(error) => {
-                // Without the setting its hooks or servers could run unasked: take it out again.
-                remove_tree(&dest);
-                return Err(format!(
-                    "the plugin has hooks or servers and could not be turned off ({error}), so \
-                     it was not installed"
-                ));
-            }
+        // Turned off before the folder appears, so no new session can see it enabled.
+        let was_listed = state
+            .settings()
+            .extensions
+            .disabled_plugins
+            .iter()
+            .any(|entry| entry == &name);
+        if let Err(error) = set_plugin_disabled(state, &name, true) {
+            return Err(format!(
+                "the plugin has hooks or servers and could not be turned off ({error}), so it \
+                 was not installed"
+            ));
         }
+        if let Err(error) = move_tree(&out, &dest) {
+            if !was_listed && let Err(undo) = set_plugin_disabled(state, &name, false) {
+                tracing::warn!(%undo, "could not take a plugin that failed to install off extensions.disabled_plugins");
+            }
+            return Err(error);
+        }
+        disabled = true;
+        notes.push(format!(
+            "It has {has}, so it is installed turned off and activate_plugin cannot start it; \
+             only the user can turn it on, in Connectors."
+        ));
+    } else {
+        move_tree(&out, &dest)?;
     }
     match request.kind {
         ExtensionKind::Skill => notes.push(format!(

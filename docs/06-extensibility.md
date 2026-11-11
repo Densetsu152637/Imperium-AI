@@ -126,7 +126,8 @@ in Connectors (a setting the daemon reads at start, so it applies after a restar
 source (URL, commit, and the installing session) is shown. A plugin
 with neither (skills and commands only) is listed at once. Agent-installed plugins also never
 read the daemon's environment through `${VAR}` in `.mcp.json` (see [Compatibility](#compatibility-with-existing-formats)),
-even after the user turns them on.
+even after the user turns them on. Plugins agents installed before this change and that are
+already enabled stay enabled; only their `${VAR}` expansion tightens.
 
 **Provenance.** Each install writes `.imperium-source.json` into its folder: `kind` (`git` or
 `path`), `location` (the URL or folder), `revision` (the commit installed) and `requested` (the
