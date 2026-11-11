@@ -251,6 +251,14 @@ impl LocalRuntime {
             .map(|folder| folder.display().to_string())
             .collect();
         listing.default_model.clone_from(&settings.models.default);
+        for row in &mut listing.models {
+            row.alias = settings
+                .runtime
+                .llamacpp
+                .models
+                .get(&row.id)
+                .and_then(|own| own.alias.clone());
+        }
         listing.enabled = !listing.configured_folders.is_empty() || !listing.models.is_empty();
         listing
     }
@@ -281,6 +289,7 @@ impl LocalRuntime {
                 };
                 LocalModelRow {
                     id: model.id.clone(),
+                    alias: None,
                     runtime: match model.format {
                         Format::Gguf => "llamacpp".into(),
                         Format::Safetensors => "vllm".into(),

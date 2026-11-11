@@ -102,6 +102,7 @@ import { EnvironmentWindow } from "./EnvironmentWindow";
 import { getDoc, setDoc, subscribeDoc } from "./store";
 import { type Daemon, useDaemon } from "./DaemonControl";
 import { ModelConfigDialog, type ModelDialogTarget } from "./ModelConfigDialog";
+import { setModelAliases } from "./modelNames";
 import { UpdateControl, useUpdates } from "./UpdateControl";
 
 type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
@@ -193,6 +194,8 @@ export function App() {
   const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
+  // Every view shows a model by its alias (modelNames.ts).
+  useEffect(() => setModelAliases(modelTable?.models ?? [], localModels?.models ?? []), [modelTable, localModels]);
   const [mods, setMods] = useState<ModListResult | null>(null);
   /** llama.cpp being installed (`runtime.install_progress`), named in a waiting agent's status line. */
   const [runtimeInstall, setRuntimeInstall] = useState<RuntimeInstallJob | null>(null);
@@ -352,6 +355,10 @@ export function App() {
       client.onClose(() => {
         if (attempt === generation.current) setStatus({ kind: "failed", message: "Lost the connection to imperium-core." });
       });
+      // The models first, so notices in restored histories name models by their aliases.
+      const table = await client.call<ModelListResult>("models.list");
+      const local = await client.call<LocalModelListResult>("models.local");
+      setModelAliases(table.models, local.models);
       const { sessions: running } = await client.call<SessionListResult>("session.list");
       const restored = await Promise.all(
         running.map(async (summary, index) => {
@@ -364,8 +371,8 @@ export function App() {
       );
       known.current = new Set(restored.map(([id]) => id));
       setSessions(Object.fromEntries(restored));
-      setModelTable(await client.call<ModelListResult>("models.list"));
-      setLocalModels(await client.call<LocalModelListResult>("models.local"));
+      setModelTable(table);
+      setLocalModels(local);
       setMods(await client.call<ModListResult>("mods.list"));
       setApprovals((await client.call<ApprovalListResult>("approvals.list")).approvals);
       // Older daemons have no budgets.
@@ -1219,6 +1226,7 @@ export function App() {
             setShowSettings(false);
             setModelDialog({ tab: "local" });
           }}
+          onModelsChanged={refreshModels}
           onResetLayout={() => {
             setArrangement(null);
             resetLayout();

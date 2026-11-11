@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Attachment, PermissionDecision, PermissionRule, RuntimeInstallJob, SendMode } from "@imperium/protocol";
 
 import { RESUME_TEXT, agentComposerHint, formatElapsed, taskElapsed } from "../agentView";
+import { ModelName } from "../components/ModelName";
 import { ToolGroup } from "../components/ToolGroup";
 import { WaitLine } from "../components/WaitLine";
 import type { DaemonClient } from "../daemon/client";
@@ -117,7 +118,7 @@ export function AgentView({
             <span className="agent-crumb-separator" aria-hidden="true">
               /
             </span>
-            <h3 className="session-title" title={`${task.title} (${task.taskId}) on ${task.model}`} aria-current="page">
+            <h3 className="session-title" title={`${task.title} (${task.taskId})`} aria-current="page">
               {task.title}
             </h3>
           </nav>
@@ -207,7 +208,7 @@ export function AgentView({
 
       <footer className="session-footer" aria-label="Subagent status">
         <span className="muted agent-footer-id" title={task.brief}>
-          {task.taskId} · {task.model}
+          {task.taskId} · <ModelName name={task.model} />
         </span>
         <span className="session-footer-spacer" />
         {elapsed !== null && <span className="muted">{formatElapsed(elapsed)}</span>}

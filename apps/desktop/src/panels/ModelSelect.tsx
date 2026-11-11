@@ -97,15 +97,17 @@ function allModelOptions(models: ModelRow[], local: LocalModelRow[]): SelectOpti
   const options: SelectOption[] = models.map((row) => {
     // A table row that names a local model also says what that model is.
     const localRow = local.find((candidate) => localSpec(candidate) === row.spec);
+    // Shown by its alias (or the local model's it names), with the id kept in the description.
+    const alias = row.alias ?? localRow?.alias ?? null;
     return {
       value: row.spec,
-      label: row.id,
+      label: alias ?? row.id,
       disabled: !row.endpoint_configured,
       description: row.endpoint_configured
-        ? [row.id === row.spec ? null : row.spec, localRow ? localDescription(localRow) : row.location, row.tier]
+        ? [alias ? row.id : null, row.id === row.spec ? null : row.spec, localRow ? localDescription(localRow) : row.location, row.tier]
             .filter(Boolean)
             .join(" · ")
-        : "Endpoint not configured",
+        : [alias ? row.id : null, "Endpoint not configured"].filter(Boolean).join(" · "),
     };
   });
   for (const row of local) {
@@ -113,8 +115,8 @@ function allModelOptions(models: ModelRow[], local: LocalModelRow[]): SelectOpti
     if (options.some((option) => option.value === spec)) continue;
     options.push({
       value: spec,
-      label: row.id,
-      description: localDescription(row),
+      label: row.alias ?? row.id,
+      description: row.alias ? `${row.id} · ${localDescription(row)}` : localDescription(row),
       disabled: row.problem != null,
     });
   }

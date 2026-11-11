@@ -2241,6 +2241,18 @@ button.task-open:hover {
   padding: 0.2rem 0.65rem;
 }
 
+/* Local models: Rescan and Configure, small and to the side. */
+.local-models-toolbar {
+  justify-content: flex-end;
+  gap: calc(var(--space) * 0.5);
+  margin-bottom: calc(var(--space) * 0.5);
+}
+
+.local-models-toolbar button {
+  color: var(--muted);
+  padding: 0.15rem 0.45rem;
+}
+
 .models table {
   width: 100%;
   border-collapse: collapse;
@@ -2557,13 +2569,12 @@ button.sort:hover:not(:disabled) {
   padding: 0.2rem 0.65rem;
 }
 
-.folder-list,
 .runtime-card {
+  margin-top: calc(var(--space) * 1.5);
   margin-bottom: calc(var(--space) * 1.5);
   font-size: 0.8rem;
 }
 
-.folder-list ul,
 .runtime-card .candidates,
 .skipped ul {
   list-style: none;
@@ -2574,7 +2585,6 @@ button.sort:hover:not(:disabled) {
   gap: calc(var(--space) * 0.4);
 }
 
-.folder-list li,
 .runtime-card .candidates li {
   display: flex;
   align-items: center;
@@ -2582,7 +2592,6 @@ button.sort:hover:not(:disabled) {
   min-width: 0;
 }
 
-.folder-list code,
 .runtime-card code,
 .skipped code {
   overflow: hidden;
@@ -2591,11 +2600,6 @@ button.sort:hover:not(:disabled) {
   min-width: 0;
 }
 
-.folder-list li code {
-  flex: 1;
-}
-
-.folder-list button.icon,
 .local-model-table button.icon {
   padding: 0.15rem 0.3rem;
 }
@@ -2619,7 +2623,6 @@ button.sort:hover:not(:disabled) {
   display: block;
 }
 
-.folder-list code,
 .runtime-card code,
 .skipped code {
   font-size: 0.75rem;

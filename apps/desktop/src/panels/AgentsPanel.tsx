@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 
 import { RESUME_TEXT, formatElapsed, taskElapsed } from "../agentView";
 import { RowMenu, type RowMenuItem } from "../components/RowMenu";
+import { modelName, useModelNames } from "../modelNames";
 import { formatCost, type SessionState, type TaskState } from "../sessions";
 import { isStopped, shownTaskStatus } from "../stop";
 
@@ -79,12 +80,13 @@ function AgentRow({
   onResume,
   onCancel,
 }: { task: TaskState; now: number; stopped: boolean; open: boolean } & Actions) {
+  const aliases = useModelNames();
   const status = shownTaskStatus(task.status, stopped);
   const elapsed = taskElapsed(task, now);
   const paused = task.status === "paused";
   const hover = [
     `${task.title} (${task.taskId})`,
-    `${status} · ${task.model} · ${formatCost(task.costUsd)}`,
+    `${status} · ${modelName(aliases, task.model)} · ${formatCost(task.costUsd)}`,
     stopped && task.status === "running" ? "Halted while the session is stopped" : "",
   ]
     .filter(Boolean)

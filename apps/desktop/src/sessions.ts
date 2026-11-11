@@ -20,6 +20,7 @@ import type {
 import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
 import { taskTitle } from "./agentView";
+import { modelAliases, modelName } from "./modelNames";
 import { applySent, applyWait, type Sent, type Waits } from "./waits";
 
 export { taskTitle };
@@ -199,6 +200,9 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
 });
 
 /** A pause time as `HH:MM`, with the weekday when it is not today. */
+/** A model as notices name it: by its alias when it has one (modelNames.ts). */
+const shown = (model: string): string => modelName(modelAliases(), model);
+
 export function formatResumeTime(unixMs: number): string {
   const at = new Date(unixMs);
   const time = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
@@ -326,9 +330,9 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent, tasks: Record<s
       next.push({
         kind: "notice",
         message:
-          `Context compacted to fit ${event.model}: ${formatTokens(event.before_tokens)} → ` +
+          `Context compacted to fit ${shown(event.model)}: ${formatTokens(event.before_tokens)} → ` +
           `${formatTokens(event.after_tokens)} tokens; ${event.summarised_messages} earlier messages ` +
-          `summarised by ${event.summary_model}`,
+          `summarised by ${shown(event.summary_model)}`,
       });
       break;
     case "model_suggestion":
@@ -364,13 +368,13 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent, tasks: Record<s
     case "task_resumed":
       next.push({
         kind: "notice",
-        message: `Continued ${tasks[event.task_id]?.title ?? event.task_id} on ${event.model}: ${event.text.split("\n")[0]}`,
+        message: `Continued ${tasks[event.task_id]?.title ?? event.task_id} on ${shown(event.model)}: ${event.text.split("\n")[0]}`,
       });
       break;
     case "model_changed":
       next.push({
         kind: "notice",
-        message: event.from ? `Switched model from ${event.from} to ${event.to}` : `Model set to ${event.to}`,
+        message: event.from ? `Switched model from ${shown(event.from)} to ${shown(event.to)}` : `Model set to ${shown(event.to)}`,
       });
       break;
     default:

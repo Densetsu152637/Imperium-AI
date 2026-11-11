@@ -63,8 +63,8 @@ paths are later work.
 ## Setting up models from the app
 
 **Implemented:** everything needed to use models already on disk is available over the protocol,
-the desktop's Local models panel ([07](07-desktop-ui.md#setting-up-models-implemented)), and the
-CLI. Each change is written to the user's `config.toml` through the settings table and applied to
+the desktop's Local models panel and Settings → Models, where model folders are added
+([07](07-desktop-ui.md#setting-up-models-implemented)), and the CLI. Each change is written to the user's `config.toml` through the settings table and applied to
 the running daemon at once; the configuration layers kept for later model-settings saves are
 read again, so such a save never brings an old value back.
 
@@ -907,6 +907,7 @@ id = "sonnet"
 spec = "openrouter:anthropic/claude-sonnet"
 location = "cloud"
 tier = "strong"
+alias = "Claude Sonnet"               # optional display name; the id stays what rules use
 context_window = 200000               # optional; for context breakdowns (local models report theirs)
 
 [routing]

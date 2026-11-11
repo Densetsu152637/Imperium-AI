@@ -5,6 +5,10 @@
  */
 export type TableModelSettings = { 
 /**
+ * Display name shown instead of the id; null keeps the row's own `alias`.
+ */
+alias: string | null, 
+/**
  * False leaves the row out of routing.
  */
 enabled: boolean | null, tier: "basic" | "standard" | "strong" | "frontier" | null, tags: Array<string> | null, 

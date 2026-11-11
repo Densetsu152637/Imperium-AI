@@ -7,7 +7,12 @@ export type ModelRow = { id: string,
 /**
  * `<endpoint>:<model>`.
  */
-spec: string, location: "local" | "cloud", tier: "basic" | "standard" | "strong" | "frontier", tags: Array<string>, input_usd_per_mtok: number | null, output_usd_per_mtok: number | null, 
+spec: string, 
+/**
+ * The display name set for the row (its `alias`, or the app's override), shown instead of
+ * the id; the id is what rules, agents and `--model` use.
+ */
+alias: string | null, location: "local" | "cloud", tier: "basic" | "standard" | "strong" | "frontier", tags: Array<string>, input_usd_per_mtok: number | null, output_usd_per_mtok: number | null, 
 /**
  * False when the row names an endpoint that is not configured.
  */

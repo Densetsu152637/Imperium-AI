@@ -91,6 +91,8 @@ pub fn set_config(
                 update.id
             ));
         }
+        imperium_config::check_alias(settings.alias.as_deref())
+            .map_err(|reason| format!("model table row {}: {reason}", update.id))?;
         if settings.context_window == Some(0) {
             return Err(format!(
                 "model table row {}: context_window needs a value of at least 1",
@@ -208,6 +210,7 @@ fn local_table(settings: &LocalLaunchSettings) -> Table {
             table.insert(key.to_string(), value);
         }
     };
+    put("alias", settings.alias.clone().map(Value::String));
     if settings.context_auto {
         put("context", Some(Value::String("auto".into())));
     } else {
@@ -243,6 +246,7 @@ fn table_table(settings: &TableModelSettings) -> Table {
             table.insert(key.to_string(), value);
         }
     };
+    put("alias", settings.alias.clone().map(Value::String));
     put("enabled", settings.enabled.map(Value::Boolean));
     put("tier", settings.tier.clone().map(Value::String));
     put("tags", settings.tags.as_deref().map(strings));
@@ -260,6 +264,7 @@ fn table_table(settings: &TableModelSettings) -> Table {
 
 fn to_local(settings: &LocalLaunchSettings) -> LocalModelSettings {
     LocalModelSettings {
+        alias: settings.alias.clone(),
         context: if settings.context_auto {
             Some(ContextLimit::Auto)
         } else {
@@ -279,6 +284,7 @@ fn to_local(settings: &LocalLaunchSettings) -> LocalModelSettings {
 
 fn from_local(settings: LocalModelSettings) -> LocalLaunchSettings {
     LocalLaunchSettings {
+        alias: settings.alias,
         context: settings.context.and_then(ContextLimit::tokens),
         context_auto: settings.context == Some(ContextLimit::Auto),
         pool_tokens: settings.pool_tokens,
@@ -386,6 +392,7 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                 location: entry.location.as_str().into(),
                 endpoint_configured: endpoint.is_some(),
                 saved: TableModelSettings {
+                    alias: own.alias,
                     enabled: own.enabled,
                     tier: own.tier.map(|tier| tier.as_str().into()),
                     tags: own.tags,
@@ -394,6 +401,7 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                     output_usd_per_mtok: own.output_usd_per_mtok,
                 },
                 effective: TableModelEffective {
+                    alias: entry.alias.clone(),
                     enabled: entry.enabled,
                     tier: entry.tier.as_str().into(),
                     tags: entry.tags.clone(),

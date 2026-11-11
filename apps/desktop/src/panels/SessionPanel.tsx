@@ -62,6 +62,7 @@ import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
 import { canStop, isStopShortcut, isStopped } from "../stop";
 import { editStillValid, queueActions, queueLabel, steeredLabel, type QueueChange } from "../queue";
+import { ModelName } from "../components/ModelName";
 
 type Props = {
   session: SessionState;
@@ -630,7 +631,7 @@ export function EntryView({
       return <ToolCall entry={entry} />;
     case "task":
       return (
-        <div className="task-line" title={`${entry.taskId} on ${entry.model}\n${entry.brief}`}>
+        <div className="task-line" title={`${entry.taskId}\n${entry.brief}`}>
           →{" "}
           {onOpenAgent ? (
             <button type="button" className="link task-open" onClick={() => onOpenAgent(entry.taskId)}>
@@ -640,7 +641,7 @@ export function EntryView({
             <strong>{entry.title}</strong>
           )}{" "}
           <span className="muted">
-            {entry.taskId} · {entry.model}
+            {entry.taskId} · <ModelName name={entry.model} />
           </span>
         </div>
       );
