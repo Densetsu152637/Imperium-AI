@@ -155,9 +155,12 @@ the wait reason in the desktop.
     keeps across restarts and no generated title replaces; session rows are one line (status
     dot, title, time since activity) with the rest in the tooltip, renamed by double-click or
     *Rename* in the row's menu ([07](07-desktop-ui.md#environments-and-sessions-implemented)).
-18. **Quieter interface.** Panels carry too many buttons. Keep the primary action visible,
-    move the rest into overflow menus or hover actions, and tighten spacing and type for a
-    sleeker look.
+18. **Quieter interface** (implemented). Panels carry too many buttons. Keep the primary action
+    visible, move the rest into overflow menus or hover actions, and tighten spacing and type for
+    a sleeker look: panel headers show the title, the primary action and one ⋯ menu (collapse
+    all, detach, close, and the panel's secondary actions); row actions appear on hover or
+    focus; header and title-bar actions are icon buttons with labels; control sizes and type
+    steps are shared tokens ([07](07-desktop-ui.md#quiet-interface-implemented)).
 19. **Emperor behaviour.** Train Emperor towards the working style of frontier agent models,
     and reinforce it in the system and root prompts:
     - concise, structured answers; the big picture first, more detail only when asked;

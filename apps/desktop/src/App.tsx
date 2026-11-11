@@ -904,8 +904,14 @@ export function App() {
       id: "projects",
       title: "Environments",
       actions: (
-        <button onClick={() => setEnvWindow({ id: null })} disabled={!client}>
-          <Plus aria-hidden="true" /> New environment
+        <button
+          className="ghost icon-only panel-tool"
+          onClick={() => setEnvWindow({ id: null })}
+          disabled={!client}
+          aria-label="New environment"
+          title={client ? "New environment" : "Not connected to imperium-core"}
+        >
+          <Plus aria-hidden="true" />
         </button>
       ),
       body: (
@@ -928,11 +934,13 @@ export function App() {
         <>
           <SessionSortSelect sort={sessionSort} onSort={setSessionSort} />
           <button
+            className="ghost icon-only panel-tool"
             onClick={newSessionView}
             disabled={!client}
-            title={client ? "Start a session: choose its options and write the first message in the middle panel" : "Not connected to imperium-core"}
+            aria-label="New session"
+            title={client ? "New session: choose its options and write the first message in the middle panel" : "Not connected to imperium-core"}
           >
-            <Plus aria-hidden="true" /> New session
+            <Plus aria-hidden="true" />
           </button>
         </>
       ),
@@ -1227,12 +1235,13 @@ export function App() {
         <span className="spacer" />
         <UpdateControl updates={updates} onOpen={() => setShowSettings(true)} />
         <button
-          className="ghost titlebar-button"
+          className="ghost titlebar-button icon-only"
           onClick={() => setShowConnectors((open) => !open)}
           aria-expanded={showConnectors}
-          title="MCP servers, plugins, and skills"
+          aria-label="Connectors"
+          title="Connectors: MCP servers, plugins, and skills"
         >
-          <Plug aria-hidden="true" /> Connectors
+          <Plug aria-hidden="true" />
         </button>
         <button
           className={`ghost titlebar-button icon-only layout-toggle${editingLayout ? " active" : ""}`}
@@ -1244,12 +1253,13 @@ export function App() {
           <PANELS_ICON aria-hidden="true" />
         </button>
         <button
-          className="ghost titlebar-button"
+          className="ghost titlebar-button icon-only"
           onClick={() => setShowSettings((open) => !open)}
           aria-expanded={showSettings}
+          aria-label="Settings"
           title="Settings (Ctrl+,)"
         >
-          <Settings aria-hidden="true" /> Settings
+          <Settings aria-hidden="true" />
         </button>
       </header>
       {showConnectors && <ConnectorsWindow client={client} onClose={() => setShowConnectors(false)} />}

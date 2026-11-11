@@ -350,7 +350,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
                   {index === 0 && <span className="folder-badge">working directory</span>}
                   <button
                     type="button"
-                    className="ghost icon-only"
+                    className="ghost icon-only row-tool"
                     aria-label={`Remove ${folder}`}
                     title="Remove folder (the folder itself is untouched)"
                     disabled={busy || !client}
@@ -417,8 +417,15 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
                   </button>
                 </span>
               ) : (
-                <button type="button" className="danger" onClick={() => setDeleting(true)} disabled={busy || !client}>
-                  <Trash aria-hidden="true" /> Delete environment
+                <button
+                  type="button"
+                  className="ghost danger icon-only"
+                  onClick={() => setDeleting(true)}
+                  disabled={busy || !client}
+                  aria-label="Delete environment"
+                  title="Delete environment (folders on disk are untouched)"
+                >
+                  <Trash aria-hidden="true" />
                 </button>
               ))}
             <span className="spacer" />

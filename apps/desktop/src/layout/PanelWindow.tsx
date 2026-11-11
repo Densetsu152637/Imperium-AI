@@ -1,10 +1,13 @@
 // A detached panel's window: the panel fills it under a slim header with the panel's own
-// actions, a Pin toggle (always on top), and a Dock button. The window never writes the layout;
-// pinning, moving, and docking are reported to the main window (panelWindows.ts), which does.
+// primary action, a Pin toggle (always on top), and a Dock button, both icon-only; the panel's
+// secondary actions are in a ⋯ menu. The window never writes the layout; pinning, moving, and
+// docking are reported to the main window (panelWindows.ts), which does.
 
+import { PanelLeftClose, Pin } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
+import { RowMenu } from "../components/RowMenu";
 import { insideTauri } from "../daemon/connection";
 import { emitPanelEvent, listenPanelEvents } from "../panelWindows";
 import type { PanelSpec } from "./Columns";
@@ -101,18 +104,22 @@ export function PanelWindow({ id, panel }: { id: string; panel: PanelSpec | null
       <header className="panel-header">
         <h2 id={`panel-${id}`}>{title}</h2>
         {panel?.actions}
+        {panel?.menu && panel.menu.length > 0 && (
+          <RowMenu label={`${title} options`} items={panel.menu} className="panel-menu-button" />
+        )}
         {canPin && (
           <button
-            className="ghost panel-pin"
+            className="ghost icon-only panel-tool panel-pin"
             onClick={togglePin}
             aria-pressed={pinned}
-            title={pinned ? "Unpin from above other windows" : "Keep above other windows"}
+            aria-label="Keep above other windows"
+            title={pinned ? "Pinned above other windows; click to unpin" : "Keep above other windows"}
           >
-            {pinned ? "Pinned" : "Pin"}
+            <Pin aria-hidden="true" fill={pinned ? "currentColor" : "none"} />
           </button>
         )}
-        <button className="ghost" onClick={dock} title="Return to the main window">
-          Dock
+        <button className="ghost icon-only panel-tool" onClick={dock} aria-label="Dock" title="Dock: return to the main window">
+          <PanelLeftClose aria-hidden="true" />
         </button>
       </header>
       <div className="panel-body">{panel?.body ?? <p className="empty">Loading…</p>}</div>

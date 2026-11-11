@@ -1,7 +1,8 @@
 // The model table: every model delegation can use, searchable and sortable. Favourites come
-// first and hidden models last, in a collapsed group (modelPrefs.ts).
+// first and hidden models last, in a collapsed group (modelPrefs.ts). A row's favourite and hide
+// toggles show on hover or focus (and stay shown while set).
 
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, SlidersHorizontal } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import type { ModelListResult, ModelRow } from "@imperium/protocol";
@@ -106,7 +107,14 @@ export function ModelsPanel({ table, onConfigure }: { table: ModelListResult | n
         <span className="muted">
           prefer {table.prefer} · {table.rules} rule{table.rules === 1 ? "" : "s"}
         </span>
-        <button onClick={onConfigure}>Configure</button>
+        <button
+          className="ghost icon-only panel-tool"
+          onClick={onConfigure}
+          aria-label="Configure models"
+          title="Configure models: the table, routing rules, and endpoints"
+        >
+          <SlidersHorizontal aria-hidden="true" />
+        </button>
       </div>
       <table>
         <thead>
