@@ -991,6 +991,60 @@ pre {
   animation: rise-in var(--slow) var(--ease);
 }
 
+/* Jump to latest: floats over the bottom of a transcript the reader has scrolled up in. The
+   anchor has no height, so it sits on the conversation's bottom edge without moving the layout. */
+.jump-latest-anchor {
+  position: relative;
+  height: 0;
+  z-index: 2;
+}
+
+.jump-latest {
+  position: absolute;
+  bottom: calc(var(--space) * 1.5);
+  /* Centred without a transform, which the rise-in animation owns. */
+  left: 0;
+  right: 0;
+  width: fit-content;
+  margin-inline: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(var(--space) * 0.75);
+  padding: calc(var(--space) * 0.5) calc(var(--space) * 1.5);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.25);
+  animation: rise-in var(--slow) var(--ease);
+}
+
+.jump-latest:hover,
+.jump-latest:focus-visible {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.jump-latest-count {
+  min-width: 1.4em;
+  padding: 0 0.4em;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.jump-latest-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
 /* Readable measure: prose is capped and centred; code and tables may run wider. */
 .prose {
   font-size: calc(1rem * var(--prose-scale));

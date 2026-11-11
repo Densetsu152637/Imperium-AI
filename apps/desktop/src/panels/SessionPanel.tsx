@@ -6,7 +6,7 @@
 // all usage) has passed an alert threshold.
 
 import { CornerDownRight, Gauge, Paperclip, Pencil, Play, SlidersHorizontal, Square, Trash, X } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -48,7 +48,9 @@ import { describeRule } from "../components/PermissionsEditor";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { ToolCall } from "../components/ToolCall";
+import { JumpToLatest } from "../components/JumpToLatest";
 import { ToolGroup } from "../components/ToolGroup";
+import { useFollowScroll } from "../useFollowScroll";
 import { groupToolRuns, itemForEntry } from "../toolCalls";
 import { WaitLine } from "../components/WaitLine";
 import { describeWait } from "../waits";
@@ -139,19 +141,26 @@ export function SessionPanel({
   const [drawer, setDrawer] = useState<Drawer>(null);
   const drawerId = useId();
   useEffect(() => setRendered(settings.renderMarkdown), [settings.renderMarkdown]);
-  const end = useRef<HTMLDivElement>(null);
   const entryCount = session.entries.length;
   const last = session.entries.at(-1);
   const lastLength = last && "text" in last ? last.text.length : 0;
+  const sessionId = session.summary.session_id;
+  const items = useMemo(() => groupToolRuns(session.entries), [session.entries]);
 
-  // Block body: newer browsers return a promise from scrollIntoView, which an effect must not return.
-  useEffect(() => {
-    if (settings.autoScroll) end.current?.scrollIntoView({ block: "end" });
-  }, [entryCount, lastLength, settings.autoScroll]);
+  // Follows the newest output until the reader scrolls up (roadmap item 20).
+  const follow = useFollowScroll({
+    count: items.length,
+    activity: `${entryCount}:${lastLength}`,
+    enabled: settings.autoScroll,
+    resetKey: sessionId,
+  });
+  const conversation = follow.ref;
+  const send: Props["onSend"] = (text, mode, attachments) => {
+    follow.resume();
+    onSend(text, mode, attachments);
+  };
 
   // A search hit: after any scroll to the end, bring its entry into view and mark it briefly.
-  const conversation = useRef<HTMLDivElement>(null);
-  const sessionId = session.summary.session_id;
   useEffect(() => {
     if (!focusEvent) return;
     const frame = window.requestAnimationFrame(() => {
@@ -163,6 +172,8 @@ export function SessionPanel({
       const item = index === null ? null : itemForEntry(groupToolRuns(session.entries), index);
       const target = item === null ? null : conversation.current?.children.item(item);
       if (!(target instanceof HTMLElement)) return;
+      // The reader is looking at the hit now, not the newest output.
+      follow.release();
       target.scrollIntoView({ block: "center" });
       target.classList.add("search-focus");
       window.setTimeout(() => target.classList.remove("search-focus"), 2000);
@@ -171,7 +182,6 @@ export function SessionPanel({
     // Only a new hit (or another session) scrolls; new entries do not.
   }, [focusEvent?.nonce, sessionId]);
 
-  const items = useMemo(() => groupToolRuns(session.entries), [session.entries]);
   const sum = totals(session.calls);
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
   const archived = session.summary.archived;
@@ -277,8 +287,8 @@ export function SessionPanel({
         ) : (
           session.busy && <p className="working">Working…</p>
         )}
-        <div ref={end} />
       </div>
+      <JumpToLatest follow={follow} />
 
       {archived && (
         <div className="archived-note" role="status">
@@ -393,7 +403,7 @@ export function SessionPanel({
         hidden={archived}
         client={client}
         placeholder={composerHint(settings.sendKey === "enter", session.busy)}
-        onSend={onSend}
+        onSend={send}
       />
 
       <footer className="session-footer" aria-label="Session status">
