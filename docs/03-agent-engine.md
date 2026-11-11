@@ -714,6 +714,17 @@ to record git checkpoints of the session's files before turns that change them, 
 the journal's length and the saved conversation at that point, and `session.rewind` puts the
 files back, forks the conversation there into a new session (the original is kept), or both
 ([checkpoints and rewinding](14-projects-and-automation.md#checkpoints-and-rewinding)).
+
+**Branches (implemented):** after every root turn (and after each compaction) the engine appends
+a line to `<id>.turns.jsonl`, beside the journal: how many events the journal held and how many
+messages the root conversation had. `session.branch` reads it to cut the saved conversation
+(`<id>.messages.json`, written only between turns) at an earlier message, so a branch gets the
+journal's first events and exactly the conversation of that point; a compaction after the point
+rewrites the conversation, so earlier points can no longer be branched from, and a session from
+before the index can only be branched at its latest point. The branch is an ordinary session
+that resumes from the copied files, and it keeps its own index, so it can be branched in turn
+([branching](14-projects-and-automation.md#branching-and-comparison)).
+
 Transcripts, the subagent task tree, and the files agents attached or made export from the
 journal as Markdown or JSON, running or archived (`session.export`,
 [07](07-desktop-ui.md#exporting-transcripts-implemented)).

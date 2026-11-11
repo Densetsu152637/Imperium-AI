@@ -238,6 +238,60 @@ chat`) puts a session back, refused while a turn is running. `mode` is one of:
 
 The result lists the files written back and removed, the undo checkpoint, and the new session.
 
+### Branching and comparison
+
+**Implemented** (roadmap item 7). A branch is a new session made from a copy of another's
+journal and root conversation, so it continues independently; nothing is merged back.
+
+`session.branch { session_id, at?, title?, worktree? }` (`/branch` in `imperium chat`):
+
+- `at` is the index, in the source's `session.subscribe` history, of any event; absent means the
+  session's current point. The turn containing the event is kept whole, so the branch has
+  exactly the messages up to the end of that turn. When the event is the user message that
+  started a turn, that turn is left out and its text returns as `prompt`, to edit and send
+  again; files attached to that message are not carried into the prompt (they stay where they
+  are, listed in the original session), so attach them again. A turn that is still running, a point from before a compaction, and a session from
+  before the turn index ([agent engine](03-agent-engine.md)) are refused.
+- The journal's first events and the saved conversation at that point are copied; the branch
+  records `branched_from { session_id, at }` (in its summary and meta file) and is titled
+  "… (branch)" unless `title` is given. Environment, folders, permissions and model are the
+  source's, and the source may be running or archived (it must be a session the daemon
+  knows; an id that is not a plain session id is refused). What belongs to the running session
+  rather than its record starts afresh: "always this session" approvals and the permission mode
+  reset on a branch. The model, effort, skills and plugins carry over. Only the root conversation is carried:
+  subagents that were running are reported as interrupted in the branch, and their kept state is
+  not copied. Attachments stay where they are and are referenced by path, not copied.
+- A branch shares the source's folders and worktrees unless `worktree` is set. With it, the
+  branch gets a git worktree of its own and the files as they were at that point: the "before"
+  state of the first later checkpoint of the source, else its files as they are now (no turn
+  since changed them), written byte for byte like a rewind. The source's working tree, index,
+  HEAD and branches are only read, never changed. It needs the folders to be in a git
+  repository on this machine.
+
+`session.compare { session_id, message, models, worktree? }` (`/compare <model> <model> ... --
+<message>`): best-of-N. The session must be idle. It is branched at its current point once per
+model (two to four, each named once, each usable now, checked up front), each branch is switched
+to its model (the next turn fits the conversation to it, as for any model switch) and sent the
+message, and they run in parallel as ordinary sessions: agent limits apply, and a local model is
+loaded or swapped by the [residency controller](04-models-and-routing.md) like any other
+request, never around it. Each branch carries `branched_from` and the shared `comparison_id`.
+Branches get a worktree each when the folders are in a git repository (`worktree: false` shares
+the folders, which suits read-only questions; shared folders mean the branches edit the same
+files). The result lists the branches and their models.
+
+`session.compare_pick { comparison_id, session_id }` (`/pick <n>`) keeps one branch and archives
+the others (which stops them; they stay archived, with their `comparison_id`, and can be
+unarchived). A comparison that fails part-way (a model that cannot be switched to, a branch that stops)
+drops the branches it made, removing only worktrees they created themselves; deleting any
+session leaves a worktree another session still works in.
+
+Branches of a comparison can also be told apart by `comparison_id` in
+`session.list`, and the desktop's compare view reads each branch's events for its tokens, cost
+and time ([07](07-desktop-ui.md#branches-and-model-comparison-implemented)).
+
+Not offered: merging branches, and diffing files across sessions beyond what the review pane
+shows.
+
 ### Review pane (implemented)
 
 The checkpoints are also what a session's changes are reviewed against
