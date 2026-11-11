@@ -19,7 +19,9 @@ use imperium_local::runtime::{
     GITHUB_API, build_number, install, llama_cpp_ref, pack_for, packs_for, pinned_build,
     remove_earlier_releases, resolve,
 };
-use imperium_local::runtime_check::{self, find_existing, has_cuda_backend, home_dir};
+use imperium_local::runtime_check::{
+    self, find_existing, find_unverified, has_cuda_backend, home_dir,
+};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
     LocalModelListResult, ModelAddEndpointParams, ModelAddEndpointResult, ModelFolderParams,
@@ -522,8 +524,10 @@ pub async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResult {
         .collect();
     let backend = crate::llama_runtime::backend_label(&resolved, &device_ids);
     let build = build_number(check.version.as_deref());
+    // Unverified downloads are listed last and only run once the user picks one.
     let candidates = find_existing(home.as_deref())
         .into_iter()
+        .chain(find_unverified(home.as_deref()))
         .filter(|candidate| candidate != &server)
         .map(|candidate| candidate.display().to_string())
         .collect();

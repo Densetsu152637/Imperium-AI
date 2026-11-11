@@ -1905,7 +1905,8 @@ pub struct RuntimeStatusResult {
     pub summary: String,
     pub llama_cpp_ref: String,
     /// Other `llama-server` executables found on this machine (on `PATH`, common build
-    /// folders), offered when none is set up.
+    /// folders, and unpacked downloads in the home and Downloads folders), offered to the
+    /// user. None is run or chosen automatically; `runtime.set_server` adopts one.
     pub candidates: Vec<String>,
     /// The latest runtime pack installation since the daemon started.
     pub install: Option<RuntimeInstallJob>,
