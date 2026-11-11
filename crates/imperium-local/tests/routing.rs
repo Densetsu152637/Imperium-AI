@@ -253,6 +253,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         instructions: None,
         max_steps: 10,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),

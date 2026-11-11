@@ -106,6 +106,7 @@ fn start_in(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> 
         instructions: None,
         max_steps: 5,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),

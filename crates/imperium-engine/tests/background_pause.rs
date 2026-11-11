@@ -177,6 +177,7 @@ fn start(local: Arc<OneSlot>, load: Arc<Manual>, dir: &std::path::Path) -> Sessi
         instructions: None,
         max_steps: 6,
         background: Some(Background { load }),
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),

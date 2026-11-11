@@ -7,10 +7,13 @@ use std::path::PathBuf;
 use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
-    ContextFit, SessionAgentResume, SessionAgentResumeParams, SessionAgents, SessionAgentsParams,
-    SessionAnswer, SessionAnswerParams, SessionControl, SessionControlParams, SessionCreate,
-    SessionCreateParams, SessionQueue, SessionQueueParams, SessionRespond, SessionRespondParams,
-    SessionSend, SessionSendParams, SessionSuggestionRespond, SuggestionRespondParams,
+    ContextFit, RewindMode, SessionAgentResume, SessionAgentResumeParams, SessionAgents,
+    SessionAgentsParams, SessionAnswer, SessionAnswerParams, SessionCheckpoints,
+    SessionCheckpointsParams, SessionCheckpointsResult, SessionControl, SessionControlParams,
+    SessionCreate, SessionCreateParams, SessionQueue, SessionQueueParams, SessionRespond,
+    SessionRespondParams, SessionRewind, SessionRewindParams, SessionRewindResult, SessionSend,
+    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSuggestionRespond,
+    SuggestionRespondParams,
 };
 use imperium_protocol::session::{
     AgentEvent, AgentStatus, AgentSummary, ContextCategory, ExtensionKind, LocalWaitReason,
@@ -56,7 +59,7 @@ pub fn run(
                 worktree_branch: worktree.flatten(),
             })
             .await?;
-        let session_id = session.session_id.clone();
+        let mut session_id = session.session_id.clone();
         for tree in &session.worktrees {
             println!(
                 "Worktree {} on branch {} (for {})",
@@ -76,7 +79,8 @@ pub fn run(
             "Type a message. While the agent works, messages queue and run in order; /steer \
              <text> adds a message to the running turn, /queue lists what waits. /context shows \
              what the model is reading, /model <id> switches models, /effort <low|medium|high|max> \
-             sets how hard a reasoning model thinks, /compact summarises older turns; /download, /dismiss, or /never answer a model download suggestion; an \
+             sets how hard a reasoning model thinks, /compact summarises older turns, /rewind lists \
+             checkpoints and puts files and the conversation back to one; /download, /dismiss, or /never answer a model download suggestion; an \
              empty line (when idle) or /exit quits."
         );
         let mut lines = read_lines();
@@ -89,8 +93,10 @@ pub fn run(
             tokio::select! {
                 line = lines.recv() => {
                     let Some(line) = line else { break };
-                    if chat.on_line(&mut client, &session_id, line).await? == Flow::Quit {
-                        break;
+                    match chat.on_line(&mut client, &session_id, line).await? {
+                        Flow::Quit => break,
+                        Flow::Switch(next) => session_id = next,
+                        Flow::Continue => {}
                     }
                 }
                 notification = client.next_notification() => {
@@ -144,6 +150,8 @@ enum Asking {
 enum Flow {
     Continue,
     Quit,
+    /// Go on in another session (a conversation rewound into a fork).
+    Switch(String),
 }
 
 /// The terminal side of a chat: whether a turn runs, the permission questions waiting for an
@@ -316,6 +324,41 @@ impl Chat {
                     .await;
                 if let Err(error) = result {
                     println!("{error}");
+                }
+            }
+            Some(Command::Rewind(None)) => {
+                let result = client
+                    .call::<SessionCheckpoints>(SessionCheckpointsParams {
+                        session_id: session_id.to_string(),
+                    })
+                    .await;
+                match result {
+                    Ok(result) => print!("{}", describe_checkpoints(&result)),
+                    Err(error) => println!("{error}"),
+                }
+            }
+            Some(Command::Rewind(Some((checkpoint, mode)))) => {
+                let result = client
+                    .call::<SessionRewind>(SessionRewindParams {
+                        session_id: session_id.to_string(),
+                        checkpoint,
+                        mode,
+                    })
+                    .await;
+                match result {
+                    Ok(result) => {
+                        print!("{}", describe_rewind(&result));
+                        if let Some(forked) = result.session_id {
+                            client
+                                .call::<SessionSubscribe>(SessionSubscribeParams {
+                                    session_id: forked.clone(),
+                                })
+                                .await?;
+                            self.prompt();
+                            return Ok(Flow::Switch(forked));
+                        }
+                    }
+                    Err(error) => println!("{error}"),
                 }
             }
             Some(Command::Steer(text)) => self.send(client, session_id, text, true).await?,
@@ -714,9 +757,84 @@ enum Command {
     /// `session.suggestion_respond` names it.
     Suggestion(&'static str),
     Control(Control),
+    /// `/rewind`: the session's checkpoints. `/rewind <n> [files|conversation|both]`: rewinds
+    /// to checkpoint `n` (both by default).
+    Rewind(Option<(u32, RewindMode)>),
+}
+
+/// `/rewind`, `/rewind <n>`, or `/rewind <n> <mode>`; `None` when malformed.
+fn rewind_command(rest: &str) -> Option<Option<(u32, RewindMode)>> {
+    let mut words = rest.split_whitespace();
+    let Some(number) = words.next() else {
+        return Some(None);
+    };
+    let number = number.trim_start_matches('#').parse().ok()?;
+    let mode = match words.next() {
+        None | Some("both") => RewindMode::Both,
+        Some("files") => RewindMode::Files,
+        Some("conversation") => RewindMode::Conversation,
+        Some(_) => return None,
+    };
+    words.next().is_none().then_some(Some((number, mode)))
+}
+
+/// The checkpoints as `/rewind` lists them.
+fn describe_checkpoints(result: &SessionCheckpointsResult) -> String {
+    if !result.available {
+        return format!(
+            "No checkpoints: {}.\n",
+            result.reason.as_deref().unwrap_or("not available")
+        );
+    }
+    if result.checkpoints.is_empty() {
+        return "No checkpoints yet: one is recorded before each turn that changes files.\n".into();
+    }
+    let mut out = String::new();
+    for checkpoint in &result.checkpoints {
+        let what = if checkpoint.kind == "rewind" {
+            "(the files before a rewind)".to_string()
+        } else {
+            let line = checkpoint.prompt.lines().next().unwrap_or_default();
+            let mut shown: String = line.chars().take(70).collect();
+            if shown.len() < line.len() {
+                shown.push('…');
+            }
+            format!("before \"{shown}\"")
+        };
+        out.push_str(&format!("  #{} {what}\n", checkpoint.number));
+    }
+    out.push_str(
+        "/rewind <n> puts the files and the conversation back (the conversation in a new \
+         session); add files or conversation for one of them.\n",
+    );
+    out
+}
+
+/// What a rewind did, as `/rewind <n>` reports it.
+fn describe_rewind(result: &SessionRewindResult) -> String {
+    let mut out = String::new();
+    if let Some(undo) = result.undo_checkpoint {
+        out.push_str(&format!(
+            "Files rewound: {} restored, {} removed. /rewind {undo} files undoes it.\n",
+            result.restored.len(),
+            result.removed.len()
+        ));
+    }
+    if let Some(session) = &result.session_id {
+        out.push_str(&format!(
+            "Conversation rewound into session {session}; continuing there.\n"
+        ));
+        if let Some(prompt) = result.prompt.as_deref().filter(|p| !p.is_empty()) {
+            out.push_str(&format!("The rewound message was: {prompt}\n"));
+        }
+    }
+    out
 }
 
 fn command(text: &str) -> Option<Command> {
+    if text == "/rewind" || text.starts_with("/rewind ") {
+        return rewind_command(&text["/rewind".len()..]).map(Command::Rewind);
+    }
     match text {
         "/context" => return Some(Command::Context),
         "/queue" => return Some(Command::Queue),
@@ -1072,6 +1190,25 @@ mod tests {
         assert!(describe_effort("max", true).ends_with("max."));
         assert!(describe_effort("low", false).contains("cannot reason"));
         assert_eq!(control_command("tell me about /model x"), None);
+    }
+
+    #[test]
+    fn rewind_commands_take_a_checkpoint_and_a_mode() {
+        assert_eq!(command("/rewind"), Some(Command::Rewind(None)));
+        assert_eq!(
+            command("/rewind 3"),
+            Some(Command::Rewind(Some((3, RewindMode::Both))))
+        );
+        assert_eq!(
+            command("/rewind #2 files"),
+            Some(Command::Rewind(Some((2, RewindMode::Files))))
+        );
+        assert_eq!(
+            command("/rewind 2 conversation"),
+            Some(Command::Rewind(Some((2, RewindMode::Conversation))))
+        );
+        assert_eq!(command("/rewind x"), None);
+        assert_eq!(command("/rewind 2 all"), None);
     }
 
     #[test]

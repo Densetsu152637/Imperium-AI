@@ -91,6 +91,9 @@ pub struct SessionConfig {
     /// Set for a session a schedule or a project agent started: its local model calls rank below
     /// the user's, and it pauses at a step boundary while the machine is busy.
     pub background: Option<Background>,
+    /// Told when each root turn starts and ends, so the daemon can checkpoint the session's
+    /// files (`None`: no checkpoints).
+    pub checkpoints: Option<Arc<dyn crate::TurnCheckpoints>>,
 }
 
 /// The answer to a model switch or a compaction.
@@ -691,6 +694,7 @@ async fn run(
         slot,
         effort,
     } = started;
+    let checkpoints = config.checkpoints.clone();
     for message in config.notices {
         emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
     }
@@ -901,6 +905,10 @@ async fn run(
                 ),
             }
         }
+        if let Some(checkpoints) = checkpoints.clone() {
+            let prompt = text.clone();
+            let _ = tokio::task::spawn_blocking(move || checkpoints.before_turn(&prompt)).await;
+        }
         let recalled = shared.recall(&text);
         let handles_open = {
             let turn = root.run_turn_with(text, attachments, recalled);
@@ -938,6 +946,9 @@ async fn run(
             handles_open
         };
         save_messages(&shared, &messages_path, root.messages());
+        if let Some(checkpoints) = checkpoints.clone() {
+            let _ = tokio::task::spawn_blocking(move || checkpoints.after_turn()).await;
+        }
         if !handles_open {
             return;
         }

@@ -171,6 +171,7 @@ fn start(index: usize, local: Arc<dyn LocalModels>, dir: &std::path::Path) -> Se
         instructions: None,
         max_steps: 6,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),

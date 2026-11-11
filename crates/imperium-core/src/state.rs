@@ -176,6 +176,8 @@ pub struct DaemonState {
     measurements: model_awareness::Measurements,
     /// Model card vectors for `list_models` searches by meaning.
     model_cards: imperium_memory::models::CardIndex,
+    /// Each running session's checkpoints, when it records them.
+    checkpoints: Mutex<HashMap<String, Arc<crate::checkpoints::SessionCheckpoints>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -256,6 +258,7 @@ impl DaemonState {
             session_index: OnceLock::new(),
             measurements: model_awareness::Measurements::default(),
             model_cards: imperium_memory::models::CardIndex::new(),
+            checkpoints: Mutex::new(HashMap::new()),
         });
         state.apply_load_view();
         if let Some(local) = state.local.get() {
@@ -1392,13 +1395,34 @@ impl DaemonState {
         }));
         let model_spec = model.as_ref().map(|model| model.spec.clone());
         let effort = options.effort.unwrap_or(self.settings().models.effort);
+        let journal_path = self
+            .paths
+            .data_dir()
+            .join("sessions")
+            .join(format!("{id}.jsonl"));
+        // Remembered sessions on this machine checkpoint their repositories' files before each
+        // turn that changes them.
+        let checkpoints =
+            (remember && !remote && self.settings().sessions.checkpoints).then(|| {
+                Arc::new(crate::checkpoints::SessionCheckpoints::new(
+                    self.me.clone(),
+                    self.paths.data_dir(),
+                    &id,
+                    journal_path.clone(),
+                    workspace
+                        .roots()
+                        .into_iter()
+                        .map(Path::to_path_buf)
+                        .collect(),
+                ))
+            });
         let session = Session::spawn(SessionConfig {
             effort,
-            journal_path: self
-                .paths
-                .data_dir()
-                .join("sessions")
-                .join(format!("{id}.jsonl")),
+            journal_path,
+            checkpoints: checkpoints.clone().map(|checkpoints| {
+                let hook: Arc<dyn imperium_engine::TurnCheckpoints> = checkpoints;
+                hook
+            }),
             id: id.clone(),
             workspace,
             model,
@@ -1473,6 +1497,12 @@ impl DaemonState {
             );
         }
         let session = Arc::new(session);
+        if let Some(checkpoints) = checkpoints {
+            self.checkpoints
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id.clone(), checkpoints);
+        }
         self.placements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1584,6 +1614,8 @@ impl DaemonState {
         let _ = std::fs::remove_dir_all(crate::attachments::store_dir(self.paths.data_dir(), id));
         let sessions = self.paths.data_dir().join("sessions");
         let _ = std::fs::remove_file(sessions.join(format!("{id}.meta.json")));
+        // So do its checkpoints: their refs in each repository and their records.
+        crate::checkpoints::forget(self.paths.data_dir(), id);
         // Its agents' kept state goes with it.
         let agents = imperium_engine::agents_dir(&sessions.join(format!("{id}.jsonl")));
         if agents.exists()
@@ -1932,6 +1964,75 @@ impl DaemonState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id);
+        self.checkpoints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+    }
+
+    /// A running session's checkpoints, when it records them.
+    pub(crate) fn checkpoints_of(
+        &self,
+        id: &str,
+    ) -> Option<Arc<crate::checkpoints::SessionCheckpoints>> {
+        self.checkpoints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+
+    /// Starts a new session from session `id` as it was when its journal was `journal_bytes`
+    /// long, with `messages` (its saved root conversation then) as its conversation. Returns the
+    /// new session's id; the original is left as it is.
+    pub(crate) fn fork_session(
+        &self,
+        id: &str,
+        journal_bytes: u64,
+        messages: Option<Vec<u8>>,
+    ) -> Result<String, String> {
+        let sessions = self.paths.data_dir().join("sessions");
+        let mut meta: serde_json::Value = std::fs::read_to_string(self.meta_path(id))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .ok_or("the session is not recorded, so it cannot be forked")?;
+        let journal = std::fs::read(sessions.join(format!("{id}.jsonl")))
+            .map_err(|error| format!("could not read the session's journal: {error}"))?;
+        let limit = usize::try_from(journal_bytes)
+            .unwrap_or(usize::MAX)
+            .min(journal.len());
+        // Whole lines only.
+        let cut = journal[..limit]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |at| at + 1);
+        let new_id = new_session_id().map_err(|error| error.to_string())?;
+        let new_journal = sessions.join(format!("{new_id}.jsonl"));
+        std::fs::write(&new_journal, &journal[..cut]).map_err(|error| error.to_string())?;
+        if let Some(messages) = messages {
+            std::fs::write(imperium_engine::messages_path(&new_journal), messages)
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(fields) = meta.as_object_mut() {
+            let title = fields
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .filter(|title| !title.trim().is_empty())
+                .map(|title| format!("{title} (rewound)"));
+            if let Some(title) = title {
+                fields.insert("title".into(), title.into());
+            }
+            fields.insert("pinned".into(), false.into());
+            fields.insert("forked_from".into(), id.into());
+            fields.remove("deferred_brief");
+        }
+        std::fs::write(self.meta_path(&new_id), meta.to_string())
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = self.resume_from_meta(&new_id, &meta, &new_journal) {
+            let _ = std::fs::remove_file(self.meta_path(&new_id));
+            return Err(error.to_string());
+        }
+        Ok(new_id)
     }
 
     pub fn session(&self, id: &str) -> Option<Arc<Session>> {

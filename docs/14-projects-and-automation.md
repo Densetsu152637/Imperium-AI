@@ -174,6 +174,64 @@ max_disk_gb = 50                # per project; new worktrees are refused above t
 - Non-Git projects can use copy-on-write snapshots (where the filesystem supports them) or run
   writers sequentially.
 
+### Checkpoints and rewinding
+
+**Implemented: git-based checkpoints** (roadmap item 6). Checkpoints are kept in git, not in a
+snapshot store of their own. Before each root turn, the daemon lists the files of every git
+repository the session's folders are in (an environment folder, a session's own worktree, or a
+linked worktree, each by its own working tree) and hashes them into the repository's object
+store; after the turn it lists them again, and when anything changed it keeps the "before"
+state as a commit on a private ref:
+
+- `refs/imperium/checkpoints/<session>/<n>` (`<n>-<k>` for the session's further
+  repositories), whose parent is `HEAD` as it was, authored by `Imperium`. Private refs are not
+  branches or tags: `git push` does not send them and `git log --all` shows them, which is a
+  way to look at one by hand.
+- It holds every file git would see: tracked files and untracked files that are not ignored,
+  byte for byte (no clean or smudge filters, no line-ending conversion). Ignored files
+  (`node_modules/`, build output) and submodules' own files are not in it.
+- The repository's index, `HEAD`, and branches are never touched: the commit is built from a
+  temporary index of the daemon's own (`<data>/sessions/<id>.checkpoints/index.tmp`) with
+  plumbing (`ls-files`, `hash-object --no-filters`, `update-index --index-info`,
+  `write-tree`, `commit-tree`, `update-ref`). Like worktree discovery, nothing a repository's
+  config names runs: every git call turns hooks and fsmonitor off (`-c
+  core.hooksPath=/dev/null`, `NUL` on Windows, and `-c core.fsmonitor=false`), signs nothing,
+  uses no pager, prompt, diff driver, or filter, and drops git's own environment variables.
+- Its record, `<data>/sessions/<id>.checkpoints/<n>.json`, links it to the journal (its length
+  when the turn started) and names the turn's message; `<n>.messages.json` keeps the root
+  conversation as it was, so the conversation can be rewound too.
+- Unchanged files are not read again (sizes and modification times are remembered), so a turn
+  in a large repository costs one listing and the files that changed; the first turn hashes
+  every file once. Large untracked files that are not ignored are copied into the repository's
+  object store like any other.
+- `sessions.checkpoints = false` turns them off. Folders outside git, sessions on a remote
+  runtime whose folders are not on this machine, and project-agent sessions have no checkpoints;
+  `session.checkpoints` then says why (`available: false, reason`). Deleting a session deletes
+  its refs and records.
+
+`session.checkpoints { session_id }` lists them, oldest first (`number`, `at_unix_ms`, `kind`,
+`prompt`, `repos: [{ root, commit, reference }]`, `conversation`), and `session.checkpoint`
+announces each new one to every client.
+
+**Rewinding.** `session.rewind { session_id, checkpoint, mode }` (`/rewind` in `imperium
+chat`) puts a session back, refused while a turn is running. `mode` is one of:
+
+- `files`: every file git would see is put back to the checkpoint: changed and deleted files
+  (tracked or untracked) are written back, files added since are removed, along with folders
+  they leave empty. Ignored files, the index, `HEAD`, and branches are left as they are, so
+  commits made since stay; `git status` shows the rewound files as changes against them. The
+  files as they were are first kept as a `rewind` checkpoint, and rewinding to it (files only)
+  undoes the rewind.
+- `conversation`: the conversation is forked at the checkpoint into a new session (titled
+  "… (rewound)", in the same folders, worktrees, and environment) whose transcript and
+  conversation end just before that turn's message; the message comes back in the result
+  (`prompt`) to edit and send again. The original session is kept as it was, so nothing said is
+  lost; archive or delete it once the fork is right. Subagents of the original are not carried
+  into the fork.
+- `both` (the default): files, then the conversation.
+
+The result lists the files written back and removed, the undo checkpoint, and the new session.
+
 ## Project agent
 
 A long-lived agent per project that watches for work and **dispatches it into new sessions**.
