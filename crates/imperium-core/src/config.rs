@@ -5,8 +5,11 @@
 use imperium_config::{SetError, SettingState};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
-    ConfigDescribeResult, ConfigEntry, ConfigSetParams, ConfigSetResult,
+    ConfigDescribeResult, ConfigEntry, ConfigSetParams, ConfigSetResult, PersonalitiesListResult,
+    PersonalitySummary,
 };
+use imperium_workflow::DEFAULT_PERSONALITY;
+use imperium_workflow::personality::Origin;
 
 use crate::state::DaemonState;
 
@@ -51,6 +54,28 @@ pub fn set(state: &DaemonState, params: ConfigSetParams) -> Result<ConfigSetResu
         overridden: updated.overridden(),
         entry: entry(&updated),
     })
+}
+
+/// `personalities.list`: what `policy.personality` may name, each id as the file that wins.
+pub fn personalities(state: &DaemonState) -> PersonalitiesListResult {
+    PersonalitiesListResult {
+        personalities: state
+            .personality_sources()
+            .list()
+            .into_iter()
+            .map(|info| PersonalitySummary {
+                source: info.origin.kind().into(),
+                pack: match info.origin {
+                    Origin::Pack(name) => Some(name),
+                    Origin::Local | Origin::BuiltIn => None,
+                },
+                id: info.id,
+                name: info.name,
+                overrides: info.overrides,
+            })
+            .collect(),
+        default: DEFAULT_PERSONALITY.into(),
+    }
 }
 
 fn entry(state: &SettingState) -> ConfigEntry {

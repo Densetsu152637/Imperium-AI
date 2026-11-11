@@ -215,6 +215,7 @@ fn start(dir: &std::path::Path, base_url: String, local: bool) -> Session {
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: Some(INSTRUCTIONS.into()),
+        personality: None,
         max_steps: 5,
         background: None,
         checkpoints: None,

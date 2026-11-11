@@ -2823,6 +2823,50 @@ pub struct ConfigSetResult {
     pub overridden: bool,
 }
 
+/// `personalities.list`: the personalities `policy.personality` may name, for a picker. Local
+/// personalities (`<config>/personalities/`) come first in precedence, then workflow packs',
+/// then the built-in ones; each id is listed once, as the one that wins.
+#[derive(Debug)]
+pub struct PersonalitiesList;
+
+impl Method for PersonalitiesList {
+    const NAME: &'static str = "personalities.list";
+    type Params = PersonalitiesListParams;
+    type Result = PersonalitiesListResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PersonalitiesListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PersonalitiesListResult {
+    /// Sorted by name.
+    pub personalities: Vec<PersonalitySummary>,
+    /// The id used when `policy.personality` is unset or names one that is not found.
+    pub default: String,
+}
+
+/// One selectable personality.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PersonalitySummary {
+    /// The file stem, which `policy.personality` takes.
+    pub id: String,
+    /// Its display name, from the file's heading.
+    pub name: String,
+    /// Where the winning file is.
+    #[ts(type = "\"local\" | \"pack\" | \"builtin\"")]
+    pub source: String,
+    /// For `pack`: the pack's folder name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pack: Option<String>,
+    /// A local personality that hides a pack or built-in one with the same id.
+    pub overrides: bool,
+}
+
 // ---- Changes agents make to the app config ----
 
 /// Where an installed mod, plugin, or skill came from, recorded in its folder as
