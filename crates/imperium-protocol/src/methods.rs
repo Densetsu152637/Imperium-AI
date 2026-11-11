@@ -535,6 +535,9 @@ pub struct ReviewHunk {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ReviewFile {
+    /// Names the file as it is now (both sides), for a whole-file `session.review_hunk`
+    /// (`hunk: "file:<id>"`); a file that changed since it was listed no longer matches.
+    pub id: String,
     /// The repository's top folder.
     pub repo: String,
     /// Relative to `repo`, with `/`.
@@ -598,7 +601,7 @@ pub enum ReviewAction {
     Reject,
 }
 
-/// `session.review_hunk`: accepts or rejects one hunk, or a whole file with `hunk: "file"`.
+/// `session.review_hunk`: accepts or rejects one hunk, or a whole file with `hunk: "file:<id>"`.
 /// Refused while a turn is running.
 #[derive(Debug)]
 pub struct SessionReviewHunk;
@@ -618,7 +621,7 @@ pub struct SessionReviewHunkParams {
     pub since: Option<u32>,
     pub repo: String,
     pub path: String,
-    /// A hunk's `id`, or `file` for the whole file.
+    /// A hunk's `id`, or `file:<id>` with the file's `id` for the whole file.
     pub hunk: String,
     pub action: ReviewAction,
 }

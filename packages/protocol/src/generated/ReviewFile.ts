@@ -6,6 +6,11 @@ import type { ReviewHunk } from "./ReviewHunk";
  */
 export type ReviewFile = { 
 /**
+ * Names the file as it is now (both sides), for a whole-file `session.review_hunk`
+ * (`hunk: "file:<id>"`); a file that changed since it was listed no longer matches.
+ */
+id: string, 
+/**
  * The repository's top folder.
  */
 repo: string, 

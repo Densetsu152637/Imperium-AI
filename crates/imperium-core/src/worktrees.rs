@@ -7,22 +7,40 @@
 //! `.git/info/exclude` so it is never committed. Removing one keeps its branch.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use imperium_protocol::methods::SessionWorktree;
 
-/// Runs git in `dir`, returning its trimmed output or its error message.
+/// Runs git in `dir` with nothing from the repository's config able to run (hooks and
+/// fsmonitor off, no network; [`crate::safe_git`]), returning its trimmed output or its error
+/// message.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(|error| format!("could not run git: {error}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    crate::safe_git::run(crate::safe_git::command(dir).args(args))
+        .map(|out| crate::safe_git::text(&out))
+}
+
+/// Refuses a repository whose own config names checkout filter drivers: `worktree add`
+/// checks files out, which would run them in the daemon.
+fn check_filters(repo: &Path) -> Result<(), String> {
+    let found = git(
+        repo,
+        &[
+            "config",
+            "--local",
+            "--includes",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..+\.(smudge|process)$",
+        ],
+    )
+    .unwrap_or_default();
+    if found.is_empty() {
+        Ok(())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        Err(format!(
+            "the repository's own config names checkout filters ({}), which Imperium does not \
+             run; add the worktree from a terminal",
+            found.lines().collect::<Vec<_>>().join(", ")
+        ))
     }
 }
 
@@ -156,7 +174,8 @@ fn make(repo: &Path, branch: &str, worktree_dir: Option<&Path>) -> Result<String
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let shown = plain(&path);
-    git(repo, &["worktree", "add", "-b", branch, &shown])?;
+    check_filters(repo)?;
+    git(repo, &["worktree", "add", "-b", branch, "--", &shown])?;
     Ok(shown)
 }
 
@@ -175,12 +194,36 @@ pub fn apply(folders: &[String], worktrees: &[SessionWorktree]) -> Vec<String> {
 
 /// Removes the worktrees `records` name (one per repository, whatever is in them), keeping
 /// their branches. Returns the folders removed and the failures.
+fn registered_root(repo: &Path, path: &Path) -> Result<String, String> {
+    let listed = git(repo, &["worktree", "list", "--porcelain"])?;
+    let wanted = path
+        .canonicalize()
+        .map_err(|error| format!("the worktree is gone: {error}"))?;
+    listed
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        // The first is the main checkout, which is never removed.
+        .skip(1)
+        .filter_map(|tree| {
+            let canonical = Path::new(tree).canonicalize().ok()?;
+            wanted
+                .starts_with(&canonical)
+                .then(|| (canonical.components().count(), plain(&canonical)))
+        })
+        .max()
+        .map(|(_, root)| root)
+        .ok_or_else(|| "not a linked worktree of its repository".to_string())
+}
+
 pub fn remove(records: &[SessionWorktree]) -> (Vec<String>, Vec<String>) {
     let mut removed: Vec<String> = Vec::new();
     let mut failed = Vec::new();
     for record in records {
-        let root = match git(Path::new(&record.path), &["rev-parse", "--show-toplevel"]) {
-            Ok(root) => plain(Path::new(&root)),
+        // The worktree is looked up in the repository's own list (never by asking git inside
+        // the session's folder, whose `.git` the session could have rewritten): the linked
+        // worktree that holds the recorded path.
+        let root = match registered_root(Path::new(&record.repo), Path::new(&record.path)) {
+            Ok(root) => root,
             Err(error) => {
                 failed.push(format!("{}: {error}", record.path));
                 continue;
@@ -194,7 +237,7 @@ pub fn remove(records: &[SessionWorktree]) -> (Vec<String>, Vec<String>) {
         }
         match git(
             Path::new(&record.repo),
-            &["worktree", "remove", "--force", &root],
+            &["worktree", "remove", "--force", "--", &root],
         ) {
             Ok(_) => removed.push(root),
             Err(error) => failed.push(format!("{root}: {error}")),

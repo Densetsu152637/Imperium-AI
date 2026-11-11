@@ -108,6 +108,10 @@ pub(crate) fn working_files(top: &Path, cache: &mut HashCache) -> Result<Files, 
             continue;
         }
         let full = top.join(&path);
+        // A path under a linked folder could lead out of the working tree; it is not read.
+        if !no_links_between(top, &full) {
+            continue;
+        }
         let Ok(meta) = std::fs::symlink_metadata(&full) else {
             continue;
         };
@@ -706,13 +710,35 @@ impl SessionCheckpoints {
         let undo = self.keep_now(&mut inner, &repos)?;
         let mut restored = Vec::new();
         let mut removed = Vec::new();
+        // Every repository is tried; a failure in one does not leave the rest unrewound.
+        let mut errors = Vec::new();
         for repo in &record.checkpoint.repos {
             let top = PathBuf::from(&repo.root);
-            let target = commit_files(&top, &repo.commit)?;
             let cache = inner.caches.entry(top.clone()).or_default();
-            let (written, gone) = restore(&top, &target, cache)?;
-            restored.extend(written);
-            removed.extend(gone);
+            match commit_files(&top, &repo.commit).and_then(|target| restore(&top, &target, cache))
+            {
+                Ok((written, gone)) => {
+                    restored.extend(written);
+                    removed.extend(gone);
+                }
+                Err(error) => errors.push(format!("{}: {error}", repo.root)),
+            }
+        }
+        if !errors.is_empty() {
+            return Err(format!(
+                "the files were only partly rewound ({}; {} restored, {} removed elsewhere: {}); \
+                 rewinding the files to checkpoint {} undoes it",
+                errors.join("; "),
+                restored.len(),
+                removed.len(),
+                restored
+                    .iter()
+                    .chain(&removed)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                undo.number
+            ));
         }
         Ok((undo.number, restored, removed))
     }
@@ -888,4 +914,51 @@ pub(crate) fn rewind(
         result.prompt = Some(record.checkpoint.prompt.clone());
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    fn git(dir: &std::path::Path, args: &[&str]) -> (bool, String) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        )
+    }
+
+    /// An index entry under a folder that is a link out of the working tree is not read.
+    #[cfg(unix)]
+    #[test]
+    fn snapshots_do_not_follow_linked_folders_out_of_the_tree() {
+        use super::*;
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "private key\n").unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let top = repo.path().canonicalize().unwrap();
+        git(&top, &["init", "-q"]);
+        std::fs::write(top.join("a.txt"), "a\n").unwrap();
+        git(&top, &["add", "a.txt"]);
+        // `d/secret` in the index without touching the disk, then `d` made a link outside.
+        let (_, empty) = git(&top, &["hash-object", "-w", "/dev/null"]);
+        let entry = format!("100644,{empty},d/secret");
+        git(&top, &["update-index", "--add", "--cacheinfo", &entry]);
+        std::os::unix::fs::symlink(outside.path(), top.join("d")).unwrap();
+        let files = working_files(&top, &mut HashCache::default()).unwrap();
+        assert!(files.contains_key("a.txt"));
+        assert!(
+            !files.contains_key("d/secret"),
+            "nothing is read through the link"
+        );
+        let secret = outside.path().join("secret").display().to_string();
+        let (_, id) = git(&top, &["hash-object", &secret]);
+        let (stored, _) = git(&top, &["cat-file", "-e", &id]);
+        assert!(!stored, "the outside file was not stored");
+    }
 }

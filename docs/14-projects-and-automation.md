@@ -111,7 +111,12 @@ session records its worktrees (`worktrees: [{ folder, path, branch, repo }]` in
 resumes after a restart, and `session.delete { session_id, remove_worktrees }` (`imperium
 session delete <id> --remove-worktrees`) stops and forgets the session and removes its
 worktrees, keeping their branches. Worktrees are made only for local folders (not remote
-runtimes).
+runtimes). The daemon's git runs with hooks and fsmonitor off (no `post-checkout` hook runs),
+and a repository whose own config names checkout filters (`filter.*.smudge` or
+`filter.*.process`) is refused rather than checked out with them. Removing a session's worktree
+looks it up in the repository's own `git worktree list` (the linked worktree holding the
+recorded folder), never by asking git inside the session's folder, whose `.git` the session
+could have rewritten.
 
 **Implemented: project worktrees by default.** An environment's sessions can also use the git
 worktrees of the repositories its folders are in, with no folders or grants to add: the main
@@ -242,24 +247,45 @@ The checkpoints are also what a session's changes are reviewed against
   `modified`, `deleted`) and unified diff hunks (three lines of context) computed by the daemon
   from the stored contents, so no diff driver or filter runs. Only files a turn changed are
   listed: each `turn` checkpoint records the files its turn changed, so edits you make between
-  turns are not taken for the session's. Binary files and files over 2 MiB are listed without
-  hunks.
+  turns are not taken for the session's. Binary files and files over 2 MiB (sized with
+  `cat-file -s` before anything is read) are listed without hunks.
 - `session.review_hunk { repo, path, hunk, action }` accepts a hunk (it is kept and no longer
-  shown: it joins the review's base, a commit on `refs/imperium/review/<session>` whose parent is
-  the checkpoint) or rejects it (the hunk is reverted in the working tree; an emptied file the
-  checkpoint did not have is removed). `hunk: "file"` acts on the whole file. A hunk is named by
-  a digest of its place and lines, so one that changed since it was shown is refused.
+  shown) or rejects it (the hunk is reverted in the working tree; an emptied file the checkpoint
+  did not have is removed). Accepting keeps the working tree's file mode, rejecting puts the
+  checkpoint's back. `hunk: "file:<id>"`, with the file's `id` from `session.review`, acts on
+  the whole file (contents and mode). Hunks are named by a digest of their place and lines, and
+  files by a digest of both sides, so a hunk or file that changed since it was shown is
+  refused; so is a file no turn of the session changed.
+- Accepted hunks build the review's base: each acceptance is a commit on
+  `refs/imperium/review/<session>` (`-<k>` for further repositories) whose parent is the base
+  before it, so the bases form a chain from the checkpoint. The base belongs to the chosen
+  checkpoint: choosing another *since* starts a fresh review from that checkpoint, and the
+  acceptances made against the previous one are dropped (the files themselves are unchanged).
 - `session.review_commit { repo, message }` commits, on the repository's current branch, every
   file the session changed since the checkpoint as it now is (accepted hunks kept, rejected ones
   reverted, unreviewed ones included), and nothing else you have staged or changed:
-  `git add -A -- <files>` and `git commit --no-verify -- <files>` with hooks and fsmonitor off.
-  A repository whose own config (`.git/config` and its includes, or the worktree's config) names
-  filter drivers or a signing program is refused, so nothing a repository's config names runs
-  in the daemon; your global config (Git LFS, signing) applies as usual. The commit message is
-  prefilled with the session's title (written by its model) and the files.
+  `git add -A -- <files>` and `git commit --no-verify -- <files>` with hooks and fsmonitor off
+  and paths taken literally (`GIT_LITERAL_PATHSPECS`), so a file named `[ab].txt` never matches
+  `a.txt`. The commit message is prefilled with the session's title (written by its model) and
+  the files.
 - `session.review_pull_request { repo, title, body, base? }` pushes the current branch to
-  `origin` (`push -u`) and runs `gh pr create`; without `gh` on the PATH it returns the two
-  commands to run instead.
+  `origin` (`git push -u -- origin refs/heads/<branch>`, network transports only: `file` and
+  `ext` are refused) and runs `gh pr create` with hooks and fsmonitor off for the git it starts;
+  without `gh` on the PATH it returns the two commands to run instead, quoted for a POSIX shell.
+  A branch (or base) starting with `-` is refused.
+- **Refused repository config.** Committing, pushing, and opening a pull request are refused
+  when the repository's own config (`.git/config` with its includes, or the worktree's config)
+  sets any of: `filter.*.clean`, `filter.*.smudge`, `filter.*.process`, `gpg.*program`,
+  `gpg.ssh.defaultKeyCommand`, `core.hooksPath`, `core.sshCommand`, `core.gitProxy`,
+  `core.askPass`, `core.fsmonitor`, `core.alternateRefsCommand`, `credential.*`,
+  `remote.*.receivepack`, `remote.*.uploadpack`, `remote.*.vcs`, `url.*.insteadOf`,
+  `url.*.pushInsteadOf`, `protocol.*`, or `commit.gpgSign = true` when your global config does
+  not turn signing on. Each would make git run a program or reach a place the repository chose;
+  Imperium runs nothing a repository's config names, so these are done from a terminal. Your
+  global and system config (Git LFS, signing, credential helpers) apply as usual. Every git call
+  the daemon makes for checkpoints and the review also sets `GIT_NO_LAZY_FETCH=1` and
+  `GIT_ALLOW_PROTOCOL=none` (the push names its own network list), so a partial clone never
+  fetches a missing object through a transport its config names.
 - Committing and opening a pull request are gated by the permission rules `git_commit` and
   `open_pull_request` ([rules](05-tools-and-isolation.md#rules)): without a rule they return
   `needs_confirmation` until called again with `confirmed: true` (the pane asks), an `allow`

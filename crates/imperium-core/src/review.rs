@@ -221,18 +221,71 @@ pub(crate) fn suggested_message(title: &str, paths: &[String]) -> String {
     message
 }
 
-/// Contents as stored; empty for a missing file.
-fn contents(top: &Path, entry: Option<&Entry>) -> Result<Vec<u8>, String> {
-    match entry {
-        Some(entry) => blob(top, &entry.sha),
-        None => Ok(Vec::new()),
+/// Contents as stored, for a diff: empty for a missing file, `None` for a blob over 2 MiB (its
+/// size is asked first, so a large one is never read).
+fn contents(top: &Path, entry: Option<&Entry>) -> Result<Option<Vec<u8>>, String> {
+    let Some(entry) = entry else {
+        return Ok(Some(Vec::new()));
+    };
+    let size: u64 = text(&run(command(top).args(["cat-file", "-s", &entry.sha]))?)
+        .parse()
+        .map_err(|_| format!("git cat-file -s gave no size for {}", entry.sha))?;
+    if size > MAX_DIFF_BYTES as u64 {
+        return Ok(None);
     }
+    blob(top, &entry.sha).map(Some)
+}
+
+/// Both sides as text, when neither is binary or too large.
+fn texts(old: Option<Vec<u8>>, new: Option<Vec<u8>>) -> Option<(String, String)> {
+    let (old, new) = (old?, new?);
+    if is_binary(&old) || is_binary(&new) {
+        return None;
+    }
+    Some((String::from_utf8(old).ok()?, String::from_utf8(new).ok()?))
 }
 
 fn is_binary(bytes: &[u8]) -> bool {
     bytes.len() > MAX_DIFF_BYTES
         || bytes[..bytes.len().min(8000)].contains(&0)
         || std::str::from_utf8(bytes).is_err()
+}
+
+/// A file's id: a digest of its path and both sides, so a whole-file action on a file that
+/// changed since it was shown misses.
+fn file_id(path: &str, base: Option<&Entry>, working: Option<&Entry>) -> String {
+    let side = |entry: Option<&Entry>| {
+        entry.map_or_else(|| "-".to_string(), |e| format!("{} {}", e.mode, e.sha))
+    };
+    let mut digest = Sha256::new();
+    digest.update(format!("{path}\n{}\n{}", side(base), side(working)).as_bytes());
+    digest
+        .finalize()
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The mode a file gets: accepting keeps the working tree's (a mode change is part of what is
+/// accepted), rejecting puts the base's back.
+fn result_mode(action: ReviewAction, base: Option<&Entry>, working: Option<&Entry>) -> String {
+    let (first, second) = match action {
+        ReviewAction::Accept => (working, base),
+        ReviewAction::Reject => (base, working),
+    };
+    first
+        .or(second)
+        .map_or_else(|| "100644".to_string(), |entry| entry.mode.clone())
+}
+
+/// A line's text without its ending (`\r\n`, `\n`, or a lone `\r`, as the diff splits them).
+fn line_text(value: &str) -> &str {
+    value
+        .strip_suffix("\r\n")
+        .or_else(|| value.strip_suffix('\n'))
+        .or_else(|| value.strip_suffix('\r'))
+        .unwrap_or(value)
 }
 
 /// A hunk as computed: its ranges in the old and new lines (0-based, end exclusive) and its
@@ -244,7 +297,10 @@ struct Hunk {
 }
 
 fn hunks(old: &str, new: &str) -> Vec<Hunk> {
-    let diff = TextDiff::configure().diff_lines(old, new);
+    hunks_of(&TextDiff::configure().diff_lines(old, new))
+}
+
+fn hunks_of(diff: &TextDiff<'_, '_, '_, str>) -> Vec<Hunk> {
     diff.grouped_ops(CONTEXT)
         .into_iter()
         .filter_map(|group| {
@@ -260,12 +316,7 @@ fn hunks(old: &str, new: &str) -> Vec<Hunk> {
                         ChangeTag::Delete => '-',
                         ChangeTag::Insert => '+',
                     };
-                    let value = change.value();
-                    let value = value
-                        .strip_suffix('\n')
-                        .map(|line| line.strip_suffix('\r').unwrap_or(line))
-                        .unwrap_or(value);
-                    lines.push(format!("{sign}{value}"));
+                    lines.push(format!("{sign}{}", line_text(change.value())));
                 }
             }
             Some(Hunk { old, new, lines })
@@ -318,19 +369,17 @@ fn review_file(repo: &RepoReview, path: &str) -> Result<ReviewFile, String> {
         (_, None) => "deleted",
         _ => "modified",
     };
-    let old = contents(&repo.top, base)?;
-    let new = contents(&repo.top, working)?;
-    let binary = is_binary(&old) || is_binary(&new);
-    let hunks = if binary {
-        Vec::new()
-    } else {
-        let (old, new) = (String::from_utf8_lossy(&old), String::from_utf8_lossy(&new));
-        hunks(&old, &new)
+    let both = texts(contents(&repo.top, base)?, contents(&repo.top, working)?);
+    let binary = both.is_none();
+    let hunks = match &both {
+        None => Vec::new(),
+        Some((old, new)) => hunks(old, new)
             .iter()
             .map(|hunk| to_wire(path, hunk))
-            .collect()
+            .collect(),
     };
     Ok(ReviewFile {
+        id: file_id(path, base, working),
         repo: repo.top.display().to_string(),
         path: path.to_string(),
         status: status.to_string(),
@@ -379,7 +428,7 @@ pub(crate) fn review(
         files,
         suggested_message: context.suggested_message,
         repos,
-        gh: find_gh().is_some(),
+        gh: find_gh(state).is_some(),
     })
 }
 
@@ -393,9 +442,44 @@ fn find_repo<'a>(context: &'a Context, repo: &str) -> Result<(usize, &'a RepoRev
         .ok_or_else(|| format!("{repo} is not one of the session's repositories"))
 }
 
-/// Splits text into lines with their endings, as the diff numbers them.
-fn lines(text: &str) -> Vec<&str> {
-    text.split_inclusive('\n').collect()
+/// Applies (accept: the base takes the hunk) or reverts (reject: the working text loses it) the
+/// hunk named `id`, using the diff's own lines, so the ranges match whatever line endings the
+/// text has. Returns the side's new text.
+fn apply_hunk(
+    path: &str,
+    old: &str,
+    new: &str,
+    id: &str,
+    action: ReviewAction,
+) -> Result<String, String> {
+    let diff = TextDiff::configure().diff_lines(old, new);
+    let found = hunks_of(&diff)
+        .into_iter()
+        .find(|hunk| hunk_id(path, hunk) == id)
+        .ok_or("that hunk has changed since it was shown; review the file again")?;
+    let (old_lines, new_lines) = (diff.old_slices(), diff.new_slices());
+    let parts: [&[&str]; 3] = match action {
+        ReviewAction::Accept => [
+            &old_lines[..found.old.start],
+            &new_lines[found.new.clone()],
+            &old_lines[found.old.end..],
+        ],
+        ReviewAction::Reject => [
+            &new_lines[..found.new.start],
+            &old_lines[found.old.clone()],
+            &new_lines[found.new.end..],
+        ],
+    };
+    Ok(parts.concat().concat())
+}
+
+/// Hashes `bytes` into the repository as they are.
+fn store(top: &Path, bytes: Vec<u8>) -> Result<String, String> {
+    run_with_input(
+        command(top).args(["hash-object", "-w", "--no-filters", "--stdin"]),
+        bytes,
+    )
+    .map(|out| text(&out))
 }
 
 /// `session.review_hunk`: accepts a hunk (it joins the review base) or rejects it (it is
@@ -416,79 +500,60 @@ pub(crate) fn act_on_hunk(
     if !safe_relative(path) {
         return Err(format!("{path}: not a path inside the repository"));
     }
+    if !repo.touched.contains(path) {
+        return Err(format!("{path} was not changed by this session's turns"));
+    }
     let (base, working) = (repo.base.get(path), repo.working.get(path));
     if base == working {
         return Err(format!("{path} has no changes to review"));
     }
-    let old = contents(&repo.top, base)?;
-    let new = contents(&repo.top, working)?;
-    // What the file becomes on the side that changes: `None` removes it.
-    let whole = params.hunk == "file";
-    let result: Option<Vec<u8>> = if whole {
+    // What the changing side's entry becomes: `None` removes the file.
+    let result: Option<Entry> = if let Some(id) = params.hunk.strip_prefix("file:") {
+        // The whole file, as it was when shown: accepting takes the working entry (contents
+        // and mode) into the base, rejecting puts the base's back.
+        if id != file_id(path, base, working) {
+            return Err(format!(
+                "{path} has changed since it was shown; review it again"
+            ));
+        }
         match params.action {
-            ReviewAction::Accept => working.map(|_| new.clone()),
-            ReviewAction::Reject => base.map(|_| old.clone()),
+            ReviewAction::Accept => working.cloned(),
+            ReviewAction::Reject => base.cloned(),
         }
     } else {
-        if is_binary(&old) || is_binary(&new) {
-            return Err(format!("{path} is binary: accept or reject the whole file"));
-        }
-        let (old_text, new_text) = (String::from_utf8_lossy(&old), String::from_utf8_lossy(&new));
-        let found = hunks(&old_text, &new_text)
-            .into_iter()
-            .find(|hunk| hunk_id(path, hunk) == params.hunk)
-            .ok_or("that hunk has changed since it was shown; review the file again")?;
-        let (old_lines, new_lines) = (lines(&old_text), lines(&new_text));
-        let joined = match params.action {
-            ReviewAction::Accept => [
-                &old_lines[..found.old.start],
-                &new_lines[found.new.clone()],
-                &old_lines[found.old.end..],
-            ]
-            .concat()
-            .concat(),
-            ReviewAction::Reject => [
-                &new_lines[..found.new.start],
-                &old_lines[found.old.clone()],
-                &new_lines[found.new.end..],
-            ]
-            .concat()
-            .concat(),
+        let Some((old, new)) = texts(contents(&repo.top, base)?, contents(&repo.top, working)?)
+        else {
+            return Err(format!(
+                "{path} is binary or large: accept or reject the whole file"
+            ));
         };
+        let joined = apply_hunk(path, &old, &new, &params.hunk, params.action)?;
         // A file only one side has, emptied, is removed rather than left empty.
         let one_sided = match params.action {
             ReviewAction::Accept => working.is_none(),
             ReviewAction::Reject => base.is_none(),
         };
-        (!(one_sided && joined.is_empty())).then(|| joined.into_bytes())
+        if one_sided && joined.is_empty() {
+            None
+        } else {
+            Some(Entry {
+                mode: result_mode(params.action, base, working),
+                sha: store(&repo.top, joined.into_bytes())?,
+            })
+        }
     };
-    let mode = working
-        .or(base)
-        .map_or_else(|| "100644".to_string(), |entry| entry.mode.clone());
     match params.action {
         ReviewAction::Accept => {
             let mut files = repo.base.clone();
             match result {
-                Some(bytes) => {
-                    let sha = text(&run_with_input(
-                        command(&repo.top).args(["hash-object", "-w", "--no-filters", "--stdin"]),
-                        bytes,
-                    )?);
-                    files.insert(path.to_string(), Entry { mode, sha });
-                }
-                None => {
-                    files.remove(path);
-                }
-            }
+                Some(entry) => files.insert(path.to_string(), entry),
+                None => files.remove(path),
+            };
             set_base(state, &params.session_id, &context, index, repo, &files)?;
         }
         ReviewAction::Reject => match result {
-            Some(bytes) => {
-                let sha = text(&run_with_input(
-                    command(&repo.top).args(["hash-object", "-w", "--no-filters", "--stdin"]),
-                    bytes,
-                )?);
-                write_file(&repo.top, path, &Entry { mode, sha })?;
+            Some(entry) => {
+                write_file(&repo.top, path, &entry)?;
             }
             None => {
                 remove_file(&repo.top, path)?;
@@ -571,10 +636,17 @@ fn permitted(state: &DaemonState, session_id: &str, tool: &str) -> Result<bool, 
     }
 }
 
-/// Refuses a repository whose own config (not the user's global one) names programs `git add`
-/// or `git commit` would run: filter drivers and signing programs.
-fn check_repository_config(top: &Path) -> Result<(), String> {
-    let pattern = r"^(filter\..+\.(clean|smudge|process)|gpg\.(.+\.)?program|core\.hookspath)$";
+/// Keys in a repository's own config that make `git add`, `git commit`, `git push`, or `gh`
+/// run a program, reach a transport, or answer for credentials (lower case, as git compares
+/// them).
+pub(crate) const REFUSED_CONFIG: &str = r"^(filter\..+\.(clean|smudge|process)|gpg\..*program|gpg\.ssh\.defaultkeycommand|core\.(hookspath|sshcommand|gitproxy|askpass|fsmonitor|alternaterefscommand)|credential\..*|remote\..+\.(receivepack|uploadpack|vcs)|url\..+\.(insteadof|pushinsteadof)|protocol\..*)$";
+
+/// Refuses a repository whose own config (`.git/config` with its includes, and the worktree's
+/// config) has any [`REFUSED_CONFIG`] key, or turns on commit signing that the user's global
+/// config does not: those would run programs (or reach places) a repository chose, and
+/// Imperium runs nothing a repository's config names. The user's global config applies as
+/// usual. `what` says what to do instead.
+fn check_repository_config(top: &Path, what: &str) -> Result<(), String> {
     let mut found = Vec::new();
     for scope in ["--local", "--worktree"] {
         if let Ok(out) = run(command(top).args([
@@ -583,17 +655,33 @@ fn check_repository_config(top: &Path) -> Result<(), String> {
             "--includes",
             "--name-only",
             "--get-regexp",
-            pattern,
+            REFUSED_CONFIG,
         ])) {
             found.extend(String::from_utf8_lossy(&out).lines().map(str::to_string));
         }
     }
+    // Signing the repository turned on, which the user did not turn on for themselves.
+    let signs = |scope: &str| {
+        run(command(top).args([
+            "config",
+            scope,
+            "--includes",
+            "--type=bool",
+            "--get",
+            "commit.gpgsign",
+        ]))
+        .is_ok_and(|out| text(&out) == "true")
+    };
+    if (signs("--local") || signs("--worktree")) && !signs("--global") && !signs("--system") {
+        found.push("commit.gpgsign".into());
+    }
+    found.dedup();
     if found.is_empty() {
         Ok(())
     } else {
         Err(format!(
-            "this repository's own config names programs git would run ({}), which Imperium \
-             does not run; commit from a terminal",
+            "this repository's own config sets {}, which could make git run programs or reach \
+             places the repository chose; Imperium does not run them, so {what} from a terminal",
             found.join(", ")
         ))
     }
@@ -626,7 +714,7 @@ pub(crate) fn commit(
     if params.message.trim().is_empty() {
         return Err("a commit message is needed".into());
     }
-    check_repository_config(&repo.top)?;
+    check_repository_config(&repo.top, "commit")?;
     // A file git never knew that is gone again has nothing to commit (and git would refuse the
     // path).
     let known = run(command(&repo.top).args(["ls-files", "-z"]))?;
@@ -685,8 +773,11 @@ pub(crate) fn commit(
     })
 }
 
-/// `gh` on the PATH, if there is one.
-fn find_gh() -> Option<PathBuf> {
+/// `gh`: the one set for tests, else the one on the PATH, if there is one.
+fn find_gh(state: &DaemonState) -> Option<PathBuf> {
+    if let Some(gh) = state.gh_override() {
+        return Some(gh);
+    }
     let names: &[&str] = if cfg!(windows) {
         &["gh.exe", "gh.cmd", "gh"]
     } else {
@@ -697,7 +788,8 @@ fn find_gh() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Quotes a word for the shown command.
+/// Quotes a word for a POSIX shell: plain when it is only safe characters, else in single
+/// quotes (a `'` inside becomes `'\''`), so nothing in it is expanded when pasted.
 fn quoted(word: &str) -> String {
     if !word.is_empty()
         && word
@@ -706,8 +798,48 @@ fn quoted(word: &str) -> String {
     {
         word.to_string()
     } else {
-        format!("\"{}\"", word.replace('\\', "\\\\").replace('"', "\\\""))
+        format!("'{}'", word.replace('\'', r"'\''"))
     }
+}
+
+/// `gh pr create` for the branch, with nothing from the repository's config able to run in
+/// the git it starts: hooks (pointed at `no_hooks`, an empty folder) and fsmonitor off through
+/// `GIT_CONFIG_*`, and git's own variables from the daemon's surroundings dropped.
+fn gh_command(
+    gh: &Path,
+    top: &Path,
+    branch: &str,
+    title: &str,
+    base: Option<&str>,
+    no_hooks: &Path,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(gh);
+    command
+        .current_dir(top)
+        .args(["pr", "create", "--head", branch, "--title", title])
+        .args(["--body-file", "-"]);
+    if let Some(base) = base {
+        command.args(["--base", base]);
+    }
+    for name in crate::safe_git::DROPPED_ENV {
+        command.env_remove(name);
+    }
+    command
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_0", "false")
+        .env("GIT_CONFIG_KEY_1", "core.hooksPath")
+        .env("GIT_CONFIG_VALUE_1", no_hooks)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
 }
 
 /// `session.review_pull_request`: pushes the repository's current branch and opens a pull
@@ -715,14 +847,6 @@ fn quoted(word: &str) -> String {
 pub(crate) fn pull_request(
     state: &DaemonState,
     params: &SessionReviewPullRequestParams,
-) -> Result<SessionReviewPullRequestResult, String> {
-    pull_request_with(state, params, find_gh())
-}
-
-pub(crate) fn pull_request_with(
-    state: &DaemonState,
-    params: &SessionReviewPullRequestParams,
-    gh: Option<PathBuf>,
 ) -> Result<SessionReviewPullRequestResult, String> {
     let allowed = permitted(state, &params.session_id, PULL_REQUEST_TOOL)?;
     idle(state, &params.session_id)?;
@@ -739,6 +863,11 @@ pub(crate) fn pull_request_with(
     let branch = run(command(&top).args(["symbolic-ref", "--quiet", "--short", "HEAD"]))
         .map(|out| text(&out))
         .map_err(|_| "HEAD is not on a branch; commit on a branch first".to_string())?;
+    let base = params.base.as_deref().filter(|base| !base.is_empty());
+    // Read as options by git or gh otherwise.
+    if branch.starts_with('-') || base.is_some_and(|base| base.starts_with('-')) {
+        return Err("a branch name starting with '-' cannot be pushed from here".into());
+    }
     if params.title.trim().is_empty() {
         return Err("a pull request title is needed".into());
     }
@@ -748,11 +877,14 @@ pub(crate) fn pull_request_with(
         quoted(params.title.trim()),
         quoted(&params.body)
     );
-    if let Some(base) = params.base.as_deref().filter(|base| !base.is_empty()) {
+    if let Some(base) = base {
         create.push_str(&format!(" --base {}", quoted(base)));
     }
-    let shown = format!("git push -u origin {}\n{create}", quoted(&branch));
-    let Some(gh) = gh else {
+    let shown = format!(
+        "git push -u origin -- {}\n{create}",
+        quoted(&format!("refs/heads/{branch}"))
+    );
+    let Some(gh) = find_gh(state) else {
         return Ok(SessionReviewPullRequestResult {
             branch,
             command: shown,
@@ -767,30 +899,27 @@ pub(crate) fn pull_request_with(
             ..SessionReviewPullRequestResult::default()
         });
     }
-    run(command(&top).args(["push", "--quiet", "-u", "origin", &branch]))?;
-    let mut gh = std::process::Command::new(gh);
-    gh.current_dir(&top)
+    check_repository_config(&top, "push and open the pull request")?;
+    let refspec = format!("refs/heads/{branch}");
+    run(command(&top)
+        // Network transports only: never `file` or `ext` (a local program).
+        .env("GIT_ALLOW_PROTOCOL", "https:http:ssh:git")
         .args([
-            "pr",
-            "create",
-            "--head",
-            &branch,
-            "--title",
-            params.title.trim(),
-        ])
-        .args(["--body-file", "-"])
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    if let Some(base) = params.base.as_deref().filter(|base| !base.is_empty()) {
-        gh.args(["--base", base]);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        gh.creation_flags(0x0800_0000);
-    }
+            "-c",
+            "protocol.ext.allow=never",
+            "-c",
+            "protocol.file.allow=never",
+            "push",
+            "--quiet",
+            "-u",
+            "--",
+            "origin",
+            &refspec,
+        ]))?;
+    let no_hooks =
+        crate::checkpoints::records_dir(state.data_dir(), &params.session_id).join("no-hooks");
+    std::fs::create_dir_all(&no_hooks).map_err(|error| error.to_string())?;
+    let mut gh = gh_command(&gh, &top, &branch, params.title.trim(), base, &no_hooks);
     let out = run_with_input(&mut gh, params.body.clone().into_bytes())
         .map_err(|error| error.replacen("git ", "gh ", 1))?;
     let url = String::from_utf8_lossy(&out)
@@ -823,16 +952,105 @@ mod tests {
         assert!(first.lines.contains(&"+B".to_string()));
         let second = to_wire("x", &found[1]);
         assert_eq!(second.header, "@@ -8,3 +8,4 @@");
-        // Rejecting the second hunk reverts only it.
-        let (o, n) = (lines(old), lines(new));
-        let reverted = [
-            &n[..found[1].new.start],
-            &o[found[1].old.clone()],
-            &n[found[1].new.end..],
-        ]
-        .concat()
-        .concat();
+        // Rejecting the second hunk reverts only it; accepting the first moves only it.
+        let reverted = apply_hunk("x", old, new, &second.id, ReviewAction::Reject).unwrap();
         assert_eq!(reverted, "a\nB\nc\nd\ne\nf\ng\nh\ni\nj\n");
+        let accepted = apply_hunk("x", old, new, &first.id, ReviewAction::Accept).unwrap();
+        assert_eq!(accepted, "a\nB\nc\nd\ne\nf\ng\nh\ni\nj\n");
+        assert!(apply_hunk("x", old, new, "stale", ReviewAction::Accept).is_err());
+    }
+
+    #[test]
+    fn hunks_follow_the_diffs_own_lines_with_lone_carriage_returns() {
+        // The diff splits at a lone `\r` too; the applied ranges must use the same lines.
+        let old = "a\rb\nc\nd\ne\nf\ng\nh\ni\nj\nk\n";
+        let new = "a\rB\nc\nd\ne\nf\ng\nh\ni\nj\nK\n";
+        let found: Vec<ReviewHunk> = hunks(old, new).iter().map(|h| to_wire("x", h)).collect();
+        assert_eq!(found.len(), 2);
+        assert!(found[0].lines.contains(&"-b".to_string()));
+        assert!(
+            found[0].lines.contains(&" a".to_string()),
+            "no stray \\r in the text"
+        );
+        let reverted = apply_hunk("x", old, new, &found[1].id, ReviewAction::Reject).unwrap();
+        assert_eq!(reverted, "a\rB\nc\nd\ne\nf\ng\nh\ni\nj\nk\n");
+        let accepted = apply_hunk("x", old, new, &found[0].id, ReviewAction::Accept).unwrap();
+        assert_eq!(accepted, "a\rB\nc\nd\ne\nf\ng\nh\ni\nj\nk\n");
+    }
+
+    #[test]
+    fn accepting_keeps_the_working_mode_and_rejecting_restores_the_base() {
+        let base = Entry {
+            mode: "100644".into(),
+            sha: "a".into(),
+        };
+        let working = Entry {
+            mode: "100755".into(),
+            sha: "b".into(),
+        };
+        let accept = result_mode(ReviewAction::Accept, Some(&base), Some(&working));
+        let reject = result_mode(ReviewAction::Reject, Some(&base), Some(&working));
+        assert_eq!((accept.as_str(), reject.as_str()), ("100755", "100644"));
+        assert_eq!(
+            result_mode(ReviewAction::Reject, None, Some(&working)),
+            "100755"
+        );
+        // A mode change alone changes the file's id, so a stale whole-file action misses.
+        assert_ne!(
+            file_id("x", Some(&base), Some(&working)),
+            file_id("x", Some(&base), Some(&base))
+        );
+    }
+
+    #[test]
+    fn gh_runs_without_the_repositorys_hooks_or_fsmonitor() {
+        let gh = gh_command(
+            Path::new("gh"),
+            Path::new("."),
+            "feat/x",
+            "Title",
+            Some("main"),
+            Path::new("/empty"),
+        );
+        let envs: std::collections::HashMap<String, Option<String>> = gh
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let get = |key: &str| envs.get(key).cloned().flatten();
+        assert_eq!(get("GIT_CONFIG_COUNT").as_deref(), Some("2"));
+        assert_eq!(get("GIT_CONFIG_KEY_0").as_deref(), Some("core.fsmonitor"));
+        assert_eq!(get("GIT_CONFIG_VALUE_0").as_deref(), Some("false"));
+        assert_eq!(get("GIT_CONFIG_KEY_1").as_deref(), Some("core.hooksPath"));
+        assert_eq!(get("GIT_CONFIG_VALUE_1").as_deref(), Some("/empty"));
+        assert_eq!(
+            envs.get("GIT_DIR"),
+            Some(&None),
+            "git's own variables are dropped"
+        );
+        let args: Vec<String> = gh
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "pr",
+                "create",
+                "--head",
+                "feat/x",
+                "--title",
+                "Title",
+                "--body-file",
+                "-",
+                "--base",
+                "main"
+            ]
+        );
     }
 
     #[test]
@@ -848,6 +1066,7 @@ mod tests {
     #[test]
     fn shown_commands_quote_what_needs_it() {
         assert_eq!(quoted("feat/x"), "feat/x");
-        assert_eq!(quoted("Add \"x\""), "\"Add \\\"x\\\"\"");
+        assert_eq!(quoted("Add \"x\" $(rm -rf ~)"), "'Add \"x\" $(rm -rf ~)'");
+        assert_eq!(quoted("it's"), r"'it'\''s'");
     }
 }

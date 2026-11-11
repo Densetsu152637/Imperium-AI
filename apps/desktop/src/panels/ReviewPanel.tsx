@@ -361,7 +361,7 @@ function ReviewFileView({
               <span className="review-add">+{counts.added}</span> <span className="review-del">−{counts.removed}</span>
             </span>
           )}
-          <HunkTools disabled={disabled} what="this file" onAct={(action) => onAct("file", action)} />
+          <HunkTools disabled={disabled} what="this file" onAct={(action) => onAct(`file:${file.id}`, action)} />
         </summary>
         {file.binary ? (
           <p className="empty">Binary or large file: accept or reject it whole.</p>

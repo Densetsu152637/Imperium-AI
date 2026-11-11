@@ -87,6 +87,13 @@ async fn serve(repo: PathBuf) -> String {
                             "arguments": json!({"path": path, "content": content}).to_string()}})
                     };
                     json!({"tool_calls": [call(0, "a.txt", AFTER), call(1, "new.txt", "new\n")]})
+                } else if last["role"] == "user" && said.trim() == "glob" {
+                    json!({"tool_calls": [{"index": 0, "id": "g0", "function": {
+                        "name": "write_file",
+                        "arguments": json!({"path": "[ab].txt", "content": "glob\n"}).to_string()}}]})
+                } else if last["role"] == "user" && said.trim() == "slow" {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    json!({"content": "ok"})
                 } else {
                     json!({"content": "ok"})
                 };
@@ -105,11 +112,17 @@ async fn serve(repo: PathBuf) -> String {
 }
 
 fn daemon(home: &Path, url: &str, commit_rule: Option<&str>) -> Arc<DaemonState> {
+    let extra: Vec<(&str, &str)> = commit_rule
+        .map(|action| vec![("git_commit", action)])
+        .unwrap_or_default();
+    daemon_with(home, url, &extra)
+}
+
+/// A daemon whose permission rules allow `write_file` plus `extra` (tool, action) rules.
+fn daemon_with(home: &Path, url: &str, extra: &[(&str, &str)]) -> Arc<DaemonState> {
     let mut rules = String::from("{ tool = \"write_file\", action = \"allow\" }");
-    if let Some(action) = commit_rule {
-        rules.push_str(&format!(
-            ", {{ tool = \"git_commit\", action = \"{action}\" }}"
-        ));
+    for (tool, action) in extra {
+        rules.push_str(&format!(", {{ tool = \"{tool}\", action = \"{action}\" }}"));
     }
     let config = format!(
         "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"{url}\"\n\
@@ -277,21 +290,55 @@ async fn hunks_are_accepted_and_rejected_and_the_rest_committed_after_asking() {
     );
 
     // Whole files: the deletion is rejected (the file comes back), the new file accepted.
+    let shown: SessionReviewResult =
+        ok(&mut connection, "session.review", json!({"session_id": id})).await;
+    let file_id = |path: &str| {
+        let file = shown.files.iter().find(|file| file.path == path).unwrap();
+        format!("file:{}", file.id)
+    };
     ok::<SessionReviewHunkResult>(
         &mut connection,
         "session.review_hunk",
         json!({"session_id": id, "since": 1, "repo": root, "path": "b.txt",
-               "hunk": "file", "action": "reject"}),
+               "hunk": file_id("b.txt"), "action": "reject"}),
     )
     .await;
     assert_eq!(read(dir.join("b.txt")), "keep\n");
+    // A whole-file action on a file that changed since it was shown is refused.
+    std::fs::write(dir.join("new.txt"), "newer\n").unwrap();
+    let stale = call(
+        &mut connection,
+        "session.review_hunk",
+        json!({"session_id": id, "since": 1, "repo": root, "path": "new.txt",
+               "hunk": file_id("new.txt"), "action": "reject"}),
+    )
+    .await;
+    assert!(stale.unwrap_err().contains("changed since"));
+    assert_eq!(read(dir.join("new.txt")), "newer\n");
+    std::fs::write(dir.join("new.txt"), "new\n").unwrap();
     ok::<SessionReviewHunkResult>(
         &mut connection,
         "session.review_hunk",
         json!({"session_id": id, "since": 1, "repo": root, "path": "new.txt",
-               "hunk": "file", "action": "accept"}),
+               "hunk": file_id("new.txt"), "action": "accept"}),
     )
     .await;
+    // A file the session's turns never changed is not the review's to change.
+    std::fs::write(dir.join("user.txt"), "the user's edit\n").unwrap();
+    let untouched = call(
+        &mut connection,
+        "session.review_hunk",
+        json!({"session_id": id, "since": 1, "repo": root, "path": "user.txt",
+               "hunk": "file:x", "action": "reject"}),
+    )
+    .await;
+    assert!(
+        untouched
+            .unwrap_err()
+            .contains("not changed by this session")
+    );
+    assert_eq!(read(dir.join("user.txt")), "the user's edit\n");
+    std::fs::write(dir.join("user.txt"), "the user's\n").unwrap();
     let review: SessionReviewResult =
         ok(&mut connection, "session.review", json!({"session_id": id})).await;
     assert!(review.files.is_empty(), "everything reviewed");
@@ -348,11 +395,273 @@ async fn hunks_are_accepted_and_rejected_and_the_rest_committed_after_asking() {
     .await;
     assert!(!pr.opened);
     assert_eq!(pr.branch, "main");
-    assert!(pr.command.contains("git push -u origin main"));
+    assert!(pr.command.contains("git push -u origin -- refs/heads/main"));
     assert!(
         pr.command
-            .contains("gh pr create --head main --title \"Session work\"")
+            .contains("gh pr create --head main --title 'Session work'")
     );
+}
+
+/// Sends `text` to a new session in `dir` and waits for its turn to end.
+async fn turn(state: &Arc<DaemonState>, dir: &Path, text: &str) -> String {
+    let (session, _) = state
+        .create_session(&dir.display().to_string(), None)
+        .unwrap();
+    let mut events = session.subscribe();
+    let mut announced = state.announcements();
+    session.send(text.into()).unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event within 20 s")
+            .unwrap();
+        if let SessionEvent::TurnCompleted { .. } = event.event
+            && event.agent_id == ROOT_AGENT
+        {
+            break;
+        }
+    }
+    loop {
+        let notification = tokio::time::timeout(Duration::from_secs(20), announced.recv())
+            .await
+            .expect("a checkpoint within 20 s")
+            .unwrap();
+        if notification.method == "session.checkpoint" {
+            break;
+        }
+    }
+    session.id().to_string()
+}
+
+#[tokio::test]
+async fn paths_are_literal_so_a_glob_named_file_commits_only_itself() {
+    let repo = repository();
+    let dir = repo.path().to_path_buf();
+    let url = serve(dir.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url, Some("allow"));
+    let mut connection = connect(&state).await;
+    let id = turn(&state, &dir, "glob").await;
+    // The user's edit to a.txt would match the pattern `[ab].txt`.
+    std::fs::write(dir.join("a.txt"), "the user's\n").unwrap();
+    let root =
+        ok::<SessionReviewResult>(&mut connection, "session.review", json!({"session_id": id}))
+            .await
+            .repos[0]
+            .clone();
+    let committed: SessionReviewCommitResult = ok(
+        &mut connection,
+        "session.review_commit",
+        json!({"session_id": id, "repo": root, "message": "Glob"}),
+    )
+    .await;
+    assert!(committed.committed);
+    assert_eq!(
+        git(&dir, &["show", "--name-only", "--format=", "HEAD"]),
+        "[ab].txt"
+    );
+    assert!(git(&dir, &["status", "--porcelain"]).contains("a.txt"));
+}
+
+#[tokio::test]
+async fn a_repositorys_own_config_that_would_run_programs_is_refused() {
+    let repo = repository();
+    let dir = repo.path().to_path_buf();
+    let url = serve(dir.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url, Some("allow"));
+    let mut connection = connect(&state).await;
+    let id = edited(&state, &dir).await;
+    let root =
+        ok::<SessionReviewResult>(&mut connection, "session.review", json!({"session_id": id}))
+            .await
+            .repos[0]
+            .clone();
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    let params = json!({"session_id": id, "repo": root, "message": "x"});
+    // A filter driver in the repository's own config.
+    git(&dir, &["config", "filter.evil.clean", "touch marker"]);
+    let refused = call(&mut connection, "session.review_commit", params.clone()).await;
+    assert!(refused.unwrap_err().contains("filter.evil.clean"));
+    git(&dir, &["config", "--unset", "filter.evil.clean"]);
+    // SSH signing whose key comes from a command the repository names.
+    git(&dir, &["config", "gpg.format", "ssh"]);
+    git(&dir, &["config", "commit.gpgSign", "true"]);
+    git(
+        &dir,
+        &["config", "gpg.ssh.defaultKeyCommand", "touch marker"],
+    );
+    let refused = call(&mut connection, "session.review_commit", params).await;
+    let message = refused.unwrap_err();
+    assert!(message.contains("gpg.ssh.defaultkeycommand"), "{message}");
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+    assert!(!dir.join("marker").exists());
+}
+
+/// A stand-in for `gh` that records that it ran.
+fn fake_gh(dir: &Path) -> (PathBuf, PathBuf) {
+    let log = dir.join("gh-ran");
+    #[cfg(windows)]
+    let gh = {
+        let gh = dir.join("gh.cmd");
+        std::fs::write(
+            &gh,
+            format!(
+                "@echo off\r\necho ran> \"{}\"\r\necho https://example.com/pr/1\r\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        gh
+    };
+    #[cfg(not(windows))]
+    let gh = {
+        use std::os::unix::fs::PermissionsExt;
+        let gh = dir.join("gh");
+        std::fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\necho ran > '{}'\necho https://example.com/pr/1\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        gh
+    };
+    (gh, log)
+}
+
+#[tokio::test]
+async fn pull_requests_follow_the_rules_and_refuse_repository_transports() {
+    let tools = tempfile::tempdir().unwrap();
+    let (gh, log) = fake_gh(tools.path());
+    let origin = tempfile::tempdir().unwrap();
+    git(origin.path(), &["init", "-q", "--bare"]);
+
+    // Denied: nothing runs.
+    let repo = repository();
+    let dir = repo.path().to_path_buf();
+    git(
+        &dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            &origin.path().display().to_string(),
+        ],
+    );
+    let url = serve(dir.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon_with(home.path(), &url, &[("open_pull_request", "deny")]);
+    state.use_gh(gh.clone());
+    let mut connection = connect(&state).await;
+    let id = edited(&state, &dir).await;
+    let root =
+        ok::<SessionReviewResult>(&mut connection, "session.review", json!({"session_id": id}))
+            .await
+            .repos[0]
+            .clone();
+    let params = json!({"session_id": id, "repo": root, "title": "PR", "confirmed": true});
+    let denied = call(&mut connection, "session.review_pull_request", params).await;
+    assert!(denied.unwrap_err().contains("denies open_pull_request"));
+    assert!(!log.exists());
+
+    // Allowed: the repository's own transport settings are refused before any push.
+    let repo = repository();
+    let dir = repo.path().to_path_buf();
+    git(
+        &dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            &origin.path().display().to_string(),
+        ],
+    );
+    let url = serve(dir.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon_with(home.path(), &url, &[("open_pull_request", "allow")]);
+    state.use_gh(gh.clone());
+    let mut connection = connect(&state).await;
+    let id = edited(&state, &dir).await;
+    let root =
+        ok::<SessionReviewResult>(&mut connection, "session.review", json!({"session_id": id}))
+            .await
+            .repos[0]
+            .clone();
+    let params = json!({"session_id": id, "repo": root, "title": "PR"});
+    for (key, value) in [
+        ("core.sshCommand", "touch marker"),
+        ("protocol.ext.allow", "always"),
+    ] {
+        git(&dir, &["config", key, value]);
+        let refused = call(
+            &mut connection,
+            "session.review_pull_request",
+            params.clone(),
+        )
+        .await;
+        let message = refused.unwrap_err();
+        assert!(message.contains(&key.to_lowercase()), "{message}");
+        git(&dir, &["config", "--unset", key]);
+    }
+    // Without them the push runs, with network transports only: a local `file` origin is
+    // refused, so gh never runs either.
+    let failed = call(&mut connection, "session.review_pull_request", params).await;
+    let message = failed.unwrap_err();
+    assert!(message.contains("file"), "{message}");
+    assert!(!log.exists());
+    assert!(!dir.join("marker").exists());
+    assert_eq!(
+        git(origin.path(), &["for-each-ref"]),
+        "",
+        "nothing was pushed"
+    );
+}
+
+#[tokio::test]
+async fn nothing_changes_while_a_turn_runs() {
+    let repo = repository();
+    let dir = repo.path().to_path_buf();
+    let url = serve(dir.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url, Some("allow"));
+    let mut connection = connect(&state).await;
+    let id = edited(&state, &dir).await;
+    let session = state.session(&id).unwrap();
+    let mut events = session.subscribe();
+    let root =
+        ok::<SessionReviewResult>(&mut connection, "session.review", json!({"session_id": id}))
+            .await
+            .repos[0]
+            .clone();
+    session.send("slow".into()).unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if let SessionEvent::TurnStarted { .. } = event.event {
+            break;
+        }
+    }
+    let commit = call(
+        &mut connection,
+        "session.review_commit",
+        json!({"session_id": id, "repo": root, "message": "x"}),
+    )
+    .await;
+    assert!(commit.unwrap_err().contains("a turn is running"));
+    let hunk = call(
+        &mut connection,
+        "session.review_hunk",
+        json!({"session_id": id, "since": 1, "repo": root, "path": "new.txt",
+               "hunk": "file:x", "action": "reject"}),
+    )
+    .await;
+    assert!(hunk.unwrap_err().contains("a turn is running"));
+    assert!(dir.join("new.txt").exists());
 }
 
 #[tokio::test]

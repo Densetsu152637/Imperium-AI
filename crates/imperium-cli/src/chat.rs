@@ -1359,6 +1359,7 @@ mod tests {
             repos: vec!["/r".into()],
             files: vec![ReviewFile {
                 repo: "/r".into(),
+                id: "f".into(),
                 path: "a.txt".into(),
                 status: "added".into(),
                 binary: false,

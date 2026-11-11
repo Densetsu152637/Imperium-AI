@@ -175,3 +175,124 @@ async fn worktrees_go_under_the_configured_folder_when_set() {
         "nothing is made inside the repository"
     );
 }
+
+/// A call's error message (it must fail).
+fn call_error(connection: &mut Connection, method: &str, params: Value) -> String {
+    let frame = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
+    let Some(Response { outcome, .. }) = connection.handle_text(&frame.to_string()).response else {
+        panic!("no reply to {method}");
+    };
+    match outcome {
+        Outcome::Error(error) => error.message,
+        Outcome::Result(value) => panic!("{method} should fail, got {value}"),
+    }
+}
+
+#[tokio::test]
+async fn making_a_worktree_runs_nothing_from_the_repositorys_config() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = repository();
+    let marker = home.path().join("hook-ran");
+    let hooks = repo.path().join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::write(
+        hooks.join("post-checkout"),
+        format!(
+            "#!/bin/sh\ntouch '{}'\n",
+            marker.display().to_string().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            hooks.join("post-checkout"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let state = daemon(home.path(), None);
+    let mut connection = connect(&state);
+    let env = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Repo", "folders": [repo.path()]}),
+    );
+    call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": env["id"], "worktree": true}),
+    );
+    assert!(!marker.exists(), "the post-checkout hook did not run");
+
+    // A checkout filter in the repository's own config is refused, not run.
+    git(
+        repo.path(),
+        &["config", "filter.evil.smudge", "touch marker"],
+    );
+    let refused = call_error(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": env["id"], "worktree": true, "worktree_branch": "other"}),
+    );
+    assert!(refused.contains("filter.evil.smudge"), "{refused}");
+}
+
+#[tokio::test]
+async fn deleting_a_session_removes_only_its_recorded_worktree() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = repository();
+    let state = daemon(home.path(), None);
+    let mut connection = connect(&state);
+    let env = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Repo", "folders": [repo.path()]}),
+    );
+    let created = call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": env["id"], "worktree": true}),
+    );
+    let id = created["session_id"].as_str().unwrap().to_string();
+    let mine = std::path::PathBuf::from(created["folders"][0].as_str().unwrap());
+    // Someone else's worktree of the same repository.
+    let others = tempfile::tempdir().unwrap();
+    let theirs = others.path().join("theirs");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "theirs",
+            &theirs.display().to_string(),
+        ],
+    );
+    std::fs::write(theirs.join("work.txt"), "uncommitted\n").unwrap();
+    // The session points its own `.git` at a git folder that names their worktree.
+    let fake = mine.join("fake");
+    git(
+        &mine,
+        &["init", "-q", "--bare", &fake.display().to_string()],
+    );
+    git(&fake, &["config", "core.bare", "false"]);
+    git(
+        &fake,
+        &["config", "core.worktree", &theirs.display().to_string()],
+    );
+    std::fs::write(mine.join(".git"), format!("gitdir: {}\n", fake.display())).unwrap();
+
+    call(
+        &mut connection,
+        "session.delete",
+        json!({"session_id": id, "remove_worktrees": true}),
+    );
+    assert_eq!(
+        std::fs::read_to_string(theirs.join("work.txt")).unwrap(),
+        "uncommitted\n",
+        "their worktree is untouched"
+    );
+}

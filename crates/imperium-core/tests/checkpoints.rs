@@ -62,12 +62,26 @@ fn repository() -> tempfile::TempDir {
 /// Root: `edit` deletes `b.txt` and `notes/u.txt` (as a command would) and writes `a.txt` and
 /// `new.txt`; a tool result ends the turn; anything else is answered `ok`.
 async fn serve(repo: PathBuf) -> String {
+    serve_with(repo, None).await
+}
+
+/// Like [`serve`]; `edit` also replaces the folder `d` of `second` with an (ignored) file `d`.
+async fn serve_with(repo: PathBuf, second: Option<PathBuf>) -> String {
     let repo = Arc::new(repo);
+    let second = Arc::new(second);
     let app = Router::new().route(
         "/v1/chat/completions",
         post(move |axum::Json(body): axum::Json<Value>| {
             let repo = Arc::clone(&repo);
+            let second = Arc::clone(&second);
             async move {
+                if let Some(second) = second.as_ref()
+                    && second.join("d").is_dir()
+                    && body.to_string().contains("\"edit\"")
+                {
+                    let _ = std::fs::remove_dir_all(second.join("d"));
+                    let _ = std::fs::write(second.join("d"), "in the way\n");
+                }
                 let messages = body["messages"].as_array().cloned().unwrap_or_default();
                 let last = messages.last().cloned().unwrap_or_default();
                 let said = last["content"].as_str().unwrap_or_default().to_string();
@@ -369,4 +383,124 @@ async fn folders_outside_git_have_no_checkpoints() {
     assert!(!listed.available);
     assert!(listed.reason.unwrap().contains("git"));
     assert!(listed.checkpoints.is_empty());
+}
+
+/// Runs the `edit` turn in a new session in `dir` and waits until its checkpoint is kept.
+async fn edited(state: &Arc<DaemonState>, dir: &Path) -> String {
+    let (session, _) = state
+        .create_session(&dir.display().to_string(), None)
+        .unwrap();
+    let mut events = session.subscribe();
+    let mut announced = state.announcements();
+    session.send("edit".into()).unwrap();
+    turn(&mut events).await;
+    checkpoint_kept(&mut announced).await;
+    session.id().to_string()
+}
+
+async fn checkpoint_kept(
+    announced: &mut broadcast::Receiver<imperium_protocol::jsonrpc::Notification>,
+) {
+    loop {
+        let notification = tokio::time::timeout(Duration::from_secs(20), announced.recv())
+            .await
+            .expect("a checkpoint within 20 s")
+            .unwrap();
+        if notification.method == "session.checkpoint" {
+            return;
+        }
+    }
+}
+
+/// A partial clone fetches missing objects from its promisor remote, running the transport
+/// the repository's config names; the daemon's git never does.
+#[tokio::test]
+async fn a_missing_object_is_never_fetched_through_the_repositorys_transport() {
+    let repo = repository();
+    let dir = repo.path().to_path_buf();
+    let url = serve(dir.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url);
+    let mut connection = connect(&state).await;
+    let id = edited(&state, &dir).await;
+    let marker = home.path().join("MARKER");
+    let fetch = format!(
+        "ext::sh -c touch% {}",
+        marker.display().to_string().replace('\\', "/")
+    );
+    git(&dir, &["config", "core.repositoryformatversion", "1"]);
+    git(&dir, &["config", "extensions.partialClone", "origin"]);
+    git(&dir, &["config", "remote.origin.url", &fetch]);
+    git(&dir, &["config", "remote.origin.promisor", "true"]);
+    git(&dir, &["config", "protocol.ext.allow", "always"]);
+    // The checkpoint's a.txt ("one") is missing from the object store.
+    let blob = git(
+        &dir,
+        &[
+            "rev-parse",
+            &format!("refs/imperium/checkpoints/{id}/1:a.txt"),
+        ],
+    );
+    std::fs::remove_file(dir.join(".git/objects").join(&blob[..2]).join(&blob[2..])).unwrap();
+    let rewound = call(
+        &mut connection,
+        "session.rewind",
+        json!({"session_id": id, "checkpoint": 1, "mode": "files"}),
+    )
+    .await;
+    assert!(rewound.is_err(), "the missing object cannot be read");
+    assert!(!marker.exists(), "nothing the repository named ran");
+}
+
+/// A rewind across two repositories rewinds every one it can, and a failure says which
+/// checkpoint undoes it.
+#[tokio::test]
+async fn a_partly_failed_rewind_names_its_undo_checkpoint() {
+    let first = repository();
+    let second = tempfile::tempdir().unwrap();
+    let other = second.path();
+    git(other, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(other.join("d")).unwrap();
+    std::fs::write(other.join("d/x.txt"), "x\n").unwrap();
+    std::fs::write(other.join(".gitignore"), "/d\n").unwrap();
+    git(other, &["add", "-f", ".gitignore", "d/x.txt"]);
+    git(other, &["commit", "-q", "-m", "init"]);
+    let url = serve_with(first.path().to_path_buf(), Some(other.to_path_buf())).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url);
+    let mut connection = connect(&state).await;
+    let env = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Two", "folders": [first.path(), other]}),
+    )
+    .await
+    .unwrap();
+    let created = call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": env["id"]}),
+    )
+    .await
+    .unwrap();
+    let id = created["session_id"].as_str().unwrap().to_string();
+    let session = state.session(&id).unwrap();
+    let mut events = session.subscribe();
+    let mut announced = state.announcements();
+    session.send("edit".into()).unwrap();
+    turn(&mut events).await;
+    checkpoint_kept(&mut announced).await;
+    assert!(other.join("d").is_file());
+    let failed = call(
+        &mut connection,
+        "session.rewind",
+        json!({"session_id": id, "checkpoint": 1, "mode": "files"}),
+    )
+    .await;
+    let message = failed.unwrap_err();
+    assert!(message.contains("checkpoint 2 undoes it"), "{message}");
+    assert!(message.contains("a.txt"), "{message}");
+    // The first repository was rewound all the same.
+    assert_eq!(read(first.path().join("a.txt")), "one\n");
+    assert!(!first.path().join("new.txt").exists());
 }

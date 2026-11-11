@@ -24,6 +24,7 @@ test("checkpoints are named by their number and the message they came before", (
 });
 
 const file: ReviewFile = {
+  id: "f",
   repo: "C:\\work\\app",
   path: "src/a.ts",
   status: "modified",

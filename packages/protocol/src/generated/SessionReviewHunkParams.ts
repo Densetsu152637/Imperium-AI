@@ -7,6 +7,6 @@ export type SessionReviewHunkParams = { session_id: string,
  */
 since: number | null, repo: string, path: string, 
 /**
- * A hunk's `id`, or `file` for the whole file.
+ * A hunk's `id`, or `file:<id>` with the file's `id` for the whole file.
  */
 hunk: string, action: ReviewAction, };
