@@ -152,9 +152,10 @@ the wait reason in the desktop.
     settings restarts, the policy calls ask to make room, `models.unload`, resumes, and a
     memory budget refreshed from live readings. The local runtime only carries them out, and
     every move is reported with its reason (`model.residency`)
-    ([04](04-models-and-routing.md#residency-controller-implemented)). Still to do: the races
-    the review found (titles, crashed servers, a yield racing a resume), the desktop wait line,
-    and measuring on real hardware.
+    ([04](04-models-and-routing.md#residency-controller-implemented)). The races the review
+    found are fixed (titles never load a model, a crashed server is unloaded as `crashed` and
+    reloaded with a backoff, a resuming agent waits for its own slot's save), and the desktop
+    wait line and `imperium chat` show the moves. Still to do: measuring on real hardware.
 17. **Session titles and list** (implemented). After a session's first exchange the core
     titles it in the background with a model that is cheap to ask now (the session's model
     when it is local and loaded with a free slot, another loaded local model, or the session's

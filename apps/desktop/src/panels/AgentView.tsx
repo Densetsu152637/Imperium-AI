@@ -24,7 +24,8 @@ import { useSettings } from "../settings";
 import { isStopped, shownTaskStatus } from "../stop";
 import { groupToolRuns } from "../toolCalls";
 import { useFollowScroll } from "../useFollowScroll";
-import { describeWait } from "../waits";
+import { describeWait, type Residency } from "../waits";
+import { modelName, useModelNames } from "../modelNames";
 import { useNow } from "./AgentsPanel";
 import { Composer } from "./Composer";
 import { EntryView, PlanView, QueueView } from "./SessionPanel";
@@ -49,6 +50,8 @@ type Props = {
   onStop?: () => void;
   client?: DaemonClient | null;
   runtimeInstall?: RuntimeInstallJob | null;
+  /** The latest `model.residency` move made for each local model, which the status line words. */
+  residency?: Residency;
 };
 
 export function AgentView({
@@ -65,8 +68,10 @@ export function AgentView({
   onStop,
   client = null,
   runtimeInstall = null,
+  residency = {},
 }: Props) {
   const settings = useSettings();
+  const aliases = useModelNames();
   const [busyAction, setBusyAction] = useState(false);
   const items = useMemo(() => groupToolRuns(task.entries), [task.entries]);
   const running = task.status === "running";
@@ -81,7 +86,14 @@ export function AgentView({
     (entry) => entry.kind === "permission" && entry.agentId === task.taskId && !entry.answered,
   );
   const wait =
-    running && !stopped && !archived ? describeWait({ wait: session.waits[task.taskId], install: runtimeInstall }) : null;
+    running && !stopped && !archived
+      ? describeWait({
+          wait: session.waits[task.taskId],
+          install: runtimeInstall,
+          residency,
+          name: (id) => modelName(aliases, id),
+        })
+      : null;
   const name = (id: string) => agentName(session, id);
 
   // Follows the subagent's newest output until the reader scrolls up (roadmap item 20).

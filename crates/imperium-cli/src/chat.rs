@@ -7,13 +7,13 @@ use std::path::PathBuf;
 use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
-    ContextFit, RewindMode, SessionAgentResume, SessionAgentResumeParams, SessionAgents,
-    SessionAgentsParams, SessionAnswer, SessionAnswerParams, SessionCheckpoints,
-    SessionCheckpointsParams, SessionCheckpointsResult, SessionControl, SessionControlParams,
-    SessionCreate, SessionCreateParams, SessionQueue, SessionQueueParams, SessionRespond,
-    SessionRespondParams, SessionRewind, SessionRewindParams, SessionRewindResult, SessionSend,
-    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSuggestionRespond,
-    SuggestionRespondParams,
+    ContextFit, MODEL_RESIDENCY, ModelResidency, RewindMode, SessionAgentResume,
+    SessionAgentResumeParams, SessionAgents, SessionAgentsParams, SessionAnswer,
+    SessionAnswerParams, SessionCheckpoints, SessionCheckpointsParams, SessionCheckpointsResult,
+    SessionControl, SessionControlParams, SessionCreate, SessionCreateParams, SessionQueue,
+    SessionQueueParams, SessionRespond, SessionRespondParams, SessionRewind, SessionRewindParams,
+    SessionRewindResult, SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
+    SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
     AgentEvent, AgentStatus, AgentSummary, ContextCategory, ExtensionKind, LocalWaitReason,
@@ -101,6 +101,12 @@ pub fn run(
                 }
                 notification = client.next_notification() => {
                     let notification = notification?;
+                    if notification.method == MODEL_RESIDENCY {
+                        if let Ok(moved) = serde_json::from_value::<ModelResidency>(notification.params) {
+                            println!("\n{}", dim(&residency_line(&moved)));
+                        }
+                        continue;
+                    }
                     if notification.method != SESSION_EVENT {
                         continue;
                     }
@@ -1106,6 +1112,58 @@ fn render_breakdown(breakdown: &Breakdown) -> String {
     out
 }
 
+/// One `model.residency` move on one line: what moved, and why.
+fn residency_line(moved: &ModelResidency) -> String {
+    let model = moved.model_id.as_deref().unwrap_or("?");
+    let holder = moved.holder.as_deref().unwrap_or("an agent");
+    // What was done, what would have been, and to what.
+    let (done, verb, what) = match moved.action.as_str() {
+        "load" => ("loaded", "load", model.to_string()),
+        "unload" => ("unloaded", "unload", model.to_string()),
+        "save_slot" => ("saved", "save", format!("{holder}'s context on {model}")),
+        "restore_slot" => (
+            "restored",
+            "restore",
+            format!("{holder}'s context on {model}"),
+        ),
+        "resize_pool" => (
+            "restarted",
+            "restart",
+            format!("{model} with a larger KV pool"),
+        ),
+        "set_budget" => (
+            "set",
+            "set",
+            format!(
+                "the memory budget to {} MiB of VRAM",
+                moved.bytes / (1 << 20)
+            ),
+        ),
+        other => (other, other, model.to_string()),
+    };
+    let reason = &moved.reason;
+    let detail = moved
+        .detail
+        .as_deref()
+        .map(|detail| format!(": {detail}"))
+        .unwrap_or_default();
+    if moved.ok {
+        format!("· {done} {what} ({reason}){detail}")
+    } else {
+        format!("· could not {verb} {what} ({reason}){detail}")
+    }
+}
+
+/// `text` dimmed when standard output is a terminal.
+fn dim(text: &str) -> String {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal() {
+        format!("\x1b[2m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
 /// The decision a typed answer to a permission question gives.
 fn permission_answer(answer: &str) -> PermissionDecision {
     match answer.trim().to_ascii_lowercase().as_str() {
@@ -1133,6 +1191,36 @@ fn choose_answer(question: &Question, input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn residency_moves_print_what_moved_and_why() {
+        let moved = ModelResidency {
+            action: "unload".into(),
+            model_id: Some("qwen".into()),
+            holder: None,
+            reason: "crashed".into(),
+            ok: true,
+            detail: Some("the server exited (exit code: 1)".into()),
+            seconds: 0.0,
+            bytes: 0,
+        };
+        assert_eq!(
+            residency_line(&moved),
+            "· unloaded qwen (crashed): the server exited (exit code: 1)"
+        );
+        let restore = ModelResidency {
+            action: "restore_slot".into(),
+            holder: Some("s/root".into()),
+            reason: "resume".into(),
+            ok: false,
+            detail: Some("no file".into()),
+            ..moved
+        };
+        assert_eq!(
+            residency_line(&restore),
+            "· could not restore s/root's context on qwen (resume): no file"
+        );
+    }
 
     #[test]
     fn answers_default_to_the_recommendation_and_numbers_pick_options() {

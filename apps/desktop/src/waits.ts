@@ -2,10 +2,12 @@
 // may first load a model, make room on the GPU, compact the conversation, install llama.cpp,
 // wait for a slot, or wait for the user. This follows those waits per agent from the session's
 // events until the agent's first output, and words them for the status line under the sent
-// message (SessionPanel) and the Agents panel's rows. Pure, so the rules are tested without a
-// window (test/waits.test.ts).
+// message (SessionPanel) and the Agents panel's rows. A local wait is worded from the latest
+// `model.residency` move made for its model since it began (a swap, a restart, a crash being
+// recovered), else from its `local_model_waiting` reason. Pure, so the rules are tested without
+// a window (test/waits.test.ts).
 
-import type { AgentEvent, LocalWaitReason, PauseCause, RuntimeInstallJob } from "@imperium/protocol";
+import type { AgentEvent, LocalWaitReason, ModelResidency, PauseCause, RuntimeInstallJob } from "@imperium/protocol";
 
 /** What an agent waits on, when the session's events say. */
 export type WaitCause =
@@ -96,24 +98,93 @@ export function applySent(sent: Sent | null, { agent_id: agentId, event }: Agent
   return sent;
 }
 
-/** What each local wait reason says; reasons a newer daemon adds are worded from their name. */
-const LOCAL_TEXT: Record<string, string> = {
-  loading: "Loading model…",
-  growing_pool: "Growing context pool…",
-  kv_room: "Waiting for room in the context cache…",
-  slot: "Waiting for a free slot…",
-  other_model: "Waiting for another model…",
-  making_room: "Making room on the GPU…",
-  saving_context: "Saving context…",
-  restoring_context: "Restoring context…",
+/** What each local wait reason says about the model it waits for (by its alias); reasons a newer daemon adds are worded from their name. */
+const LOCAL_TEXT: Record<string, (model: string) => string> = {
+  loading: (model) => `Loading ${model}…`,
+  growing_pool: (model) => `Growing ${model}'s context pool…`,
+  kv_room: (model) => `Waiting for room in ${model}'s context cache…`,
+  slot: (model) => `Waiting for a free slot on ${model}…`,
+  other_model: (model) => `Waiting for another model before ${model}…`,
+  making_room: (model) => `Making room on the GPU for ${model}…`,
+  saving_context: (model) => `Saving other agents' context to make room for ${model}…`,
+  restoring_context: (model) => `Restoring this agent's context on ${model}…`,
 };
 
-/** A local wait reason in words: `loading` → "Loading model…", `some_new_reason` → "Some new reason…". */
-export function localWaitText(reason: string): string {
-  const known = LOCAL_TEXT[reason];
-  if (known) return known;
+/** Words a reason a newer daemon adds: `some_new_reason` → "Some new reason…". */
+function fromName(reason: string): string | null {
   const words = reason.replace(/[_-]+/g, " ").trim();
-  return words ? `${words[0].toUpperCase()}${words.slice(1)}…` : "Waiting for the local model…";
+  return words ? `${words[0].toUpperCase()}${words.slice(1)}…` : null;
+}
+
+/** A local wait reason in words: `loading` → "Loading Qwen 3…", `some_new_reason` → "Some new reason…". */
+export function localWaitText(reason: string, model = "the model"): string {
+  return LOCAL_TEXT[reason]?.(model) ?? fromName(reason) ?? "Waiting for the local model…";
+}
+
+/** A `model.residency` move and when this window heard of it. */
+export type ResidencyNote = { move: ModelResidency; at: number };
+
+/** The latest move made for each model (its own, or one made to make room for it), by model id. */
+export type Residency = Record<string, ResidencyNote>;
+
+/** The model a move was made for: the one an eviction made room for (its `detail`), else the model moved. */
+export function residencyTarget(move: ModelResidency): string | null {
+  const roomFor = move.detail?.match(/^made room for (.+)$/)?.[1];
+  return roomFor ?? move.model_id ?? null;
+}
+
+/** Records a `model.residency` move against the model a waiting call would be waiting for. */
+export function applyResidency(residency: Residency, move: ModelResidency, now: number): Residency {
+  const target = residencyTarget(move);
+  return target ? { ...residency, [target]: { move, at: now } } : residency;
+}
+
+/**
+ * What a waiting call for `model` (by its alias) shows for a move made for it: one sentence per
+ * reason. `null` for moves its `local_model_waiting` reason already says as well (an ordinary
+ * load or restore for the call), for failed moves, and for the budget.
+ */
+export function residencyText(move: ModelResidency, model: string, name: (id: string) => string = (id) => id): string | null {
+  if (!move.ok) return null;
+  const other = move.model_id ? name(move.model_id) : "a model";
+  const evicted = move.action === "unload" || move.action === "save_slot";
+  switch (move.reason) {
+    case "crashed":
+      return `Restoring ${model} after a crash…`;
+    case "room":
+      return evicted ? `Swapping out ${other} to make room for ${model}…` : null;
+    case "more_gpu":
+      return evicted ? `Swapping out ${other} so ${model} fits on the GPU…` : null;
+    case "swap_gain":
+      return evicted ? `Swapping out ${other} to give ${model} more of the GPU…` : null;
+    case "gpu_rule":
+      return `Making room on the GPU for ${model}…`;
+    case "critic":
+      return `Giving the GPU to ${model} while its review runs…`;
+    case "aged":
+      return evicted ? `Swapping out ${other}, loaded longest, for ${model}…` : null;
+    case "grow":
+      return `Restarting ${model} with a larger context pool…`;
+    case "promote":
+      return `Moving ${model} onto the GPU…`;
+    case "config":
+      return `Restarting ${model} with its new settings…`;
+    case "resume":
+      return `Bringing ${model} back for this agent…`;
+    case "yield":
+      return `Saving a waiting agent's context on ${model}…`;
+    case "stopped":
+      return `Saving a stopped session's context on ${model}…`;
+    case "idle":
+      return `Reloading ${model} after it was unloaded while idle…`;
+    case "request":
+      return `Reloading ${model} after it was unloaded on request…`;
+    case "call":
+    case "budget":
+      return null;
+    default:
+      return fromName(move.reason);
+  }
 }
 
 /** llama.cpp being installed: "Installing llama.cpp (42%)…", without a share until the size is known. */
@@ -146,6 +217,8 @@ export function describeWait({
   stopped = false,
   pause = null,
   install = null,
+  residency = {},
+  name = (id) => id,
 }: {
   wait: AgentWait | null | undefined;
   /** For the root: a message this window sent that has not started a turn. */
@@ -155,6 +228,10 @@ export function describeWait({
   pause?: { cause: PauseCause; until: string | null } | null;
   /** A llama.cpp installation the daemon reports (`runtime.install_progress`). */
   install?: RuntimeInstallJob | null;
+  /** The latest `model.residency` move made for each model. */
+  residency?: Residency;
+  /** A model's display name (its alias). */
+  name?: (id: string) => string;
 }): WaitView | null {
   const since = Math.min(wait?.since ?? Infinity, sent?.since ?? Infinity);
   if (since === Infinity) return null;
@@ -174,9 +251,13 @@ export function describeWait({
       return view("Waiting for your answers…", null);
     case "compacting":
       return view("Compacting conversation…", "stop", cause.model);
-    case "local":
+    case "local": {
       if (cause.reason === "loading" && install?.state === "running") return view(installText(install), "stop", cause.model);
-      return view(localWaitText(cause.reason), "stop", cause.model);
+      const model = name(cause.model);
+      const note = residency[cause.model];
+      const moved = note && note.at >= since ? residencyText(note.move, model, name) : null;
+      return view(moved ?? localWaitText(cause.reason, model), "stop", cause.model);
+    }
   }
   // Sent, and the core has not said what it is doing yet (preparing the message, measuring it).
   if (sent) return view("Starting…", "stop");

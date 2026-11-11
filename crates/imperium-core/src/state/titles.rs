@@ -1,7 +1,8 @@
 //! Session titles. After a session's first exchange it is given a short title, written by a
 //! model that is cheap to ask now: the session's own model when it is local and loaded with a
 //! free slot, another local model that is, or the session's hosted model. No model is loaded for
-//! a title, and the turn never waits for one; without a model at hand (and for background
+//! a title (the runtime refuses the call if the model was swapped out since it was chosen,
+//! `LocalModels::acquire_loaded`), and the turn never waits for one; without a model at hand (and for background
 //! sessions and project agents, which call models only when the machine is quiet) the title is
 //! the first message's first words. A title the user gave (`session.control` `rename`) is never
 //! replaced.
@@ -11,8 +12,8 @@ use std::time::Duration;
 
 use imperium_api::ChatMessage;
 use imperium_engine::{
-    Availability, ChatClients, ChatRequest, Endpoint, LocalModels, LocalRequest, Priority,
-    ResolvedModel, Session,
+    AcquireError, Availability, ChatClients, ChatRequest, Endpoint, LocalModels, LocalRequest,
+    Priority, ResolvedModel, Session,
 };
 use imperium_protocol::methods::SESSION_UPDATED;
 use imperium_protocol::session::{AgentEvent, ROOT_AGENT, SessionEvent};
@@ -216,9 +217,11 @@ async fn generate(
     let call = async {
         let (endpoint, lease) = if model.local {
             let local = state.local_models_handle()?;
-            // Checked loaded just now; ranked below the user's calls.
+            // Checked loaded just now, but a swap-out may come first: the runtime then refuses
+            // rather than load it, and the first words make the title. Ranked below the user's
+            // calls.
             let lease = local
-                .acquire_with(
+                .acquire_loaded(
                     &model.model,
                     &holder,
                     LocalRequest {
@@ -227,8 +230,18 @@ async fn generate(
                         uncapped: false,
                     },
                 )
-                .await
-                .ok()?;
+                .await;
+            let lease = match lease {
+                Ok(lease) => lease,
+                Err(AcquireError::NotLoaded(_)) => {
+                    tracing::debug!(session = %session_id, model = %model.model, "the title model was swapped out; the title is the first words");
+                    return None;
+                }
+                Err(error) => {
+                    tracing::info!(session = %session_id, %error, "no generated title");
+                    return None;
+                }
+            };
             let endpoint = Endpoint {
                 base_url: lease.base_url.clone(),
                 api_key: None,

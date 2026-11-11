@@ -696,6 +696,25 @@ loop over one vocabulary (`imperium-local::residency`): actions `load`, `unload`
   the root, Resume after a stop) calls `LocalModels::resume`, which loads its model if it was
   swapped out and restores its context ahead of its next call, as the user's work, reported as
   `resume`. A stopped session's slots are saved as `stopped`.
+- **A save comes before the restore that reads it.** A waiting agent's slot is saved (`yield`,
+  `stopped`) with its save marked in flight; the agent's next call on that model waits for the
+  save to finish (*Saving context*) and then restores what it wrote, so it never restores an
+  older save over context it built since. A yield planned while the agent waited is dropped if
+  the agent has gone on before the save starts.
+- **Titles never load a model.** A session title asks for a slot with
+  `LocalModels::acquire_loaded`: the supervisor hands out a slot only on a model loaded as it
+  is, and answers `AcquireError::NotLoaded` (never loading, restarting, growing or moving the
+  model) when it was swapped out between the title's check and its call. The title then falls
+  back to the first message's first words.
+- **A crashed server is recovered.** The supervisor asks each server whether its process has
+  exited (`Server::exited`, a non-blocking `try_wait` on the child). A call that finds its
+  model's server gone takes no slot on it and waits; the controller (on that signal or its next
+  look) unloads it with reason `crashed` (`detail` says how it ended), whoever held it, since
+  nothing can be saved from a dead server; the waiting call, or the next one, loads it again. A
+  model that crashes again within 10 minutes stays down before it is reloaded:
+  0 s after the first crash, then 5 s, doubling to at most 5 minutes
+  (`ResidencyPolicy::crash_backoff`), so a server that dies as it loads does not spin. Calls
+  holding a slot when the server died fail as before.
 - **The budget follows the machine.** Every 30 s the controller reads the free VRAM (and, while
   no model is loaded, the available RAM) the way the start did, `[hardware]` overrides included,
   and moves the budget when it changed by 512 MiB or more: VRAM is what is free plus what the
@@ -709,7 +728,7 @@ loop over one vocabulary (`imperium-local::residency`): actions `load`, `unload`
   sends it to every client as `model.residency` (`ModelResidency`: `action`, `model_id`,
   `holder`, `reason`, `ok`, `detail`, `seconds`, `bytes`). Reasons: `call`, `resume`, `room`,
   `more_gpu`, `swap_gain`, `gpu_rule`, `critic`, `aged`, `idle`, `config`, `grow`, `promote`,
-  `request`, `yield`, `stopped`, `budget`. An eviction's `detail` names the model it made room
+  `request`, `yield`, `stopped`, `budget`, `crashed`. An eviction's `detail` names the model it made room
   for, a load's its placement. `model.swapped_out` keeps its coarser reasons (every eviction for
   a load is `room`).
 
@@ -743,14 +762,16 @@ then re-reads from where the prompts diverge: wasted work, not a wrong answer); 
 that a model is `Loaded` and then call it, so a swap-out in between makes the title call load
 the model it meant not to; (3) there is no supervisor restart of a crashed `llama-server`: a
 server that dies stays listed as loaded until it is unloaded, and its calls fail. The controller
-removes the split and the missing reasons; the races are listed below.
+removes the split and the missing reasons. The three races are fixed since: a call waits for its
+own slot's save (race 1), titles use a call that never loads (race 2), and a crashed server is
+unloaded as `crashed` and reloaded with a backoff (race 3), as described above. The desktop's
+wait line words `local_model_waiting` and `model.residency` ([07](07-desktop-ui.md#waiting-status-line-implemented)),
+and `imperium chat` prints each `model.residency` move as a dim line.
 
-Not done yet: an `if_loaded` call for titles (race 2); a health check that unloads a crashed
-server (with reason) so the next call reloads it (race 3); cancelling an in-flight yield when the
-waiting agent resumes (race 1); the desktop showing `model.residency` and `local_model_waiting`
-on the wait line; reading free VRAM through NVML instead of `nvidia-smi`, and other vendors;
-saved-slot cache evictions and prompt-cache sizing as reported moves; and measuring all of it on
-a 16 GB GPU (swap and restore times, the budget refresh beside another GPU process).
+Not done yet: reading free VRAM through NVML instead of `nvidia-smi`, and other vendors;
+saved-slot cache evictions and prompt-cache sizing as reported moves; noticing a crash between
+calls sooner than the controller's 15 s look; and measuring all of it on a 16 GB GPU (swap and
+restore times, the budget refresh beside another GPU process).
 
 `models.config` returns, for every local model and every model-table row, what `models.toml`
 saves (`saved`), what is in effect (`effective`, from the daemon's settings snapshot), the memory

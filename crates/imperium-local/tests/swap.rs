@@ -11,11 +11,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-use imperium_api::{Availability, LocalModels};
+use imperium_api::{AcquireError, Availability, LocalModels, LocalRequest, Priority};
 use imperium_config::LlamaCppSettings;
 use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
-use imperium_local::residency::{Move, Reason};
+use imperium_local::residency::{Action, Move, Reason};
 use imperium_local::scan::{Format, LocalModel};
 use imperium_local::supervisor::{
     LaunchError, LaunchFuture, LaunchSpec, Launcher, Runtimes, Server, SlotFuture, SlotTransfer,
@@ -58,6 +58,8 @@ struct Log {
     /// Launches and stops running right now, and the most there have been at once.
     active: AtomicU32,
     max_active: AtomicU32,
+    /// Whether the latest server of each model has exited on its own.
+    exited: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 /// Counts a launch or stop as running while it is held.
@@ -80,6 +82,18 @@ impl Drop for Active<'_> {
 impl Log {
     fn push(&self, op: String) {
         lock(&self.ops).push(op);
+    }
+
+    /// The latest server of `model` exits on its own.
+    fn crash(&self, model: &str) {
+        lock(&self.exited)[model].store(true, Ordering::SeqCst);
+    }
+
+    fn launches(&self) -> usize {
+        self.steps()
+            .iter()
+            .filter(|step| step.starts_with("launch"))
+            .count()
     }
 
     /// The operations without file names.
@@ -121,11 +135,18 @@ struct FakeServer {
     model: String,
     url: String,
     log: Arc<Log>,
+    exited: Arc<AtomicBool>,
 }
 
 impl Server for FakeServer {
     fn base_url(&self) -> &str {
         &self.url
+    }
+
+    fn exited(&self) -> Option<String> {
+        self.exited
+            .load(Ordering::SeqCst)
+            .then(|| "the server exited (exit code: 1)".to_string())
     }
 
     fn save_slot<'a>(&'a self, slot: u32, file: &'a str) -> SlotFuture<'a> {
@@ -208,10 +229,13 @@ impl Launcher for FakeLauncher {
                     "the model did not load in time".into(),
                 ));
             }
+            let exited = Arc::new(AtomicBool::new(false));
+            lock(&self.log.exited).insert(spec.model_id.clone(), Arc::clone(&exited));
             Ok(Box::new(FakeServer {
                 model: spec.model_id.clone(),
                 url: format!("http://fake/{}/v1", spec.model_id),
                 log: Arc::clone(&self.log),
+                exited,
             }) as Box<dyn Server>)
         })
     }
@@ -1243,4 +1267,178 @@ async fn a_stopped_agents_slot_is_released_at_once_and_comes_back_on_resume() {
         Reason::Stopped
     );
     drop(lease);
+}
+
+fn restores(log: &Log) -> usize {
+    log.steps()
+        .iter()
+        .filter(|step| step.starts_with("restore emperor"))
+        .count()
+}
+
+#[tokio::test]
+async fn a_resuming_agent_waits_for_its_own_slot_save_and_restores_what_it_wrote() {
+    let (supervisor, log) = start(LlamaCppSettings {
+        slots: Some(4),
+        ..quick()
+    });
+    let root = "s/root";
+    let _turn = supervisor.attach("emperor", root);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    // The root waits for a subagent on its own model; saving its slot takes a while.
+    log.save_ms.store(200, Ordering::SeqCst);
+    let waiting = supervisor.waiting("emperor", root);
+    drop(supervisor.acquire("emperor", "s/t1").await.unwrap());
+    log.saving.notified().await;
+    // A steering message wakes the root while its save is still being written: its call waits
+    // for the save and restores it, rather than run without it and have a later call restore
+    // the older context over what it built since.
+    drop(waiting);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    let steps = log.steps();
+    let saved = steps.iter().position(|s| s == "save emperor 0").unwrap();
+    let erased = steps.iter().position(|s| s == "erase emperor 0").unwrap();
+    let restored = steps
+        .iter()
+        .position(|s| s.starts_with("restore emperor"))
+        .unwrap_or_else(|| panic!("the resumed call restores the save: {steps:?}"));
+    assert!(saved < erased && erased < restored, "{steps:?}");
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert_eq!(restores(&log), 1, "{:?}", log.steps());
+    assert_eq!(log.files(), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_yield_planned_while_an_agent_waited_is_dropped_once_it_goes_on() {
+    let (supervisor, log) = start(LlamaCppSettings {
+        slots: Some(4),
+        ..quick()
+    });
+    let root = "s/root";
+    let _turn = supervisor.attach("emperor", root);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    let waiting = supervisor.waiting("emperor", root);
+    // The subagent's call plans the root's yield; the root goes on before it runs.
+    let subagent = supervisor.acquire("emperor", "s/t1").await.unwrap();
+    drop(waiting);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !log.steps().iter().any(|s| s.starts_with("save")),
+        "{:?}",
+        log.steps()
+    );
+    drop(subagent);
+    let (_, slot) = call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert_eq!(slot, Some(0), "its cached prompt is still in its slot");
+    assert_eq!(restores(&log), 0);
+}
+
+#[tokio::test]
+async fn a_call_that_must_not_load_is_refused_once_its_model_was_swapped_out() {
+    let (supervisor, log) = start(quick());
+    call(&supervisor, &log, "emperor", "s/root", Duration::ZERO).await;
+    // A title finds the emperor loaded...
+    assert_eq!(supervisor.availability("emperor"), Availability::Loaded);
+    // ...another session's call swaps it out before the title's call...
+    call(&supervisor, &log, "worker", "other/root", Duration::ZERO).await;
+    let launches = log.launches();
+    let title = LocalRequest {
+        priority: Priority::Background,
+        prompt_tokens: Some(512),
+        uncapped: false,
+    };
+    // ...which is refused instead of loading the emperor back.
+    let refused = supervisor
+        .acquire_loaded("emperor", "s:title", title)
+        .await
+        .map(drop);
+    assert_eq!(refused, Err(AcquireError::NotLoaded("emperor".into())));
+    assert_eq!(log.launches(), launches);
+    assert_eq!(supervisor.loaded()[0].model_id, "worker");
+    // A model that is loaded serves it.
+    let lease = supervisor
+        .acquire_loaded("worker", "other:title", title)
+        .await
+        .unwrap();
+    assert!(lease.slot.is_some());
+}
+
+#[tokio::test]
+async fn a_crashed_server_is_unloaded_with_its_reason_and_loaded_again_by_the_next_call() {
+    let (supervisor, log) = start(quick());
+    let moves = record_moves(&supervisor);
+    let root = "s/root";
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    // A running server is not unloaded as crashed.
+    let unload = || Action::Unload {
+        model: "emperor".into(),
+    };
+    assert!(supervisor.execute(unload(), Reason::Crashed).await.is_err());
+    log.crash("emperor");
+    assert!(supervisor.loaded()[0].crashed);
+    // The next call gets no slot on the dead server; it waits until the server is unloaded,
+    // then loads it again. A call that must not load is refused.
+    let next = tokio::spawn({
+        let (supervisor, log) = (Arc::clone(&supervisor), Arc::clone(&log));
+        async move { call(&supervisor, &log, "emperor", root, Duration::ZERO).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!next.is_finished());
+    assert_eq!(
+        supervisor
+            .acquire_loaded("emperor", "s:title", LocalRequest::default())
+            .await
+            .map(drop),
+        Err(AcquireError::NotLoaded("emperor".into()))
+    );
+    supervisor.execute(unload(), Reason::Crashed).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), next)
+        .await
+        .expect("the call loads the model again")
+        .unwrap();
+    assert_eq!(log.launches(), 2);
+    assert!(!supervisor.loaded()[0].crashed);
+    let crashed = lock(&moves)
+        .iter()
+        .find(|m| m.action == unload())
+        .cloned()
+        .expect("the unload is reported");
+    assert_eq!(crashed.reason, Reason::Crashed);
+    assert!(crashed.detail.unwrap().contains("exited"));
+    // Nothing could be saved from it.
+    assert!(!log.steps().iter().any(|s| s.starts_with("save")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_that_keeps_crashing_is_loaded_again_only_after_a_backoff() {
+    let (supervisor, log) = start(quick());
+    let root = "s/root";
+    let crash = || async {
+        log.crash("emperor");
+        supervisor
+            .execute(
+                Action::Unload {
+                    model: "emperor".into(),
+                },
+                Reason::Crashed,
+            )
+            .await
+            .unwrap();
+    };
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    // The first crash: loaded again at once.
+    crash().await;
+    let crashed = tokio::time::Instant::now();
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert!(crashed.elapsed() < Duration::from_secs(1));
+    // Again soon after: it stays down 5 s.
+    crash().await;
+    let crashed = tokio::time::Instant::now();
+    let early =
+        tokio::time::timeout(Duration::from_secs(4), supervisor.acquire("emperor", root)).await;
+    assert!(early.is_err(), "loaded again during the backoff");
+    assert_eq!(log.launches(), 2);
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    assert!(crashed.elapsed() >= Duration::from_secs(5));
+    assert_eq!(log.launches(), 3);
 }

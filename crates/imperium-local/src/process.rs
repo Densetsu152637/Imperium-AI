@@ -263,7 +263,9 @@ impl Server for ProcessServer {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         Box::pin(async move {
+            // One that has exited on its own (see `exited`) is already gone.
             if let Some(mut child) = child
+                && !matches!(child.try_wait(), Ok(Some(_)))
                 && let Err(error) = child.kill().await
             {
                 tracing::warn!(%error, "could not stop a model server");
@@ -273,6 +275,17 @@ impl Server for ProcessServer {
 
     fn pid(&self) -> Option<u32> {
         self.pid
+    }
+
+    /// Asks the OS whether the process is still there (a non-blocking `try_wait`); a child
+    /// [`Server::stop`] has taken was stopped on purpose, not crashed.
+    fn exited(&self) -> Option<String> {
+        let mut child = self.child.lock().unwrap_or_else(PoisonError::into_inner);
+        match child.as_mut()?.try_wait() {
+            Ok(Some(status)) => Some(format!("the server exited ({status})")),
+            // Not knowing is not a crash: calls to it still say whether it serves.
+            Ok(None) | Err(_) => None,
+        }
     }
 }
 

@@ -54,7 +54,8 @@ import { ToolGroup } from "../components/ToolGroup";
 import { useFollowScroll } from "../useFollowScroll";
 import { groupToolRuns, itemForEntry } from "../toolCalls";
 import { WaitLine } from "../components/WaitLine";
-import { describeWait } from "../waits";
+import { describeWait, type Residency } from "../waits";
+import { modelName, useModelNames } from "../modelNames";
 import type { DaemonClient } from "../daemon/client";
 import { SentAttachments } from "../components/AttachmentChips";
 import { Composer } from "./Composer";
@@ -106,6 +107,8 @@ type Props = {
   focusEvent?: { index: number; nonce: number } | null;
   /** llama.cpp being installed, named in the status line while a model waits to load. */
   runtimeInstall?: RuntimeInstallJob | null;
+  /** The latest `model.residency` move made for each local model, which the status line words. */
+  residency?: Residency;
   /** Answers the status line's budget question: send the waiting message anyway, or drop it. */
   onBudget?: (confirm: boolean) => void;
   /** Opens a subagent's log in this panel (from its line in the transcript). */
@@ -137,9 +140,11 @@ export function SessionPanel({
   budgets = [],
   focusEvent = null,
   runtimeInstall = null,
+  residency = {},
   onBudget,
   onOpenAgent,
 }: Props) {
+  const aliases = useModelNames();
   const settings = useSettings();
   const [rendered, setRendered] = useState(settings.renderMarkdown);
   const [drawer, setDrawer] = useState<Drawer>(null);
@@ -205,6 +210,8 @@ export function SessionPanel({
             ? { cause: session.pause.cause, until: session.pause.untilMs > 0 ? formatResumeTime(session.pause.untilMs) : null }
             : null,
         install: runtimeInstall,
+        residency,
+        name: (id) => modelName(aliases, id),
       });
   const wait = stopped && described?.action !== "budget" ? null : described;
   // Ctrl+. (Cmd+. on macOS) stops a running session or resumes a stopped one.
