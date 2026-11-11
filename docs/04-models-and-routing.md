@@ -242,12 +242,12 @@ source `detected` and the app says so on the runtime card. Installing a build re
 - **Where it looks**, one folder level deep at most (no disk is scanned): `PATH`; Unsloth's
   `~/.unsloth/llama.cpp` and a `~/llama.cpp` checkout (`build/bin/Release`, `build/bin`, `bin`);
   LM Studio's bundled backends (`~/.lmstudio/extensions/backends/llama.cpp-*/`, which ship a
-  `llama-server`); a `llama.cpp*` checkout or unpacked release (`llama-b<N>-bin-*`) directly in
-  the home or Downloads folder; on Windows winget (`%LOCALAPPDATA%\Microsoft\WinGet\Links` and
+  `llama-server`); on Windows winget (`%LOCALAPPDATA%\Microsoft\WinGet\Links` and
   `Packages\ggml.llamacpp*`), scoop (`~/scoop/apps/llama*/current`, its shims, and the global
   scoop), Chocolatey's `bin`, and `%LOCALAPPDATA%\llama.cpp`; on macOS `/opt/homebrew/bin`,
   `/usr/local/bin`, and `~/.local/bin`; on Linux `/usr/local/bin`, `/usr/bin`, Linuxbrew,
-  `~/.local/bin`, and `/opt/llama.cpp`. Folders with many builds (LM Studio's) are read newest
+  `~/.local/bin`, and `/opt/llama.cpp`. The home and Downloads folders are not scanned for
+  unpacked releases, so an unverified download is never run automatically. Folders with many builds (LM Studio's) are read newest
   first, eight at most.
 - **Which one.** Of those that start and take the flags: one that sees the GPU through the
   backend that suits this machine (CUDA on an NVIDIA GPU, Metal on Apple Silicon), then one that

@@ -348,8 +348,9 @@ pub fn home_dir() -> Option<PathBuf> {
 
 /// `llama-server` executables already on this machine: on `PATH`, and in the places llama.cpp
 /// builds are usually installed or left on this OS ([`crate::runtime_locations::places`]:
-/// package managers, LM Studio's backends, Unsloth's, `llama.cpp` checkouts and unpacked
-/// releases in the home and Downloads folders), read at most one folder level deep.
+/// package managers, LM Studio's backends, Unsloth's and `llama.cpp` checkouts in fixed
+/// folders; the home and Downloads folders are not globbed, so an unverified download is never
+/// run automatically), read at most one folder level deep.
 pub fn find_existing(home: Option<&Path>) -> Vec<PathBuf> {
     use crate::runtime_locations::{Os, expand, places};
     let os = Os::current();

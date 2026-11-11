@@ -1,6 +1,7 @@
 //! Where `llama-server` builds are usually left on each OS: `PATH`, package managers (winget,
 //! scoop, Chocolatey, Homebrew), LM Studio's bundled llama.cpp backends, and llama.cpp checkouts
-//! or unpacked release archives in the home and Downloads folders.
+//! in fixed, conventional folders. The home and Downloads folders are deliberately not globbed:
+//! an unverified binary unpacked there must not be run automatically.
 //!
 //! [`places`] is pure: it is given the OS, the home folder and the environment, and lists the
 //! folders to look in, some of them as "every child of this folder whose name starts with ..."
@@ -132,17 +133,6 @@ pub fn places(os: Os, home: Option<&Path>, var: &dyn Fn(&str) -> Option<OsString
             prefix: "llama.cpp",
             subdirs: &[""],
         });
-        // A checkout or an unpacked release archive (`llama-b12180-bin-win-cuda-13.5-x64`)
-        // left in the home or Downloads folder.
-        for parent in [home.to_path_buf(), home.join("Downloads")] {
-            for prefix in ["llama.cpp", "llama-b"] {
-                places.push(Place::Children {
-                    parent: parent.clone(),
-                    prefix,
-                    subdirs: CHECKOUT,
-                });
-            }
-        }
     }
     places
 }
@@ -245,6 +235,35 @@ mod tests {
             .collect()
     }
 
+    /// Unverified builds in the home or Downloads folders are never probed automatically.
+    fn assert_no_download_globs(parents: &[(PathBuf, &'static str)], home: &Path) {
+        for (parent, prefix) in parents {
+            assert!(
+                parent != home && !parent.starts_with(home.join("Downloads")),
+                "automatic probing must not glob {} for {prefix}*",
+                parent.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_fake_download_is_not_among_the_expanded_places() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = Os::Linux.server_name();
+        let fake = dir.path().join("Downloads").join("llama-b99999");
+        std::fs::create_dir_all(&fake).unwrap();
+        std::fs::write(fake.join(server), "").unwrap();
+        let home_fake = dir.path().join("llama.cpp-b1");
+        std::fs::create_dir_all(&home_fake).unwrap();
+        std::fs::write(home_fake.join(server), "").unwrap();
+        let places = places(Os::Linux, Some(dir.path()), &env(&[]));
+        let found: Vec<_> = expand(&places, server)
+            .into_iter()
+            .filter(|path| path.starts_with(dir.path()))
+            .collect();
+        assert!(found.is_empty(), "{found:?}");
+    }
+
     #[test]
     fn windows_looks_in_winget_scoop_chocolatey_and_lm_studio() {
         let home = PathBuf::from("C:/Users/me");
@@ -283,11 +302,10 @@ mod tests {
                 home.join(".lmstudio").join("extensions").join("backends"),
                 "llama.cpp",
             ),
-            (home.join("Downloads"), "llama-b"),
-            (home.clone(), "llama.cpp"),
         ] {
             assert!(parents.contains(&expected), "missing {expected:?}");
         }
+        assert_no_download_globs(&parents, &home);
         assert!(!dirs.contains(&PathBuf::from("/usr/local/bin")));
     }
 
@@ -319,7 +337,7 @@ mod tests {
                 .iter()
                 .any(|dir| dir.to_string_lossy().contains("WinGet"))
         );
-        assert!(parents(&places).contains(&(home.join("Downloads"), "llama.cpp")));
+        assert_no_download_globs(&parents(&places), &home);
     }
 
     #[test]
