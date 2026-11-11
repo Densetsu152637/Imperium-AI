@@ -331,12 +331,13 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
   room. Settings → *Reset layout* restores the default arrangement. The rules are pure
   functions (`layout/arrangement.ts`) with tests (`test/arrangement.test.ts`).
 
-### Rearranging (planned)
+### Rearranging (planned beyond the panel editor)
 
-- Everything is drag-and-drop: drag a panel's title bar to another column, into a stack, or
-  out into a new window; drag a module between panels. Drop targets preview the result.
-- An **edit layout** mode shows all drop zones, panel boundaries, and hidden modules; outside
-  it, layouts are locked to prevent accidental changes.
+The [panel editor](#panel-editor-implemented) covers moving panels between and into columns and
+locking the layout outside it. Still planned:
+
+- Dragging a panel out into a new window and a module between panels, and showing hidden
+  modules in the editor.
 - **Layouts are global.** One layout applies to every project, and changes to it apply
   everywhere.
 - **Project overrides are explicit.** A project uses its own layout only after the user
