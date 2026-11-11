@@ -102,6 +102,7 @@ fn hosted() -> ResolvedModel {
         local: false,
         context_window: None,
         kind: "scripted".into(),
+        reasoning: None,
     }
 }
 
@@ -117,6 +118,7 @@ fn local() -> ResolvedModel {
         local: true,
         context_window: None,
         kind: "scripted".into(),
+        reasoning: None,
     }
 }
 
@@ -155,6 +157,7 @@ fn start(
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.join("journal.jsonl"),
     })
     .unwrap()

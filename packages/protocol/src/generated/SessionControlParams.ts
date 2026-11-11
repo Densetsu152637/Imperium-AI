@@ -5,7 +5,9 @@ export type SessionControlParams = { session_id: string,
 /**
  * `set_resume_policy` (with `resume_policy`, or none to use the default), `resume_now`,
  * `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
- * for `models.default`; refused while a turn runs), `compact` (summarise older turns
+ * for `models.default`; refused while a turn runs), `set_effort` (with `effort`; applies
+ * from every agent's next model call, also while a turn runs; kept across restarts),
+ * `compact` (summarise older turns
  * now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
  * `rename` (with `title`; kept across restarts and never replaced by a generated title; an
  * empty title lets the session be titled automatically again), `archive` (stop the session and keep its journal; announced with `session.updated`),
@@ -14,11 +16,15 @@ export type SessionControlParams = { session_id: string,
  * or `resume` (continue a stopped session; not to be confused with `resume_now`, which ends
  * a usage-limit wait).
  */
-action: "set_resume_policy" | "resume_now" | "watch" | "unwatch" | "set_model" | "compact" | "set_pinned" | "rename" | "archive" | "unarchive" | "stop" | "resume", resume_policy: ResumePolicy | null, repo: string | null, pull_request: number | null, 
+action: "set_resume_policy" | "resume_now" | "watch" | "unwatch" | "set_model" | "set_effort" | "compact" | "set_pinned" | "rename" | "archive" | "unarchive" | "stop" | "resume", resume_policy: ResumePolicy | null, repo: string | null, pull_request: number | null, 
 /**
  * For `set_model`: a model table id or an `<endpoint>:<model>` spec.
  */
 model: string | null, 
+/**
+ * For `set_effort`: how hard models that can reason think.
+ */
+effort?: "low" | "medium" | "high" | "max", 
 /**
  * For `set_pinned`: whether the session is pinned.
  */

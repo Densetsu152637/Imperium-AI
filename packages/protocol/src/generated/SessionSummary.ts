@@ -23,6 +23,16 @@ folders: Array<string>,
  */
 model: string | null, 
 /**
+ * The session's reasoning effort (`session.control` `set_effort`), kept across restarts.
+ * Sent only to models that can reason; absent from daemons that predate it.
+ */
+effort?: "low" | "medium" | "high" | "max", 
+/**
+ * Whether the session's model can reason, so its effort applies (clients show the effort
+ * control only then).
+ */
+reasoning: boolean, 
+/**
  * Where the session's commands run, such as `tier 0 · folder policy`.
  */
 isolation: string, 

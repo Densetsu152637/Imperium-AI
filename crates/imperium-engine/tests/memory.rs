@@ -71,6 +71,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -100,6 +101,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: data.join(format!("{id}.jsonl")),
     })
     .unwrap()

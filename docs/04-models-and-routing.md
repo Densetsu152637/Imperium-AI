@@ -934,10 +934,44 @@ A subagent's model is chosen as follows:
    out: they are for work that can wait, chosen by name or by a rule.
 4. The session's own model.
 
-Agents pass `tier`, `location`, `tags`, `model`, and `single_call` to `spawn_agent`. Ids must be unique and
+Agents pass `tier`, `location`, `tags`, `model`, `single_call`, and `effort` ([reasoning
+effort](#reasoning-effort)) to `spawn_agent`. Ids must be unique and
 rules may only name ids in the table; the daemon refuses to start otherwise. Rows whose
 endpoint is unknown or whose key is missing are skipped with a warning. `models.list` returns
 the table, and the desktop app shows it in a searchable, sortable Models panel.
+
+### Reasoning effort
+
+**Implemented.** Every session has a reasoning effort, `low`, `medium`, `high` or `max`: it
+starts at `models.effort` (default `medium`), `session.control` `set_effort` changes it (from
+every agent's next model call, during a turn too), and it is kept in the session's meta file,
+so a resumed session keeps it. `spawn_agent` takes an optional `effort` for one subagent; other
+subagents use the session's. The effort is sent only to models that can reason, decided in this
+order:
+
+1. the model table row's `reasoning = true | false`;
+2. its tags: `reasoning` or `thinking` say yes, `no-reasoning` or `no-thinking` say no;
+3. for a local model, `runtime.llamacpp.models."<id>".reasoning`, else its chat template (the
+   GGUF's `tokenizer.chat_template`, or a Hugging Face folder's `chat_template.jinja` or
+   `tokenizer_config.json`): a thinking switch (`enable_thinking`), think tags, or a
+   `reasoning_effort` variable mean it can;
+4. the model's name: known reasoning families (OpenAI o-series, GPT-5 except `-chat`,
+   gpt-oss, Claude 3.7 and 4 onwards, DeepSeek R1, QwQ and Qwen 3 except `-Instruct`, Gemini
+   2.5 and 3, Grok 3 mini and 4, Magistral, GLM 4.5 onwards, ...).
+
+`models.list` and `models.local` rows carry `reasoning`, and session summaries carry `effort` and
+whether the session's model can reason. Each endpoint gets the effort in its own form, chosen by
+its host (every endpoint speaks Chat Completions):
+
+| Backend | What is sent |
+|---|---|
+| OpenAI and other OpenAI-compatible services | `reasoning_effort`: `low`, `medium`, `high` (`max` is sent as `high`, the highest level every server accepts) |
+| llama.cpp, vLLM, Ollama (local servers) | the same `reasoning_effort`; llama.cpp hands it to the chat template, so templates without levels only see that reasoning is on. llama.cpp has no per-request thinking budget (only the server's `--reasoning-budget`), so none is sent |
+| OpenRouter (`openrouter.ai`) | `reasoning: {"effort": ...}`, `max` included |
+| Anthropic (`api.anthropic.com`, its OpenAI-compatible endpoint, which ignores `reasoning_effort`) | `thinking: {"type": "enabled", "budget_tokens": N}` with 1024, 4096, 12288 or 24000 tokens; `max_tokens` is set to the budget plus 8000 when the call sets none, and a smaller cap shrinks the budget (no thinking below 1024). Claude 5 models think adaptively whatever the budget |
+| DeepSeek (`deepseek.com`), Mistral (`mistral.ai`) | nothing: no effort control is known |
+
+Summaries for compaction and session titles are sent no effort.
 
 ### Task classes
 

@@ -129,6 +129,7 @@ fn start(pool: &Arc<Pool>, script: &Arc<Script>, dir: &std::path::Path) -> Sessi
             local: true,
             context_window: None,
             kind: "scripted".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         clients,
@@ -149,6 +150,7 @@ fn start(pool: &Arc<Pool>, script: &Arc<Script>, dir: &std::path::Path) -> Sessi
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.join("journal.jsonl"),
     })
     .unwrap()

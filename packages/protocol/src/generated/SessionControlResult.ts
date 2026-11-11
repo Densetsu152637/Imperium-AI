@@ -7,6 +7,14 @@ export type SessionControlResult = {
  */
 model: string | null, 
 /**
+ * For `set_effort`: the session's effort afterwards.
+ */
+effort?: "low" | "medium" | "high" | "max", 
+/**
+ * For `set_model` and `set_effort`: whether the session's model can reason.
+ */
+reasoning?: boolean, 
+/**
  * For `set_model` and `compact`: the conversation measured for that model's window. For
  * `set_model` it is an estimate (`method` `estimated`) against the window the model is
  * expected to have, as the model is not loaded or called until the session's next turn,

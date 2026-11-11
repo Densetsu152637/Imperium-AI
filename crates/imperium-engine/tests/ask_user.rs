@@ -91,6 +91,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
             pricing: None,
         }),
         catalog: Vec::new(),
@@ -112,6 +113,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.join(".journal/test.jsonl"),
     })
     .unwrap()

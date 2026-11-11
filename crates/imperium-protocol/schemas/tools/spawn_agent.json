@@ -6,6 +6,16 @@
       "brief": {
         "type": "string"
       },
+      "effort": {
+        "description": "How hard the subagent's model thinks, if it can reason. Default: the session's effort.",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "type": "string"
+      },
       "location": {
         "description": "Restrict to models on this machine or at hosted providers",
         "enum": [

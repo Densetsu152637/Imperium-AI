@@ -269,6 +269,15 @@ pub struct SessionSummary {
     pub folders: Vec<String>,
     /// The root agent's model spec; `None` while the session waits for one to be chosen.
     pub model: Option<String>,
+    /// The session's reasoning effort (`session.control` `set_effort`), kept across restarts.
+    /// Sent only to models that can reason; absent from daemons that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "\"low\" | \"medium\" | \"high\" | \"max\"")]
+    pub effort: Option<String>,
+    /// Whether the session's model can reason, so its effort applies (clients show the effort
+    /// control only then).
+    #[serde(default)]
+    pub reasoning: bool,
     /// Where the session's commands run, such as `tier 0 · folder policy`.
     pub isolation: String,
     /// The session's title: one the user gave it (`session.control` `rename`), else one
@@ -968,6 +977,10 @@ pub struct ModelRow {
     pub context_window: Option<u32>,
     /// False when the row is switched off and left out of routing.
     pub enabled: bool,
+    /// Whether the model can reason, so sessions on it send their effort: the row's
+    /// `reasoning` setting or tags, a local model's chat template, or a known model name.
+    #[serde(default)]
+    pub reasoning: bool,
 }
 
 /// `models.local`: models found in `models.folders`, the hardware they are planned against, and
@@ -1015,6 +1028,10 @@ pub struct LocalModelRow {
     /// instead of the id.
     #[serde(default)]
     pub alias: Option<String>,
+    /// Whether the model can reason: its `reasoning` setting, else its chat template (a
+    /// thinking switch, think tags, or `reasoning_effort`), else its name.
+    #[serde(default)]
+    pub reasoning: bool,
     /// `llamacpp` for GGUF files, `vllm` for Hugging Face folders.
     #[ts(type = "\"llamacpp\" | \"vllm\"")]
     pub runtime: String,
@@ -2401,7 +2418,9 @@ pub struct SessionControlParams {
     pub session_id: String,
     /// `set_resume_policy` (with `resume_policy`, or none to use the default), `resume_now`,
     /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
-    /// for `models.default`; refused while a turn runs), `compact` (summarise older turns
+    /// for `models.default`; refused while a turn runs), `set_effort` (with `effort`; applies
+    /// from every agent's next model call, also while a turn runs; kept across restarts),
+    /// `compact` (summarise older turns
     /// now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
     /// `rename` (with `title`; kept across restarts and never replaced by a generated title; an
     /// empty title lets the session be titled automatically again), `archive` (stop the session and keep its journal; announced with `session.updated`),
@@ -2410,7 +2429,7 @@ pub struct SessionControlParams {
     /// or `resume` (continue a stopped session; not to be confused with `resume_now`, which ends
     /// a usage-limit wait).
     #[ts(
-        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\" | \"rename\" | \"archive\" | \"unarchive\" | \"stop\" | \"resume\""
+        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"set_effort\" | \"compact\" | \"set_pinned\" | \"rename\" | \"archive\" | \"unarchive\" | \"stop\" | \"resume\""
     )]
     pub action: String,
     #[serde(default)]
@@ -2423,6 +2442,10 @@ pub struct SessionControlParams {
     /// For `set_model`: a model table id or an `<endpoint>:<model>` spec.
     #[serde(default)]
     pub model: Option<String>,
+    /// For `set_effort`: how hard models that can reason think.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "\"low\" | \"medium\" | \"high\" | \"max\"")]
+    pub effort: Option<String>,
     /// For `set_pinned`: whether the session is pinned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -2439,6 +2462,14 @@ pub struct SessionControlResult {
     /// For `set_model` and `compact`: the session's model afterwards.
     #[serde(default)]
     pub model: Option<String>,
+    /// For `set_effort`: the session's effort afterwards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "\"low\" | \"medium\" | \"high\" | \"max\"")]
+    pub effort: Option<String>,
+    /// For `set_model` and `set_effort`: whether the session's model can reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning: Option<bool>,
     /// For `set_model` and `compact`: the conversation measured for that model's window. For
     /// `set_model` it is an estimate (`method` `estimated`) against the window the model is
     /// expected to have, as the model is not loaded or called until the session's next turn,

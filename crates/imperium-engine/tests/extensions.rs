@@ -101,6 +101,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -121,6 +122,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: project.path().join(".journal.jsonl"),
     })
     .unwrap();

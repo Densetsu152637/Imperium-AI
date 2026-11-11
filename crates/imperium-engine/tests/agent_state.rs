@@ -126,6 +126,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -146,6 +147,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         auto_compact: false,
         keep_agent_state: true,
         background: None,
+        effort: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),
     })
     .unwrap()

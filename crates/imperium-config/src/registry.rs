@@ -129,6 +129,7 @@ pub static SETTINGS: &[SettingDef] = &[
     live(def("models.default", "Default model", STRING, "Model for new sessions, as <endpoint>:<model>.")),
     live(def("models.folders", "Model folders", PathList, "Folders scanned for GGUF models, LM Studio and Hugging Face cache folders, and Hugging Face model folders; scanned again at once when changed.")),
     def("models.download_dir", "Download folder", PathKind, "Where Hugging Face downloads go (absolute). Defaults to the first model folder, else <data>/models."),
+    live(choice("models.effort", "Reasoning effort", &["low", "medium", "high", "max"], "How hard models that can reason think before answering, for new sessions; each session can change its own. Models that cannot reason are sent nothing.")),
     live(def("models.suggest_downloads", "Suggest model downloads", Bool, "Sessions offer to download a suitable local model from Hugging Face when the best one available is poor for the task. Nothing downloads without your consent.")),
     choice("routing.prefer", "Routing preference", &["cheapest", "local", "cloud"], "Tie-breaker among suitable models for subagents."),
     choice("runtime.llamacpp.backend", "llama.cpp backend", &["auto", "cpu", "vulkan", "cuda12", "cuda13", "rocm", "metal"], "Runtime pack used to run local GGUF models."),

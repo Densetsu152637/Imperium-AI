@@ -969,6 +969,28 @@ impl Connection {
                     Some(session.set_model(model).await.map_err(switch_error)?)
                 }
                 "compact" => Some(session.compact().await.map_err(switch_error)?),
+                "set_effort" => {
+                    let effort = params
+                        .effort
+                        .as_deref()
+                        .ok_or_else(|| {
+                            ErrorObject::new(codes::INVALID_PARAMS, "set_effort needs effort")
+                        })?
+                        .parse::<imperium_api::Effort>()
+                        .map_err(|error| {
+                            ErrorObject::new(codes::INVALID_PARAMS, error.to_string())
+                        })?;
+                    state.set_effort(&session, effort);
+                    return Ok(SessionControlResult {
+                        effort: Some(session.effort().as_str().to_string()),
+                        reasoning: Some(
+                            session
+                                .model()
+                                .is_some_and(|model| state.model_reasons(&model)),
+                        ),
+                        ..SessionControlResult::default()
+                    });
+                }
                 "set_pinned" => {
                     let pinned = params.pinned.ok_or_else(|| {
                         ErrorObject::new(codes::INVALID_PARAMS, "set_pinned needs pinned")
@@ -990,8 +1012,10 @@ impl Connection {
             };
             Ok(match fitted {
                 Some(context) => SessionControlResult {
+                    reasoning: session.model().map(|model| state.model_reasons(&model)),
                     model: session.model(),
                     context: Some(context),
+                    effort: None,
                 },
                 None => SessionControlResult::default(),
             })

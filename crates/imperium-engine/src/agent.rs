@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use imperium_api::{
-    Load, LocalRequest, Priority, ToolContext, ToolEvent, ToolGroup, ToolProvider,
+    Effort, Load, LocalRequest, Priority, ToolContext, ToolEvent, ToolGroup, ToolProvider,
     parse_arguments as parse, truncate_chars as truncate,
 };
 use imperium_config::{Location, Tier};
@@ -179,6 +179,8 @@ pub struct Agent {
     /// What the next `turn_started` says instead of the text, for chunk and reduce agents
     /// whose real brief holds chunk text that must stay out of the journal and history.
     shown: Option<String>,
+    /// The reasoning effort this subagent was spawned with, over the session's.
+    effort: Option<Effort>,
 }
 
 impl Agent {
@@ -283,7 +285,22 @@ impl Agent {
             fit_pending: false,
             previous: None,
             shown: None,
+            effort: None,
         }
+    }
+
+    /// Thinks at `effort` instead of the session's effort, when its model can reason.
+    pub fn with_effort(mut self, effort: Option<Effort>) -> Self {
+        self.effort = effort;
+        self
+    }
+
+    /// The effort this agent's calls carry: its own or the session's, when the model can
+    /// reason; `None` (nothing sent) when it cannot.
+    fn request_effort(&self) -> Option<Effort> {
+        self.model
+            .reasons(self.shared.local.as_deref())
+            .then(|| self.effort.unwrap_or_else(|| self.shared.effort.get()))
     }
 
     /// The model this agent calls.
@@ -724,6 +741,7 @@ impl Agent {
                     tools: &tools,
                     slot: lease.as_ref().and_then(|lease| lease.slot),
                     max_tokens: lease.as_ref().and_then(|lease| lease.max_tokens),
+                    effort: self.request_effort(),
                 };
                 let capped = request.max_tokens.is_some();
                 let started = Instant::now();
@@ -1638,11 +1656,19 @@ impl Agent {
             single_call: bool,
             #[serde(default)]
             title: Option<String>,
+            #[serde(default)]
+            effort: Option<String>,
         }
         let args: Args = parse(arguments)?;
         if args.brief.trim().is_empty() {
             return Err("brief must not be empty".into());
         }
+        let effort = args
+            .effort
+            .as_deref()
+            .map(str::parse::<Effort>)
+            .transpose()
+            .map_err(|error| error.to_string())?;
         let tier = match args.tier.as_deref() {
             Some(tier) => tier.parse::<Tier>()?,
             None => Tier::default(),
@@ -1681,7 +1707,8 @@ impl Agent {
             model,
             false,
             role,
-        );
+        )
+        .with_effort(effort);
         if args.single_call {
             agent = agent.single_call();
         }
@@ -2470,6 +2497,8 @@ impl Agent {
                         tools: &[],
                         slot: lease.as_ref().and_then(|lease| lease.slot),
                         max_tokens: lease.as_ref().and_then(|lease| lease.max_tokens),
+                        // A summary needs no deliberation: no reasoning control is sent.
+                        effort: None,
                     },
                     &mut ignore,
                 )

@@ -129,6 +129,7 @@ fn start(local: Arc<dyn LocalModels>, dir: &std::path::Path) -> Session {
             local: true,
             context_window: None,
             kind: "llamacpp".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -149,6 +150,7 @@ fn start(local: Arc<dyn LocalModels>, dir: &std::path::Path) -> Session {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.join(".journal.jsonl"),
     })
     .unwrap()

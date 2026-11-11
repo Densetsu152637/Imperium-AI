@@ -97,6 +97,7 @@ async fn a_session_calls_the_client_registered_for_its_endpoint_kind() {
             local: false,
             context_window: None,
             kind: "scripted".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         clients,
@@ -117,6 +118,7 @@ async fn a_session_calls_the_client_registered_for_its_endpoint_kind() {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();
@@ -175,6 +177,7 @@ async fn an_unknown_endpoint_kind_fails_the_turn() {
             local: false,
             context_window: None,
             kind: "anthropic".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         clients: ChatClients::default(),
@@ -195,6 +198,7 @@ async fn an_unknown_endpoint_kind_fails_the_turn() {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

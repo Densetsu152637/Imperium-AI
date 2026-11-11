@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use imperium_api::Pricing;
+use imperium_api::{Effort, Pricing};
 use serde::{Deserialize, Serialize};
 
 use crate::SecretName;
@@ -918,11 +918,16 @@ pub struct ModelSettings {
     /// the built-in list ([`default_suggestions`]).
     #[serde(default = "default_suggestions")]
     pub suggestions: Vec<SuggestionCandidate>,
+    /// Reasoning effort new sessions start with (`low`, `medium`, `high`, `max`); a session
+    /// changes its own, and models that cannot reason are sent none.
+    #[serde(default)]
+    pub effort: Effort,
 }
 
 impl Default for ModelSettings {
     fn default() -> Self {
         ModelSettings {
+            effort: Effort::default(),
             default: None,
             catalog: Vec::new(),
             folders: Vec::new(),
@@ -1160,6 +1165,11 @@ pub struct CatalogEntry {
     /// their own; for other models the window is unknown unless given here.
     #[serde(default)]
     pub context_window: Option<u32>,
+    /// Whether the model can reason, so sessions on it send their reasoning effort. Unset, a
+    /// `reasoning` or `thinking` tag says yes (`no-reasoning` says no), else a local model's
+    /// chat template decides, else the model's name (known reasoning models).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<bool>,
     /// `cpu` pins a llama.cpp model to the CPU lane: its own server with no GPU layers, its
     /// weights and KV cache in system RAM, never taking VRAM or part in GPU swaps.
     #[serde(default)]
@@ -1188,6 +1198,13 @@ fn default_enabled() -> bool {
 }
 
 impl CatalogEntry {
+    /// Whether the row says its model reasons: its `reasoning` setting, else its tags; `None`
+    /// when it says neither (the model's template or name then decides).
+    pub fn reasoning_setting(&self) -> Option<bool> {
+        self.reasoning
+            .or_else(|| imperium_api::reasoning_from_tags(&self.tags))
+    }
+
     /// The name of a CPU-lane-only key this row sets, if any.
     fn lane_key_set(&self) -> Option<&'static str> {
         if self.parallel.is_some() {

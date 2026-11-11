@@ -128,9 +128,13 @@ the wait reason in the desktop.
     and result, for the session and for every subagent, collapsed by default: one line per call
     (state, tool, summary, run time) that opens to the arguments and result, long text behind
     "show more" ([07](07-desktop-ui.md#tool-calls-implemented)).
-15. **Reasoning effort.** Models that can reason get a per-session effort setting (low,
-    medium, high, max), mapped to each backend's reasoning controls and hidden for models
-    without them.
+15. **Reasoning effort** (implemented). Models that can reason get a per-session effort
+    setting (low, medium, high, max), mapped to each backend's reasoning controls and hidden
+    for models without them: `models.effort` sets the default, `session.control` `set_effort`
+    (and `/effort` in the CLI, a selector beside the model in the desktop app) changes it,
+    `spawn_agent` may set one for a subagent, and whether a model reasons comes from its table
+    row, its tags, a local model's chat template, or its name
+    ([04](04-models-and-routing.md#reasoning-effort), [07](07-desktop-ui.md)).
 16. **Memory control in core.** Review loading and unloading end to end: imperium-core
     should own every decision about which models and KV caches are resident, loaded, or
     unloaded (the local runtime only carries them out), with the reason for each move visible.

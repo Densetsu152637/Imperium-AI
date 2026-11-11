@@ -321,3 +321,58 @@ export const INSTALL_ON_FIRST_USE = "llama.cpp will be installed on first use.";
 export function needsRuntime(spec: string, runtime: RuntimeInfo | null | undefined): boolean {
   return spec.startsWith("llamacpp:") && runtime != null && !runtime.installed && !runtime.auto_install;
 }
+
+/** A reasoning effort level, as `session.control` `set_effort` takes it. */
+export type Effort = "low" | "medium" | "high" | "max";
+
+const EFFORT_OPTIONS: SelectOption[] = [
+  { value: "low", label: "Low effort", description: "Thinks briefly: fastest and cheapest" },
+  { value: "medium", label: "Medium effort", description: "The usual balance" },
+  { value: "high", label: "High effort", description: "Thinks longer on hard problems" },
+  { value: "max", label: "Max effort", description: "The most the model's backend allows" },
+];
+
+/**
+ * The open session's reasoning effort, beside its model. The footer shows it only when the
+ * model can reason; a change applies from the agents' next model call, during a turn too.
+ */
+export function EffortSelect({
+  current,
+  disabled,
+  onChange,
+}: {
+  /** The session's effort; daemons before protocol 0.9 send none, shown as medium. */
+  current: Effort | undefined;
+  disabled?: boolean;
+  /** Sets the effort; rejects with the daemon's reason. */
+  onChange: (effort: Effort) => Promise<unknown>;
+}) {
+  const [pending, setPending] = useState<Effort | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const choose = (value: string) => {
+    const effort = value as Effort;
+    if (effort === current) return;
+    setPending(effort);
+    setError(null);
+    onChange(effort)
+      .catch((reason: unknown) => setError(message(reason)))
+      .finally(() => setPending(null));
+  };
+  return (
+    <span className="effort-select">
+      <Select
+        aria-label="Reasoning effort"
+        className="effort-select-button"
+        value={pending ?? current ?? "medium"}
+        options={EFFORT_OPTIONS}
+        disabled={disabled || pending !== null}
+        onChange={choose}
+      />
+      {error && (
+        <span className="model-status error" role="alert" title={error}>
+          {error}
+        </span>
+      )}
+    </span>
+  );
+}
