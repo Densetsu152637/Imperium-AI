@@ -1126,7 +1126,7 @@ impl Supervisor {
                     }
                 },
             );
-        let supervisor = Arc::new_cyclic(|me| Supervisor {
+        Arc::new_cyclic(|me| Supervisor {
             models: Mutex::new(models),
             model_settings: Mutex::new(settings.models.clone()),
             settings,
@@ -1150,8 +1150,7 @@ impl Supervisor {
                 hold: DEFAULT_INTERACTIVE_HOLD,
             }),
             me: Weak::clone(me),
-        });
-        supervisor
+        })
     }
 
     pub fn models(&self) -> Vec<LocalModel> {
