@@ -280,15 +280,38 @@ async fn a_symlinked_instruction_file_leading_outside_is_not_loaded() {
         outside.path().join("secret.md"),
         dir.path().join("linked/AGENTS.md"),
     );
-    if made.is_err() {
-        return; // this platform does not permit symbolic links here
+    if let Err(error) = made {
+        eprintln!("SKIPPED: symbolic links cannot be created here: {error}");
+        return;
     }
+    // A legitimate sibling in the same directory is the positive control.
+    std::fs::write(dir.path().join("linked/CLAUDE.md"), "Sibling rules.\n").unwrap();
     let workspace = Workspace::new(dir.path()).unwrap();
     let script = vec![("list_dir", json!({"path": "linked"}))];
     let (request, _) = explore_with(&dir, workspace, true, script).await;
-    assert!(
-        !user_messages(&request)
-            .join("\n")
-            .contains("Outside secret.")
+    let all = user_messages(&request).join("\n");
+    assert!(all.contains("Sibling rules."), "{all}");
+    assert!(!all.contains("Outside secret."));
+}
+
+#[tokio::test]
+async fn a_worktree_root_file_is_skipped_only_when_the_manifest_serves_the_same_text() {
+    // The project (what the manifest serves) and a worktree session rooted elsewhere.
+    let project = tempfile::tempdir().unwrap();
+    let worktree = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("AGENTS.md"), "Project rules.\n").unwrap();
+    std::fs::write(project.path().join("CLAUDE.md"), "Same text.\n").unwrap();
+    std::fs::write(worktree.path().join("AGENTS.md"), "Worktree rules.\n").unwrap();
+    std::fs::write(worktree.path().join("CLAUDE.md"), "Same text.\n").unwrap();
+    let workspace = Workspace::new(worktree.path()).unwrap();
+    let script = vec![("list_dir", json!({"path": "."}))];
+    let (request, _) = explore_with(&project, workspace, true, script).await;
+    let all = user_messages(&request).join("\n");
+    assert!(all.contains("<instruction-file"), "{all}");
+    assert!(all.contains("Worktree rules."));
+    assert_eq!(
+        all.matches("Same text.").count(),
+        0,
+        "identical: served already"
     );
 }

@@ -93,10 +93,10 @@ pub fn cap(text: &str, max: usize) -> (String, bool) {
 
 /// [`cap`] for text read from a file of `total` bytes, of which only a prefix was read.
 fn cap_of(text: &str, max: usize, total: usize) -> (String, bool) {
-    if text.len() <= max {
+    if text.len() <= max && total <= max {
         return (text.to_string(), false);
     }
-    let mut end = max;
+    let mut end = max.min(text.len());
     while !text.is_char_boundary(end) {
         end -= 1;
     }
@@ -124,7 +124,20 @@ fn read_bounded(file: &Path) -> std::io::Result<(String, usize)> {
     handle
         .take(MAX_FILE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
-    Ok((String::from_utf8_lossy(&bytes).into_owned(), total))
+    // Only a character cut off by the read limit is forgiven; other invalid bytes are an error.
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok((text, total)),
+        Err(error) if total > MAX_FILE_BYTES && error.utf8_error().error_len().is_none() => {
+            let valid = error.utf8_error().valid_up_to();
+            let mut bytes = error.into_bytes();
+            bytes.truncate(valid);
+            Ok((String::from_utf8(bytes).unwrap_or_default(), total))
+        }
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the file is not valid UTF-8",
+        )),
+    }
 }
 
 /// Reads `file` and the files it imports under `policy`.
@@ -488,7 +501,30 @@ pub(crate) mod tests {
         let made = std::os::unix::fs::symlink(target, link);
         #[cfg(windows)]
         let made = std::os::windows::fs::symlink_file(target, link);
+        if let Err(error) = &made {
+            eprintln!("SKIPPED: symbolic links cannot be created here: {error}");
+        }
         made.is_ok()
+    }
+
+    #[test]
+    fn invalid_utf8_is_refused_and_files_under_the_cap_are_not_truncated() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("AGENTS.md");
+        std::fs::write(&bad, [b'o', b'k', 0xff, 0xfe]).unwrap();
+        let error = expand(&bad, &policy(dir.path())).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        // Exactly at the cap, with multi-byte characters: whole, not truncated.
+        let text = "é".repeat(MAX_FILE_BYTES / 2);
+        assert_eq!(text.len(), MAX_FILE_BYTES);
+        let file = write(dir.path(), "CLAUDE.md", &text);
+        let expanded = expand(&file, &policy(dir.path())).unwrap();
+        assert!(!expanded.truncated && expanded.text == text);
+        // Over the cap, cut inside a multi-byte character by the read limit: still read.
+        let long = "é".repeat(MAX_FILE_BYTES);
+        let file = write(dir.path(), "docs/long.md", &long);
+        let expanded = expand(&file, &policy(dir.path())).unwrap();
+        assert!(expanded.truncated);
     }
 
     #[test]

@@ -229,8 +229,23 @@ pub(crate) fn discover(
             continue;
         };
         for file in imports::instruction_files(dir, root) {
-            if file.parent() == project.as_deref() || file.parent() == served_root.as_deref() {
+            if file.parent() == project.as_deref() {
                 continue;
+            }
+            // A worktree's root files are skipped only when they are the project's own, or
+            // the same bytes: otherwise the manifest does not serve what they say.
+            if file.parent() == served_root.as_deref()
+                && let (Some(project), Some(name)) = (project.as_deref(), file.file_name())
+            {
+                let counterpart = project.join(name);
+                if std::fs::canonicalize(&counterpart).ok() == std::fs::canonicalize(&file).ok()
+                    || matches!(
+                        (std::fs::read(&counterpart), std::fs::read(&file)),
+                        (Ok(theirs), Ok(ours)) if theirs == ours
+                    )
+                {
+                    continue;
+                }
             }
             let path = imports::display_path(&file);
             if tracker.loaded.contains(&path) {

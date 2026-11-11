@@ -221,13 +221,11 @@ this off.
 
 Only a call that succeeded counts as opening a directory: one that was denied by a rule, blocked
 by a hook, or failed loads nothing. The files in the workspace's root folder are skipped as well
-as the project folder's (a session in a worktree works in the worktree's root).
+as the project folder's when they are the project's own file (same path) or have the same
+bytes; a worktree root file that differs from what the manifest serves is loaded.
 
 The message is the record: which files an agent holds is read back from its conversation, so a
-resumed session does not load them again and compaction keeps them (above). Once the
-single-carrier change for compaction lands (the `<context-manifest kept="true">` block of the
-context-transcripts work), the instruction files are carried inside that block instead of a
-separate wrapper; the loaded-once and never-summarised behaviour stays the same. Each load is also
+resumed session does not load them again and compaction keeps them (above). Each load is also
 journaled as a `context_loaded` event whose references are `instructions:<absolute path>`.
 The context breakdown counts them under `manifest` (workflow context).
 
@@ -247,8 +245,13 @@ only from the project folder, and the files found while exploring from any allow
 workspace folders, folder grants, and project worktrees), not only the one they live in. The
 same limit applies to the files themselves: a symbolic link whose target is outside the
 allowed folders is not read, whether it is an instruction file, an import, or a file loaded by
-reference. Files are read only up to the 16 KiB limit (plus one byte, to know they are cut), so
-a huge file is never read whole.
+reference. For a required project instruction file this means a `AGENTS.md` or `CLAUDE.md` that
+is a symbolic link leading outside the project is refused when loaded, and under
+`workflow.enforce = "required-before-action"` the agent's writes and commands stay blocked
+until the link is fixed. Instruction files met while exploring, and the files they import, are
+read only up to the 16 KiB limit (plus one byte, to know they are cut), so a huge file is
+never read whole; their content must be valid UTF-8, otherwise they are reported as not
+readable.
 
 For a pack, the entry index (`entry`, `AGENTS.md` by default) and a `CLAUDE.md` beside it are
 both required manifest items (`<pack>:CLAUDE.md`, "entry file"), and `context_load` returns each

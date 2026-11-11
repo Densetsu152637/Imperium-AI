@@ -384,9 +384,7 @@ fail to start without one.
 
 Compaction never summarises instruction files an agent met while exploring: they are workflow
 context, carried over verbatim after the summary (see the
-[workflow contract](18-workflow-contract.md#instruction-files-met-while-exploring)). Once the
-`<context-manifest kept="true">` block of the context-transcripts work lands, they travel inside
-that block rather than in a wrapper of their own.
+[workflow contract](18-workflow-contract.md#instruction-files-met-while-exploring)).
 
 **Implemented:** a session's root agent can switch to another model or endpoint mid-session
 and keep its conversation (`Session::set_model`; `session.control` with `set_model` and a model
