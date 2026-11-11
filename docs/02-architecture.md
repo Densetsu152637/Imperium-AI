@@ -69,8 +69,8 @@
   subagent a follow-up ([03](03-agent-engine.md#agent-state)). `session.control` changes a running session between turns:
   its usage-limit policy, what it watches, its model (without loading it; the next turn
   compacts the conversation to fit, [03](03-agent-engine.md#switching-models-and-compaction)),
-  or compaction now, and pins it (`set_pinned`, kept across restarts and announced as
-  `session.updated`); model switches and compaction are refused with `-32006` while a turn runs,
+  or compaction now, pins it (`set_pinned`) or renames it (`rename`; both kept across restarts
+  and announced as `session.updated`); model switches and compaction are refused with `-32006` while a turn runs,
   and compaction with `-32007` when the conversation cannot fit.
 - Schema defined in Rust (`imperium-protocol`) and exported to TypeScript with `ts-rs` into
   `packages/protocol/src/generated/` whenever `cargo test` runs. `scripts/check-rust.sh` (run

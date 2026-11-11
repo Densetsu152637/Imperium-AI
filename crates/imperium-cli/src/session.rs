@@ -70,6 +70,7 @@ pub fn set_archived(session_id: String, archived: bool) -> anyhow::Result<()> {
                 pull_request: None,
                 model: None,
                 pinned: None,
+                title: None,
             })
             .await?;
         println!(
