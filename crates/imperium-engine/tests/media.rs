@@ -126,6 +126,7 @@ async fn agents_generate_images_and_audio() {
         background: None,
         checkpoints: None,
         auto_compact: false,
+        auto_compact_at: None,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),

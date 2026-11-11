@@ -83,6 +83,9 @@ pub struct SessionConfig {
     /// Compact the root conversation at the start of a turn when it has grown past the model's
     /// context budget (for long-lived sessions such as an environment's persistent agent).
     pub auto_compact: bool,
+    /// Compact an agent's conversation mid-turn when the next model call would read this share
+    /// of its model's context window (`context.auto_compact_at`); `None` or 0 turns it off.
+    pub auto_compact_at: Option<f64>,
     /// Keep every agent's state (a subagent's conversation included) in
     /// `<journal>.agents/`, so finished subagents can be resumed after a restart
     /// (`sessions.agent_state_keep`). Off, it is kept in memory while the session runs.
@@ -602,6 +605,7 @@ pub(crate) struct Shared {
     pub routing: RoutingSettings,
     pub local: Option<Arc<dyn LocalModels>>,
     pub max_steps: u32,
+    pub auto_compact_at: Option<f64>,
     /// Tools the user allowed for the rest of the session, for every agent.
     pub allowed_tools: Mutex<HashSet<String>>,
     /// Tool providers, started before the first turn.
@@ -642,8 +646,8 @@ impl Shared {
 }
 
 /// What a resumed session had loaded, from its journal: skills each agent loaded, as (agent id,
-/// skill name), and the plugins activated, in order. An agent's compaction drops its skills,
-/// since the summary replaced their instructions.
+/// skill name), and the plugins activated, in order.
+/// A compaction keeps loaded skills' instructions verbatim, so it drops none.
 fn replay_extensions(history: &[AgentEvent]) -> (HashSet<(String, String)>, Vec<String>) {
     let mut skills = HashSet::new();
     let mut plugins = Vec::new();
@@ -661,9 +665,6 @@ fn replay_extensions(history: &[AgentEvent]) -> (HashSet<(String, String)>, Vec<
                 name,
                 ..
             } if !plugins.contains(name) => plugins.push(name.clone()),
-            SessionEvent::ContextCompacted { .. } => {
-                skills.retain(|(agent, _)| agent != agent_id);
-            }
             _ => {}
         }
     }
@@ -722,6 +723,7 @@ async fn run(
         routing: config.routing,
         local: config.local,
         max_steps: config.max_steps,
+        auto_compact_at: config.auto_compact_at,
         allowed_tools: Mutex::new(config.pre_approved.into_iter().collect()),
         tools: config.tools,
         extensions: config.extensions,

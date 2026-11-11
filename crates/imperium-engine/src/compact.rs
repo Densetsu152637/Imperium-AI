@@ -173,7 +173,7 @@ fn transcript(messages: &[ChatMessage]) -> String {
             ChatMessage::User { content, .. } => {
                 out.push_str(&format!(
                     "### User\n{}\n\n",
-                    truncate_chars(content, MESSAGE_CHARS)
+                    truncate_chars(&without_pinned(content), MESSAGE_CHARS)
                 ));
             }
             ChatMessage::Assistant {
@@ -205,6 +205,88 @@ fn transcript(messages: &[ChatMessage]) -> String {
     out
 }
 
+/// Opens the workflow context a compaction carries over verbatim.
+const PINNED_OPEN: &str = "<context-manifest kept=\"true\">\n";
+const PINNED_HEAD: &str = "<context-manifest kept=\"true\">\nWorkflow context loaded earlier in this conversation, kept verbatim:\n\n";
+const PINNED_CLOSE: &str = "\n[end of kept context]\n</context-manifest>";
+/// The tools whose results are workflow context: loaded workflow companions and skills.
+const PINNED_TOOLS: [&str; 2] = ["context_load", "load_skill"];
+
+/// The workflow context in `messages[1..cut]`, which a compaction keeps verbatim instead of
+/// summarising: the context manifest of a turn, the references `context_load` returned, and
+/// the instructions `load_skill` returned (the system prompt, which holds the policy index,
+/// project instruction files, and eager skills, is never summarised at all). Context carried
+/// over by an earlier compaction is carried again. Empty when there is none.
+pub(crate) fn pinned_context(
+    messages: &[ChatMessage],
+    spans: &HashMap<usize, Spans>,
+    cut: usize,
+) -> String {
+    let mut names: HashMap<&str, &str> = HashMap::new();
+    let mut items: Vec<String> = Vec::new();
+    let mut keep = |text: &str| {
+        let text = text
+            .strip_prefix(PINNED_HEAD)
+            .and_then(|inner| inner.strip_suffix(PINNED_CLOSE))
+            .unwrap_or(text);
+        if !text.trim().is_empty() && !items.iter().any(|item| item.contains(text)) {
+            items.push(text.to_string());
+        }
+    };
+    for (index, message) in messages.iter().enumerate().take(cut).skip(1) {
+        match message {
+            ChatMessage::Assistant { tool_calls, .. } => {
+                for call in tool_calls {
+                    names.insert(&call.id, &call.function.name);
+                }
+            }
+            ChatMessage::User { content, .. } => {
+                let parts = spans
+                    .get(&index)
+                    .cloned()
+                    .unwrap_or_else(|| restored_spans(content));
+                for (category, range) in parts {
+                    if category == Category::Manifest
+                        && let Some(text) = content.get(range)
+                    {
+                        keep(text);
+                    }
+                }
+            }
+            ChatMessage::Tool {
+                tool_call_id,
+                content,
+            } => {
+                let pinned = names
+                    .get(tool_call_id.as_str())
+                    .is_some_and(|name| PINNED_TOOLS.contains(name));
+                if pinned
+                    && !content.starts_with("error")
+                    && !content.contains("skill is already loaded")
+                {
+                    keep(content);
+                }
+            }
+            ChatMessage::System { .. } => {}
+        }
+    }
+    if items.is_empty() {
+        return String::new();
+    }
+    format!("{PINNED_HEAD}{}{PINNED_CLOSE}", items.join("\n\n"))
+}
+
+/// `content` without a block of carried-over workflow context.
+fn without_pinned(content: &str) -> String {
+    if let Some(start) = content.find(PINNED_OPEN)
+        && let Some(end) = content[start..].find(PINNED_CLOSE)
+    {
+        let end = start + end + PINNED_CLOSE.len();
+        return format!("{}{}", &content[..start], &content[end..]);
+    }
+    content.to_string()
+}
+
 /// The summary as it is put into the conversation, tagged so a restored conversation's
 /// breakdown recognises it.
 pub(crate) fn summary_block(summary: &str) -> String {
@@ -216,13 +298,31 @@ pub(crate) fn summary_block(summary: &str) -> String {
 
 /// The conversation with `messages[1..cut]` replaced by `block`, and its recorded parts moved
 /// to the new message indices. The block goes before the first kept message when that is a
-/// user message (so roles keep alternating), else in a user message of its own.
+/// user message (so roles keep alternating), else in a user message of its own. `pinned` (the
+/// [`pinned_context`], if any) follows the summary in the same message.
 pub(crate) fn rebuild(
     messages: &[ChatMessage],
     spans: &HashMap<usize, Spans>,
     cut: usize,
-    block: &str,
+    summary: &str,
+    pinned: &str,
 ) -> (Vec<ChatMessage>, HashMap<usize, Spans>) {
+    let (block, head) = if pinned.is_empty() {
+        (
+            summary.to_string(),
+            vec![(Category::Summary, 0..summary.len())],
+        )
+    } else {
+        let start = summary.len() + PART_SEPARATOR.len();
+        (
+            format!("{summary}{PART_SEPARATOR}{pinned}"),
+            vec![
+                (Category::Summary, 0..summary.len()),
+                (Category::Manifest, start..start + pinned.len()),
+            ],
+        )
+    };
+    let block = block.as_str();
     let mut out = vec![messages[0].clone()];
     let mut new_spans = HashMap::new();
     if let Some(system) = spans.get(&0) {
@@ -235,7 +335,7 @@ pub(crate) fn rebuild(
                 .get(&cut)
                 .cloned()
                 .unwrap_or_else(|| restored_spans(content));
-            let mut parts = vec![(Category::Summary, 0..block.len())];
+            let mut parts = head;
             parts.extend(
                 inner
                     .into_iter()
@@ -249,7 +349,7 @@ pub(crate) fn rebuild(
             cut + 1
         }
         _ => {
-            new_spans.insert(1, vec![(Category::Summary, 0..block.len())]);
+            new_spans.insert(1, head);
             out.push(ChatMessage::user(block));
             cut
         }
@@ -383,7 +483,7 @@ mod tests {
         let messages = conversation();
         let spans = HashMap::from([(5, vec![(Category::User, 0..3)])]);
         let block = summary_block("earlier work");
-        let (rebuilt, new_spans) = rebuild(&messages, &spans, 5, &block);
+        let (rebuilt, new_spans) = rebuild(&messages, &spans, 5, &block, "");
         assert_eq!(rebuilt.len(), 5);
         let ChatMessage::User { content, .. } = &rebuilt[1] else {
             panic!("a user message")
@@ -395,7 +495,7 @@ mod tests {
         assert_eq!(rebuilt[2..], messages[6..]);
 
         // Cut inside a turn: the summary is a user message of its own before the assistant.
-        let (rebuilt, _) = rebuild(&messages, &spans, 6, &block);
+        let (rebuilt, _) = rebuild(&messages, &spans, 6, &block, "");
         assert!(matches!(&rebuilt[1], ChatMessage::User { content, .. } if content == &block));
         assert_eq!(rebuilt[2..], messages[6..]);
     }
@@ -413,5 +513,118 @@ mod tests {
     fn the_budget_leaves_room_for_the_reply() {
         assert_eq!(budget(1_000), 850);
         assert_eq!(budget(32_768), 27_852);
+    }
+
+    fn calling_tool(id: &str, name: &str) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: id.into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: name.into(),
+                    arguments: "{}".into(),
+                },
+            }],
+        }
+    }
+
+    fn tool_result(id: &str, content: &str) -> ChatMessage {
+        ChatMessage::Tool {
+            tool_call_id: id.into(),
+            content: content.into(),
+        }
+    }
+
+    /// A conversation with workflow context: a manifest in the first user message, a
+    /// `context_load` and a `load_skill` result, and ordinary work.
+    fn with_context() -> (Vec<ChatMessage>, HashMap<usize, Spans>, [String; 3]) {
+        let manifest =
+            "<context-manifest role=\"root\">\n- AGENTS.md (required)\n</context-manifest>";
+        let loaded =
+            "<loaded reference=\"workflows/AGENTS.leaf.md\">\n# Leaf\nKeep  spacing.\n</loaded>\n";
+        let skill = "# Skill: review\nRead the diff first.\n";
+        let first = format!("{manifest}{PART_SEPARATOR}fix the parser");
+        let spans = HashMap::from([(
+            1,
+            vec![
+                (Category::Manifest, 0..manifest.len()),
+                (
+                    Category::User,
+                    manifest.len() + PART_SEPARATOR.len()..first.len(),
+                ),
+            ],
+        )]);
+        let messages = vec![
+            ChatMessage::System {
+                content: "system prompt\n\nProject instructions: AGENTS.md".into(),
+            },
+            user(&first),
+            calling_tool("a", "context_load"),
+            tool_result("a", loaded),
+            calling_tool("b", "load_skill"),
+            tool_result("b", skill),
+            calling("c"),
+            tool_result("c", "ordinary output that may be summarised"),
+            reply("done"),
+            user("next"),
+            reply("ok"),
+        ];
+        (
+            messages,
+            spans,
+            [manifest.into(), loaded.into(), skill.into()],
+        )
+    }
+
+    #[test]
+    fn compaction_keeps_the_system_prompt_and_workflow_context_verbatim() {
+        let (messages, spans, [manifest, loaded, skill]) = with_context();
+        let cut = 9;
+        let pinned = pinned_context(&messages, &spans, cut);
+        for text in [&manifest, &loaded, &skill] {
+            assert!(pinned.contains(text.as_str()), "{text}");
+        }
+        assert!(!pinned.contains("ordinary output"));
+
+        let (rebuilt, new_spans) = rebuild(&messages, &spans, cut, &summary_block("s"), &pinned);
+        // The system prompt is untouched, byte for byte.
+        assert_eq!(rebuilt[0], messages[0]);
+        let ChatMessage::User { content, .. } = &rebuilt[1] else {
+            panic!("a user message")
+        };
+        // Workflow context is in the kept message verbatim; older work is only summarised.
+        for text in [&manifest, &loaded, &skill] {
+            assert!(content.contains(text.as_str()), "{text}");
+        }
+        assert!(content.contains("<conversation-summary>"));
+        assert!(!content.contains("ordinary output"));
+        assert!(!content.contains("fix the parser"));
+        assert!(new_spans[&1].iter().any(|(c, _)| *c == Category::Manifest));
+
+        // A second compaction carries the same context forward without repeating it.
+        let mut again = rebuilt.clone();
+        again.push(user("more"));
+        again.push(reply("fine"));
+        let carried = pinned_context(&again, &new_spans, 3);
+        for text in [&manifest, &loaded, &skill] {
+            assert_eq!(carried.matches(text.as_str()).count(), 1, "{text}");
+        }
+        let (second, _) = rebuild(&again, &new_spans, 3, &summary_block("t"), &carried);
+        assert_eq!(second[0], messages[0]);
+        let ChatMessage::User { content, .. } = &second[1] else {
+            panic!("a user message")
+        };
+        for text in [&manifest, &loaded, &skill] {
+            assert_eq!(content.matches(text.as_str()).count(), 1, "{text}");
+        }
+        // The summariser is not shown the carried context.
+        assert!(!transcript(&rebuilt[1..2]).contains("Read the diff first"));
+    }
+
+    #[test]
+    fn a_conversation_without_workflow_context_pins_nothing() {
+        let messages = conversation();
+        assert_eq!(pinned_context(&messages, &HashMap::new(), 9), "");
     }
 }

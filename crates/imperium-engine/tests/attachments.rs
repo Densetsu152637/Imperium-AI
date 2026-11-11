@@ -98,6 +98,7 @@ async fn attachments_reach_the_model_and_the_journal() {
         background: None,
         checkpoints: None,
         auto_compact: false,
+        auto_compact_at: None,
         keep_agent_state: false,
         effort: Default::default(),
         journal_path: journal.clone(),

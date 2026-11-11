@@ -108,6 +108,7 @@ fn start_in(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> 
         background: None,
         checkpoints: None,
         auto_compact: false,
+        auto_compact_at: None,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.join(".journal/test.jsonl"),

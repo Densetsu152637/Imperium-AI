@@ -179,6 +179,7 @@ fn start(local: Arc<OneSlot>, load: Arc<Manual>, dir: &std::path::Path) -> Sessi
         background: Some(Background { load }),
         checkpoints: None,
         auto_compact: false,
+        auto_compact_at: None,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.join(".journal.jsonl"),

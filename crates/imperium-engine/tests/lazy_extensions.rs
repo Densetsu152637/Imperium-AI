@@ -184,6 +184,7 @@ fn start(
         background: None,
         checkpoints: None,
         auto_compact: false,
+        auto_compact_at: None,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: project.join(".journal.jsonl"),
