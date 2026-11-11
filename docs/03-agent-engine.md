@@ -352,9 +352,33 @@ table with each category's share of the window); `--context` adds a one-line sum
 turn. The desktop shows it in the session's *Context and outputs* section
 ([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
-- Planned: per-agent context windows track usage and, near the limit during a turn, the engine
-  compacts automatically with the [same compaction](#switching-models-and-compaction) a model
-  switch uses (today it runs at the first turn after a switch, or when asked).
+- **Mid-turn compaction (implemented):** each agent, the root and every subagent, checks before
+  each model call whether the next request would reach `context.auto_compact_at` (default
+  `0.85`, never taken below `0.5`; `0` turns it off) of its model's context window. The size is the latest call's reported
+  prompt tokens plus an estimate of the messages added since, or an estimate of the whole request
+  before any call has reported. At or past it, the agent runs the [same
+  compaction](#switching-models-and-compaction) a model switch uses, emits `compaction_started`
+  and `context_compacted`, and carries on with the turn. It needs a known window (the model
+  table's, a local model's planned one); without one nothing happens. It never loops: another
+  attempt waits for at least two new messages, a compaction that did not shrink the conversation
+  stops further attempts for that turn, and a failed one is a notice (not tried again until the
+  conversation has grown) while the turn continues with the conversation as it is. A
+  compaction aims at 80% of the trigger at most, so the next call does not trigger it again,
+  and none is tried when the system prompt, tools, and carried context alone take 80% of the
+  trigger (summarising could not get under it). The session's `auto_compact` flag stays what it was: also fit
+  the root conversation at the start of each turn (environment agents).
+- **What compaction never touches:** the system prompt (the policy index and role instructions,
+  project instruction files such as `AGENTS.md`, eager skills, memory and web rules) is always
+  kept as it was. Workflow context loaded during the conversation is carried over verbatim
+  too, next to the summary, in a `<context-manifest kept="true">` block (recognised again after a restart): the latest
+  context manifest, what `context_load` returned (each result once; one that holds an earlier
+  one replaces it) (workflow companions), and what `load_skill`
+  returned (skill instructions; a skill therefore stays loaded; journals written before this carried nothing over, and
+  replay still drops their skills at such a compaction). Everything else is up for
+  summarising: messages, tool calls and results, subagent reports, attachments. Text inside a carried item that looks like the block's own
+  delimiters is backslash-escaped, so no item can end the block or split itself. The carried
+  context counts against the budget, so a conversation whose kept context alone is too large is
+  refused like one whose system prompt is.
 - Large tool outputs are stored as artefacts; the model receives a truncated view plus a
   handle it can page through.
 
@@ -383,7 +407,9 @@ fail to start without one.
 ## Switching models and compaction
 
 Compaction never summarises instruction files an agent met while exploring: they are workflow
-context, carried over verbatim after the summary (see the
+context, carried over verbatim after the summary, inside the same kept-context block as the
+loaded workflow references and skills (once per file, also across repeated compactions and
+restarts; see [what compaction never touches](#context-management) and the
 [workflow contract](18-workflow-contract.md#instruction-files-met-while-exploring)).
 
 **Implemented:** a session's root agent can switch to another model or endpoint mid-session
@@ -435,7 +461,8 @@ in the model folders (`-32004` otherwise, or when no local runtime is set up).
   2,000 characters are cut in what it reads). The summary goes before the first kept user
   message, tagged `<conversation-summary>` (so roles still alternate, and breakdowns count it as
   `summary`), or in a user message of its own when the kept part starts mid-turn. The result
-  is measured again: a summary too long is shortened, and if the kept messages are still too
+  is measured again (workflow context loaded earlier is carried over verbatim beside the
+  summary, see [mid-turn compaction](#context-management)): a summary too long is shortened, and if the kept messages are still too
   many, fewer are kept and the summary rewritten, up to six attempts.
 - **Failure at the first turn:** when the model cannot be reached or loaded (no runtime, the
   server missing, not enough memory), when the system prompt and tools alone (plus a minimal
@@ -687,4 +714,6 @@ to record git checkpoints of the session's files before turns that change them, 
 the journal's length and the saved conversation at that point, and `session.rewind` puts the
 files back, forks the conversation there into a new session (the original is kept), or both
 ([checkpoints and rewinding](14-projects-and-automation.md#checkpoints-and-rewinding)).
-Planned: transcripts, task trees, and artefacts browsable and exportable.
+Transcripts, the subagent task tree, and the files agents attached or made export from the
+journal as Markdown or JSON, running or archived (`session.export`,
+[07](07-desktop-ui.md#exporting-transcripts-implemented)).

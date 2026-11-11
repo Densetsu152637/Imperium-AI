@@ -155,6 +155,18 @@ impl DaemonState {
             .then(|| imperium_engine::journal_events(&self.journal_path(id)))
     }
 
+    /// A session's title and every event it has emitted, for exporting its transcript: a
+    /// running session's history, or an archived one's journal. `None` when there is no such
+    /// session.
+    pub fn transcript_source(&self, id: &str) -> Option<(String, Vec<AgentEvent>)> {
+        if let Some(session) = self.session(id) {
+            let title = self.summary(&session).title;
+            return Some((title, session.subscribe_with_history().0));
+        }
+        let title = self.archived_map().get(id)?.title.clone();
+        Some((title, self.archived_history(id)?))
+    }
+
     /// Archives a running session: records it, stops it, and tells every client. Archiving an
     /// archived session changes nothing.
     pub fn archive(&self, id: &str) -> Result<SessionSummary, ArchiveError> {

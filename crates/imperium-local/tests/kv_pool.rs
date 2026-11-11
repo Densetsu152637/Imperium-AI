@@ -683,6 +683,7 @@ async fn a_session_parked_on_an_approval_holds_no_claim() {
         background: None,
         checkpoints: None,
         auto_compact: false,
+        auto_compact_at: None,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),

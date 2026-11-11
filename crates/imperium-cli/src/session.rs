@@ -1,7 +1,8 @@
 //! `imperium session list|archive|unarchive`: the daemon's sessions, and archiving them.
 
 use imperium_protocol::methods::{
-    SessionControl, SessionControlParams, SessionList, SessionListParams, SessionSummary,
+    ExportFormat, SessionControl, SessionControlParams, SessionExport, SessionExportParams,
+    SessionList, SessionListParams, SessionSummary,
 };
 
 use crate::{block_on, connect};
@@ -79,6 +80,41 @@ pub fn set_archived(session_id: String, archived: bool) -> anyhow::Result<()> {
             "{} session {session_id}",
             if archived { "archived" } else { "unarchived" }
         );
+        Ok(())
+    })
+}
+
+/// Writes a session's transcript to `output`, or standard output.
+pub fn export(
+    session_id: String,
+    format: &str,
+    no_subagents: bool,
+    output: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
+    let format = match format {
+        "md" | "markdown" => ExportFormat::Markdown,
+        "json" => ExportFormat::Json,
+        other => anyhow::bail!("unknown format {other:?}: use md or json"),
+    };
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let exported = client
+            .call::<SessionExport>(SessionExportParams {
+                session_id,
+                format,
+                include_subagents: no_subagents.then_some(false),
+            })
+            .await?;
+        if let Some(warning) = &exported.warning {
+            eprintln!("warning: {warning}");
+        }
+        match output {
+            Some(path) => {
+                std::fs::write(&path, exported.content)?;
+                eprintln!("wrote {}", path.display());
+            }
+            None => print!("{}", exported.content),
+        }
         Ok(())
     })
 }

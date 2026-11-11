@@ -214,10 +214,15 @@ the wait reason in the desktop.
     load chosen ones (or all) up front. Hooks stay active from the start, since a hook may be a
     security check that must see every call
     ([06](06-extensibility.md#lazy-skills-and-plugins-implemented)).
-24. **Context and transcripts.** Items 24–35 are described in the design docs and, unless marked implemented, not built
-    yet (their *planned* and *later work* notes; each links to where it is described). Automatic compaction mid-turn when an agent nears its context
-    limit, and transcripts, task trees, and artefacts browsable and exportable
-    ([03](03-agent-engine.md)).
+24. **Context and transcripts** (implemented). Each agent compacts its own conversation mid-turn
+    when the next call would reach `context.auto_compact_at` of its window, keeping the system
+    prompt and loaded workflow context verbatim
+    ([03](03-agent-engine.md#context-management)). Transcripts, subagent task trees, and the
+    files agents attached or made export as Markdown or JSON (`session.export`, `imperium
+    session export`, and *Export* in a session's menu), for archived sessions too
+    ([07](07-desktop-ui.md#exporting-transcripts-implemented)).
+    Items 25–35 are described in the design docs and, unless marked implemented, not built yet
+    (their *planned* and *later work* notes; each links to where it is described).
 25. **More tools and permission modes** (implemented). `glob` and `grep` file tools that
     honour `.gitignore`, folder checks, and deny rules, with paged output
     ([05](05-tools-and-isolation.md#glob-and-grep-implemented)); background processes for
