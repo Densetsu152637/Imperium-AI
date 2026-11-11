@@ -221,12 +221,33 @@ const HARMLESS_REDIRECTS: &[&str] = &[
     ">NUL",
 ];
 
+/// `line` with each harmless redirect replaced by a space. A redirect counts only as a whole
+/// token: when a file-name character follows it (`>nul.sh`, `>&1out`, `>/dev/null/../x`) it
+/// names a file, so it stays in the line for [`risky`] to see.
 fn without_harmless_redirects(line: &str) -> String {
-    let mut line = line.to_string();
-    for redirect in HARMLESS_REDIRECTS {
-        line = line.replace(redirect, " ");
+    let mut stripped = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(next) = rest.chars().next() {
+        let harmless = HARMLESS_REDIRECTS
+            .iter()
+            .find(|redirect| rest.starts_with(**redirect) && ends_word(&rest[redirect.len()..]));
+        if let Some(redirect) = harmless {
+            stripped.push(' ');
+            rest = &rest[redirect.len()..];
+        } else {
+            stripped.push(next);
+            rest = &rest[next.len_utf8()..];
+        }
     }
-    line
+    stripped
+}
+
+/// Whether `after` starts a new word or command (or is empty), rather than continuing a name.
+fn ends_word(after: &str) -> bool {
+    after
+        .chars()
+        .next()
+        .is_none_or(|next| next.is_whitespace() || matches!(next, ';' | '&' | '|'))
 }
 
 /// Whether the line substitutes commands or redirects output into a file.
@@ -537,6 +558,38 @@ mod tests {
         assert_eq!(allowed("cargo test > ~/.bashrc"), None);
         assert_eq!(allowed("cargo test 2>&1"), Some(Allow));
         assert_eq!(allowed("cargo test 2>/dev/null"), Some(Allow));
+    }
+
+    #[test]
+    fn a_redirect_that_names_a_file_is_not_harmless() {
+        for line in [
+            "cargo test >nul.txt",
+            "cargo test >nul.sh",
+            "git log >&1out",
+            "git log >&2x",
+            "x 2>/dev/nullx",
+            "x >/dev/null/../../out",
+            "x 2>NULL",
+        ] {
+            assert!(risky(line), "{line} writes a file");
+        }
+        for line in [
+            "cargo test 2>&1",
+            "x >/dev/null",
+            "x 2>/dev/null",
+            "x > /dev/null && y",
+            "x >nul; y",
+            "x 2>&1 | y",
+            "x >NUL",
+        ] {
+            assert!(!risky(line), "{line} only merges or discards output");
+        }
+        let rules = [rule(COMMAND_TOOL, "git *", Allow)];
+        let allowed = |line: &str| evaluate(&rules, &[], COMMAND_TOOL, &command(line));
+        assert_eq!(allowed("git log >&1out"), None);
+        assert_eq!(allowed("git log >nul.sh"), None);
+        assert_eq!(allowed("git log 2>&1 | head"), None, "head is not allowed");
+        assert_eq!(allowed("git log 2>&1 && git status"), Some(Allow));
     }
 
     #[test]
