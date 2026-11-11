@@ -271,7 +271,8 @@ pub struct SessionSummary {
     pub model: Option<String>,
     /// Where the session's commands run, such as `tier 0 · folder policy`.
     pub isolation: String,
-    /// The session's first message, for lists.
+    /// The session's title: one the user gave it (`session.control` `rename`), else one
+    /// generated after its first exchange, else its first message.
     pub title: String,
     pub status: crate::session::SessionStatus,
     /// What it watches, when watching or merged.
@@ -2367,7 +2368,7 @@ pub const SESSION_CREATED: &str = "session.created";
 pub const SESSION_UPDATED: &str = "session.updated";
 
 /// `session.control`: change how a session waits for usage resets, resume it now, set what
-/// pull request it watches, switch its model, compact its conversation, or pin it.
+/// pull request it watches, switch its model, compact its conversation, pin it, or rename it.
 #[derive(Debug)]
 pub struct SessionControl;
 
@@ -2385,13 +2386,14 @@ pub struct SessionControlParams {
     /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
     /// for `models.default`; refused while a turn runs), `compact` (summarise older turns
     /// now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
-    /// `archive` (stop the session and keep its journal; announced with `session.updated`),
+    /// `rename` (with `title`; kept across restarts and never replaced by a generated title; an
+    /// empty title lets the session be titled automatically again), `archive` (stop the session and keep its journal; announced with `session.updated`),
     /// `unarchive` (resume an archived session), `stop` (halt the root and every subagent at
     /// their next safe point; queued messages wait; kept across restarts; see `work_stopped`),
     /// or `resume` (continue a stopped session; not to be confused with `resume_now`, which ends
     /// a usage-limit wait).
     #[ts(
-        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\" | \"archive\" | \"unarchive\" | \"stop\" | \"resume\""
+        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"compact\" | \"set_pinned\" | \"rename\" | \"archive\" | \"unarchive\" | \"stop\" | \"resume\""
     )]
     pub action: String,
     #[serde(default)]
@@ -2408,6 +2410,10 @@ pub struct SessionControlParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub pinned: Option<bool>,
+    /// For `rename`: the new title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

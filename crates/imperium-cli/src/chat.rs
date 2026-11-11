@@ -274,6 +274,7 @@ impl Chat {
                         pull_request: None,
                         model,
                         pinned: None,
+                        title: None,
                     })
                     .await;
                 match result {

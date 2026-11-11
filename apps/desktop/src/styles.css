@@ -3021,6 +3021,116 @@ button.setup-action small {
   gap: 0.35rem;
 }
 
+/* Session rows: one line, a status dot, the title, and how long ago; the rest is in the tooltip. */
+.list button.session-row-main {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.6rem;
+}
+
+.session-row-main > .name {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-ago {
+  flex: none;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The time gives way to the "more" button on hover, so the row keeps its width. */
+.list .session-row:hover .session-ago,
+.list .session-row:focus-within .session-ago {
+  visibility: hidden;
+}
+
+.list .session-row .row-menu-button {
+  position: relative;
+  margin-left: -1.9rem;
+  pointer-events: none;
+}
+
+.list .session-row:hover .row-menu-button,
+.list .session-row:focus-within .row-menu-button,
+.list .session-row .row-menu-button.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.list .session-row:has(.selected):not(:hover, :focus-within) .row-menu-button:not(.open) {
+  opacity: 0;
+}
+
+@media (hover: none) {
+  .list .session-row .session-ago {
+    display: none;
+  }
+
+  .list .session-row .row-menu-button {
+    pointer-events: auto;
+  }
+}
+
+.status-dot {
+  flex: none;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+.status-dot.working {
+  background: var(--accent);
+  opacity: 1;
+}
+
+.status-dot.working {
+  animation: status-dot-pulse 1.6s ease-in-out infinite;
+}
+
+.status-dot.watching,
+.status-dot.merged {
+  background: var(--ok);
+  opacity: 1;
+}
+
+.status-dot.needs_attention {
+  background: var(--danger);
+  opacity: 1;
+}
+
+.status-dot.needs_model,
+.status-dot.paused {
+  background: transparent;
+  border: 1px solid var(--accent);
+  opacity: 1;
+}
+
+@keyframes status-dot-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.working {
+    animation: none;
+  }
+}
+
+.session-rename {
+  flex: 1;
+  min-width: 0;
+  margin: 0.1rem 0;
+  padding: 0.2rem 0.5rem;
+  font: inherit;
+  font-size: 0.875rem;
+}
+
 .pin-mark {
   flex: none;
   width: 0.8rem;
