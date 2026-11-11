@@ -15,7 +15,7 @@ const NO_HOOKS: &str = "core.hooksPath=NUL";
 const NO_HOOKS: &str = "core.hooksPath=/dev/null";
 
 /// Variables that would point git somewhere else or change what it runs.
-const DROPPED_ENV: &[&str] = &[
+pub(crate) const DROPPED_ENV: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -32,6 +32,9 @@ const DROPPED_ENV: &[&str] = &[
     "GIT_ASKPASS",
     "GIT_CONFIG_PARAMETERS",
     "GIT_CONFIG_COUNT",
+    "GIT_GLOB_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
 ];
 
 /// A git command in `dir` with hooks and fsmonitor off, no pager, no prompts, and no console
@@ -56,6 +59,14 @@ pub(crate) fn command(dir: &Path) -> Command {
         ])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        // Paths given to git are paths, never pathspec patterns: `[ab].txt` is one file.
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        // No network: a missing object in a partial clone is not fetched (which would run the
+        // transport, ssh command, or credential helper the repository's config names), and no
+        // transport is allowed whatever the repository's `protocol.*.allow` says. A push sets
+        // its own list.
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "none")
         .env("GCM_INTERACTIVE", "never")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

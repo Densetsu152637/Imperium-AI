@@ -172,10 +172,19 @@ pub(crate) fn touched_dir(workspace: &Workspace, name: &str, arguments: &str) ->
     }
     let (path, is_dir) = match Invocation::parse(name, arguments).ok()? {
         Invocation::ListDir { path } => (path, true),
+        // A search's folder (grep may also be given one file).
+        Invocation::Glob { scope, .. } | Invocation::Grep { scope, .. } => {
+            let is_dir = workspace
+                .resolve(&scope.path)
+                .is_ok_and(|resolved| !resolved.is_file());
+            (scope.path, is_dir)
+        }
         Invocation::ReadFile { path, .. }
         | Invocation::WriteFile { path, .. }
         | Invocation::EditFile { path, .. } => (path, false),
-        Invocation::RunCommand { .. } => return None,
+        Invocation::RunCommand { .. }
+        | Invocation::CommandOutput { .. }
+        | Invocation::CommandStop { .. } => return None,
     };
     let resolved = workspace.resolve(&path).ok()?;
     let dir = if is_dir {

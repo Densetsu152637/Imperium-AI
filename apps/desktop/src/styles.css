@@ -6238,3 +6238,166 @@ button.select.open .select-chevron {
   height: 0.85em;
   vertical-align: -0.1em;
 }
+
+/* The review pane: changed files as quiet unified diffs. Hunk and file tools are row tools,
+   shown on hover or focus; added and removed lines are tinted, context stays plain. */
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space);
+  font-size: var(--fs-sm);
+}
+
+.review-bar,
+.review-actions,
+.review-confirm {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.review-since {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.review-since select {
+  flex: 1;
+  min-width: 0;
+}
+
+.review-notice {
+  color: var(--muted);
+  margin: 0;
+}
+
+.review-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.review-file summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  padding: 0.15rem 0;
+}
+
+.review-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-code);
+}
+
+.review-repo,
+.review-counts {
+  color: var(--muted);
+}
+
+.review-status {
+  font-family: var(--font-code);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  width: 1ch;
+}
+
+.review-added,
+.review-add {
+  color: var(--ok);
+}
+
+.review-deleted,
+.review-del {
+  color: var(--danger);
+}
+
+.review-tools {
+  display: inline-flex;
+  gap: 0.15rem;
+}
+
+.review-file summary:hover button.row-tool,
+.review-file summary:focus-within button.row-tool,
+.review-hunk-header:hover button.row-tool,
+.review-hunk-header:focus-within button.row-tool {
+  opacity: 1;
+}
+
+.review-hunk {
+  margin: 0.25rem 0 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.review-hunk-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.4rem;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.review-lines {
+  margin: 0;
+  padding: 0.2rem 0;
+  font-family: var(--font-code);
+  font-size: var(--fs-xs);
+  overflow-x: auto;
+}
+
+.review-line {
+  display: block;
+  padding: 0 0.4rem;
+  white-space: pre;
+}
+
+.review-line-add {
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.review-line-del {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.review-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.review-commit textarea {
+  font-family: var(--font-code);
+  font-size: var(--fs-sm);
+  resize: vertical;
+}
+
+.review-command {
+  margin: 0;
+  padding: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-code);
+  font-size: var(--fs-xs);
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+@media (hover: none) {
+  .review button.icon-only.row-tool {
+    opacity: 1;
+  }
+}
