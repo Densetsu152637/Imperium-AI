@@ -137,8 +137,11 @@ the wait reason in the desktop.
    browser the user drives, beside the agent's own browser view.
 10. **Local-model extras.** Speculative decoding with draft models, a local model benchmark,
     and an OpenAI-compatible local API server for other tools.
-11. **Sharing and sync (design).** Design plans for session sharing and export, and for team
-    sync.
+11. **Sharing and sync (design)** (designed). Design plans for session sharing and export, and
+    for team sync: a portable session bundle with shared redaction, a mandatory preview and
+    read-only import with explicit forking, and team sync as a git-backed config layer that
+    narrows automatically and widens only on review, in phases from shared redaction and
+    settings export onward ([19](19-sharing-and-sync.md)). No code yet.
 12. **Environment file access** (implemented; bug, from use of the app so far, like the items
     after it). Agents failed to read paths an environment grants them: an agent could not open
     the Imperium-AI checkout given as the environment's first project path. The folder checks
