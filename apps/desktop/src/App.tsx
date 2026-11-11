@@ -63,6 +63,7 @@ import { SessionPanel } from "./panels/SessionPanel";
 import type { Effort } from "./panels/ModelSelect";
 import { NewSessionPanel, type NewSessionOptions } from "./panels/NewSessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
+import { ReviewPanel } from "./panels/ReviewPanel";
 import { AgentView } from "./panels/AgentView";
 import { agentDelivery, finishedMeanwhile, followUpText } from "./agentView";
 import { queueParams, type QueueChange } from "./queue";
@@ -1056,6 +1057,11 @@ export function App() {
         />
       ),
     },
+    {
+      id: "review",
+      title: "Review",
+      body: <ReviewPanel session={session} client={client} onOpenSession={selectSession} />,
+    },
     { id: "models", title: "Models", body: <ModelsPanel table={modelTable} onConfigure={() => setModelDialog({ tab: "table" })} /> },
     {
       id: "local-models",
@@ -1360,6 +1366,7 @@ const PANELS: { id: string; title: string }[] = [
   { id: "sessions", title: "Sessions" },
   { id: "approvals", title: "Approvals" },
   { id: "agents", title: "Agents" },
+  { id: "review", title: "Review" },
   { id: "models", title: "Models" },
   { id: "local-models", title: "Local models" },
   { id: "telemetry", title: "Telemetry" },
