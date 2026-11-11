@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -41,6 +42,7 @@ use crate::breakdown::{
     join_parts, tool_texts,
 };
 use crate::compact::{self, SwitchError};
+use crate::instructions;
 use crate::queue::{Inbox, QueueError, steering_text};
 use crate::session::{SessionMemory, Shared, lock};
 use crate::{LocalLease, LocalModels, LocalPresence, ResolvedModel, TaskRequest, route};
@@ -186,6 +188,11 @@ pub struct Agent {
     shown: Option<String>,
     /// The reasoning effort this subagent was spawned with, over the session's.
     effort: Option<Effort>,
+    /// The instruction files the conversation holds; read from it on first use.
+    instructions: Option<instructions::Tracker>,
+    /// Whether the latest tool call succeeded (only successful file calls load instruction
+    /// files).
+    last_tool_ok: std::sync::atomic::AtomicBool,
 }
 
 impl Agent {
@@ -301,6 +308,8 @@ impl Agent {
             previous: None,
             shown: None,
             effort: None,
+            instructions: None,
+            last_tool_ok: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -953,14 +962,29 @@ impl Agent {
                 .tool_calls
                 .iter()
                 .any(|call| call.function.name == ACTIVATE_PLUGIN);
+            let mut touched: Vec<PathBuf> = Vec::new();
             for call in completion.tool_calls {
+                self.last_tool_ok.store(false, Ordering::SeqCst);
                 let output = self.run_tool(&call).await;
                 let output = self.guard_input(output, window);
+                // Only a call that worked counts as opening the directory: not one that was
+                // denied, refused by a hook, or failed.
+                if self.last_tool_ok.load(Ordering::SeqCst)
+                    && let Some(dir) = instructions::touched_dir(
+                        &self.shared.workspace,
+                        &call.function.name,
+                        &call.function.arguments,
+                    )
+                    && !touched.contains(&dir)
+                {
+                    touched.push(dir);
+                }
                 self.messages.push(ChatMessage::Tool {
                     tool_call_id: call.id,
                     content: output,
                 });
             }
+            self.load_instruction_files(&touched);
             // A plugin activated in this round offers its tools from the next call.
             if activates {
                 (tools, tool_texts) = self.offered_tools();
@@ -973,6 +997,38 @@ impl Agent {
             message: message.clone(),
         });
         self.outcome(message, false, total)
+    }
+
+    /// Puts the instruction files of the directories the round's file tools touched into the
+    /// conversation, after the round's tool results (so every call keeps its result next to
+    /// it). Does nothing when the workflow is turned off.
+    fn load_instruction_files(&mut self, touched: &[PathBuf]) {
+        let Some(context) = self.shared.context.clone() else {
+            return;
+        };
+        if touched.is_empty() || self.single_call {
+            return;
+        }
+        let tracker = self
+            .instructions
+            .get_or_insert_with(|| instructions::Tracker::from_messages(&self.messages));
+        let loaded = instructions::discover(&self.shared.workspace, &context, touched, tracker);
+        if loaded.is_empty() {
+            return;
+        }
+        let blocks: Vec<String> = loaded.iter().map(|file| file.block.clone()).collect();
+        let content = instructions::wrap(&blocks);
+        self.spans.insert(
+            self.messages.len(),
+            vec![(Category::Manifest, 0..content.len())],
+        );
+        self.messages.push(ChatMessage::user(content));
+        self.emit(SessionEvent::ContextLoaded {
+            references: loaded
+                .into_iter()
+                .map(|file| format!("{}{}", instructions::REFERENCE_PREFIX, file.path))
+                .collect(),
+        });
     }
 
     /// Runs `tool.before` hooks; returns the message for the model when one blocks the call.
@@ -1377,6 +1433,7 @@ impl Agent {
         output: String,
         started: Option<Instant>,
     ) -> String {
+        self.last_tool_ok.store(ok, Ordering::SeqCst);
         self.emit(SessionEvent::ToolFinished {
             call_id: call.id.clone(),
             ok,
@@ -2582,7 +2639,11 @@ impl Agent {
             } else {
                 compact::MESSAGE_FORMATTING
             };
-            let summary_tokens = after.messages[1].saturating_sub(host);
+            // The instruction files kept verbatim sit in the same message as the summary.
+            let kept_instructions = estimate_tokens(&compact::preserved_text(&self.messages, cut));
+            let summary_tokens = after.messages[1]
+                .saturating_sub(host)
+                .saturating_sub(kept_instructions);
             let others = after_tokens.saturating_sub(summary_tokens);
             if others + compact::MIN_SUMMARY_TOKENS <= budget {
                 // A shorter summary is enough.

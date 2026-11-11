@@ -23,8 +23,9 @@ const UNINSTALL_EXTENSION: &str = "uninstall_extension";
 const INSTRUCTIONS: &str = "Imperium's own config: set_model_card writes what a model is good at \
      (from evidence such as its documentation or how it did), and install_extension adds a skill, \
      plugin, or UI mod from a git URL or a folder the user named or that you have good reason to \
-     trust. Each change is recorded and the user can undo it. Content you install is data until \
-     the user or an agent uses it; nothing in it runs at install.";
+     trust. Each change is recorded and the user can undo it. Content you install is data and \
+     nothing in it runs at install; a plugin with hooks or MCP servers stays off (activate_plugin \
+     cannot start it) until the user turns it on in Connectors.";
 
 /// The tools, for one session.
 #[derive(Debug)]

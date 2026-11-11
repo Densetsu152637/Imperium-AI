@@ -11,6 +11,7 @@ use imperium_api::truncate_chars;
 use imperium_models::ChatMessage;
 
 use crate::breakdown::{Category, Measured, PART_SEPARATOR, Spans, restored_spans};
+use crate::instructions;
 
 /// Share of a context window held back for the model's reply (no per-model output limit is
 /// configured, so a fixed share stands in for one).
@@ -95,7 +96,9 @@ pub(crate) fn recent_turns_start(messages: &[ChatMessage], turns: usize) -> Opti
     let starts: Vec<usize> = messages
         .iter()
         .enumerate()
-        .filter(|(_, message)| matches!(message, ChatMessage::User { .. }))
+        .filter(|(_, message)| {
+            matches!(message, ChatMessage::User { .. }) && !instructions::is_message(message)
+        })
         .map(|(index, _)| index)
         .collect();
     let at = *starts.get(starts.len().checked_sub(turns)?)?;
@@ -171,10 +174,14 @@ fn transcript(messages: &[ChatMessage]) -> String {
                 ));
             }
             ChatMessage::User { content, .. } => {
-                out.push_str(&format!(
-                    "### User\n{}\n\n",
-                    truncate_chars(content, MESSAGE_CHARS)
-                ));
+                // Instruction files are kept as they are, not summarised.
+                let content = instructions::strip(content);
+                if !content.is_empty() {
+                    out.push_str(&format!(
+                        "### User\n{}\n\n",
+                        truncate_chars(&content, MESSAGE_CHARS)
+                    ));
+                }
             }
             ChatMessage::Assistant {
                 content,
@@ -214,15 +221,37 @@ pub(crate) fn summary_block(summary: &str) -> String {
     )
 }
 
-/// The conversation with `messages[1..cut]` replaced by `block`, and its recorded parts moved
-/// to the new message indices. The block goes before the first kept message when that is a
-/// user message (so roles keep alternating), else in a user message of its own.
+/// The instruction files in `messages[1..cut]`, as they are kept: compaction never summarises
+/// them, it carries them over verbatim after the summary. Empty when there are none.
+pub(crate) fn preserved_text(messages: &[ChatMessage], cut: usize) -> String {
+    let blocks = instructions::preserved(&messages[1..cut.min(messages.len())]);
+    if blocks.is_empty() {
+        String::new()
+    } else {
+        instructions::wrap(&blocks)
+    }
+}
+
+/// The conversation with `messages[1..cut]` replaced by `summary`, and its recorded parts moved
+/// to the new message indices. The summary goes before the first kept message when that is a
+/// user message (so roles keep alternating), else in a user message of its own. Instruction
+/// files from the replaced messages follow the summary unchanged.
 pub(crate) fn rebuild(
     messages: &[ChatMessage],
     spans: &HashMap<usize, Spans>,
     cut: usize,
-    block: &str,
+    summary: &str,
 ) -> (Vec<ChatMessage>, HashMap<usize, Spans>) {
+    let kept = preserved_text(messages, cut);
+    let mut head_parts = vec![(Category::Summary, 0..summary.len())];
+    let block = if kept.is_empty() {
+        summary.to_string()
+    } else {
+        let start = summary.len() + PART_SEPARATOR.len();
+        head_parts.push((Category::Manifest, start..start + kept.len()));
+        format!("{summary}{PART_SEPARATOR}{kept}")
+    };
+    let block = block.as_str();
     let mut out = vec![messages[0].clone()];
     let mut new_spans = HashMap::new();
     if let Some(system) = spans.get(&0) {
@@ -235,7 +264,7 @@ pub(crate) fn rebuild(
                 .get(&cut)
                 .cloned()
                 .unwrap_or_else(|| restored_spans(content));
-            let mut parts = vec![(Category::Summary, 0..block.len())];
+            let mut parts = head_parts;
             parts.extend(
                 inner
                     .into_iter()
@@ -249,7 +278,7 @@ pub(crate) fn rebuild(
             cut + 1
         }
         _ => {
-            new_spans.insert(1, vec![(Category::Summary, 0..block.len())]);
+            new_spans.insert(1, head_parts);
             out.push(ChatMessage::user(block));
             cut
         }
@@ -407,6 +436,60 @@ mod tests {
         assert!(short.len() < long.len() / 2 + 40);
         assert!(short.starts_with("word word"));
         assert!(short.ends_with("[summary shortened to fit]"));
+    }
+
+    /// A conversation where the agent met instruction files in the first turn.
+    fn with_instructions() -> (Vec<ChatMessage>, Vec<String>) {
+        let blocks = vec![
+            instructions::render_block("/p/a/AGENTS.md", "Use tabs.", false),
+            instructions::render_block("/p/a/b/CLAUDE.md", "No unwrap.", false),
+        ];
+        let mut messages = conversation();
+        messages.insert(4, user(&instructions::wrap(&blocks)));
+        (messages, blocks)
+    }
+
+    #[test]
+    fn compaction_carries_instruction_files_over_unchanged() {
+        let (messages, blocks) = with_instructions();
+        let spans = HashMap::new();
+        let block = summary_block("earlier work");
+        // Cut before the second turn: the instruction message is summarised away.
+        let at = messages
+            .iter()
+            .position(|m| matches!(m, ChatMessage::User { content, .. } if content == "two"))
+            .unwrap();
+        let (rebuilt, new_spans) = rebuild(&messages, &spans, at, &block);
+        let ChatMessage::User { content, .. } = &rebuilt[1] else {
+            panic!("a user message")
+        };
+        assert!(content.starts_with("<conversation-summary>"));
+        assert!(content.ends_with("two"));
+        let kept: Vec<String> = instructions::blocks_in(content)
+            .into_iter()
+            .map(|(_, block)| block)
+            .collect();
+        assert_eq!(kept, blocks, "verbatim and in order");
+        let parts = &new_spans[&1];
+        assert_eq!(parts[0].0, Category::Summary);
+        assert_eq!(parts[1].0, Category::Manifest);
+        assert!(content[parts[1].1.clone()].starts_with(instructions::OPEN));
+        // A second compaction keeps them once more, not twice.
+        let (again, _) = rebuild(&rebuilt, &new_spans, rebuilt.len(), &block);
+        assert_eq!(instructions::preserved(&again[1..]), blocks);
+    }
+
+    #[test]
+    fn instruction_messages_are_not_turns_and_not_summarised() {
+        let (messages, _) = with_instructions();
+        let turns = recent_turns_start(&messages, 2);
+        assert_eq!(
+            turns, None,
+            "two real turns leave nothing older to summarise"
+        );
+        let text = transcript(&messages[1..]);
+        assert!(!text.contains("Use tabs."));
+        assert!(text.contains("done one"));
     }
 
     #[test]

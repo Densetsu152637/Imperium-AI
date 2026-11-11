@@ -122,7 +122,7 @@ impl Category {
             Category::ToolsMcp => "MCP tools",
             Category::ToolsPlugins => "Plugin tools",
             Category::Summary => "Conversation summary",
-            Category::Manifest => "Workflow context manifest",
+            Category::Manifest => "Workflow context (manifest and instruction files)",
             Category::Memories => "Recalled memories",
             Category::Attachments => "Attachments",
             Category::User => "User messages",
@@ -169,6 +169,11 @@ pub(crate) fn restored_spans(content: &str) -> Spans {
         ),
         (
             Category::Manifest,
+            "<workflow-instructions>",
+            "</workflow-instructions>",
+        ),
+        (
+            Category::Manifest,
             "<context-manifest",
             "</context-manifest>",
         ),
@@ -179,10 +184,12 @@ pub(crate) fn restored_spans(content: &str) -> Spans {
         ),
         (Category::Attachments, "<attachments>", "</attachments>"),
     ] {
-        let rest = &content[start..];
-        if rest.starts_with(open)
-            && let Some(end) = rest.find(close)
-        {
+        // A tag may repeat (compaction keeps instruction files before newer ones).
+        loop {
+            let rest = &content[start..];
+            let Some(end) = rest.starts_with(open).then(|| rest.find(close)).flatten() else {
+                break;
+            };
             let end = start + end + close.len();
             spans.push((category, start..end));
             start = (end + PART_SEPARATOR.len()).min(content.len());

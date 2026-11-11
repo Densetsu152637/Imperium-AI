@@ -11,6 +11,7 @@ mod artefacts;
 mod breakdown;
 mod checkpoints;
 mod compact;
+mod instructions;
 mod journal;
 mod launcher;
 mod model;
