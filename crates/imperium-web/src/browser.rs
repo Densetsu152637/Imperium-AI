@@ -19,6 +19,8 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 /// Longest page text returned by `read`.
 const MAX_TEXT: usize = 20_000;
+/// How much of the browser's output an error reports.
+const LOG_TAIL: usize = 2_000;
 
 /// What the page looks like after an action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,11 +89,16 @@ impl Browser {
         headless: bool,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(profile_dir).map_err(|error| error.to_string())?;
-        let port_file = profile_dir.join("DevToolsActivePort");
-        let _ = std::fs::remove_file(&port_file);
+        let log_path = profile_dir.join("imperium-browser.log");
         let mut command = Command::new(program);
+        let deadline = Instant::now() + START_TIMEOUT;
+        // We choose the port ourselves and poll the debugger over HTTP: the port file the
+        // browser writes for `--remote-debugging-port=0` is not reliably written on CI runners.
+        let port = free_port()?;
+        let log = std::fs::File::create(&log_path).map_err(|error| error.to_string())?;
         command
-            .arg("--remote-debugging-port=0")
+            .arg(format!("--remote-debugging-port={port}"))
+            .arg("--remote-debugging-address=127.0.0.1")
             .arg(format!("--user-data-dir={}", profile_dir.display()))
             .args([
                 "--no-first-run",
@@ -99,19 +106,32 @@ impl Browser {
                 "--window-size=1280,900",
             ])
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(
+                log.try_clone().map_err(|error| error.to_string())?,
+            ))
+            .stderr(Stdio::from(log))
             .kill_on_drop(true);
         if headless {
             command.arg("--headless=new");
         }
         command.arg("about:blank");
-        let process = command
+        let mut process = command
             .spawn()
             .map_err(|error| format!("could not start {}: {error}", program.display()))?;
-        let deadline = Instant::now() + START_TIMEOUT;
-        let port = wait_for_port(&port_file, deadline).await?;
-        let socket_url = wait_for_page(port, deadline).await?;
+        let socket_url = match wait_for_page(&mut process, port, deadline).await {
+            Ok(url) => url,
+            Err(reason) => {
+                let status = match process.try_wait() {
+                    Ok(Some(status)) => format!("the browser exited ({status})"),
+                    Ok(None) => "the browser was still running".to_string(),
+                    Err(error) => format!("the browser state is unknown ({error})"),
+                };
+                return Err(format!(
+                    "{reason}; {status}; output: {}",
+                    log_tail(&log_path)
+                ));
+            }
+        };
         let (socket, _) = tokio_tungstenite::connect_async(socket_url.as_str())
             .await
             .map_err(|error| format!("could not connect to the browser: {error}"))?;
@@ -275,13 +295,45 @@ impl Browser {
     }
 }
 
+/// A port nothing is listening on right now.
+fn free_port() -> Result<u16, String> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+    listener
+        .local_addr()
+        .map(|address| address.port())
+        .map_err(|error| error.to_string())
+}
+
+/// The last part of the browser's output, for error messages.
+fn log_tail(path: &Path) -> String {
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let tail = &bytes[bytes.len().saturating_sub(LOG_TAIL)..];
+    let text = String::from_utf8_lossy(tail);
+    let text = text.trim();
+    if text.is_empty() {
+        "none".into()
+    } else {
+        text.to_string()
+    }
+}
+
 /// Waits for the browser to list its first page and returns that page's debugger socket. The
-/// port file can appear before the page target is registered (slow starts, notably Edge on
-/// Windows), so an empty list or a refused connection is retried until `deadline`.
-async fn wait_for_page(port: u16, deadline: Instant) -> Result<String, String> {
+/// debugger can come up after the process starts, and the page target after the debugger
+/// (slow starts, notably Edge on Windows), so a refused connection or an empty list is
+/// retried until `deadline`, unless the browser has exited.
+async fn wait_for_page(
+    process: &mut Child,
+    port: u16,
+    deadline: Instant,
+) -> Result<String, String> {
     let list = format!("http://127.0.0.1:{port}/json/list");
     let mut last_error = "the browser has no page to drive".to_string();
     while Instant::now() < deadline {
+        if let Ok(Some(_)) = process.try_wait() {
+            return Err(format!(
+                "the browser exited before opening its debugging port ({last_error})"
+            ));
+        }
         match reqwest::get(&list).await {
             Ok(response) => match response.json::<Value>().await {
                 Ok(pages) => {
@@ -301,23 +353,9 @@ async fn wait_for_page(port: u16, deadline: Instant) -> Result<String, String> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Err(last_error)
-}
-
-/// Waits for the browser to write the port it listens on.
-async fn wait_for_port(file: &Path, deadline: Instant) -> Result<u16, String> {
-    while Instant::now() < deadline {
-        if let Ok(text) = std::fs::read_to_string(file)
-            && let Some(port) = text
-                .lines()
-                .next()
-                .and_then(|line| line.trim().parse().ok())
-        {
-            return Ok(port);
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err("the browser did not open its debugging port".into())
+    Err(format!(
+        "the browser did not open its debugging port ({last_error})"
+    ))
 }
 
 #[cfg(test)]
