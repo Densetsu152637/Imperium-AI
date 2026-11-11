@@ -680,13 +680,22 @@ icon, title, and status badge (with *Resume now* while paused); everything else 
 session sits in the footer under the composer.
 
 **Session footer (implemented):** a compact row under the composer, as in chat apps: the model
-selector at the left, then the session's cost once it has one, an options button, and the
+selector at the left (with the effort selector beside it for a model that can reason), then the
+session's cost once it has one, an options button, and the
 context meter at the right. The options button opens *Display* (*Render Markdown*, and the
 project and isolation tier) and *Usage limits* (how to wait when usage runs out:
 `session.control` `set_resume_policy`) above the composer; the context meter opens the
 [context breakdown](#environments-and-sessions-implemented), session totals, and recent outputs
 there. Only one of them is open at a time; each closes with its button again or the panel's
 close button.
+
+**Effort selector (implemented):** beside the model, a compact list of the session's
+[reasoning effort](04-models-and-routing.md#reasoning-effort) (*Low*, *Medium*, *High*, *Max
+effort*), shown only while the session's model can reason (the session summary's `reasoning`,
+updated when the model is switched). Choosing one sends `session.control` `set_effort`, which
+applies from the agents' next model call, during a turn too, and is kept across restarts; a
+refusal shows its error beside the list. New sessions start at `models.effort`, which the
+Settings window lists with the other model settings.
 
 **Model selector (implemented):** the footer's model is a themed list of the model table
 (`models.list`; each row by id, with its spec, location, and tier; rows whose endpoint is not

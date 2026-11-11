@@ -165,6 +165,7 @@ fn model(url: &str) -> ResolvedModel {
         local: false,
         context_window: None,
         kind: "openai".into(),
+        reasoning: None,
     }
 }
 
@@ -192,6 +193,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         auto_compact: false,
         background: None,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),
     })
     .unwrap()

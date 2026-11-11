@@ -158,6 +158,7 @@ fn start(local: Arc<OneSlot>, load: Arc<Manual>, dir: &std::path::Path) -> Sessi
             local: true,
             context_window: None,
             kind: "llamacpp".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -178,6 +179,7 @@ fn start(local: Arc<OneSlot>, load: Arc<Manual>, dir: &std::path::Path) -> Sessi
         background: Some(Background { load }),
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.join(".journal.jsonl"),
     })
     .unwrap()

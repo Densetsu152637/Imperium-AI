@@ -14,6 +14,11 @@ id: string,
  */
 alias: string | null, 
 /**
+ * Whether the model can reason: its `reasoning` setting, else its chat template (a
+ * thinking switch, think tags, or `reasoning_effort`), else its name.
+ */
+reasoning: boolean, 
+/**
  * `llamacpp` for GGUF files, `vllm` for Hugging Face folders.
  */
 runtime: "llamacpp" | "vllm", path: string, 

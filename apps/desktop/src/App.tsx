@@ -58,6 +58,7 @@ import {
   type SessionSort,
 } from "./panels/NavigationPanels";
 import { SessionPanel } from "./panels/SessionPanel";
+import type { Effort } from "./panels/ModelSelect";
 import { NewSessionPanel, type NewSessionOptions } from "./panels/NewSessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { AgentView } from "./panels/AgentView";
@@ -572,6 +573,11 @@ export function App() {
     setEnvView(true);
   };
 
+  /** Whether the model `spec` (a table id or `<endpoint>:<model>`) can reason, from the model rows. */
+  const modelReasons = (spec: string): boolean =>
+    (modelTable?.models ?? []).some((row) => (row.spec === spec || row.id === spec) && row.reasoning) ||
+    (localModels?.models ?? []).some((row) => `${row.runtime}:${row.id}` === spec && row.reasoning);
+
   /** Creates a session from the new-session composer and sends its first message; rejects with the daemon's reason. */
   const createSession = async ({ environmentId, model, worktree, text }: NewSessionOptions) => {
     const env = environments.find((e) => e.id === environmentId);
@@ -603,6 +609,8 @@ export function App() {
       created_at: Date.now(),
       worktrees: created.worktrees,
       pinned: false,
+      // Until the daemon's summary arrives: what the model rows say about the model.
+      reasoning: created.model !== null && modelReasons(created.model),
     };
     setSessions((all) => ({ ...all, [created.session_id]: newSession(summary, Date.now()) }));
     setSelected(created.session_id);
@@ -811,7 +819,19 @@ export function App() {
     const id = selected;
     const result = await control(id, { action: "set_model", model });
     const now = result.model ?? model;
-    setSessions((all) => (all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, model: now } } } : all));
+    const reasoning = result.reasoning ?? false;
+    setSessions((all) => (all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, model: now, reasoning } } } : all));
+    return result;
+  };
+
+  /** Sets the selected session's reasoning effort from its agents' next model calls on.
+   * Rejects with the daemon's reason, which the effort selector shows beside itself. */
+  const setEffort = async (effort: Effort): Promise<SessionControlResult> => {
+    if (!selected) throw new Error("No session is open.");
+    const id = selected;
+    const result = await control(id, { action: "set_effort", effort });
+    const now = result.effort ?? effort;
+    setSessions((all) => (all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, effort: now } } } : all));
     return result;
   };
 
@@ -975,6 +995,7 @@ export function App() {
         localRuntime={localModels?.runtime ?? null}
         onOpenLocalModels={() => togglePanel("local-models", true)}
         onSetModel={setModel}
+        onSetEffort={setEffort}
         client={client}
         onUnarchive={() => setSessionArchived(session.summary.session_id, false)}
         budgets={budgets?.status ?? []}

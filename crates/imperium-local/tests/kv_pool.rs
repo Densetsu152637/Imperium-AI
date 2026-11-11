@@ -631,6 +631,7 @@ fn local_model(model: &str) -> ResolvedModel {
         local: true,
         context_window: None,
         kind: "openai".into(),
+        reasoning: None,
     }
 }
 
@@ -681,6 +682,7 @@ async fn a_session_parked_on_an_approval_holds_no_claim() {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

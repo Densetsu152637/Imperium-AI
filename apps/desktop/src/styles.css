@@ -807,6 +807,18 @@ pre {
   min-width: 0;
 }
 
+/* Beside the model, for models that can reason: quieter than the model it qualifies. */
+.effort-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.session-footer .effort-select-button .select-value {
+  color: var(--muted);
+}
+
 .session-footer .model-select-button .select-value {
   color: var(--text);
   font-weight: 500;

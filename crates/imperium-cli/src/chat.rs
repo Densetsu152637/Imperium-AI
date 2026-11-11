@@ -75,8 +75,8 @@ pub fn run(
         println!(
             "Type a message. While the agent works, messages queue and run in order; /steer \
              <text> adds a message to the running turn, /queue lists what waits. /context shows \
-             what the model is reading, /model <id> switches models, /compact summarises older \
-             turns; /download, /dismiss, or /never answer a model download suggestion; an \
+             what the model is reading, /model <id> switches models, /effort <low|medium|high|max> \
+             sets how hard a reasoning model thinks, /compact summarises older turns; /download, /dismiss, or /never answer a model download suggestion; an \
              empty line (when idle) or /exit quits."
         );
         let mut lines = read_lines();
@@ -261,9 +261,10 @@ impl Chat {
                 print!("{}", describe_queue(&queue.messages));
             }
             Some(Command::Control(action)) => {
-                let (action, model) = match action {
-                    Control::SetModel(model) => ("set_model", Some(model)),
-                    Control::Compact => ("compact", None),
+                let (action, model, effort) = match action {
+                    Control::SetModel(model) => ("set_model", Some(model), None),
+                    Control::SetEffort(effort) => ("set_effort", None, Some(effort)),
+                    Control::Compact => ("compact", None, None),
                 };
                 let result = client
                     .call::<SessionControl>(SessionControlParams {
@@ -273,11 +274,19 @@ impl Chat {
                         repo: None,
                         pull_request: None,
                         model,
+                        effort,
                         pinned: None,
                         title: None,
                     })
                     .await;
                 match result {
+                    Ok(result) if action == "set_effort" => println!(
+                        "{}",
+                        describe_effort(
+                            result.effort.as_deref().unwrap_or_default(),
+                            result.reasoning.unwrap_or(false)
+                        )
+                    ),
                     Ok(result) => println!(
                         "{}",
                         describe_fit(
@@ -783,6 +792,8 @@ fn describe_queue(messages: &[QueuedMessage]) -> String {
 enum Control {
     /// `/model <id>`: switch the session's model.
     SetModel(String),
+    /// `/effort <level>`: how hard a model that can reason thinks.
+    SetEffort(String),
     /// `/compact`: summarise older turns now.
     Compact,
 }
@@ -791,8 +802,24 @@ fn control_command(text: &str) -> Option<Control> {
     if text == "/compact" {
         return Some(Control::Compact);
     }
+    if let Some(effort) = text.strip_prefix("/effort ") {
+        let effort = effort.trim();
+        return (!effort.is_empty()).then(|| Control::SetEffort(effort.to_ascii_lowercase()));
+    }
     let model = text.strip_prefix("/model ")?.trim();
     (!model.is_empty()).then(|| Control::SetModel(model.to_string()))
+}
+
+/// One line on an effort change, saying when the model cannot use it.
+fn describe_effort(effort: &str, reasoning: bool) -> String {
+    if reasoning {
+        format!("Reasoning effort set to {effort}.")
+    } else {
+        format!(
+            "Reasoning effort set to {effort}; the session's model cannot reason, so it applies \
+             once the session is on one that can."
+        )
+    }
 }
 
 /// One line on a model switch or compaction: `Switched to x:y; compacted 30.1k -> 9.2k tokens
@@ -1031,6 +1058,13 @@ mod tests {
         );
         assert_eq!(control_command("/compact"), Some(Control::Compact));
         assert_eq!(control_command("/model "), None);
+        assert_eq!(
+            control_command("/effort High"),
+            Some(Control::SetEffort("high".into()))
+        );
+        assert_eq!(control_command("/effort "), None);
+        assert!(describe_effort("max", true).ends_with("max."));
+        assert!(describe_effort("low", false).contains("cannot reason"));
         assert_eq!(control_command("tell me about /model x"), None);
     }
 

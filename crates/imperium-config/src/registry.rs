@@ -130,6 +130,7 @@ pub static SETTINGS: &[SettingDef] = &[
     live(def("models.default", "Default model", STRING, "Model for new sessions, as <endpoint>:<model>.")),
     live(def("models.folders", "Model folders", PathList, "Folders scanned for GGUF models, LM Studio and Hugging Face cache folders, and Hugging Face model folders; scanned again at once when changed.")),
     def("models.download_dir", "Download folder", PathKind, "Where Hugging Face downloads go (absolute). Defaults to the first model folder, else <data>/models."),
+    live(choice("models.effort", "Reasoning effort", &["low", "medium", "high", "max"], "How hard models that can reason think before answering, for new sessions; each session can change its own. Models that cannot reason are sent nothing.")),
     live(def("models.suggest_downloads", "Suggest model downloads", Bool, "Sessions offer to download a suitable local model from Hugging Face when the best one available is poor for the task. Nothing downloads without your consent.")),
     live(choice("models.list_models", "Model list for agents", LIST_MODELS, "Which agents of new sessions get list_models, which lists the models they may delegate to with their cards and whether each fits in memory: root (the agent that delegates), all (subagents too), or off.")),
     choice("routing.prefer", "Routing preference", &["cheapest", "local", "cloud"], "Tie-breaker among suitable models for subagents."),

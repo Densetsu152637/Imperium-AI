@@ -143,12 +143,6 @@ impl ModelEntry {
     }
 }
 
-/// Whether tags mark a model as reasoning.
-fn reasoning_tags(tags: &[String]) -> bool {
-    tags.iter()
-        .any(|tag| matches!(tag.as_str(), "reasoning" | "thinking"))
-}
-
 impl DaemonState {
     /// The models a new session routes delegated work to: the model table's rows
     /// ([`DaemonState::catalog`]), then each local model the table does not name and the user
@@ -287,7 +281,10 @@ impl DaemonState {
             context,
             vision: row.tags.iter().any(|tag| tag == "vision")
                 || found.as_ref().is_some_and(|model| model.mmproj.is_some()),
-            reasoning: reasoning_tags(&row.tags),
+            // The row's setting or tags, else the local model's chat template, else its name.
+            reasoning: row
+                .model
+                .reasons(local.map(|local| &*local.supervisor as &dyn LocalModels)),
             price: row
                 .model
                 .pricing

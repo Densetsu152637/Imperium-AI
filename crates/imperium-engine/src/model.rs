@@ -22,6 +22,26 @@ pub struct ResolvedModel {
     /// The endpoint's `kind`, naming the client that calls it (see
     /// [`ChatClients`](imperium_models::ChatClients)).
     pub kind: String,
+    /// Whether the model can reason, so calls carry the session's effort: the model table row's
+    /// `reasoning` setting or tags, else (hosted models) whether its name is a known reasoning
+    /// model. `None` for a local model nothing configured: its runtime decides from the chat
+    /// template (see [`ResolvedModel::reasons`]).
+    pub reasoning: Option<bool>,
+}
+
+impl ResolvedModel {
+    /// Whether the model can reason: [`ResolvedModel::reasoning`], else the local runtime's
+    /// answer from the model's chat template, else its name.
+    pub fn reasons(&self, local: Option<&dyn LocalModels>) -> bool {
+        self.reasoning
+            .or_else(|| {
+                self.local
+                    .then_some(local)
+                    .flatten()
+                    .and_then(|local| local.reasons(&self.model))
+            })
+            .unwrap_or_else(|| imperium_api::reasoning_by_name(&self.model))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,13 +72,13 @@ pub fn resolve_model(
         .split_once(':')
         .filter(|(endpoint, model)| !endpoint.is_empty() && !model.is_empty())
         .ok_or_else(|| ModelError::BadSpec(spec.to_string()))?;
-    let context_window = settings
+    let row = settings
         .models
         .catalog
         .iter()
-        .find(|entry| entry.spec == spec)
-        .and_then(|entry| entry.context_window)
-        .map(u64::from);
+        .find(|entry| entry.spec == spec);
+    let context_window = row.and_then(|entry| entry.context_window).map(u64::from);
+    let reasoning = row.and_then(imperium_config::CatalogEntry::reasoning_setting);
     if endpoint_id == LLAMACPP_ENDPOINT || endpoint_id == VLLM_ENDPOINT {
         return Ok(ResolvedModel {
             spec: spec.to_string(),
@@ -70,6 +90,8 @@ pub fn resolve_model(
             pricing: None,
             local: true,
             context_window,
+            // Unset, the runtime reads the model's chat template.
+            reasoning,
             // llama.cpp offers its tokenizer; vLLM is reached as any OpenAI-compatible server.
             kind: if endpoint_id == LLAMACPP_ENDPOINT {
                 "llamacpp"
@@ -100,6 +122,7 @@ pub fn resolve_model(
         local: false,
         context_window,
         kind: endpoint.kind.clone(),
+        reasoning: Some(reasoning.unwrap_or_else(|| imperium_api::reasoning_by_name(model))),
     })
 }
 
@@ -298,6 +321,45 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_comes_from_the_row_then_tags_then_the_name() {
+        let table = format!(
+            r#"{ENDPOINTS}
+[[models.catalog]]
+id = "r"
+spec = "hosted:plain-model"
+location = "cloud"
+tier = "strong"
+tags = ["reasoning"]
+
+[[models.catalog]]
+id = "off"
+spec = "hosted:o3"
+location = "cloud"
+tier = "strong"
+reasoning = false
+
+[[models.catalog]]
+id = "loc"
+spec = "llamacpp:qwen"
+location = "local"
+tier = "basic"
+"#
+        );
+        let settings = settings(&table);
+        let resolve =
+            |spec: &str| resolve_model(&settings, Some(spec), |_| Ok(Some("k".into()))).unwrap();
+        assert_eq!(resolve("hosted:plain-model").reasoning, Some(true));
+        assert_eq!(resolve("hosted:o3").reasoning, Some(false));
+        assert_eq!(resolve("hosted:o4-mini").reasoning, Some(true));
+        assert_eq!(resolve("hosted:gpt-4o").reasoning, Some(false));
+        // A local model nothing configured is left to its runtime, then its name.
+        let local = resolve("llamacpp:qwen");
+        assert_eq!(local.reasoning, None);
+        assert!(!local.reasons(None));
+        assert!(resolve("llamacpp:Qwen3-8B").reasons(None));
+    }
+
+    #[test]
     fn the_context_window_comes_from_the_model_table() {
         let table = format!(
             "{ENDPOINTS}\n[[models.catalog]]\nid = \"big\"\nspec = \"hosted:big\"\n\
@@ -330,6 +392,7 @@ mod tests {
                     local: false,
                     context_window: None,
                     kind: "openai".into(),
+                    reasoning: None,
                 },
                 tier,
                 location,
@@ -357,6 +420,7 @@ mod tests {
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
         }
     }
 

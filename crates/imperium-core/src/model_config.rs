@@ -309,6 +309,8 @@ fn to_local(settings: &LocalLaunchSettings) -> LocalModelSettings {
         max_wait_s: settings.max_wait_s,
         max_output_tokens: settings.max_output_tokens,
         extra_args: settings.extra_args.clone(),
+        // Set in the config file only; the app's dialog leaves it alone.
+        reasoning: None,
     }
 }
 

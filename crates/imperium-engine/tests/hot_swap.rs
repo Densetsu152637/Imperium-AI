@@ -105,6 +105,7 @@ fn model(spec: &str, url: &str, context_window: Option<u64>) -> ResolvedModel {
         local: false,
         context_window,
         kind: "openai".into(),
+        reasoning: None,
     }
 }
 
@@ -141,6 +142,7 @@ fn start_with(
         auto_compact,
         background: None,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),
     })
     .unwrap()

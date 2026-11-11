@@ -195,6 +195,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         local: false,
         context_window: None,
         kind: "openai".into(),
+        reasoning: None,
     };
     let catalog = vec![
         CatalogModel {
@@ -210,6 +211,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
                 local: true,
                 context_window: None,
                 kind: "openai".into(),
+                reasoning: None,
             },
             tier: Tier::Standard,
             location: Location::Local,
@@ -253,6 +255,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

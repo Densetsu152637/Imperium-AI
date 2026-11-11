@@ -24,4 +24,9 @@ context_window: number | null,
 /**
  * False when the row is switched off and left out of routing.
  */
-enabled: boolean, };
+enabled: boolean, 
+/**
+ * Whether the model can reason, so sessions on it send their effort: the row's
+ * `reasoning` setting or tags, a local model's chat template, or a known model name.
+ */
+reasoning: boolean, };

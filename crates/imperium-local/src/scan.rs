@@ -431,6 +431,8 @@ fn add_hf_dir(found: &Found, scan: &mut Scan, ids: &mut BTreeMap<String, PathBuf
         key_length: number("head_dim"),
         value_length: number("head_dim"),
         context_length: number("max_position_embeddings"),
+        template_reasons: hf_chat_template(dir)
+            .map(|template| imperium_api::template_reasons(&template)),
         ..GgufInfo::default()
     };
     ids.insert(id.clone(), dir.to_path_buf());
@@ -444,6 +446,28 @@ fn add_hf_dir(found: &Found, scan: &mut Scan, ids: &mut BTreeMap<String, PathBuf
         format: Format::Safetensors,
         repo: found.repo.clone(),
     });
+}
+
+/// A Hugging Face model folder's chat template: `chat_template.jinja`, else the
+/// `chat_template` in `tokenizer_config.json` (a string, or named templates whose texts are
+/// joined).
+fn hf_chat_template(dir: &Path) -> Option<String> {
+    if let Ok(template) = fs::read_to_string(dir.join("chat_template.jinja")) {
+        return Some(template);
+    }
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("tokenizer_config.json")).ok()?).ok()?;
+    match config.get("chat_template")? {
+        serde_json::Value::String(template) => Some(template.clone()),
+        serde_json::Value::Array(named) => Some(
+            named
+                .iter()
+                .filter_map(|entry| entry.get("template")?.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
+    }
 }
 
 /// Splits `name-00001-of-00003` into (`name`, 1, 3).

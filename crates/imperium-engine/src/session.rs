@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
-use imperium_api::ToolProvider;
+use imperium_api::{Effort, ToolProvider};
 use imperium_config::RoutingSettings;
 use imperium_protocol::methods::SessionHold;
 use imperium_protocol::session::{
@@ -44,6 +44,8 @@ const EVENT_BUFFER: usize = 1024;
 pub struct SessionConfig {
     pub id: String,
     pub workspace: Workspace,
+    /// How hard models that can reason think, until [`Session::set_effort`] changes it.
+    pub effort: Effort,
     /// The root agent's model, and the fallback for subagents. `None` starts the session
     /// without one: messages wait (status `needs_model`) until [`Session::set_model`] gives it
     /// one.
@@ -128,6 +130,7 @@ pub struct Session {
     id: String,
     /// The root agent's model spec, updated when it is switched; `None` until it has one.
     model: Arc<Mutex<Option<String>>>,
+    effort: SessionEffort,
     project_dir: String,
     isolation: String,
     /// The folders, grants, and sandbox the session's tools work in.
@@ -154,6 +157,25 @@ impl std::fmt::Debug for SharedSlot {
         f.debug_struct("SharedSlot")
             .field("started", &self.0.get().is_some())
             .finish()
+    }
+}
+
+/// A session's reasoning effort, read by every agent at each model call, so a change applies
+/// from the next call on.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SessionEffort(Arc<Mutex<Effort>>);
+
+impl SessionEffort {
+    fn new(effort: Effort) -> Self {
+        SessionEffort(Arc::new(Mutex::new(effort)))
+    }
+
+    pub fn get(&self) -> Effort {
+        *lock(&self.0)
+    }
+
+    fn set(&self, effort: Effort) {
+        *lock(&self.0) = effort;
     }
 }
 
@@ -186,6 +208,7 @@ impl Session {
         let model = Arc::new(Mutex::new(
             config.model.as_ref().map(|model| model.spec.clone()),
         ));
+        let effort = SessionEffort::new(config.effort);
         let project_dir = config.workspace.root_display();
         let isolation = config.workspace.isolation_label();
         let workspace = config.workspace.clone();
@@ -217,12 +240,14 @@ impl Session {
                 inboxes: Arc::clone(&inboxes),
                 agents: Arc::clone(&agents),
                 slot: shared.clone(),
+                effort: effort.clone(),
             },
             Arc::clone(&model),
         ));
         Ok(Session {
             id,
             model,
+            effort,
             project_dir,
             isolation,
             workspace,
@@ -246,6 +271,18 @@ impl Session {
     /// The root agent's model spec, or `None` while the session waits for one.
     pub fn model(&self) -> Option<String> {
         lock(&self.model).clone()
+    }
+
+    /// How hard models that can reason think in this session.
+    pub fn effort(&self) -> Effort {
+        self.effort.get()
+    }
+
+    /// Changes the session's reasoning effort from every agent's next model call on (a
+    /// subagent spawned with its own effort keeps it). Allowed while a turn runs; models that
+    /// cannot reason are still sent nothing.
+    pub fn set_effort(&self, effort: Effort) {
+        self.effort.set(effort);
     }
 
     /// Switches the session to `model` from its next turn, keeping the conversation, without
@@ -588,6 +625,8 @@ pub(crate) struct Shared {
     pub chunk_gate: Arc<Semaphore>,
     /// Chunk agents started so far, across all `delegate_chunks` calls.
     pub chunk_agents: AtomicUsize,
+    /// The session's reasoning effort, as it is now.
+    pub effort: SessionEffort,
     next_task: AtomicU32,
 }
 
@@ -603,6 +642,7 @@ struct Started {
     inboxes: Arc<Inboxes>,
     agents: Arc<AgentStore>,
     slot: SharedSlot,
+    effort: SessionEffort,
 }
 
 /// The root agent's task: one turn at a time, in message order, while
@@ -618,6 +658,7 @@ async fn run(
         inboxes,
         agents,
         slot,
+        effort,
     } = started;
     for message in config.notices {
         emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
@@ -655,6 +696,7 @@ async fn run(
         questions: QuestionBroker::default(),
         chunk_gate: Arc::new(Semaphore::new(MAX_PARALLEL_CHUNKS)),
         chunk_agents: AtomicUsize::new(0),
+        effort,
         inboxes,
         // Task ids continue after those of earlier runs, whose state is kept.
         next_task: AtomicU32::new(agents.last_task_number()),

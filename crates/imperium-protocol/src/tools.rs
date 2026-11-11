@@ -76,7 +76,8 @@ pub fn spawn_agent() -> ToolDefinition {
             "model": {"type": "string", "description": "A model table id (or <endpoint>:<model>) to use"},
             "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},
             "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match. Task classes route by default: refactor, tests, ui, format, docs prefer small local models; architecture, math, proof, algorithm, design prefer cloud frontier models."},
-            "single_call": {"type": "boolean", "description": "The subagent gets the brief and no tools, answers in exactly one model call, and its reply is the report. Use for hard, self-contained questions; put everything it needs in the brief. Default false."}
+            "single_call": {"type": "boolean", "description": "The subagent gets the brief and no tools, answers in exactly one model call, and its reply is the report. Use for hard, self-contained questions; put everything it needs in the brief. Default false."},
+            "effort": {"type": "string", "enum": ["low", "medium", "high", "max"], "description": "How hard the subagent's model thinks, if it can reason. Default: the session's effort."}
         }, "required": ["brief"]}),
         status: ToolStatus::Available,
     }
