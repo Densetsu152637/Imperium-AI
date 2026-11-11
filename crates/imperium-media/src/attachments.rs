@@ -431,12 +431,19 @@ fn open_verified(attachment: &Attachment) -> std::io::Result<std::fs::File> {
             "it is no longer where it was attached (it was replaced by a link or moved); attach it again",
         ));
     }
-    let file = std::fs::File::open(&canonical)?;
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::new(
+    // Before opening: opening a FIFO for reading blocks until a writer appears.
+    let not_a_file = || {
+        std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "it is no longer a regular file",
-        ));
+        )
+    };
+    if !std::fs::metadata(&canonical)?.is_file() {
+        return Err(not_a_file());
+    }
+    let file = std::fs::File::open(&canonical)?;
+    if !file.metadata()?.is_file() {
+        return Err(not_a_file());
     }
     Ok(file)
 }
@@ -995,6 +1002,36 @@ mod tests {
         let folder = render(std::slice::from_ref(&png));
         assert!(folder.images.is_empty());
         assert!(folder.text.contains("could not be read"), "{}", folder.text);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_swapped_in_after_send_does_not_hang_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "text").unwrap();
+        let text = Attachment {
+            id: "a1".into(),
+            name: "notes.txt".into(),
+            kind: AttachmentKind::Text,
+            mime: "text/plain".into(),
+            size: 4,
+            path: plain(&path.canonicalize().unwrap()),
+            copied: false,
+            vision: false,
+            preview: None,
+        };
+        std::fs::remove_file(&path).unwrap();
+        let made = std::process::Command::new("mkfifo").arg(&path).status();
+        if !made.is_ok_and(|status| status.success()) {
+            return;
+        }
+        let rendered = render(std::slice::from_ref(&text));
+        assert!(
+            rendered.text.contains("could not be read"),
+            "{}",
+            rendered.text
+        );
     }
 
     #[test]
