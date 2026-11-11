@@ -33,8 +33,15 @@ export function exportMediaType(format: ExportFormat): string {
 export async function saveExport(result: SessionExportResult): Promise<boolean> {
   if (isTauri()) {
     // The shell opens the save dialog and writes only the file picked there.
-    return invoke<boolean>("save_export", { filename: result.filename, contents: result.content });
+    // A warning is confirmed by the shell before the dialog opens, where the page cannot skip it.
+    return invoke<boolean>("save_export", {
+      filename: result.filename,
+      contents: result.content,
+      warning: result.warning ?? null,
+    });
   }
+  // A browser has no shell to ask for us, so the page asks.
+  if (result.warning && !window.confirm(result.warning + " Save it anyway?")) return false;
   const url = URL.createObjectURL(new Blob([result.content], { type: exportMediaType(result.format) }));
   const link = document.createElement("a");
   link.href = url;
@@ -52,10 +59,5 @@ export async function exportSession(
   sessionId: string,
   format: ExportFormat,
 ): Promise<boolean> {
-  const result = await requestExport(client, sessionId, format);
-  // Exports are verbatim; when one looks like it holds a credential, the user decides.
-  if (result.warning && !window.confirm(`${result.warning}
-
-Save it anyway?`)) return false;
-  return saveExport(result);
+  return saveExport(await requestExport(client, sessionId, format));
 }

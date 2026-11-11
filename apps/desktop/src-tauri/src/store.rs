@@ -75,17 +75,46 @@ fn check_export(filename: &str, contents: &str) -> Result<&'static str, String> 
     Ok(extension)
 }
 
-/// Saves an exported transcript: opens the save dialog itself, suggesting `filename`, and writes
-/// `contents` to the one path the user picks there. Returns false when the dialog was cancelled.
+/// What to ask before saving a transcript the daemon warned about, if anything. The question is
+/// asked here, in the shell, so the page cannot skip or fake it.
+fn confirmation(warning: Option<&str>) -> Option<String> {
+    let warning = warning?.trim();
+    (!warning.is_empty()).then(|| format!("{warning}\n\nSave it anyway?"))
+}
+
+/// Saves an exported transcript: asks first when the daemon `warning`ed that it looks like it
+/// holds a credential, then opens the save dialog itself, suggesting `filename`, and writes
+/// `contents` to the one path the user picks there. Returns false when either was cancelled.
 /// The page cannot choose where the file goes, so it cannot write anywhere on its own.
 #[tauri::command]
 pub async fn save_export(
     app: tauri::AppHandle,
     filename: String,
     contents: String,
+    warning: Option<String>,
 ) -> Result<bool, String> {
-    use tauri_plugin_dialog::DialogExt;
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     let extension = check_export(&filename, &contents)?;
+    if let Some(question) = confirmation(warning.as_deref()) {
+        let asker = app.clone();
+        let proceed = tauri::async_runtime::spawn_blocking(move || {
+            asker
+                .dialog()
+                .message(question)
+                .title("Export transcript")
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Save anyway".into(),
+                    "Cancel".into(),
+                ))
+                .blocking_show()
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        if !proceed {
+            return Ok(false);
+        }
+    }
     let label = if extension == "json" {
         "JSON"
     } else {
@@ -126,6 +155,15 @@ mod tests {
         for bad in ["", "../config", "a/b", "Settings", "x.json", "a\\b"] {
             assert!(file(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn only_a_warned_export_is_confirmed_first() {
+        assert_eq!(confirmation(None), None);
+        assert_eq!(confirmation(Some("  \n")), None);
+        let question = confirmation(Some("Looks like a GitHub token.")).unwrap();
+        assert!(question.starts_with("Looks like a GitHub token."));
+        assert!(question.ends_with("Save it anyway?"));
     }
 
     #[test]

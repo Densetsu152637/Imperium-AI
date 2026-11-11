@@ -593,6 +593,84 @@ fn filename(title: &str, session_id: &str, format: ExportFormat) -> String {
     format!("{stem}.{extension}")
 }
 
+/// Every string in an agent's log and below, newline-separated.
+fn collect_text(agent: &Agent, out: &mut String) {
+    let mut add = |text: &str| {
+        out.push_str(text);
+        out.push('\n');
+    };
+    add(&agent.task);
+    if let Some(report) = &agent.report {
+        add(report);
+    }
+    for entry in &agent.entries {
+        match entry {
+            Entry::User { text, .. } | Entry::Assistant { text } => add(text),
+            Entry::Tool {
+                summary,
+                arguments,
+                output,
+                ..
+            } => {
+                add(summary);
+                arguments.iter().chain(output).for_each(|text| add(text));
+            }
+            Entry::Followup { text, .. } => add(text),
+            Entry::Media { prompt, .. } => add(prompt),
+            Entry::Notice { message } | Entry::Failure { message } => add(message),
+            Entry::Subagent { .. } | Entry::Compaction { .. } | Entry::ModelChanged { .. } => {}
+        }
+    }
+    for child in &agent.subagents {
+        collect_text(child, out);
+    }
+}
+
+/// What credential `text` seems to hold, judged by the shapes real ones have (a known prefix
+/// and a long enough body, a private key header, a JWT). Anything else, a git commit hash
+/// included, does not count; a clean result is not a promise that nothing secret is there.
+fn credential_in(text: &str) -> Option<&'static str> {
+    const PREFIXES: [(&str, &str); 14] = [
+        ("sk-ant-", "an Anthropic API key"),
+        ("sk-", "an API key"),
+        ("ghp_", "a GitHub token"),
+        ("gho_", "a GitHub token"),
+        ("ghs_", "a GitHub token"),
+        ("github_pat_", "a GitHub token"),
+        ("glpat-", "a GitLab token"),
+        ("xoxb-", "a Slack token"),
+        ("xoxp-", "a Slack token"),
+        ("AKIA", "an AWS key"),
+        ("ASIA", "an AWS key"),
+        ("AIza", "a Google API key"),
+        ("hf_", "a Hugging Face token"),
+        ("npm_", "an npm token"),
+    ];
+    if text.contains("-----BEGIN") && text.contains("PRIVATE KEY-----") {
+        return Some("a private key");
+    }
+    for word in text.split(|c: char| c.is_whitespace() || "\"'`=:,;()[]{}<>".contains(c)) {
+        for (prefix, reason) in PREFIXES {
+            if let Some(body) = word.strip_prefix(prefix)
+                && body.len() >= 16
+                && body
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                return Some(reason);
+            }
+        }
+        // A JWT: three base64url parts, the first a JSON header ("eyJ").
+        if word.starts_with("eyJ") {
+            let parts: Vec<&str> = word.split('.').collect();
+            if parts.len() == 3 && parts.iter().all(|part| part.len() >= 8) {
+                return Some("a JSON web token");
+            }
+        }
+    }
+    None
+}
+
 /// Renders events as `format`. Public to the crate for tests; the daemon calls [`export`].
 pub(crate) fn render(
     session_id: &str,
@@ -602,18 +680,23 @@ pub(crate) fn render(
     subagents: bool,
 ) -> SessionExportResult {
     let transcript = build(session_id, title, events, subagents);
+    // Scanned as the strings the transcript holds, before they are serialised (JSON escaping
+    // would break up a multi-line key).
+    let mut text = String::new();
+    collect_text(&transcript.root, &mut text);
+    let warning = credential_in(&text).map(|reason| {
+        format!(
+            "This transcript looks like it contains {reason}. Exports are verbatim, including \
+             everything the agents read and ran, so check it before sharing. A transcript \
+             without this warning can still hold secrets."
+        )
+    });
     let content = match format {
         ExportFormat::Markdown => render_markdown(&transcript),
         ExportFormat::Json => {
             serde_json::to_string_pretty(&transcript).unwrap_or_else(|_| "{}".into())
         }
     };
-    let warning = imperium_memory::looks_secret(&content).map(|reason| {
-        format!(
-            "This transcript looks like it contains {reason}. Exports are verbatim, including \
-             everything the agents read and ran, so check it before sharing."
-        )
-    });
     SessionExportResult {
         format,
         filename: filename(title, session_id, format),
@@ -788,6 +871,45 @@ mod tests {
         assert!(result.warning.unwrap().contains("GitHub token"));
         let clean = render("s1", "t", &events(), ExportFormat::Json, true);
         assert!(clean.warning.is_none());
+    }
+
+    #[test]
+    fn git_hashes_do_not_warn_but_known_credential_shapes_do() {
+        let hash = "9fceb02d0ae598e95dc970b74767f19372d61af8";
+        assert_eq!(
+            credential_in(&format!("commit {hash} and {hash}12345678")),
+            None
+        );
+        for (text, reason) in [
+            ("key sk-ant-abcdefghijklmnop1234", "Anthropic"),
+            ("AKIAABCDEFGHIJKLMNOP", "AWS"),
+            ("token=glpat-abcdefghij0123456789", "GitLab"),
+            ("-----BEGIN RSA PRIVATE KEY-----\nMIIE", "private key"),
+            (
+                "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r",
+                "web token",
+            ),
+        ] {
+            assert!(credential_in(text).unwrap().contains(reason), "{text}");
+        }
+        assert_eq!(credential_in("sk-short"), None);
+    }
+
+    #[test]
+    fn a_key_split_over_json_escapes_is_still_found_in_the_strings() {
+        let mut list = events();
+        list.push(at(
+            "t1",
+            SessionEvent::ToolFinished {
+                call_id: "c9".into(),
+                ok: true,
+                output: "cat .env\nTOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123\n".into(),
+                tool: Some("run_command".into()),
+                duration_ms: None,
+            },
+        ));
+        let result = render("s1", "t", &list, ExportFormat::Json, true);
+        assert!(result.warning.is_some());
     }
 
     #[test]

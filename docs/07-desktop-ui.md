@@ -844,7 +844,9 @@ builds the transcript from the session's journal, and saves it through the nativ
 writes only the file picked there (`save_export`; the page cannot name a path, only a `.md` or
 `.json` file name to suggest, and transcripts over 64 MiB are refused). Exports are verbatim,
 so they can hold anything an agent read or ran, secrets included: when one looks like it
-holds a credential the app asks before saving, and the CLI prints a warning. The transcript holds every message, each tool call with its arguments and result, the
+holds a credential (a known key prefix, a private key, a JWT; git hashes do not count) the
+shell asks before opening the save dialog, and the CLI prints a warning. No warning does not
+mean no secrets: read an export before sharing it. The transcript holds every message, each tool call with its arguments and result, the
 subagent task tree with each subagent's own log under the task that started it, compaction
 notices, and the files attached to messages or created by agents. Subagents of an archived
 session open in the agent view like any other (read-only: no *Resume* or *Cancel*, no

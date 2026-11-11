@@ -363,7 +363,9 @@ turn. The desktop shows it in the session's *Context and outputs* section
   attempt waits for at least two new messages, a compaction that did not shrink the conversation
   stops further attempts for that turn, and a failed one is a notice (not tried again until the
   conversation has grown) while the turn continues with the conversation as it is. A
-  compaction aims at 80% of the trigger at most, so the next call does not trigger it again. The session's `auto_compact` flag stays what it was: also fit
+  compaction aims at 80% of the trigger at most, so the next call does not trigger it again,
+  and none is tried when the system prompt, tools, and carried context alone take 80% of the
+  trigger (summarising could not get under it). The session's `auto_compact` flag stays what it was: also fit
   the root conversation at the start of each turn (environment agents).
 - **What compaction never touches:** the system prompt (the policy index and role instructions,
   project instruction files such as `AGENTS.md`, eager skills, memory and web rules) is always
@@ -373,7 +375,8 @@ turn. The desktop shows it in the session's *Context and outputs* section
   one replaces it) (workflow companions), and what `load_skill`
   returned (skill instructions; a skill therefore stays loaded; journals written before this carried nothing over, and
   replay still drops their skills at such a compaction). Everything else is up for
-  summarising: messages, tool calls and results, subagent reports, attachments. The carried
+  summarising: messages, tool calls and results, subagent reports, attachments. Text inside a carried item that looks like the block's own
+  delimiters is backslash-escaped, so no item can end the block or split itself. The carried
   context counts against the budget, so a conversation whose kept context alone is too large is
   refused like one whose system prompt is.
 - Large tool outputs are stored as artefacts; the model receives a truncated view plus a

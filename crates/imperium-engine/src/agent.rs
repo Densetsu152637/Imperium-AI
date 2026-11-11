@@ -2451,6 +2451,22 @@ impl Agent {
         if tokens < trigger {
             return;
         }
+        // What compaction cannot shrink: the system prompt, the tools, and the carried context.
+        let fixed = estimate_tokens(&serde_json::to_string(&self.messages[0]).unwrap_or_default())
+            + tools
+                .iter()
+                .map(|(_, text)| estimate_tokens(text))
+                .sum::<u64>()
+            + estimate_tokens(&compact::pinned_context(
+                &self.messages,
+                &self.spans,
+                self.messages.len(),
+            ));
+        if !compact::worth_compacting(fixed, trigger) {
+            // Summarising would not get the conversation under its trigger; ask again later.
+            self.compact_mark = Some(self.messages.len() + 4);
+            return;
+        }
         self.compact_mark = Some(self.messages.len());
         let model = self.model.clone();
         match self.fit_with(&model, false, Some(trigger)).await {
