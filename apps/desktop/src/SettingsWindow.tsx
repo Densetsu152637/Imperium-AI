@@ -324,13 +324,16 @@ const TAIL_SECTIONS: Section[] = [
   { id: "about", label: "About", group: "About" },
 ];
 
+/** The Panels section's icon, which the main window's panel-editor toggle uses too. */
+export const PANELS_ICON: LucideIcon = LayoutGrid;
+
 /** One icon per section, in the same line style as the rest of the app. */
 const SECTION_ICONS: Record<string, LucideIcon> = {
   general: SlidersHorizontal,
   appearance: Palette,
   chat: MessageSquare,
   notifications: Bell,
-  panels: LayoutGrid,
+  panels: PANELS_ICON,
   shortcuts: Keyboard,
   daemon: Server,
   updates: Download,

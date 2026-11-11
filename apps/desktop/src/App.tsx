@@ -6,7 +6,7 @@
 // `?panel=<id>`: it connects to the daemon itself but shows only that panel. The main window
 // owns the layout and the list of detached panels; see panelWindows.ts.
 
-import { Plug, Plus, Settings } from "lucide-react";
+import { Check, Plug, Plus, Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
@@ -40,7 +40,8 @@ import type {
 
 import { DaemonClient, type DaemonConnection } from "./daemon/client";
 import { findDaemon, insideTauri, rememberDevConnection } from "./daemon/connection";
-import { Columns, type ColumnSpec, type PanelSpec } from "./layout/Columns";
+import { addColumn, applyDrop, reconcile, removeColumn, sameArrangement, visibleColumns, type Arrangement, type DropTarget } from "./layout/arrangement";
+import { Columns, type PanelSpec } from "./layout/Columns";
 import { PanelWindow } from "./layout/PanelWindow";
 import { getLayout, resetLayout, updateLayout, type DetachedPanel } from "./layout/state";
 import { downloadNotice, sessionNotice, updateNotice } from "./attention";
@@ -89,7 +90,7 @@ import {
   type AppSettings,
   type ChangeSettings,
 } from "./settings";
-import { SETTINGS_SECTIONS, SettingsWindow } from "./SettingsWindow";
+import { PANELS_ICON, SETTINGS_SECTIONS, SettingsWindow } from "./SettingsWindow";
 import { appCommands } from "./commands/appCommands";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
@@ -173,6 +174,10 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
   const [hidden, setHidden] = useState<string[]>(saved.hidden);
   const [detached, setDetached] = useState<Record<string, DetachedPanel>>(saved.detached);
+  /** Which panels sit in which columns, as the panel editor left them (null: the default). */
+  const [arrangement, setArrangement] = useState<Arrangement | null>(saved.arrangement);
+  /** The panel editor: panels are moved only while it is on. */
+  const [editingLayout, setEditingLayout] = useState(false);
   // Panels whose windows this session has opened, so each opens once.
   const opened = useRef(new Set<string>());
   const [showSettings, setShowSettings] = useState(false);
@@ -402,12 +407,23 @@ export function App() {
   }, [modBus, isDetached]);
   const daemon = useDaemon(() => void connect(), status.kind === "connected", !isDetached);
 
-  // Remember the selection, closed panels, and detached windows. Only the main window writes
-  // the layout.
+  // Remember the selection, the arrangement, closed panels, and detached windows. Only the main
+  // window writes the layout.
   useEffect(() => {
     if (isDetached) return;
-    updateLayout({ environment: envId, session: selected, projectView: envView, hidden, detached, sessionSort });
-  }, [isDetached, envId, selected, envView, hidden, detached, sessionSort]);
+    updateLayout({ environment: envId, session: selected, projectView: envView, arrangement, hidden, detached, sessionSort });
+  }, [isDetached, envId, selected, envView, arrangement, hidden, detached, sessionSort]);
+
+  // Esc leaves the panel editor, unless a dialog is open (it closes that instead).
+  useEffect(() => {
+    if (!editingLayout) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("[aria-modal='true']")) return;
+      setEditingLayout(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editingLayout]);
 
   // Remember the sessions as last seen, for the next time the daemon is away.
   useEffect(() => {
@@ -1034,13 +1050,26 @@ export function App() {
     );
   }
 
-  const columns: ColumnSpec[] = [
-    { id: "left", mode: "stack", panels: visible([...leftPanels, ...(approvals.length > 0 ? [approvalsPanel] : [])]) },
-    ...(detached[sessionPanel.id]
-      ? []
-      : [{ id: "main", mode: "span" as const, panel: { ...sessionPanel, onDetach: () => detach(sessionPanel.id) } }]),
-    { id: "right", mode: "stack", panels: visible(rightPanels) },
+  // The default arrangement: environments and sessions on the left, the session in the middle,
+  // the rest on the right. The saved one (from the panel editor) wins, with new panels added.
+  const defaultArrangement: Arrangement = [
+    { id: "left", panels: [...leftPanels.map((panel) => panel.id), approvalsPanel.id] },
+    { id: "main", panels: [sessionPanel.id] },
+    { id: "right", panels: rightPanels.map((panel) => panel.id) },
   ];
+  const layoutColumns = reconcile(arrangement, defaultArrangement);
+  const shownPanels = new Map<string, PanelSpec>(
+    visible([...leftPanels, ...(approvals.length > 0 ? [approvalsPanel] : []), ...rightPanels]).map((panel) => [panel.id, panel]),
+  );
+  if (!detached[sessionPanel.id]) {
+    shownPanels.set(sessionPanel.id, { ...sessionPanel, span: true, onDetach: () => detach(sessionPanel.id) });
+  }
+  const columns = visibleColumns(layoutColumns, (id) => shownPanels.get(id), editingLayout);
+  /** Keeps an arrangement the editor changed; an unchanged one is not written. */
+  const arrange = (next: Arrangement) => {
+    if (!sameArrangement(next, layoutColumns)) setArrangement(next);
+  };
+  const newColumnId = () => `column-${Date.now().toString(36)}`;
 
   return (
     <SettingsContext.Provider value={settings}>
@@ -1064,6 +1093,15 @@ export function App() {
           title="MCP servers, plugins, and skills"
         >
           <Plug aria-hidden="true" /> Connectors
+        </button>
+        <button
+          className={`ghost titlebar-button icon-only layout-toggle${editingLayout ? " active" : ""}`}
+          onClick={() => setEditingLayout((editing) => !editing)}
+          aria-pressed={editingLayout}
+          aria-label="Edit layout"
+          title={editingLayout ? "Done editing the layout (Esc)" : "Edit layout"}
+        >
+          <PANELS_ICON aria-hidden="true" />
         </button>
         <button
           className="ghost titlebar-button"
@@ -1097,6 +1135,7 @@ export function App() {
             setModelDialog({ tab: "local" });
           }}
           onResetLayout={() => {
+            setArrangement(null);
             resetLayout();
             window.location.reload();
           }}
@@ -1127,11 +1166,26 @@ export function App() {
         />
       )}
       {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={daemon} />}
-      {(
-        <main className="workspace">
-          <Columns initial={columns.length === 3 ? [0.2, 0.55, 0.25] : undefined} columns={columns} />
-        </main>
+      {editingLayout && (
+        <div className="layout-editor-bar" role="region" aria-label="Layout editor">
+          <span className="muted">Drag a panel by its header to move it; drop it at a column's edge to start a new column.</span>
+          <button className="ghost small" onClick={() => arrange(addColumn(layoutColumns, editingLayout, newColumnId))}>
+            <Plus aria-hidden="true" /> Column
+          </button>
+          <button className="primary small" onClick={() => setEditingLayout(false)}>
+            <Check aria-hidden="true" /> Done
+          </button>
+        </div>
       )}
+      <main className={`workspace${editingLayout ? " editing-layout" : ""}`}>
+        <Columns
+          initial={arrangement === null && columns.length === 3 ? [0.2, 0.55, 0.25] : undefined}
+          columns={columns}
+          editing={editingLayout}
+          onDrop={(panel: string, target: DropTarget) => arrange(applyDrop(layoutColumns, panel, target, editingLayout, newColumnId))}
+          onRemoveColumn={(column) => arrange(removeColumn(layoutColumns, column, (id) => shownPanels.has(id), editingLayout))}
+        />
+      </main>
     </div>
     </ChangeSettingsContext.Provider>
       </SettingsContext.Provider>
