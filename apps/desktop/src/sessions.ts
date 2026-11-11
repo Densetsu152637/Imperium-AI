@@ -18,6 +18,8 @@ import type {
 } from "@imperium/protocol";
 import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
+import { applySent, applyWait, type Sent, type Waits } from "./waits";
+
 export const ROOT = "root";
 
 /** A transcript entry; `event` is the index of the history event that started it, which
@@ -125,6 +127,10 @@ export type SessionState = {
   updatedAt: number;
   /** Events applied so far: the index the next one has in the session's history. */
   eventCount: number;
+  /** Agents that have not produced output yet, and what they wait on (waits.ts). */
+  waits: Waits;
+  /** A message this window sent that has not started a turn yet. */
+  sent: Sent | null;
 };
 
 /** The daemon's default, for sessions this window creates before their summary arrives. */
@@ -150,6 +156,8 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   pause: summary.hold ? { untilMs: 0, reason: summary.hold.reason, cause: summary.hold.cause } : null,
   updatedAt,
   eventCount: 0,
+  waits: {},
+  sent: null,
 });
 
 /** A pause time as `HH:MM`, with the weekday when it is not today. */
@@ -298,8 +306,8 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
   return next;
 }
 
-/** Applies one event; returns a new state (inputs are never mutated). */
-export function applyEvent(state: SessionState, agentEvent: AgentEvent): SessionState {
+/** Applies one event; returns a new state (inputs are never mutated). `now` stamps waits that begin. */
+export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: number = Date.now()): SessionState {
   const { agent_id: agentId, event } = agentEvent;
   let entries = state.entries;
 
@@ -436,8 +444,22 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent): Session
     statusDetail,
     pause,
     eventCount: eventIndex + 1,
+    waits: applyWait(state.waits ?? {}, agentEvent, now),
+    sent: applySent(state.sent ?? null, agentEvent),
   };
 }
+
+/** Marks a message as sent from this window, so its status line shows until its turn starts. */
+export const markSent = (state: SessionState, text: string, now: number = Date.now()): SessionState => ({
+  ...state,
+  sent: { text, since: now, budget: null },
+});
+
+/** The sent message's budget question (`message`), or none; `null` forgets the message. */
+export const updateSent = (state: SessionState, budget: string | null | undefined): SessionState => ({
+  ...state,
+  sent: budget === undefined || !state.sent ? null : { ...state.sent, budget },
+});
 
 /** Tokens a breakdown's request held: the categories, which add up to the reported size. */
 export const breakdownUsed = (breakdown: ContextBreakdown): number =>

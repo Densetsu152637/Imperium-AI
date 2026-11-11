@@ -654,6 +654,9 @@ impl Chat {
                 ),
                 _ => {}
             },
+            SessionEvent::CompactionStarted { model } => {
+                println!("\n{tag}· compacting the conversation for {model}");
+            }
             // This client prints the result of its own /model and /compact, and lists the
             // queue on /queue.
             SessionEvent::ModelChanged { .. }

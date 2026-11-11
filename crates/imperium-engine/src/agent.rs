@@ -2314,6 +2314,9 @@ impl Agent {
             free.saturating_sub(allowance),
             keep_from,
         );
+        self.emit(SessionEvent::CompactionStarted {
+            model: target.spec.clone(),
+        });
         let (mut summary, mut summary_model) = self.summarise(target, cut, allowance).await?;
         for _ in 0..compact::MAX_ATTEMPTS {
             let block = compact::summary_block(&summary);

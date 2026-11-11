@@ -134,4 +134,4 @@ mmproj: boolean, } | { "type": "model_suggestion_update", id: string,
  * `message`), `dismissed` (not now), or `disabled` (don't ask again: suggestions are
  * off).
  */
-state: "downloading" | "ready" | "failed" | "cancelled" | "dismissed" | "disabled", job_id: string | null, model: string | null, message: string | null, } | { "type": "questions_asked", request_id: number, questions: Array<Question>, } | { "type": "questions_answered", request_id: number, };
+state: "downloading" | "ready" | "failed" | "cancelled" | "dismissed" | "disabled", job_id: string | null, model: string | null, message: string | null, } | { "type": "questions_asked", request_id: number, questions: Array<Question>, } | { "type": "questions_answered", request_id: number, } | { "type": "compaction_started", model: string, };
