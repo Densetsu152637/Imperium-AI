@@ -13,9 +13,9 @@ use imperium_protocol::methods::{
     SessionSend, SessionSendParams, SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
-    AgentEvent, AgentStatus, AgentSummary, ContextCategory, LocalWaitReason, PauseCause,
-    PermissionDecision, Question, QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode, SessionEvent,
-    SessionEventParams, StepStatus, TokenCountMethod,
+    AgentEvent, AgentStatus, AgentSummary, ContextCategory, ExtensionKind, LocalWaitReason,
+    PauseCause, PermissionDecision, Question, QueuedMessage, ROOT_AGENT, SESSION_EVENT, SendMode,
+    SessionEvent, SessionEventParams, StepStatus, TokenCountMethod,
 };
 use tokio::sync::mpsc;
 
@@ -621,6 +621,12 @@ impl Chat {
             SessionEvent::ContextLoaded { references } => {
                 println!("\n{tag}· loaded {}", references.join(", "));
             }
+            SessionEvent::ExtensionLoaded { kind, name, tools } => match kind {
+                ExtensionKind::Skill => println!("\n{tag}· loaded skill {name}"),
+                ExtensionKind::Plugin => {
+                    println!("\n{tag}· activated plugin {name} ({} tools)", tools.len());
+                }
+            },
             SessionEvent::MessageQueued { id, text, steer } => {
                 let first = text.lines().next().unwrap_or_default();
                 if steer {

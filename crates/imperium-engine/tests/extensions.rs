@@ -83,6 +83,8 @@ async fn skills_commands_and_hooks_shape_a_turn() {
             timeout_s: Some(10),
         }],
         server_timeout: Duration::from_secs(5),
+        lazy: true,
+        eager: Vec::new(),
     });
     assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
 
@@ -152,6 +154,8 @@ async fn skills_commands_and_hooks_shape_a_turn() {
             .unwrap()
             .contains("- greeting: Greet people politely")
     );
+    // Only the index is in the prompt; the instructions come with load_skill.
+    assert!(!system.lock().unwrap().contains("Always say good morning."));
     assert!(finished[0].0 && finished[0].1.contains("Always say good morning."));
     assert!(!finished[1].0);
     assert!(

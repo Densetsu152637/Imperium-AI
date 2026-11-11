@@ -792,8 +792,8 @@ pub enum WritePolicy {
     Off,
 }
 
-/// Where plugins are loaded from, besides `<config>/plugins`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+/// Where plugins are loaded from, besides `<config>/plugins`, and what loads up front.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ExtensionSettings {
     /// Plugin folders, or folders of plugins, in the Claude Code layout.
     #[serde(default)]
@@ -801,6 +801,25 @@ pub struct ExtensionSettings {
     /// Plugins, by name, that are found but not loaded.
     #[serde(default)]
     pub disabled_plugins: Vec<String>,
+    /// Load skills and plugins on first use: agents start with only each one's name and
+    /// description. Off, every skill's instructions are in the prompt and every plugin's
+    /// servers start with the session.
+    #[serde(default = "default_true")]
+    pub lazy: bool,
+    /// Skills and plugins, by name, loaded up front even when `lazy` is on.
+    #[serde(default)]
+    pub eager: Vec<String>,
+}
+
+impl Default for ExtensionSettings {
+    fn default() -> Self {
+        ExtensionSettings {
+            plugin_dirs: Vec::new(),
+            disabled_plugins: Vec::new(),
+            lazy: true,
+            eager: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

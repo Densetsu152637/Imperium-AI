@@ -39,17 +39,24 @@ const CACHE_LIMIT: usize = 100_000;
 pub(crate) const IMAGE_TOKENS: u64 = 800;
 /// What joins the labelled parts of one message.
 pub(crate) const PART_SEPARATOR: &str = "\n\n";
+/// The tool whose results are skill instructions.
+pub(crate) const LOAD_SKILL: &str = "load_skill";
 
 /// The kinds of text a request carries, in the order breakdowns list them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Category {
     SystemBase,
+    /// The index of skills and plugins loaded on use.
     SystemSkills,
+    /// Skill instructions: eager ones in the system prompt, and `load_skill` results.
+    SkillsLoaded,
     SystemMemory,
     SystemCitations,
     SystemProject,
     ToolsBuiltin,
     ToolsMcp,
+    /// Tools of activated plugins.
+    ToolsPlugins,
     Summary,
     Manifest,
     Memories,
@@ -61,14 +68,16 @@ pub(crate) enum Category {
 }
 
 impl Category {
-    const ALL: [Category; 15] = [
+    const ALL: [Category; 17] = [
         Category::SystemBase,
         Category::SystemSkills,
+        Category::SkillsLoaded,
         Category::SystemMemory,
         Category::SystemCitations,
         Category::SystemProject,
         Category::ToolsBuiltin,
         Category::ToolsMcp,
+        Category::ToolsPlugins,
         Category::Summary,
         Category::Manifest,
         Category::Memories,
@@ -83,11 +92,13 @@ impl Category {
         match self {
             Category::SystemBase => "system_base",
             Category::SystemSkills => "system_skills",
+            Category::SkillsLoaded => "skills_loaded",
             Category::SystemMemory => "system_memory",
             Category::SystemCitations => "system_citations",
             Category::SystemProject => "system_project",
             Category::ToolsBuiltin => "tools_builtin",
             Category::ToolsMcp => "tools_mcp",
+            Category::ToolsPlugins => "tools_plugins",
             Category::Summary => "summary",
             Category::Manifest => "manifest",
             Category::Memories => "memories",
@@ -102,12 +113,14 @@ impl Category {
     fn label(self) -> &'static str {
         match self {
             Category::SystemBase => "System prompt",
-            Category::SystemSkills => "Skills listing",
+            Category::SystemSkills => "Skill and plugin index",
+            Category::SkillsLoaded => "Loaded skills",
             Category::SystemMemory => "Memory instructions",
             Category::SystemCitations => "Web citation rules",
             Category::SystemProject => "Project instructions",
             Category::ToolsBuiltin => "Built-in tools",
             Category::ToolsMcp => "MCP tools",
+            Category::ToolsPlugins => "Plugin tools",
             Category::Summary => "Conversation summary",
             Category::Manifest => "Workflow context manifest",
             Category::Memories => "Recalled memories",
@@ -179,9 +192,13 @@ pub(crate) fn restored_spans(content: &str) -> Spans {
     spans
 }
 
-/// The tool definitions as sent, one JSON array per category (built-in tools, then MCP tools,
-/// whose specs occupy `mcp` in `specs`).
-pub(crate) fn tool_texts(specs: &[ToolSpec], mcp: Range<usize>) -> Vec<(Category, String)> {
+/// The tool definitions as sent, one JSON array per category: built-in tools, then each of
+/// `groups` (outside tools: MCP servers' and activated plugins'), whose specs occupy the given
+/// ranges of `specs`.
+pub(crate) fn tool_texts(
+    specs: &[ToolSpec],
+    groups: &[(Category, Range<usize>)],
+) -> Vec<(Category, String)> {
     let wire = |category: Category, tools: Vec<&ToolSpec>| {
         let array: Vec<_> = tools.into_iter().map(ToolSpec::to_wire).collect();
         (!array.is_empty()).then(|| {
@@ -189,23 +206,26 @@ pub(crate) fn tool_texts(specs: &[ToolSpec], mcp: Range<usize>) -> Vec<(Category
             (category, text)
         })
     };
-    let (builtin, mcp_specs): (Vec<_>, Vec<_>) = specs
+    let in_group = |index: usize| groups.iter().any(|(_, range)| range.contains(&index));
+    let builtin = specs
         .iter()
         .enumerate()
-        .partition(|(index, _)| !mcp.contains(index));
-    [
-        wire(
-            Category::ToolsBuiltin,
-            builtin.into_iter().map(|(_, spec)| spec).collect(),
-        ),
-        wire(
-            Category::ToolsMcp,
-            mcp_specs.into_iter().map(|(_, spec)| spec).collect(),
-        ),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+        .filter(|(index, _)| !in_group(*index))
+        .map(|(_, spec)| spec)
+        .collect();
+    std::iter::once(wire(Category::ToolsBuiltin, builtin))
+        .chain(
+            groups
+                .iter()
+                .map(|(category, range)| wire(*category, specs[range.clone()].iter().collect())),
+        )
+        .flatten()
+        .collect()
+}
+
+/// Whether a category is outside tools' definitions (rendered after the built-in ones).
+fn outside_tools(category: Category) -> bool {
+    matches!(category, Category::ToolsMcp | Category::ToolsPlugins)
 }
 
 /// One model request: its messages with the parts recorded for them, and its tool definitions.
@@ -229,6 +249,18 @@ impl<'a> Request<'a> {
     /// The segments, each with the index of the message it comes from (`None` for the tools).
     fn indexed_segments(&self) -> Vec<(Option<usize>, Category, &'a str)> {
         let mut segments: Vec<(Option<usize>, Category, &'a str)> = Vec::new();
+        // Skill instructions loaded on use arrive as `load_skill` results.
+        let skill_loads: HashSet<&str> = self
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                ChatMessage::Assistant { tool_calls, .. } => Some(tool_calls),
+                _ => None,
+            })
+            .flatten()
+            .filter(|call| call.function.name == LOAD_SKILL)
+            .map(|call| call.id.as_str())
+            .collect();
         for (index, message) in self.messages.iter().enumerate() {
             let recorded = self.spans.get(&index);
             let mut parts: Vec<(Category, &'a str)> = Vec::new();
@@ -253,8 +285,16 @@ impl<'a> Request<'a> {
                         parts.push((Category::Assistant, &call.function.arguments));
                     }
                 }
-                ChatMessage::Tool { content, .. } => {
-                    parts.push((Category::ToolResults, content));
+                ChatMessage::Tool {
+                    content,
+                    tool_call_id,
+                } => {
+                    let category = if skill_loads.contains(tool_call_id.as_str()) {
+                        Category::SkillsLoaded
+                    } else {
+                        Category::ToolResults
+                    };
+                    parts.push((category, content));
                 }
             }
             segments.extend(
@@ -478,10 +518,15 @@ impl TokenCounter {
                 for ((category, _), count) in segments.iter().zip(counts) {
                     totals[category.index()] += count;
                 }
-                // The tools as the template renders them, not as the JSON sent.
-                if let Some((builtin, mcp)) = rendered_tools {
+                // The tools as the template renders them, not as the JSON sent; outside tools
+                // are split between MCP and plugin tools as their JSON is.
+                if let Some((builtin, outside)) = rendered_tools {
                     totals[Category::ToolsBuiltin.index()] = builtin;
-                    totals[Category::ToolsMcp.index()] = mcp;
+                    let mcp = totals[Category::ToolsMcp.index()];
+                    let plugins = totals[Category::ToolsPlugins.index()];
+                    let split = calibrate(&[mcp, plugins], outside);
+                    totals[Category::ToolsMcp.index()] = split[0];
+                    totals[Category::ToolsPlugins.index()] = split[1];
                 }
             }
             None => {
@@ -672,7 +717,7 @@ fn assemble(
     for ((index, category, _), count) in indexed.iter().zip(&counts) {
         match index {
             Some(index) => messages[*index] += count,
-            None if *category == Category::ToolsMcp => tools[1] += count,
+            None if outside_tools(*category) => tools[1] += count,
             None => tools[0] += count,
         }
     }
@@ -719,7 +764,7 @@ impl TokenCounter {
         Ok(counts)
     }
 
-    /// The tokens the model's chat template spends on `tools` (built-in, MCP): the difference
+    /// The tokens the model's chat template spends on `tools` (built-in, outside): the difference
     /// it makes to rendering a minimal conversation, so the template's tool instructions and
     /// its own JSON spacing count as tools. Measured once per tool set; `None` when the server
     /// has no `/apply-template`, leaving the JSON as sent.
@@ -750,6 +795,7 @@ impl TokenCounter {
             .iter()
             .cloned()
             .chain(array(Category::ToolsMcp))
+            .chain(array(Category::ToolsPlugins))
             .collect();
         let probe = serde_json::json!([
             {"role": "system", "content": "x"},
@@ -876,7 +922,10 @@ mod tests {
             },
         ];
         let spans = HashMap::from([(0, system_spans), (1, user_spans)]);
-        let tools = tool_texts(&[spec("read_file"), spec("mcp__s__t")], 1..2);
+        let tools = tool_texts(
+            &[spec("read_file"), spec("mcp__s__t"), spec("mcp__p_s__t")],
+            &[(Category::ToolsMcp, 1..2), (Category::ToolsPlugins, 2..3)],
+        );
         let request = Request {
             messages: &messages,
             spans: &spans,
@@ -908,6 +957,48 @@ mod tests {
         assert_eq!(builtin, json!([spec("read_file").to_wire()]));
         let mcp: serde_json::Value = serde_json::from_str(text_of(Category::ToolsMcp)[0]).unwrap();
         assert_eq!(mcp, json!([spec("mcp__s__t").to_wire()]));
+        let plugins: serde_json::Value =
+            serde_json::from_str(text_of(Category::ToolsPlugins)[0]).unwrap();
+        assert_eq!(plugins, json!([spec("mcp__p_s__t").to_wire()]));
+    }
+
+    #[test]
+    fn loaded_skills_count_apart_from_other_tool_results() {
+        let call = |id: &str, name: &str| ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: "{}".into(),
+            },
+        };
+        let messages = vec![
+            ChatMessage::System {
+                content: "base".into(),
+            },
+            ChatMessage::user("go"),
+            ChatMessage::Assistant {
+                content: None,
+                tool_calls: vec![call("a", "load_skill"), call("b", "read_file")],
+            },
+            ChatMessage::Tool {
+                tool_call_id: "a".into(),
+                content: "# Skill: pdf".into(),
+            },
+            ChatMessage::Tool {
+                tool_call_id: "b".into(),
+                content: "file text".into(),
+            },
+        ];
+        let spans = HashMap::new();
+        let request = Request {
+            messages: &messages,
+            spans: &spans,
+            tools: &[],
+        };
+        let segments = request.segments();
+        assert!(segments.contains(&(Category::SkillsLoaded, "# Skill: pdf")));
+        assert!(segments.contains(&(Category::ToolResults, "file text")));
     }
 
     #[test]

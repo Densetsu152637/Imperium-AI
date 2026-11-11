@@ -1,13 +1,17 @@
 //! Agent Skills: folders with a `SKILL.md` (name and description in front matter, instructions
-//! in the body) and optional resource files. Agents see each skill's description and load the
-//! ones they need with the `load_skill` tool.
+//! in the body) and optional resource files. Agents see only each skill's name, description,
+//! and trigger hint (front matter `when_to_use`) up front, and load the instructions of the ones
+//! they need with the `load_skill` tool; an eager skill's instructions are in the prompt from
+//! the start.
 
 use std::path::{Component, Path, PathBuf};
 
 use imperium_api::markdown::front_matter;
 
-/// Longest description shown in the skill list.
+/// Longest description shown in the skill index.
 const DESCRIPTION_CHARS: usize = 300;
+/// Longest trigger hint shown in the skill index.
+const HINT_CHARS: usize = 150;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
@@ -17,6 +21,10 @@ pub struct Skill {
     pub dir: PathBuf,
     /// Where it came from, such as `user`, `project`, or `plugin:<name>`.
     pub origin: String,
+    /// When to use it (front matter `when_to_use`), shown in the index after the description.
+    pub hint: Option<String>,
+    /// Its instructions are in the prompt from the start rather than loaded on use.
+    pub eager: bool,
 }
 
 /// Finds skills in each `(folder, origin)`: every subfolder with a `SKILL.md`. Earlier folders
@@ -59,27 +67,55 @@ pub fn discover(folders: &[(PathBuf, String)]) -> (Vec<Skill>, Vec<String>) {
             if skills.iter().any(|skill| skill.name == name) {
                 continue;
             }
+            let hint = fields
+                .get("when_to_use")
+                .filter(|hint| !hint.is_empty())
+                .map(|hint| hint.chars().take(HINT_CHARS).collect());
             skills.push(Skill {
                 name,
                 description: description.chars().take(DESCRIPTION_CHARS).collect(),
                 dir,
                 origin: origin.clone(),
+                hint,
+                eager: false,
             });
         }
     }
     (skills, problems)
 }
 
-/// The skill list for an agent's instructions.
-pub fn listing(skills: &[Skill]) -> String {
-    let mut text = String::from(
-        "Skills are packaged instructions for particular tasks. When a task matches a skill's \
-         description, call load_skill with its name before starting, and follow it.\n",
-    );
-    for skill in skills {
-        text.push_str(&format!("- {}: {}\n", skill.name, skill.description));
+/// The index lines for the skills loaded on use: name, description, and trigger hint.
+pub(crate) fn index_lines(skills: &[Skill]) -> String {
+    let mut text = String::new();
+    for skill in skills.iter().filter(|skill| !skill.eager) {
+        text.push_str(&format!("- {}: {}", skill.name, skill.description));
+        if let Some(hint) = &skill.hint {
+            text.push_str(&format!(" (use when: {hint})"));
+        }
+        text.push('\n');
     }
     text
+}
+
+/// The eager skills' instructions, for the prompt; `None` when no skill is eager.
+pub fn eager_instructions(skills: &[Skill]) -> Option<String> {
+    let loaded: Vec<String> = skills
+        .iter()
+        .filter(|skill| skill.eager)
+        .filter_map(|skill| match load(skill, None) {
+            Ok(text) => Some(text),
+            Err(error) => {
+                tracing::warn!(skill = %skill.name, %error, "could not read an eager skill");
+                None
+            }
+        })
+        .collect();
+    (!loaded.is_empty()).then(|| {
+        format!(
+            "These skills are always loaded; follow each when its task comes up.\n\n{}",
+            loaded.join("\n\n")
+        )
+    })
 }
 
 /// A skill's instructions, or one of its resource files (a path relative to the skill folder).
@@ -163,7 +199,7 @@ mod tests {
             .collect();
         assert_eq!(names, [("pdf", "user"), ("notes", "project")]);
         assert_eq!(problems.len(), 1);
-        assert!(listing(&skills).contains("- pdf: Fill PDF forms"));
+        assert!(index_lines(&skills).contains("- pdf: Fill PDF forms\n"));
 
         let loaded = load(&skills[0], None).unwrap();
         assert!(loaded.contains("Do the thing."), "{loaded}");

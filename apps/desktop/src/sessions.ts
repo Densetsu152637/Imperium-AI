@@ -312,6 +312,15 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent, tasks: Record<s
     case "context_loaded":
       next.push({ kind: "notice", message: `Loaded ${event.references.join(", ")}` });
       break;
+    case "extension_loaded":
+      next.push({
+        kind: "notice",
+        message:
+          event.kind === "skill"
+            ? `Loaded skill ${event.name}`
+            : `Activated plugin ${event.name} (${event.tools?.length ?? 0} tools)`,
+      });
+      break;
     case "paused":
       next.push({
         kind: "notice",

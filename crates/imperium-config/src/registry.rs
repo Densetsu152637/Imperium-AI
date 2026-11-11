@@ -151,6 +151,8 @@ pub static SETTINGS: &[SettingDef] = &[
     def("mcp.trusted_projects", "Trusted MCP projects", PathList, "Project folders whose .mcp.json servers may start."),
     def("extensions.plugin_dirs", "Plugin folders", PathList, "More plugin folders (Claude Code layout), besides <config>/plugins."),
     def("extensions.disabled_plugins", "Disabled plugins", StringList, "Plugins, by name, whose skills, commands, hooks, and servers are not loaded."),
+    def("extensions.lazy", "Load extensions on use", Bool, "Agents start with each skill's and plugin's name and description, and load the rest on first use. Off loads every skill's instructions and starts every plugin's servers up front."),
+    def("extensions.eager", "Always-loaded extensions", StringList, "Skills and plugins, by name, loaded up front even when extensions load on use."),
     def("memory.enabled", "Memory", Bool, "Global and project memory for agents."),
     choice("memory.write.global", "Save global memories", WRITE_POLICY, "Whether agents may save global memories."),
     choice("memory.write.project", "Save project memories", WRITE_POLICY, "Whether agents may save shared project memories."),

@@ -7,8 +7,8 @@ use imperium_api::{Effort, ToolProvider};
 use imperium_config::RoutingSettings;
 use imperium_protocol::methods::SessionHold;
 use imperium_protocol::session::{
-    AgentEvent, AgentSummary, Attachment, PauseCause, PermissionDecision, QueuedMessage,
-    ROOT_AGENT, ResumePolicy, SendMode, SessionEvent, SessionStatus,
+    AgentEvent, AgentSummary, Attachment, ExtensionKind, PauseCause, PermissionDecision,
+    QueuedMessage, ROOT_AGENT, ResumePolicy, SendMode, SessionEvent, SessionStatus,
 };
 use imperium_tools::Workspace;
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
@@ -604,6 +604,8 @@ pub(crate) struct Shared {
     /// Tool providers, started before the first turn.
     pub tools: Vec<Arc<dyn ToolProvider>>,
     pub extensions: Extensions,
+    /// Skills whose instructions are in an agent's conversation, as (agent id, skill name).
+    pub loaded_skills: Mutex<HashSet<(String, String)>>,
     pub memory: Option<SessionMemory>,
     pub context: Option<Arc<ContextIndex>>,
     pub enforce: Enforce,
@@ -634,6 +636,35 @@ impl Shared {
     pub fn next_task_id(&self) -> String {
         format!("t{}", self.next_task.fetch_add(1, Ordering::Relaxed) + 1)
     }
+}
+
+/// What a resumed session had loaded, from its journal: skills each agent loaded, as (agent id,
+/// skill name), and the plugins activated, in order. An agent's compaction drops its skills,
+/// since the summary replaced their instructions.
+fn replay_extensions(history: &[AgentEvent]) -> (HashSet<(String, String)>, Vec<String>) {
+    let mut skills = HashSet::new();
+    let mut plugins = Vec::new();
+    for AgentEvent { agent_id, event } in history {
+        match event {
+            SessionEvent::ExtensionLoaded {
+                kind: ExtensionKind::Skill,
+                name,
+                ..
+            } => {
+                skills.insert((agent_id.clone(), name.clone()));
+            }
+            SessionEvent::ExtensionLoaded {
+                kind: ExtensionKind::Plugin,
+                name,
+                ..
+            } if !plugins.contains(name) => plugins.push(name.clone()),
+            SessionEvent::ContextCompacted { .. } => {
+                skills.retain(|(agent, _)| agent != agent_id);
+            }
+            _ => {}
+        }
+    }
+    (skills, plugins)
 }
 
 /// What a session's task starts with besides its configuration.
@@ -670,6 +701,11 @@ async fn run(
             emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
         }
     }
+    // Plugins start on first use, except eager ones and those a resumed session had activated.
+    let (loaded_skills, activated) = replay_extensions(&emitter.history.lock());
+    for message in config.extensions.plugins.start(&activated).await {
+        emitter.emit(ROOT_AGENT, SessionEvent::Notice { message });
+    }
     let shared = Arc::new(Shared {
         session_id: config.id.clone(),
         controls: Arc::clone(&emitter.controls),
@@ -685,6 +721,7 @@ async fn run(
         allowed_tools: Mutex::new(config.pre_approved.into_iter().collect()),
         tools: config.tools,
         extensions: config.extensions,
+        loaded_skills: Mutex::new(loaded_skills),
         memory: config.memory,
         context: config.context,
         enforce: config.enforce,
