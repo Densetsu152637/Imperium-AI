@@ -258,7 +258,14 @@ The UI always shows the active tier for each session and agent.
 project folder. The first folder is the working directory: relative paths resolve there and
 `run_command` starts there. The file tools accept an absolute path inside any of the folders and
 refuse anything outside all of them (after resolving `..` and symbolic links), and the agent's
-system prompt lists the further folders. The OS tier makes every folder writable (one
+system prompt lists the further folders. A folder path may hold spaces (`D:\Git
+Repositories\Imperium-AI`), and the file tools read the looser spellings models write: a path in
+quotes or with surrounding whitespace, a `file://` URL, a JSON argument whose Windows backslashes
+are left unescaped (a `read_file` or `list_dir` path that would decode to a newline or tab, as
+`D:\new\tools` does, is read with literal backslashes), and on Windows a Git Bash (`/d/...`),
+WSL (`/mnt/d/...`), or `/D:/...` spelling of a drive path. Each reading is checked like any
+other path, and the first that lands inside a folder or grant is used. The OS tier makes every
+folder writable (one
 `--bind` per folder for bubblewrap, one `subpath` per folder for Seatbelt); the container tier
 mounts the first folder at `/workspace` and the others at `/folders/2`, `/folders/3`, … in order.
 
