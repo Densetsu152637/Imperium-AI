@@ -422,3 +422,141 @@ async fn a_branch_with_a_worktree_gets_the_files_of_its_point_and_leaves_the_sou
         "edited\n"
     );
 }
+
+async fn session_count(connection: &mut Connection) -> usize {
+    call(connection, "session.list", json!({})).await.unwrap()["sessions"]
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+/// A repository, an environment on it, and a session on a worktree of its own with one finished
+/// turn and a file it has not committed.
+async fn session_on_a_worktree(
+    state: &Arc<DaemonState>,
+    connection: &mut Connection,
+    repo: &Path,
+) -> (String, std::path::PathBuf) {
+    git(repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "committed\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-q", "-m", "init"]);
+    let env = call(
+        connection,
+        "environments.create",
+        json!({"name": "Repo", "folders": [repo]}),
+    )
+    .await
+    .unwrap();
+    let created = call(
+        connection,
+        "session.create",
+        json!({"environment_id": env["id"], "worktree": true}),
+    )
+    .await
+    .unwrap();
+    let id = created["session_id"].as_str().unwrap().to_string();
+    let tree = std::path::PathBuf::from(created["worktrees"][0]["path"].as_str().unwrap());
+    state.session(&id).unwrap().send("hello".into()).unwrap();
+    after_turns(state, &id, 1).await;
+    std::fs::write(tree.join("dirty.txt"), "uncommitted work\n").unwrap();
+    (id, tree)
+}
+
+#[tokio::test]
+async fn a_failed_comparison_leaves_no_branches_and_never_removes_the_sources_worktree() {
+    let url = serve().await;
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url);
+    let mut connection = connect(&state).await;
+    let (id, tree) = session_on_a_worktree(&state, &mut connection, repo.path()).await;
+    let before = session_count(&mut connection).await;
+    let worktrees = git(repo.path(), &["worktree", "list"]);
+
+    // Branches sharing the source's worktree: the failure drops them, not the source's files.
+    state.inject_compare_failure(2);
+    let shared = call(
+        &mut connection,
+        "session.compare",
+        json!({"session_id": id, "message": "go", "models": ["fake:m", "fake:n"], "worktree": false}),
+    )
+    .await;
+    assert!(shared.is_err());
+    assert_eq!(
+        std::fs::read_to_string(tree.join("dirty.txt")).unwrap(),
+        "uncommitted work\n",
+        "the source's uncommitted work survives"
+    );
+    assert!(state.session(&id).is_some());
+    assert_eq!(
+        session_count(&mut connection).await,
+        before,
+        "no new sessions"
+    );
+
+    // Branches with worktrees of their own: theirs are removed again, the source's stays.
+    let own = call(
+        &mut connection,
+        "session.compare",
+        json!({"session_id": id, "message": "go", "models": ["fake:m", "fake:n"], "worktree": true}),
+    )
+    .await;
+    assert!(own.is_err());
+    assert_eq!(session_count(&mut connection).await, before);
+    assert_eq!(
+        git(repo.path(), &["worktree", "list"]),
+        worktrees,
+        "no leaked worktrees"
+    );
+    assert!(tree.join("dirty.txt").exists());
+}
+
+#[tokio::test]
+async fn deleting_a_branch_that_shares_the_sources_worktree_leaves_it() {
+    let url = serve().await;
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url);
+    let mut connection = connect(&state).await;
+    let (id, tree) = session_on_a_worktree(&state, &mut connection, repo.path()).await;
+    let history = after_turns(&state, &id, 1).await;
+    let branched: SessionBranchResult = serde_json::from_value(
+        call(
+            &mut connection,
+            "session.branch",
+            json!({"session_id": id, "at": history.len() - 1}),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    call(
+        &mut connection,
+        "session.delete",
+        json!({"session_id": branched.session_id, "remove_worktrees": true}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        tree.join("dirty.txt").exists(),
+        "the source still has its worktree"
+    );
+}
+
+#[tokio::test]
+async fn only_known_sessions_can_be_branched() {
+    let url = serve().await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url);
+    let mut connection = connect(&state).await;
+    for id in ["../../x", "..", "nope", ""] {
+        let refused = call(
+            &mut connection,
+            "session.branch",
+            json!({"session_id": id, "at": 0}),
+        )
+        .await;
+        assert!(refused.is_err(), "{id:?}");
+    }
+}

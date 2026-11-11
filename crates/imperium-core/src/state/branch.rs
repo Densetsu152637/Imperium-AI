@@ -74,6 +74,19 @@ impl DaemonState {
     /// left as it is; the branch continues on its own.
     pub(crate) fn branch_session(&self, request: &BranchRequest) -> Result<Branched, String> {
         let source = request.source.as_str();
+        // Only a session the daemon knows, never a path: the id names files.
+        let plain = !source.is_empty()
+            && source
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        let known = self.session(source).is_some()
+            || self
+                .archived_sessions()
+                .iter()
+                .any(|summary| summary.session_id == source);
+        if !plain || !known {
+            return Err(format!("no session {source}"));
+        }
         let mut meta: Value = std::fs::read_to_string(self.meta_path(source))
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
@@ -313,7 +326,7 @@ impl DaemonState {
             .session(&params.session_id)
             .map(|session| self.summary(&session).title)
             .unwrap_or_default();
-        let mut branches = Vec::new();
+        let mut branches: Vec<CompareBranch> = Vec::new();
         for (spec, model) in params.models.iter().zip(resolved) {
             let request = BranchRequest {
                 source: params.session_id.clone(),
@@ -323,10 +336,11 @@ impl DaemonState {
                 worktree: params.worktree != Some(false),
             };
             let state = Arc::clone(self);
+            let explicit = params.worktree.is_some();
             let made = tokio::task::spawn_blocking(move || {
                 match state.branch_session(&request) {
-                    // Folders outside git (or an explicit choice) share the source's folders.
-                    Err(_) if params.worktree.is_none() => state.branch_session(&BranchRequest {
+                    // Folders outside git share the source's folders.
+                    Err(_) if !explicit => state.branch_session(&BranchRequest {
                         worktree: false,
                         ..request
                     }),
@@ -334,42 +348,66 @@ impl DaemonState {
                 }
             })
             .await
-            .map_err(|error| error.to_string())?;
-            let branched = match made {
+            .map_err(|error| error.to_string());
+            let branched = match made.and_then(|made| made) {
                 Ok(branched) => branched,
                 Err(error) => {
-                    // No half a comparison: the branches made so far are dropped.
-                    for branch in &branches {
-                        let branch: &CompareBranch = branch;
-                        let _ = self.delete_session(&branch.session_id, true);
-                    }
+                    self.drop_branches(&branches);
                     return Err(error);
                 }
             };
-            let session = self
-                .session(&branched.session_id)
-                .ok_or("the branch stopped before it could start")?;
-            session
-                .set_model(model)
-                .await
-                .map_err(|error| error.to_string())?;
+            // Listed at once, so any failure below drops it with the others.
             branches.push(CompareBranch {
-                session_id: branched.session_id,
+                session_id: branched.session_id.clone(),
                 model: spec.clone(),
                 worktree: branched.worktree,
             });
+            let fault = self
+                .compare_fault
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let switched = if fault != 0 && fault == branches.len() {
+                Err("injected failure".to_string())
+            } else {
+                match self.session(&branched.session_id) {
+                    Some(session) => session
+                        .set_model(model)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
+                    None => Err("the branch stopped before it could start".to_string()),
+                }
+            };
+            if let Err(error) = switched {
+                self.drop_branches(&branches);
+                return Err(error);
+            }
         }
         for branch in &branches {
-            if let Some(session) = self.session(&branch.session_id) {
-                session
-                    .send(params.message.clone())
-                    .map_err(|error| error.to_string())?;
+            let sent = self
+                .session(&branch.session_id)
+                .ok_or_else(|| "a branch stopped before it could start".to_string())
+                .and_then(|session| {
+                    session
+                        .send(params.message.clone())
+                        .map_err(|error| error.to_string())
+                });
+            if let Err(error) = sent {
+                self.drop_branches(&branches);
+                return Err(error);
             }
         }
         Ok(SessionCompareResult {
             comparison_id,
             branches,
         })
+    }
+
+    /// No half a comparison: deletes branches made so far, with only the worktrees they made
+    /// themselves (a branch on its source's folders has none to remove).
+    fn drop_branches(&self, branches: &[CompareBranch]) {
+        for branch in branches {
+            let _ = self.delete_session(&branch.session_id, branch.worktree);
+        }
     }
 
     /// `session.compare_pick`: keeps one branch, archives the others.

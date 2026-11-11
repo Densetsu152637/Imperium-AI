@@ -183,6 +183,8 @@ pub struct DaemonState {
     model_cards: imperium_memory::models::CardIndex,
     /// Each running session's checkpoints, when it records them.
     checkpoints: Mutex<HashMap<String, Arc<crate::checkpoints::SessionCheckpoints>>>,
+    /// Test hook: make `session.compare` fail after creating this many branches (0: never).
+    compare_fault: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -264,6 +266,7 @@ impl DaemonState {
             measurements: model_awareness::Measurements::default(),
             model_cards: imperium_memory::models::CardIndex::new(),
             checkpoints: Mutex::new(HashMap::new()),
+            compare_fault: std::sync::atomic::AtomicUsize::new(0),
         });
         state.apply_load_view();
         if let Some(local) = state.local.get() {
@@ -1642,8 +1645,18 @@ impl DaemonState {
         }
         let mut result = SessionDeleteResult::default();
         if remove_worktrees && !placement.worktrees.is_empty() {
-            (result.removed_worktrees, result.failed) =
-                crate::worktrees::remove(&placement.worktrees);
+            // A worktree another session also works in (a branch shares its source's) is
+            // theirs too, and may hold uncommitted work: it stays.
+            let others = self.worktree_paths_in_use();
+            let own: Vec<_> = placement
+                .worktrees
+                .iter()
+                .filter(|tree| !others.iter().any(|path| same_path(path, &tree.path)))
+                .cloned()
+                .collect();
+            if !own.is_empty() {
+                (result.removed_worktrees, result.failed) = crate::worktrees::remove(&own);
+            }
         }
         self.announce(
             imperium_protocol::methods::SESSION_DELETED,
@@ -1653,6 +1666,30 @@ impl DaemonState {
             },
         );
         Ok(result)
+    }
+
+    /// Worktree folders that running and archived sessions work in.
+    fn worktree_paths_in_use(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self
+            .placements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .flat_map(|placement| placement.worktrees.iter().map(|tree| tree.path.clone()))
+            .collect();
+        paths.extend(
+            self.archived_sessions()
+                .into_iter()
+                .flat_map(|summary| summary.worktrees.into_iter().map(|tree| tree.path)),
+        );
+        paths
+    }
+
+    /// Test hook: `session.compare` fails after creating its `branches`th branch.
+    #[doc(hidden)]
+    pub fn inject_compare_failure(&self, branches: usize) {
+        self.compare_fault
+            .store(branches, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn environments(&self) -> &Environments {
@@ -2117,6 +2154,12 @@ pub(crate) fn bundled_dirs(relative: &str) -> Vec<PathBuf> {
         dirs.push(beside.join("..").join(relative));
     }
     dirs
+}
+
+/// Whether two paths name the same folder (spelled alike, or the same place on disk).
+fn same_path(a: &str, b: &str) -> bool {
+    a == b
+        || matches!((Path::new(a).canonicalize(), Path::new(b).canonicalize()), (Ok(x), Ok(y)) if x == y)
 }
 
 fn lock_watches(
