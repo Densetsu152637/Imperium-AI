@@ -135,8 +135,14 @@ the wait reason in the desktop.
     should own every decision about which models and KV caches are resident, loaded, or
     unloaded (the local runtime only carries them out), with the reason for each move visible.
     The KV-residency work and the GPU rule are the starting point; measure on real hardware.
-17. **Session titles and list.** Titles are generated automatically from the first exchange
-    and can be renamed; session rows are compact, one line, as in the Claude interface.
+17. **Session titles and list** (implemented). After a session's first exchange the core
+    titles it in the background with a model that is cheap to ask now (the session's model
+    when it is local and loaded with a free slot, another loaded local model, or the session's
+    hosted model), never loading one for it; otherwise, and for background sessions, the title
+    is the first message's first words. `session.control` `rename` sets a title the user
+    keeps across restarts and no generated title replaces; session rows are one line (status
+    dot, title, time since activity) with the rest in the tooltip, renamed by double-click or
+    *Rename* in the row's menu ([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 18. **Quieter interface.** Panels carry too many buttons. Keep the primary action visible,
     move the rest into overflow menus or hover actions, and tighten spacing and type for a
     sleeker look.

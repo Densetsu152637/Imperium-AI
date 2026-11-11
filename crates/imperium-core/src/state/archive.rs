@@ -83,7 +83,11 @@ impl DaemonState {
         let title = meta["title"]
             .as_str()
             .map(str::to_string)
-            .unwrap_or_else(|| title_from(&imperium_engine::journal_events(journal)));
+            .unwrap_or_else(|| {
+                super::titles::from_first_message(&title_from(&imperium_engine::journal_events(
+                    journal,
+                )))
+            });
         let summary = SessionSummary {
             session_id: id.to_string(),
             project_dir: project,
@@ -113,6 +117,26 @@ impl DaemonState {
         let mut sessions: Vec<_> = self.archived_map().values().cloned().collect();
         sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
         sessions
+    }
+
+    /// Renames an archived session, or clears its title (`None`: its first message is shown).
+    /// False when no archived session has this id.
+    pub(super) fn rename_archived(&self, id: &str, title: Option<String>) -> std::io::Result<bool> {
+        let summary = {
+            let mut archived = self.archived_map();
+            let Some(summary) = archived.get_mut(id) else {
+                return Ok(false);
+            };
+            summary.title = title.clone().unwrap_or_else(|| {
+                super::titles::from_first_message(&title_from(&imperium_engine::journal_events(
+                    &self.journal_path(id),
+                )))
+            });
+            summary.clone()
+        };
+        self.record_title(id, title.as_deref(), true)?;
+        self.announce(SESSION_UPDATED, summary);
+        Ok(true)
     }
 
     /// Stops listing an archived session (it is being deleted); its summary, if it was one.

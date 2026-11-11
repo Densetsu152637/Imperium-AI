@@ -68,6 +68,16 @@ so long transcripts stay light. The daemon sends the arguments on `tool_started`
 name and run time on `tool_finished`, each cut to 8,000 characters for display; the model
 always receives the full result ([03](03-agent-engine.md#agent-loop)).
 
+Consecutive calls, with no other entry (assistant text, a message, an approval) between them,
+fold into one line so a busy turn does not flood the transcript: what they did by kind, in the
+order each kind first ran (*Read 3 files, ran 2 commands, searched 1 time*; tools without a
+kind count as *used 2 other tools*, or *Used 4 tools* when none has one). While any of them
+runs the line shows a spinner and the latest running call's summary; once all have ended it
+shows a cross when any failed, otherwise a check. Opening it lists the calls as the rows above,
+each still opening on its own. A lone call stays its own row. The Agents panel folds a
+subagent's calls the same way, and a session search hit on a folded call lands on its group's
+line (`apps/desktop/src/toolCalls.ts`, `components/ToolGroup.tsx`).
+
 ### Waiting status line (implemented)
 
 After a message is sent, and before the agent's first output (a streamed token, a tool call,
@@ -200,8 +210,8 @@ layout of panels, and every panel — including the built-in ones — is customi
 
 - **Environments panel** (top left): environments and their folders; planned: their location
   (local, container, SSH host), project-agent status, and schedules.
-- **Sessions panel** (bottom left): sessions in the selected environment, with status, cost,
-  and pending approvals.
+- **Sessions panel** (bottom left): sessions in the selected environment, one line each:
+  status dot, title, and time since activity, with the rest on hover.
 - **Main session panel** (middle, full height): the selected session, or the
   [new-session composer](#environments-and-sessions-implemented) when none is open. It is built
   from sections — title bar, conversation and plan, composer and its footer (model, cost,
@@ -579,10 +589,25 @@ options, and a refused `session.create` shows the daemon's explanation above the
 session started without a model keeps its message queued until one is picked
 ([worktrees](14-projects-and-automation.md#worktrees)).
 
-The Sessions panel lists every session across environments, each with its environment's icon
-to the left of its title and a status badge (idle, working, needs attention, paused with its
-resume time, watching with its pull request, merged), and a *⋯* menu with *Pin*/*Unpin*,
-*Archive*, and *Show* its environment. Archived sessions (archived by hand, or on their own once
+The Sessions panel lists every session across environments, one line each as in Claude's
+app: a status dot (working pulses, needs attention is red, paused or waiting for a model is a
+ring, watching and merged are green), the title cut short with an ellipsis, and how long ago it
+was active (`5m`, `3h`, `2d`) on the right, which gives way to the *⋯* menu on hover. Everything
+else (status in words, environment, model, cost, *Persistent*, worktrees) is in the row's
+tooltip. The menu has *Rename*, *Pin*/*Unpin*, *Archive*, and *Show* its environment.
+
+**Session titles (implemented):** after a session's first exchange the core gives it a title of
+a few words, written in the background by a model that is cheap to ask at that moment (the
+session's own model when it is local and loaded with a free slot, another loaded local model,
+or the session's hosted model). It never loads a model for a title and the turn never waits;
+without such a model, and for background sessions and project agents, the title is the first
+message's first words. Double-clicking a title (or *Rename* in its menu) edits it in place:
+Enter or leaving the field keeps it, Escape cancels, and an empty title hands it back to
+automatic titling. A title the user gives is kept by the daemon (`session.control` `rename`)
+across restarts, archived sessions included, and no generated title replaces it; changes are
+announced as `session.updated`.
+
+Archived sessions (archived by hand, or on their own once
 their pull request closes or after the inactivity set in Settings → Sessions; see
 [archiving sessions](14-projects-and-automation.md#archiving-sessions)) leave the list and are
 kept in a collapsed *Archived* group at the bottom, most recently archived first, with
@@ -597,9 +622,8 @@ they survive restarts; the daemon announces a changed session as `session.update
 environment (or *Show* in a session's menu) opens that environment's view, which lists only its
 sessions, with *All sessions* to return; clicking the row opens the session and selects its
 environment. An environment's persistent agent is listed above everything else in its group,
-titled *<environment> agent* with a *Persistent* badge; a session on worktrees has a *Worktree*
-badge whose tooltip lists each worktree and branch. Renaming and stopping sessions are not
-offered yet; deleting one is `session.delete` (`imperium session delete`), and a session
+titled *<environment> agent* (not renamed) and marked persistent in its tooltip; a session on
+worktrees has a tooltip line for each worktree and branch. Deleting a session is `session.delete` (`imperium session delete`), and a session
 deleted elsewhere (`session.deleted`) leaves the list. The session's top bar shows only its
 icon, title, and status badge (with *Resume now* while paused); everything else about the
 session sits in the footer under the composer.
@@ -880,7 +904,7 @@ is dimmed with an *off* badge.
 A model's alias (`modelNames.ts`, from `models.list` and `models.local`) is what the interface
 names it by: the session model list and the command palette's *Use …* entries (the id in the
 description, and the palette's search matches either), the Models and Local models panels, the
-Resources panel's loaded models, the session list, the context breakdown, the telemetry table,
+Resources panel's loaded models, the session list's hover, the context breakdown, the telemetry table,
 the Agents panel and task lines, and notices such as *Switched model from … to …*. The real id or
 spec is the secondary text or hover. Ids and specs sent to the daemon and stored in settings are
 unchanged. A notice already shown keeps the name it was written with.

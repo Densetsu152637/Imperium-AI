@@ -27,7 +27,8 @@ model: string | null,
  */
 isolation: string, 
 /**
- * The session's first message, for lists.
+ * The session's title: one the user gave it (`session.control` `rename`), else one
+ * generated after its first exchange, else its first message.
  */
 title: string, status: SessionStatus, 
 /**

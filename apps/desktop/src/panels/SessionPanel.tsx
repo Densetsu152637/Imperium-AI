@@ -6,7 +6,7 @@
 // all usage) has passed an alert threshold.
 
 import { CornerDownRight, Gauge, Paperclip, Pencil, Play, SlidersHorizontal, Square, Trash, X } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -47,6 +47,8 @@ import { describeRule } from "../components/PermissionsEditor";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { ToolCall } from "../components/ToolCall";
+import { ToolGroup } from "../components/ToolGroup";
+import { groupToolRuns, itemForEntry } from "../toolCalls";
 import { WaitLine } from "../components/WaitLine";
 import { describeWait } from "../waits";
 import type { DaemonClient } from "../daemon/client";
@@ -153,7 +155,9 @@ export function SessionPanel({
         session.entries.map((entry) => entry.event),
         focusEvent.index,
       );
-      const target = index === null ? null : conversation.current?.children.item(index);
+      // A hit on a call folded into a group of calls lands on the group's line.
+      const item = index === null ? null : itemForEntry(groupToolRuns(session.entries), index);
+      const target = item === null ? null : conversation.current?.children.item(item);
       if (!(target instanceof HTMLElement)) return;
       target.scrollIntoView({ block: "center" });
       target.classList.add("search-focus");
@@ -163,6 +167,7 @@ export function SessionPanel({
     // Only a new hit (or another session) scrolls; new entries do not.
   }, [focusEvent?.nonce, sessionId]);
 
+  const items = useMemo(() => groupToolRuns(session.entries), [session.entries]);
   const sum = totals(session.calls);
   const outputs = session.entries.filter((entry): entry is Extract<Entry, { kind: "tool" }> => entry.kind === "tool");
   const archived = session.summary.archived;
@@ -232,19 +237,21 @@ export function SessionPanel({
       {session.plan && <PlanView plan={session.plan} />}
 
       <div className="conversation" aria-live="polite" ref={conversation}>
-        {session.entries.map((entry, index) =>
-          entry.kind === "suggestion" ? (
+        {items.map((item) =>
+          item.kind === "tools" ? (
+            <ToolGroup key={item.index} calls={item.calls} />
+          ) : item.entry.kind === "suggestion" ? (
             <ModelSuggestionCard
-              key={index}
-              entry={entry}
+              key={item.index}
+              entry={item.entry}
               sessionId={session.summary.session_id}
               client={client}
               onSetModel={(model) => onSetModel(model).catch(() => null)}
             />
           ) : (
             <EntryView
-              key={index}
-              entry={entry}
+              key={item.index}
+              entry={item.entry}
               rendered={rendered}
               onRespond={onRespond}
               onAlwaysAllow={onAlwaysAllow}

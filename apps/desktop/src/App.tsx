@@ -522,6 +522,15 @@ export function App() {
     );
   };
 
+  /** Renames a session; `session.updated` brings the title it keeps (generated again when cleared). */
+  const renameSession = (sessionId: string, title: string) => {
+    if (title)
+      setSessions((all) =>
+        all[sessionId] ? { ...all, [sessionId]: { ...all[sessionId], summary: { ...all[sessionId].summary, title } } } : all,
+      );
+    control(sessionId, { action: "rename", title }).catch(report);
+  };
+
   /** Archives a session, or resumes an archived one (which this window then follows afresh). */
   const setSessionArchived = (sessionId: string, archived: boolean) => {
     if (!archived) known.current.delete(sessionId);
@@ -845,6 +854,7 @@ export function App() {
           onSelect={selectSession}
           onSetPinned={setSessionPinned}
           onSetArchived={setSessionArchived}
+          onRename={renameSession}
           onShowEnvironment={showEnvironment}
           onShowAll={() => setEnvView(false)}
           client={client}

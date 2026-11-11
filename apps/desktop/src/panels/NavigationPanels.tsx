@@ -1,12 +1,14 @@
 // The Environments and Sessions panels on the left. An environment is a named set of folders;
 // its sessions' tools may use every folder, and the first is the working directory. Each row
 // is an icon and a title with a "more" menu; environments are created and edited in the
-// environment window (EnvironmentWindow.tsx). Pinned environments and sessions come first;
+// environment window (EnvironmentWindow.tsx). A session row is one line: a status dot, its title,
+// and how long ago it was active, with the rest in its tooltip; double-click the title, or use
+// the "more" menu, to rename it. Pinned environments and sessions come first;
 // archived sessions are kept apart in a collapsed Archived group at the bottom. A search box above
 // the sessions searches what was said and done in them (SessionSearch.tsx).
 
 import { Archive, ArchiveRestore, ArrowLeft, FolderOpen, Pencil, Pin, PinOff, Trash } from "lucide-react";
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 
 import type { EnvironmentInfo, SessionStatus } from "@imperium/protocol";
 
@@ -14,10 +16,11 @@ import { RowMenu } from "../components/RowMenu";
 import { Select } from "../components/Select";
 import { ProjectIcon, environmentIcon, projectName, sameFolder } from "../projectIcons";
 import type { SearchClient } from "../sessionSearch";
+import { formatAgo } from "../ago";
 import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
 import { SessionSearch } from "./SessionSearch";
-import { StatusBadge } from "./StatusBadge";
-import { ModelName } from "../components/ModelName";
+import { statusText } from "./StatusBadge";
+import { modelAliases, modelName } from "../modelNames";
 
 /** The environment a session works in: the one it names, else the one whose first folder it uses. */
 export function environmentOf(session: SessionState, environments: EnvironmentInfo[]): EnvironmentInfo | null {
@@ -167,6 +170,7 @@ export function SessionsPanel({
   onSelect,
   onSetPinned,
   onSetArchived,
+  onRename,
   onShowEnvironment,
   onShowAll,
   client = null,
@@ -183,6 +187,8 @@ export function SessionsPanel({
   onSetPinned: (sessionId: string, pinned: boolean) => void;
   /** Archives a session (`true`) or resumes an archived one. */
   onSetArchived: (sessionId: string, archived: boolean) => void;
+  /** Renames a session; an empty title lets it be titled automatically again. */
+  onRename: (sessionId: string, title: string) => void;
   onShowEnvironment: (id: string) => void;
   onShowAll: () => void;
   /** Searches sessions; no search box without one. */
@@ -191,6 +197,8 @@ export function SessionsPanel({
   onOpenHit?: (sessionId: string, eventIndex: number) => void;
 }) {
   const [searchActive, setSearching] = useState(false);
+  // The session whose title is being edited in place.
+  const [renaming, setRenaming] = useState<string | null>(null);
   // While a query is entered, its results stand in for the list.
   const searching = searchActive && !!client && !!onOpenHit;
   const inScope = scope ? sessions.filter((s) => environmentOf(s, environments)?.id === scope.id) : sessions;
@@ -206,46 +214,68 @@ export function SessionsPanel({
     const env = environmentOf(session, environments);
     const place = env?.name ?? projectName(session.summary.project_dir);
     const pinned = !!session.summary.pinned;
-    const title = session.summary.persistent ? `${place} agent` : sessionTitle(session);
+    const persistent = !!session.summary.persistent;
+    const title = persistent ? `${place} agent` : sessionTitle(session);
+    const status = statusText(session);
+    // `updatedAt` is a time once the session has had an event here, else only an ordering key.
+    const at = session.summary.archived
+      ? session.summary.archived_at
+      : Math.max(session.updatedAt, session.summary.created_at ?? 0);
+    // Everything but the title and time is on hover.
+    const hover = [
+      title,
+      status,
+      place,
+      `${session.summary.model ? modelName(modelAliases(), session.summary.model) : "No model"} · ${formatCost(totals(session.calls).costUsd)}`,
+      persistent ? "Persistent: always available, keeps its conversation across restarts" : null,
+      ...(session.summary.worktrees ?? []).map((tree) => `Worktree ${tree.path} (${tree.branch})`),
+    ]
+      .filter(Boolean)
+      .join("\n");
+    // Enter and leaving the field keep the new title; Escape keeps the old one.
+    const finishRename = (input: HTMLInputElement) => {
+      setRenaming(null);
+      const value = input.value.trim();
+      if (input.dataset.cancel !== "true" && value !== title) onRename(id, value);
+    };
+    const onRenameKey = (event: KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        event.currentTarget.dataset.cancel = "true";
+      }
+      if (event.key === "Enter" || event.key === "Escape") event.currentTarget.blur();
+    };
     return (
       <li key={id}>
-        <div className="row nav-row">
-          <button
-            className={`row-main nav-row-main${id === selected ? " selected" : ""}`}
-            aria-current={id === selected ? "true" : undefined}
-            onClick={() => onSelect(id)}
-          >
-            <ProjectIcon choice={environmentIcon(env ?? { id: session.summary.project_dir, icon: null, color: null })} />
-            <span className="nav-row-text">
-              <span className="name">
-                {title}
-                {pinned && <Pin className="pin-mark" aria-label="Pinned" />}
-              </span>
-              <span className="row-meta">
-                {session.summary.persistent && (
-                  <span className="badge persistent" title="Always available; keeps its conversation across restarts">
-                    Persistent
-                  </span>
-                )}
-                {(session.summary.worktrees?.length ?? 0) > 0 && (
-                  <span
-                    className="badge worktree"
-                    title={session.summary.worktrees.map((tree) => `${tree.path} (${tree.branch})`).join("\n")}
-                  >
-                    Worktree
-                  </span>
-                )}
-                <StatusBadge session={session} />
-                <span className="detail">
-                  {!scope && sort !== "environment" && `${place} · `}
-                  {session.summary.model ? <ModelName name={session.summary.model} /> : "No model"} · {formatCost(totals(session.calls).costUsd)}
-                </span>
-              </span>
-            </span>
-          </button>
+        <div className="row nav-row session-row">
+          {renaming === id ? (
+            <input
+              className="session-rename"
+              aria-label="Session title"
+              defaultValue={title}
+              autoFocus
+              onFocus={(event) => event.currentTarget.select()}
+              onKeyDown={onRenameKey}
+              onBlur={(event) => finishRename(event.currentTarget)}
+            />
+          ) : (
+            <button
+              className={`row-main session-row-main${id === selected ? " selected" : ""}`}
+              aria-current={id === selected ? "true" : undefined}
+              title={hover}
+              onClick={() => onSelect(id)}
+              onDoubleClick={() => !persistent && setRenaming(id)}
+            >
+              <span className={`status-dot ${session.status}`} role="img" aria-label={status} />
+              <span className="name">{title}</span>
+              {pinned && <Pin className="pin-mark" aria-label="Pinned" />}
+              <span className="session-ago">{formatAgo(at)}</span>
+            </button>
+          )}
           <RowMenu
             label={`More for ${title}`}
             items={[
+              { label: "Rename", icon: Pencil, onSelect: () => setRenaming(id), disabled: persistent },
               ...(session.summary.archived
                 ? [{ label: "Unarchive", icon: ArchiveRestore, onSelect: () => onSetArchived(id, false) }]
                 : [
@@ -257,7 +287,7 @@ export function SessionsPanel({
                       icon: Archive,
                       onSelect: () => onSetArchived(id, true),
                       // An environment's agent runs while the daemon does.
-                      disabled: !!session.summary.persistent,
+                      disabled: persistent,
                     },
                   ]),
               {
