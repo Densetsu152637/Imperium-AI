@@ -342,7 +342,7 @@ export function PermissionModeSelect({
   disabled,
   onChange,
 }: {
-  /** The session's mode; daemons before protocol 0.16 send none, shown as default. */
+  /** The session's mode; daemons before protocol 0.17 send none, shown as default. */
   current: PermissionMode | undefined;
   disabled?: boolean;
   /** Sets the mode; rejects with the daemon's reason. */
