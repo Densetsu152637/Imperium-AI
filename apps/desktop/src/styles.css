@@ -1789,37 +1789,12 @@ button.danger:hover:not(:disabled) {
   --ctx-color: var(--ctx-overhead);
 }
 
-/* Telemetry */
-.stat-row {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space);
-  margin: 0 0 var(--space);
-}
-
-.stat-row > div {
-  min-width: 0;
-}
-
-.stat-row dt {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
-}
-
-.stat-row dd {
-  margin: 0;
-  font-size: 1.25rem;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* Telemetry: a Markdown table of the models in use, sized to its content */
+.telemetry {
+  overflow-x: auto;
 }
 
 .telemetry table {
-  width: 100%;
   border-collapse: collapse;
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
@@ -1828,7 +1803,7 @@ button.danger:hover:not(:disabled) {
 .telemetry th,
 .telemetry td {
   text-align: right;
-  padding: 0.3rem 0.35rem;
+  padding: 0.3rem 0.5rem;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
@@ -1843,9 +1818,7 @@ button.danger:hover:not(:disabled) {
 .telemetry th:first-child,
 .telemetry td:first-child {
   text-align: left;
-  max-width: 10rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  padding-left: 0;
 }
 
 .telemetry tbody tr,
@@ -1856,20 +1829,6 @@ button.danger:hover:not(:disabled) {
 .telemetry tbody tr:hover,
 .models tbody tr:hover {
   background: var(--hover);
-}
-
-/* Narrow panels hide the less important telemetry columns and shrink the totals. */
-@container (max-width: 16rem) {
-  .stat-row dd {
-    font-size: 1rem;
-  }
-}
-
-@container (max-width: 22rem) {
-  .telemetry th:nth-child(4),
-  .telemetry td:nth-child(4) {
-    display: none;
-  }
 }
 
 /* Settings: a popover under the title bar */
