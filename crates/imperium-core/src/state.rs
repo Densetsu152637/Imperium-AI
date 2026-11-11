@@ -42,6 +42,7 @@ use crate::project_agent::ProjectAgents;
 use crate::scheduler::Scheduler;
 use crate::suggestions::{SuggestTool, Suggestions};
 
+mod agent_config;
 mod archive;
 mod model_awareness;
 mod session_search;
@@ -115,6 +116,8 @@ pub struct DaemonState {
     settings: RwLock<Arc<Settings>>,
     /// Serialises saves of model settings.
     pub(crate) config_saves: Mutex<()>,
+    /// Serialises reads and writes of the config change journal (`config_changes`).
+    pub(crate) config_journal: Mutex<()>,
     /// The configuration layers the settings were built from, so a save rebuilds them with
     /// only the app file replaced; `None` when the caller gave settings alone.
     config_layers: Mutex<Option<Vec<Layer>>>,
@@ -220,6 +223,7 @@ impl DaemonState {
             paths,
             settings: RwLock::new(Arc::new(settings)),
             config_saves: Mutex::new(()),
+            config_journal: Mutex::new(()),
             config_layers: Mutex::new(None),
             secrets,
             sessions: Mutex::new(HashMap::new()),
@@ -1345,6 +1349,12 @@ impl DaemonState {
                 subagents: list_models == imperium_config::ListModelsScope::All,
             }));
         }
+        // Every session may change the app config through the daemon, wherever it runs; the
+        // permission rules decide whether each change asks.
+        tools.push(Arc::new(agent_config::AgentConfigTools {
+            daemon: self.me.clone(),
+            session_id: id.clone(),
+        }));
         let model_spec = model.as_ref().map(|model| model.spec.clone());
         let effort = options.effort.unwrap_or(self.settings().models.effort);
         let session = Session::spawn(SessionConfig {

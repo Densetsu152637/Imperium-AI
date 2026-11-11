@@ -1,0 +1,27 @@
+{
+  "description": "Remove a skill, plugin, or UI mod from the user's Imperium config folder. Its folder is kept aside, so the user can undo the removal. Removing one an agent did not install asks the user first.",
+  "name": "uninstall_extension",
+  "parameters": {
+    "properties": {
+      "kind": {
+        "description": "What to remove",
+        "enum": [
+          "skill",
+          "plugin",
+          "mod"
+        ],
+        "type": "string"
+      },
+      "name": {
+        "description": "Its name: the skill's, plugin's, or mod's id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "kind",
+      "name"
+    ],
+    "type": "object"
+  },
+  "status": "available"
+}

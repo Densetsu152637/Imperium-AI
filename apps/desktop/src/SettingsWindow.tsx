@@ -36,21 +36,28 @@ import {
   Smartphone,
   Boxes,
   GitPullRequest,
+  History,
+  Undo2,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 
 import type {
+  ConfigChange,
+  ConfigChangesResult,
   ConfigDescribeResult,
   ConfigEntry,
   ConfigSetResult,
+  ConfigUndoResult,
   ModListResult,
   PermissionSet,
   PermissionsResult,
 } from "@imperium/protocol";
 
 import { BudgetsSection } from "./components/BudgetsEditor";
+import { formatAgo } from "./ago";
+import { changeDetails, installedByAgent, sourceLabel, undoLabel } from "./configChanges";
 import { PermissionsEditor, samePermissions } from "./components/PermissionsEditor";
 import { Select } from "./components/Select";
 import { matches, ModalNavGroup, ModalNavItem, SettingsModal } from "./components/SettingsModal";
@@ -340,6 +347,7 @@ const APP_SECTIONS: Section[] = [
 ];
 const PERMISSIONS_SECTION: Section = { id: "permissions", label: "Permissions", group: "Agent and daemon" };
 const BUDGETS_SECTION: Section = { id: "budgets", label: "Budgets", group: "Agent and daemon" };
+const AGENT_CHANGES_SECTION: Section = { id: "agent-changes", label: "Changes by agents", group: "Agent and daemon" };
 const TAIL_SECTIONS: Section[] = [
   { id: "data", label: "Data and storage", group: "About" },
   { id: "about", label: "About", group: "About" },
@@ -362,6 +370,7 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
   data: HardDrive,
   permissions: ShieldCheck,
   budgets: Gauge,
+  "agent-changes": History,
   about: Info,
   "config:agents": Bot,
   "config:models": Boxes,
@@ -389,6 +398,7 @@ export const SETTINGS_SECTIONS: { id: string; label: string }[] = [
   ...Object.entries(CONFIG_SECTIONS).map(([id, label]) => ({ id: `config:${id}`, label })),
   PERMISSIONS_SECTION,
   BUDGETS_SECTION,
+  AGENT_CHANGES_SECTION,
   ...TAIL_SECTIONS,
 ];
 
@@ -443,7 +453,7 @@ export function SettingsWindow(props: Props) {
       .filter(([id]) => present.has(id) || !config)
       .map(([id, label]) => ({ id: `config:${id}`, label, group: "Agent and daemon" }));
   }, [config]);
-  const sections = [...APP_SECTIONS, ...configSections, PERMISSIONS_SECTION, BUDGETS_SECTION, ...TAIL_SECTIONS];
+  const sections = [...APP_SECTIONS, ...configSections, PERMISSIONS_SECTION, BUDGETS_SECTION, AGENT_CHANGES_SECTION, ...TAIL_SECTIONS];
 
   const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => onChange({ ...settings, [key]: value });
 
@@ -584,6 +594,12 @@ export function SettingsWindow(props: Props) {
         return client ? <PermissionsSection client={client} /> : <p className="muted">Connect to imperium-core to change permissions.</p>;
       case "budgets":
         return client ? <BudgetsSection client={client} /> : <p className="muted">Connect to imperium-core to manage budgets.</p>;
+      case "agent-changes":
+        return client ? (
+          <AgentChangesSection client={client} onChanged={props.onModelsChanged} />
+        ) : (
+          <p className="muted">Connect to imperium-core to see what agents changed.</p>
+        );
       case "data":
         return <DataSection userFile={config?.user_file ?? null} settings={settings} onChange={onChange} onResetLayout={props.onResetLayout} />;
       case "about":
@@ -867,12 +883,15 @@ function ModsSection({
       {mods.mods.map((mod) => {
         const panels = mod.panels.map((panel) => panel.title).join(", ") || "none";
         const permissions = mod.permissions.join(", ") || "none";
+        const byAgent = installedByAgent(mod);
+        const optIn = (mod.bundled && !BUNDLED_ON_BY_DEFAULT.includes(mod.id)) || byAgent;
+        const from = mod.installed_from ? ` From ${sourceLabel(mod.installed_from)}.` : "";
         return (
           <Row
             key={mod.id}
             label={`${mod.name}${mod.version ? ` ${mod.version}` : ""}`}
-            badge={<span className="badge">{mod.bundled ? "bundled" : "installed"}</span>}
-            description={`Panels: ${panels}. Permissions: ${permissions}.${mod.bundled && !BUNDLED_ON_BY_DEFAULT.includes(mod.id) ? " Off until you turn it on." : ""}`}
+            badge={<span className="badge">{mod.bundled ? "bundled" : byAgent ? "installed by an agent" : "installed"}</span>}
+            description={`Panels: ${panels}. Permissions: ${permissions}.${from}${optIn ? " Off until you turn it on." : ""}`}
           >
             <Toggle checked={modEnabled(settings, mod)} onChange={(on) => toggle(mod.id, on)} label={mod.name} />
           </Row>
@@ -883,6 +902,71 @@ function ModsSection({
           Could not load {problem}
         </p>
       ))}
+    </>
+  );
+}
+
+/** What agents changed in the app config (`config.changes`), newest first, each with Undo (`config.undo`). */
+function AgentChangesSection({ client, onChanged }: { client: DaemonClient; onChanged?: () => void }) {
+  const [changes, setChanges] = useState<ConfigChange[] | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    client
+      .call<ConfigChangesResult>("config.changes", {})
+      .then((result) => setChanges(result.changes))
+      .catch((failure: unknown) => setError(String(failure instanceof Error ? failure.message : failure)));
+  }, [client]);
+  useEffect(load, [load]);
+
+  const undo = async (change: ConfigChange) => {
+    setBusy(change.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await client.call<ConfigUndoResult>("config.undo", { id: change.id });
+      setNotice(result.message);
+      load();
+      onChanged?.();
+    } catch (failure) {
+      setError(String(failure instanceof Error ? failure.message : failure));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (!changes) return error ? <p className="error">{error}</p> : <p className="muted">Loading…</p>;
+  return (
+    <>
+      <Row
+        label="Changes by agents"
+        description="Model cards agents wrote and mods, plugins, and skills they installed or removed. Permission rules for set_model_card, install_extension, and uninstall_extension decide whether agents ask first."
+      />
+      {changes.length === 0 && <p className="muted">No agent has changed the app config.</p>}
+      {changes.map((change) => {
+        const details = changeDetails(change);
+        const undone = change.undone_at_unix_ms !== null;
+        return (
+          <Row
+            key={change.id}
+            label={change.summary}
+            badge={undone ? <span className="badge">undone</span> : undefined}
+            description={[formatAgo(change.at_unix_ms) && `${formatAgo(change.at_unix_ms)} ago`, ...details].filter(Boolean).join(" · ")}
+          >
+            <button onClick={() => void undo(change)} disabled={undone || busy !== null} title={undoLabel(change)}>
+              <Undo2 aria-hidden="true" /> Undo
+            </button>
+          </Row>
+        );
+      })}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      {notice && <p className="muted">{notice}</p>}
     </>
   );
 }

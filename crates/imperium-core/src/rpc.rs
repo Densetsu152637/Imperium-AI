@@ -39,7 +39,8 @@ use crate::state::{CreateError, DaemonState, SessionOptions};
 use imperium_engine::ModelError;
 use imperium_protocol::methods::SessionSuggestionRespond;
 use imperium_protocol::methods::{
-    ConfigDescribe, ConfigDescribeParams, ConfigSet, ConfigSetParams,
+    ConfigChanges, ConfigChangesParams, ConfigChangesResult, ConfigDescribe, ConfigDescribeParams,
+    ConfigSet, ConfigSetParams, ConfigUndo, ConfigUndoParams,
 };
 use imperium_protocol::methods::{
     EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
@@ -460,6 +461,17 @@ impl Connection {
                     &self.state.mods_dir(),
                     &crate::mods::bundled_roots(),
                 ))
+            }),
+            ConfigChanges::NAME => {
+                call::<ConfigChanges>(request.params, |_: ConfigChangesParams| {
+                    Ok(ConfigChangesResult {
+                        changes: crate::config_changes::list(&self.state),
+                    })
+                })
+            }
+            ConfigUndo::NAME => call::<ConfigUndo>(request.params, |params: ConfigUndoParams| {
+                crate::config_changes::undo(&self.state, params.id)
+                    .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
             }),
             ModelConfig::NAME => call::<ModelConfig>(request.params, |_: ModelConfigParams| {
                 Ok(crate::model_config::config(&self.state))

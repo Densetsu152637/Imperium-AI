@@ -11,6 +11,7 @@
 | Agents      | `spawn_agent`, `await_tasks`, `send_to_task`, `cancel_task` | See [agent engine](03-agent-engine.md)        |
 | Media       | `media.generate`, `media.transcribe`                      | See [media](09-media-generation.md)              |
 | Interaction | `ask_user` (implemented)                                  | Pauses the agent until the user answers          |
+| App config  | `set_model_card`, `install_extension`, `uninstall_extension` (implemented) | Change the user's Imperium config through the daemon, journalled and undoable; see [06](06-extensibility.md#agents-manage-the-app-config-implemented) |
 
 Implemented in phase 8 (`imperium-web`): `web_fetch` reads an http(s) page as text (title,
 final URL, scripts and markup removed, long pages in chunks via `offset` and `limit`; non-text
@@ -224,8 +225,11 @@ action: `allow` (run without asking), `ask` (ask even where the tool would not),
   without `/` matches the file name at any depth (`.env`, `*.pem`); an absolute pattern (or one
   starting with `~`) matches the absolute path; any other matches the path relative to the
   working directory. Matching ignores case on Windows.
-- **Other tools** (MCP tools, web and browser tools, memory): only rules without a pattern
-  match.
+- **Other tools** (MCP tools, web and browser tools, memory, and the app config tools
+  `set_model_card`, `install_extension`, `uninstall_extension`): only rules without a pattern
+  match. The app config tools run without asking by default (removing an extension an agent
+  did not install asks); a rule narrows them to *ask* or *deny*
+  ([06](06-extensibility.md#agents-manage-the-app-config-implemented)).
 
 Evaluation: every matching rule of both scopes is collected; an environment rule overrides the
 global rules of equal specificity (both name the tool exactly or both use a wildcard, and their

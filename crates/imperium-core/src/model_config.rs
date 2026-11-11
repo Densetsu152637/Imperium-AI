@@ -114,8 +114,20 @@ pub fn set_config(
     if params.dry_run {
         return Ok(result(state, &candidate, &saved));
     }
-    write_app_file(&file, &saved)?;
-    let mut next = (*current).clone();
+    save_and_apply(state, &file, &saved, &current, &candidate)?;
+    Ok(result(state, &state.settings(), &saved))
+}
+
+/// Writes `saved` as the app file and makes `candidate` (built from it) the live model settings.
+fn save_and_apply(
+    state: &DaemonState,
+    file: &Path,
+    saved: &Table,
+    current: &Settings,
+    candidate: &Settings,
+) -> Result<(), String> {
+    write_app_file(file, saved)?;
+    let mut next = current.clone();
     next.models = candidate.models.clone();
     next.runtime.llamacpp.models = candidate.runtime.llamacpp.models.clone();
     for (id, endpoint) in &mut next.endpoints {
@@ -128,7 +140,131 @@ pub fn set_config(
     if let Some(local) = state.local_runtime() {
         local.apply_model_settings(&applied);
     }
-    Ok(result(state, &applied, &saved))
+    Ok(())
+}
+
+/// Where a model's card is saved in the app file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CardKind {
+    /// A model table row: `models.overrides."<id>".card`.
+    Table,
+    /// A local model: `runtime.llamacpp.models."<id>".card`.
+    Local,
+}
+
+impl CardKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            CardKind::Table => "table",
+            CardKind::Local => "local",
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<CardKind> {
+        match text {
+            "table" => Some(CardKind::Table),
+            "local" => Some(CardKind::Local),
+            _ => None,
+        }
+    }
+
+    fn path(self) -> &'static [&'static str] {
+        match self {
+            CardKind::Table => &["models", "overrides"],
+            CardKind::Local => &["runtime", "llamacpp", "models"],
+        }
+    }
+}
+
+/// A card written by [`set_card`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CardChange {
+    /// The table row id or local model id the card was saved under.
+    pub id: String,
+    pub kind: CardKind,
+    /// What the app file held before.
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+/// Finds where `model` keeps its card: a model table row by id (or by spec), else a local model
+/// by id (or by its `llamacpp:` / `vllm:` spec).
+pub(crate) fn card_target(state: &DaemonState, model: &str) -> Result<(String, CardKind), String> {
+    let model = model.trim();
+    let settings = state.settings();
+    if let Some(row) = settings.models.catalog.iter().find(|row| row.id == model) {
+        return Ok((row.id.clone(), CardKind::Table));
+    }
+    let local_id = model
+        .strip_prefix("llamacpp:")
+        .or_else(|| model.strip_prefix("vllm:"))
+        .unwrap_or(model);
+    let local = state.local_runtime().and_then(|local| {
+        local
+            .supervisor
+            .models()
+            .into_iter()
+            .find(|found| found.id == local_id)
+    });
+    if let Some(found) = local {
+        return Ok((found.id, CardKind::Local));
+    }
+    if let Some(row) = settings.models.catalog.iter().find(|row| row.spec == model) {
+        return Ok((row.id.clone(), CardKind::Table));
+    }
+    Err(format!(
+        "no model {model}: name a model table id or a local model id, as list_models shows them"
+    ))
+}
+
+/// Sets (or, with `None`, clears) the card of `id` in the app file and applies it at once, like
+/// the model dialog does. With `expect`, the card must still be what it says (for undo), or
+/// nothing is written.
+pub(crate) fn set_card(
+    state: &DaemonState,
+    id: &str,
+    kind: CardKind,
+    card: Option<&str>,
+    expect: Option<Option<&str>>,
+) -> Result<CardChange, String> {
+    let card = card.map(str::trim).filter(|card| !card.is_empty());
+    imperium_config::check_card(card).map_err(|reason| format!("card of {id}: {reason}"))?;
+    let _saving = state
+        .config_saves
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let file = state.paths().app_models_file();
+    let mut saved = read_app_file(&file)?;
+    let mut entry: Table = saved_entry(&saved, kind.path(), id).unwrap_or_default();
+    let before = entry
+        .get("card")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if let Some(expected) = expect
+        && before.as_deref() != expected
+    {
+        return Err(format!(
+            "the card of {id} was changed since; edit it in the model settings instead"
+        ));
+    }
+    match card {
+        Some(card) => {
+            entry.insert("card".into(), Value::String(card.to_string()));
+        }
+        None => {
+            entry.remove("card");
+        }
+    }
+    set_entry(&mut saved, kind.path(), id, entry);
+    let current = state.settings();
+    let candidate = candidate(state, &file, &saved)?;
+    save_and_apply(state, &file, &saved, &current, &candidate)?;
+    Ok(CardChange {
+        id: id.to_string(),
+        kind,
+        before,
+        after: card.map(str::to_string),
+    })
 }
 
 /// The settings the configuration layers would give with `saved` as the app layer, checked

@@ -95,7 +95,7 @@ pub fn list(user_dir: &Path, bundled: &[PathBuf]) -> ModListResult {
     ModListResult { mods, problems }
 }
 
-fn load(dir: &Path, bundled: bool) -> Result<ModInfo, String> {
+pub(crate) fn load(dir: &Path, bundled: bool) -> Result<ModInfo, String> {
     let manifest: Manifest = serde_json::from_str(
         &std::fs::read_to_string(dir.join("mod.json")).map_err(|error| error.to_string())?,
     )
@@ -137,6 +137,9 @@ fn load(dir: &Path, bundled: bool) -> Result<ModInfo, String> {
                 slot: panel.slot,
             })
             .collect(),
+        installed_from: (!bundled)
+            .then(|| crate::extension_install::read_source(dir))
+            .flatten(),
         bundled,
         source,
     })
