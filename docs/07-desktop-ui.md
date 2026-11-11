@@ -15,8 +15,27 @@
   [permissions](#permissions-implemented)), a floating composer, and under it a
   footer with the model selector and the context meter
   ([session footer](#environments-and-sessions-implemented)).
-- Telemetry panel: per-call tokens, time to first token, tokens per second, and cost, with
-  session totals.
+- Telemetry panel: a live table of the models in use right now across every session and
+  subagent, one row per model, updated in place as calls finish (not a history). It is a
+  GitHub-flavoured Markdown table, so columns size to their content:
+
+  | Model | tok/s | in | out | cost |
+  |---|---|---|---|---|
+  | Qwen 3 (4B) | 120.0 | 1.00M | 1.60k | — |
+  | Claude (Sonnet) | 60.0 | 54.00k | 2.00k | $1.60 |
+
+  A model is active while an agent using it works: a session's root agent during a turn
+  (`turn_started` to `turn_completed` / `turn_failed`, unless the session is stopped) or a
+  subagent whose task is running. `in` and `out` add up the prompt and completion tokens of
+  that work only (the root's calls since its turn started, each running task's calls since it
+  was spawned or resumed), across agents sharing the model. `tok/s` is the latest call's
+  generation speed (`tokens_per_sec`), one decimal. Counts under a thousand are plain, larger
+  ones two decimals with `k` or `M`. `cost` is dollars with two decimals from the calls'
+  `cost_usd`, and an em dash for local models (a local runtime's spec or a table row marked
+  local) or when no cost was reported. The model shows its model-table id, else the spec
+  without its endpoint (`modelLabel` in `telemetry.ts`, the one place to switch to aliases).
+  A row the window saw go idle stays for a minute with its last values, then drops off.
+  Session totals and per-turn usage stay in the session panel.
 - Display settings: UI scale, prose and code text scale, density, and line length. They are
   stored per viewer in local storage for now and move into the daemon's configuration with
   the settings UI.

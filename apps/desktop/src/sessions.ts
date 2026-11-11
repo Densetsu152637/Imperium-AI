@@ -94,6 +94,8 @@ export type TaskState = {
   entries: Entry[];
   report: string;
   costUsd: number | null;
+  /** Index in the session's `calls` where this task's current run (spawn or resume) began. */
+  callsFrom: number;
 };
 
 export type ModelCall = {
@@ -129,6 +131,8 @@ export type SessionState = {
   tasks: Record<string, TaskState>;
   plan: Plan | null;
   calls: ModelCall[];
+  /** Index in `calls` where the root agent's current (or latest) turn began. */
+  turnCallsFrom: number;
   /** Each agent's latest context breakdown, by agent id. */
   breakdowns: Record<string, ContextBreakdown>;
   busy: boolean;
@@ -165,6 +169,7 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   tasks: {},
   plan: null,
   calls: [],
+  turnCallsFrom: 0,
   breakdowns: {},
   busy: false,
   queue: [],
@@ -388,7 +393,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     );
   }
 
-  let { summary, tasks, plan, calls, breakdowns, busy, queue, browser, status, statusDetail, pause } = state;
+  let { summary, tasks, plan, calls, turnCallsFrom, breakdowns, busy, queue, browser, status, statusDetail, pause } = state;
   if (event.type === "model_changed" && agentId === ROOT) summary = { ...summary, model: event.to };
   if (event.type === "status_changed") {
     status = event.status;
@@ -434,7 +439,10 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     entries = applyToEntries(entries, agentEvent);
     if (event.type === "plan_updated") plan = event.plan;
     if (event.type === "queue_changed") queue = event.messages;
-    if (event.type === "turn_started") busy = true;
+    if (event.type === "turn_started") {
+      busy = true;
+      turnCallsFrom = calls.length;
+    }
     if (event.type === "turn_completed" || event.type === "turn_failed") busy = false;
     if (event.type === "task_spawned") {
       tasks = {
@@ -447,13 +455,14 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
           entries: [],
           report: "",
           costUsd: null,
+          callsFrom: calls.length,
         },
       };
     }
     // A finished subagent given a follow-up works again with its earlier conversation.
     if (event.type === "task_resumed" && tasks[event.task_id]) {
       const task = tasks[event.task_id];
-      tasks = { ...tasks, [event.task_id]: { ...task, status: "running", model: event.model, report: "" } };
+      tasks = { ...tasks, [event.task_id]: { ...task, status: "running", model: event.model, report: "", callsFrom: calls.length } };
     }
   } else if (tasks[agentId]) {
     const task = tasks[agentId];
@@ -482,6 +491,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     tasks,
     plan,
     calls,
+    turnCallsFrom,
     breakdowns,
     busy,
     queue,

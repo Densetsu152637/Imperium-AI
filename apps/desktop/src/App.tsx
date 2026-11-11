@@ -933,7 +933,7 @@ export function App() {
         />
       ),
     },
-    { id: "telemetry", title: "Telemetry", body: <TelemetryPanel session={session} /> },
+    { id: "telemetry", title: "Telemetry", body: <TelemetryPanel sessions={allSessions} models={modelTable?.models ?? []} /> },
     { id: "resources", title: "Resources", body: <ResourcesPanel client={client} /> },
     { id: "usage", title: "Usage", body: <UsagePanel client={client} /> },
     { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },
