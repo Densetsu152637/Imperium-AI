@@ -18,6 +18,9 @@ bytes: number,
 slots: number, 
 /**
  * Out: `room` (another model needed the memory), `idle`, `config` (its settings
- * changed), or `request` (`models.unload`). In: `swap` (it replaced a model) or `restore` (it came back with saved slots).
+ * changed), `grow` (a call needs a larger KV pool), `promote` (it ran on the CPU while the
+ * GPU was idle and restarts on the GPU), or `request` (`models.unload`). In: `swap` (it
+ * replaced a model) or `restore` (it came back with saved slots). `model.residency` says
+ * in more detail why each move happened.
  */
 reason: string, };

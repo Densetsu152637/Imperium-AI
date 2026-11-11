@@ -332,6 +332,8 @@ pub enum UnloadError {
     Queued(String),
     #[error("an agent is mid-turn on {0}; it unloads once the turn ends")]
     Claimed(String),
+    #[error("{0} was used again since it went idle")]
+    Used(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1756,6 +1758,11 @@ impl Supervisor {
             }
             if Presence::claims(&users, id, &entry.batch, None) != Claim::None {
                 return Err(UnloadError::Claimed(id.to_string()));
+            }
+            // Planned while idle, but used again before the unload got its turn.
+            let idle_unload = Duration::from_secs(self.settings.idle_unload_s);
+            if reason == Reason::Idle && lock(&entry.pool.last_used).elapsed() < idle_unload {
+                return Err(UnloadError::Used(id.to_string()));
             }
             state
                 .loaded

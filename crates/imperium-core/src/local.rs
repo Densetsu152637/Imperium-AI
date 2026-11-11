@@ -19,12 +19,16 @@ use imperium_protocol::methods::{
     GpuInfo, HardwareInfo, LocalModelListResult, LocalModelRow, RuntimeInfo, SkippedModel,
 };
 
+use crate::residency::{MachineProbe, MemoryProbe, ResidencyController};
+
 /// vLLM runs on Linux (including WSL2) only; elsewhere its models are listed but cannot load.
 const VLLM_AVAILABLE: bool = cfg!(target_os = "linux");
 
 #[derive(Debug)]
 pub struct LocalRuntime {
     pub supervisor: Arc<Supervisor>,
+    /// Decides what the supervisor keeps in memory ([`crate::residency`]).
+    pub residency: Arc<ResidencyController>,
     /// The folders and what the last scan skipped; both change when they are scanned again.
     scanned: Mutex<(Vec<PathBuf>, Vec<Skipped>)>,
     hardware: Hardware,
@@ -84,8 +88,12 @@ impl LocalRuntime {
     /// A runtime around a supervisor a test started, planned against `hardware`.
     #[cfg(test)]
     pub(crate) fn for_tests(supervisor: Arc<Supervisor>, hardware: Hardware) -> Self {
+        // The budget stays the one the test planned against: no probe.
+        let residency = ResidencyController::new(&supervisor, None);
+        residency.start();
         LocalRuntime {
             supervisor,
+            residency,
             scanned: Mutex::new((Vec::new(), Vec::new())),
             hardware,
             server: Arc::new(Mutex::new(("cpu".into(), PathBuf::from("llama-server")))),
@@ -135,8 +143,14 @@ impl LocalRuntime {
             Arc::clone(&launcher) as Arc<dyn imperium_local::supervisor::Launcher>,
         );
         supervisor.set_cpu_pinned(cpu_pins(settings));
+        let probe: Arc<dyn MemoryProbe> = Arc::new(MachineProbe {
+            overrides: settings.hardware.clone(),
+        });
+        let residency = ResidencyController::new(&supervisor, Some(probe));
+        residency.start();
         let local = LocalRuntime {
             supervisor,
+            residency,
             scanned: Mutex::new((folders, found.skipped)),
             hardware,
             server: Arc::new(Mutex::new((pack, server))),
@@ -576,6 +590,7 @@ mod tests {
         );
         supervisor.set_cpu_pinned(HashMap::from([("critic".to_string(), CpuLane::default())]));
         let runtime = LocalRuntime {
+            residency: ResidencyController::new(&supervisor, None),
             supervisor: Arc::clone(&supervisor),
             scanned: Mutex::new((Vec::new(), Vec::new())),
             hardware,
