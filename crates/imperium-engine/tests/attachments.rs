@@ -77,6 +77,7 @@ async fn attachments_reach_the_model_and_the_journal() {
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -97,6 +98,7 @@ async fn attachments_reach_the_model_and_the_journal() {
         background: None,
         auto_compact: false,
         keep_agent_state: false,
+        effort: Default::default(),
         journal_path: journal.clone(),
     })
     .unwrap();

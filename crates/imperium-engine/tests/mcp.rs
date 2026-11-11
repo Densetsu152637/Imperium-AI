@@ -103,6 +103,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -144,6 +145,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

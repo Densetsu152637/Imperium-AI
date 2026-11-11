@@ -290,6 +290,8 @@ impl LocalRuntime {
                 LocalModelRow {
                     id: model.id.clone(),
                     alias: None,
+                    reasoning: imperium_api::LocalModels::reasons(&*self.supervisor, &model.id)
+                        .unwrap_or_else(|| imperium_api::reasoning_by_name(&model.id)),
                     runtime: match model.format {
                         Format::Gguf => "llamacpp".into(),
                         Format::Safetensors => "vllm".into(),

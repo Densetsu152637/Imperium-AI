@@ -176,6 +176,10 @@ pub struct LocalModelSettings {
     pub max_output_tokens: Option<u32>,
     /// Arguments added after `runtime.llamacpp.extra_args`.
     pub extra_args: Option<Vec<String>>,
+    /// Whether the model can reason, over what its chat template says (a thinking switch,
+    /// think tags or `reasoning_effort` mark one that can).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<bool>,
 }
 
 /// `[models.overrides."<catalog id>"]`: what the app changes on a model-table row.

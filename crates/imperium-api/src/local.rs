@@ -185,6 +185,12 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     fn planned_context(&self, _model: &str) -> Option<u64> {
         None
     }
+    /// Whether the model can reason (its chat template has a thinking switch, think tags or an
+    /// effort variable, or its settings say so), so a session's effort is sent with its calls;
+    /// `None` when the runtime cannot tell.
+    fn reasons(&self, _model: &str) -> Option<bool> {
+        None
+    }
     /// Why `holder`'s call for a model waits, while it waits in [`LocalModels::acquire`];
     /// `None` when it does not wait or the runtime does not say.
     fn wait_reason(&self, _holder: &str) -> Option<LocalWait> {

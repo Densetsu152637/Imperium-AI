@@ -126,6 +126,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -146,6 +147,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

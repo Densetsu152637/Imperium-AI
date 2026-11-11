@@ -198,6 +198,7 @@ fn start(dir: &std::path::Path, base_url: String, local: bool) -> Session {
             local,
             context_window: Some(16_384),
             kind: if local { "llamacpp" } else { "openai" }.into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -218,6 +219,7 @@ fn start(dir: &std::path::Path, base_url: String, local: bool) -> Session {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.join(".journal/context.jsonl"),
     })
     .unwrap()

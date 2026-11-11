@@ -418,8 +418,12 @@ in the model folders (`-32004` otherwise, or when no local runtime is set up).
 `imperium chat` switches with `/model <id>`, printing the estimate (`Switched to x; the
 conversation (about 30.1k tokens) is over its budget of 13.9k tokens, so older turns are
 compacted when you send the next message.`), and compacts with `/compact`, printing what
-happened (`Context of x; compacted 30.1k -> 9.2k tokens (12 messages summarised by y).`). The
-desktop has a model picker in the session header ([07](07-desktop-ui.md#environments-and-sessions-implemented)).
+happened (`Context of x; compacted 30.1k -> 9.2k tokens (12 messages summarised by y).`).
+`/effort <low|medium|high|max>` sets the session's [reasoning
+effort](04-models-and-routing.md#reasoning-effort) (`session.control` `set_effort`), saying
+when the session's model cannot reason. The desktop has a model picker, and an effort selector
+beside it for models that can reason, in the session footer
+([07](07-desktop-ui.md#environments-and-sessions-implemented)).
 
 ## Queueing and steering
 

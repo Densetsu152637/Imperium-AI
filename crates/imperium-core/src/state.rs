@@ -82,6 +82,8 @@ pub struct SessionOptions {
     pub worktree_branch: Option<String>,
     /// Worktrees a resumed session was started on.
     pub worktrees: Vec<SessionWorktree>,
+    /// The reasoning effort to start with; `models.effort` when unset.
+    pub effort: Option<imperium_api::Effort>,
 }
 
 /// Where a session works: its environment and every folder, the working directory first.
@@ -820,6 +822,10 @@ impl DaemonState {
                 // A session that never had a model keeps waiting for one.
                 may_wait_for_model: model.is_none(),
                 worktrees: serde_json::from_value(meta["worktrees"].clone()).unwrap_or_default(),
+                // The effort the session was set to, else (older sessions) the default.
+                effort: meta["effort"]
+                    .as_str()
+                    .and_then(|effort| effort.parse().ok()),
                 ..SessionOptions::default()
             };
             let created = match meta["environment_id"].as_str() {
@@ -1325,7 +1331,9 @@ impl DaemonState {
             }));
         }
         let model_spec = model.as_ref().map(|model| model.spec.clone());
+        let effort = options.effort.unwrap_or(self.settings().models.effort);
         let session = Session::spawn(SessionConfig {
+            effort,
             journal_path: self
                 .paths
                 .data_dir()
@@ -1377,6 +1385,7 @@ impl DaemonState {
                 "pinned": placement.pinned,
                 "title": placement.title,
                 "title_by_user": placement.title_by_user,
+                "effort": effort.as_str(),
             });
             let path = self.meta_path(&id);
             if let Err(error) = std::fs::write(&path, meta.to_string()) {
@@ -1590,6 +1599,44 @@ impl DaemonState {
             .join(format!("{id}.meta.json"))
     }
 
+    /// Sets a session's reasoning effort from its agents' next model calls on, records it with
+    /// the session so it survives a restart, and tells every client.
+    pub fn set_effort(&self, session: &Session, effort: imperium_api::Effort) {
+        session.set_effort(effort);
+        // Sessions that are not remembered (project agents) have no meta file; their effort
+        // lasts until the daemon stops.
+        self.update_meta(session.id(), |meta| {
+            meta.insert("effort".into(), effort.as_str().into());
+        });
+        self.announce(
+            imperium_protocol::methods::SESSION_UPDATED,
+            self.summary(session),
+        );
+    }
+
+    /// Whether the model `spec` names (a model table id or `<endpoint>:<model>`) can reason:
+    /// the table row's `reasoning` setting or tags, else a local model's chat template (or
+    /// its `reasoning` setting), else whether its name is a known reasoning model.
+    pub fn model_reasons(&self, spec: &str) -> bool {
+        let settings = self.settings();
+        let row = settings
+            .models
+            .catalog
+            .iter()
+            .find(|entry| entry.spec == spec || entry.id == spec);
+        if let Some(set) = row.and_then(imperium_config::CatalogEntry::reasoning_setting) {
+            return set;
+        }
+        let spec = row.map_or(spec, |entry| entry.spec.as_str());
+        let (endpoint, model) = spec.split_once(':').unwrap_or(("", spec));
+        let local = endpoint == imperium_config::LLAMACPP_ENDPOINT
+            || endpoint == imperium_config::VLLM_ENDPOINT;
+        let runtime = self.local.get().filter(|_| local);
+        runtime
+            .and_then(|runtime| LocalModels::reasons(&*runtime.supervisor, model))
+            .unwrap_or_else(|| imperium_api::reasoning_by_name(model))
+    }
+
     /// Pins or unpins a session, records it with the session so it survives a restart, and
     /// tells every client.
     pub fn set_pinned(&self, session: &Session, pinned: bool) -> std::io::Result<()> {
@@ -1634,6 +1681,9 @@ impl DaemonState {
             title: placement
                 .title
                 .unwrap_or_else(|| titles::from_first_message(&session.title())),
+            reasoning: session
+                .model()
+                .is_some_and(|model| self.model_reasons(&model)),
             ..summary(session)
         }
     }
@@ -1775,6 +1825,7 @@ impl DaemonState {
                     endpoint_configured: endpoint.is_some(),
                     context_window: entry.context_window,
                     enabled: entry.enabled,
+                    reasoning: self.model_reasons(&entry.spec),
                 }
             })
             .collect();
@@ -1876,6 +1927,8 @@ fn summary(session: &Session) -> SessionSummary {
         environment_id: None,
         folders: vec![session.project_dir().to_string()],
         model: session.model(),
+        effort: Some(session.effort().as_str().to_string()),
+        reasoning: false,
         isolation: session.isolation().to_string(),
         title: session.title(),
         status,

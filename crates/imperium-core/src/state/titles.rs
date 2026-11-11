@@ -249,6 +249,8 @@ async fn generate(
             tools: &[],
             slot: lease.as_ref().and_then(|lease| lease.slot),
             max_tokens: Some(max_tokens),
+            // A title needs no deliberation: no reasoning control is sent.
+            effort: None,
         };
         let completion = client.stream(request, &mut |_| {}).await;
         drop(lease);

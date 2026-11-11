@@ -31,6 +31,10 @@ pub struct GgufInfo {
     /// For split models: which part this is (0-based) and how many there are.
     pub split_index: Option<u32>,
     pub split_count: Option<u32>,
+    /// Whether the chat template renders reasoning (a thinking switch, think tags, or a
+    /// `reasoning_effort` variable); `None` when the file has no template, or one too long to
+    /// read.
+    pub template_reasons: Option<bool>,
 }
 
 impl GgufInfo {
@@ -139,6 +143,9 @@ pub fn read(reader: &mut (impl Read + Seek)) -> Result<GgufInfo, GgufError> {
             Value::Text(text) => match key.as_str() {
                 "general.architecture" => info.architecture = Some(text),
                 "general.name" => info.name = Some(text),
+                "tokenizer.chat_template" => {
+                    info.template_reasons = Some(imperium_api::template_reasons(&text));
+                }
                 _ => {}
             },
             Value::Number(number) => numbers.push((key, number)),
@@ -394,6 +401,27 @@ mod tests {
         let info = read(&mut Cursor::new(bytes)).unwrap();
         assert_eq!(info.kv_bytes_per_token(1.0), Some(48 * 4 * 256));
         assert_eq!((info.split_index, info.split_count), (Some(1), Some(3)));
+    }
+
+    #[test]
+    fn the_chat_template_says_whether_the_model_reasons() {
+        let with = |template: &str| {
+            let bytes = header(&[
+                ("general.architecture", V::Str("qwen3")),
+                ("tokenizer.chat_template", V::Str(template)),
+            ]);
+            read(&mut Cursor::new(bytes)).unwrap().template_reasons
+        };
+        assert_eq!(
+            with("{%- if enable_thinking is defined and enable_thinking is false %}"),
+            Some(true)
+        );
+        assert_eq!(
+            with("{% for m in messages %}{{ m.content }}{% endfor %}"),
+            Some(false)
+        );
+        let none = read(&mut Cursor::new(llama("plain"))).unwrap();
+        assert_eq!(none.template_reasons, None);
     }
 
     #[test]

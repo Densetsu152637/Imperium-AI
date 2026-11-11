@@ -2812,6 +2812,19 @@ impl LocalModels for Supervisor {
         lock(&self.models).iter().any(|model| model.id == id)
     }
 
+    fn reasons(&self, id: &str) -> Option<bool> {
+        let set = lock(&self.model_settings)
+            .get(id)
+            .and_then(|settings| settings.reasoning);
+        set.or_else(|| {
+            lock(&self.models)
+                .iter()
+                .find(|model| model.id == id)?
+                .info
+                .template_reasons
+        })
+    }
+
     fn planned_context(&self, id: &str) -> Option<u64> {
         if !self.has_model(id) {
             return None;

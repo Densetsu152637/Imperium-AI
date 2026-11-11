@@ -116,6 +116,7 @@ async fn agents_research_and_cite_sources() {
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -140,6 +141,7 @@ async fn agents_research_and_cite_sources() {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();
@@ -248,6 +250,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
         }),
         catalog: Vec::new(),
         routing: imperium_config::RoutingSettings::default(),
@@ -277,6 +280,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
     })
     .unwrap();

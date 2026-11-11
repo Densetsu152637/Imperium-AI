@@ -82,6 +82,7 @@ fn start_in(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> 
             local: false,
             context_window: None,
             kind: "openai".into(),
+            reasoning: None,
             pricing: Some(Pricing {
                 input_usd_per_mtok: 1.0,
                 output_usd_per_mtok: 2.0,
@@ -107,6 +108,7 @@ fn start_in(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> 
         background: None,
         auto_compact: false,
         keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.join(".journal/test.jsonl"),
     })
     .unwrap()

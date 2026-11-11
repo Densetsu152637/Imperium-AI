@@ -59,7 +59,7 @@ import { SentAttachments } from "../components/AttachmentChips";
 import { Composer } from "./Composer";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { ModelSuggestionCard } from "./ModelSuggestionCard";
-import { SessionModelSelect } from "./ModelSelect";
+import { EffortSelect, SessionModelSelect, type Effort } from "./ModelSelect";
 import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
 import { canStop, isStopShortcut, isStopped } from "../stop";
@@ -93,6 +93,8 @@ type Props = {
   onOpenLocalModels?: () => void;
   /** Switches the session's model; resolves with the daemon's answer, rejects with its reason. */
   onSetModel: (model: string) => Promise<SessionControlResult>;
+  /** Sets the session's reasoning effort; rejects with the daemon's reason. */
+  onSetEffort?: (effort: Effort) => Promise<SessionControlResult>;
   /** For answering model download suggestions and following their downloads. */
   client?: DaemonClient | null;
   /** Resumes an archived session. */
@@ -128,6 +130,7 @@ export function SessionPanel({
   localRuntime = null,
   onOpenLocalModels,
   onSetModel,
+  onSetEffort,
   client = null,
   onUnarchive,
   budgets = [],
@@ -418,6 +421,14 @@ export function SessionPanel({
           onOpenLocalModels={onOpenLocalModels}
           onSwitch={onSetModel}
         />
+        {onSetEffort && session.summary.reasoning && (
+          <EffortSelect
+            key={`effort-${session.summary.session_id}`}
+            current={session.summary.effort}
+            disabled={archived}
+            onChange={onSetEffort}
+          />
+        )}
         <span className="session-footer-spacer" />
         {sum.costUsd !== null && (
           <span className="session-cost muted" title="Session cost">

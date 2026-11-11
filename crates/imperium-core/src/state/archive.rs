@@ -95,6 +95,9 @@ impl DaemonState {
             folders,
             model: imperium_engine::journalled_model(journal)
                 .or_else(|| meta["model"].as_str().map(str::to_string)),
+            effort: meta["effort"].as_str().map(str::to_string),
+            // An archived session calls no model.
+            reasoning: false,
             isolation: meta["isolation"].as_str().unwrap_or_default().to_string(),
             title,
             status: serde_json::from_value(meta["status"].clone()).unwrap_or(SessionStatus::Idle),
