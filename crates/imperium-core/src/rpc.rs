@@ -895,6 +895,28 @@ impl Connection {
                     state.unarchive(&params.session_id).map_err(archive_error)?;
                     return Ok(SessionControlResult::default());
                 }
+                // Archived sessions can be renamed too.
+                "rename" => {
+                    let title = params.title.as_deref().ok_or_else(|| {
+                        ErrorObject::new(codes::INVALID_PARAMS, "rename needs title")
+                    })?;
+                    let renamed =
+                        state
+                            .set_title(&params.session_id, title, true)
+                            .map_err(|error| {
+                                ErrorObject::new(
+                                    codes::INTERNAL_ERROR,
+                                    format!("could not record the title: {error}"),
+                                )
+                            })?;
+                    if !renamed {
+                        return Err(ErrorObject::new(
+                            codes::SESSION_NOT_FOUND,
+                            "no such session",
+                        ));
+                    }
+                    return Ok(SessionControlResult::default());
+                }
                 _ => {}
             }
             let session = state

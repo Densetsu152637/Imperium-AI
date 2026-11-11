@@ -44,6 +44,7 @@ use crate::suggestions::{SuggestTool, Suggestions};
 
 mod archive;
 mod session_search;
+mod titles;
 pub use archive::ArchiveError;
 
 /// Options for [`DaemonState::create_session_with`].
@@ -92,6 +93,10 @@ struct Placement {
     worktrees: Vec<SessionWorktree>,
     /// Listed first; recorded in the session's meta file so it survives a restart.
     pinned: bool,
+    /// The session's title, once it has one (see [`titles`]); recorded like the pin.
+    title: Option<String>,
+    /// The user gave the title: a generated one never replaces it.
+    title_by_user: bool,
     /// A project agent: like an environment's persistent agent, it runs while the daemon does
     /// and is never archived.
     project_agent: bool,
@@ -1215,6 +1220,8 @@ impl DaemonState {
             persistent: options.persistent,
             worktrees: options.worktrees.clone(),
             pinned: false,
+            title: None,
+            title_by_user: false,
             project_agent: options.launcher.is_some(),
         };
         // A remote runtime's folders are not on this machine: project files (instructions,
@@ -1269,11 +1276,18 @@ impl DaemonState {
             workspace
         };
         if resume {
-            // A resumed session keeps its pin.
-            placement.pinned = std::fs::read_to_string(self.meta_path(&id))
+            // A resumed session keeps its pin and its title.
+            let meta = std::fs::read_to_string(self.meta_path(&id))
                 .ok()
                 .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-                .is_some_and(|meta| meta["pinned"].as_bool() == Some(true));
+                .unwrap_or_default();
+            placement.pinned = meta["pinned"].as_bool() == Some(true);
+            placement.title = meta["title"]
+                .as_str()
+                .filter(|title| !title.trim().is_empty())
+                .map(str::to_string);
+            placement.title_by_user =
+                placement.title.is_some() && meta["title_by_user"].as_bool() == Some(true);
         }
         // Tool providers in the order their tools are offered (MCP tools always come first).
         let mut tools: Vec<Arc<dyn ToolProvider>> = Vec::new();
@@ -1349,6 +1363,8 @@ impl DaemonState {
                 "folders": placement.folders,
                 "worktrees": placement.worktrees,
                 "pinned": placement.pinned,
+                "title": placement.title,
+                "title_by_user": placement.title_by_user,
             });
             let path = self.meta_path(&id);
             if let Err(error) = std::fs::write(&path, meta.to_string()) {
@@ -1364,6 +1380,9 @@ impl DaemonState {
         }
         if let Some(me) = self.me.upgrade() {
             crate::suggestions::watch(&me, id.clone(), session.subscribe());
+            if placement.title.is_none() {
+                titles::watch(&me, id.clone(), session.subscribe());
+            }
             crate::resources::watch_session(&me, id.clone(), session.subscribe());
             crate::budgets::watch_session(
                 &me,
@@ -1600,6 +1619,9 @@ impl DaemonState {
             worktrees: placement.worktrees,
             pinned: placement.pinned,
             created_at: created_at(&self.journal_path(session.id())),
+            title: placement
+                .title
+                .unwrap_or_else(|| titles::from_first_message(&session.title())),
             ..summary(session)
         }
     }
