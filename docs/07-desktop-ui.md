@@ -139,12 +139,27 @@ its `turn_started` adds it to the transcript (or `message_queued` puts it in the
 session turns out to need a model). The line reads, from the session's events
 (`apps/desktop/src/waits.ts`):
 
-- `local_model_waiting` by reason: *Loading model…*, *Growing context pool…*, *Waiting for room
-  in the context cache…*, *Waiting for a free slot…* (queued behind other agents' calls on
-  the model), *Waiting for another model…*, *Making room on the GPU…*, *Saving context…*,
-  *Restoring context…*; a reason a newer daemon adds is worded from its name. While a model
-  waits to load and llama.cpp is being installed (`runtime.install_progress`) it reads
-  *Installing llama.cpp (42%)…*. These offer **Stop** (`session.control` `stop`).
+- `local_model_waiting` by reason, one sentence naming the model by its alias: *Loading
+  Qwen 3…*, *Growing Qwen 3's context pool…*, *Waiting for room in Qwen 3's context cache…*,
+  *Waiting for a free slot on Qwen 3…* (queued behind other agents' calls on the model),
+  *Waiting for another model before Qwen 3…*, *Making room on the GPU for Qwen 3…*, *Saving
+  other agents' context to make room for Qwen 3…*, *Restoring this agent's context on Qwen 3…*;
+  a reason a newer daemon adds is worded from its name. While a model waits to load and
+  llama.cpp is being installed (`runtime.install_progress`) it reads *Installing llama.cpp
+  (42%)…*. These offer **Stop** (`session.control` `stop`).
+- A `model.residency` move made for the waited-on model since the wait began (on the model
+  itself, or an eviction whose `detail` says it made room for it) replaces that sentence with
+  why memory is moving, one sentence per reason: `crashed` *Restoring Qwen 3 after a crash…*,
+  `room` *Swapping out Gemma to make room for Qwen 3…*, `more_gpu` *Swapping out Gemma so Qwen
+  3 fits on the GPU…*, `swap_gain` *Swapping out Gemma to give Qwen 3 more of the GPU…*,
+  `gpu_rule` *Making room on the GPU for Qwen 3…*, `critic` *Giving the GPU to Qwen 3 while
+  its review runs…*, `aged` *Swapping out Gemma, loaded longest, for Qwen 3…*, `grow`
+  *Restarting Qwen 3 with a larger context pool…*, `promote` *Moving Qwen 3 onto the GPU…*,
+  `config` *Restarting Qwen 3 with its new settings…*, `resume` *Bringing Qwen 3 back for this
+  agent…*, `yield` *Saving a waiting agent's context on Qwen 3…*, `stopped` *Saving a stopped
+  session's context on Qwen 3…*, `idle` and `request` *Reloading Qwen 3 after it was unloaded
+  …*. The call's own load or restore (`call`), the budget, and failed moves keep the
+  `local_model_waiting` sentence; a reason a newer daemon adds is worded from its name.
 - `compaction_started` until `context_compacted` (or a notice or the turn's failure):
   *Compacting conversation…*, with **Stop**.
 - An unanswered approval or questions: *Waiting for your approval…* / *Waiting for your
@@ -357,12 +372,13 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
   room. Settings → *Reset layout* restores the default arrangement. The rules are pure
   functions (`layout/arrangement.ts`) with tests (`test/arrangement.test.ts`).
 
-### Rearranging (planned)
+### Rearranging (planned beyond the panel editor)
 
-- Everything is drag-and-drop: drag a panel's title bar to another column, into a stack, or
-  out into a new window; drag a module between panels. Drop targets preview the result.
-- An **edit layout** mode shows all drop zones, panel boundaries, and hidden modules; outside
-  it, layouts are locked to prevent accidental changes.
+The [panel editor](#panel-editor-implemented) covers moving panels between and into columns and
+locking the layout outside it. Still planned:
+
+- Dragging a panel out into a new window and a module between panels, and showing hidden
+  modules in the editor.
 - **Layouts are global.** One layout applies to every project, and changes to it apply
   everywhere.
 - **Project overrides are explicit.** A project uses its own layout only after the user

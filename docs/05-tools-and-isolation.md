@@ -142,12 +142,12 @@ may only fill a whole `env` value (it becomes `secret_env`) or `bearer`. The bui
 directory has Filesystem, Git, GitHub (hosted), Fetch, Memory, PostgreSQL, SQLite, Slack,
 Brave Search, Playwright, Notion, Context7, Sequential Thinking, and Time.
 
+The client speaks to stdio and streamable-HTTP servers and offers their tools (implemented).
 Planned:
 
-- Client support for stdio and streamable-HTTP MCP servers, including tools, resources,
-  prompts, and server-initiated sampling (routed through Imperium's router and budgets).
-- Servers are configured globally, per project, or by plugins; each has its own permission
-  scope and runs inside the session's isolation tier when it is a local process.
+- Resources, prompts, and server-initiated sampling (routed through Imperium's router and
+  budgets).
+- Per-project server configuration, and local servers run inside the session's isolation tier.
 - OAuth flows for remote MCP servers open in the system browser; tokens go to the keychain.
 
 ## Permissions

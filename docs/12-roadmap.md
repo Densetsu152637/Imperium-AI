@@ -159,9 +159,10 @@ the wait reason in the desktop.
     settings restarts, the policy calls ask to make room, `models.unload`, resumes, and a
     memory budget refreshed from live readings. The local runtime only carries them out, and
     every move is reported with its reason (`model.residency`)
-    ([04](04-models-and-routing.md#residency-controller-implemented)). Still to do: the races
-    the review found (titles, crashed servers, a yield racing a resume), the desktop wait line,
-    and measuring on real hardware.
+    ([04](04-models-and-routing.md#residency-controller-implemented)). The races the review
+    found are fixed (titles never load a model, a crashed server is unloaded as `crashed` and
+    reloaded with a backoff, a resuming agent waits for its own slot's save), and the desktop
+    wait line and `imperium chat` show the moves. Still to do: measuring on real hardware.
 17. **Session titles and list** (implemented). After a session's first exchange the core
     titles it in the background with a model that is cheap to ask now (the session's model
     when it is local and loaded with a free slot, another loaded local model, or the session's
@@ -213,6 +214,44 @@ the wait reason in the desktop.
     load chosen ones (or all) up front. Hooks stay active from the start, since a hook may be a
     security check that must see every call
     ([06](06-extensibility.md#lazy-skills-and-plugins-implemented)).
+24. **Context and transcripts.** Items 24–35 are described in the design docs but not built
+    yet (their *planned* and *later work* notes; each links to where it is described). Automatic compaction mid-turn when an agent nears its context
+    limit, and transcripts, task trees, and artefacts browsable and exportable
+    ([03](03-agent-engine.md)).
+25. **More tools and permission modes.** Glob and grep file tools, background processes for
+    `run_command`, and permission modes: ask every time, accept edits, plan only, full access
+    ([05](05-tools-and-isolation.md)).
+26. **Worktrees for parallel writers.** Parallel writing subagents each work in their own git
+    worktree so concurrent edits never collide
+    ([14](14-projects-and-automation.md#worktrees)).
+27. **Environment configuration.** An environment's own `.imperium/config.toml` (instructions,
+    policy, plugins, MCP servers, routing, budgets), sessions narrowed to a subfolder or a
+    read-only mount, and schedules and project agents per environment
+    ([14](14-projects-and-automation.md)).
+28. **Local runtimes and hardware.** vLLM as a supervised runtime, GPU probes for AMD, Intel,
+    and Apple Silicon, and memory estimates calibrated against measured use
+    ([04](04-models-and-routing.md)).
+29. **Routing extras.** Queue-delay handling, capability filters, escalation, and built-in
+    rules sending critique, review, and verify tasks to the CPU lane
+    ([04](04-models-and-routing.md)).
+30. **Hooks and mods.** More hook events, hooks that rewrite calls, HTTP hooks; more mod
+    contribution points, install and update commands, a permission prompt at install, and
+    trusted main-context mods ([06](06-extensibility.md)).
+31. **Policy packs and MCP.** Fetching pack updates shown as a diff to accept, a policy crate
+    that layers packs into the prompt; MCP resources, prompts, sampling, and OAuth for remote
+    servers; and an MCP server bridge exposing Imperium itself
+    ([08](08-agent-policy.md), [05](05-tools-and-isolation.md#mcp), [02](02-architecture.md)).
+32. **Web and browser.** More search providers (Kagi and others), caching and robots handling,
+    browser tabs and downloads, and a browser pane the user can take over
+    ([05](05-tools-and-isolation.md)).
+33. **Protocol transport.** Event subscriptions, and Unix sockets and Windows named pipes for
+    SSH forwarding ([02](02-architecture.md#protocol)).
+34. **Desktop and platform gaps.** Rebindable shortcuts; attachments for models without
+    vision (image descriptions), drawn PDF pages, and a supervised local whisper; an encrypted
+    secret store where no keychain exists; WASM pet behaviours
+    ([07](07-desktop-ui.md), [10](10-configuration.md), [16](16-pets.md)).
+35. **Layouts.** Dragging panels out into windows and modules between panels, project layout
+    overrides, and exportable layout presets ([07](07-desktop-ui.md)).
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
