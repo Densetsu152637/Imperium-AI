@@ -196,8 +196,51 @@ workflow, so it does not depend on the agent's own model.
 - **Gate (configurable):** with `workflow.enforce = "required-before-action"`, write and
   execute tools are held until the agent has loaded every required item; the agent is told
   which items are missing. `"warn"` only records the gap; `"off"` disables the check.
-- **Compaction:** after context compaction, loaded instruction items are reloaded from their
-  refs rather than kept as summaries.
+- **Compaction:** instruction files are workflow context and are never summarised. The
+  [exploration files](#instruction-files-met-while-exploring) are carried over verbatim into
+  the compacted conversation (the summary's message holds them after the summary), once per
+  path; the compactor also keeps them out of the text it asks a model to summarise, and they
+  do not count as user turns when a manual compaction keeps the last turns.
+
+### Instruction files met while exploring
+
+**Implemented.** The manifest serves the project folder's own `AGENTS.md` and `CLAUDE.md`. In
+addition, when an agent's file tools (`read_file`, `list_dir`, `write_file`, `edit_file`) first
+touch a directory inside an allowed folder (the workspace folders, read or write grants that
+are folders, and the project's worktrees), the `AGENTS.md` and `CLAUDE.md` in that directory
+and in each parent up to that folder's root that the agent's conversation does not hold yet are
+put into it. They arrive as one user message wrapped in `<workflow-instructions>` after the
+tool results of the round that touched the directory, outermost directory first and `AGENTS.md`
+before `CLAUDE.md`, so the nearest file comes last and takes precedence where they differ. Each
+file is loaded once per agent conversation (every subagent has its own), is cut at 16 KiB with
+a `[truncated: ...]` note, and a conversation holds at most 96 KiB of them; beyond that further
+files are listed as not loaded. The project folder's own files are skipped here, as the
+manifest serves them; `run_command` has no working directory of its own, so it loads nothing.
+A remote workspace (Docker, WSL, SSH) loads nothing. `workflow.enabled = false` turns all of
+this off.
+
+The message is the record: which files an agent holds is read back from its conversation, so a
+resumed session does not load them again and compaction keeps them (above). Each load is also
+journaled as a `context_loaded` event whose references are `instructions:<absolute path>`.
+The context breakdown counts them under `manifest` (workflow context).
+
+### Imports
+
+Instruction files follow `@path` imports the way Claude Code does: a word starting with `@`
+outside code spans and fenced code, relative to the importing file, `@~/` for the home folder,
+and a backslash before a space for a space in the path (`@D:/Git\ Repositories/rules/CLAUDE.md`).
+An import that is not a file is ignored (an `@mention`). Imported files follow their importer in
+`<imported-file>` blocks, depth-first, each once; a file already served by an earlier item (a
+`CLAUDE.md` that imports the `AGENTS.md` beside it) is not repeated. Imports nest 5 levels deep;
+an import that loops back to a file being read, goes deeper, or is too large is not followed and
+is reported in the text (`[not imported: <path> (<reason>)]`). Imports outside the allowed
+locations are read only for a pack the user configured in `workflow.packs` (trusted); the
+bundled pack, the project's files, and the files found while exploring may only import from
+inside the folder they live in (a pack's folder, the workspace folders).
+
+For a pack, the entry index (`entry`, `AGENTS.md` by default) and a `CLAUDE.md` beside it are
+both required manifest items (`<pack>:CLAUDE.md`, "entry file"), and `context_load` returns each
+with its imports.
 
 ### Audit
 

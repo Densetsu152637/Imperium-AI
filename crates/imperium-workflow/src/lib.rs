@@ -4,6 +4,7 @@
 //! `context_load`, so the same role and task get the same files whatever model runs them.
 
 mod docs;
+pub mod imports;
 pub mod pack;
 pub mod personality;
 mod text;
@@ -184,6 +185,14 @@ impl ContextIndex {
                 format!("{}:{}", pack.name, pack.entry),
                 "entry index".into(),
             );
+            // A pack that also ships a CLAUDE.md (usually importing the entry) serves it too.
+            if pack.entry != "CLAUDE.md" && pack.root.join("CLAUDE.md").is_file() {
+                push(
+                    &mut manifest,
+                    format!("{}:CLAUDE.md", pack.name),
+                    "entry file".into(),
+                );
+            }
             for path in pack.roles.get(role).into_iter().flatten() {
                 push(
                     &mut manifest,
@@ -210,20 +219,26 @@ impl ContextIndex {
         manifest
     }
 
-    /// The text of a reference: a whole file, or one section of it.
+    /// The folder instruction files are read in when the agent explores: the project's.
+    pub fn project_dir(&self) -> &Path {
+        &self.project_dir
+    }
+
+    /// The text of a reference: a whole file, or one section of it. An instruction file at the
+    /// root of a pack or the project comes with the files it imports.
     pub fn load(&self, reference: &str) -> Result<String, LoadError> {
         let (source, rest) = reference
             .split_once(':')
             .ok_or_else(|| LoadError::BadReference(reference.into()))?;
-        let root = if source == PROJECT {
-            &self.project_dir
+        let (root, trusted, entry) = if source == PROJECT {
+            (&self.project_dir, false, None)
         } else {
-            &self
+            let pack = self
                 .packs
                 .iter()
                 .find(|pack| pack.name == source)
-                .ok_or_else(|| LoadError::UnknownPack(source.into()))?
-                .root
+                .ok_or_else(|| LoadError::UnknownPack(source.into()))?;
+            (&pack.root, pack.trusted, Some(pack.entry.as_str()))
         };
         let (path, anchor) = rest.split_once('#').unwrap_or((rest, ""));
         let relative = Path::new(path);
@@ -235,6 +250,23 @@ impl ContextIndex {
             return Err(LoadError::Outside(reference.into()));
         }
         let file = root.join(relative);
+        if anchor.is_empty() && (entry == Some(path) || PROJECT_INSTRUCTIONS.contains(&path)) {
+            // What the entry served already is not imported again by the file after it.
+            let served = [entry.unwrap_or("AGENTS.md"), "AGENTS.md"]
+                .into_iter()
+                .filter(|name| *name != path)
+                .map(|name| root.join(name))
+                .collect();
+            let policy = imports::Policy {
+                allowed: vec![root.clone()],
+                trusted,
+                skip: served,
+                ..imports::Policy::default()
+            };
+            if let Ok(expanded) = imports::expand(&file, &policy) {
+                return Ok(expanded.text);
+            }
+        }
         let text = std::fs::read_to_string(&file)
             .map_err(|error| LoadError::Io(reference.into(), error))?;
         if anchor.is_empty() {
@@ -266,6 +298,85 @@ mod tests {
         )
         .unwrap();
         dir
+    }
+
+    fn write(root: &Path, relative: &str, text: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn pack_entry_files_load_with_their_imports() {
+        let pack = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write(outside.path(), "shared.md", "Shared outside the pack.\n");
+        let shared = imports::display_path(&outside.path().join("shared.md"));
+        write(
+            pack.path(),
+            "AGENTS.md",
+            "Entry.\n@guides/style.md\n@guides/loop-a.md\n",
+        );
+        write(
+            pack.path(),
+            "CLAUDE.md",
+            &format!("@AGENTS.md\nClaude only.\n@{shared}\n"),
+        );
+        write(pack.path(), "guides/style.md", "Style.\n");
+        write(pack.path(), "guides/loop-a.md", "A.\n@loop-b.md\n");
+        write(pack.path(), "guides/loop-b.md", "B.\n@loop-a.md\n");
+        let project = project();
+        let load = |trusted: bool| {
+            let mut pack = Pack::load(pack.path()).unwrap();
+            pack.trusted = trusted;
+            let index = ContextIndex::new(vec![pack], project.path());
+            let name = index.packs()[0].name.clone();
+            let refs: Vec<String> = index
+                .resolve("leaf", "anything")
+                .items
+                .into_iter()
+                .map(|item| item.reference)
+                .collect();
+            assert_eq!(
+                refs[1..3],
+                [format!("{name}:AGENTS.md"), format!("{name}:CLAUDE.md")]
+            );
+            (
+                index.load(&format!("{name}:AGENTS.md")).unwrap(),
+                index.load(&format!("{name}:CLAUDE.md")).unwrap(),
+            )
+        };
+
+        let (entry, claude) = load(false);
+        assert!(entry.contains("Style.") && entry.contains("B."));
+        assert_eq!(entry.matches("A.\n").count(), 1);
+        assert!(entry.contains("not imported") && entry.contains("cycle"));
+        // CLAUDE.md imports the entry, which was served already: not repeated.
+        assert!(claude.contains("Claude only.") && !claude.contains("Entry."));
+        // An import outside the pack is refused for a pack that is not trusted...
+        assert!(!claude.contains("Shared outside") && claude.contains("outside the allowed"));
+        // ...and followed for one the user configured.
+        let (_, claude) = load(true);
+        assert!(claude.contains("Shared outside the pack."));
+    }
+
+    #[test]
+    fn a_pack_import_chain_stops_at_the_depth_cap() {
+        let pack = tempfile::tempdir().unwrap();
+        write(pack.path(), "AGENTS.md", "Entry.\n@d1.md\n");
+        for level in 1..=8 {
+            write(
+                pack.path(),
+                &format!("d{level}.md"),
+                &format!("Depth {level}.\n@d{}.md\n", level + 1),
+            );
+        }
+        let project = project();
+        let index = ContextIndex::new(vec![Pack::load(pack.path()).unwrap()], project.path());
+        let name = index.packs()[0].name.clone();
+        let text = index.load(&format!("{name}:AGENTS.md")).unwrap();
+        assert!(text.contains("Depth 5.") && !text.contains("Depth 6."));
+        assert!(text.contains("imports nest at most 5 levels"));
     }
 
     #[test]
