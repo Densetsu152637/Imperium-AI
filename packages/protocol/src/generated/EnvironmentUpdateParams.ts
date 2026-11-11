@@ -19,4 +19,8 @@ pet?: string,
  * Replaces the path grants and permission rules. Rules apply to running sessions from
  * their next call; grants to sessions started afterwards.
  */
-permissions?: PermissionSet, };
+permissions?: PermissionSet, 
+/**
+ * Turns the project's git worktrees on or off for sessions started afterwards.
+ */
+project_worktrees?: boolean, };

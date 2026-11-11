@@ -59,6 +59,8 @@ export function EnvironmentRuntimeFields({
   onChange,
   persistentAgent,
   onPersistentAgent,
+  projectWorktrees,
+  onProjectWorktrees,
   disabled,
   testBlocked,
   onTest,
@@ -67,6 +69,9 @@ export function EnvironmentRuntimeFields({
   onChange: (draft: RuntimeDraft) => void;
   persistentAgent: boolean;
   onPersistentAgent: (on: boolean) => void;
+  /** Whether sessions also get the git worktrees of the folders' repositories. */
+  projectWorktrees: boolean;
+  onProjectWorktrees: (on: boolean) => void;
   disabled?: boolean;
   /** Why Test cannot run now (unsaved changes, no environment yet), if it cannot. */
   testBlocked?: string | null;
@@ -148,6 +153,20 @@ export function EnvironmentRuntimeFields({
           Persistent agent
         </span>
         <Switch label="Persistent agent" checked={persistentAgent} disabled={disabled} onChange={onPersistentAgent} />
+      </div>
+      <div className="runtime-row">
+        <span
+          className="environment-label"
+          title="Sessions can also use the git worktrees of the folders' repositories (the ones git worktree list shows, including new ones), as they use the folders. Local folders only; a session started in its own worktree keeps to it."
+        >
+          Project worktrees
+        </span>
+        <Switch
+          label="Project worktrees"
+          checked={projectWorktrees}
+          disabled={disabled || isRemote(draft)}
+          onChange={onProjectWorktrees}
+        />
       </div>
     </section>
   );

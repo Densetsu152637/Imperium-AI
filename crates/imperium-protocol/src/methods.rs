@@ -549,6 +549,12 @@ pub struct EnvironmentInfo {
     /// environment's sessions (on top of the global ones).
     #[serde(default)]
     pub permissions: crate::permissions::PermissionSet,
+    /// Whether sessions also get the git worktrees of the repositories its local folders are
+    /// in (the ones `git worktree list` shows, including ones added while a session runs), as
+    /// writable as the folders. On unless turned off. Sessions started on their own worktree
+    /// (`session.create` `worktree`) and remote runtimes do not get them.
+    #[serde(default = "yes")]
+    pub project_worktrees: bool,
 }
 
 /// Where an environment's tools run. `local` is this machine (under the configured isolation
@@ -652,6 +658,10 @@ pub struct EnvironmentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub permissions: Option<crate::permissions::PermissionSet>,
+    /// Whether sessions get the project's git worktrees (on when left out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub project_worktrees: Option<bool>,
 }
 
 /// `environments.update`: rename an environment, change its icon, its runtime, or turn its
@@ -699,6 +709,10 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub permissions: Option<crate::permissions::PermissionSet>,
+    /// Turns the project's git worktrees on or off for sessions started afterwards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub project_worktrees: Option<bool>,
 }
 
 /// `environments.test_runtime`: checks that an environment's runtime can be reached: Docker is

@@ -23,4 +23,8 @@ pet?: string,
 /**
  * Path grants and permission rules.
  */
-permissions?: PermissionSet, };
+permissions?: PermissionSet, 
+/**
+ * Whether sessions get the project's git worktrees (on when left out).
+ */
+project_worktrees?: boolean, };

@@ -312,7 +312,11 @@ machine (in its temporary folder).
 **Worktrees:** a session can be started on git worktrees of its environment's repositories so
 its edits stay apart from the user's checkout; see
 [worktrees](14-projects-and-automation.md#worktrees). The sandbox is then the worktrees (and
-any folders outside git).
+any folders outside git). Otherwise an environment's local sessions also get the git worktrees of their
+folders' repositories (discovered from git's records, checked to point back at the repository,
+and looked up again when a path falls outside everything else), as writable as the folders,
+under the same path checks, with deny rules still winning; the environment's **Project
+worktrees** switch turns this off.
 
 | Tier            | Boundary                                                                     | Protects against                                    | Does not protect against                           |
 | --------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |

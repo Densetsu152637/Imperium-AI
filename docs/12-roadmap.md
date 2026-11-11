@@ -122,8 +122,12 @@ the wait reason in the desktop.
     arguments, `file://`, Git Bash and WSL forms), each still checked against the folders and
     grants, and a session test lists and reads an environment's first folder whose path has
     spaces ([05](05-tools-and-isolation.md#isolation-tiers)).
-13. **Worktrees by default.** An environment's sessions get its project-specific worktrees
-    without extra setup.
+13. **Worktrees by default** (implemented). An environment's sessions get its project-specific
+    worktrees without extra setup: the git worktrees of its folders' repositories (main checkout
+    and linked worktrees, including ones added while a session runs) are discovered from git's
+    records, open with the same access and checks as the folders, and turned off with the
+    environment's **Project worktrees** switch
+    ([14](14-projects-and-automation.md#worktrees), [05](05-tools-and-isolation.md#isolation-tiers)).
 14. **Visible tool calls** (implemented). The transcript shows each tool call, with arguments
     and result, for the session and for every subagent, collapsed by default: one line per call
     (state, tool, summary, run time) that opens to the arguments and result, long text behind

@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -48,9 +49,11 @@ pub async fn run_command(
             tail(&String::from_utf8_lossy(&output.stderr)),
         ));
     }
+    let roots = workspace.command_roots();
+    let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
     let child = workspace
         .sandbox()
-        .command(&workspace.roots(), workspace.grants(), command)?
+        .command(&roots, workspace.grants(), command)?
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

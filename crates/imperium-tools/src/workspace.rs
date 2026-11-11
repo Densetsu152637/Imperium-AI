@@ -2,6 +2,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use crate::permissions::{PathGrant, PathMode, Permissions, Target, expand_home};
+use crate::project_worktrees::ProjectWorktrees;
 use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
 use crate::{Sandbox, ToolError};
 
@@ -13,6 +14,10 @@ use crate::{Sandbox, ToolError};
 /// Path grants open further paths outside the folders, read-only or writable (global package
 /// caches and toolchains, for example). Where a folder and a grant both cover a path, the
 /// deepest one decides, so a read-only grant inside a folder makes that part read-only.
+///
+/// With [`Workspace::with_project_worktrees`], the git worktrees of the folders' repositories
+/// count as folders too (discovered from git's records, and looked up again when a path falls
+/// outside everything else, so new ones are covered).
 ///
 /// A remote workspace's folders are paths inside a runtime ([`Remote`]); its tools run there
 /// through a [`Runner`], and paths are checked as written (after resolving `.` and `..`), since
@@ -28,6 +33,8 @@ pub struct Workspace {
     remote: Option<RemoteFolders>,
     /// The permission rules the session's calls are checked against.
     permissions: Permissions,
+    /// The folders' repositories' worktrees, when they are open too.
+    worktrees: Option<Arc<ProjectWorktrees>>,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -81,6 +88,7 @@ impl Workspace {
             sandbox: Sandbox::Policy,
             remote: None,
             permissions: Permissions::default(),
+            worktrees: None,
         })
     }
 
@@ -121,6 +129,7 @@ impl Workspace {
                 runner,
             }),
             permissions: Permissions::default(),
+            worktrees: None,
         })
     }
 
@@ -265,6 +274,49 @@ impl Workspace {
         self
     }
 
+    /// The same workspace with the git worktrees of its folders' repositories open as folders
+    /// too: the main checkout and every linked worktree, at the same place inside each as the
+    /// folder is in its own (a folder below the repository's top opens that subfolder of each).
+    /// They are as writable as the folders. Local workspaces only; a remote one is unchanged.
+    pub fn with_project_worktrees(mut self) -> Self {
+        if self.remote.is_none() {
+            self.worktrees = ProjectWorktrees::discover(&self.roots()).map(Arc::new);
+        }
+        self
+    }
+
+    /// The project worktrees open beyond the folders (those not already inside one), looked up
+    /// afresh. Empty unless [`Workspace::with_project_worktrees`] found a repository.
+    pub fn project_worktrees(&self) -> Vec<PathBuf> {
+        if let Some(worktrees) = &self.worktrees {
+            worktrees.refresh();
+        }
+        self.extra_worktrees()
+    }
+
+    /// The project worktrees as last found, without those inside a folder.
+    fn extra_worktrees(&self) -> Vec<PathBuf> {
+        let Some(worktrees) = &self.worktrees else {
+            return Vec::new();
+        };
+        let roots = self.roots();
+        worktrees
+            .known()
+            .into_iter()
+            .filter(|tree| !roots.iter().any(|root| tree.starts_with(root)))
+            .collect()
+    }
+
+    /// The folders commands may use: the folders, then the project worktrees (looked up
+    /// afresh).
+    pub fn command_roots(&self) -> Vec<PathBuf> {
+        self.roots()
+            .into_iter()
+            .map(Path::to_path_buf)
+            .chain(self.project_worktrees())
+            .collect()
+    }
+
     /// The same workspace with commands run under `sandbox`.
     pub fn with_sandbox(self, sandbox: Sandbox) -> Self {
         Workspace { sandbox, ..self }
@@ -362,9 +414,19 @@ impl Workspace {
         if self.remote.is_some() {
             return self.resolve_remote(path, write).map(PathBuf::from);
         }
-        let resolved = self
-            .locate_checked(path)?
-            .ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+        let mut resolved = self.locate_checked(path)?;
+        // Outside everything known: a worktree may have been added since the last look.
+        if resolved
+            .as_ref()
+            .is_none_or(|found| self.writable(found).is_none())
+            && self
+                .worktrees
+                .as_ref()
+                .is_some_and(|worktrees| worktrees.refresh())
+        {
+            resolved = self.locate_checked(path)?;
+        }
+        let resolved = resolved.ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
         match self.writable(&resolved) {
             None => Err(ToolError::OutsideWorkspace(path.to_string())),
             Some(false) if write => Err(ToolError::ReadOnly(path.to_string())),
@@ -374,10 +436,12 @@ impl Workspace {
 
     /// Whether a canonical path may be written: `None` outside every folder and grant. The
     /// deepest folder or grant containing it decides (a grant wins over a folder at the same
-    /// depth).
+    /// depth). Project worktrees count as folders.
     fn writable(&self, resolved: &Path) -> Option<bool> {
+        let worktrees = self.extra_worktrees();
         self.roots()
             .into_iter()
+            .chain(worktrees.iter().map(PathBuf::as_path))
             .map(|root| (root, true, false))
             .chain(
                 self.grants
@@ -512,7 +576,7 @@ fn drive_path(written: &str) -> Option<String> {
 }
 
 /// A path as people write it: without Windows' `\\?\` verbatim prefix on drive paths.
-fn plain(path: &Path) -> String {
+pub fn plain(path: &Path) -> String {
     let shown = path.display().to_string();
     match shown.strip_prefix(r"\\?\") {
         Some(rest) if !rest.starts_with("UNC") => rest.to_string(),

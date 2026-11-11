@@ -293,6 +293,7 @@ mod tests {
             pet: None,
             pinned: false,
             permissions: Default::default(),
+            project_worktrees: true,
         }
     }
 
