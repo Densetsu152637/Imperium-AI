@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::Router;
@@ -23,15 +24,31 @@ fn sse(chunk: Value) -> String {
 
 /// One tool call per request, in order; then a reply.
 async fn fake_model(calls: Vec<(&'static str, Value)>) -> String {
-    let calls = Arc::new(calls);
+    scripted_model(vec![("", calls)]).await
+}
+
+/// A model with one script of tool calls per prompt: a conversation whose first user message
+/// contains a script's prompt follows that script (one call per request, then a reply).
+async fn scripted_model(scripts: Vec<(&'static str, Vec<(&'static str, Value)>)>) -> String {
+    let scripts = Arc::new(scripts);
     let app = Router::new().route(
         "/v1/chat/completions",
         post(move |axum::Json(body): axum::Json<Value>| {
-            let calls = Arc::clone(&calls);
+            let scripts = Arc::clone(&scripts);
             async move {
                 let messages = body["messages"].as_array().cloned().unwrap_or_default();
                 let done = messages.iter().filter(|m| m["role"] == "tool").count();
-                let body = match calls.get(done) {
+                let prompt = messages
+                    .iter()
+                    .find(|m| m["role"] == "user")
+                    .and_then(|m| m["content"].as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let calls = scripts
+                    .iter()
+                    .find(|(key, _)| prompt.contains(key))
+                    .map(|(_, calls)| calls);
+                let body = match calls.and_then(|calls| calls.get(done)) {
                     Some((name, arguments)) => sse(json!({"choices":[{"delta":{"tool_calls":[{
                         "index": 0, "id": format!("c{done}"),
                         "function": {"name": name, "arguments": arguments.to_string()}
@@ -48,6 +65,35 @@ async fn fake_model(calls: Vec<(&'static str, Value)>) -> String {
     url
 }
 
+/// An MCP server offering `lookup`; counts how often it is initialised (started).
+async fn mcp_server(starts: Arc<AtomicUsize>) -> String {
+    let app = Router::new().route(
+        "/mcp",
+        post(move |axum::Json(request): axum::Json<Value>| {
+            let starts = Arc::clone(&starts);
+            async move {
+                let Some(id) = request.get("id").cloned() else {
+                    return axum::Json(json!({}));
+                };
+                let result = match request["method"].as_str() {
+                    Some("initialize") => {
+                        starts.fetch_add(1, Ordering::SeqCst);
+                        json!({"protocolVersion": "2025-06-18", "capabilities": {}})
+                    }
+                    Some("tools/list") => json!({"tools": [
+                        {"name": "lookup", "description": "Look up a word", "inputSchema": {"type": "object"}}]}),
+                    _ => json!({"content": [{"type": "text", "text": "lookup ok"}]}),
+                };
+                axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    url
+}
+
 fn daemon(home: &Path, base_url: &str, extra: &str) -> Arc<DaemonState> {
     let config = format!(
         "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"{base_url}\"\n\
@@ -58,6 +104,12 @@ fn daemon(home: &Path, base_url: &str, extra: &str) -> Arc<DaemonState> {
     // settings from the same layers.
     let paths = imperium_config::Paths::under(home);
     write(&paths.user_config_file(), &config);
+    reopen(home)
+}
+
+/// A daemon started again on the config folder under `home`, as after a restart.
+fn reopen(home: &Path) -> Arc<DaemonState> {
+    let paths = imperium_config::Paths::under(home);
     let loaded =
         imperium_config::load(&paths, None, std::iter::empty::<(String, String)>()).unwrap();
     let state = DaemonState::new(paths, loaded.settings().unwrap(), None);
@@ -101,10 +153,20 @@ async fn run_turn(
     project: &Path,
     answer: PermissionDecision,
 ) -> (String, Turn) {
+    run_prompt(state, project, answer, "manage the config").await
+}
+
+/// A turn in a new session that starts with `prompt`.
+async fn run_prompt(
+    state: &Arc<DaemonState>,
+    project: &Path,
+    answer: PermissionDecision,
+    prompt: &str,
+) -> (String, Turn) {
     let (session, mut events) = state
         .create_session(&project.display().to_string(), None)
         .unwrap();
-    session.send("manage the config".into()).unwrap();
+    session.send(prompt.into()).unwrap();
     let mut turn = Turn::default();
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
@@ -399,4 +461,82 @@ async fn permission_rules_deny_or_ask_before_an_agent_changes_the_config() {
     assert!(!state.paths().app_models_file().exists());
     let mut connection = connect(&state);
     assert!(change_ids(&mut connection).is_empty());
+}
+
+#[tokio::test]
+async fn an_installed_plugin_with_a_server_stays_off_until_the_user_turns_it_on() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let sources = tempfile::tempdir().unwrap();
+    let starts = Arc::new(AtomicUsize::new(0));
+    let mcp_url = mcp_server(Arc::clone(&starts)).await;
+    // No hooks: only a server, which `activate_plugin` would start without asking anyone.
+    let plugin = sources.path().join("words-plugin");
+    write(
+        &plugin.join(".claude-plugin/plugin.json"),
+        r#"{"name": "words", "description": "Dictionary tools."}"#,
+    );
+    write(
+        &plugin.join(".mcp.json"),
+        &json!({"mcpServers": {"dict": {"type": "http", "url": mcp_url}}}).to_string(),
+    );
+    let url = scripted_model(vec![
+        (
+            "install words",
+            vec![(
+                "install_extension",
+                json!({"kind": "plugin", "source": plugin.display().to_string()}),
+            )],
+        ),
+        (
+            "activate words",
+            vec![("activate_plugin", json!({"name": "words"}))],
+        ),
+    ])
+    .await;
+    let state = daemon(home.path(), &url, "");
+    let mut connection = connect(&state);
+    let deny = PermissionDecision::Deny;
+
+    // The install runs without asking, and leaves the plugin off.
+    let (_, turn) = run_prompt(&state, project.path(), deny, "install words").await;
+    assert!(turn.asked.is_empty(), "{:?}", turn.asked);
+    let (tool, ok, output) = &turn.tools[0];
+    assert_eq!(tool, "install_extension");
+    assert!(*ok, "{output}");
+    assert!(output.contains("turned off"), "{output}");
+    let listed = rpc(&mut connection, "mcp.list", json!({})).unwrap();
+    let words = listed["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["name"] == "words")
+        .expect("the installed plugin is listed");
+    assert_eq!(words["enabled"], false);
+    assert_eq!(words["servers"][0], "words_dict");
+    assert!(words["installed_from"]["session_id"].is_string());
+
+    // A later session cannot start its server.
+    let (_, turn) = run_prompt(&state, project.path(), deny, "activate words").await;
+    let (tool, ok, output) = &turn.tools[0];
+    assert_eq!(tool, "activate_plugin");
+    assert!(!*ok, "{output}");
+    assert_eq!(starts.load(Ordering::SeqCst), 0, "the server was started");
+
+    // Once the user turns it on in Connectors (a setting the daemon reads at start), a new
+    // session can activate it.
+    let saved = rpc(
+        &mut connection,
+        "config.set",
+        json!({"key": "extensions.disabled_plugins", "value": null}),
+    )
+    .unwrap();
+    assert_eq!(saved["restart"], true);
+    let state = reopen(home.path());
+    let (_, turn) = run_prompt(&state, project.path(), deny, "activate words").await;
+    let (tool, ok, output) = &turn.tools[0];
+    assert_eq!(tool, "activate_plugin");
+    assert!(*ok, "{output}");
+    assert!(output.contains("words_dict"), "{output}");
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
 }
