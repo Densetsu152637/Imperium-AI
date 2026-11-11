@@ -753,7 +753,7 @@ card = "Good at: creative writing, stories and essays."
             DaemonState::new(
                 imperium_config::Paths::under(home),
                 settings,
-                Some(LocalRuntime::for_tests(supervisor, hardware)),
+                Some(LocalRuntime::with_supervisor(supervisor, hardware)),
             )
         }
 

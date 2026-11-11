@@ -84,6 +84,12 @@ async fn run() -> anyhow::Result<()> {
     {
         tracing::info!(%address, "phones can connect");
     }
+    match daemon.start_openai().await {
+        Ok(Some(address)) => tracing::info!(%address, "the OpenAI-compatible API is on"),
+        Ok(None) => {}
+        // The API is optional: the daemon runs without it, and `api.get` says why.
+        Err(error) => tracing::error!(%error, "the OpenAI-compatible API did not start"),
+    }
     daemon.start_load_monitor();
     daemon.start_project_agents();
     daemon.start_scheduler();

@@ -22,6 +22,9 @@ pub enum BudgetScope {
     Endpoint,
     /// Calls to one model (`target` is its spec, `<endpoint>:<model>`).
     Model,
+    /// Calls that come through one entry point rather than from a session (`target` is its
+    /// name; `api` is the OpenAI-compatible local API server).
+    Source,
 }
 
 /// The period a budget resets over, in local time.

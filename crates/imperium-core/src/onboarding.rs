@@ -70,7 +70,7 @@ fn set_error(error: SetError) -> ErrorObject {
 
 /// Reads the configuration again after the user file changed and applies part of it to the
 /// running daemon with `apply`.
-fn apply_saved(
+pub(crate) fn apply_saved(
     state: &DaemonState,
     apply: impl FnOnce(&mut Settings, &Settings),
 ) -> Result<(), ErrorObject> {
@@ -590,6 +590,10 @@ pub(crate) fn apply_setting(state: &DaemonState, key: &str) {
                 .clone_from(&fresh.runtime.llamacpp.custom_path);
         })
         .map(|()| apply_server(state)),
+        key if crate::openai::is_api_setting(key) => {
+            apply_saved(state, |next, fresh| next.api.clone_from(&fresh.api))
+                .map(|()| crate::openai::reconcile_later(state))
+        }
         _ => return,
     };
     if let Err(error) = applied {
