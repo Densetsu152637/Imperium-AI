@@ -17,6 +17,7 @@ import { Select } from "../components/Select";
 import { ProjectIcon, environmentIcon, projectName, sameFolder } from "../projectIcons";
 import type { SearchClient } from "../sessionSearch";
 import { formatAgo } from "../ago";
+import { branchNote, nestBranches } from "../branches";
 import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
 import { SessionSearch } from "./SessionSearch";
 import { statusText } from "./StatusBadge";
@@ -224,7 +225,7 @@ export function SessionsPanel({
   // Within one environment, grouping by environment would be a single group.
   const groups = groupSessions(active, environments, scope && sort === "environment" ? "recent" : sort);
 
-  const row = (session: SessionState) => {
+  const row = ({ session, depth }: { session: SessionState; depth: number }) => {
     const id = session.summary.session_id;
     const env = environmentOf(session, environments);
     const place = env?.name ?? projectName(session.summary.project_dir);
@@ -243,6 +244,10 @@ export function SessionsPanel({
       place,
       `${session.summary.model ? modelName(modelAliases(), session.summary.model) : "No model"} · ${formatCost(totals(session.calls).costUsd)}`,
       persistent ? "Persistent: always available, keeps its conversation across restarts" : null,
+      branchNote(session.summary, (from) => {
+        const source = sessions.find((s) => s.summary.session_id === from);
+        return source ? sessionTitle(source) : null;
+      }),
       ...(session.summary.worktrees ?? []).map((tree) => `Worktree ${tree.path} (${tree.branch})`),
     ]
       .filter(Boolean)
@@ -261,7 +266,7 @@ export function SessionsPanel({
       if (event.key === "Enter" || event.key === "Escape") event.currentTarget.blur();
     };
     return (
-      <li key={id}>
+      <li key={id} className={depth > 0 ? "branch-row" : undefined} style={depth > 0 ? { ["--branch-depth" as string]: depth } : undefined}>
         <div className="row nav-row session-row">
           {renaming === id ? (
             <input
@@ -363,7 +368,7 @@ export function SessionsPanel({
               className="list"
               aria-label={group.label ?? (scope ? `Sessions in ${scope.name}` : "All sessions")}
             >
-              {group.sessions.map(row)}
+              {nestBranches(group.sessions).map(row)}
             </ul>
           </section>
         ))
@@ -376,7 +381,7 @@ export function SessionsPanel({
             <span className="session-group-count">{archived.length}</span>
           </summary>
           <ul className="list" aria-label="Archived sessions">
-            {archived.map(row)}
+            {nestBranches(archived).map(row)}
           </ul>
         </details>
       )}

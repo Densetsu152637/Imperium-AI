@@ -9,12 +9,13 @@ use imperium_cli::client::Client;
 use imperium_protocol::methods::{
     ContextFit, MODEL_RESIDENCY, ModelResidency, RewindMode, SessionAgentResume,
     SessionAgentResumeParams, SessionAgents, SessionAgentsParams, SessionAnswer,
-    SessionAnswerParams, SessionCheckpoints, SessionCheckpointsParams, SessionCheckpointsResult,
-    SessionControl, SessionControlParams, SessionCreate, SessionCreateParams, SessionQueue,
-    SessionQueueParams, SessionRespond, SessionRespondParams, SessionReview, SessionReviewParams,
-    SessionReviewResult, SessionRewind, SessionRewindParams, SessionRewindResult, SessionSend,
-    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSuggestionRespond,
-    SuggestionRespondParams,
+    SessionAnswerParams, SessionBranch, SessionBranchParams, SessionCheckpoints,
+    SessionCheckpointsParams, SessionCheckpointsResult, SessionCompare, SessionCompareParams,
+    SessionComparePick, SessionComparePickParams, SessionControl, SessionControlParams,
+    SessionCreate, SessionCreateParams, SessionQueue, SessionQueueParams, SessionRespond,
+    SessionRespondParams, SessionReview, SessionReviewParams, SessionReviewResult, SessionRewind,
+    SessionRewindParams, SessionRewindResult, SessionSend, SessionSendParams, SessionSubscribe,
+    SessionSubscribeParams, SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
     AgentEvent, AgentStatus, AgentSummary, ContextCategory, ExtensionKind, LocalWaitReason,
@@ -82,7 +83,9 @@ pub fn run(
              what the model is reading, /model <id> switches models, /effort <low|medium|high|max> \
              sets how hard a reasoning model thinks, /compact summarises older turns, /rewind lists \
              checkpoints and puts files and the conversation back to one, /diff [n] shows what \
-             the session changed (since checkpoint n); /download, /dismiss, or /never answer a \
+             the session changed (since checkpoint n); /branch continues in a copy of this \
+             conversation, /compare <model> <model> -- <message> runs a message on several \
+             models and /pick <n> keeps one; /download, /dismiss, or /never answer a \
              model download suggestion; an \
              empty line (when idle) or /exit quits."
         );
@@ -177,6 +180,8 @@ struct Chat {
     latest: Option<Breakdown>,
     /// A model download suggestion waiting for /download, /dismiss, or /never.
     suggestion: Option<String>,
+    /// The latest `/compare`: its id and the sessions it started, for `/pick`.
+    comparison: Option<(String, Vec<imperium_protocol::methods::CompareBranch>)>,
 }
 
 impl Chat {
@@ -378,6 +383,95 @@ impl Chat {
                             self.prompt();
                             return Ok(Flow::Switch(forked));
                         }
+                    }
+                    Err(error) => println!("{error}"),
+                }
+            }
+            Some(Command::Branch(title)) => {
+                let result = client
+                    .call::<SessionBranch>(SessionBranchParams {
+                        session_id: session_id.to_string(),
+                        at: None,
+                        title,
+                        worktree: false,
+                    })
+                    .await;
+                match result {
+                    Ok(result) => {
+                        println!(
+                            "Branched into session {}; continuing there. The original is kept.",
+                            result.session_id
+                        );
+                        client
+                            .call::<SessionSubscribe>(SessionSubscribeParams {
+                                session_id: result.session_id.clone(),
+                            })
+                            .await?;
+                        self.prompt();
+                        return Ok(Flow::Switch(result.session_id));
+                    }
+                    Err(error) => println!("{error}"),
+                }
+            }
+            Some(Command::Compare(models, message)) => {
+                let result = client
+                    .call::<SessionCompare>(SessionCompareParams {
+                        session_id: session_id.to_string(),
+                        message,
+                        models,
+                        worktree: None,
+                    })
+                    .await;
+                match result {
+                    Ok(result) => {
+                        println!("Comparing on {} branches:", result.branches.len());
+                        for (number, branch) in result.branches.iter().enumerate() {
+                            println!(
+                                "  {} {} (session {})",
+                                number + 1,
+                                branch.model,
+                                branch.session_id
+                            );
+                        }
+                        println!("/pick <n> keeps one and archives the rest.");
+                        self.comparison = Some((result.comparison_id, result.branches));
+                    }
+                    Err(error) => println!("{error}"),
+                }
+            }
+            Some(Command::Usage(usage)) => println!("{usage}"),
+            Some(Command::Pick(number)) => {
+                let Some((comparison_id, branches)) = self.comparison.clone() else {
+                    println!("No comparison to pick from: start one with /compare.");
+                    self.prompt();
+                    return Ok(Flow::Continue);
+                };
+                let Some(branch) = number.checked_sub(1).and_then(|at| branches.get(at)) else {
+                    println!("Pick a number from 1 to {}.", branches.len());
+                    self.prompt();
+                    return Ok(Flow::Continue);
+                };
+                let result = client
+                    .call::<SessionComparePick>(SessionComparePickParams {
+                        comparison_id,
+                        session_id: branch.session_id.clone(),
+                    })
+                    .await;
+                match result {
+                    Ok(result) => {
+                        println!(
+                            "Kept session {}; archived {}.",
+                            result.kept,
+                            result.archived.len()
+                        );
+                        self.comparison = None;
+                        client
+                            .call::<SessionSubscribe>(SessionSubscribeParams {
+                                session_id: result.kept.clone(),
+                            })
+                            .await?;
+                        self.prompt();
+                        return Ok(Flow::Switch(result.kept));
                     }
                     Err(error) => println!("{error}"),
                 }
@@ -781,8 +875,29 @@ enum Command {
     /// `/rewind`: the session's checkpoints. `/rewind <n> [files|conversation|both]`: rewinds
     /// to checkpoint `n` (both by default).
     Rewind(Option<(u32, RewindMode)>),
+    /// `/branch [title]`: continue in a copy of the conversation as it is now.
+    Branch(Option<String>),
+    /// `/compare <model> <model> [...] -- <message>`: the message on each model.
+    Compare(Vec<String>, String),
+    /// `/pick <n>`: keep branch `n` of the latest comparison.
+    Pick(usize),
+    /// A command typed in the wrong shape: its usage, printed instead of sending the line.
+    Usage(&'static str),
     /// `/diff [n]`: what the session changed since its first checkpoint (or checkpoint `n`).
     Diff(Option<u32>),
+}
+
+const COMPARE_USAGE: &str =
+    "Usage: /compare <model> <model> [<model> <model>] -- <message> (two to four models)";
+const PICK_USAGE: &str = "Usage: /pick <n> (the number of a branch from the latest /compare)";
+
+/// `/compare <model> <model> [...] -- <message>`: two to four models, then the message.
+fn compare_command(rest: &str) -> Option<Command> {
+    let (models, message) = rest.split_once("--")?;
+    let models: Vec<String> = models.split_whitespace().map(str::to_string).collect();
+    let message = message.trim();
+    ((2..=4).contains(&models.len()) && !message.is_empty())
+        .then(|| Command::Compare(models, message.to_string()))
 }
 
 /// `/rewind`, `/rewind <n>`, or `/rewind <n> <mode>`; `None` when malformed.
@@ -895,6 +1010,27 @@ fn describe_review(review: &SessionReviewResult) -> String {
 }
 
 fn command(text: &str) -> Option<Command> {
+    if text == "/branch" || text.starts_with("/branch ") {
+        let title = text["/branch".len()..].trim();
+        return Some(Command::Branch(
+            (!title.is_empty()).then(|| title.to_string()),
+        ));
+    }
+    if text == "/compare" || text.starts_with("/compare ") {
+        return Some(
+            compare_command(&text["/compare".len()..]).unwrap_or(Command::Usage(COMPARE_USAGE)),
+        );
+    }
+    if text == "/pick" || text.starts_with("/pick ") {
+        return Some(
+            text["/pick".len()..]
+                .trim()
+                .trim_start_matches('#')
+                .parse()
+                .ok()
+                .map_or(Command::Usage(PICK_USAGE), Command::Pick),
+        );
+    }
     if text == "/diff" {
         return Some(Command::Diff(None));
     }
@@ -1347,6 +1483,34 @@ mod tests {
         assert!(describe_effort("max", true).ends_with("max."));
         assert!(describe_effort("low", false).contains("cannot reason"));
         assert_eq!(control_command("tell me about /model x"), None);
+    }
+
+    #[test]
+    fn branch_and_compare_commands() {
+        assert_eq!(command("/branch"), Some(Command::Branch(None)));
+        assert_eq!(
+            command("/branch  try again "),
+            Some(Command::Branch(Some("try again".into())))
+        );
+        assert_eq!(
+            command("/compare fake:a fake:b -- fix the bug"),
+            Some(Command::Compare(
+                vec!["fake:a".into(), "fake:b".into()],
+                "fix the bug".into()
+            ))
+        );
+        // Two to four models and a message are needed.
+        for bad in [
+            "/compare",
+            "/compare fake:a -- hi",
+            "/compare fake:a fake:b",
+        ] {
+            assert_eq!(command(bad), Some(Command::Usage(COMPARE_USAGE)), "{bad}");
+        }
+        assert_eq!(command("/pick #2"), Some(Command::Pick(2)));
+        for bad in ["/pick", "/pick x"] {
+            assert_eq!(command(bad), Some(Command::Usage(PICK_USAGE)), "{bad}");
+        }
     }
 
     #[test]
