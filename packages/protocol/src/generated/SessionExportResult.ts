@@ -9,4 +9,9 @@ filename: string,
 /**
  * The transcript as text (a JSON document for `json`).
  */
-content: string, };
+content: string, 
+/**
+ * Set when the transcript looks like it holds a credential. Exports are verbatim: they
+ * include whatever the agents read and ran, so check before sharing one.
+ */
+warning?: string, };
