@@ -264,7 +264,7 @@ async fn a_low_threshold_is_clamped_and_compaction_cannot_loop() {
     assert!(compactions.len() <= fake.turns().len(), "{compactions:?}");
     for (before, after) in compactions {
         assert!(after < before, "{before} -> {after}");
-        // Aimed well under the 4,000-token trigger.
-        assert!(after <= 3_200 + 400, "{after}");
+        // Aimed well under the 5,000-token trigger.
+        assert!(after <= 4_000 + 400, "{after}");
     }
 }
