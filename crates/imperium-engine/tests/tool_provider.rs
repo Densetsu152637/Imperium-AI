@@ -220,6 +220,19 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
     );
     let system = first["messages"][0]["content"].as_str().unwrap();
     assert!(system.ends_with("Keep notes with note_add."), "{system}");
+    // The assembled root prompt keeps the response style (roadmap item 19) in its base part.
+    let base = system.split("\n\nKeep notes").next().unwrap();
+    for rule in [
+        "Replies: lead with the result.",
+        "the big picture first, more detail only when the user asks",
+        "Avoid emojis.",
+        "Show code only when the user asks to see it.",
+        "rather than pasting code for the user to apply",
+        "instead of relying on what you learned in training",
+        "say plainly what you did not verify",
+    ] {
+        assert!(base.contains(rule), "{rule} missing from {system}");
+    }
     // Its start-up notice reached the session before the turn.
     let (history, _) = session.subscribe_with_history();
     assert!(matches!(
@@ -393,4 +406,8 @@ async fn a_root_only_provider_is_not_offered_to_subagents() {
         "{sub_tools:?}"
     );
     assert!(!sub_system.contains("Only the root reads this."));
+    // The reply style is the root's; a subagent reports to its delegator instead.
+    assert!(root_system.contains("Replies: lead with the result."));
+    assert!(!sub_system.contains("Replies:"));
+    assert!(sub_system.contains("lead with the result"));
 }

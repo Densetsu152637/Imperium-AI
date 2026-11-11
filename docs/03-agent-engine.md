@@ -59,6 +59,28 @@ Tool calling works with native function-calling models and, as a fallback, a con
 JSON/grammar format (llama.cpp grammars, vLLM guided decoding) for models without native
 support.
 
+## Response style
+
+**Implemented:** the root agent's system prompt carries a short style contract
+([roadmap item 19](12-roadmap.md)), and
+[`emperor-root.md`](../crates/imperium-protocol/schemas/prompts/emperor-root.md) has the same
+rules under *Response style*, so Emperor is trained on what the engine asks for:
+
+- Lead with the result; keep replies short, the big picture first and more detail only when
+  the user asks.
+- Act through the tools and subagents rather than pasting code for the user to apply; show
+  code only when asked.
+- Headings, lists or tables only when the content has that shape; plain sentences otherwise;
+  avoid emojis.
+- For facts that can change, search (`web_search`, `search_sessions`, memory, `list_models`)
+  instead of relying on training.
+- Check results before reporting, and say plainly what was not verified.
+
+A subagent's prompt asks for the same in its report to the delegator: the result first, then
+what it found and what is left undone or not verified. Tests in `imperium-engine` (the
+assembled root prompt) and `imperium-protocol` (`emperor-root.md`) pin these rules, so an edit
+that drops one fails.
+
 ## Planning
 
 **Implemented (phase 3):** the `update_plan` tool (a goal and steps with `pending`,

@@ -355,6 +355,18 @@ mod tests {
         ] {
             assert!(root.contains(name), "{name} missing from the root prompt");
         }
+        // The response style of roadmap item 19, which the engine's root prompt also carries.
+        for rule in [
+            "## Response style",
+            "Lead with the result",
+            "the big picture first, more detail only when the",
+            "do not paste code for the user to apply",
+            "Avoid emojis",
+            "not from what you learned in training",
+            "Say plainly what you did not verify",
+        ] {
+            assert!(root.contains(rule), "{rule} missing from the root prompt");
+        }
         assert!(prompt("questions.md").contains("recommended"));
         let plan = prompt("plan.md");
         assert!(plan.contains("## Open questions"));

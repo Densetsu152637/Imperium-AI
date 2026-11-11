@@ -195,29 +195,9 @@ impl Agent {
     ) -> Self {
         let root = shared.workspace.root_display();
         let mut system = if can_delegate {
-            format!(
-                "You are Imperium, a coding agent working in the project folder {root}. Use the \
-                 tools to inspect and change files and to run commands; paths are relative to the \
-                 project folder. For multi-step work, keep a checklist with update_plan. For \
-                 independent pieces of a larger task, delegate with spawn_agent (a self-contained \
-                 brief; optionally a tier: basic, standard, strong, frontier), then call \
-                 await_tasks to collect the reports; you use no tokens while waiting. To redirect \
-                 delegated work in progress, steer_agent adds a message to a task's current \
-                 turn and queue_agent gives it a follow-up turn. An input too large for your \
-                 context arrives as an artefact handle with an outline; have it read with \
-                 delegate_chunks, which gives each chunk to an agent of its own. Ask the user \
-                 about decisions that are theirs in one ask_user batch. Check the results, and \
-                 finish with a short summary of what was done. A message marked <steering> \
-                 arrived from the user while you were working: take it into account and carry on."
-            )
+            root_prompt(&root)
         } else {
-            format!(
-                "You are an Imperium subagent working in the project folder {root}. Complete the \
-                 brief you are given using the tools; paths are relative to the project folder. \
-                 Your final reply is your report to the agent that delegated to you: state what \
-                 you did, what you found, and anything left undone. A message marked <steering> \
-                 arrived while you were working: take it into account and carry on."
-            )
+            subagent_prompt(&root)
         };
         // An environment's further folders are also open to the tools, by absolute path.
         let others = shared.workspace.folders_display().split_off(1);
@@ -255,6 +235,11 @@ impl Agent {
                  path: {}.",
                 grants.join(", ")
             ));
+        }
+        // How the root agent answers the user; it closes the base instruction.
+        if can_delegate {
+            system.push_str("\n\n");
+            system.push_str(RESPONSE_STYLE);
         }
         // Each part is kept with its label, so context breakdowns count them separately.
         let mut parts = vec![(Category::SystemBase, system)];
@@ -2301,6 +2286,45 @@ impl Agent {
     }
 }
 
+/// The root agent's base instruction: its tools, delegation, and looking facts up rather than
+/// recalling them. [`RESPONSE_STYLE`] follows it, after the folder lines.
+fn root_prompt(root: &str) -> String {
+    format!(
+        "You are Imperium, a coding agent working in the project folder {root}; tool paths are \
+         relative to it. Act through the tools: inspect and change files and run commands \
+         yourself, or delegate, rather than pasting code for the user to apply. Keep a checklist \
+         with update_plan for multi-step work. Delegate independent pieces with spawn_agent (a \
+         self-contained brief; optionally a tier: basic, standard, strong, frontier) and collect \
+         the reports with await_tasks, which uses no tokens while waiting; steer_agent adds a \
+         message to a task's current turn and queue_agent gives it a follow-up turn. An input \
+         too large for your context arrives as an artefact handle with an outline: have it read \
+         with delegate_chunks, one agent per chunk. Ask the user about decisions that are theirs \
+         in one ask_user batch. For facts that can change, search with the tools you have \
+         (web_search, search_sessions, memory_search, list_models) instead of relying on what \
+         you learned in training. A message marked <steering> arrived from the user while you were working: \
+         take it into account and carry on."
+    )
+}
+
+/// How the root agent writes to the user (roadmap item 19). Tests pin these rules.
+const RESPONSE_STYLE: &str = "Replies: lead with the result. Keep them short: the big picture \
+     first, more detail only when the user asks. Use headings, lists or tables only when the \
+     content has that shape; otherwise plain sentences. Avoid emojis. Show code only when the \
+     user asks to see it. Check results before reporting, and say plainly what you did not \
+     verify.";
+
+/// A subagent's base instruction: do the brief, then report briefly to the delegator.
+fn subagent_prompt(root: &str) -> String {
+    format!(
+        "You are an Imperium subagent working in the project folder {root}. Complete the brief \
+         you are given using the tools; paths are relative to the project folder. Look up facts \
+         that can change rather than relying on what you learned in training. Your final reply \
+         is your report to the agent that delegated to you: lead with the result, then what you \
+         found and anything left undone or not verified, concisely. A message marked <steering> \
+         arrived while you were working: take it into account and carry on."
+    )
+}
+
 /// The system prompt of a single-call agent.
 fn single_call_prompt(root: &str) -> String {
     format!(
@@ -3251,5 +3275,68 @@ mod single_call_tests {
         let prompt = single_call_prompt("/work");
         assert!(!prompt.contains("  "), "{prompt}");
         assert!(prompt.contains("/work") && prompt.contains("subagent"));
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::{RESPONSE_STYLE, root_prompt, subagent_prompt};
+
+    /// The rules of roadmap item 19 stay in the root prompt: change them on purpose, here too.
+    #[test]
+    fn the_root_prompt_keeps_the_response_style() {
+        for rule in [
+            "lead with the result",
+            "the big picture first, more detail only when the user asks",
+            "headings, lists or tables only when the content has that shape",
+            "Avoid emojis",
+            "Show code only when the user asks to see it",
+            "say plainly what you did not verify",
+        ] {
+            assert!(RESPONSE_STYLE.contains(rule), "{rule} missing");
+        }
+        let root = root_prompt("/work");
+        for rule in [
+            "Act through the tools",
+            "rather than pasting code for the user to apply",
+            "instead of relying on what you learned in training",
+            "web_search",
+            "search_sessions",
+            "memory_search",
+            "list_models",
+        ] {
+            assert!(root.contains(rule), "{rule} missing");
+        }
+    }
+
+    /// The tool contracts the root prompt names survive rewording.
+    #[test]
+    fn the_root_prompt_names_its_tools() {
+        let root = root_prompt("/work");
+        for tool in [
+            "update_plan",
+            "spawn_agent",
+            "await_tasks",
+            "steer_agent",
+            "queue_agent",
+            "delegate_chunks",
+            "ask_user",
+            "<steering>",
+        ] {
+            assert!(root.contains(tool), "{tool} missing");
+        }
+    }
+
+    #[test]
+    fn base_prompts_have_no_runs_of_spaces_and_subagents_report_briefly() {
+        let root = root_prompt("/work");
+        let subagent = subagent_prompt("/work");
+        for prompt in [root.as_str(), subagent.as_str(), RESPONSE_STYLE] {
+            assert!(!prompt.contains("  "), "{prompt}");
+        }
+        assert!(root.starts_with("You are Imperium, a coding agent"));
+        assert!(subagent.starts_with("You are an Imperium subagent"));
+        assert!(subagent.contains("lead with the result"));
+        assert!(subagent.contains("not verified"));
     }
 }
