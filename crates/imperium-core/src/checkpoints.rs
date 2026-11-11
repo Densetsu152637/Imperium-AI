@@ -839,6 +839,40 @@ pub(crate) fn forget(data_dir: &Path, session_id: &str) {
     }
 }
 
+/// The files a session's repository at `repo` had at journal position `journal_bytes`, when a
+/// later turn changed them: the "before" state of the first `turn` checkpoint taken at or after
+/// that position (files unchanged by the turns in between are the same). `None` when no later
+/// turn changed files, so the files as they are now are the ones.
+pub(crate) fn commit_after(
+    data_dir: &Path,
+    session_id: &str,
+    journal_bytes: u64,
+    repo: &Path,
+) -> Option<String> {
+    let dir = records_dir(data_dir, session_id);
+    let wanted = repo.canonicalize().ok()?;
+    let mut records: Vec<Record> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.ends_with(".json") && !name.ends_with(".messages.json")
+        })
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .filter_map(|text| serde_json::from_str(&text).ok())
+        .collect();
+    records.sort_by_key(|record| record.checkpoint.number);
+    let record = records.into_iter().find(|record| {
+        record.checkpoint.kind == "turn" && record.journal_offset >= journal_bytes
+    })?;
+    record
+        .checkpoint
+        .repos
+        .into_iter()
+        .find(|candidate| Path::new(&candidate.root).canonicalize().ok().as_ref() == Some(&wanted))
+        .map(|candidate| candidate.commit)
+}
+
 /// `session.checkpoints`.
 pub(crate) fn list(
     state: &DaemonState,

@@ -114,8 +114,18 @@ the wait reason in the desktop.
    `git_commit` and `open_pull_request` permission rules and asking by default
    ([14](14-projects-and-automation.md#review-pane-implemented),
    [07](07-desktop-ui.md#review-panel-implemented)).
-7. **Branching and comparison.** Branch a conversation from any message; run best-of-N across
-   models and compare the results side by side.
+7. **Branching and comparison** (implemented). Branch a conversation from any message; run
+   best-of-N across models and compare the results side by side. `session.branch` copies a
+   session's journal and root conversation up to a message into a new session
+   (`branched_from`), optionally in a worktree of its own holding the files of that point;
+   `session.compare` sends one message to two to four branches, one per model, run in parallel
+   under the usual agent and residency limits and tagged with a shared `comparison_id`;
+   `session.compare_pick` keeps one and archives the rest. The desktop has a "Branch from here"
+   hover action, a compare form and side-by-side view, and nests branches under their source;
+   `imperium chat` has `/branch`, `/compare` and `/pick`
+   ([14](14-projects-and-automation.md#branching-and-comparison),
+   [07](07-desktop-ui.md#branches-and-model-comparison-implemented)). Merging branches back
+   together is not offered.
 8. **Session search** (implemented). Session journals, running and archived, are indexed in the
    background (incrementally, within a per-pass budget) on the memory crate's retrieval layer:
    keyword ranking, fused with vector similarity when `memory.embedding_model` is set;

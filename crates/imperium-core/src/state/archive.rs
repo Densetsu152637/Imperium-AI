@@ -112,6 +112,8 @@ impl DaemonState {
             archived: true,
             archived_at: meta["archived_at"].as_u64(),
             created_at: super::created_at(journal),
+            branched_from: serde_json::from_value(meta["branched_from"].clone()).ok(),
+            comparison_id: meta["comparison_id"].as_str().map(str::to_string),
         };
         self.archived_map().insert(id.to_string(), summary);
     }
@@ -284,7 +286,7 @@ impl DaemonState {
             restore(self);
             return Err(error.into());
         }
-        match self.resume_from_meta(id, &meta, &self.journal_path(id)) {
+        match self.resume_from_meta(id, &meta, &self.journal_path(id), false) {
             Ok((session, _)) => {
                 let summary = self.summary(&session);
                 self.announce(SESSION_UPDATED, &summary);
@@ -371,7 +373,7 @@ impl DaemonState {
         });
     }
 
-    fn placement(&self, id: &str) -> super::Placement {
+    pub(super) fn placement(&self, id: &str) -> super::Placement {
         self.placements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -44,6 +44,7 @@ use crate::suggestions::{SuggestTool, Suggestions};
 
 mod agent_config;
 mod archive;
+mod branch;
 mod model_awareness;
 mod session_search;
 mod titles;
@@ -108,6 +109,10 @@ struct Placement {
     /// A project agent: like an environment's persistent agent, it runs while the daemon does
     /// and is never archived.
     project_agent: bool,
+    /// Branched from another session (`session.branch`); recorded in the meta file.
+    branched_from: Option<imperium_protocol::methods::BranchOrigin>,
+    /// The comparison a branch belongs to (`session.compare`).
+    comparison_id: Option<String>,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -184,6 +189,8 @@ pub struct DaemonState {
     model_cards: imperium_memory::models::CardIndex,
     /// Each running session's checkpoints, when it records them.
     checkpoints: Mutex<HashMap<String, Arc<crate::checkpoints::SessionCheckpoints>>>,
+    /// Test hook: make `session.compare` fail after creating this many branches (0: never).
+    compare_fault: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -266,6 +273,7 @@ impl DaemonState {
             measurements: model_awareness::Measurements::default(),
             model_cards: imperium_memory::models::CardIndex::new(),
             checkpoints: Mutex::new(HashMap::new()),
+            compare_fault: std::sync::atomic::AtomicUsize::new(0),
         });
         state.apply_load_view();
         if let Some(local) = state.local.get() {
@@ -851,7 +859,7 @@ impl DaemonState {
             let (Some(meta), true) = (meta, recent) else {
                 continue;
             };
-            match self.resume_from_meta(&id, &meta, &journal) {
+            match self.resume_from_meta(&id, &meta, &journal, false) {
                 Ok(_) => resumed += 1,
                 Err(error) => tracing::warn!(session = %id, %error, "could not resume the session"),
             }
@@ -865,6 +873,7 @@ impl DaemonState {
         id: &str,
         meta: &serde_json::Value,
         journal: &Path,
+        worktree: bool,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
         let id = id.to_string();
         {
@@ -877,6 +886,9 @@ impl DaemonState {
                 resume_id: Some(id.clone()),
                 background: meta["background"].as_bool().unwrap_or(false),
                 run_now: meta["run_now"].as_bool().unwrap_or(false),
+                // A branch asking for a worktree of its own gets a new one.
+                worktree,
+                id: worktree.then(|| id.clone()),
                 // A session that never had a model keeps waiting for one.
                 may_wait_for_model: model.is_none(),
                 worktrees: serde_json::from_value(meta["worktrees"].clone()).unwrap_or_default(),
@@ -1318,6 +1330,8 @@ impl DaemonState {
             title: None,
             title_by_user: false,
             project_agent: options.launcher.is_some(),
+            branched_from: None,
+            comparison_id: None,
         };
         // A remote runtime's folders are not on this machine: project files (instructions,
         // skills, project memory) are not read from them.
@@ -1384,6 +1398,8 @@ impl DaemonState {
                 .map(str::to_string);
             placement.title_by_user =
                 placement.title.is_some() && meta["title_by_user"].as_bool() == Some(true);
+            placement.branched_from = serde_json::from_value(meta["branched_from"].clone()).ok();
+            placement.comparison_id = meta["comparison_id"].as_str().map(str::to_string);
         }
         // Tool providers in the order their tools are offered (MCP tools always come first).
         let mut tools: Vec<Arc<dyn ToolProvider>> = Vec::new();
@@ -1500,6 +1516,8 @@ impl DaemonState {
                 "pinned": placement.pinned,
                 "title": placement.title,
                 "title_by_user": placement.title_by_user,
+                "branched_from": placement.branched_from,
+                "comparison_id": placement.comparison_id,
                 "effort": effort.as_str(),
                 "permission_mode": permission_mode.as_str(),
             });
@@ -1657,8 +1675,18 @@ impl DaemonState {
         }
         let mut result = SessionDeleteResult::default();
         if remove_worktrees && !placement.worktrees.is_empty() {
-            (result.removed_worktrees, result.failed) =
-                crate::worktrees::remove(&placement.worktrees);
+            // A worktree another session also works in (a branch shares its source's) is
+            // theirs too, and may hold uncommitted work: it stays.
+            let others = self.worktree_paths_in_use();
+            let own: Vec<_> = placement
+                .worktrees
+                .iter()
+                .filter(|tree| !others.iter().any(|path| same_path(path, &tree.path)))
+                .cloned()
+                .collect();
+            if !own.is_empty() {
+                (result.removed_worktrees, result.failed) = crate::worktrees::remove(&own);
+            }
         }
         self.announce(
             imperium_protocol::methods::SESSION_DELETED,
@@ -1668,6 +1696,30 @@ impl DaemonState {
             },
         );
         Ok(result)
+    }
+
+    /// Worktree folders that running and archived sessions work in.
+    fn worktree_paths_in_use(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self
+            .placements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .flat_map(|placement| placement.worktrees.iter().map(|tree| tree.path.clone()))
+            .collect();
+        paths.extend(
+            self.archived_sessions()
+                .into_iter()
+                .flat_map(|summary| summary.worktrees.into_iter().map(|tree| tree.path)),
+        );
+        paths
+    }
+
+    /// Test hook: `session.compare` fails after creating its `branches`th branch.
+    #[doc(hidden)]
+    pub fn inject_compare_failure(&self, branches: usize) {
+        self.compare_fault
+            .store(branches, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn environments(&self) -> &Environments {
@@ -1815,6 +1867,8 @@ impl DaemonState {
             persistent: placement.persistent,
             worktrees: placement.worktrees,
             pinned: placement.pinned,
+            branched_from: placement.branched_from,
+            comparison_id: placement.comparison_id,
             created_at: created_at(&self.journal_path(session.id())),
             title: placement
                 .title
@@ -2119,7 +2173,7 @@ impl DaemonState {
         }
         std::fs::write(self.meta_path(&new_id), meta.to_string())
             .map_err(|error| error.to_string())?;
-        if let Err(error) = self.resume_from_meta(&new_id, &meta, &new_journal) {
+        if let Err(error) = self.resume_from_meta(&new_id, &meta, &new_journal, false) {
             let _ = std::fs::remove_file(self.meta_path(&new_id));
             return Err(error.to_string());
         }
@@ -2166,6 +2220,12 @@ pub(crate) fn bundled_dirs(relative: &str) -> Vec<PathBuf> {
     dirs
 }
 
+/// Whether two paths name the same folder (spelled alike, or the same place on disk).
+fn same_path(a: &str, b: &str) -> bool {
+    a == b
+        || matches!((Path::new(a).canonicalize(), Path::new(b).canonicalize()), (Ok(x), Ok(y)) if x == y)
+}
+
 fn lock_watches(
     watches: &Mutex<HashMap<String, (String, u64)>>,
 ) -> std::sync::MutexGuard<'_, HashMap<String, (String, u64)>> {
@@ -2207,6 +2267,8 @@ fn summary(session: &Session) -> SessionSummary {
         archived: false,
         archived_at: None,
         created_at: None,
+        branched_from: None,
+        comparison_id: None,
     }
 }
 

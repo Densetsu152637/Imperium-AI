@@ -27,6 +27,11 @@ import type {
   SessionSendParams,
   SessionControlResult,
   SessionCreateParams,
+  SessionBranchParams,
+  SessionBranchResult,
+  SessionCompareParams,
+  SessionCompareResult,
+  SessionComparePickParams,
   SessionCreateResult,
   SessionEventParams,
   DownloadJob,
@@ -61,6 +66,8 @@ import {
 } from "./panels/NavigationPanels";
 import { exportSession } from "./exportSession";
 import { SessionPanel } from "./panels/SessionPanel";
+import { ComparePanel } from "./panels/ComparePanel";
+import { branchRun, comparisonMembers, comparisonOpen } from "./branches";
 import type { Effort, PermissionMode } from "./panels/ModelSelect";
 import { NewSessionPanel, type NewSessionOptions } from "./panels/NewSessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
@@ -187,6 +194,10 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
   /** A subagent whose log the main panel shows in place of its session's transcript. */
   const [agentView, setAgentView] = useState<{ sessionId: string; agentId: string } | null>(null);
+  /** The comparison the main panel shows side by side in place of a session (`session.compare`). */
+  const [compareView, setCompareView] = useState<string | null>(null);
+  /** A message branched from, handed to the new session's composer to edit. */
+  const [prefill, setPrefill] = useState<{ sessionId: string; text: string; nonce: number } | null>(null);
   const [hidden, setHidden] = useState<string[]>(saved.hidden);
   const [detached, setDetached] = useState<Record<string, DetachedPanel>>(saved.detached);
   /** Which panels sit in which columns, as the panel editor left them (null: the default). */
@@ -639,6 +650,85 @@ export function App() {
     }
   };
 
+  /**
+   * Follows a session the daemon made from another (a branch): subscribes to it and lists it at
+   * once, with the summary the source implies until the daemon's own arrives.
+   */
+  const adoptBranch = async (
+    daemon: DaemonClient,
+    sessionId: string,
+    from: SessionSummary,
+    at: number,
+    extra: Partial<SessionSummary> = {},
+  ) => {
+    known.current.add(sessionId);
+    const summary: SessionSummary = {
+      ...from,
+      session_id: sessionId,
+      title: `${from.title} (branch)`,
+      status: "idle",
+      status_detail: null,
+      hold: null,
+      pinned: false,
+      archived: false,
+      archived_at: null,
+      created_at: Date.now(),
+      branched_from: { session_id: from.session_id, at },
+      comparison_id: undefined,
+      ...extra,
+    };
+    const { history } = await daemon.call<SessionSubscribeResult>("session.subscribe", { session_id: sessionId });
+    setSessions((all) => ({
+      ...all,
+      [sessionId]: history.reduce((state, event) => applyEvent(state, event), newSession(summary, Date.now())),
+    }));
+  };
+
+  /** Branches the selected session at a history event and continues in the branch. */
+  const branchFrom = (at: number) => {
+    const source = selected ? sessionsRef.current[selected] : null;
+    if (!client || !source) return;
+    const params: SessionBranchParams = { session_id: source.summary.session_id, at, worktree: false };
+    void (async () => {
+      const made = await client.call<SessionBranchResult>("session.branch", params);
+      await adoptBranch(client, made.session_id, source.summary, at);
+      setCompareView(null);
+      setSelected(made.session_id);
+      // Branched at a message of the user's: it comes back to the composer to edit.
+      if (made.prompt) setPrefill({ sessionId: made.session_id, text: made.prompt, nonce: Date.now() });
+    })().catch(report);
+  };
+
+  /** Sends one message to a branch of the selected session on each model, and shows the replies side by side. */
+  const compareModels = async (models: string[], message: string) => {
+    const source = selected ? sessionsRef.current[selected] : null;
+    if (!client || !source) throw new Error("Not connected to imperium-core.");
+    const params: SessionCompareParams = { session_id: source.summary.session_id, message, models };
+    const made = await client.call<SessionCompareResult>("session.compare", params);
+    const at = Math.max(0, source.eventCount - 1);
+    for (const branch of made.branches) {
+      await adoptBranch(client, branch.session_id, source.summary, at, {
+        model: branch.model,
+        comparison_id: made.comparison_id,
+        title: `${source.summary.title} · ${branch.model}`,
+      });
+    }
+    setCompareView(made.comparison_id);
+  };
+
+  /** Keeps one branch of a comparison and archives the others, then continues in it. */
+  const keepBranch = (comparisonId: string, sessionId: string) => {
+    if (!client) return;
+    const params: SessionComparePickParams = { comparison_id: comparisonId, session_id: sessionId };
+    client
+      .call("session.compare_pick", params)
+      .then(() => {
+        setCompareView(null);
+        setSelected(sessionId);
+      })
+      .catch(report);
+  };
+
   /** Opens the new-session composer in the middle panel. */
   const newSessionView = () => setSelected(null);
 
@@ -870,6 +960,7 @@ export function App() {
   const [searchFocus, setSearchFocus] = useState<{ sessionId: string; index: number; nonce: number } | null>(null);
   const selectSession = (sessionId: string) => {
     setSearchFocus(null);
+    setCompareView(null);
     setSelected(sessionId);
     // New sessions start in the environment the user is working in.
     const picked = sessions[sessionId];
@@ -1003,7 +1094,26 @@ export function App() {
   const sessionPanel: PanelSpec = {
     id: "session",
     title: "Session",
-    body: session && viewedTask ? (
+    body: compareView && comparisonMembers(allSessions, compareView).length > 0 ? (
+      (() => {
+        const members = comparisonMembers(allSessions, compareView);
+        const message =
+          members
+            .flatMap((member) => member.entries.filter((entry) => entry.kind === "user"))
+            .map((entry) => (entry.kind === "user" ? entry.text : ""))
+            .at(-1) ?? "";
+        return (
+          <ComparePanel
+            message={message}
+            columns={members.map((member) => ({ ...branchRun(member, message), title: sessionTitle(member) }))}
+            open={comparisonOpen(members)}
+            onKeep={(id) => keepBranch(compareView, id)}
+            onOpen={selectSession}
+            onBack={() => setCompareView(null)}
+          />
+        );
+      })()
+    ) : session && viewedTask ? (
       <AgentView
         key={`${session.summary.session_id}/${viewedTask.taskId}`}
         session={session}
@@ -1048,6 +1158,12 @@ export function App() {
         residency={residency}
         onBudget={answerBudget}
         onOpenAgent={showAgent}
+        onBranch={client ? branchFrom : undefined}
+        onCompare={client ? compareModels : undefined}
+        onOpenSession={selectSession}
+        onViewComparison={() => setCompareView(session.summary.comparison_id ?? null)}
+        prefill={prefill && prefill.sessionId === session.summary.session_id ? prefill : null}
+        titleOf={(id) => (sessionsRef.current[id] ? sessionTitle(sessionsRef.current[id]) : null)}
       />
     ) : (
       <NewSessionPanel

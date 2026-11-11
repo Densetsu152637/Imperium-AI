@@ -847,6 +847,31 @@ outside the model table is not offered for delegation by name
 ([model awareness](04-models-and-routing.md#model-awareness-and-model-cards-implemented)).
 Routing still sees a hidden model that is in the model table.
 
+### Branches and model comparison (implemented)
+
+**Branch from here.** A message in the transcript shows a quiet branch button at its corner on
+hover or keyboard focus. On a reply it starts a new session holding the conversation up to that
+reply (`session.branch`, `at` the entry's history event) and opens it; on one of the user's own
+messages the branch ends just before the message, which comes back in the composer to edit and
+send again. The original is kept as it was, and the new session says where it came from under
+its title (*Branched from …*, with a link back). Archived sessions offer no branch button.
+
+**Branches in the list.** A branched session is listed directly under the session it was
+branched from, one level in (deeper for a branch of a branch), as the same compact one-line row;
+its tooltip names its source. A branch whose source is archived, in another group, or deleted
+stands on its own.
+
+**Comparing models.** The compare button in the session footer (disabled while a turn runs)
+opens a form: tick two to four models (enabled table rows, then local models found in the
+folders) and write the message. Starting it calls `session.compare`, adds the branches to the
+list at once, and replaces the session panel with the compare view: one column per model with
+its alias, tokens in and out, cost, and model time for the turn, and its reply as it streams
+(the quickest and cheapest finished columns are tinted). *Keep this one* calls
+`session.compare_pick`, which keeps that branch and archives the others (they stay in the
+archive); *Open* shows a column's branch as an ordinary session, whose note links back to the
+side-by-side view. The column state, standouts and form rules are in
+`apps/desktop/src/branches.ts` (tested in `test/branches.test.ts`).
+
 ### Exporting transcripts (implemented)
 
 A session's ⋯ menu in the Sessions panel has **Export as Markdown** and **Export as JSON**,

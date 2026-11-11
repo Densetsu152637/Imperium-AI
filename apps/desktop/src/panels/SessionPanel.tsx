@@ -5,7 +5,7 @@
 // small budget mark shows when a budget over the session (its environment, endpoint, or model, or
 // all usage) has passed an alert threshold.
 
-import { CornerDownRight, Gauge, Paperclip, Pencil, Play, ShieldCheck, ShieldPlus, SlidersHorizontal, Square, Trash, X } from "lucide-react";
+import { CornerDownRight, Gauge, GitBranch, GitCompare, Paperclip, Pencil, Play, ShieldCheck, ShieldPlus, SlidersHorizontal, Square, Trash, X } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -59,6 +59,7 @@ import { modelName, useModelNames } from "../modelNames";
 import type { DaemonClient } from "../daemon/client";
 import { SentAttachments } from "../components/AttachmentChips";
 import { Composer } from "./Composer";
+import { CompareForm } from "./ComparePanel";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { ModelSuggestionCard } from "./ModelSuggestionCard";
 import {
@@ -73,6 +74,7 @@ import { useSettings } from "../settings";
 import { canStop, isStopShortcut, isStopped } from "../stop";
 import { editStillValid, queueActions, queueLabel, steeredLabel, type QueueChange } from "../queue";
 import { ModelName } from "../components/ModelName";
+import { branchNote } from "../branches";
 
 type Props = {
   session: SessionState;
@@ -121,10 +123,22 @@ type Props = {
   onBudget?: (confirm: boolean) => void;
   /** Opens a subagent's log in this panel (from its line in the transcript). */
   onOpenAgent?: (agentId: string) => void;
+  /** Branches the conversation at a history event (`session.branch`): a copy up to there, as a new session. */
+  onBranch?: (eventIndex: number) => void;
+  /** Starts a comparison of the same message on several models (`session.compare`); rejects with the daemon's reason. */
+  onCompare?: (models: string[], message: string) => Promise<void>;
+  /** Opens another session (the one this was branched from). */
+  onOpenSession?: (sessionId: string) => void;
+  /** Opens the side-by-side view of the comparison this session is a branch of. */
+  onViewComparison?: () => void;
+  /** Text to put in the composer (a branched-from message to edit); `nonce` repeats it. */
+  prefill?: { text: string; nonce: number } | null;
+  /** The title of a session, for naming the one this was branched from. */
+  titleOf?: (sessionId: string) => string | null;
 };
 
 /** What the footer has opened above the composer. */
-type Drawer = "context" | "options" | null;
+type Drawer = "context" | "options" | "compare" | null;
 
 export function SessionPanel({
   session,
@@ -152,6 +166,12 @@ export function SessionPanel({
   residency = {},
   onBudget,
   onOpenAgent,
+  onBranch,
+  onCompare,
+  onOpenSession,
+  onViewComparison,
+  prefill = null,
+  titleOf = () => null,
 }: Props) {
   const aliases = useModelNames();
   const settings = useSettings();
@@ -268,6 +288,23 @@ export function SessionPanel({
         </div>
       </header>
 
+      {session.summary.branched_from && (
+        <p className="branch-note muted">
+          <GitBranch aria-hidden="true" />
+          <span>{branchNote(session.summary, titleOf)}</span>
+          {onOpenSession && (
+            <button type="button" className="link" onClick={() => onOpenSession(session.summary.branched_from!.session_id)}>
+              Open it
+            </button>
+          )}
+          {session.summary.comparison_id && onViewComparison && (
+            <button type="button" className="link" onClick={onViewComparison}>
+              Compare side by side
+            </button>
+          )}
+        </p>
+      )}
+
       {session.plan && <PlanView plan={session.plan} />}
 
       <div className="conversation" aria-live="polite" ref={conversation}>
@@ -292,6 +329,7 @@ export function SessionPanel({
               onAnswer={onAnswer}
               onOpenAgent={onOpenAgent}
               agentName={(id) => agentName(session, id)}
+              onBranch={archived ? undefined : onBranch}
             />
           ),
         )}
@@ -345,7 +383,7 @@ export function SessionPanel({
         <section
           id={drawerId}
           className="session-drawer"
-          aria-label={drawer === "context" ? "Context and outputs" : "Session options"}
+          aria-label={drawer === "context" ? "Context and outputs" : drawer === "compare" ? "Compare models" : "Session options"}
         >
           <button
             type="button"
@@ -356,7 +394,16 @@ export function SessionPanel({
           >
             <X aria-hidden="true" />
           </button>
-          {drawer === "context" ? (
+          {drawer === "compare" ? (
+            onCompare && (
+              <CompareForm
+                models={models}
+                localModels={localModels}
+                onStart={onCompare}
+                onClose={() => setDrawer(null)}
+              />
+            )
+          ) : drawer === "context" ? (
             <div className="session-sections">
               <section className="context-window-section">
                 <h3>Context window</h3>
@@ -424,6 +471,7 @@ export function SessionPanel({
         client={client}
         placeholder={composerHint(settings.sendKey === "enter", session.busy)}
         onSend={send}
+        prefill={prefill}
       />
 
       <footer className="session-footer" aria-label="Session status">
@@ -459,6 +507,20 @@ export function SessionPanel({
           <span className="session-cost muted" title="Session cost">
             {formatCost(sum.costUsd)}
           </span>
+        )}
+        {onCompare && !archived && (
+          <button
+            type="button"
+            className="ghost icon-only footer-button"
+            onClick={() => toggle("compare")}
+            aria-label="Compare models"
+            aria-expanded={drawer === "compare"}
+            aria-controls={drawer === "compare" ? drawerId : undefined}
+            disabled={session.busy}
+            title="Compare models: send one message to a copy of this conversation on several models"
+          >
+            <GitCompare aria-hidden="true" />
+          </button>
         )}
         <button
           type="button"
@@ -641,6 +703,7 @@ export function EntryView({
   onAnswer,
   onOpenAgent,
   agentName = (id) => id,
+  onBranch,
 }: {
   entry: Entry;
   rendered: boolean;
@@ -650,11 +713,27 @@ export function EntryView({
   onOpenAgent?: (agentId: string) => void;
   /** A subagent's title by id, for lines that mention one. */
   agentName?: (agentId: string) => string;
+  /** Branches the conversation from this message (hover action); not offered without it. */
+  onBranch?: (eventIndex: number) => void;
 }) {
+  const branch = (title: string) =>
+    onBranch &&
+    entry.event !== undefined && (
+      <button
+        type="button"
+        className="ghost icon-only message-action"
+        aria-label="Branch from here"
+        title={title}
+        onClick={() => onBranch(entry.event!)}
+      >
+        <GitBranch aria-hidden="true" />
+      </button>
+    );
   switch (entry.kind) {
     case "user":
       return (
         <div className="message user prose">
+          {branch("Branch from here: continue a copy of the conversation as it was before this message, with the message ready to edit")}
           {entry.attachments && <SentAttachments attachments={entry.attachments} />}
           {entry.text}
         </div>
@@ -670,6 +749,7 @@ export function EntryView({
     case "assistant":
       return (
         <div className="message assistant prose">
+          {branch("Branch from here: continue a copy of the conversation up to this reply")}
           {rendered ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.text}</ReactMarkdown> : <pre>{entry.text}</pre>}
         </div>
       );
