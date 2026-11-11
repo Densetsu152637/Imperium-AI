@@ -58,7 +58,7 @@ pub fn agents_dir(journal: &Path) -> PathBuf {
     journal.with_extension("agents")
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| {
@@ -81,14 +81,6 @@ fn safe_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn first_line(text: &str) -> String {
-    let line = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default();
-    imperium_api::truncate_chars(line.trim(), 80)
-}
-
 fn add(total: &mut TokenUsage, usage: &TokenUsage) {
     total.prompt_tokens += usage.prompt_tokens;
     total.completion_tokens += usage.completion_tokens;
@@ -101,7 +93,11 @@ fn new_record(id: &str, parent: Option<String>, role: &str, task: &str, model: &
             agent_id: id.to_string(),
             parent,
             role: role.to_string(),
-            title: first_line(task),
+            title: if task.trim().is_empty() {
+                String::new()
+            } else {
+                crate::title::task_title(None, task)
+            },
             task: task.to_string(),
             model: model.to_string(),
             local: false,
@@ -333,8 +329,14 @@ impl AgentStore {
                 task_id,
                 brief,
                 model,
+                title,
+                ..
             } => {
                 let mut record = new_record(task_id, Some(agent.to_string()), "leaf", brief, model);
+                // Journals written before titles derive one from the brief.
+                if !title.trim().is_empty() {
+                    record.summary.title = title.clone();
+                }
                 record.summary.status = AgentStatus::Running;
                 // A subagent registered before its spawn event keeps its role.
                 if let Some(earlier) = records.get(task_id) {
@@ -367,14 +369,14 @@ impl AgentStore {
                     Some(imperium_api::truncate_chars(report, REPORT_CHARS));
                 task_id.as_str()
             }),
-            SessionEvent::TaskPaused { task_id, progress } => {
-                records.get_mut(task_id).map(|record| {
-                    record.summary.status = AgentStatus::Paused;
-                    record.summary.last_report =
-                        Some(imperium_api::truncate_chars(progress, REPORT_CHARS));
-                    task_id.as_str()
-                })
-            }
+            SessionEvent::TaskPaused {
+                task_id, progress, ..
+            } => records.get_mut(task_id).map(|record| {
+                record.summary.status = AgentStatus::Paused;
+                record.summary.last_report =
+                    Some(imperium_api::truncate_chars(progress, REPORT_CHARS));
+                task_id.as_str()
+            }),
             SessionEvent::TurnStarted { .. } => {
                 let record = if agent == ROOT_AGENT {
                     records.entry(agent.to_string()).or_insert_with(root)

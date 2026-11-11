@@ -70,6 +70,7 @@ pub fn spawn_agent() -> ToolDefinition {
         description: "Delegate an independent task to a subagent that runs in parallel. The brief must be self-contained. Returns a task id; collect the report with await_tasks.",
         parameters: json!({"type": "object", "properties": {
             "brief": {"type": "string"},
+            "title": {"type": "string", "description": "A short name for the task, 3 to 6 words, such as \"Fix login redirect test\"; shown to the user instead of the task id. Derived from the brief when left out."},
             "tier": {"type": "string", "enum": ["basic", "standard", "strong", "frontier"], "description": "Minimum model capability; the cheapest suitable model is chosen. Default standard."},
             "model": {"type": "string", "description": "A model table id (or <endpoint>:<model>) to use"},
             "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},

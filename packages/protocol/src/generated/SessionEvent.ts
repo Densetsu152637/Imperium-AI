@@ -66,19 +66,40 @@ prompt_tokens: number | null,
 /**
  * Prompt tokens served from the provider's cache.
  */
-cached_tokens: number, } | { "type": "plan_updated", plan: Plan, } | { "type": "task_spawned", task_id: string, brief: string, model: string, } | { "type": "task_finished", task_id: string, ok: boolean, 
+cached_tokens: number, } | { "type": "plan_updated", plan: Plan, } | { "type": "task_spawned", task_id: string, brief: string, model: string, 
+/**
+ * A short name for the task (3 to 6 words), from the delegator or derived from the
+ * brief; shown instead of the task id. Empty in journals written before titles.
+ */
+title: string, 
+/**
+ * When it happened, in milliseconds since the Unix epoch; absent in older journals.
+ */
+at_ms?: number, } | { "type": "task_finished", task_id: string, ok: boolean, 
 /**
  * The subagent's final reply, truncated for display.
  */
-report: string, usage: TokenUsage, cost_usd: number | null, } | { "type": "task_paused", task_id: string, 
+report: string, usage: TokenUsage, cost_usd: number | null, 
+/**
+ * When it happened, in milliseconds since the Unix epoch; absent in older journals.
+ */
+at_ms?: number, } | { "type": "task_paused", task_id: string, 
 /**
  * What it had done so far, and any messages queued for it that were not delivered.
  */
-progress: string, } | { "type": "task_resumed", task_id: string, 
+progress: string, 
+/**
+ * When it happened, in milliseconds since the Unix epoch; absent in older journals.
+ */
+at_ms?: number, } | { "type": "task_resumed", task_id: string, 
 /**
  * The follow-up message.
  */
-text: string, model: string, } | { "type": "turn_completed", usage: TokenUsage, 
+text: string, model: string, 
+/**
+ * When it happened, in milliseconds since the Unix epoch; absent in older journals.
+ */
+at_ms?: number, } | { "type": "turn_completed", usage: TokenUsage, 
 /**
  * Absent when the model has no configured prices.
  */

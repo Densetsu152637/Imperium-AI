@@ -716,6 +716,7 @@ async fn run(
                         .into(),
                     usage: Default::default(),
                     cost_usd: None,
+                    at_ms: Some(crate::agents::now_ms()),
                 },
             );
         }

@@ -233,7 +233,8 @@ async fn a_finished_subagent_is_resumed_with_its_conversation() {
         ("t1", AgentStatus::Idle, true)
     );
     assert_eq!(t1.parent.as_deref(), Some("root"));
-    assert_eq!((t1.title.as_str(), t1.role.as_str()), ("explore", "leaf"));
+    // Titled from its brief, since the root named none.
+    assert_eq!((t1.title.as_str(), t1.role.as_str()), ("Explore", "leaf"));
     assert_eq!(t1.last_report.as_deref(), Some("explored"));
     assert_eq!(t1.messages, 4);
 
@@ -241,7 +242,7 @@ async fn a_finished_subagent_is_resumed_with_its_conversation() {
     session.send("follow up".into()).unwrap();
     let seen = until(&mut events, "root", turn_ended).await;
     assert!(seen.iter().any(|event| matches!(&event.event,
-        SessionEvent::TaskResumed { task_id, text, model }
+        SessionEvent::TaskResumed { task_id, text, model, .. }
             if task_id == "t1" && text == "now summarise" && model == "fake:m")));
     let report = seen.iter().find_map(|event| match &event.event {
         SessionEvent::ToolFinished { output, .. } if output.starts_with("## t1") => Some(output),

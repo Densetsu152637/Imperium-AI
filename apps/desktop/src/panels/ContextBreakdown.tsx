@@ -31,8 +31,8 @@ function agentOrder(a: string, b: string): number {
 
 function agentLabel(session: SessionState, agentId: string): string {
   if (agentId === ROOT) return "Root agent";
-  const brief = session.tasks[agentId]?.brief.split("\n")[0] ?? "";
-  return brief ? `${agentId}: ${brief.length > 48 ? `${brief.slice(0, 47)}…` : brief}` : agentId;
+  const title = session.tasks[agentId]?.title ?? "";
+  return title ? `${title.length > 48 ? `${title.slice(0, 47)}…` : title} (${agentId})` : agentId;
 }
 
 /** A share of the window (or, when it is unknown, of the request) as a percentage. */

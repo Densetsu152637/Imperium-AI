@@ -19,8 +19,11 @@ import type {
 } from "@imperium/protocol";
 import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
+import { taskTitle } from "./agentView";
 import { modelAliases, modelName } from "./modelNames";
 import { applySent, applyWait, type Sent, type Waits } from "./waits";
+
+export { taskTitle };
 
 export const ROOT = "root";
 
@@ -45,7 +48,7 @@ type EntryBody =
       answered: boolean;
     }
   | { kind: "questions"; requestId: number; questions: Question[]; answered: boolean }
-  | { kind: "task"; taskId: string; brief: string; model: string }
+  | { kind: "task"; taskId: string; title: string; brief: string; model: string }
   | { kind: "turn"; usage: TokenUsage; costUsd: number | null; steps: number }
   | { kind: "error"; message: string }
   | { kind: "notice"; message: string }
@@ -87,16 +90,29 @@ export type SuggestionEntry = {
 
 export type TaskState = {
   taskId: string;
+  /** A short name for lists and headers (see taskTitle); the id is secondary. */
+  title: string;
   brief: string;
   model: string;
   /** `paused`: stopped at a safe point for a steering message to the root; resume or cancel it. */
   status: "running" | "paused" | "finished" | "failed";
+  /** Its transcript, as the root's: turns, steering, replies, and tool calls. */
   entries: Entry[];
   report: string;
   costUsd: number | null;
+  /** Messages waiting for it while it runs (`session.send` with its `agent_id`). */
+  queue: QueuedMessage[];
+  plan: Plan | null;
+  /** When its current run started and ended (Unix ms), from the daemon; null in older journals. */
+  startedAt: number | null;
+  endedAt: number | null;
   /** Index in the session's `calls` where this task's current run (spawn or resume) began. */
   callsFrom: number;
 };
+
+/** A subagent's name by id, for lines that mention it; the id when it is not known. */
+export const agentName = (session: Pick<SessionState, "tasks">, agentId: string): string =>
+  session.tasks[agentId]?.title ?? agentId;
 
 export type ModelCall = {
   at: number;
@@ -203,8 +219,9 @@ export function sessionTitle(session: SessionState): string {
   return first ? first.split("\n")[0].slice(0, 80) : "New session";
 }
 
-/** Applies one event to a transcript; returns a new array (inputs are never mutated). */
-function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
+/** Applies one event to a transcript; returns a new array (inputs are never mutated). `tasks`
+ * names subagents in the lines that mention them. */
+function applyToEntries(entries: Entry[], { event }: AgentEvent, tasks: Record<string, TaskState> = {}): Entry[] {
   const next = [...entries];
   const last = next.at(-1);
   switch (event.type) {
@@ -258,7 +275,13 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
       break;
     }
     case "task_spawned":
-      next.push({ kind: "task", taskId: event.task_id, brief: event.brief, model: event.model });
+      next.push({
+        kind: "task",
+        taskId: event.task_id,
+        title: taskTitle(event.title, event.brief),
+        brief: event.brief,
+        model: event.model,
+      });
       break;
     case "turn_completed":
       next.push({ kind: "turn", usage: event.usage, costUsd: event.cost_usd, steps: event.steps });
@@ -343,7 +366,10 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
       break;
     }
     case "task_resumed":
-      next.push({ kind: "notice", message: `Continued ${event.task_id} on ${shown(event.model)}: ${event.text.split("\n")[0]}` });
+      next.push({
+        kind: "notice",
+        message: `Continued ${tasks[event.task_id]?.title ?? event.task_id} on ${shown(event.model)}: ${event.text.split("\n")[0]}`,
+      });
       break;
     case "model_changed":
       next.push({
@@ -436,7 +462,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
   }
 
   if (agentId === ROOT) {
-    entries = applyToEntries(entries, agentEvent);
+    entries = applyToEntries(entries, agentEvent, tasks);
     if (event.type === "plan_updated") plan = event.plan;
     if (event.type === "queue_changed") queue = event.messages;
     if (event.type === "turn_started") {
@@ -449,12 +475,17 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
         ...tasks,
         [event.task_id]: {
           taskId: event.task_id,
+          title: taskTitle(event.title, event.brief),
           brief: event.brief,
           model: event.model,
           status: "running",
           entries: [],
           report: "",
           costUsd: null,
+          queue: [],
+          plan: null,
+          startedAt: event.at_ms ?? null,
+          endedAt: null,
           callsFrom: calls.length,
         },
       };
@@ -462,7 +493,18 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     // A finished subagent given a follow-up works again with its earlier conversation.
     if (event.type === "task_resumed" && tasks[event.task_id]) {
       const task = tasks[event.task_id];
-      tasks = { ...tasks, [event.task_id]: { ...task, status: "running", model: event.model, report: "", callsFrom: calls.length } };
+      tasks = {
+        ...tasks,
+        [event.task_id]: {
+          ...task,
+          status: "running",
+          model: event.model,
+          report: "",
+          startedAt: event.at_ms ?? null,
+          endedAt: null,
+          callsFrom: calls.length,
+        },
+      };
     }
   } else if (tasks[agentId]) {
     const task = tasks[agentId];
@@ -470,10 +512,21 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     const cost = (more: number | null) => (more === null ? task.costUsd : (task.costUsd ?? 0) + more);
     const updated: TaskState =
       event.type === "task_finished"
-        ? { ...task, status: event.ok ? "finished" : "failed", report: event.report, costUsd: cost(event.cost_usd) }
+        ? {
+            ...task,
+            status: event.ok ? "finished" : "failed",
+            report: event.report,
+            costUsd: cost(event.cost_usd),
+            queue: [],
+            endedAt: event.at_ms ?? null,
+          }
         : event.type === "task_paused"
-          ? { ...task, status: "paused", report: event.progress }
-          : { ...task, entries: applyToEntries(task.entries, agentEvent) };
+          ? { ...task, status: "paused", report: event.progress, queue: [], endedAt: event.at_ms ?? null }
+          : event.type === "queue_changed"
+            ? { ...task, queue: event.messages }
+            : event.type === "plan_updated"
+              ? { ...task, plan: event.plan }
+              : { ...task, entries: applyToEntries(task.entries, agentEvent, tasks) };
     tasks = { ...tasks, [agentId]: updated };
   }
   // Entries this event added start at it; earlier ones are already marked.

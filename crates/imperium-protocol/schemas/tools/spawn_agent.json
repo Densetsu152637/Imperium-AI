@@ -38,6 +38,10 @@
           "frontier"
         ],
         "type": "string"
+      },
+      "title": {
+        "description": "A short name for the task, 3 to 6 words, such as \"Fix login redirect test\"; shown to the user instead of the task id. Derived from the brief when left out.",
+        "type": "string"
       }
     },
     "required": [
