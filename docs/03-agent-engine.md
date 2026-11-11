@@ -303,8 +303,10 @@ recalled memories, and the user's own text. Assistant messages count their text 
 tool call's name and arguments; tool results count their content, and `load_skill` results
 count as loaded skills, so the index's cost and the cost of what was loaded on use show apart
 ([lazy skills and plugins](06-extensibility.md#lazy-skills-and-plugins-implemented)).
-Conversations restored after a daemon restart recognise the manifest and memories by the tags
-they are wrapped in.
+Instruction files found while exploring directories
+([workflow contract](18-workflow-contract.md#instruction-files-met-while-exploring)) arrive as a
+user message of their own and count under `manifest` too. Conversations restored after a daemon
+restart recognise the manifest, instruction files, and memories by the tags they are wrapped in.
 
 | Category key | Label |
 | --- | --- |
@@ -312,7 +314,7 @@ they are wrapped in.
 | `skills_loaded` | Skill instructions: eager skills' in the system prompt and `load_skill` results |
 | `tools_builtin`, `tools_mcp`, `tools_plugins` | Tool definitions (`tools_plugins`: activated plugins' tools) |
 | `summary` | A [compacted](#switching-models-and-compaction) conversation's summary of its older turns |
-| `manifest`, `memories` | Workflow context manifest and recalled memories, from user-message preambles |
+| `manifest`, `memories` | Workflow context (the manifest and instruction files) and recalled memories, from user-message preambles |
 | `user`, `assistant`, `tool_results` | The conversation |
 | `overhead` | Chat template and formatting: roles, call ids, separators, template markup |
 
@@ -400,6 +402,12 @@ Sessions the daemon starts itself (schedules, auto-fix, project agents) still ne
 fail to start without one.
 
 ## Switching models and compaction
+
+Compaction never summarises instruction files an agent met while exploring: they are workflow
+context, carried over verbatim after the summary, inside the same kept-context block as the
+loaded workflow references and skills (once per file, also across repeated compactions and
+restarts; see [what compaction never touches](#context-management) and the
+[workflow contract](18-workflow-contract.md#instruction-files-met-while-exploring)).
 
 **Implemented:** a session's root agent can switch to another model or endpoint mid-session
 and keep its conversation (`Session::set_model`; `session.control` with `set_model` and a model

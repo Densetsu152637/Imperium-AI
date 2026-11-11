@@ -41,7 +41,14 @@ Effective policy is assembled from layers, later layers overriding earlier ones:
    secret handling).
 2. Default pack (bundled or updated).
 3. User pack overrides (`<config>/policy/`), including a full fork via a Git URL.
-4. Project instructions (`AGENTS.md`, `CLAUDE.md`, `.imperium/policy/`).
+4. Project instructions (`AGENTS.md`, `CLAUDE.md`, `.imperium/policy/`). The project folder's
+   files are served by the workflow manifest. The `AGENTS.md` and `CLAUDE.md` in any other
+   directory an agent opens, and in its parents up to the allowed folder's root, are loaded
+   automatically the first time the agent's file tools touch that directory (nearest last, so
+   it wins), and `@path` imports inside them and inside a pack's entry files are followed. See
+   [instruction files met while exploring](18-workflow-contract.md#instruction-files-met-while-exploring)
+   and [imports](18-workflow-contract.md#imports). They are workflow context: compaction keeps
+   them verbatim, and `workflow.enabled = false` turns them off.
 5. Session overrides.
 
 Users can **disable** the default pack entirely, replace it with another pack (any Git

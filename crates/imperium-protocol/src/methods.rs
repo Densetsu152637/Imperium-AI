@@ -2987,8 +2987,9 @@ pub struct ConfigChange {
     /// For `install`, and an `uninstall` of something an agent installed: where it came from.
     #[serde(default)]
     pub source: Option<InstallSource>,
-    /// For `install` of a plugin with hooks: it was added to `extensions.disabled_plugins`, so
-    /// its hooks do not run until the user turns it on.
+    /// For `install` of a plugin with hooks or MCP servers: it was added to
+    /// `extensions.disabled_plugins`, so its hooks and servers do not run until the user turns
+    /// it on.
     #[serde(default)]
     pub disabled: bool,
     /// For `uninstall`: where the folder was moved, so undo can put it back.

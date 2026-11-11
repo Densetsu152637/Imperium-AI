@@ -31,6 +31,9 @@ pub struct Pack {
     /// Files every agent in a role must load.
     pub roles: BTreeMap<String, Vec<String>>,
     pub candidates: Vec<Candidate>,
+    /// Whether the user configured this folder (`workflow.packs`): its `@` imports may then
+    /// reach outside the pack. A bundled pack is not trusted.
+    pub trusted: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -115,7 +118,14 @@ impl Pack {
             entry,
             roles,
             candidates,
+            trusted: false,
         })
+    }
+
+    /// The pack marked as configured by the user.
+    pub fn trusted(mut self) -> Self {
+        self.trusted = true;
+        self
     }
 }
 

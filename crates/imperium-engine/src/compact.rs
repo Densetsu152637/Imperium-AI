@@ -13,6 +13,7 @@ use imperium_models::ChatMessage;
 use crate::breakdown::{
     Category, KEPT_CLOSE, KEPT_OPEN, Measured, PART_SEPARATOR, Spans, restored_spans,
 };
+use crate::instructions;
 
 /// Share of a context window held back for the model's reply (no per-model output limit is
 /// configured, so a fixed share stands in for one).
@@ -108,7 +109,9 @@ pub(crate) fn recent_turns_start(messages: &[ChatMessage], turns: usize) -> Opti
     let starts: Vec<usize> = messages
         .iter()
         .enumerate()
-        .filter(|(_, message)| matches!(message, ChatMessage::User { .. }))
+        .filter(|(_, message)| {
+            matches!(message, ChatMessage::User { .. }) && !instructions::is_message(message)
+        })
         .map(|(index, _)| index)
         .collect();
     let at = *starts.get(starts.len().checked_sub(turns)?)?;
@@ -184,10 +187,15 @@ fn transcript(messages: &[ChatMessage]) -> String {
                 ));
             }
             ChatMessage::User { content, .. } => {
-                out.push_str(&format!(
-                    "### User\n{}\n\n",
-                    truncate_chars(&without_pinned(content), MESSAGE_CHARS)
-                ));
+                // Instruction files and carried-over context are kept as they are, not
+                // summarised.
+                let content = instructions::strip(&without_pinned(content));
+                if !content.is_empty() {
+                    out.push_str(&format!(
+                        "### User\n{}\n\n",
+                        truncate_chars(&content, MESSAGE_CHARS)
+                    ));
+                }
             }
             ChatMessage::Assistant {
                 content,
@@ -254,12 +262,20 @@ pub(crate) fn pinned_context(
         }
         items.push(item.to_string());
     };
-    let mut keep = |text: &str| match text
-        .strip_prefix(PINNED_HEAD)
-        .and_then(|inner| inner.strip_suffix(PINNED_CLOSE))
-    {
-        Some(inner) => inner.split(ITEM_SEP).for_each(&mut add),
-        None => add(text),
+    let mut keep = |text: &str| {
+        if let Some(inner) = text
+            .strip_prefix(PINNED_HEAD)
+            .and_then(|inner| inner.strip_suffix(PINNED_CLOSE))
+        {
+            inner.split(ITEM_SEP).for_each(&mut add);
+        } else if text.starts_with(instructions::OPEN) {
+            // Instruction files met while exploring travel here too, one item per file.
+            for (_, block) in instructions::blocks_in(text) {
+                add(&block);
+            }
+        } else {
+            add(text);
+        }
     };
     for (index, message) in messages.iter().enumerate().take(cut).skip(1) {
         match message {
@@ -535,6 +551,80 @@ mod tests {
         assert!(short.len() < long.len() / 2 + 40);
         assert!(short.starts_with("word word"));
         assert!(short.ends_with("[summary shortened to fit]"));
+    }
+
+    /// A conversation where the agent met instruction files in the first turn.
+    fn with_instructions() -> (Vec<ChatMessage>, Vec<String>) {
+        let blocks = vec![
+            instructions::render_block("/p/a/AGENTS.md", "Use tabs.", false),
+            instructions::render_block("/p/a/b/CLAUDE.md", "No unwrap.", false),
+        ];
+        let mut messages = conversation();
+        messages.insert(4, user(&instructions::wrap(&blocks)));
+        (messages, blocks)
+    }
+
+    #[test]
+    fn compaction_carries_instruction_files_over_unchanged() {
+        let (messages, blocks) = with_instructions();
+        let spans = HashMap::new();
+        // Cut before the second turn: the instruction message is summarised away.
+        let at = messages
+            .iter()
+            .position(|m| matches!(m, ChatMessage::User { content, .. } if content == "two"))
+            .unwrap();
+        let pinned = pinned_context(&messages, &spans, at);
+        let (rebuilt, new_spans) =
+            rebuild(&messages, &spans, at, &summary_block("earlier"), &pinned);
+        let ChatMessage::User { content, .. } = &rebuilt[1] else {
+            panic!("a user message")
+        };
+        assert!(content.starts_with("<conversation-summary>"));
+        assert!(content.ends_with("two"));
+        let found = |content: &str| -> Vec<String> {
+            instructions::blocks_in(content)
+                .into_iter()
+                .map(|(_, block)| block)
+                .collect()
+        };
+        assert_eq!(found(content), blocks, "verbatim, in order, once");
+        let parts = &new_spans[&1];
+        assert_eq!(parts[0].0, Category::Summary);
+        assert_eq!(parts[1].0, Category::Manifest);
+        assert!(content[parts[1].1.clone()].starts_with(KEPT_OPEN));
+
+        // Compacting again, from the restored text alone, still holds each file once.
+        let restored = HashMap::new();
+        let mut conversation = rebuilt;
+        for _ in 0..2 {
+            conversation.push(reply("fine"));
+            conversation.push(user("more"));
+            conversation.push(reply("ok"));
+            let cut = conversation.len() - 2;
+            let carried = pinned_context(&conversation, &restored, cut);
+            let (next, _) = rebuild(&conversation, &restored, cut, &summary_block("t"), &carried);
+            let ChatMessage::User { content, .. } = &next[1] else {
+                panic!("a user message")
+            };
+            assert_eq!(found(content), blocks);
+            // And the tracker still knows them, so they are not loaded again.
+            let tracker = instructions::Tracker::from_messages(&next);
+            assert!(tracker.holds("/p/a/AGENTS.md") && tracker.holds("/p/a/b/CLAUDE.md"));
+            conversation = next;
+        }
+    }
+
+    #[test]
+    fn instruction_messages_are_not_turns_and_not_summarised() {
+        let (messages, _) = with_instructions();
+        let turns = recent_turns_start(&messages, 2);
+        assert_eq!(
+            turns, None,
+            "two real turns leave nothing older to summarise"
+        );
+        let text = transcript(&messages[1..]);
+        assert!(!text.contains("Use tabs."));
+        assert!(text.contains("done one"));
     }
 
     #[test]
