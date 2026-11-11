@@ -60,7 +60,7 @@ export function EnvironmentsPanel({
     return (
       <div className="environments">
         <p className="empty">
-          {connected ? "No environments yet. Use New environment to make one." : "No environments known yet."}
+          {connected ? "No environments yet. Use + (New environment) above to make one." : "No environments known yet."}
         </p>
       </div>
     );
@@ -111,7 +111,7 @@ const SORT_OPTIONS: { value: SessionSort; label: string }[] = [
   { value: "status", label: "By status" },
 ];
 
-/** The Sessions panel's sort, shown in the panel header beside New session. */
+/** The Sessions panel's sort, shown in the panel header beside the New session (+) button. */
 export function SessionSortSelect({ sort, onSort }: { sort: SessionSort; onSort: (sort: SessionSort) => void }) {
   return (
     <Select

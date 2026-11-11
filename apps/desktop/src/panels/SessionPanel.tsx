@@ -5,7 +5,7 @@
 // small budget mark shows when a budget over the session (its environment, endpoint, or model, or
 // all usage) has passed an alert threshold.
 
-import { CornerDownRight, Gauge, Paperclip, Pencil, Play, SlidersHorizontal, Square, Trash, X } from "lucide-react";
+import { CornerDownRight, Gauge, Paperclip, Pencil, Play, ShieldCheck, ShieldPlus, SlidersHorizontal, Square, Trash, X } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -45,6 +45,7 @@ import {
 } from "../sessions";
 import { describeUsage, formatShare, indicator, modelSpec } from "../budgets";
 import { describeRule } from "../components/PermissionsEditor";
+import { RowMenu } from "../components/RowMenu";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { ToolCall } from "../components/ToolCall";
@@ -682,21 +683,28 @@ export function EntryView({
             <span className="muted">Answered</span>
           ) : (
             <span className="buttons">
-              <button className="primary" onClick={() => onRespond(entry.requestId, "allow")}>
+              <button className="primary small" onClick={() => onRespond(entry.requestId, "allow")}>
                 Allow
               </button>
-              <button onClick={() => onRespond(entry.requestId, "allow_for_session")}>Always this session</button>
-              {entry.suggestedRule && onAlwaysAllow && (
-                <button
-                  onClick={() => entry.suggestedRule && onAlwaysAllow(entry.requestId, entry.suggestedRule)}
-                  title={`Adds an allow rule to this environment's permissions (Settings → Permissions for global rules): ${describeRule(entry.suggestedRule)}`}
-                >
-                  Always allow {entry.suggestedRule.pattern ? <code>{entry.suggestedRule.pattern}</code> : "this tool"}
-                </button>
-              )}
-              <button className="danger" onClick={() => onRespond(entry.requestId, "deny")}>
+              <button className="ghost danger small" onClick={() => onRespond(entry.requestId, "deny")}>
                 Deny
               </button>
+              <RowMenu
+                label="More ways to allow"
+                items={[
+                  { label: "Always this session", icon: ShieldCheck, onSelect: () => onRespond(entry.requestId, "allow_for_session") },
+                  ...(entry.suggestedRule && onAlwaysAllow
+                    ? [
+                        {
+                          label: `Always allow ${entry.suggestedRule.pattern ?? "this tool"}`,
+                          icon: ShieldPlus,
+                          title: `Adds an allow rule to this environment's permissions (Settings → Permissions for global rules): ${describeRule(entry.suggestedRule)}`,
+                          onSelect: () => entry.suggestedRule && onAlwaysAllow(entry.requestId, entry.suggestedRule),
+                        },
+                      ]
+                    : []),
+                ]}
+              />
             </span>
           )}
         </div>
@@ -789,17 +797,25 @@ export function QueueView({
             <span className="buttons">
               {actions.includes("edit") && !isEditing && (
                 <button
-                  className="ghost"
+                  className="ghost icon-only row-tool"
                   onClick={() => setEditing({ id: message.id, text: message.text })}
                   aria-label="Edit queued message"
                   title="Edit"
                 >
-                  <Pencil aria-hidden="true" /> Edit
+                  <Pencil aria-hidden="true" />
                 </button>
               )}
+              <button
+                className="ghost icon-only row-tool danger"
+                onClick={() => onChange(message.id, { kind: "remove" })}
+                aria-label="Remove queued message"
+                title="Remove"
+              >
+                <Trash aria-hidden="true" />
+              </button>
               {actions.includes("steer") && (
                 <button
-                  className="ghost steer"
+                  className="ghost small steer"
                   onClick={() => onChange(message.id, { kind: "steer" })}
                   aria-label="Steer the running turn with this message"
                   title="Steer: the agent reads it after its current step, instead of after the turn"
@@ -807,14 +823,6 @@ export function QueueView({
                   <CornerDownRight aria-hidden="true" /> Steer
                 </button>
               )}
-              <button
-                className="ghost danger"
-                onClick={() => onChange(message.id, { kind: "remove" })}
-                aria-label="Remove queued message"
-                title="Remove"
-              >
-                <Trash aria-hidden="true" /> Remove
-              </button>
             </span>
           </li>
         );

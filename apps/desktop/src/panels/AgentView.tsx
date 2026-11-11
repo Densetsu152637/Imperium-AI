@@ -14,6 +14,7 @@ import type { Attachment, PermissionDecision, PermissionRule, RuntimeInstallJob,
 import { RESUME_TEXT, agentComposerHint, formatElapsed, taskElapsed } from "../agentView";
 import { JumpToLatest } from "../components/JumpToLatest";
 import { ModelName } from "../components/ModelName";
+import { RowMenu } from "../components/RowMenu";
 import { ToolGroup } from "../components/ToolGroup";
 import { WaitLine } from "../components/WaitLine";
 import type { DaemonClient } from "../daemon/client";
@@ -146,7 +147,7 @@ export function AgentView({
           {paused && onResume && !archived && (
             <button
               type="button"
-              className="primary"
+              className="primary small"
               disabled={busyAction}
               onClick={() => act(() => onResume(task.taskId, RESUME_TEXT))}
               title="Resume from where it paused, with its saved conversation"
@@ -155,15 +156,19 @@ export function AgentView({
             </button>
           )}
           {paused && onCancel && !archived && (
-            <button
-              type="button"
-              className="ghost danger"
-              disabled={busyAction}
-              onClick={() => act(() => onCancel(task.taskId))}
-              title="End it without resuming"
-            >
-              <CircleX aria-hidden="true" /> Cancel
-            </button>
+            <RowMenu
+              label={`More for ${task.title}`}
+              items={[
+                {
+                  label: "Cancel",
+                  icon: CircleX,
+                  danger: true,
+                  disabled: busyAction,
+                  title: "End it without resuming",
+                  onSelect: () => act(() => onCancel(task.taskId)),
+                },
+              ]}
+            />
           )}
         </div>
       </header>

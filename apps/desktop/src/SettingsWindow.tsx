@@ -39,6 +39,7 @@ import {
   History,
   Undo2,
   Workflow,
+  Volume2,
   type LucideIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
@@ -59,6 +60,7 @@ import { BudgetsSection } from "./components/BudgetsEditor";
 import { formatAgo } from "./ago";
 import { changeDetails, installedByAgent, sourceLabel, undoLabel } from "./configChanges";
 import { PermissionsEditor, samePermissions } from "./components/PermissionsEditor";
+import { RowMenu } from "./components/RowMenu";
 import { Select } from "./components/Select";
 import { matches, ModalNavGroup, ModalNavItem, SettingsModal } from "./components/SettingsModal";
 import { Row } from "./components/SettingsRow";
@@ -612,11 +614,16 @@ export function SettingsWindow(props: Props) {
             {section === "notifications" && (
               <>
                 <Row label="Try the sounds" description="Hear each chime; a failed turn uses the finish sound setting.">
-                  <div className="row-actions">
-                    <button onClick={() => preview("approval")}>Approval</button>
-                    <button onClick={() => preview("finished")}>Finished</button>
-                    <button onClick={() => preview("failed")}>Failed</button>
-                  </div>
+                  <RowMenu
+                    label="Play a sound"
+                    icon={Volume2}
+                    text="Play"
+                    items={[
+                      { label: "Approval", onSelect: () => preview("approval") },
+                      { label: "Finished", onSelect: () => preview("finished") },
+                      { label: "Failed", onSelect: () => preview("failed") },
+                    ]}
+                  />
                 </Row>
                 <TestNotificationRow />
               </>

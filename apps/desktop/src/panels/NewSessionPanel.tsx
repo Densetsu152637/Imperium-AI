@@ -109,7 +109,7 @@ export function NewSessionPanel({
     ? "Not connected to imperium-core"
     : !environment
       ? environments.length === 0
-        ? "Create an environment first (Environments → New environment)"
+        ? "Create an environment first (Environments → + New environment)"
         : "Choose an environment"
       : environment.folders.length === 0
         ? `Add a folder to ${environment.name} first`

@@ -22,10 +22,10 @@ export function ApprovalsPanel({
             <span className="badge">{approval.kind}</span> {approval.summary}
           </p>
           <div className="approval-actions">
-            <button className="primary" onClick={() => onRespond(approval.id, true)}>
+            <button className="primary small" onClick={() => onRespond(approval.id, true)}>
               <Check aria-hidden="true" /> Approve
             </button>
-            <button onClick={() => onRespond(approval.id, false)}>
+            <button className="ghost small" onClick={() => onRespond(approval.id, false)}>
               <X aria-hidden="true" /> Decline
             </button>
           </div>
