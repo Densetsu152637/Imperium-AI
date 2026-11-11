@@ -244,6 +244,8 @@ mod tests {
             call_id: "c".into(),
             ok: false,
             output: "The user denied this action.".into(),
+            tool: None,
+            duration_ms: None,
         };
         assert!(pet_events(&denied).contains(&PetEvent::Once("confused".into())));
         let failed = SessionEvent::TurnFailed {

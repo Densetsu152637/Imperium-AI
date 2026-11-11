@@ -38,7 +38,8 @@
 
 The Agents panel lists the subagents of the selected session: each row shows the task id, its
 status (`running`, `paused`, `finished`, or `failed`), model, cost, brief, the messages it was given and
-its tool calls, and its latest report. Subagents keep their state when they finish
+its tool calls (the same collapsed rows as the transcript, [below](#tool-calls-implemented)),
+and its latest report. Subagents keep their state when they finish
 ([agent state](03-agent-engine.md#agent-state)), so a finished or failed row's ⋯ menu has
 **Continue with…**: it opens a follow-up box under the row (Ctrl+Enter sends, Escape
 cancels), and the follow-up is sent with `session.agent_resume`. The subagent works again with
@@ -53,6 +54,18 @@ box), and **Cancel** (`session.agent_cancel`) until the root agent or the user d
 A running subagent that has not produced output yet shows the same status line as the
 session ([waiting status line](#waiting-status-line-implemented)) under its summary, with
 **Stop** (stops the session's work; a running subagent cannot be cancelled on its own).
+
+### Tool calls (implemented)
+
+Every tool call, the session's own in the transcript and each subagent's in its Agents panel
+row, is one quiet line, collapsed by default: a spinner, check, or cross, the tool's name, a
+short summary of what it does (`write src/main.rs`), and how long it ran. Opening the line
+shows the arguments (JSON, indented) and the result; text over about 1,200 characters or 16
+lines folds behind **Show more**. A call denied or blocked before it ran shows its reason on
+the line and opens only when the reason runs past one line. The body is built only while open,
+so long transcripts stay light. The daemon sends the arguments on `tool_started` and the tool
+name and run time on `tool_finished`, each cut to 8,000 characters for display; the model
+always receives the full result ([03](03-agent-engine.md#agent-loop)).
 
 ### Waiting status line (implemented)
 

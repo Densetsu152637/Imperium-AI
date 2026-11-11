@@ -152,14 +152,23 @@ async fn an_approved_write_changes_the_file_and_the_turn_reports_cost() {
         .respond(request_id, PermissionDecision::Allow)
         .unwrap();
 
-    assert!(matches!(
-        next(&mut events).await,
-        SessionEvent::ToolStarted { .. }
-    ));
-    assert!(matches!(
-        next(&mut events).await,
-        SessionEvent::ToolFinished { ok: true, .. }
-    ));
+    // The transcript shows each call with its arguments, result, and duration.
+    let SessionEvent::ToolStarted { arguments, .. } = next(&mut events).await else {
+        panic!("expected the tool to start");
+    };
+    assert!(arguments.unwrap().contains("hello.txt"));
+    let SessionEvent::ToolFinished {
+        ok,
+        tool,
+        duration_ms,
+        ..
+    } = next(&mut events).await
+    else {
+        panic!("expected the tool to finish");
+    };
+    assert!(ok);
+    assert_eq!(tool.as_deref(), Some("write_file"));
+    assert!(duration_ms.is_some());
     assert!(matches!(
         next(&mut events).await,
         SessionEvent::TextDelta { .. }

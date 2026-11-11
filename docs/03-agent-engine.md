@@ -27,7 +27,9 @@
 with the built-in tools, sequential tool execution with permission prompts, and a stop after
 `agents.max_steps` model calls per turn. The system prompt is a fixed instruction naming the
 project folder; policy layers, memory, hooks, and concurrent tool calls come later. Each turn
-emits `turn_started`, `text_delta`, `permission_requested`, `tool_started`, `tool_finished`,
+emits `turn_started`, `text_delta`, `permission_requested`, `tool_started` (with the call's
+arguments), `tool_finished` (tool name, result, and run time; arguments and result cut to
+8,000 characters for display),
 `model_call_completed` after every model call (tokens, duration, time to first token, tokens
 per second, cost) followed by that call's `context_breakdown` ([context
 management](#context-management)), and `turn_completed` (token usage, cost, model calls) or

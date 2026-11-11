@@ -32,7 +32,7 @@ type EntryBody =
   /** A steering message that joined the running turn; `paused` lists the subagents it paused. */
   | { kind: "steer"; text: string; paused: string[]; attachments?: Attachment[] }
   | { kind: "assistant"; text: string }
-  | { kind: "tool"; callId: string; summary: string; ok: boolean | null; output: string }
+  | ToolEntry
   | {
       kind: "permission";
       agentId: string;
@@ -49,6 +49,22 @@ type EntryBody =
   | { kind: "error"; message: string }
   | { kind: "notice"; message: string }
   | SuggestionEntry;
+
+/** One tool call, shown as a collapsed row that opens to its arguments and result. */
+export type ToolEntry = {
+  kind: "tool";
+  callId: string;
+  /** The tool's name; empty in history recorded before it was sent. */
+  tool: string;
+  summary: string;
+  /** The JSON arguments as the model wrote them; empty when not sent. */
+  arguments: string;
+  /** `null` while it runs. */
+  ok: boolean | null;
+  output: string;
+  /** Run time; `null` while it runs or when it never started (denied, invalid, blocked). */
+  durationMs: number | null;
+};
 
 /** A model download suggestion and what became of it (see docs/07-desktop-ui.md). */
 export type SuggestionEntry = {
@@ -199,16 +215,36 @@ function applyToEntries(entries: Entry[], { event }: AgentEvent): Entry[] {
       else next.push({ kind: "assistant", text: event.text });
       break;
     case "tool_started":
-      next.push({ kind: "tool", callId: event.call_id, summary: event.summary, ok: null, output: "" });
+      next.push({
+        kind: "tool",
+        callId: event.call_id,
+        tool: event.tool,
+        summary: event.summary,
+        arguments: event.arguments ?? "",
+        ok: null,
+        output: "",
+        durationMs: null,
+      });
       break;
     case "tool_finished": {
       const index = next.findLastIndex((entry) => entry.kind === "tool" && entry.callId === event.call_id && entry.ok === null);
       if (index >= 0) {
-        const tool = next[index] as Extract<Entry, { kind: "tool" }>;
-        next[index] = { ...tool, ok: event.ok, output: event.output };
+        const tool = next[index] as ToolEntry;
+        next[index] = { ...tool, ok: event.ok, output: event.output, durationMs: event.duration_ms ?? null };
       } else {
-        // Denied, invalid, and planning/delegation calls finish without a start event.
-        next.push({ kind: "tool", callId: event.call_id, summary: event.output, ok: event.ok, output: "" });
+        // Denied, invalid, and blocked calls finish without a start event: the first line of
+        // the reason is the row, and a longer reason opens below it.
+        const [first, ...rest] = event.output.split("\n");
+        next.push({
+          kind: "tool",
+          callId: event.call_id,
+          tool: event.tool ?? "",
+          summary: first,
+          arguments: "",
+          ok: event.ok,
+          output: rest.length > 0 ? event.output : "",
+          durationMs: null,
+        });
       }
       break;
     }

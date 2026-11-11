@@ -1152,6 +1152,62 @@ pre {
   width: 1.2em;
 }
 
+/* A call with nothing to open (denied or blocked before it ran): the same line, no chevron. */
+.tool.plain {
+  color: var(--muted);
+  padding: 0.2rem 0.6rem 0.2rem calc(0.4rem + 0.9em);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool.plain.failed {
+  color: var(--danger);
+}
+
+.tool-name {
+  font-family: var(--font-code);
+  font-size: 0.9em;
+  margin-right: 0.5em;
+  opacity: 0.8;
+}
+
+.tool-duration {
+  margin-left: 0.6em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.tool-body {
+  padding-left: calc(0.4rem + 0.9em);
+}
+
+.tool-label {
+  margin-top: calc(var(--space) * 0.75);
+  font-size: 0.8em;
+  color: var(--muted);
+}
+
+.tool-text pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-more {
+  margin-top: calc(var(--space) * 0.25);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.tool-more:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
 .permission {
   display: flex;
   flex-wrap: wrap;
@@ -2158,6 +2214,17 @@ button.danger:hover:not(:disabled) {
 
 .task-activity .failed {
   color: var(--danger);
+}
+
+/* A subagent's tool calls: the transcript's rows, at the activity list's size. */
+.task-activity .task-tool {
+  list-style: none;
+  margin-left: -1.1rem;
+}
+
+.task-activity .tool {
+  font-size: inherit;
+  max-width: none;
 }
 
 .task-report {

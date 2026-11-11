@@ -43,6 +43,9 @@ use crate::{LocalLease, LocalModels, LocalPresence, ResolvedModel, TaskRequest, 
 
 /// Longest tool output or report shown in events (the model receives the full text).
 const EVENT_OUTPUT_CHARS: usize = 2_000;
+/// Longest tool-call arguments or output shown in events; the transcript collapses each call
+/// and folds longer text behind "show more".
+const EVENT_TOOL_CHARS: usize = 8_000;
 /// Longest subagent report handed back to the parent.
 const REPORT_CHARS: usize = 8_000;
 /// Share of the root's context window, in percent, above which an input is stored as an
@@ -1187,14 +1190,7 @@ impl Agent {
     async fn run_provider(&self, provider: &dyn ToolProvider, call: &ToolCall) -> String {
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
-        let finish = |ok: bool, output: String| {
-            self.emit(SessionEvent::ToolFinished {
-                call_id: call.id.clone(),
-                ok,
-                output: truncate(&output, EVENT_OUTPUT_CHARS),
-            });
-            output
-        };
+        let finish = |ok: bool, output: String| self.tool_finished(call, name, ok, output, None);
         let check = match provider.check(name, arguments) {
             Ok(check) => check,
             Err(error) => return finish(false, format!("error: {error}")),
@@ -1223,11 +1219,7 @@ impl Agent {
         {
             return finish(false, "The user denied this action.".into());
         }
-        self.emit(SessionEvent::ToolStarted {
-            call_id: call.id.clone(),
-            tool: name.to_string(),
-            summary: check.summary,
-        });
+        let started = self.tool_started(call, name, check.summary);
         let emit = |event: ToolEvent| {
             if let Some(event) = tool_event(event) {
                 self.emit(event);
@@ -1242,7 +1234,38 @@ impl Agent {
             Err(error) => (false, format!("error: {error}")),
         };
         self.after_tool(name, arguments, ok, &output).await;
-        finish(ok, output)
+        self.tool_finished(call, name, ok, output, Some(started))
+    }
+
+    /// Announces a tool call that is about to run; returns when it started.
+    fn tool_started(&self, call: &ToolCall, tool: &str, summary: String) -> Instant {
+        self.emit(SessionEvent::ToolStarted {
+            call_id: call.id.clone(),
+            tool: tool.to_string(),
+            summary,
+            arguments: Some(truncate(&call.function.arguments, EVENT_TOOL_CHARS)),
+        });
+        Instant::now()
+    }
+
+    /// Announces a tool call's end and passes its output through; `started` is absent for a
+    /// call that never ran (denied, invalid or blocked).
+    fn tool_finished(
+        &self,
+        call: &ToolCall,
+        tool: &str,
+        ok: bool,
+        output: String,
+        started: Option<Instant>,
+    ) -> String {
+        self.emit(SessionEvent::ToolFinished {
+            call_id: call.id.clone(),
+            ok,
+            output: truncate(&output, EVENT_TOOL_CHARS),
+            tool: Some(tool.to_string()),
+            duration_ms: started.map(|started| millis(started.elapsed())),
+        });
+        output
     }
 
     /// For a background session: waits, before the next model call, while the machine is busy
@@ -1493,11 +1516,7 @@ impl Agent {
             AgentTool::MemoryRead => "read a memory",
             AgentTool::MemoryRemember => "save a memory",
         };
-        self.emit(SessionEvent::ToolStarted {
-            call_id: call.id.clone(),
-            tool: name.to_string(),
-            summary: summary.to_string(),
-        });
+        let started = self.tool_started(call, name, summary.to_string());
         let result = match tool {
             AgentTool::UpdatePlan => self.update_plan(arguments),
             AgentTool::SpawnAgent => self.spawn_agent(arguments),
@@ -1519,22 +1538,12 @@ impl Agent {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
-        self.emit(SessionEvent::ToolFinished {
-            call_id: call.id.clone(),
-            ok,
-            output: truncate(&output, EVENT_OUTPUT_CHARS),
-        });
-        output
+        self.tool_finished(call, name, ok, output, Some(started))
     }
 
     async fn run_builtin(&self, call: &ToolCall) -> String {
         let finish = |ok: bool, output: String| {
-            self.emit(SessionEvent::ToolFinished {
-                call_id: call.id.clone(),
-                ok,
-                output: truncate(&output, EVENT_OUTPUT_CHARS),
-            });
-            output
+            self.tool_finished(call, &call.function.name, ok, output, None)
         };
         let invocation = match Invocation::parse(&call.function.name, &call.function.arguments) {
             Ok(invocation) => invocation,
@@ -1573,18 +1582,14 @@ impl Agent {
         {
             return finish(false, "The user denied this action.".into());
         }
-        self.emit(SessionEvent::ToolStarted {
-            call_id: call.id.clone(),
-            tool: tool.to_string(),
-            summary,
-        });
+        let started = self.tool_started(call, tool, summary);
         let (ok, output) = match invocation.execute(&self.shared.workspace).await {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
         self.after_tool(tool, &call.function.arguments, ok, &output)
             .await;
-        finish(ok, output)
+        self.tool_finished(call, tool, ok, output, Some(started))
     }
 
     fn update_plan(&self, arguments: &str) -> Result<String, String> {

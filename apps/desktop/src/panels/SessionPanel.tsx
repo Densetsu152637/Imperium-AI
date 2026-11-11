@@ -46,7 +46,7 @@ import { describeUsage, formatShare, indicator, modelSpec } from "../budgets";
 import { describeRule } from "../components/PermissionsEditor";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
-import { ToolState } from "../components/ToolState";
+import { ToolCall } from "../components/ToolCall";
 import { WaitLine } from "../components/WaitLine";
 import { describeWait } from "../waits";
 import type { DaemonClient } from "../daemon/client";
@@ -608,17 +608,7 @@ function EntryView({
         </div>
       );
     case "tool":
-      return (
-        <details className={`tool ${entry.ok === false ? "failed" : ""}`}>
-          <summary>
-            <span className="tool-state">
-              <ToolState ok={entry.ok} />
-            </span>{" "}
-            {entry.summary}
-          </summary>
-          {entry.output && <pre>{entry.output}</pre>}
-        </details>
-      );
+      return <ToolCall entry={entry} />;
     case "task":
       return (
         <div className="task-line">

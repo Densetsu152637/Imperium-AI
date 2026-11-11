@@ -44,6 +44,11 @@ pub enum SessionEvent {
         call_id: String,
         tool: String,
         summary: String,
+        /// The call's JSON arguments as the model wrote them, truncated for display; absent in
+        /// history recorded before arguments were sent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        arguments: Option<String>,
     },
     /// A tool call needs the user's approval; answer with `session.respond`.
     PermissionRequested {
@@ -62,6 +67,15 @@ pub enum SessionEvent {
         call_id: String,
         ok: bool,
         output: String,
+        /// The tool's name; absent in history recorded before it was sent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        tool: Option<String>,
+        /// Time from `tool_started` to the end; absent when the call never started (denied,
+        /// invalid or blocked).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, type = "number")]
+        duration_ms: Option<u64>,
     },
     /// One model call finished; emitted after every call, so a turn can have several.
     ModelCallCompleted {

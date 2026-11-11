@@ -16,12 +16,26 @@ import type { TokenUsage } from "./TokenUsage";
 /**
  * Something that happened in a session, in order.
  */
-export type SessionEvent = { "type": "turn_started", text: string, attachments?: Array<Attachment>, } | { "type": "text_delta", text: string, } | { "type": "tool_started", call_id: string, tool: string, summary: string, } | { "type": "permission_requested", request_id: number, tool: string, summary: string, 
+export type SessionEvent = { "type": "turn_started", text: string, attachments?: Array<Attachment>, } | { "type": "text_delta", text: string, } | { "type": "tool_started", call_id: string, tool: string, summary: string, 
+/**
+ * The call's JSON arguments as the model wrote them, truncated for display; absent in
+ * history recorded before arguments were sent.
+ */
+arguments?: string, } | { "type": "permission_requested", request_id: number, tool: string, summary: string, 
 /**
  * The rule "always allow" would add (`permissions.add_rule`), when there is a sensible
  * one: the command and its subcommand, the file's folder, or the whole tool.
  */
-suggested_rule?: PermissionRule, } | { "type": "tool_finished", call_id: string, ok: boolean, output: string, } | { "type": "model_call_completed", model: string, usage: TokenUsage, duration_ms: number, 
+suggested_rule?: PermissionRule, } | { "type": "tool_finished", call_id: string, ok: boolean, output: string, 
+/**
+ * The tool's name; absent in history recorded before it was sent.
+ */
+tool?: string, 
+/**
+ * Time from `tool_started` to the end; absent when the call never started (denied,
+ * invalid or blocked).
+ */
+duration_ms?: number, } | { "type": "model_call_completed", model: string, usage: TokenUsage, duration_ms: number, 
 /**
  * Time the call waited for a slot on a local model before it started, which
  * `duration_ms` leaves out; absent for hosted models.

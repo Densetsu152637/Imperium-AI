@@ -11,7 +11,7 @@ import remarkGfm from "remark-gfm";
 import type { RuntimeInstallJob } from "@imperium/protocol";
 
 import { RowMenu } from "../components/RowMenu";
-import { ToolState } from "../components/ToolState";
+import { ToolCall } from "../components/ToolCall";
 import { WaitLine } from "../components/WaitLine";
 import { formatCost, type SessionState, type TaskState } from "../sessions";
 import { isStopped, shownTaskStatus } from "../stop";
@@ -137,8 +137,8 @@ function TaskRow({
                   {entry.text.split("\n")[0]}
                 </li>
               ) : entry.kind === "tool" ? (
-                <li key={index} className={entry.ok === false ? "failed" : undefined}>
-                  <ToolState ok={entry.ok} /> {entry.summary}
+                <li key={index} className="task-tool">
+                  <ToolCall entry={entry} />
                 </li>
               ) : null,
             )}
