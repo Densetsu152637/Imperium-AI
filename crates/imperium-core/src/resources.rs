@@ -530,6 +530,7 @@ mod tests {
             claimed: false,
             cpu_pinned: false,
             stale: false,
+            crashed: false,
         }
     }
 

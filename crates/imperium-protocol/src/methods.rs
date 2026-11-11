@@ -1939,7 +1939,9 @@ pub struct ModelResidency {
     /// (its settings changed), `grow` (a call needs a larger KV pool), `promote` (it ran on the
     /// CPU while the GPU was idle), `request` (`models.unload`), `yield` (a waiting agent gave
     /// its KV cells to another agent on the same model), `stopped` (the session was stopped),
-    /// or `budget` (the free memory measured changed).
+    /// `budget` (the free memory measured changed), or `crashed` (its server exited on its own:
+    /// it was taken out of memory and the next call loads it again, `detail` says how it
+    /// ended). Clients word reasons they do not know from their name.
     pub reason: String,
     /// Whether it happened; when not, `detail` says why.
     pub ok: bool,
@@ -1968,7 +1970,8 @@ pub struct ModelSwap {
     pub slots: u32,
     /// Out: `room` (another model needed the memory), `idle`, `config` (its settings
     /// changed), `grow` (a call needs a larger KV pool), `promote` (it ran on the CPU while the
-    /// GPU was idle and restarts on the GPU), or `request` (`models.unload`). In: `swap` (it
+    /// GPU was idle and restarts on the GPU), `request` (`models.unload`), or `crashed` (its
+    /// server exited on its own; nothing was saved). In: `swap` (it
     /// replaced a model) or `restore` (it came back with saved slots). `model.residency` says
     /// in more detail why each move happened.
     pub reason: String,

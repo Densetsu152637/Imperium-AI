@@ -27,7 +27,9 @@ holder?: string,
  * (its settings changed), `grow` (a call needs a larger KV pool), `promote` (it ran on the
  * CPU while the GPU was idle), `request` (`models.unload`), `yield` (a waiting agent gave
  * its KV cells to another agent on the same model), `stopped` (the session was stopped),
- * or `budget` (the free memory measured changed).
+ * `budget` (the free memory measured changed), or `crashed` (its server exited on its own:
+ * it was taken out of memory and the next call loads it again, `detail` says how it
+ * ended). Clients word reasons they do not know from their name.
  */
 reason: string, 
 /**

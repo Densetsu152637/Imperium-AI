@@ -6,7 +6,9 @@
 //!   [`TICK`], the controller reads the loaded models and plans ([`plan`]): models whose
 //!   settings changed restart once nobody uses them ([`Reason::Config`]), and models nobody has
 //!   used for `idle_unload_s` unload ([`Reason::Idle`]). The runtime executes each action and
-//!   refuses anything that would move a model or slot in use.
+//!   refuses anything that would move a model or slot in use. A model whose server exited on
+//!   its own is taken out of the loaded set at once ([`Reason::Crashed`]); the next call for it
+//!   loads it again, after a backoff when it keeps crashing.
 //! - **Calls ask it.** A call whose model is not loaded asks the controller's policy
 //!   ([`CorePolicy`]) what to swap out, under the arbiter's rules: never a model in use, the GPU
 //!   rule (nothing runs on the CPU while nothing generates; the critic is the exception), the
@@ -63,18 +65,27 @@ pub struct Planned {
     pub reason: Reason,
 }
 
-/// What to do now about the loaded models: restart those whose settings changed once nobody
-/// uses them, and unload those unused for `idle_unload`. A model with a slot in use, a call
-/// queued, or an agent of any session mid-turn on it is left alone.
+/// What to do now about the loaded models: take those whose server crashed out of the loaded
+/// set at once (whoever holds them: there is nothing left to wait for), restart those whose
+/// settings changed once nobody uses them, and unload those unused for `idle_unload`. Otherwise
+/// a model with a slot in use, a call queued, or an agent of any session mid-turn on it is left
+/// alone.
 pub fn plan(loaded: &[LoadedStatus], idle_unload: Duration) -> Vec<Planned> {
     loaded
         .iter()
-        .filter(|model| model.slots_in_use == 0 && model.queued == 0 && !model.claimed)
+        .filter(|model| {
+            model.crashed || (model.slots_in_use == 0 && model.queued == 0 && !model.claimed)
+        })
         .filter_map(|model| {
             let unload = Action::Unload {
                 model: model.model_id.clone(),
             };
-            if model.stale {
+            if model.crashed {
+                Some(Planned {
+                    action: unload,
+                    reason: Reason::Crashed,
+                })
+            } else if model.stale {
                 Some(Planned {
                     action: unload,
                     reason: Reason::Config,
@@ -293,6 +304,7 @@ mod tests {
             pool_tokens: 8192,
             pool_reserved_tokens: 0,
             stale: false,
+            crashed: false,
         }
     }
 
@@ -421,24 +433,47 @@ mod tests {
     use imperium_local::scan::{Format, LocalModel};
     use imperium_local::supervisor::{LaunchFuture, LaunchSpec, Launcher, Runtimes, Server};
 
-    #[derive(Debug)]
-    struct FakeLauncher;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    struct FakeServer(String);
+    /// Starts fake servers; the latest one can be made to exit on its own.
+    #[derive(Debug, Default)]
+    struct FakeLauncher {
+        launches: AtomicUsize,
+        latest: std::sync::Mutex<Option<Arc<AtomicBool>>>,
+    }
+
+    impl FakeLauncher {
+        fn crash(&self) {
+            if let Some(exited) = self.latest.lock().unwrap().as_ref() {
+                exited.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    struct FakeServer(String, Arc<AtomicBool>);
 
     impl Server for FakeServer {
         fn base_url(&self) -> &str {
             &self.0
+        }
+
+        fn exited(&self) -> Option<String> {
+            self.1
+                .load(Ordering::SeqCst)
+                .then(|| "the server exited (exit code: 1)".to_string())
         }
     }
 
     impl Launcher for FakeLauncher {
         fn launch<'a>(&'a self, spec: &'a LaunchSpec) -> LaunchFuture<'a> {
             Box::pin(async move {
-                Ok(
-                    Box::new(FakeServer(format!("http://fake/{}/v1", spec.model_id)))
-                        as Box<dyn Server>,
-                )
+                self.launches.fetch_add(1, Ordering::SeqCst);
+                let exited = Arc::new(AtomicBool::new(false));
+                *self.latest.lock().unwrap() = Some(Arc::clone(&exited));
+                Ok(Box::new(FakeServer(
+                    format!("http://fake/{}/v1", spec.model_id),
+                    exited,
+                )) as Box<dyn Server>)
             })
         }
     }
@@ -490,13 +525,69 @@ mod tests {
     }
 
     fn start(idle_unload_s: u64) -> Arc<Supervisor> {
+        start_with(idle_unload_s, Arc::default())
+    }
+
+    fn start_with(idle_unload_s: u64, launcher: Arc<FakeLauncher>) -> Arc<Supervisor> {
         Supervisor::start(
             vec![model("a"), model("b")],
             settings(idle_unload_s),
             Runtimes::default(),
             &machine(10, 0),
-            Arc::new(FakeLauncher),
+            launcher,
         )
+    }
+
+    #[test]
+    fn a_crashed_model_is_unloaded_at_once_whoever_holds_it() {
+        let crashed = LoadedStatus {
+            crashed: true,
+            slots_in_use: 1,
+            queued: 2,
+            claimed: true,
+            idle_for: None,
+            ..status("crashed")
+        };
+        assert_eq!(
+            plan(&[crashed, status("running")], Duration::from_secs(900)),
+            [Planned {
+                action: Action::Unload {
+                    model: "crashed".into()
+                },
+                reason: Reason::Crashed,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_controller_unloads_a_crashed_server_and_the_next_call_loads_it_again() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = start_with(900, Arc::clone(&launcher));
+        let controller = ResidencyController::new(&supervisor, None);
+        let mut moves = supervisor.moves();
+        // The server dies under a call (which fails on its own).
+        let lease = supervisor.acquire("a", "s/root").await.unwrap();
+        launcher.crash();
+        assert_eq!(
+            controller.tick().await,
+            [Planned {
+                action: Action::Unload { model: "a".into() },
+                reason: Reason::Crashed,
+            }]
+        );
+        drop(lease);
+        assert!(supervisor.loaded().is_empty());
+        drop(supervisor.acquire("a", "s/root").await.unwrap());
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+        assert!(!supervisor.loaded()[0].crashed);
+        assert_eq!(
+            drain(&mut moves),
+            [
+                ("load a".to_string(), Reason::Call),
+                ("unload a".to_string(), Reason::Crashed),
+                ("load a".to_string(), Reason::Call),
+            ]
+        );
     }
 
     fn drain(moves: &mut tokio::sync::broadcast::Receiver<Move>) -> Vec<(String, Reason)> {
