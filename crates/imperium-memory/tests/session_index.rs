@@ -33,6 +33,7 @@ fn tool(summary: &str) -> AgentEvent {
             call_id: "c1".into(),
             tool: "edit_file".into(),
             summary: summary.into(),
+            arguments: None,
         },
     )
 }

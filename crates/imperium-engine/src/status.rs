@@ -349,6 +349,7 @@ mod tests {
                 call_id: "c".into(),
                 tool: "w".into(),
                 summary: "s".into(),
+                arguments: None,
             },
         });
         assert_eq!(controls.status().0, SessionStatus::Working);

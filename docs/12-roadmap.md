@@ -117,8 +117,10 @@ the wait reason in the desktop.
     spaces ([05](05-tools-and-isolation.md#isolation-tiers)).
 13. **Worktrees by default.** An environment's sessions get its project-specific worktrees
     without extra setup.
-14. **Visible tool calls.** The transcript shows each tool call, with arguments and result, for
-    the session and for every subagent, collapsed by default.
+14. **Visible tool calls** (implemented). The transcript shows each tool call, with arguments
+    and result, for the session and for every subagent, collapsed by default: one line per call
+    (state, tool, summary, run time) that opens to the arguments and result, long text behind
+    "show more" ([07](07-desktop-ui.md#tool-calls-implemented)).
 15. **Reasoning effort.** Models that can reason get a per-session effort setting (low,
     medium, high, max), mapped to each backend's reasoning controls and hidden for models
     without them.
