@@ -51,8 +51,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use imperium_api::{
-    AcquireFuture, Availability, Load as MachineLoad, LoadView, LocalLease, LocalModels,
-    LocalPresence, LocalRequest, LocalWait, Priority, ResumeFuture, SuspendFuture, holder_session,
+    AcquireError, AcquireFuture, Availability, Load as MachineLoad, LoadView, LoadedFuture,
+    LocalLease, LocalModels, LocalPresence, LocalRequest, LocalWait, Priority, ResumeFuture,
+    SuspendFuture, holder_session,
 };
 pub use imperium_config::{CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS};
 use imperium_config::{LaneRow, LlamaCppSettings, LocalModelSettings, ModelLaunch, VllmSettings};
@@ -77,6 +78,9 @@ const RECHECK: Duration = Duration::from_millis(250);
 const DEFAULT_INTERACTIVE_HOLD: Duration = Duration::from_secs(5 * 60);
 /// The window `max_swaps_per_min` counts over.
 const SWAP_WINDOW: Duration = Duration::from_secs(60);
+/// A crash this long after the previous one starts a new streak (see
+/// [`crate::residency::crash_backoff`]).
+const CRASH_STREAK: Duration = Duration::from_secs(10 * 60);
 /// Load speed assumed for a model that has not been loaded yet, to estimate a swap.
 const ASSUMED_LOAD_BYTES_PER_S: u64 = 2 * 1024 * MIB;
 /// How a model pinned to the CPU lane is served (from its model-table row).
@@ -194,6 +198,12 @@ pub trait Server: Send + Sync {
 
     /// The server's process id, for the resource monitor; `None` for in-process servers.
     fn pid(&self) -> Option<u32> {
+        None
+    }
+
+    /// How the server ended, once it has exited on its own (crashed, killed from outside);
+    /// `None` while it runs, and for servers that cannot tell.
+    fn exited(&self) -> Option<String> {
         None
     }
 
@@ -319,6 +329,9 @@ pub struct LoadedStatus {
     pub pool_reserved_tokens: u32,
     /// Started with settings that have changed since; it restarts once nothing is using it.
     pub stale: bool,
+    /// Its server exited on its own: calls wait until it is unloaded ([`Reason::Crashed`]) and
+    /// loaded again.
+    pub crashed: bool,
 }
 
 /// Why [`Supervisor::unload`] did not unload a model.
@@ -354,7 +367,7 @@ pub struct SwapEvent {
     /// Out: slots saved. In: saved slots its agents will get back.
     pub slots: u32,
     /// Out: `room`, `idle`, `config` (its settings changed), `grow` (a call needs a larger KV
-    /// pool), or `request` (`models.unload`).
+    /// pool), `promote`, `request` (`models.unload`), or `crashed` (its server exited).
     /// In: `swap` (it replaced a
     /// model) or `restore` (it came back to saved slots).
     pub reason: &'static str,
@@ -665,11 +678,19 @@ struct Loaded {
     /// It runs (partly) on the CPU while the GPU went idle: no call takes a slot on it, and it
     /// restarts once its calls are done, to be placed on the GPU (swap reason `promote`).
     promoting: bool,
+    /// A call found its server gone ([`Server::exited`]): no call takes a slot on it until the
+    /// residency controller unloads it ([`Reason::Crashed`]).
+    crashed: bool,
 }
 
 impl Loaded {
     fn in_use(&self) -> u32 {
         self.pool.in_use()
+    }
+
+    /// Whether its server has exited on its own.
+    fn has_crashed(&self) -> bool {
+        self.crashed || self.server.exited().is_some()
     }
 
     /// The pool a call of `request` needs this server restarted with, when it does not fit the
@@ -747,6 +768,20 @@ struct State {
     load_seconds: HashMap<String, f64>,
     /// How fast each model has generated, kept after it is unloaded.
     throughput: HashMap<String, Throughput>,
+    /// Slots being saved for a holder while it waits (`(model, holder)`): its next call on
+    /// the model waits for the save, so it restores the newest context, never an older one.
+    saving: HashSet<(String, String)>,
+    /// Models whose server crashed, and how often in a row, for the reload backoff.
+    crashes: HashMap<String, Crash>,
+}
+
+/// A model's recent crashes.
+#[derive(Debug, Clone, Copy)]
+struct Crash {
+    /// When it last crashed (Tokio's clock, which tests can advance).
+    at: tokio::time::Instant,
+    /// Crashes in a row, each within [`CRASH_STREAK`] of the one before.
+    streak: u32,
 }
 
 /// Tokens generated over the seconds spent generating them, over a model's recent calls.
@@ -970,6 +1005,9 @@ enum Step {
     Load,
     /// It waits its turn.
     Wait,
+    /// The holder's own slot on the model is being saved (it yielded its cells while it
+    /// waited): the call waits for the save, then restores what it wrote.
+    Saving,
     /// A background call gives way to the user's calls, or to a saturated machine; waiting
     /// this way does not count against `max_wait_s`.
     Yield,
@@ -987,6 +1025,9 @@ enum Plan {
     Wait {
         yielded: bool,
     },
+    /// The model's server crashed lately and keeps crashing: it stays down a while
+    /// ([`ResidencyPolicy::crash_backoff`]).
+    Backoff,
     Load(Box<Load>),
 }
 
@@ -1235,7 +1276,9 @@ impl Supervisor {
     ///
     /// - [`Action::Unload`] unloads a model nobody uses (no slot in use, no call queued, no
     ///   agent mid-turn on it), saving its slots; [`Reason::Config`] restarts a model whose
-    ///   settings changed the same way.
+    ///   settings changed the same way. [`Reason::Crashed`] takes a model whose server exited out
+    ///   of the loaded set whoever holds it (there is nothing left to save or wait for), and
+    ///   refuses one whose server still runs.
     /// - [`Action::SaveSlot`] saves an agent's slot and frees its cells (it must not be in use).
     /// - [`Action::RestoreSlot`] and [`Action::Load`] bring an agent's context back ahead of its
     ///   next call, loading its model if needed, with a call that reserves almost nothing.
@@ -1251,6 +1294,9 @@ impl Supervisor {
                 })
                 .await;
                 Ok(())
+            }
+            Action::Unload { model } if reason == Reason::Crashed => {
+                self.unload_crashed(&model).await
             }
             Action::Unload { model } => self
                 .unload_for(&model, reason)
@@ -1314,9 +1360,10 @@ impl Supervisor {
             prompt_tokens: Some(0),
             uncapped: false,
         };
-        self.acquire_slot(model, holder, request, reason)
+        self.acquire_slot(model, holder, request, reason, true)
             .await
             .map(drop)
+            .map_err(|error| error.to_string())
     }
 
     /// Sets how background calls give way to the user's: they wait while `view` reports
@@ -1724,6 +1771,7 @@ impl Supervisor {
                     pool_tokens: loaded.pool.pool_tokens,
                     pool_reserved_tokens: loaded.pool.reserved_tokens(),
                     stale: loaded.stale,
+                    crashed: loaded.has_crashed(),
                 }
             })
             .collect();
@@ -1774,6 +1822,64 @@ impl Supervisor {
         if let Err(error) = self.swap_out_detached(victim, reason, None, swapping).await {
             tracing::warn!(%error, model = %id, "could not unload a model");
         }
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
+    /// Takes `id`, whose server has exited on its own, out of the loaded set, so the next call
+    /// for it loads it again (after [`ResidencyPolicy::crash_backoff`] when it keeps crashing).
+    /// Calls holding a slot on it have already failed or will; nothing can be saved from it.
+    async fn unload_crashed(&self, id: &str) -> Result<(), String> {
+        let swapping = Arc::clone(&self.swapping).lock_owned().await;
+        let (entry, exit, streak) = {
+            let mut state = lock(&self.state);
+            let entry = state
+                .loaded
+                .get(id)
+                .ok_or_else(|| format!("{id} is not loaded"))?;
+            let Some(exit) = entry.server.exited() else {
+                return Err(format!("the server of {id} is running"));
+            };
+            let entry = state
+                .loaded
+                .remove(id)
+                .ok_or_else(|| format!("{id} is not loaded"))?;
+            let now = tokio::time::Instant::now();
+            let streak = match state.crashes.get(id) {
+                Some(last) if now.duration_since(last.at) < CRASH_STREAK => last.streak + 1,
+                _ => 1,
+            };
+            state
+                .crashes
+                .insert(id.to_string(), Crash { at: now, streak });
+            (entry, exit, streak)
+        };
+        let started = Instant::now();
+        self.shrink(id);
+        // Reaps the process; its memory is already free.
+        entry.server.stop().await;
+        drop(entry);
+        drop(swapping);
+        let seconds = started.elapsed().as_secs_f64();
+        tracing::warn!(model = %id, %exit, streak, "a local model's server exited on its own; it is loaded again at its next call");
+        self.record(
+            Move::done(
+                Action::Unload {
+                    model: id.to_string(),
+                },
+                Reason::Crashed,
+            )
+            .took(seconds, 0)
+            .detail(exit),
+        );
+        self.emit(SwapEvent {
+            direction: SwapDirection::Out,
+            model_id: id.to_string(),
+            seconds,
+            bytes: 0,
+            slots: 0,
+            reason: Reason::Crashed.swap_label(),
+        });
         self.changed.notify_waiters();
         Ok(())
     }
@@ -1870,14 +1976,17 @@ impl Supervisor {
 
     /// Takes a slot on `id` for `holder`'s call, loading the model first if needed; `cause` is
     /// the reason reported for the load and the restore of a saved slot ([`Reason::Call`], or
-    /// [`Reason::Resume`] for an agent's context brought back ahead of its next call).
+    /// [`Reason::Resume`] for an agent's context brought back ahead of its next call). Without
+    /// `may_load` the call never loads, restarts or swaps a model: it takes a slot on the model
+    /// as loaded, or fails with [`AcquireError::NotLoaded`].
     async fn acquire_slot(
         &self,
         id: &str,
         holder: &str,
         request: LocalRequest,
         cause: Reason,
-    ) -> Result<LocalLease, String> {
+        may_load: bool,
+    ) -> Result<LocalLease, AcquireError> {
         let priority = request.priority;
         let model = self
             .model(id)
@@ -1913,7 +2022,7 @@ impl Supervisor {
             let step = if priority == Priority::Background && self.saturated() {
                 Step::Yield
             } else {
-                self.step(id, holder, &request, &ticket)?
+                self.step(id, holder, &request, &ticket, may_load)?
             };
             if matches!(step, Step::Leased(..) | Step::Queued(_)) {
                 self.yield_waiters(id, holder);
@@ -1970,6 +2079,10 @@ impl Supervisor {
                     // Unloaded meanwhile: wait for it again, keeping the place in line.
                     continue;
                 }
+                // `step` answers these only to a call that may load.
+                Step::Load | Step::Restart if !may_load => {
+                    return Err(AcquireError::NotLoaded(id.to_string()));
+                }
                 Step::Load => {
                     self.note_demand(id, &request);
                     // Behind a load or unload in flight, perhaps of another model.
@@ -1989,7 +2102,8 @@ impl Supervisor {
                             return self
                                 .swap_in(&model, holder, &request, *load, swapping, cause)
                                 .await
-                                .map(|lease| lease.with_wait(waited));
+                                .map(|lease| lease.with_wait(waited))
+                                .map_err(AcquireError::Failed);
                         }
                         Plan::Wait { yielded } => {
                             drop(swapping);
@@ -1998,9 +2112,14 @@ impl Supervisor {
                                 deadline = tokio::time::Instant::now() + max_wait;
                             }
                         }
+                        Plan::Backoff => {
+                            drop(swapping);
+                            waiting.set(LocalWait::Loading);
+                        }
                     }
                 }
                 Step::Wait => waiting.set(self.why_waiting(id)),
+                Step::Saving => waiting.set(LocalWait::SavingContext),
                 Step::Restart => {
                     waiting.set(self.why_waiting(id));
                     let swapping = Arc::clone(&self.swapping).lock_owned();
@@ -2018,7 +2137,7 @@ impl Supervisor {
             }
             let now = tokio::time::Instant::now();
             if now >= deadline {
-                return Err(too_long());
+                return Err(too_long().into());
             }
             let asleep = Instant::now();
             let _ = tokio::time::timeout(RECHECK.min(deadline - now), changed.as_mut()).await;
@@ -2069,24 +2188,63 @@ impl Supervisor {
     }
 
     /// Takes a slot and tokens on `id` if it is loaded and takes this call, queues for them, or
-    /// says whether the call may load the model or must wait its turn.
+    /// says whether the call may load the model or must wait its turn. Without `may_load`, a
+    /// model that is not loaded as it is (missing, crashed, or waiting to restart) is
+    /// [`AcquireError::NotLoaded`], and the call never makes it grow or move.
     fn step(
         &self,
         id: &str,
         holder: &str,
         request: &LocalRequest,
         ticket: &Ticket<'_>,
-    ) -> Result<Step, String> {
+        may_load: bool,
+    ) -> Result<Step, AcquireError> {
         let priority = request.priority;
+        let not_loaded = || Err(AcquireError::NotLoaded(id.to_string()));
         let mut state = lock(&self.state);
         let behind = state.behind_another_model(ticket.seq, id, priority);
         if !state.loaded.contains_key(id) {
+            if !may_load {
+                return not_loaded();
+            }
             state.set_admitted(ticket.seq, false);
             return Ok(if behind { Step::Wait } else { Step::Load });
         }
+        // Its own slot is being saved (it yielded its cells while it waited): restoring before
+        // the save is done would read an older save, or none.
+        if state.saving.contains(&(id.to_string(), holder.to_string())) {
+            return Ok(Step::Saving);
+        }
+        if let Some(entry) = state.loaded.get_mut(id)
+            && entry.has_crashed()
+        {
+            // The residency controller unloads it ([`Reason::Crashed`]); the call then loads
+            // it again. Told once, so waiting calls do not wake each other.
+            let first = !entry.crashed;
+            entry.crashed = true;
+            state.set_admitted(ticket.seq, false);
+            drop(state);
+            if first {
+                tracing::warn!(model = %id, "a local model's server has exited; it is loaded again");
+                self.changed.notify_waiters();
+            }
+            return if may_load {
+                Ok(Step::Wait)
+            } else {
+                not_loaded()
+            };
+        }
+        if !may_load
+            && state
+                .loaded
+                .get(id)
+                .is_some_and(|entry| entry.growing || entry.promoting)
+        {
+            return not_loaded();
+        }
         // At a request boundary, a model running on the CPU while nothing generates is moved
         // to the GPU: no agent runs on the CPU alone while the GPU is idle.
-        let promote = self.promotes(&state, id, holder, priority);
+        let promote = may_load && self.promotes(&state, id, holder, priority);
         let Some(entry) = state.loaded.get_mut(id) else {
             return Ok(Step::Wait);
         };
@@ -2109,7 +2267,7 @@ impl Supervisor {
             self.changed.notify_waiters();
             return Ok(if busy { Step::Wait } else { Step::Restart });
         }
-        if let Some(target) = entry.growth(request) {
+        if may_load && let Some(target) = entry.growth(request) {
             tracing::info!(model = %id, from = entry.pool.pool_tokens, to = target, "a call needs a larger KV pool; the model restarts with it once its running calls are done");
             self.grow_to(id, target);
             entry.stale = true;
@@ -2237,6 +2395,13 @@ impl Supervisor {
         }
         if state.behind_another_model(ticket.seq, &model.id, priority) {
             return Ok(Plan::Retry);
+        }
+        // A server that keeps crashing stays down a while before it is loaded again.
+        if let Some(crash) = state.crashes.get(&model.id) {
+            let decider = Arc::clone(&*lock(&self.policy));
+            if crash.at.elapsed() < decider.crash_backoff(&model.id, crash.streak) {
+                return Ok(Plan::Backoff);
+            }
         }
         // A background call lets the user's calls load their models first, and does not
         // swap out a model the user used lately.
@@ -2510,6 +2675,7 @@ impl Supervisor {
                     growing: false,
                     squeezed,
                     promoting: false,
+                    crashed: false,
                 },
             );
         }
@@ -2714,10 +2880,20 @@ impl Supervisor {
         let Some(files) = &self.slot_files else {
             return false;
         };
-        // The slot is taken like a call takes one, so nobody uses it while it is saved.
+        // The slot is taken like a call takes one, so nobody uses it while it is saved, and the
+        // holder's next call on the model waits for the save (see `State::saving`).
         let found = {
-            let state = lock(&self.state);
-            state.loaded.get(model).and_then(|entry| {
+            let mut state = lock(&self.state);
+            // A yield planned while the holder waited, which has gone on since: its slot is in
+            // use again, or about to be.
+            if reason == Reason::Yield
+                && !lock(&self.presence.users)
+                    .get(holder)
+                    .is_some_and(|user| user.model == model && user.waiting > 0)
+            {
+                return false;
+            }
+            let found = state.loaded.get(model).and_then(|entry| {
                 let key = entry.key?;
                 let permit = Arc::clone(&entry.pool.permits).try_acquire_owned().ok()?;
                 let slot = lock(&entry.pool.table).take_own(holder)?;
@@ -2728,10 +2904,20 @@ impl Supervisor {
                     slot,
                     permit,
                 ))
-            })
+            });
+            if found.is_some() {
+                state.saving.insert((model.to_string(), holder.to_string()));
+            }
+            found
         };
         let Some((server, pool, key, slot, _permit)) = found else {
             return false;
+        };
+        // Cleared however the save ends, cancellation included.
+        let _saving = SavingMark {
+            supervisor: self,
+            model,
+            holder,
         };
         let action = Action::SaveSlot {
             model: model.to_string(),
@@ -2969,6 +3155,8 @@ impl Supervisor {
     /// Why a call for `id` that must wait its turn waits.
     fn why_waiting(&self, id: &str) -> LocalWait {
         match lock(&self.state).loaded.get(id) {
+            // Its server exited: it is loaded again once the controller has unloaded it.
+            Some(entry) if entry.crashed => LocalWait::Loading,
             Some(entry) if entry.growing => LocalWait::GrowingPool,
             Some(entry) if entry.promoting => LocalWait::MakingRoom,
             // Stale: it restarts with new settings once free.
@@ -3028,6 +3216,23 @@ impl Forget<'_> {
 impl Drop for Forget<'_> {
     fn drop(&mut self) {
         lock(self.files).forget(self.holder, self.key);
+    }
+}
+
+/// Marks a holder's slot on a model as being saved while held; dropping it lets the holder's
+/// next call go on.
+struct SavingMark<'a> {
+    supervisor: &'a Supervisor,
+    model: &'a str,
+    holder: &'a str,
+}
+
+impl Drop for SavingMark<'_> {
+    fn drop(&mut self) {
+        lock(&self.supervisor.state)
+            .saving
+            .remove(&(self.model.to_string(), self.holder.to_string()));
+        self.supervisor.changed.notify_waiters();
     }
 }
 
@@ -3160,7 +3365,23 @@ impl LocalModels for Supervisor {
         holder: &'a str,
         request: LocalRequest,
     ) -> AcquireFuture<'a> {
-        Box::pin(self.acquire_slot(id, holder, request, Reason::Call))
+        Box::pin(async move {
+            self.acquire_slot(id, holder, request, Reason::Call, true)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// Never loads, restarts, grows or moves a model: decided where slots are handed out, so a
+    /// swap-out between a caller's check and its call is answered with
+    /// [`AcquireError::NotLoaded`], not a load.
+    fn acquire_loaded<'a>(
+        &'a self,
+        id: &'a str,
+        holder: &'a str,
+        request: LocalRequest,
+    ) -> LoadedFuture<'a> {
+        Box::pin(self.acquire_slot(id, holder, request, Reason::Call, false))
     }
 
     fn attach(&self, model: &str, holder: &str) -> LocalPresence {

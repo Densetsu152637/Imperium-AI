@@ -11,7 +11,7 @@
 //!   how through the installed [`ResidencyPolicy`];
 //! - when told to, through [`crate::supervisor::Supervisor::execute`] (idle unloads, settings
 //!   restarts, `models.unload`, a stopped session's slots, a resuming agent's context, the
-//!   memory budget).
+//!   memory budget, a crashed server taken out of the loaded set).
 //!
 //! Every move is reported as a [`Move`] with its [`Reason`]
 //! ([`crate::supervisor::Supervisor::moves`]).
@@ -113,6 +113,23 @@ pub enum Reason {
     Stopped,
     /// The free memory measured on the machine changed.
     Budget,
+    /// Its server exited on its own: it is taken out of the loaded set, and the next call for
+    /// it loads it again (after [`crash_backoff`] when it keeps crashing).
+    Crashed,
+}
+
+/// How long a model that crashed `streak` times in a row stays down before a call may load it
+/// again: not at all after one crash, then 5 s, doubling up to 5 minutes, so a server that
+/// dies as soon as it loads does not spin.
+pub fn crash_backoff(streak: u32) -> Duration {
+    const FIRST: Duration = Duration::from_secs(5);
+    const MOST: Duration = Duration::from_secs(5 * 60);
+    match streak {
+        0 | 1 => Duration::ZERO,
+        n => FIRST
+            .checked_mul(1 << (n - 2).min(16))
+            .map_or(MOST, |wait| wait.min(MOST)),
+    }
 }
 
 impl Reason {
@@ -135,6 +152,7 @@ impl Reason {
             Reason::Yield => "yield",
             Reason::Stopped => "stopped",
             Reason::Budget => "budget",
+            Reason::Crashed => "crashed",
         }
     }
 
@@ -253,6 +271,12 @@ pub trait ResidencyPolicy: Send + Sync + fmt::Debug {
     fn yield_slots(&self, _model: &str, _holder: &str, waiting: Vec<String>) -> Vec<String> {
         waiting
     }
+
+    /// How long `model`, whose server crashed `streak` times in a row, stays down before a
+    /// call may load it again.
+    fn crash_backoff(&self, _model: &str, streak: u32) -> Duration {
+        crash_backoff(streak)
+    }
 }
 
 /// The arbiter's rules as they are.
@@ -260,3 +284,15 @@ pub trait ResidencyPolicy: Send + Sync + fmt::Debug {
 pub struct Standard;
 
 impl ResidencyPolicy for Standard {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_crash_loop_backs_off_up_to_five_minutes() {
+        let waits: Vec<u64> = (1..=9).map(|n| crash_backoff(n).as_secs()).collect();
+        assert_eq!(waits, [0, 5, 10, 20, 40, 80, 160, 300, 300]);
+        assert_eq!(crash_backoff(u32::MAX), Duration::from_secs(300));
+    }
+}

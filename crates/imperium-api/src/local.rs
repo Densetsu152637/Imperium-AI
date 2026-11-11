@@ -168,6 +168,46 @@ pub fn holder_session(holder: &str) -> &str {
 }
 
 pub type AcquireFuture<'a> = Pin<Box<dyn Future<Output = Result<LocalLease, String>> + Send + 'a>>;
+pub type LoadedFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<LocalLease, AcquireError>> + Send + 'a>>;
+
+/// Why [`LocalModels::acquire_loaded`] gave no slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcquireError {
+    /// The model is not loaded (or is being swapped out, restarted or recovered from a crash),
+    /// and this call never loads one: the caller does without it.
+    NotLoaded(String),
+    /// Anything else, as [`LocalModels::acquire`] reports it.
+    Failed(String),
+}
+
+impl fmt::Display for AcquireError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AcquireError::NotLoaded(model) => {
+                write!(
+                    f,
+                    "local model {model} is not loaded, and this call does not load it"
+                )
+            }
+            AcquireError::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for AcquireError {}
+
+impl From<String> for AcquireError {
+    fn from(message: String) -> Self {
+        AcquireError::Failed(message)
+    }
+}
+
+impl From<&str> for AcquireError {
+    fn from(message: &str) -> Self {
+        AcquireError::Failed(message.to_string())
+    }
+}
 pub type SuspendFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 pub type ResumeFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
@@ -253,6 +293,26 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
         request: LocalRequest,
     ) -> AcquireFuture<'a> {
         self.acquire_as(model, holder, request.priority)
+    }
+    /// Like [`LocalModels::acquire_with`], for a call only worth making on a model already
+    /// loaded (a session title): it never loads, restarts or swaps a model, and answers
+    /// [`AcquireError::NotLoaded`] instead, so the caller falls back. The default checks
+    /// [`LocalModels::availability`] first, which a swap-out can overtake; a runtime that loads
+    /// models itself enforces it where it hands out slots.
+    fn acquire_loaded<'a>(
+        &'a self,
+        model: &'a str,
+        holder: &'a str,
+        request: LocalRequest,
+    ) -> LoadedFuture<'a> {
+        Box::pin(async move {
+            if self.availability(model) != Availability::Loaded {
+                return Err(AcquireError::NotLoaded(model.to_string()));
+            }
+            self.acquire_with(model, holder, request)
+                .await
+                .map_err(AcquireError::Failed)
+        })
     }
     /// Says that `holder` is working on `model` for one turn: while held, after the agent's
     /// first call on the loaded model, the model is never unloaded for another session's load,
