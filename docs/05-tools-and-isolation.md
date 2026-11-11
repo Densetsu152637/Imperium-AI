@@ -277,7 +277,8 @@ action: `allow` (run without asking), `ask` (ask even where the tool would not),
   stricter), and each command is matched on its own: any command denied denies the line, any
   asked asks, and the line is allowed only when every command is. Allow rules with a pattern
   never match a line with command substitution (`` ` ``, `$(`, `<(`, `>(`) or output redirection
-  into a file (`2>&1` and redirection to `/dev/null` or `nul` are fine).
+  into a file (`2>&1` and redirection to `/dev/null` or `nul` are fine, but only as whole
+  words: `>nul.txt` and `>&1out` name files).
 - **File tools** (`read_file`, `write_file`, `edit_file`, `list_dir`): a path glob. `*` and `?`
   stay within a path segment, `**` crosses segments, and `dir/**` also matches `dir`. A pattern
   without `/` matches the file name at any depth (`.env`, `*.pem`); an absolute pattern (or one
@@ -426,12 +427,12 @@ session's tools off this machine. With a remote runtime the workspace's folders 
 inside it, and every file and command tool is a short `sh -c` script run through the runtime's
 own client, so the runtime needs nothing but a POSIX shell:
 
-- **Docker container** (`docker` with `container`): `docker exec -i -w <folder> <container> sh -c …`.
+- **Docker container** (`docker` with `container`): `docker exec -i -w <folder> -- <container> sh -c …`.
 - **WSL** (`wsl` with `distro`, Windows only): `wsl.exe -d <distro> --cd <folder> --exec sh -c …`
   (`--exec` hands the script to `sh` as one argument; after a plain `--`, wsl.exe would join the
   arguments for the login shell). Windows paths given as folders or to tools (`C:\work\app`,
   `\\wsl$\<distro>\…`) are translated (`/mnt/c/work/app`).
-- **SSH** (`ssh` with `host`): `ssh -o BatchMode=yes -T [-p port] <host> "sh -c 'cd <folder> && …'"`
+- **SSH** (`ssh` with `host`): `ssh -o BatchMode=yes -T [-p port] -- <host> "sh -c 'cd <folder> && …'"`
   with the system client, so `~/.ssh/config` aliases, keys, and agents apply and no password is
   ever asked for. `user@host:port` is split into the destination and `-p`.
 

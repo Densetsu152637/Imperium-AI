@@ -88,8 +88,10 @@ impl ProjectWorktrees {
                 let folder = if project.inside.as_os_str().is_empty() {
                     tree
                 } else {
+                    // A link at the subfolder (committed on that branch) must not lead out
+                    // of the worktree: `tree` is canonical, so a target outside it is refused.
                     match tree.join(&project.inside).canonicalize() {
-                        Ok(folder) if folder.is_dir() => folder,
+                        Ok(folder) if folder.is_dir() && folder.starts_with(&tree) => folder,
                         _ => continue,
                     }
                 };
@@ -294,6 +296,51 @@ mod tests {
             sub.known()
                 .contains(&tree.join("src").canonicalize().unwrap())
         );
+    }
+
+    /// Makes `link` a directory link to `target`; `false` where links cannot be made.
+    fn link_dir(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(target, link).or_else(|_| {
+            // Creating symbolic links needs a privilege; a junction needs none.
+            let status = Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()?
+                .status;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("mklink failed"))
+            }
+        });
+        made.is_ok()
+    }
+
+    #[test]
+    fn a_subfolder_that_is_a_link_out_of_its_worktree_opens_nothing() {
+        let (base, repo, tree) = repo_with_worktree();
+        // On the linked worktree's branch, `src` is a link to a folder outside the worktree.
+        let outside = base.path().join("home");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::remove_dir_all(tree.join("src")).unwrap();
+        if !link_dir(&outside, &tree.join("src")) {
+            return;
+        }
+        let found = ProjectWorktrees::discover(&[repo.join("src").as_path()]).unwrap();
+        let known = found.known();
+        assert!(
+            known.contains(&repo.join("src").canonicalize().unwrap()),
+            "the session's own folder stays"
+        );
+        assert!(
+            !known.contains(&outside.canonicalize().unwrap()),
+            "the link's target is not opened: {known:?}"
+        );
+        assert_eq!(known.len(), 1);
     }
 
     #[test]
