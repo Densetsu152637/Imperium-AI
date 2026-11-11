@@ -541,7 +541,9 @@ fn existing_dir(path: &Path) -> std::io::Result<PathBuf> {
 /// The name a not-yet-existing path component gets when it is created. Win32 drops trailing
 /// dots and spaces from a name, so `key.pem.` creates `key.pem`; resolving it that way lets
 /// rule patterns, containment, and the write all see the same file. `None` when nothing is
-/// left (`...`, a lone space).
+/// left (`...`, a lone space) or when the name has a `:`, which on NTFS names an alternate
+/// data stream (`key.pem::$DATA` and `key.pem:x` write to `key.pem`) that no rule pattern for
+/// the file would match.
 fn creatable_name(name: OsString) -> Option<OsString> {
     if !cfg!(windows) {
         return Some(name);
@@ -549,6 +551,9 @@ fn creatable_name(name: OsString) -> Option<OsString> {
     let Some(text) = name.to_str() else {
         return Some(name);
     };
+    if text.contains(':') {
+        return None;
+    }
     match without_trailing_dots_and_spaces(text) {
         "" => None,
         trimmed if trimmed.len() == text.len() => Some(name),
@@ -659,6 +664,9 @@ mod tests {
             }
         );
         assert_eq!(creatable_name(" ".into()).is_none(), cfg!(windows));
+        for stream in ["key.pem::$DATA", "key.pem:foo", ":x"] {
+            assert_eq!(creatable_name(stream.into()).is_none(), cfg!(windows));
+        }
     }
 
     #[cfg(windows)]
@@ -683,6 +691,12 @@ mod tests {
             );
         }
         assert!(workspace.resolve_writable("...").is_err());
+        for stream in ["key.pem::$DATA", "key.pem:foo", "sub/key.pem:foo"] {
+            assert!(
+                workspace.resolve_writable(stream).is_err(),
+                "{stream} is a stream of key.pem"
+            );
+        }
     }
 
     #[test]
