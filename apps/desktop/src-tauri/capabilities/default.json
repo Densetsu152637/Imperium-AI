@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "dialog:allow-open",
+    "dialog:allow-save",
     "notification:default",
     "core:webview:allow-create-webview-window",
     "core:window:allow-set-always-on-top",

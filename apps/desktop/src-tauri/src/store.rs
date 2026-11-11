@@ -48,6 +48,12 @@ pub fn store_write(name: String, contents: String) -> Result<(), String> {
     std::fs::rename(&partial, &path).map_err(|error| error.to_string())
 }
 
+/// Writes a transcript the user chose a place for in the save dialog.
+#[tauri::command]
+pub fn export_write(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(path, contents).map_err(|error| error.to_string())
+}
+
 /// The folder, so the interface can tell the user where their settings are.
 #[tauri::command]
 pub fn store_folder() -> Result<String, String> {

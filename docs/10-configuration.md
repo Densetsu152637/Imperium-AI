@@ -75,6 +75,7 @@ listed; edit them in the file.
 | `resume.mode` | `wait_for_reset` | When a provider's usage runs out: `wait_for_reset`, `at_time`, `retry_every`, or `stop` (each session can override it) |
 | `resume.at_time`, `retry_every_minutes`, `max_wait_hours` | none, `5`, `12` | Local `HH:MM` for `at_time`; retry interval; longest wait in one turn |
 | `agents.resume_days` | `7` | Sessions active within this many days continue after the daemon restarts |
+| `context.auto_compact_at` | `0.85` | Compact an agent's conversation mid-turn when the next model call would read this share of its model's context window; `0` never does. Needs a known window; the system prompt and loaded workflow context are never compacted ([mid-turn compaction](03-agent-engine.md#context-management)) |
 | `sessions.auto_archive_on_pr_close` | `true` | Archive a session once the pull request it watches is merged or closed ([archiving sessions](14-projects-and-automation.md#archiving-sessions)) |
 | `sessions.agent_state_keep` | `true` | Keep each agent's state (a subagent's conversation, plan, and usage) in `<data>/sessions/<id>.agents/`, so finished subagents can be resumed with a follow-up, also after a restart; deleted with the session ([agent state](03-agent-engine.md#agent-state)) |
 | `sessions.auto_archive_after_days` | `0` | Archive an idle session after this many days without activity; `0` never does. Working, waiting, pinned, and agent sessions are never archived |

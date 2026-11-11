@@ -808,6 +808,19 @@ outside the model table is not offered for delegation by name
 ([model awareness](04-models-and-routing.md#model-awareness-and-model-cards-implemented)).
 Routing still sees a hidden model that is in the model table.
 
+### Exporting transcripts (implemented)
+
+A session's ⋯ menu in the Sessions panel has **Export as Markdown** and **Export as JSON**,
+for running and archived sessions alike. The app asks the daemon for `session.export`, which
+builds the transcript from the session's journal, and saves it through the native save dialog
+(a download in a browser build; the dialog's file is written by the shell's `export_write`
+command). The transcript holds every message, each tool call with its arguments and result, the
+subagent task tree with each subagent's own log under the task that started it, compaction
+notices, and the files attached to messages or created by agents. Subagents of an archived
+session open in the agent view like any other (read-only: no *Resume* or *Cancel*, no
+composer). The CLI does the same with `imperium session export <id> [--format md|json]
+[--no-subagents] [-o file]` ([02](02-architecture.md)).
+
 ### Session search (implemented)
 
 A search box sits at the top of the Sessions panel (*Search sessions*, or *Search this
