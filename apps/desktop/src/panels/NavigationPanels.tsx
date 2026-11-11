@@ -111,6 +111,19 @@ const SORT_OPTIONS: { value: SessionSort; label: string }[] = [
   { value: "status", label: "By status" },
 ];
 
+/** The Sessions panel's sort, shown in the panel header beside New session. */
+export function SessionSortSelect({ sort, onSort }: { sort: SessionSort; onSort: (sort: SessionSort) => void }) {
+  return (
+    <Select
+      aria-label="Sort sessions"
+      className="sessions-sort"
+      value={sort}
+      onChange={(value) => onSort(value as SessionSort)}
+      options={SORT_OPTIONS}
+    />
+  );
+}
+
 /** Status groups, in the order they are shown. */
 const STATUS_GROUPS: { label: string; statuses: SessionStatus[] }[] = [
   { label: "Waiting for approval", statuses: ["needs_attention"] },
@@ -166,7 +179,6 @@ export function SessionsPanel({
   scope,
   selected,
   sort,
-  onSort,
   onSelect,
   onSetPinned,
   onSetArchived,
@@ -181,8 +193,8 @@ export function SessionsPanel({
   environments: EnvironmentInfo[];
   scope: EnvironmentInfo | null;
   selected: string | null;
+  /** How active sessions are grouped; the header's `SessionSortSelect` sets it. */
   sort: SessionSort;
-  onSort: (sort: SessionSort) => void;
   onSelect: (sessionId: string) => void;
   onSetPinned: (sessionId: string, pinned: boolean) => void;
   /** Archives a session (`true`) or resumes an archived one. */
@@ -305,8 +317,8 @@ export function SessionsPanel({
 
   return (
     <div className="sessions">
-      <div className="sessions-toolbar">
-        {scope ? (
+      {scope && (
+        <div className="sessions-toolbar">
           <div className="sessions-scope">
             <button className="back" onClick={onShowAll}>
               <ArrowLeft aria-hidden="true" /> All sessions
@@ -316,17 +328,8 @@ export function SessionsPanel({
               <span>{scope.name}</span>
             </span>
           </div>
-        ) : (
-          <span className="spacer" />
-        )}
-        <Select
-          aria-label="Sort sessions"
-          className="sessions-sort"
-          value={sort}
-          onChange={(value) => onSort(value as SessionSort)}
-          options={SORT_OPTIONS}
-        />
-      </div>
+        </div>
+      )}
       {client && onOpenHit && (
         <SessionSearch
           client={client}
