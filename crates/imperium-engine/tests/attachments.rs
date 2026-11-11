@@ -41,13 +41,19 @@ fn attachment(
     mime: &str,
     vision: bool,
 ) -> Attachment {
+    // The canonical path, as the daemon's check of a sent attachment keeps it.
+    let canonical = path.canonicalize().unwrap().display().to_string();
+    let shown = canonical
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&canonical)
+        .to_string();
     Attachment {
         id: format!("a-{}", path.file_name().unwrap().to_string_lossy()),
         name: path.file_name().unwrap().to_string_lossy().into_owned(),
         kind,
         mime: mime.into(),
         size: std::fs::metadata(path).unwrap().len(),
-        path: path.display().to_string(),
+        path: shown,
         copied: false,
         vision,
         preview: None,

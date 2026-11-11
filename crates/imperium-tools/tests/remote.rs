@@ -129,11 +129,11 @@ async fn ssh_writes_and_edits_send_the_content_on_standard_input() {
     let (spec, stdin) = fake.last();
     assert_eq!(spec.program, "ssh");
     assert_eq!(
-        &spec.args[..6],
-        ["-o", "BatchMode=yes", "-T", "-p", "2222", "me@build"]
+        &spec.args[..7],
+        ["-o", "BatchMode=yes", "-T", "-p", "2222", "--", "me@build"]
     );
     assert!(
-        spec.args[6].contains("mkdir -p -- ") && spec.args[6].contains("/srv/app/docs/a.txt"),
+        spec.args[7].contains("mkdir -p -- ") && spec.args[7].contains("/srv/app/docs/a.txt"),
         "{spec}"
     );
     assert_eq!(stdin.as_deref(), Some(&b"one two"[..]));
@@ -173,7 +173,7 @@ async fn docker_exec_runs_in_the_container_and_nothing_escapes_the_folders() {
         .unwrap();
     assert_eq!(
         fake.last().0.to_string(),
-        "docker exec -i -w /app web sh -c ls"
+        "docker exec -i -w /app -- web sh -c ls"
     );
     let before = fake.calls().len();
     for outside in [r#"{"path":"../etc/passwd"}"#, r#"{"path":"/etc/passwd"}"#] {

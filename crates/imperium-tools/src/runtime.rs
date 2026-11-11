@@ -40,12 +40,14 @@ impl Remote {
     }
 
     /// The process that runs `script` with `sh -c` in `cwd` inside the runtime. Input piped to
-    /// it reaches the script (Docker needs `-i` for that).
+    /// it reaches the script (Docker needs `-i` for that). The container and the SSH host
+    /// follow a `--`, so a name that starts with `-` (a hand-edited environment file can hold
+    /// one; saving refuses it) is a name, never an option such as `-oProxyCommand=...`.
     pub fn command(&self, cwd: &str, script: &str) -> ProcessSpec {
         match self {
             Remote::Docker { container } => ProcessSpec::new(
                 "docker",
-                ["exec", "-i", "-w", cwd, container, "sh", "-c", script],
+                ["exec", "-i", "-w", cwd, "--", container, "sh", "-c", script],
             ),
             // `--exec` runs `sh` directly: after a plain `--`, wsl.exe joins the arguments into
             // one line for the distribution's login shell, which would split the script.
@@ -64,7 +66,7 @@ impl Remote {
                 }
                 // ssh hands the remote side one command line, run by the login shell.
                 let inner = format!("cd {} && {script}", sh_quote(cwd));
-                args.extend([host, format!("sh -c {}", sh_quote(&inner))]);
+                args.extend(["--".into(), host, format!("sh -c {}", sh_quote(&inner))]);
                 ProcessSpec {
                     program: "ssh".into(),
                     args,
@@ -283,7 +285,7 @@ mod tests {
         .command("/srv/app", "ls -1");
         assert_eq!(
             spec.to_string(),
-            "docker exec -i -w /srv/app web sh -c ls -1"
+            "docker exec -i -w /srv/app -- web sh -c ls -1"
         );
         assert_eq!(
             spec.args.last().unwrap(),
@@ -318,6 +320,7 @@ mod tests {
                 "-T",
                 "-p",
                 "2222",
+                "--",
                 "me@build",
                 r#"sh -c 'cd '\''/home/me/it'\''\'\'''\''s here'\'' && echo '\''hi'\'''"#,
             ]
@@ -326,7 +329,29 @@ mod tests {
             host: "devbox".into(),
         }
         .command("/w", "true");
-        assert_eq!(alias.args[3], "devbox", "{alias}");
+        assert_eq!(alias.args[3..5], ["--", "devbox"], "{alias}");
+    }
+
+    #[test]
+    fn a_name_that_looks_like_an_option_stays_a_name() {
+        let ssh = Remote::Ssh {
+            host: "-oProxyCommand=x".into(),
+        }
+        .command("/w", "true");
+        let at = ssh.args.iter().position(|arg| arg == "--").unwrap();
+        assert_eq!(ssh.args[at + 1], "-oProxyCommand=x", "{ssh}");
+        assert_eq!(ssh.args.len(), at + 3, "only the script follows: {ssh}");
+        let docker = Remote::Docker {
+            container: "--privileged".into(),
+        }
+        .command("/w", "true");
+        let at = docker.args.iter().position(|arg| arg == "--").unwrap();
+        assert_eq!(docker.args[at + 1], "--privileged", "{docker}");
+        assert_eq!(docker.args[at + 2], "sh", "{docker}");
+        assert!(
+            !docker.args[..at].iter().any(|arg| arg == "--privileged"),
+            "{docker}"
+        );
     }
 
     #[test]
