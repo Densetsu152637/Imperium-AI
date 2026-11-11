@@ -111,9 +111,10 @@ pub struct CatalogModel {
     pub tier: Tier,
     pub location: Location,
     pub tags: Vec<String>,
-    /// The row is pinned to the CPU lane (`placement = "cpu"`): slow and for work that can
-    /// wait, so only a rule or a name sends work to it, never the ranking by tier.
-    pub cpu_lane: bool,
+    /// Only a rule or a name sends work to the row, never the ranking by tier: a row pinned to
+    /// the CPU lane (`placement = "cpu"`, slow and for work that can wait), and a local model
+    /// outside the model table, which `list_models` offers by name.
+    pub named_only: bool,
 }
 
 /// What a delegating agent asked for.
@@ -230,7 +231,7 @@ pub fn route(
             .iter()
             .filter(usable)
             .filter(|c| {
-                !c.cpu_lane
+                !c.named_only
                     && c.tier >= tier
                     && in_location(c)
                     && wanted.is_none_or(|w| c.location == w)
@@ -333,7 +334,7 @@ mod tests {
                 tier,
                 location,
                 tags: tags.iter().map(|tag| tag.to_string()).collect(),
-                cpu_lane: false,
+                named_only: false,
             }
         };
         vec![
@@ -694,7 +695,7 @@ mod tests {
     fn cpu_lane_rows_are_chosen_by_rule_or_name_not_by_ranking() {
         let mut rows = local_catalog();
         let lane = rows.iter_mut().find(|c| c.id == "large").unwrap();
-        lane.cpu_lane = true;
+        lane.named_only = true;
         lane.tier = Tier::Strong;
         lane.tags = vec!["critique".into()];
         let local = FakeLocal(vec![

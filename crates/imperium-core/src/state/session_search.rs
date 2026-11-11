@@ -64,7 +64,7 @@ impl std::fmt::Debug for HttpEmbedder {
 }
 
 impl HttpEmbedder {
-    async fn embed_async(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+    pub(crate) async fn embed_async(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
         #[derive(Deserialize)]
         struct Item {
             index: Option<usize>,
@@ -144,7 +144,7 @@ impl DaemonState {
     /// The configured embedding model, when one is set and can be called. Local models are
     /// served through chat slots, so only hosted (or self-run OpenAI-compatible) endpoints
     /// embed.
-    fn embedder(&self) -> Option<Arc<HttpEmbedder>> {
+    pub(crate) fn embedder(&self) -> Option<Arc<HttpEmbedder>> {
         let id = self.settings().memory.embedding_model.trim().to_string();
         if id.is_empty() {
             return None;

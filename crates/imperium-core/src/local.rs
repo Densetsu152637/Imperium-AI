@@ -81,6 +81,18 @@ pub fn cpu_pins(settings: &Settings) -> HashMap<String, CpuLane> {
 }
 
 impl LocalRuntime {
+    /// A runtime around a supervisor a test started, planned against `hardware`.
+    #[cfg(test)]
+    pub(crate) fn for_tests(supervisor: Arc<Supervisor>, hardware: Hardware) -> Self {
+        LocalRuntime {
+            supervisor,
+            scanned: Mutex::new((Vec::new(), Vec::new())),
+            hardware,
+            server: Arc::new(Mutex::new(("cpu".into(), PathBuf::from("llama-server")))),
+            launcher: None,
+        }
+    }
+
     /// Scans the model folders ([`scan_folders`]), probes the hardware, and starts the
     /// supervisor. `None` when there is nothing to scan. Must run inside the Tokio runtime.
     pub fn start(paths: &Paths, settings: &Settings) -> Option<Self> {

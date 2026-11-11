@@ -31,6 +31,25 @@ pub struct GgufInfo {
     /// For split models: which part this is (0-based) and how many there are.
     pub split_index: Option<u32>,
     pub split_count: Option<u32>,
+    /// What the model card fields of the header say (`general.*`), for the model's card.
+    pub about: About,
+}
+
+/// The descriptive `general.*` fields of a GGUF header.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct About {
+    /// `general.basename`, such as `Qwen3-Coder`.
+    pub basename: Option<String>,
+    /// `general.finetune`, such as `Instruct`.
+    pub finetune: Option<String>,
+    /// `general.size_label`, such as `30B-A3B`.
+    pub size_label: Option<String>,
+    pub description: Option<String>,
+    pub license: Option<String>,
+    /// `general.tags`, such as `text-generation` or `code`.
+    pub tags: Vec<String>,
+    /// `general.languages`.
+    pub languages: Vec<String>,
 }
 
 impl GgufInfo {
@@ -135,10 +154,24 @@ pub fn read(reader: &mut (impl Read + Seek)) -> Result<GgufInfo, GgufError> {
     for _ in 0..kv_count {
         let key = read_string(reader)?.ok_or(GgufError::Malformed("key too long"))?;
         let kind = read_u32(reader)?;
-        match read_value(reader, kind)? {
-            Value::Text(text) => match key.as_str() {
-                "general.architecture" => info.architecture = Some(text),
-                "general.name" => info.name = Some(text),
+        let texts = matches!(key.as_str(), "general.tags" | "general.languages");
+        match read_value(reader, kind, texts)? {
+            Value::Text(text) => {
+                let about = &mut info.about;
+                match key.as_str() {
+                    "general.architecture" => info.architecture = Some(text),
+                    "general.name" => info.name = Some(text),
+                    "general.basename" => about.basename = Some(text),
+                    "general.finetune" => about.finetune = Some(text),
+                    "general.size_label" => about.size_label = Some(text),
+                    "general.description" => about.description = Some(text),
+                    "general.license" => about.license = Some(text),
+                    _ => {}
+                }
+            }
+            Value::Texts(list) => match key.as_str() {
+                "general.tags" => info.about.tags = list,
+                "general.languages" => info.about.languages = list,
                 _ => {}
             },
             Value::Number(number) => numbers.push((key, number)),
@@ -179,9 +212,14 @@ pub fn read(reader: &mut (impl Read + Seek)) -> Result<GgufInfo, GgufError> {
 
 enum Value {
     Text(String),
+    /// A short array of strings, kept only where asked for.
+    Texts(Vec<String>),
     Number(u64),
     Skipped,
 }
+
+/// Most strings of an array kept as [`Value::Texts`]; longer arrays (the vocabulary) are skipped.
+const MAX_TEXTS: u64 = 64;
 
 // GGUF value types.
 const UINT8: u32 = 0;
@@ -198,7 +236,8 @@ const UINT64: u32 = 10;
 const INT64: u32 = 11;
 const FLOAT64: u32 = 12;
 
-fn read_value(reader: &mut (impl Read + Seek), kind: u32) -> Result<Value, GgufError> {
+/// Reads one value; with `texts`, a short array of strings is kept as [`Value::Texts`].
+fn read_value(reader: &mut (impl Read + Seek), kind: u32, texts: bool) -> Result<Value, GgufError> {
     Ok(match kind {
         UINT8 | INT8 | BOOL => Value::Number(u64::from(read_array::<1>(reader)?[0])),
         UINT16 | INT16 => Value::Number(u64::from(u16::from_le_bytes(read_array(reader)?))),
@@ -216,6 +255,15 @@ fn read_value(reader: &mut (impl Read + Seek), kind: u32) -> Result<Value, GgufE
         ARRAY => {
             let element = read_u32(reader)?;
             let count = read_u64(reader)?;
+            if texts && element == STRING && count <= MAX_TEXTS {
+                let mut list = Vec::new();
+                for _ in 0..count {
+                    if let Some(text) = read_string(reader)? {
+                        list.push(text);
+                    }
+                }
+                return Ok(Value::Texts(list));
+            }
             match fixed_size(element) {
                 Some(size) => skip(
                     reader,
@@ -225,7 +273,7 @@ fn read_value(reader: &mut (impl Read + Seek), kind: u32) -> Result<Value, GgufE
                 )?,
                 None => {
                     for _ in 0..count {
-                        read_value(reader, element)?;
+                        read_value(reader, element, false)?;
                     }
                 }
             }
@@ -376,6 +424,32 @@ mod tests {
         assert_eq!(info.quantization(), Some("Q4_K_M"));
         // 32 layers × 8 KV heads × (128 + 128) × 2 bytes (f16) = 128 KiB per token.
         assert_eq!(info.kv_bytes_per_token(2.0), Some(131_072));
+    }
+
+    #[test]
+    fn the_model_card_fields_are_read() {
+        let bytes = header(&[
+            ("general.architecture", V::Str("qwen3")),
+            ("general.basename", V::Str("Qwen3-Coder")),
+            ("general.finetune", V::Str("Instruct")),
+            ("general.size_label", V::Str("30B-A3B")),
+            ("general.license", V::Str("apache-2.0")),
+            ("general.description", V::Str("A coding model.")),
+            ("general.tags", V::StrArray(&["code", "text-generation"])),
+            ("general.languages", V::StrArray(&["en"])),
+            ("tokenizer.ggml.tokens", V::StrArray(&["a", "b"])),
+            ("qwen3.block_count", V::U32(48)),
+        ]);
+        let info = read(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!(info.about.basename.as_deref(), Some("Qwen3-Coder"));
+        assert_eq!(info.about.finetune.as_deref(), Some("Instruct"));
+        assert_eq!(info.about.size_label.as_deref(), Some("30B-A3B"));
+        assert_eq!(info.about.license.as_deref(), Some("apache-2.0"));
+        assert_eq!(info.about.description.as_deref(), Some("A coding model."));
+        assert_eq!(info.about.tags, ["code", "text-generation"]);
+        assert_eq!(info.about.languages, ["en"]);
+        // Arrays after the kept ones are still skipped correctly.
+        assert_eq!(info.block_count, Some(48));
     }
 
     #[test]

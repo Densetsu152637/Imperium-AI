@@ -161,11 +161,12 @@ the wait reason in the desktop.
     back to the bottom, or sending a message) resumes following the newest text, in the session
     transcript and in a subagent's log
     ([07](07-desktop-ui.md#free-scroll-while-streaming-implemented)).
-21. **Model awareness for the root agent.** The root agent can list the local models it may
+21. **Model awareness for the root agent** (implemented). The root agent can list the local models it may
     use (only those visible to the session, with whether each fits in memory now). It can also
     retrieve, through the RAG layer, what each model is good at (coding, writing, research,
     and so on), from model cards and Imperium's own measurements. The root agent uses this to
-    pick a model when it delegates.
+    pick a model when it delegates
+    ([04](04-models-and-routing.md#model-awareness-and-model-cards-implemented)).
 22. **Agents manage the app config.** By default, and outside configured environment
     projects too, agents may add to the user's local app config: filling in model cards, and
     downloading and installing mods, plugins, and skills. Each change goes through the

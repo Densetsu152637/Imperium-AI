@@ -1662,6 +1662,10 @@ pub struct ModelConfigResult {
     pub cache_types: Vec<String>,
     /// The file saved settings are written to.
     pub file: String,
+    /// Specs of the models the user hid (`models.hidden`), which agents' `list_models` leaves
+    /// out.
+    #[serde(default)]
+    pub hidden: Vec<String>,
 }
 
 /// A local model's llama.cpp settings.
@@ -1693,6 +1697,10 @@ pub struct LocalModelConfig {
     /// The context the model was trained for, from its header.
     #[ts(type = "number | null")]
     pub context_length: Option<u64>,
+    /// What the model's own metadata says (its GGUF header, a vision projector, a Hugging Face
+    /// model card beside it); agents read it after the user's card.
+    #[serde(default)]
+    pub metadata_card: String,
 }
 
 /// Per-model llama.cpp settings; a null field takes the default.
@@ -1702,6 +1710,10 @@ pub struct LocalLaunchSettings {
     /// Display name shown instead of the id; null shows the id.
     #[serde(default)]
     pub alias: Option<String>,
+    /// The model card: what the model is good at and notes, which agents read when they choose
+    /// a model to delegate to; added to `metadata_card`.
+    #[serde(default)]
+    pub card: Option<String>,
     /// Most tokens one agent may use (vLLM `--max-model-len`), capped to what the model was
     /// trained for and what fits in memory. Ignored when `context_auto` is true.
     #[serde(default)]
@@ -1798,6 +1810,9 @@ pub struct TableModelSettings {
     /// Display name shown instead of the id; null keeps the row's own `alias`.
     #[serde(default)]
     pub alias: Option<String>,
+    /// The model card agents read when they choose a model; null keeps the row's own `card`.
+    #[serde(default)]
+    pub card: Option<String>,
     /// False leaves the row out of routing.
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -1823,6 +1838,9 @@ pub struct TableModelEffective {
     /// The display name in effect, if any.
     #[serde(default)]
     pub alias: Option<String>,
+    /// The model card in effect, if any.
+    #[serde(default)]
+    pub card: Option<String>,
     pub enabled: bool,
     #[ts(type = "\"basic\" | \"standard\" | \"strong\" | \"frontier\"")]
     pub tier: String,
@@ -1839,6 +1857,9 @@ pub struct ModelSetConfigParams {
     pub local: Vec<LocalModelUpdate>,
     #[serde(default)]
     pub table: Vec<TableModelUpdate>,
+    /// Replaces `models.hidden`, the specs of the models the user hid; null leaves it alone.
+    #[serde(default)]
+    pub hidden: Option<Vec<String>>,
     /// Check and compute the result without saving or applying anything.
     #[serde(default)]
     pub dry_run: bool,

@@ -302,3 +302,61 @@ async fn aliases_are_saved_and_shown_by_every_listing() {
     assert_eq!(daemon.model_table().models[0].alias, None);
     assert_eq!(daemon.local_models().models[0].alias, None);
 }
+
+#[tokio::test]
+async fn cards_and_hidden_models_are_saved() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    let paths = Paths::under(home.path());
+
+    let update = json!({
+        "local": [{"id": "tiny", "settings": {"card": "Good at: quick answers."}}],
+        "table": [{"id": "coder", "settings": {"card": "Good at: coding."}}],
+        "hidden": ["llamacpp:tiny", "llamacpp:tiny", " "],
+    });
+    let result = call(&mut socket, "models.set_config", update)
+        .await
+        .unwrap();
+    assert_eq!(
+        result["local"][0]["saved"]["card"],
+        "Good at: quick answers."
+    );
+    assert!(result["local"][0]["metadata_card"].is_string());
+    assert_eq!(result["table"][0]["effective"]["card"], "Good at: coding.");
+    assert_eq!(result["hidden"], json!(["llamacpp:tiny"]));
+    assert_eq!(daemon.settings().models.hidden, ["llamacpp:tiny"]);
+    let loaded = imperium_config::load(&paths, None, [])
+        .unwrap()
+        .settings()
+        .unwrap();
+    assert_eq!(
+        loaded.runtime.llamacpp.models["tiny"].card.as_deref(),
+        Some("Good at: quick answers.")
+    );
+    assert_eq!(
+        loaded.models.catalog[0].card.as_deref(),
+        Some("Good at: coding.")
+    );
+    assert_eq!(loaded.models.hidden, ["llamacpp:tiny"]);
+
+    // Leaving hidden out keeps it; an empty list clears it. A blank card is refused.
+    let kept = call(&mut socket, "models.set_config", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(kept["hidden"], json!(["llamacpp:tiny"]));
+    let cleared = call(&mut socket, "models.set_config", json!({"hidden": []}))
+        .await
+        .unwrap();
+    assert_eq!(cleared["hidden"], json!([]));
+    let error = call(
+        &mut socket,
+        "models.set_config",
+        json!({"table": [{"id": "coder", "settings": {"card": " "}}]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error["message"].as_str().unwrap().contains("card"),
+        "{error}"
+    );
+}

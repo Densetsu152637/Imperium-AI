@@ -92,6 +92,7 @@ pub fn set_config(
             ));
         }
         imperium_config::check_alias(settings.alias.as_deref())
+            .and_then(|()| imperium_config::check_card(settings.card.as_deref()))
             .map_err(|reason| format!("model table row {}: {reason}", update.id))?;
         if settings.context_window == Some(0) {
             return Err(format!(
@@ -105,6 +106,9 @@ pub fn set_config(
             &update.id,
             table_table(settings),
         );
+    }
+    if let Some(hidden) = &params.hidden {
+        set_hidden(&mut saved, hidden);
     }
     let candidate = candidate(state, &file, &saved)?;
     if params.dry_run {
@@ -175,6 +179,29 @@ fn write_app_file(file: &Path, saved: &Table) -> Result<(), String> {
         .map_err(|error| format!("could not replace {}: {error}", file.display()))
 }
 
+/// Sets `models.hidden` to `specs` (sorted, each once), or removes it when there are none.
+fn set_hidden(saved: &mut Table, specs: &[String]) {
+    let mut specs: Vec<String> = specs
+        .iter()
+        .map(|spec| spec.trim().to_string())
+        .filter(|spec| !spec.is_empty())
+        .collect();
+    specs.sort();
+    specs.dedup();
+    let Some(models) = saved
+        .entry("models".to_string())
+        .or_insert_with(|| Value::Table(Table::new()))
+        .as_table_mut()
+    else {
+        return;
+    };
+    if specs.is_empty() {
+        models.remove("hidden");
+    } else {
+        models.insert("hidden".into(), strings(&specs));
+    }
+}
+
 /// Sets (or, when `entry` is empty, removes) `id` under the table at `path`.
 fn set_entry(saved: &mut Table, path: &[&str], id: &str, entry: Table) {
     let mut table = &mut *saved;
@@ -211,6 +238,7 @@ fn local_table(settings: &LocalLaunchSettings) -> Table {
         }
     };
     put("alias", settings.alias.clone().map(Value::String));
+    put("card", settings.card.clone().map(Value::String));
     if settings.context_auto {
         put("context", Some(Value::String("auto".into())));
     } else {
@@ -247,6 +275,7 @@ fn table_table(settings: &TableModelSettings) -> Table {
         }
     };
     put("alias", settings.alias.clone().map(Value::String));
+    put("card", settings.card.clone().map(Value::String));
     put("enabled", settings.enabled.map(Value::Boolean));
     put("tier", settings.tier.clone().map(Value::String));
     put("tags", settings.tags.as_deref().map(strings));
@@ -265,6 +294,7 @@ fn table_table(settings: &TableModelSettings) -> Table {
 fn to_local(settings: &LocalLaunchSettings) -> LocalModelSettings {
     LocalModelSettings {
         alias: settings.alias.clone(),
+        card: settings.card.clone(),
         context: if settings.context_auto {
             Some(ContextLimit::Auto)
         } else {
@@ -285,6 +315,7 @@ fn to_local(settings: &LocalLaunchSettings) -> LocalModelSettings {
 fn from_local(settings: LocalModelSettings) -> LocalLaunchSettings {
     LocalLaunchSettings {
         alias: settings.alias,
+        card: settings.card,
         context: settings.context.and_then(ContextLimit::tokens),
         context_auto: settings.context == Some(ContextLimit::Auto),
         pool_tokens: settings.pool_tokens,
@@ -369,6 +400,7 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                         .is_some_and(|started| started.restarts_for(&launch)),
                     cpu_lane,
                     context_length: model.info.context_length,
+                    metadata_card: imperium_local::card::metadata_card(model),
                 }
             })
             .collect()
@@ -393,6 +425,7 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                 endpoint_configured: endpoint.is_some(),
                 saved: TableModelSettings {
                     alias: own.alias,
+                    card: own.card,
                     enabled: own.enabled,
                     tier: own.tier.map(|tier| tier.as_str().into()),
                     tags: own.tags,
@@ -402,6 +435,7 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                 },
                 effective: TableModelEffective {
                     alias: entry.alias.clone(),
+                    card: entry.card.clone(),
                     enabled: entry.enabled,
                     tier: entry.tier.as_str().into(),
                     tags: entry.tags.clone(),
@@ -418,5 +452,6 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
         defaults: effective(&llama.default_launch()),
         cache_types: CACHE_TYPES.iter().map(ToString::to_string).collect(),
         file: state.paths().app_models_file().display().to_string(),
+        hidden: settings.models.hidden.clone(),
     }
 }

@@ -26,8 +26,9 @@ pub use layers::{
 };
 pub use local_models::{
     CACHE_TYPES, CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS, ContextLimit, DEFAULT_SLOTS,
-    INITIAL_POOL_TOKENS, LaneRow, LocalModelSettings, MAX_ALIAS_CHARS, MAX_SLOTS, ModelLaunch,
-    NO_CONTEXT_LIMIT, TableOverride, check_alias, check_launch, check_local_model,
+    INITIAL_POOL_TOKENS, LaneRow, LocalModelSettings, MAX_ALIAS_CHARS, MAX_CARD_CHARS, MAX_SLOTS,
+    ModelLaunch, NO_CONTEXT_LIMIT, TableOverride, check_alias, check_card, check_launch,
+    check_local_model,
 };
 pub use mcp_servers::{
     MAX_SERVER_NAME, remove_mcp_server, save_mcp_server, set_mcp_server_enabled, valid_server_name,
@@ -46,10 +47,11 @@ pub use settings::{
     ActionSettings, AgentSettings, AutofixSettings, CatalogEntry, ConditionSettings,
     DaemonSettings, EndpointSettings, Enforce, ExtensionSettings, GithubSettings, GithubWatch,
     HardwareSettings, HookSettings, ImageSettings, IsolationSettings, LLAMACPP_ENDPOINT,
-    LlamaCppSettings, LoadSettings, Location, McpServerSettings, McpSettings, MediaServiceSettings,
-    MediaSettings, MemorySettings, MemoryWrite, ModelPlacement, ModelSettings, PetSettings,
-    PhoneSettings, Preference, ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings,
-    RuntimeSettings, ScheduleSettings, SecretRef, SessionSearchScope, SessionSettings, Settings,
-    Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings, WritePolicy,
+    ListModelsScope, LlamaCppSettings, LoadSettings, Location, McpServerSettings, McpSettings,
+    MediaServiceSettings, MediaSettings, MemorySettings, MemoryWrite, ModelPlacement,
+    ModelSettings, PetSettings, PhoneSettings, Preference, ProjectSettings, ResumeSettings,
+    RoutingRule, RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef, SessionSearchScope,
+    SessionSettings, Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings,
+    WorkflowSettings, WritePolicy,
 };
 pub use settings::{SuggestionCandidate, default_suggestions};
