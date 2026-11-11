@@ -1250,7 +1250,7 @@ echo 'version: 6000 (abc)'
             overridden: false,
         };
         let listed = runtime_check::find_unverified(Some(home.path()));
-        assert_eq!(listed, [server.clone()]);
+        assert_eq!(listed, std::slice::from_ref(&server));
         let mut settings = llama_settings();
         let resolved = resolve(&settings, data.path(), &hardware, Some(home.path())).await;
         assert_ne!(resolved.server, server);
