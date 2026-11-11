@@ -593,13 +593,16 @@ impl SessionCheckpoints {
     fn keep(
         &self,
         kind: &str,
-        prompt: String,
-        at_unix_ms: u64,
-        journal_offset: u64,
-        messages: Option<&[u8]>,
-        snapshots: &[Snapshot],
+        taken: Pending,
         touched: BTreeMap<String, Vec<String>>,
     ) -> Result<SessionCheckpoint, String> {
+        let Pending {
+            prompt,
+            at_unix_ms,
+            journal_offset,
+            messages,
+            snapshots,
+        } = taken;
         let number = self.next_number();
         let headline = prompt.lines().next().unwrap_or_default();
         let message = format!(
@@ -624,7 +627,7 @@ impl SessionCheckpoints {
         }
         std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
         let conversation = kind == "turn";
-        if let (true, Some(messages)) = (conversation, messages) {
+        if let (true, Some(messages)) = (conversation, messages.as_deref()) {
             std::fs::write(self.dir.join(format!("{number}.messages.json")), messages)
                 .map_err(|error| error.to_string())?;
         }
@@ -663,15 +666,14 @@ impl SessionCheckpoints {
             snapshots.push(self.snapshot(inner, top)?);
         }
         let offset = std::fs::metadata(&self.journal).map_or(0, |meta| meta.len());
-        self.keep(
-            "rewind",
-            String::new(),
-            now_ms(),
-            offset,
-            None,
-            &snapshots,
-            BTreeMap::new(),
-        )
+        let taken = Pending {
+            prompt: String::new(),
+            at_unix_ms: now_ms(),
+            journal_offset: offset,
+            messages: None,
+            snapshots,
+        };
+        self.keep("rewind", taken, BTreeMap::new())
     }
 
     /// The files the session's turns changed from checkpoint `since` on, by repository root.
@@ -762,15 +764,7 @@ impl imperium_engine::TurnCheckpoints for SessionCheckpoints {
         if touched.is_empty() {
             return;
         }
-        if let Err(error) = self.keep(
-            "turn",
-            pending.prompt,
-            pending.at_unix_ms,
-            pending.journal_offset,
-            pending.messages.as_deref(),
-            &pending.snapshots,
-            touched,
-        ) {
+        if let Err(error) = self.keep("turn", pending, touched) {
             tracing::warn!(session = %self.session_id, %error, "could not record a checkpoint");
         }
     }

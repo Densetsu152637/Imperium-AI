@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use anyhow::Context;
 use imperium_cli::client::Client;
 use imperium_protocol::methods::{
-    ContextFit, ReviewFile, ReviewHunk, RewindMode, SessionAgentResume, SessionAgentResumeParams,
-    SessionAgents, SessionAgentsParams, SessionAnswer, SessionAnswerParams, SessionCheckpoints,
+    ContextFit, RewindMode, SessionAgentResume, SessionAgentResumeParams, SessionAgents,
+    SessionAgentsParams, SessionAnswer, SessionAnswerParams, SessionCheckpoints,
     SessionCheckpointsParams, SessionCheckpointsResult, SessionControl, SessionControlParams,
     SessionCreate, SessionCreateParams, SessionQueue, SessionQueueParams, SessionRespond,
     SessionRespondParams, SessionReview, SessionReviewParams, SessionReviewResult, SessionRewind,
@@ -1200,6 +1200,7 @@ fn choose_answer(question: &Question, input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imperium_protocol::methods::{ReviewFile, ReviewHunk};
 
     #[test]
     fn answers_default_to_the_recommendation_and_numbers_pick_options() {
