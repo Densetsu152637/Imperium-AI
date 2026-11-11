@@ -71,6 +71,7 @@ use imperium_protocol::methods::{
     SessionAgentResumeParams, SessionAgentResumeResult, SessionAgents, SessionAgentsParams,
     SessionAgentsResult,
 };
+use imperium_protocol::methods::{SessionAttach, SessionAttachParams, VoiceTranscribe};
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 use imperium_protocol::methods::{
     SessionQueue, SessionQueueParams, SessionQueueResult, SessionSendResult,
@@ -596,14 +597,28 @@ impl Connection {
                     if session.is_background() {
                         self.state.release_run_now(&session);
                     }
+                    let attachments =
+                        crate::attachments::verify(&self.state, &session, &params.attachments)?;
                     let id = session
-                        .send_message(
+                        .send_with_attachments(
                             params.text,
+                            attachments,
                             params.mode.unwrap_or_default(),
                             params.agent_id.as_deref(),
                         )
                         .map_err(queue_error)?;
                     Ok(SessionSendResult { id })
+                })
+            }
+            SessionAttach::NAME => {
+                call::<SessionAttach>(request.params, |params: SessionAttachParams| {
+                    let session = self.session(&params.session_id)?;
+                    crate::attachments::attach(&self.state, &session, params)
+                })
+            }
+            VoiceTranscribe::NAME => {
+                call_later::<VoiceTranscribe, _>(request.params, &mut later, |params| {
+                    crate::attachments::transcribe(Arc::clone(&self.state), params)
                 })
             }
             SessionQueue::NAME => {
@@ -1562,6 +1577,88 @@ mod tests {
         assert!(
             matches!(response.outcome, Outcome::Error(ref error) if error.code == codes::INVALID_PARAMS)
         );
+    }
+
+    #[tokio::test]
+    async fn attachments_are_staged_inside_the_session_and_checked_again_on_send() {
+        let mut connection = handshaken();
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("notes.md"), "# Plan").unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "key").unwrap();
+        let created = result_of(&connection.handle_text(&request(
+            2,
+            SessionCreate::NAME,
+            json!({"project_dir": project.path()}),
+        )));
+        let id = created["session_id"].as_str().unwrap().to_string();
+        let store = connection
+            .state
+            .data_dir()
+            .join("attachments")
+            .join(&id)
+            .canonicalize()
+            .unwrap();
+
+        // Inside the project: referenced where it is.
+        let inside = result_of(&connection.handle_text(&request(
+            3,
+            SessionAttach::NAME,
+            json!({"session_id": id, "path": project.path().join("notes.md")}),
+        )));
+        assert_eq!(inside["attachment"]["kind"], "text");
+        assert_eq!(inside["attachment"]["copied"], false);
+        // Pasted bytes and outside files are copied into the session's attachments folder.
+        let pasted = result_of(&connection.handle_text(&request(
+            4,
+            SessionAttach::NAME,
+            json!({"session_id": id, "name": "shot.png",
+                   "data": base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nx")}),
+        )));
+        assert_eq!(pasted["attachment"]["kind"], "image");
+        assert_eq!(pasted["attachment"]["copied"], true);
+        assert!(
+            pasted["image_data"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+        let copied = result_of(&connection.handle_text(&request(
+            5,
+            SessionAttach::NAME,
+            json!({"session_id": id, "path": outside.path().join("secret.txt")}),
+        )));
+        assert_eq!(copied["attachment"]["copied"], true);
+        let copy = std::path::Path::new(copied["attachment"]["path"].as_str().unwrap());
+        assert!(copy.canonicalize().unwrap().starts_with(&store));
+        // Neither or both sources, and oversized files, are refused.
+        let neither =
+            connection.handle_text(&request(6, SessionAttach::NAME, json!({"session_id": id})));
+        assert_eq!(error_code(&neither), Some(codes::INVALID_PARAMS));
+
+        // A sent attachment pointing outside the session is refused; the staged ones are sent.
+        let mut smuggled = inside["attachment"].clone();
+        smuggled["path"] = json!(outside.path().join("secret.txt"));
+        let refused = connection.handle_text(&request(
+            7,
+            SessionSend::NAME,
+            json!({"session_id": id, "text": "", "attachments": [smuggled]}),
+        ));
+        assert_eq!(error_code(&refused), Some(codes::INVALID_PARAMS));
+        let sent = connection.handle_text(&request(
+            8,
+            SessionSend::NAME,
+            json!({"session_id": id, "text": "", "attachments": [
+                inside["attachment"], pasted["attachment"], copied["attachment"]
+            ]}),
+        ));
+        assert_eq!(error_code(&sent), None, "{:?}", sent.response);
+
+        // Deleting the session deletes its attachments folder.
+        let deleted =
+            connection.handle_text(&request(9, SessionDelete::NAME, json!({"session_id": id})));
+        assert_eq!(error_code(&deleted), None, "{:?}", deleted.response);
+        assert!(!store.exists());
     }
 
     #[tokio::test]

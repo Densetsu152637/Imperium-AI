@@ -199,6 +199,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("sessions.auto_archive_after_days", "Archive idle sessions after (days)", Integer, "Archive a session after this many days without activity; 0 never does. Working, waiting, pinned, and project-agent sessions are never archived."),
     def("sessions.auto_archive_on_pr_close", "Archive when the pull request closes", Bool, "Archive a session once the pull request it watches is merged or closed."),
     def("sessions.agent_state_keep", "Keep agent state", Bool, "Keep each agent's conversation, plan, and usage beside the session's files, so finished subagents can be resumed with a follow-up, also after a restart. Deleted with the session."),
+    live(def("sessions.attachment_max_mib", "Largest attachment (MiB)", Integer, "The largest file that can be attached to a message. Files pasted or dropped from outside the session's folders are copied into its attachments folder; uploads from the app travel over the daemon connection, which takes about 12 MiB at most.")),
 ];
 
 /// The setting with this dotted key.

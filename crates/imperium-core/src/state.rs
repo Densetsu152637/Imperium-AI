@@ -464,6 +464,38 @@ impl DaemonState {
         (prefer_local, local)
     }
 
+    /// Whether `model` (a spec or model table id) can view images: its model table row is
+    /// tagged `vision`, or it is a local llama.cpp model with a multimodal projector beside it.
+    pub fn model_has_vision(&self, model: &str) -> bool {
+        let settings = self.settings();
+        let tagged = settings.models.catalog.iter().any(|entry| {
+            (entry.spec == model || entry.id == model)
+                && entry
+                    .tags
+                    .iter()
+                    .any(|tag| tag.eq_ignore_ascii_case("vision"))
+        });
+        if tagged {
+            return true;
+        }
+        let Some(id) = model.strip_prefix(&format!("{}:", imperium_config::LLAMACPP_ENDPOINT))
+        else {
+            return false;
+        };
+        self.local.get().is_some_and(|local| {
+            local
+                .supervisor
+                .models()
+                .iter()
+                .any(|found| found.id == id && found.mmproj.is_some())
+        })
+    }
+
+    /// Media backends from `[media]` (for push-to-talk transcription).
+    pub fn media_backends(&self) -> Option<Arc<Media>> {
+        self.media()
+    }
+
     /// Whether routing an ordinary task (default tier, no tags) for a session on `model` picks
     /// a local model; `None` when the session's model cannot be resolved.
     pub fn routes_locally(&self, model: &str) -> Option<bool> {
@@ -1218,6 +1250,24 @@ impl DaemonState {
             None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
         };
         let remember = options.launcher.is_none();
+        // Files attached from outside the session's folders are copied into its attachments
+        // folder, which its tools may read. A remote runtime cannot reach this machine's
+        // folders, so it gets no grant (attached text is inlined either way).
+        let workspace = if workspace.runtime().is_none() {
+            let store = crate::attachments::store_dir(self.paths.data_dir(), &id);
+            match std::fs::create_dir_all(&store) {
+                Ok(()) => workspace.with_grants(&[imperium_tools::permissions::PathGrant {
+                    path: store.display().to_string(),
+                    mode: imperium_tools::permissions::PathMode::Read,
+                }]),
+                Err(error) => {
+                    tracing::warn!(%error, "could not create the session's attachments folder");
+                    workspace
+                }
+            }
+        } else {
+            workspace
+        };
         if resume {
             // A resumed session keeps its pin.
             placement.pinned = std::fs::read_to_string(self.meta_path(&id))
@@ -1430,6 +1480,8 @@ impl DaemonState {
             );
         }
         self.forget_session(id);
+        // Files copied into its attachments folder go with it.
+        let _ = std::fs::remove_dir_all(crate::attachments::store_dir(self.paths.data_dir(), id));
         let sessions = self.paths.data_dir().join("sessions");
         let _ = std::fs::remove_file(sessions.join(format!("{id}.meta.json")));
         // Its agents' kept state goes with it.

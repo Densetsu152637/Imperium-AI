@@ -335,7 +335,7 @@ impl Chunker {
             self.out.extend(self.open.take());
         }
         let (kind, text) = match event.event {
-            SessionEvent::TurnStarted { text } if root => (ChunkKind::User, text),
+            SessionEvent::TurnStarted { text, .. } if root => (ChunkKind::User, text),
             SessionEvent::Steered { text, .. } if root => (ChunkKind::User, text),
             SessionEvent::ToolStarted { tool, summary, .. } => {
                 (ChunkKind::Tool, cut(format!("{tool} {summary}"), MAX_TOOL))

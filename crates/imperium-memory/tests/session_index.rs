@@ -19,7 +19,13 @@ fn event(agent: &str, event: SessionEvent) -> AgentEvent {
 }
 
 fn user(text: &str) -> AgentEvent {
-    event("root", SessionEvent::TurnStarted { text: text.into() })
+    event(
+        "root",
+        SessionEvent::TurnStarted {
+            text: text.into(),
+            attachments: Vec::new(),
+        },
+    )
 }
 
 fn delta(text: &str) -> AgentEvent {

@@ -3,6 +3,7 @@
 //! OpenAI-compatible transcription API (LocalAI, whisper.cpp front-ends, or hosted services).
 //! Results are files in the project's `media/` folder with a provenance file beside each.
 
+pub mod attachments;
 pub mod image;
 mod tools;
 
@@ -168,10 +169,9 @@ impl Media {
         root: &Path,
         path: &str,
     ) -> Result<String, MediaError> {
-        let service = self
-            .transcription
-            .as_ref()
-            .ok_or(MediaError::NotConfigured("transcription"))?;
+        if self.transcription.is_none() {
+            return Err(MediaError::NotConfigured("transcription"));
+        }
         let relative = Path::new(path);
         if relative
             .components()
@@ -181,12 +181,26 @@ impl Media {
         }
         let file = root.join(relative);
         let bytes = std::fs::read(&file).map_err(|error| MediaError::Io(path.into(), error))?;
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(
-            relative
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "audio".into()),
-        );
+        let name = relative
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "audio".into());
+        self.transcribe_bytes(http, bytes, &name).await
+    }
+
+    /// Transcribes recorded audio (push-to-talk); `file_name`'s extension tells the service
+    /// the format, such as `speech.webm`.
+    pub async fn transcribe_bytes(
+        &self,
+        http: &reqwest::Client,
+        bytes: Vec<u8>,
+        file_name: &str,
+    ) -> Result<String, MediaError> {
+        let service = self
+            .transcription
+            .as_ref()
+            .ok_or(MediaError::NotConfigured("transcription"))?;
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.to_string());
         let form = reqwest::multipart::Form::new()
             .text("model", service.model.clone())
             .part("file", part);
@@ -207,6 +221,18 @@ impl Media {
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| MediaError::Service("the transcription had no text".into()))
+    }
+}
+
+/// The file name a recording of `mime` is sent under, so the service knows its format.
+pub fn recording_name(mime: &str) -> &'static str {
+    let essence = mime.split(';').next().unwrap_or_default().trim();
+    match essence {
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "speech.wav",
+        "audio/ogg" => "speech.ogg",
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac" => "speech.m4a",
+        "audio/mpeg" | "audio/mp3" => "speech.mp3",
+        _ => "speech.webm",
     }
 }
 

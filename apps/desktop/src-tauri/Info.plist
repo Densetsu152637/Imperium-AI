@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Merged into the app bundle's Info.plist by the Tauri bundler: macOS asks before push-to-talk first records. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Imperium records your voice while you hold the push-to-talk key, to type what you say into the message box.</string>
+</dict>
+</plist>

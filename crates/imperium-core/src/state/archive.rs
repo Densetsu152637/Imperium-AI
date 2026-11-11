@@ -345,7 +345,7 @@ fn title_from(events: &[AgentEvent]) -> String {
     events
         .iter()
         .find_map(|event| match &event.event {
-            SessionEvent::TurnStarted { text } if event.agent_id == ROOT_AGENT => {
+            SessionEvent::TurnStarted { text, .. } if event.agent_id == ROOT_AGENT => {
                 Some(text.chars().take(80).collect())
             }
             _ => None,

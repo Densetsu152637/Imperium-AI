@@ -7,6 +7,7 @@ import { createContext, useContext } from "react";
 
 import { toggleMark, type ModelMark, type ModelMarks } from "./modelPrefs";
 import { getDoc, setDoc, takeLegacy } from "./store";
+import type { PttKey } from "./voice";
 
 export type Density = "compact" | "comfortable" | "spacious";
 export type Accent =
@@ -45,6 +46,8 @@ export type AppSettings = {
   renderMarkdown: boolean;
   wrapCode: boolean;
   autoScroll: boolean;
+  /** Hold to record speech into the composer; "off" leaves only the mic button. */
+  pushToTalkKey: PttKey;
   // Notifications
   soundOnApproval: boolean;
   soundOnFinish: boolean;
@@ -86,6 +89,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   renderMarkdown: true,
   wrapCode: false,
   autoScroll: true,
+  pushToTalkKey: "Ctrl+Space",
   soundOnApproval: true,
   soundOnFinish: false,
   titleBadge: true,

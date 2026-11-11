@@ -235,7 +235,10 @@ mod tests {
 
     #[test]
     fn agent_activity_maps_to_animations() {
-        let started = SessionEvent::TurnStarted { text: "hi".into() };
+        let started = SessionEvent::TurnStarted {
+            text: "hi".into(),
+            attachments: Vec::new(),
+        };
         assert_eq!(pet_events(&started), [PetEvent::Loop("working".into())]);
         let denied = SessionEvent::ToolFinished {
             call_id: "c".into(),
