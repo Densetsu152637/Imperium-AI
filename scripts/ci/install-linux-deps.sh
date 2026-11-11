@@ -7,8 +7,8 @@ set -euo pipefail
 # tried three times.
 apt_options=(
   -o Acquire::Retries=3
-  -o Acquire::http::Timeout=30
-  -o Acquire::https::Timeout=30
+  -o Acquire::http::Timeout=15
+  -o Acquire::https::Timeout=15
   -o Dpkg::Lock::Timeout=120
 )
 packages=(
@@ -16,7 +16,24 @@ packages=(
   libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
 )
 
+# GitHub's runners fetch Ubuntu packages through a mirror list (mirror+file:/etc/apt/apt-mirrors.txt)
+# whose first entry, azure.archive.ubuntu.com, sometimes stops answering. After a failed attempt
+# the list is replaced with several independent mirrors, which apt tries in order.
+use_fallback_mirrors() {
+  local list=/etc/apt/apt-mirrors.txt
+  [ -f "$list" ] || return 0
+  printf '%s\n' \
+    'http://archive.ubuntu.com/ubuntu/' \
+    'http://mirrors.edge.kernel.org/ubuntu/' \
+    'http://mirror.us.leaseweb.net/ubuntu/' |
+    sudo tee "$list" >/dev/null
+  echo "switched apt to fallback mirrors" >&2
+}
+
 for attempt in 1 2 3; do
+  if [ "$attempt" -gt 1 ]; then
+    use_fallback_mirrors
+  fi
   if sudo timeout 300 apt-get "${apt_options[@]}" update &&
     sudo timeout 600 apt-get "${apt_options[@]}" install -y --no-install-recommends "${packages[@]}"; then
     exit 0
