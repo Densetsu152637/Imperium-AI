@@ -423,6 +423,7 @@ impl Chat {
                     Err(error) => println!("{error}"),
                 }
             }
+            Some(Command::Usage(usage)) => println!("{usage}"),
             Some(Command::Pick(number)) => {
                 let Some((comparison_id, branches)) = self.comparison.clone() else {
                     println!("No comparison to pick from: start one with /compare.");
@@ -864,7 +865,13 @@ enum Command {
     Compare(Vec<String>, String),
     /// `/pick <n>`: keep branch `n` of the latest comparison.
     Pick(usize),
+    /// A command typed in the wrong shape: its usage, printed instead of sending the line.
+    Usage(&'static str),
 }
+
+const COMPARE_USAGE: &str =
+    "Usage: /compare <model> <model> [<model> <model>] -- <message> (two to four models)";
+const PICK_USAGE: &str = "Usage: /pick <n> (the number of a branch from the latest /compare)";
 
 /// `/compare <model> <model> [...] -- <message>`: two to four models, then the message.
 fn compare_command(rest: &str) -> Option<Command> {
@@ -951,16 +958,20 @@ fn command(text: &str) -> Option<Command> {
             (!title.is_empty()).then(|| title.to_string()),
         ));
     }
-    if let Some(rest) = text.strip_prefix("/compare ") {
-        return compare_command(rest);
+    if text == "/compare" || text.starts_with("/compare ") {
+        return Some(
+            compare_command(&text["/compare".len()..]).unwrap_or(Command::Usage(COMPARE_USAGE)),
+        );
     }
-    if let Some(rest) = text.strip_prefix("/pick ") {
-        return rest
-            .trim()
-            .trim_start_matches('#')
-            .parse()
-            .ok()
-            .map(Command::Pick);
+    if text == "/pick" || text.starts_with("/pick ") {
+        return Some(
+            text["/pick".len()..]
+                .trim()
+                .trim_start_matches('#')
+                .parse()
+                .ok()
+                .map_or(Command::Usage(PICK_USAGE), Command::Pick),
+        );
     }
     if text == "/rewind" || text.starts_with("/rewind ") {
         return rewind_command(&text["/rewind".len()..]).map(Command::Rewind);
@@ -1419,10 +1430,17 @@ mod tests {
             ))
         );
         // Two to four models and a message are needed.
-        assert_eq!(command("/compare fake:a -- hi"), None);
-        assert_eq!(command("/compare fake:a fake:b"), None);
+        for bad in [
+            "/compare",
+            "/compare fake:a -- hi",
+            "/compare fake:a fake:b",
+        ] {
+            assert_eq!(command(bad), Some(Command::Usage(COMPARE_USAGE)), "{bad}");
+        }
         assert_eq!(command("/pick #2"), Some(Command::Pick(2)));
-        assert_eq!(command("/pick x"), None);
+        for bad in ["/pick", "/pick x"] {
+            assert_eq!(command(bad), Some(Command::Usage(PICK_USAGE)), "{bad}");
+        }
     }
 
     #[test]
