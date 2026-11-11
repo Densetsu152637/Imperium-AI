@@ -423,21 +423,10 @@ impl Agent {
         if !local.suspended(&holder) {
             return;
         }
-        // A call that reserves almost nothing: taking the slot restores the context into it,
-        // and releasing it leaves the slot this agent's for its next call.
-        let request = LocalRequest {
-            priority: Priority::Interactive,
-            prompt_tokens: Some(0),
-            uncapped: false,
-        };
-        match local
-            .acquire_with(&self.model.model, &holder, request)
-            .await
-        {
-            Ok(lease) => drop(lease),
-            Err(error) => {
-                tracing::debug!(%holder, %error, "could not restore the agent's context ahead of its call");
-            }
+        // The runtime loads the model if needed and restores the context into the slot this
+        // agent gets, reporting it as a resume, and leaves the slot this agent's.
+        if let Err(error) = local.resume(&self.model.model, &holder).await {
+            tracing::debug!(%holder, %error, "could not restore the agent's context ahead of its call");
         }
     }
 
