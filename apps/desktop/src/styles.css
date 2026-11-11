@@ -1110,7 +1110,7 @@ pre {
   font-size: 0.85rem;
 }
 
-.tool summary {
+.tool > summary {
   cursor: pointer;
   color: var(--muted);
   width: fit-content;
@@ -1125,13 +1125,13 @@ pre {
     color var(--fast) var(--ease);
 }
 
-.tool summary:hover,
-.tool[open] summary {
+.tool > summary:hover,
+.tool[open] > summary {
   background: var(--hover);
   color: var(--text);
 }
 
-.tool.failed summary,
+.tool.failed > summary,
 .error,
 .outputs .failed {
   color: var(--danger);
@@ -1206,6 +1206,20 @@ pre {
 .tool-more:hover {
   color: var(--text);
   text-decoration: underline;
+}
+
+/* Consecutive calls on one line; opened, the calls sit under it as their own rows. */
+.tool-current {
+  margin-left: 0.6em;
+  opacity: 0.7;
+}
+
+.tool-group-calls {
+  padding-left: calc(0.4rem + 0.9em);
+}
+
+.tool-group-calls > .tool {
+  max-width: none;
 }
 
 .permission {
