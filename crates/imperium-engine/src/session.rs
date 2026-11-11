@@ -627,8 +627,8 @@ pub(crate) struct Shared {
     /// Tools the user allowed for the rest of the session, for every agent.
     pub allowed_tools: Mutex<HashSet<String>>,
     /// Tools an unattended session's starter allowed up front: they run without asking in
-    /// every mode but plan, including what the safety floor would ask about, since nobody is
-    /// there to answer.
+    /// every mode but plan, except calls the safety floor covers, which wait for the user's
+    /// approval like any other.
     pub pre_approved: HashSet<String>,
     /// Tool providers, started before the first turn.
     pub tools: Vec<Arc<dyn ToolProvider>>,

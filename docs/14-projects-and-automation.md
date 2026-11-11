@@ -453,7 +453,9 @@ commit has a failed check. For each new failing commit it runs **Fix CI**: it pr
 worktree of the pull request's branch from the watch's local clone
 (`<data>/worktrees/<owner>__<repo>/pr-<n>`, on a local `imperium/fix-pr-<n>` branch), gives a
 new session the failed checks and the end of the failed job's log (`gh run view --job
---log-failed`), with file writes, edits, and commands pre-approved inside that worktree,
+--log-failed`), with file writes, edits, and commands pre-approved inside that worktree
+(except what the [safety floor](05-tools-and-isolation.md#permission-modes-implemented)
+covers, such as `rm -rf` or `git reset --hard`: those wait in the approval queue for the user),
 commits whatever it changed with an `Imperium-Auto-Fix: session <id>` trailer, and, with
 `push = "ask"` (the default), queues an approval request; only on approval does it push to the
 pull request's branch, as a plain push. It never force-pushes, merges, closes, or approves.

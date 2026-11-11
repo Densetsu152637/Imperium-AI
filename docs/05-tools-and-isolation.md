@@ -338,9 +338,11 @@ web or earlier sessions, `ask_user`, delegation) still run, and the app-config t
 (`set_model_card`, `install_extension`, `uninstall_extension`) count as tools that ask in `ask`
 and `plan`.
 
-**The safety floor** is a built-in check that no mode, allow rule, or session approval lifts
-(only plan mode, which refuses the call anyway, and an unattended session's pre-approved tools
-pass it); each call it covers asks every time:
+**The safety floor** is a built-in check that applies everywhere: no mode, allow rule, session
+approval, or unattended session's pre-approved tools lift it (plan mode refuses the call
+anyway). Each call it covers asks every time; in an unattended session (auto-fix, schedules,
+project agents) the request waits in the approval queue, with a notification, until the user
+answers:
 
 - Commands that delete recursively or by force (`rm` with `-r`, `-R`, `-f`, `--recursive`,
   `--force` anywhere in its arguments; `rmdir` / `rd` / `del` / `erase` with `/s` or `/q`;

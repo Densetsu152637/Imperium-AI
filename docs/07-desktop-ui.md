@@ -761,8 +761,9 @@ each with a one-line description. Choosing one sends `session.control` `set_perm
 which applies from the agents' next call, during a turn too, and is kept across restarts; a
 refusal shows its error beside the list. New sessions start in `permissions.mode`, which the
 Settings window lists beside the isolation settings; deny rules and the
-[safety floor](05-tools-and-isolation.md#permission-modes-implemented) hold in every mode. The
-floor is a best-effort guard against an agent's mistakes, not a security boundary, so *Full
+[safety floor](05-tools-and-isolation.md#permission-modes-implemented) hold in every mode, and
+the floor also holds in unattended sessions (auto-fix, schedules, project agents), whose
+floored calls wait in the approval queue with a notification. The floor is a best-effort guard against an agent's mistakes, not a security boundary, so *Full
 access* is only as safe as the session's isolation tier.
 
 **Model selector (implemented):** the footer's model is a themed list of the model table

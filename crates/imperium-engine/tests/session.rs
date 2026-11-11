@@ -74,7 +74,18 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
 }
 
 fn start_in(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> Session {
-    Session::spawn(config(endpoint, dir, workspace)).unwrap()
+    start_with(endpoint, dir, workspace, Vec::new())
+}
+
+fn start_with(
+    endpoint: Endpoint,
+    dir: &std::path::Path,
+    workspace: Workspace,
+    pre_approved: Vec<String>,
+) -> Session {
+    let mut config = config(endpoint, dir, workspace);
+    config.pre_approved = pre_approved;
+    Session::spawn(config).unwrap()
 }
 
 fn config(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> SessionConfig {
@@ -679,6 +690,35 @@ async fn full_access_runs_without_asking_but_deny_rules_and_the_floor_hold() {
     );
     assert!(dir.path().join("made.txt").exists());
     assert!(!dir.path().join("blocked.txt").exists());
+}
+
+#[tokio::test]
+async fn the_safety_floor_asks_even_for_a_pre_approved_tool_in_an_unattended_session() {
+    let endpoint = scripted_endpoint(vec![
+        tool_call_body("run_command", r#"{"command":"echo ok > ran.txt"}"#),
+        tool_call_body("run_command", r#"{"command":"rm -rf keep"}"#),
+        text_body("Done."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("keep")).unwrap();
+    std::fs::write(dir.path().join("keep").join("file.txt"), "x").unwrap();
+    // As auto-fix starts its sessions: run_command pre-approved, nobody watching.
+    let session = start_with(
+        endpoint,
+        dir.path(),
+        Workspace::new(dir.path()).unwrap(),
+        vec!["run_command".into()],
+    );
+    let mut events = session.subscribe();
+    session.send("fix it".into()).unwrap();
+    let (seen, asked) = run_turn(&session, &mut events, PermissionDecision::Deny).await;
+    // The ordinary command ran without asking; the destructive one waited for approval.
+    assert_eq!(asked, ["run_command"]);
+    assert!(dir.path().join("ran.txt").exists());
+    assert!(seen.iter().any(|event| matches!(event,
+            SessionEvent::PermissionRequested { summary, .. } if summary.contains("rm -rf keep"))));
+    assert!(dir.path().join("keep").join("file.txt").exists());
 }
 
 #[tokio::test]

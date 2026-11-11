@@ -1322,20 +1322,23 @@ impl Agent {
     /// the session is not in ask-every-time mode).
     async fn approve(&self, tool: &str, summary: &str) -> bool {
         let sticky = self.shared.workspace.permissions().mode() != PermissionMode::Ask;
-        self.approve_with(tool, summary, None, sticky).await
+        self.approve_with(tool, summary, None, sticky, false).await
     }
 
     /// Like [`Agent::approve`], offering `suggested` as the rule "always allow" would add. With
-    /// `sticky` false (ask-every-time mode, the safety floor) a tool allowed for the session
-    /// still asks; tools an unattended session was started with pre-approved never ask.
+    /// `sticky` false (ask-every-time mode, ask rules, the safety floor) a tool allowed for the
+    /// session still asks. Tools an unattended session was started with pre-approved run
+    /// without asking, except a call the safety floor covers (`floored`): that one waits for
+    /// the user's approval like any other.
     async fn approve_with(
         &self,
         tool: &str,
         summary: &str,
         suggested: Option<PermissionRule>,
         sticky: bool,
+        floored: bool,
     ) -> bool {
-        if self.shared.pre_approved.contains(tool)
+        if (!floored && self.shared.pre_approved.contains(tool))
             || (sticky && lock(&self.shared.allowed_tools).contains(tool))
         {
             return true;
@@ -1389,7 +1392,13 @@ impl Agent {
         }
         if let Decision::Ask { sticky } = decision
             && !self
-                .approve_with(name, &check.summary, suggest(name, &Target::Other), sticky)
+                .approve_with(
+                    name,
+                    &check.summary,
+                    suggest(name, &Target::Other),
+                    sticky,
+                    false,
+                )
                 .await
         {
             return finish(false, "The user denied this action.".into());
@@ -1751,7 +1760,8 @@ impl Agent {
             Access::Execute => CallKind::Execute,
         };
         let mode = self.shared.workspace.permissions().mode();
-        let decision = decide_call(mode, kind, rule, safety_floor(kind, &target));
+        let floored = safety_floor(kind, &target);
+        let decision = decide_call(mode, kind, rule, floored);
         if let Decision::Refuse(why) = decision {
             return finish(false, refused(why, &summary));
         }
@@ -1765,7 +1775,7 @@ impl Agent {
         }
         if let Decision::Ask { sticky } = decision
             && !self
-                .approve_with(tool, &summary, suggest(tool, &target), sticky)
+                .approve_with(tool, &summary, suggest(tool, &target), sticky, floored)
                 .await
         {
             return finish(false, "The user denied this action.".into());
