@@ -661,9 +661,10 @@ announced as `session.updated`.
 Archived sessions (archived by hand, or on their own once
 their pull request closes or after the inactivity set in Settings → Sessions; see
 [archiving sessions](14-projects-and-automation.md#archiving-sessions)) leave the list and are
-kept in a collapsed *Archived* group at the bottom, most recently archived first, with
-*Unarchive* in their menu. Opening one shows its history with a note that it is archived and an
-*Unarchive* button in place of the composer. A sort control above the list orders it *Recent* (the default: most
+kept in a collapsed *Archived* group pinned to the bottom of the panel, apart from active
+sessions, most recently archived first, with *Unarchive* in their menu. Opening one shows its
+history with a note that it is archived and an *Unarchive* button in place of the composer. A sort
+control in the panel header, beside *New session*, orders it *Recent* (the default: most
 recently active first), *By environment* (grouped under environment headings, pinned
 environments first), or *By status* (groups *Waiting for approval*, *Active* — working or
 watching —, *Paused*, *Idle*, *Merged*); pinned sessions stay on top within each group, and the
@@ -745,8 +746,12 @@ the same order with *favourite* and *hidden* badges. The session's model selecto
 new-session composer's model list, and the command palette's *Use …* commands list favourites
 first (under *Favourites*, the rest under *Models*, when any model is marked) and leave hidden
 models out; the session's current model stays listed, dimmed under *Hidden*, while it is
-hidden, so the selector still shows what is selected. Hiding a model only affects these lists:
-delegation and routing still see it in the model table.
+hidden, so the selector still shows what is selected. The main window also keeps the daemon's
+`models.hidden` in step with the hidden marks (through `models.set_config`, only when they
+differ), so the root agent's `list_models` leaves hidden models out and a hidden local model
+outside the model table is not offered for delegation by name
+([model awareness](04-models-and-routing.md#model-awareness-and-model-cards-implemented)).
+Routing still sees a hidden model that is in the model table.
 
 ### Session search (implemented)
 
@@ -945,7 +950,11 @@ badges; a model with an [alias](10-configuration.md#model-aliases) is listed by 
 beside it and on hover, and the search matches either. The selected model's alias (or id) is the
 heading. Both forms start with *Display name*: the alias shown instead of the id everywhere a
 model is named, with the id as the placeholder; empty (or *reset*) shows the id again (or a
-table row's alias from config.toml). Each local form field is optional, shows the effective value as its placeholder and
+table row's alias from config.toml). Below it, *Model card*: what the model is good at and
+notes, which agents read when they pick a model to delegate to
+([model cards](04-models-and-routing.md#model-awareness-and-model-cards-implemented)); for a local
+model, a *From the model's metadata* fold shows what its header and model card say, with *copy
+into the card* while the card is empty. Each local form field is optional, shows the effective value as its placeholder and
 has a *reset* that clears the saved value. Fields: max context per agent (a number of tokens or
 *auto*, offered in the field's list; the placeholder shows the sized ceiling, such as *auto
 (131072)*), KV pool tokens (empty: starts small and grows on demand; a number fixes it), slots, K

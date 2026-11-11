@@ -216,7 +216,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
             tier: Tier::Standard,
             location: Location::Local,
             tags: Vec::new(),
-            cpu_lane: false,
+            named_only: false,
         },
         CatalogModel {
             id: "big".into(),
@@ -224,7 +224,7 @@ async fn delegate(local: Arc<Supervisor>) -> Vec<String> {
             tier: Tier::Strong,
             location: Location::Cloud,
             tags: Vec::new(),
-            cpu_lane: false,
+            named_only: false,
         },
     ];
     let dir = tempfile::tempdir().unwrap();

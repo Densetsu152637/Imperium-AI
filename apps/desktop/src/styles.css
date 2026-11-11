@@ -3447,7 +3447,7 @@ button.setup-action small {
   border-bottom: none;
 }
 
-.sessions-toolbar button.select.sessions-sort {
+button.select.sessions-sort {
   min-width: 0;
   width: auto;
   font-size: 0.75rem;
@@ -3475,11 +3475,27 @@ button.setup-action small {
   opacity: 0.8;
 }
 
-/* Archived sessions: a collapsed group at the bottom of the list. */
+/* The list fills the panel so Archived can sit at its foot, apart from active sessions. */
+.sessions {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* Archived sessions: a collapsed group pinned to the bottom of the panel, with at least a gap
+   above it when the active list is long enough to reach it. */
 .archived-sessions {
-  margin-top: var(--space);
+  margin-top: auto;
   border-top: 1px solid var(--border);
   padding-top: calc(var(--space) * 0.5);
+}
+
+.sessions > :has(+ .archived-sessions) {
+  margin-bottom: var(--space);
+}
+
+.sessions > .session-group + .archived-sessions {
+  margin-top: auto;
 }
 
 .archived-sessions > summary {
@@ -5507,6 +5523,19 @@ button.select.open .select-chevron {
 
 .model-check {
   text-transform: none;
+}
+
+.model-card-metadata summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  text-transform: none;
+}
+
+.model-card-metadata pre {
+  margin: 0.3rem 0 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 0.8rem;
 }
 
 .model-summary .warning {

@@ -91,6 +91,8 @@ listed; edit them in the file.
 | `endpoints.<id>.kind` | `openai` | The API the endpoint speaks, choosing its model client: `openai` (OpenAI-compatible Chat Completions; an endpoint on this machine is also tried for llama.cpp's tokenizer) or `llamacpp` (the same, always using llama.cpp's tokenizer for [context breakdowns](03-agent-engine.md#context-management)) |
 | `models.folders` | none | Folders scanned for GGUF models (`llamacpp:<id>`), including LM Studio and Hugging Face cache layouts, and Hugging Face folders (`vllm:<id>`); the `llamacpp` and `vllm` endpoint ids are reserved. Applies and is scanned at once; *Add folder* in the app and `imperium models folders add` append to it |
 | `models.suggest_downloads` | `true` | Sessions may offer to download a suitable local model from Hugging Face when the best available one is poor for the task ([model download suggestions](04-models-and-routing.md#model-download-suggestions)); applies without a restart, and a suggestion's "Don't ask again" sets it to `false` in the user file |
+| `models.hidden` | none | Specs of the models the user hid (`llamacpp:<id>` for a local model); the desktop app keeps it in step with its hidden marks. Agents' `list_models` leaves them out, and a hidden local model outside the model table is not offered for delegation by name ([model awareness](04-models-and-routing.md#model-awareness-and-model-cards-implemented)) |
+| `models.list_models` | `root` | Which agents of new sessions get `list_models`: `root`, `all` (subagents too), or `off`; applies without a restart |
 | `models.suggestions` | six well-known GGUF repositories (Qwen3 4B and 14B, Qwen2.5-Coder 7B, Qwen3-Coder 30B-A3B, Gemma 3 4B and 12B) | `[[models.suggestions]]` rows suggestions choose from: `repo`, `capabilities` (`chat`, `code`, `tools`, `vision`), `size` (`small`, `medium`, `large`; default `small`), `context` (tokens), and `mmproj` (download the vision projector too); setting any row replaces the built-in list |
 | `models.download_dir` | first of `models.folders`, else `<data>/models` | Where [Hugging Face downloads](04-models-and-routing.md#downloading-from-hugging-face) go, as `<owner>/<repo>/` below it; must be absolute; scanned with `models.folders` |
 | `runtime.llamacpp.backend` | `auto` | llama.cpp build to install and use: `auto` (the best that runs here: CUDA 13, CUDA 12, Vulkan, CPU; Metal on Apple Silicon), `cpu`, `vulkan`, `cuda12`, `cuda13`, `rocm`, or `metal` ([runtimes](04-models-and-routing.md#runtimes)) |
@@ -307,6 +309,17 @@ its spec names. The id is unchanged: config, `[[routing.rules]]`, `spawn_agent`,
 alias is trimmed, non-blank, without control characters and at most 80 characters; an invalid
 one is refused naming the key. `models.list` and `models.local` report each model's `alias`
 (`null` without one), and `imperium models local` prints it under the id.
+
+## Model cards
+
+Any model may have a `card`: what it is good at (coding, writing, research, ...) and notes,
+which agents read through `list_models` when they choose a model to delegate to
+([model cards](04-models-and-routing.md#model-awareness-and-model-cards-implemented)). It sits
+where the alias does: `runtime.llamacpp.models."<id>".card` for a local model, `card` on a
+`[[models.catalog]]` row, or `models.overrides."<id>".card` (what the model dialog writes),
+which wins. A card may span lines; it must not be blank, have control characters other than line
+breaks and tabs, or be longer than 4,000 characters. `models.config` reports each local model's
+`metadata_card` (what its header and Hugging Face model card say), which agents read after it.
 
 ## Other recommended options
 

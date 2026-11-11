@@ -941,6 +941,28 @@ pub struct ModelSettings {
     /// changes its own, and models that cannot reason are sent none.
     #[serde(default)]
     pub effort: Effort,
+    /// Specs of models the user hid (`<endpoint>:<model>`, `llamacpp:<id>` for a local model):
+    /// the desktop app keeps it in step with its hidden marks. `list_models` leaves them out, and
+    /// a hidden local model outside the model table is not offered for delegation by name.
+    #[serde(default)]
+    pub hidden: Vec<String>,
+    /// Which agents get the `list_models` tool: `root` (the default), `all` (subagents too), or
+    /// `off`.
+    #[serde(default)]
+    pub list_models: ListModelsScope,
+}
+
+/// Which agents of a session get the `list_models` tool.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListModelsScope {
+    /// The root agent only: it is the one that delegates.
+    #[default]
+    Root,
+    /// Every agent, subagents included.
+    All,
+    /// No agent.
+    Off,
 }
 
 impl Default for ModelSettings {
@@ -954,6 +976,8 @@ impl Default for ModelSettings {
             overrides: BTreeMap::new(),
             suggest_downloads: true,
             suggestions: default_suggestions(),
+            hidden: Vec::new(),
+            list_models: ListModelsScope::Root,
         }
     }
 }
@@ -1174,6 +1198,10 @@ pub struct CatalogEntry {
     /// what rules, agents and `--model` use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// The model card: what the model is good at (coding, writing, research, ...) and notes,
+    /// which agents read through `list_models` when they pick a model to delegate to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<String>,
     /// Whether the model runs on this machine (or one you control) or at a hosted provider.
     pub location: Location,
     pub tier: Tier,

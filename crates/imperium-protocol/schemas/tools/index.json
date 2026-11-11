@@ -51,6 +51,10 @@
     {
       "name": "search_sessions",
       "status": "available"
+    },
+    {
+      "name": "list_models",
+      "status": "available"
     }
   ]
 }

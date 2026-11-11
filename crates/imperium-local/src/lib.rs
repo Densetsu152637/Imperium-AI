@@ -3,6 +3,7 @@
 
 pub(crate) mod arbiter;
 pub mod backend;
+pub mod card;
 pub mod context;
 pub mod gguf;
 pub mod hardware;

@@ -9,6 +9,11 @@ export type LocalLaunchSettings = {
  */
 alias: string | null, 
 /**
+ * The model card: what the model is good at and notes, which agents read when they choose
+ * a model to delegate to; added to `metadata_card`.
+ */
+card: string | null, 
+/**
  * Most tokens one agent may use (vLLM `--max-model-len`), capped to what the model was
  * trained for and what fits in memory. Ignored when `context_auto` is true.
  */

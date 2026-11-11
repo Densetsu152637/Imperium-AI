@@ -275,6 +275,9 @@ impl Agent {
         }
         // Tool providers' rules for their tools (the web tools' citation rules).
         for provider in &shared.tools {
+            if !can_delegate && !provider.for_subagents() {
+                continue;
+            }
             if let Some(instructions) = provider.instructions() {
                 parts.push((Category::SystemCitations, instructions.to_string()));
             }
@@ -598,12 +601,12 @@ impl Agent {
         }
     }
 
-    /// The tool providers in `group`, in the order they were given.
+    /// The tool providers in `group` this agent is offered, in the order they were given:
+    /// subagents leave out the ones kept to the root agent.
     fn providers(&self, group: ToolGroup) -> impl Iterator<Item = &Arc<dyn ToolProvider>> {
-        self.shared
-            .tools
-            .iter()
-            .filter(move |provider| provider.group() == group)
+        self.shared.tools.iter().filter(move |provider| {
+            provider.group() == group && (self.can_delegate || provider.for_subagents())
+        })
     }
 
     /// The provider that runs the tool called `name`: outside servers' tools first, as they

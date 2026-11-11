@@ -60,6 +60,7 @@ pub fn all() -> Vec<ToolDefinition> {
         delegate_chunks(),
         ask_user(),
         search_sessions(),
+        list_models(),
     ]
 }
 
@@ -255,6 +256,20 @@ pub fn search_sessions() -> ToolDefinition {
             "archived": {"type": "boolean", "description": "true: archived sessions only; false: running sessions only; leave out for both"},
             "limit": {"type": "integer", "description": "Most sessions to return (default 5, at most 20)"}
         }, "required": ["query"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// List the models a delegating agent may use, optionally ranked by a task description.
+pub fn list_models() -> ToolDefinition {
+    ToolDefinition {
+        name: "list_models",
+        description: "List the models you may delegate to: id (pass it as spawn_agent's model), display name, local or hosted, context, whether it reads images or reasons, price for hosted models, and for local models whether it fits in memory now (loaded, fits_now, fits_after_unloading_idle, does_not_fit) and its measured speed. Each has a card saying what it is good at, from the user's notes, its metadata and Imperium's measurements. With query, the models whose cards best match the task come first. Nothing is loaded.",
+        parameters: json!({"type": "object", "properties": {
+            "query": {"type": "string", "description": "The task to find a model for, such as \"refactor a Rust parser\" or \"summarise research papers\""},
+            "location": {"type": "string", "enum": ["local", "cloud"], "description": "Only models on this machine, or only hosted ones"},
+            "limit": {"type": "integer", "description": "Most models to list (default all, at most 50)"}
+        }}),
         status: ToolStatus::Available,
     }
 }

@@ -30,6 +30,7 @@ const FULL_PRECISION_V = ["f16", "bf16", "f32"];
 /** Local form fields as typed: an empty string means "not set" (sent as null). */
 type LocalDraft = {
   alias: string;
+  card: string;
   context: string;
   pool_tokens: string;
   slots: string;
@@ -44,6 +45,7 @@ type LocalDraft = {
 
 type TableDraft = {
   alias: string;
+  card: string;
   enabled: boolean | null;
   tier: string;
   tags: string;
@@ -57,6 +59,7 @@ const num = (value: number | null): string => (value === null ? "" : String(valu
 function localDraft(saved: LocalLaunchSettings): LocalDraft {
   return {
     alias: saved.alias ?? "",
+    card: saved.card ?? "",
     context: saved.context_auto ? "auto" : num(saved.context),
     pool_tokens: num(saved.pool_tokens),
     slots: num(saved.slots),
@@ -73,6 +76,7 @@ function localDraft(saved: LocalLaunchSettings): LocalDraft {
 function tableDraft(saved: TableModelSettings): TableDraft {
   return {
     alias: saved.alias ?? "",
+    card: saved.card ?? "",
     enabled: saved.enabled,
     tier: saved.tier ?? "",
     tags: (saved.tags ?? []).join(", "),
@@ -84,6 +88,7 @@ function tableDraft(saved: TableModelSettings): TableDraft {
 
 const EMPTY_LOCAL: LocalDraft = localDraft({
   alias: null,
+  card: null,
   context: null,
   context_auto: false,
   pool_tokens: null,
@@ -99,6 +104,7 @@ const EMPTY_LOCAL: LocalDraft = localDraft({
 
 const EMPTY_TABLE: TableDraft = tableDraft({
   alias: null,
+  card: null,
   enabled: null,
   tier: null,
   tags: null,
@@ -115,6 +121,17 @@ export function aliasValue(text: string): string | null {
   const trimmed = text.trim().replace(/\s+/g, " ");
   if (trimmed === "") return null;
   if ([...trimmed].length > MAX_ALIAS_CHARS) throw new Error(`Display name must be at most ${MAX_ALIAS_CHARS} characters`);
+  return trimmed;
+}
+
+/** Longest model card the daemon accepts, in characters (imperium-config's MAX_CARD_CHARS). */
+const MAX_CARD_CHARS = 4000;
+
+/** A model card from its field: trimmed, null when empty; throws a message when too long. */
+export function cardValue(text: string): string | null {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  if ([...trimmed].length > MAX_CARD_CHARS) throw new Error(`The model card must be at most ${MAX_CARD_CHARS} characters`);
   return trimmed;
 }
 
@@ -150,6 +167,7 @@ function localSettings(draft: LocalDraft, config: LocalModelConfig): LocalLaunch
   const vllm = config.runtime === "vllm";
   const settings: LocalLaunchSettings = {
     alias: aliasValue(draft.alias),
+    card: cardValue(draft.card),
     context,
     context_auto: contextAuto,
     pool_tokens: pool,
@@ -185,6 +203,7 @@ function tableSettings(draft: TableDraft): TableModelSettings {
     .filter(Boolean);
   return {
     alias: aliasValue(draft.alias),
+    card: cardValue(draft.card),
     enabled: draft.enabled,
     tier: (draft.tier || null) as TableModelSettings["tier"],
     tags: tags.length > 0 ? tags : null,
@@ -300,7 +319,7 @@ export function ModelConfigDialog({
   };
 
   const collect = (): ModelSetConfigParams => {
-    const params: ModelSetConfigParams = { local: [], table: [], dry_run: false };
+    const params: ModelSetConfigParams = { local: [], table: [], hidden: null, dry_run: false };
     for (const model of config?.local ?? []) {
       const settings = localChange(model);
       if (settings) params.local.push({ id: model.id, settings });
@@ -319,7 +338,7 @@ export function ModelConfigDialog({
     setPreview(null);
     setPreviewError(null);
     if (!client) return;
-    const params: ModelSetConfigParams = { local: [], table: [], dry_run: true };
+    const params: ModelSetConfigParams = { local: [], table: [], hidden: null, dry_run: true };
     try {
       if (selectedLocal && selectedLocalDraft) {
         params.local.push({ id: selectedLocal.id, settings: localSettings(selectedLocalDraft, selectedLocal) });
@@ -588,6 +607,52 @@ function AliasField({
   );
 }
 
+/**
+ * The model card: what the model is good at (coding, writing, research, ...) and notes. Agents
+ * read it, with what the model's metadata says, when they choose a model to delegate to.
+ */
+function CardField({
+  value,
+  metadata,
+  fallback,
+  onChange,
+}: {
+  value: string;
+  metadata: string | null;
+  fallback: string | null;
+  onChange: (card: string) => void;
+}) {
+  return (
+    <Field
+      label="Model card"
+      hint="What the model is good at and notes; agents read it when they pick a model to delegate to."
+      filled={value !== ""}
+      onReset={() => onChange("")}
+    >
+      <textarea
+        rows={4}
+        value={value}
+        maxLength={MAX_CARD_CHARS}
+        placeholder={fallback ?? "Good at: coding, tool use. Notes: fast; weak at long documents."}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      {metadata && (
+        <details className="model-card-metadata">
+          <summary>
+            From the model's metadata{" "}
+            {value === "" && (
+              <button type="button" className="ghost reset" onClick={() => onChange(metadata)}>
+                copy into the card
+              </button>
+            )}
+          </summary>
+          <pre className="muted">{metadata}</pre>
+        </details>
+      )}
+    </Field>
+  );
+}
+
 function LocalForm({
   model,
   draft,
@@ -671,6 +736,7 @@ function LocalForm({
         )}
       </div>
       <AliasField id={model.id} value={draft.alias} fallback={null} onChange={(alias) => onChange({ alias })} />
+      <CardField value={draft.card} metadata={model.metadata_card || null} fallback={null} onChange={(card) => onChange({ card })} />
       <Field
         label="Max context per agent (tokens)"
         hint="A number, or auto: what the model was trained for, capped to what fits in memory beside it."
@@ -756,6 +822,12 @@ function TableForm({
         value={draft.alias}
         fallback={row.saved.alias === null ? eff.alias : null}
         onChange={(alias) => onChange({ alias })}
+      />
+      <CardField
+        value={draft.card}
+        metadata={null}
+        fallback={row.saved.card === null ? eff.card : null}
+        onChange={(card) => onChange({ card })}
       />
       <label className="radio model-check">
         <input type="checkbox" checked={draft.enabled ?? eff.enabled} onChange={(e) => onChange({ enabled: e.target.checked })} />

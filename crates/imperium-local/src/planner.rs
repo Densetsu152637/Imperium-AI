@@ -206,11 +206,123 @@ pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
     })
 }
 
+/// Whether a model fits in memory now, for agents choosing a model (`list_models`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fit {
+    /// Loaded already.
+    Loaded,
+    /// Fits beside the loaded models.
+    Fits,
+    /// Fits once loaded models nobody is using are unloaded (a swap).
+    AfterUnloadingIdle,
+    /// Does not fit while the models in use stay loaded, or not at all on this machine.
+    DoesNotFit,
+}
+
+impl Fit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Fit::Loaded => "loaded",
+            Fit::Fits => "fits_now",
+            Fit::AfterUnloadingIdle => "fits_after_unloading_idle",
+            Fit::DoesNotFit => "does_not_fit",
+        }
+    }
+}
+
+/// Memory a loaded model holds, and whether it is idle: no call on it or waiting for it, and
+/// no agent mid-turn on it, so it may be unloaded for another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    pub vram_bytes: u64,
+    pub ram_bytes: u64,
+    pub idle: bool,
+}
+
+/// Whether a model that is not loaded fits beside the loaded models in `held` (the other
+/// models), or once the idle ones are unloaded, with `place` the model's placer. Returns the
+/// placement it would get, when it fits. Nothing is loaded or unloaded.
+pub fn fit_beside(
+    held: &[Held],
+    budget: Budget,
+    place: impl Fn(Budget) -> Option<Placement>,
+) -> (Fit, Option<Placement>) {
+    let left = |models: &mut dyn Iterator<Item = &Held>| {
+        let (vram, ram) = models.fold((0, 0), |(vram, ram), held| {
+            (vram + held.vram_bytes, ram + held.ram_bytes)
+        });
+        Budget {
+            vram_bytes: budget.vram_bytes.saturating_sub(vram),
+            ram_bytes: budget.ram_bytes.saturating_sub(ram),
+            unified: budget.unified,
+        }
+    };
+    if let Some(placement) = place(left(&mut held.iter())) {
+        return (Fit::Fits, Some(placement));
+    }
+    if held.iter().any(|held| held.idle)
+        && let Some(placement) = place(left(&mut held.iter().filter(|held| !held.idle)))
+    {
+        return (Fit::AfterUnloadingIdle, Some(placement));
+    }
+    (Fit::DoesNotFit, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn fit_beside_counts_what_is_loaded_and_what_could_be_unloaded() {
+        let budget = Budget {
+            vram_bytes: 8 * GIB,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        // Needs 5 GiB of VRAM and nothing else.
+        let place = |left: Budget| {
+            (left.vram_bytes >= 5 * GIB).then_some(Placement {
+                gpu_layers: u32::MAX,
+                all_layers_on_gpu: true,
+                vram_bytes: 5 * GIB,
+                ram_bytes: 0,
+                required_bytes: 5 * GIB,
+            })
+        };
+        let held = |gib: u64, idle: bool| Held {
+            vram_bytes: gib * GIB,
+            ram_bytes: 0,
+            idle,
+        };
+        assert_eq!(fit_beside(&[], budget, place).0, Fit::Fits);
+        assert_eq!(fit_beside(&[held(2, false)], budget, place).0, Fit::Fits);
+        // 4 GiB held: fits only once the idle model goes.
+        let (fit, placement) = fit_beside(&[held(4, true)], budget, place);
+        assert_eq!(fit, Fit::AfterUnloadingIdle);
+        assert!(placement.is_some_and(|p| p.all_layers_on_gpu));
+        assert_eq!(
+            fit_beside(&[held(2, true), held(2, false)], budget, place).0,
+            Fit::AfterUnloadingIdle
+        );
+        // A model in use is never counted as free.
+        assert_eq!(
+            fit_beside(&[held(4, false)], budget, place),
+            (Fit::DoesNotFit, None)
+        );
+        assert_eq!(
+            fit_beside(&[held(2, true), held(4, false)], budget, place).0,
+            Fit::DoesNotFit
+        );
+        // Too large for the machine at all.
+        let never = |_: Budget| None;
+        assert_eq!(fit_beside(&[], budget, never).0, Fit::DoesNotFit);
+        assert_eq!(
+            Fit::AfterUnloadingIdle.as_str(),
+            "fits_after_unloading_idle"
+        );
+    }
 
     /// A 32-layer model with 4 GiB of weights and 1 GiB of KV cache.
     fn footprint() -> Footprint {

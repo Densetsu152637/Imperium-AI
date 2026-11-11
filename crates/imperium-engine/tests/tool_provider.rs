@@ -227,3 +227,170 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
         SessionEvent::Notice { message } if message == "notes are ready"
     ));
 }
+
+/// A provider kept to the root agent, such as `list_models`.
+#[derive(Debug)]
+struct RootOnly;
+
+impl ToolProvider for RootOnly {
+    fn for_subagents(&self) -> bool {
+        false
+    }
+
+    fn instructions(&self) -> Option<&str> {
+        Some("Only the root reads this.")
+    }
+
+    fn specs(&self) -> Vec<ToolSpec> {
+        vec![ToolSpec {
+            name: "root_tool".into(),
+            description: "For the root.".into(),
+            parameters: json!({"type": "object", "properties": {}}),
+        }]
+    }
+
+    fn handles(&self, name: &str) -> bool {
+        name == "root_tool"
+    }
+
+    fn check(&self, _name: &str, _arguments: &str) -> Result<ToolCheck, String> {
+        Ok(ToolCheck {
+            summary: "root tool".into(),
+            ask: false,
+            needs_context: false,
+        })
+    }
+
+    fn call<'a>(
+        &'a self,
+        _context: &'a ToolContext<'a>,
+        _name: &'a str,
+        _arguments: &'a str,
+    ) -> ToolFuture<'a> {
+        Box::pin(async { Ok("ok".to_string()) })
+    }
+}
+
+fn tool_call(name: &str, arguments: Value) -> String {
+    sse(
+        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":name,
+        "function":{"name":name,"arguments":arguments.to_string()}}]}}]}),
+    )
+}
+
+fn is_subagent(body: &Value) -> bool {
+    body["messages"][0]["content"]
+        .as_str()
+        .is_some_and(|system| system.contains("Imperium subagent"))
+}
+
+#[tokio::test]
+async fn a_root_only_provider_is_not_offered_to_subagents() {
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post({
+            let requests = Arc::clone(&requests);
+            move |Json(body): Json<Value>| {
+                let subagent = is_subagent(&body);
+                requests.lock().unwrap().push(body);
+                let reply = if subagent {
+                    sse(json!({"choices":[{"delta":{"content":"report"}}]}))
+                } else {
+                    match root_calls.fetch_add(1, Ordering::SeqCst) {
+                        0 => tool_call("spawn_agent", json!({"brief": "look around"})),
+                        1 => tool_call("await_tasks", json!({})),
+                        _ => sse(json!({"choices":[{"delta":{"content":"done"}}]})),
+                    }
+                };
+                async move { ([("content-type", "text/event-stream")], reply) }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = Session::spawn(SessionConfig {
+        id: "root-only".into(),
+        workspace: Workspace::new(dir.path()).unwrap(),
+        model: Some(ResolvedModel {
+            spec: "fake:model".into(),
+            endpoint: Endpoint {
+                base_url,
+                api_key: None,
+            },
+            model: "model".into(),
+            pricing: None,
+            local: false,
+            context_window: None,
+            kind: "openai".into(),
+            reasoning: None,
+        }),
+        catalog: Vec::new(),
+        routing: imperium_config::RoutingSettings::default(),
+        clients: Default::default(),
+        local: None,
+        tools: vec![Arc::new(RootOnly) as Arc<dyn ToolProvider>],
+        notices: Vec::new(),
+        extensions: Default::default(),
+        memory: None,
+        context: None,
+        enforce: imperium_config::Enforce::Warn,
+        pre_approved: Vec::new(),
+        launcher: None,
+        resume: false,
+        resume_policy: imperium_engine::default_resume_policy(),
+        instructions: None,
+        max_steps: 5,
+        background: None,
+        auto_compact: false,
+        keep_agent_state: true,
+        effort: Default::default(),
+        journal_path: dir.path().join("journal.jsonl"),
+    })
+    .unwrap();
+    let mut events = session.subscribe();
+    session.send("delegate something".into()).unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap();
+        match event.event {
+            SessionEvent::TurnCompleted { .. } if event.agent_id == "root" => break,
+            SessionEvent::TurnFailed { message } => panic!("turn failed: {message}"),
+            _ => {}
+        }
+    }
+    let requests = requests.lock().unwrap();
+    let offered = |body: &Value| -> (Vec<String>, String) {
+        let names = body["tools"]
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let system = body["messages"][0]["content"].as_str().unwrap().to_string();
+        (names, system)
+    };
+    let (root_tools, root_system) = offered(&requests[0]);
+    assert!(root_tools.iter().any(|name| name == "root_tool"));
+    assert!(root_system.contains("Only the root reads this."));
+    let subagent = requests
+        .iter()
+        .find(|body| is_subagent(body))
+        .expect("the subagent called the model");
+    let (sub_tools, sub_system) = offered(subagent);
+    assert!(!sub_tools.is_empty());
+    assert!(
+        !sub_tools.iter().any(|name| name == "root_tool"),
+        "{sub_tools:?}"
+    );
+    assert!(!sub_system.contains("Only the root reads this."));
+}

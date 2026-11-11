@@ -156,6 +156,9 @@ pub struct LocalModelSettings {
     /// A display name clients show instead of the id, such as `Qwen 3 (4B)`. The id stays
     /// what config, routing and `--model` use.
     pub alias: Option<String>,
+    /// The model card: what the model is good at and notes, for agents choosing a model (see
+    /// [`check_card`]). Added to what the model's own metadata says.
+    pub card: Option<String>,
     /// Most tokens one agent may use: `auto` or a number.
     pub context: Option<ContextLimit>,
     /// Fixes the tokens of KV cache all slots share (at least `context`); unset, the pool
@@ -188,6 +191,8 @@ pub struct LocalModelSettings {
 pub struct TableOverride {
     /// A display name for the row, over the row's own `alias`.
     pub alias: Option<String>,
+    /// A model card for the row, over the row's own `card`.
+    pub card: Option<String>,
     pub enabled: Option<bool>,
     pub tier: Option<Tier>,
     pub tags: Option<Vec<String>>,
@@ -346,8 +351,33 @@ pub fn check_alias(alias: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// Longest model card, in characters.
+pub const MAX_CARD_CHARS: usize = 4000;
+
+/// Checks a model card: when set, not blank, at most [`MAX_CARD_CHARS`] characters, and without
+/// control characters other than line breaks and tabs.
+pub fn check_card(card: Option<&str>) -> Result<(), String> {
+    let Some(card) = card else {
+        return Ok(());
+    };
+    if card.trim().is_empty() {
+        return Err("card is blank; leave it out instead".into());
+    }
+    if card
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err("card has a control character".into());
+    }
+    if card.chars().count() > MAX_CARD_CHARS {
+        return Err(format!("card is longer than {MAX_CARD_CHARS} characters"));
+    }
+    Ok(())
+}
+
 pub fn check_local_model(settings: &LocalModelSettings) -> Result<(), String> {
     check_alias(settings.alias.as_deref())?;
+    check_card(settings.card.as_deref())?;
     for (key, value) in [
         (
             "context",
@@ -473,10 +503,12 @@ impl Settings {
         }
         for entry in &self.models.catalog {
             check_alias(entry.alias.as_deref())
+                .and_then(|()| check_card(entry.card.as_deref()))
                 .map_err(|e| format!("models.catalog row {:?}: {e}", entry.id))?;
         }
         for (id, over) in &self.models.overrides {
             check_alias(over.alias.as_deref())
+                .and_then(|()| check_card(over.card.as_deref()))
                 .map_err(|e| format!("models.overrides.{id:?}: {e}"))?;
             if over.input_usd_per_mtok.is_some() != over.output_usd_per_mtok.is_some() {
                 return Err(format!(
@@ -522,6 +554,9 @@ impl Settings {
             };
             if over.alias.is_some() {
                 entry.alias.clone_from(&over.alias);
+            }
+            if over.card.is_some() {
+                entry.card.clone_from(&over.card);
             }
             if let Some(enabled) = over.enabled {
                 entry.enabled = enabled;
@@ -861,6 +896,59 @@ alias = "Plain"
             refused.contains("alias"),
             "a row's own alias is checked too"
         );
+    }
+
+    #[test]
+    fn cards_are_kept_per_model_and_checked() {
+        let table = r#"
+[[models.catalog]]
+id = "coder"
+spec = "cloud:coder-1"
+location = "cloud"
+tier = "basic"
+card = "Good at: coding."
+[endpoints.cloud]
+base_url = "https://example.invalid/v1"
+[models]
+hidden = ["cloud:coder-1"]
+list_models = "all"
+"#;
+        let own = config(&[(user(), table)]).settings().unwrap();
+        assert_eq!(
+            own.models.catalog[0].card.as_deref(),
+            Some("Good at: coding.")
+        );
+        assert_eq!(own.models.hidden, ["cloud:coder-1"]);
+        assert_eq!(own.models.list_models, crate::ListModelsScope::All);
+        assert_eq!(
+            config(&[]).settings().unwrap().models.list_models,
+            crate::ListModelsScope::Root
+        );
+        // The app's card replaces the row's; a local model's card sits with its settings.
+        let overridden = config(&[
+            (user(), table),
+            (
+                app(),
+                "[models.overrides.coder]\ncard = \"Good at: refactoring.\\nFast.\"\n[runtime.llamacpp.models.q]\ncard = \"Writing.\"\n",
+            ),
+        ])
+        .settings()
+        .unwrap();
+        assert_eq!(
+            overridden.models.catalog[0].card.as_deref(),
+            Some("Good at: refactoring.\nFast.")
+        );
+        assert_eq!(
+            overridden.runtime.llamacpp.models["q"].card.as_deref(),
+            Some("Writing.")
+        );
+        let bad = |text: &str| config(&[(app(), text)]).settings().unwrap_err().to_string();
+        for card in ["\" \"", "\"a\\u0007b\""] {
+            let text = format!("[runtime.llamacpp.models.x]\ncard = {card}\n");
+            assert!(bad(&text).contains("card"), "{card:?}");
+        }
+        let long = "x".repeat(super::MAX_CARD_CHARS + 1);
+        assert!(bad(&format!("[models.overrides.coder]\ncard = {long:?}\n")).contains("card"));
     }
 
     #[test]

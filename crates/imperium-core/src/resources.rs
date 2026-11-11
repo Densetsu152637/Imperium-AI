@@ -427,16 +427,21 @@ pub fn watch_session(
                     model,
                     usage,
                     duration_ms,
+                    time_to_first_token_ms,
+                    tokens_per_sec,
                     ..
-                } => Call {
-                    at: Instant::now(),
-                    session_id: session_id.clone(),
-                    spec: model,
-                    prompt_tokens: usage.prompt_tokens,
-                    completion_tokens: usage.completion_tokens,
-                    duration_ms,
-                    error: None,
-                },
+                } => {
+                    state.record_model_call(&model, tokens_per_sec, time_to_first_token_ms);
+                    Call {
+                        at: Instant::now(),
+                        session_id: session_id.clone(),
+                        spec: model,
+                        prompt_tokens: usage.prompt_tokens,
+                        completion_tokens: usage.completion_tokens,
+                        duration_ms,
+                        error: None,
+                    }
+                }
                 SessionEvent::TurnFailed { message } if event.agent_id == ROOT_AGENT => {
                     let Some(spec) = state.session(&session_id).and_then(|s| s.model()) else {
                         continue;

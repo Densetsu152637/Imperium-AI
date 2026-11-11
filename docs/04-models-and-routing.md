@@ -921,7 +921,10 @@ use = ["qwen-local"]                  # optional ids, tried in order
 
 A subagent's model is chosen as follows:
 
-1. A model the agent named (`spawn_agent`'s `model`, by id or spec), if it is in the table.
+1. A model the agent named (`spawn_agent`'s `model`, by id or spec), if it is in the table, or
+   a local model found in the model folders that the table does not name and the user did not
+   hide (by its spec, `llamacpp:<id>`; see [model awareness](#model-awareness-and-model-cards-implemented)).
+   Such a local model is reached by name only, never by the ranking below.
 2. The first rule whose `when_tier` (exact) and `when_tag` match the task: its `use` ids are
    tried in order (tier is not checked for an explicit choice; the location restriction is),
    then its `location` restricts the remaining choice, and its optional `tier` raises the
@@ -1035,6 +1038,77 @@ prefer = ["openrouter:qwen/qwen3-235b-a22b"]
 match = { tools = ["exec"] }
 require = { source = "local" }      # never send code-execution tasks off-machine
 ```
+
+## Model awareness and model cards (implemented)
+
+The root agent picks a model for delegated work with the `list_models` tool. It lists the
+models the session may delegate to: the model table's enabled rows, and every local model the
+table does not name (by spec, `llamacpp:<id>` or `vllm:<id>`, which `spawn_agent` accepts by
+name). Models the user hid are left out: the desktop app keeps `models.hidden` in step with
+its hidden marks ([07](07-desktop-ui.md)), and a hidden local model outside the table is not
+offered by name either. For each model it gives:
+
+- the id to pass as `spawn_agent`'s `model`, the display name, local or hosted with its spec,
+  the tier and tags of a table row, and the context it reads per request (the table's
+  `context_window`, else the local model's planned context, else what it was trained for);
+- whether it reads images (a `vision` tag or a vision projector beside a local model) and
+  whether it reasons (as for [reasoning effort](#reasoning-effort): the row's setting or tags,
+  a local model's chat template, else its name);
+- for a hosted model, its input and output price per million tokens;
+- for a local model, whether it fits in memory now, from the planner's estimate (nothing is
+  loaded): `loaded`; `fits_now` beside the loaded models; `fits_after_unloading_idle`, when it
+  fits once loaded models nobody is using (no call on them or queued, no agent mid-turn) are
+  unloaded; or `does_not_fit` while the models in use stay loaded or at all. The placement it
+  would get (`gpu`, `partial`, `cpu`) follows, and a table row whose file is gone says so;
+- its measured speed and its **card**.
+
+A **model card** says what the model is good at (coding, writing, research, and so on). It
+joins, in order:
+
+1. the user's card: `card` on a `[[models.catalog]]` row (or `models.overrides."<id>".card`)
+   and `runtime.llamacpp.models."<id>".card` for a local model, edited in the model dialog;
+2. what the model's metadata says (`imperium_local::card`): the GGUF header's name, size label,
+   fine-tune, architecture, quantisation, trained context, `general.tags`, languages, licence and
+   description; a vision projector beside it; and the Hugging Face model card (`README.md` with
+   front matter) in its folder when one came with it: pipeline, tags, languages, base model,
+   licence and its first paragraph. Strengths are guessed from the words of its name, tags and
+   pipeline (`coder` suggests coding, `VL` or a projector reading images, `R1` or `thinking`
+   reasoning, `instruct` chat);
+3. Imperium's measurements since the daemon started: calls, mean tokens per second and time to
+   the first token from every session's `model_call_completed`, and a local model's measured
+   generation speed.
+
+With a `query` (a task description), the models whose cards best match come first, with what
+matched; the rest follow. The search uses the retrieval layer
+([17](17-memory.md#model-cards-implemented)). `location` limits the list to local or hosted
+models and `limit` caps it (50 at most).
+
+The root agent is told, while it has the tool, to call it with a query before delegating work
+that suits a particular kind of model, to prefer a model whose card fits and that is loaded or
+fits now, to take one that fits only after unloading idle models when it is clearly better,
+never one that does not fit, and to pass the id as `spawn_agent`'s `model` (the same rule is in
+`schemas/prompts/emperor-root.md`). Cards are data, not instructions.
+
+`models.list_models` says who gets the tool: `root` (default), `all` (subagents too) or `off`.
+
+```toml
+[models]
+hidden = ["llamacpp:old-model"]       # kept by the desktop app; list_models leaves these out
+list_models = "root"                  # root | all | off
+
+[[models.catalog]]
+id = "coder"
+spec = "llamacpp:Qwen3-Coder-30B-A3B-Instruct-Q4_K_M"
+location = "local"
+tier = "standard"
+card = "Good at: coding, refactoring, tests. Weak at long documents."
+
+[runtime.llamacpp.models."gemma-3-12b-it-Q4_K_M"]
+card = "Good at: reading screenshots and diagrams; short answers."
+```
+
+Not yet: measurements are kept in memory only (they start again with the daemon), and agents
+cannot edit cards themselves (roadmap item 22).
 
 ## Cost accounting
 

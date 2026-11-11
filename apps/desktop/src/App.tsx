@@ -33,7 +33,9 @@ import type {
   LocalModelListResult,
   RuntimeInstallJob,
   ModListResult,
+  ModelConfigResult,
   ModelListResult,
+  ModelSetConfigParams,
   SessionListResult,
   SessionSummary,
   SessionSubscribeResult,
@@ -50,6 +52,7 @@ import { budgetNotice, budgetStop } from "./budgets";
 import { focusMainWindow, notify, onNoticeOpened } from "./notify";
 import {
   EnvironmentsPanel,
+  SessionSortSelect,
   SessionsPanel,
   environmentOf,
   type EnvironmentActions,
@@ -104,6 +107,7 @@ import { getDoc, setDoc, subscribeDoc } from "./store";
 import { type Daemon, useDaemon } from "./DaemonControl";
 import { ModelConfigDialog, type ModelDialogTarget } from "./ModelConfigDialog";
 import { setModelAliases } from "./modelNames";
+import { hiddenSpecs } from "./modelPrefs";
 import { UpdateControl, useUpdates } from "./UpdateControl";
 
 type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
@@ -472,6 +476,27 @@ export function App() {
   const openAgent = session && agentView?.sessionId === selected ? agentView.agentId : null;
   const viewedTask = openAgent ? (session?.tasks[openAgent] ?? null) : null;
   const client = status.kind === "connected" ? status.client : null;
+
+  // The daemon keeps a copy of the hidden models (`models.hidden`), so agents' list_models
+  // leaves them out too. Only the main window writes it, and only when it differs.
+  const hiddenKey = hiddenSpecs(settings.modelMarks).join("\n");
+  useEffect(() => {
+    if (!client || isDetached) return;
+    const hidden = hiddenKey === "" ? [] : hiddenKey.split("\n");
+    let live = true;
+    client
+      .call<ModelConfigResult>("models.config")
+      .then((config) => {
+        if (!live || [...(config.hidden ?? [])].sort().join("\n") === hiddenKey) return;
+        const params: ModelSetConfigParams = { local: [], table: [], hidden, dry_run: false };
+        return client.call("models.set_config", params);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [client, isDetached, hiddenKey]);
+
   const modHost = useMemo(
     () => ({ sessions: snapshotSessions(allSessions, environments), selected, client }),
     [allSessions, environments, selected, client],
@@ -900,13 +925,16 @@ export function App() {
       id: "sessions",
       title: "Sessions",
       actions: (
-        <button
-          onClick={newSessionView}
-          disabled={!client}
-          title={client ? "Start a session: choose its options and write the first message in the middle panel" : "Not connected to imperium-core"}
-        >
-          <Plus aria-hidden="true" /> New session
-        </button>
+        <>
+          <SessionSortSelect sort={sessionSort} onSort={setSessionSort} />
+          <button
+            onClick={newSessionView}
+            disabled={!client}
+            title={client ? "Start a session: choose its options and write the first message in the middle panel" : "Not connected to imperium-core"}
+          >
+            <Plus aria-hidden="true" /> New session
+          </button>
+        </>
       ),
       body: (
         <SessionsPanel
@@ -915,7 +943,6 @@ export function App() {
           scope={envView ? environment : null}
           selected={selected}
           sort={sessionSort}
-          onSort={setSessionSort}
           onSelect={selectSession}
           onSetPinned={setSessionPinned}
           onSetArchived={setSessionArchived}
