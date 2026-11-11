@@ -112,11 +112,12 @@ resumes after a restart, and `session.delete { session_id, remove_worktrees }` (
 session delete <id> --remove-worktrees`) stops and forgets the session and removes its
 worktrees, keeping their branches. Worktrees are made only for local folders (not remote
 runtimes). The daemon's git runs with hooks and fsmonitor off (no `post-checkout` hook runs),
-and a repository whose own config names checkout filters (`filter.*.smudge` or
-`filter.*.process`) is refused rather than checked out with them. Removing a session's worktree
-looks it up in the repository's own `git worktree list` (the linked worktree holding the
-recorded folder), never by asking git inside the session's folder, whose `.git` the session
-could have rewritten.
+and a repository whose own config names the review's commit-time keys (filter drivers or
+signing programs; see [refused repository config](#review-pane-implemented)) is refused rather
+than checked out with them. Removing a session's worktree looks it up in the repository's own
+`git worktree list` (the linked worktree holding the recorded folder), never by asking git
+inside the session's folder, whose `.git` the session could have rewritten; when a link stands
+at the recorded folder, or between it and its worktree's top, nothing is removed.
 
 **Implemented: project worktrees by default.** An environment's sessions can also use the git
 worktrees of the repositories its folders are in, with no folders or grants to add: the main
@@ -268,20 +269,32 @@ The checkpoints are also what a session's changes are reviewed against
   and paths taken literally (`GIT_LITERAL_PATHSPECS`), so a file named `[ab].txt` never matches
   `a.txt`. The commit message is prefilled with the session's title (written by its model) and
   the files.
-- `session.review_pull_request { repo, title, body, base? }` pushes the current branch to
-  `origin` (`git push -u -- origin refs/heads/<branch>`, network transports only: `file` and
-  `ext` are refused) and runs `gh pr create` with hooks and fsmonitor off for the git it starts;
-  without `gh` on the PATH it returns the two commands to run instead, quoted for a POSIX shell.
-  A branch (or base) starting with `-` is refused.
-- **Refused repository config.** Committing, pushing, and opening a pull request are refused
-  when the repository's own config (`.git/config` with its includes, or the worktree's config)
-  sets any of: `filter.*.clean`, `filter.*.smudge`, `filter.*.process`, `gpg.*program`,
-  `gpg.ssh.defaultKeyCommand`, `core.hooksPath`, `core.sshCommand`, `core.gitProxy`,
-  `core.askPass`, `core.fsmonitor`, `core.alternateRefsCommand`, `credential.*`,
-  `remote.*.receivepack`, `remote.*.uploadpack`, `remote.*.vcs`, `url.*.insteadOf`,
-  `url.*.pushInsteadOf`, `protocol.*`, or `commit.gpgSign = true` when your global config does
-  not turn signing on. Each would make git run a program or reach a place the repository chose;
-  Imperium runs nothing a repository's config names, so these are done from a terminal. Your
+- `session.review_pull_request { repo, title, body, base? }` pushes the current branch (read
+  in full from `HEAD`, so a tag of the same name does not confuse it) to `origin` with
+  `git push --recurse-submodules=no -u -- origin refs/heads/<branch>` and runs `gh pr create`
+  with hooks and fsmonitor off, and submodules never entered (`submodule.recurse=false`,
+  `diff.ignoreSubmodules=all`, `push.recurseSubmodules=no`), for the git it starts. A submodule's
+  own config therefore never runs, whatever the superproject's `push.recurseSubmodules` says.
+  Pushes use network transports only (`https`, `http`, `ssh`, `git`): an `origin` that is a
+  local path or a `file://` URL cannot be pushed from the panel, and `ext::` never runs. Without
+  `gh` on the PATH it returns the two commands to run instead: the body is written to a file
+  in the session's data folder and passed with `--body-file`, and the branch, title, and paths
+  are quoted for the shell you are likely to paste into: single quotes for PowerShell on Windows
+  (a quote inside doubled, typographic ones too) and for a POSIX shell elsewhere (`'` becomes
+  `'\''`), inside which nothing is expanded. A branch (or base) starting with `-` is refused.
+- **Refused repository config.** The repository's own config (`.git/config` with its includes,
+  or the worktree's config) is checked against two lists. *Commit-time* keys, which `git add`,
+  `git commit`, or a checkout would run: `filter.*.clean`, `filter.*.smudge`,
+  `filter.*.process`, `gpg.*program`, `gpg.ssh.defaultKeyCommand`, and, for a commit,
+  `commit.gpgSign = true` when your global config does not turn signing on. Committing and
+  making a session's worktree check only these (a worktree skips the signing check), so a local
+  `protocol.version`, credential helper, or `core.hooksPath` (hooks are off anyway) does not block
+  them. *Push-time* keys, checked before pushing and opening a pull request, add:
+  `core.hooksPath`, `core.sshCommand`, `core.gitProxy`, `core.askPass`, `core.fsmonitor`,
+  `core.alternateRefsCommand`, `credential.*`, `remote.*.receivepack`, `remote.*.uploadpack`,
+  `remote.*.vcs`, `url.*.insteadOf`, `url.*.pushInsteadOf`, and `protocol.*`. Each would make
+  git run a program or reach a place the repository chose; Imperium runs nothing a repository's
+  config names, so these are done from a terminal. Your
   global and system config (Git LFS, signing, credential helpers) apply as usual. Every git call
   the daemon makes for checkpoints and the review also sets `GIT_NO_LAZY_FETCH=1` and
   `GIT_ALLOW_PROTOCOL=none` (the push names its own network list), so a partial clone never

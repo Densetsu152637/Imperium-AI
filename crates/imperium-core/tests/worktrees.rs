@@ -237,6 +237,72 @@ async fn making_a_worktree_runs_nothing_from_the_repositorys_config() {
         json!({"environment_id": env["id"], "worktree": true, "worktree_branch": "other"}),
     );
     assert!(refused.contains("filter.evil.smudge"), "{refused}");
+
+    // Push-time settings, and hooks the daemon turns off anyway, do not block a worktree.
+    git(repo.path(), &["config", "--unset", "filter.evil.smudge"]);
+    git(repo.path(), &["config", "protocol.version", "2"]);
+    git(repo.path(), &["config", "core.hooksPath", ".husky"]);
+    call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": env["id"], "worktree": true, "worktree_branch": "third"}),
+    );
+}
+
+/// A link put where the session's worktree was recorded leads elsewhere: nothing is removed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_at_the_recorded_worktree_removes_nothing() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = repository();
+    let state = daemon(home.path(), None);
+    let mut connection = connect(&state);
+    let env = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Repo", "folders": [repo.path()]}),
+    );
+    let created = call(
+        &mut connection,
+        "session.create",
+        json!({"environment_id": env["id"], "worktree": true}),
+    );
+    let id = created["session_id"].as_str().unwrap().to_string();
+    let mine = std::path::PathBuf::from(created["folders"][0].as_str().unwrap());
+    let others = tempfile::tempdir().unwrap();
+    let theirs = others.path().join("theirs");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "theirs",
+            &theirs.display().to_string(),
+        ],
+    );
+    std::fs::write(theirs.join("work.txt"), "uncommitted\n").unwrap();
+    // The session's worktree folder is replaced by a link to theirs.
+    let moved = mine.with_extension("moved");
+    std::fs::rename(&mine, &moved).unwrap();
+    std::os::unix::fs::symlink(&theirs, &mine).unwrap();
+    let deleted = call(
+        &mut connection,
+        "session.delete",
+        json!({"session_id": id, "remove_worktrees": true}),
+    );
+    assert!(deleted["removed_worktrees"].as_array().unwrap().is_empty());
+    assert!(
+        deleted["failed"][0]
+            .as_str()
+            .unwrap()
+            .contains("a link stands")
+    );
+    assert_eq!(
+        std::fs::read_to_string(theirs.join("work.txt")).unwrap(),
+        "uncommitted\n"
+    );
 }
 
 #[tokio::test]

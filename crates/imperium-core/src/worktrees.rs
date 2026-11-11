@@ -18,30 +18,10 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .map(|out| crate::safe_git::text(&out))
 }
 
-/// Refuses a repository whose own config names checkout filter drivers: `worktree add`
-/// checks files out, which would run them in the daemon.
+/// Refuses a repository whose own config names programs a checkout would run (filter drivers;
+/// the review's commit list): `worktree add` checks files out in the daemon.
 fn check_filters(repo: &Path) -> Result<(), String> {
-    let found = git(
-        repo,
-        &[
-            "config",
-            "--local",
-            "--includes",
-            "--name-only",
-            "--get-regexp",
-            r"^filter\..+\.(smudge|process)$",
-        ],
-    )
-    .unwrap_or_default();
-    if found.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "the repository's own config names checkout filters ({}), which Imperium does not \
-             run; add the worktree from a terminal",
-            found.lines().collect::<Vec<_>>().join(", ")
-        ))
-    }
+    crate::review::check_repository_config(repo, crate::review::Step::Checkout, "add the worktree")
 }
 
 /// The top folder of the repository `folder` is in, if it is in one.
@@ -192,14 +172,15 @@ pub fn apply(folders: &[String], worktrees: &[SessionWorktree]) -> Vec<String> {
         .collect()
 }
 
-/// Removes the worktrees `records` name (one per repository, whatever is in them), keeping
-/// their branches. Returns the folders removed and the failures.
+/// The linked worktree (from the repository's own list) that holds the recorded folder `path`.
+/// Refused when a link stands at the recorded folder or between it and that worktree's top:
+/// the folder would then lead into some other worktree.
 fn registered_root(repo: &Path, path: &Path) -> Result<String, String> {
     let listed = git(repo, &["worktree", "list", "--porcelain"])?;
     let wanted = path
         .canonicalize()
         .map_err(|error| format!("the worktree is gone: {error}"))?;
-    listed
+    let (_, root, canonical_root) = listed
         .lines()
         .filter_map(|line| line.strip_prefix("worktree "))
         // The first is the main checkout, which is never removed.
@@ -208,13 +189,33 @@ fn registered_root(repo: &Path, path: &Path) -> Result<String, String> {
             let canonical = Path::new(tree).canonicalize().ok()?;
             wanted
                 .starts_with(&canonical)
-                .then(|| (canonical.components().count(), plain(&canonical)))
+                .then(|| (canonical.components().count(), plain(&canonical), canonical))
         })
         .max()
-        .map(|(_, root)| root)
-        .ok_or_else(|| "not a linked worktree of its repository".to_string())
+        .ok_or_else(|| "not a linked worktree of its repository".to_string())?;
+    let moved = "a link stands at the recorded worktree folder; remove the worktree by hand";
+    // The recorded folder itself, as its parent sees it.
+    let through_parent = match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => parent.canonicalize().ok().map(|p| p.join(name)),
+        _ => None,
+    };
+    if through_parent.as_ref() != Some(&wanted) {
+        return Err(moved.into());
+    }
+    // And each folder from the worktree's top down to it.
+    let depth = wanted
+        .strip_prefix(&canonical_root)
+        .map_or(0, |inside| inside.components().count());
+    if path.ancestors().take(depth + 1).any(|folder| {
+        std::fs::symlink_metadata(folder).is_ok_and(|meta| meta.file_type().is_symlink())
+    }) {
+        return Err(moved.into());
+    }
+    Ok(root)
 }
 
+/// Removes the worktrees `records` name (one per repository, whatever is in them), keeping
+/// their branches. Returns the folders removed and the failures.
 pub fn remove(records: &[SessionWorktree]) -> (Vec<String>, Vec<String>) {
     let mut removed: Vec<String> = Vec::new();
     let mut failed = Vec::new();

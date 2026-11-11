@@ -386,19 +386,28 @@ async fn hunks_are_accepted_and_rejected_and_the_rest_committed_after_asking() {
         "the user's change is left uncommitted"
     );
 
-    // A pull request asks first too (or, without gh, only shows the commands).
+    // A pull request asks first too (or, without gh, only shows the commands). A tag named
+    // like the branch does not change the branch's name.
+    git(&dir, &["tag", "main"]);
     let pr: SessionReviewPullRequestResult = ok(
         &mut connection,
         "session.review_pull_request",
-        json!({"session_id": id, "repo": root, "title": "Session work"}),
+        json!({"session_id": id, "repo": root, "title": "Session work", "body": "x'; calc; 'y"}),
     )
     .await;
     assert!(!pr.opened);
     assert_eq!(pr.branch, "main");
-    assert!(pr.command.contains("git push -u origin -- refs/heads/main"));
     assert!(
         pr.command
-            .contains("gh pr create --head main --title 'Session work'")
+            .contains("git push --recurse-submodules=no -u origin -- refs/heads/main")
+    );
+    assert!(
+        pr.command
+            .contains("gh pr create --head main --title 'Session work' --body-file ")
+    );
+    assert!(
+        !pr.command.contains("calc"),
+        "the body is in a file, not the command"
     );
 }
 
@@ -700,6 +709,9 @@ async fn permission_rules_deny_or_allow_commits() {
             .await
             .repos[0]
             .clone();
+    // Push-time settings (a protocol version, a credential helper) do not block a commit.
+    git(&dir, &["config", "protocol.version", "2"]);
+    git(&dir, &["config", "credential.helper", "store"]);
     let committed: SessionReviewCommitResult = ok(
         &mut connection,
         "session.review_commit",
@@ -711,4 +723,79 @@ async fn permission_rules_deny_or_allow_commits() {
         git(&dir, &["show", "--name-only", "--format=", "HEAD"]),
         "a.txt\nb.txt\nnew.txt"
     );
+}
+
+/// A submodule's own config is never run by the push, even when the superproject asks to push
+/// submodules on demand.
+#[tokio::test]
+async fn pushes_do_not_enter_submodules() {
+    let tools = tempfile::tempdir().unwrap();
+    let (gh, _log) = fake_gh(tools.path());
+    let repo = repository();
+    let dir = repo.path().to_path_buf();
+    let origin = tempfile::tempdir().unwrap();
+    git(origin.path(), &["init", "-q", "--bare"]);
+    git(
+        &dir,
+        &[
+            "remote",
+            "add",
+            "origin",
+            &origin.path().display().to_string(),
+        ],
+    );
+    // A submodule with an unpushed commit, whose own config runs a program to reach its remote.
+    let upstream = tempfile::tempdir().unwrap();
+    git(upstream.path(), &["init", "-q", "-b", "main"]);
+    std::fs::write(upstream.path().join("s.txt"), "s\n").unwrap();
+    git(upstream.path(), &["add", "."]);
+    git(upstream.path(), &["commit", "-q", "-m", "s"]);
+    let upstream_path = upstream.path().display().to_string();
+    git(
+        &dir,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            &upstream_path,
+            "sub",
+        ],
+    );
+    git(&dir, &["commit", "-q", "-m", "sub"]);
+    let sub = dir.join("sub");
+    let home = tempfile::tempdir().unwrap();
+    let marker = home.path().join("submodule-ran");
+    let touch = format!(
+        "touch '{}'",
+        marker.display().to_string().replace('\\', "/")
+    );
+    git(&sub, &["config", "core.sshCommand", &touch]);
+    git(
+        &sub,
+        &["remote", "set-url", "origin", "ssh://example.invalid/sub"],
+    );
+    std::fs::write(sub.join("s.txt"), "unpushed\n").unwrap();
+    git(&sub, &["commit", "-q", "-am", "unpushed"]);
+    git(&dir, &["commit", "-q", "-am", "bump sub"]);
+    git(&dir, &["config", "push.recurseSubmodules", "on-demand"]);
+
+    let url = serve(dir.clone()).await;
+    let state = daemon_with(home.path(), &url, &[("open_pull_request", "allow")]);
+    state.use_gh(gh);
+    let mut connection = connect(&state).await;
+    let id = edited(&state, &dir).await;
+    let root =
+        ok::<SessionReviewResult>(&mut connection, "session.review", json!({"session_id": id}))
+            .await
+            .repos[0]
+            .clone();
+    let _ = call(
+        &mut connection,
+        "session.review_pull_request",
+        json!({"session_id": id, "repo": root, "title": "PR"}),
+    )
+    .await;
+    assert!(!marker.exists(), "the submodule's config did not run");
 }

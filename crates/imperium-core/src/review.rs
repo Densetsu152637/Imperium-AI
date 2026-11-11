@@ -636,17 +636,35 @@ fn permitted(state: &DaemonState, session_id: &str, tool: &str) -> Result<bool, 
     }
 }
 
-/// Keys in a repository's own config that make `git add`, `git commit`, `git push`, or `gh`
-/// run a program, reach a transport, or answer for credentials (lower case, as git compares
-/// them).
-pub(crate) const REFUSED_CONFIG: &str = r"^(filter\..+\.(clean|smudge|process)|gpg\..*program|gpg\.ssh\.defaultkeycommand|core\.(hookspath|sshcommand|gitproxy|askpass|fsmonitor|alternaterefscommand)|credential\..*|remote\..+\.(receivepack|uploadpack|vcs)|url\..+\.(insteadof|pushinsteadof)|protocol\..*)$";
+/// Keys in a repository's own config that make `git add`, `git commit`, or a checkout run a
+/// program (lower case, as git compares them). Hooks and fsmonitor are not among them: every
+/// daemon git call turns those off itself.
+pub(crate) const COMMIT_REFUSED: &str =
+    r"^(filter\..+\.(clean|smudge|process)|gpg\..*program|gpg\.ssh\.defaultkeycommand)$";
+
+/// Keys that also make `git push` or `gh` run a program, reach a transport, or answer for
+/// credentials: the commit keys plus these.
+pub(crate) const PUSH_REFUSED: &str = r"^(filter\..+\.(clean|smudge|process)|gpg\..*program|gpg\.ssh\.defaultkeycommand|core\.(hookspath|sshcommand|gitproxy|askpass|fsmonitor|alternaterefscommand)|credential\..*|remote\..+\.(receivepack|uploadpack|vcs)|url\..+\.(insteadof|pushinsteadof)|protocol\..*)$";
+
+/// Which list a step checks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// A checkout (`worktree add`): the commit list, without the signing check.
+    Checkout,
+    Commit,
+    Push,
+}
 
 /// Refuses a repository whose own config (`.git/config` with its includes, and the worktree's
-/// config) has any [`REFUSED_CONFIG`] key, or turns on commit signing that the user's global
-/// config does not: those would run programs (or reach places) a repository chose, and
-/// Imperium runs nothing a repository's config names. The user's global config applies as
-/// usual. `what` says what to do instead.
-fn check_repository_config(top: &Path, what: &str) -> Result<(), String> {
+/// config) has any key the step's list names ([`COMMIT_REFUSED`], [`PUSH_REFUSED`]), or, for a
+/// commit, turns on signing that the user's global config does not: those would run programs
+/// (or reach places) a repository chose, and Imperium runs nothing a repository's config names.
+/// The user's global config applies as usual. `what` says what to do instead.
+pub(crate) fn check_repository_config(top: &Path, step: Step, what: &str) -> Result<(), String> {
+    let pattern = match step {
+        Step::Commit | Step::Checkout => COMMIT_REFUSED,
+        Step::Push => PUSH_REFUSED,
+    };
     let mut found = Vec::new();
     for scope in ["--local", "--worktree"] {
         if let Ok(out) = run(command(top).args([
@@ -655,7 +673,7 @@ fn check_repository_config(top: &Path, what: &str) -> Result<(), String> {
             "--includes",
             "--name-only",
             "--get-regexp",
-            REFUSED_CONFIG,
+            pattern,
         ])) {
             found.extend(String::from_utf8_lossy(&out).lines().map(str::to_string));
         }
@@ -672,7 +690,11 @@ fn check_repository_config(top: &Path, what: &str) -> Result<(), String> {
         ]))
         .is_ok_and(|out| text(&out) == "true")
     };
-    if (signs("--local") || signs("--worktree")) && !signs("--global") && !signs("--system") {
+    if step == Step::Commit
+        && (signs("--local") || signs("--worktree"))
+        && !signs("--global")
+        && !signs("--system")
+    {
         found.push("commit.gpgsign".into());
     }
     found.dedup();
@@ -714,7 +736,7 @@ pub(crate) fn commit(
     if params.message.trim().is_empty() {
         return Err("a commit message is needed".into());
     }
-    check_repository_config(&repo.top, "commit")?;
+    check_repository_config(&repo.top, Step::Commit, "commit")?;
     // A file git never knew that is gone again has nothing to commit (and git would refuse the
     // path).
     let known = run(command(&repo.top).args(["ls-files", "-z"]))?;
@@ -788,18 +810,91 @@ fn find_gh(state: &DaemonState) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Quotes a word for a POSIX shell: plain when it is only safe characters, else in single
-/// quotes (a `'` inside becomes `'\''`), so nothing in it is expanded when pasted.
-fn quoted(word: &str) -> String {
+/// The shell the shown commands are written for: PowerShell on Windows, a POSIX shell
+/// elsewhere.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Shell {
+    Posix,
+    PowerShell,
+}
+
+impl Shell {
+    fn here() -> Self {
+        if cfg!(windows) {
+            Shell::PowerShell
+        } else {
+            Shell::Posix
+        }
+    }
+}
+
+/// Quotes a word for `shell`: plain when it is only safe characters, else in single quotes,
+/// inside which nothing is expanded. A POSIX `'` becomes `'\''`; PowerShell doubles every
+/// single quote it accepts, typographic ones included.
+fn quoted(word: &str, shell: Shell) -> String {
     if !word.is_empty()
         && word
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_./:@".contains(c))
     {
-        word.to_string()
-    } else {
-        format!("'{}'", word.replace('\'', r"'\''"))
+        return word.to_string();
     }
+    match shell {
+        Shell::Posix => format!("'{}'", word.replace('\'', r"'\''")),
+        Shell::PowerShell => {
+            let mut out = String::from("'");
+            for c in word.chars() {
+                out.push(c);
+                if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+                    out.push(c);
+                }
+            }
+            out.push('\'');
+            out
+        }
+    }
+}
+
+/// The push's arguments: the branch only, never submodules (whose own config would run).
+fn push_args(refspec: &str) -> Vec<&str> {
+    vec![
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "protocol.file.allow=never",
+        "push",
+        "--quiet",
+        "--recurse-submodules=no",
+        "-u",
+        "--",
+        "origin",
+        refspec,
+    ]
+}
+
+/// The commands that push the branch and open the pull request, to run by hand: the body is
+/// read from `body_file`, and every other value is quoted for `shell`.
+fn shown_commands(
+    shell: Shell,
+    branch: &str,
+    title: &str,
+    body_file: &Path,
+    base: Option<&str>,
+) -> String {
+    let refspec = format!("refs/heads/{branch}");
+    let mut create = format!(
+        "gh pr create --head {} --title {} --body-file {}",
+        quoted(branch, shell),
+        quoted(title, shell),
+        quoted(&body_file.display().to_string(), shell)
+    );
+    if let Some(base) = base {
+        create.push_str(&format!(" --base {}", quoted(base, shell)));
+    }
+    format!(
+        "git push --recurse-submodules=no -u origin -- {}\n{create}",
+        quoted(&refspec, shell)
+    )
 }
 
 /// `gh pr create` for the branch, with nothing from the repository's config able to run in
@@ -827,11 +922,18 @@ fn gh_command(
     command
         .env("GH_PROMPT_DISABLED", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_COUNT", "5")
         .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
         .env("GIT_CONFIG_VALUE_0", "false")
         .env("GIT_CONFIG_KEY_1", "core.hooksPath")
         .env("GIT_CONFIG_VALUE_1", no_hooks)
+        // Submodules are never entered (their own config would run).
+        .env("GIT_CONFIG_KEY_2", "submodule.recurse")
+        .env("GIT_CONFIG_VALUE_2", "false")
+        .env("GIT_CONFIG_KEY_3", "diff.ignoreSubmodules")
+        .env("GIT_CONFIG_VALUE_3", "all")
+        .env("GIT_CONFIG_KEY_4", "push.recurseSubmodules")
+        .env("GIT_CONFIG_VALUE_4", "no")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]
@@ -860,9 +962,11 @@ pub(crate) fn pull_request(
             params.repo
         ));
     }
-    let branch = run(command(&top).args(["symbolic-ref", "--quiet", "--short", "HEAD"]))
-        .map(|out| text(&out))
-        .map_err(|_| "HEAD is not on a branch; commit on a branch first".to_string())?;
+    // In full, then without `refs/heads/`: `--short` can answer `heads/x` when a tag `x` exists.
+    let branch = run(command(&top).args(["symbolic-ref", "--quiet", "HEAD"]))
+        .ok()
+        .and_then(|out| text(&out).strip_prefix("refs/heads/").map(str::to_string))
+        .ok_or("HEAD is not on a branch; commit on a branch first")?;
     let base = params.base.as_deref().filter(|base| !base.is_empty());
     // Read as options by git or gh otherwise.
     if branch.starts_with('-') || base.is_some_and(|base| base.starts_with('-')) {
@@ -871,18 +975,17 @@ pub(crate) fn pull_request(
     if params.title.trim().is_empty() {
         return Err("a pull request title is needed".into());
     }
-    let mut create = format!(
-        "gh pr create --head {} --title {} --body {}",
-        quoted(&branch),
-        quoted(params.title.trim()),
-        quoted(&params.body)
-    );
-    if let Some(base) = base {
-        create.push_str(&format!(" --base {}", quoted(base)));
-    }
-    let shown = format!(
-        "git push -u origin -- {}\n{create}",
-        quoted(&format!("refs/heads/{branch}"))
+    // The body goes in a file, so the shown commands carry only short, quoted values.
+    let records = crate::checkpoints::records_dir(state.data_dir(), &params.session_id);
+    std::fs::create_dir_all(&records).map_err(|error| error.to_string())?;
+    let body_file = records.join("pull-request-body.md");
+    std::fs::write(&body_file, &params.body).map_err(|error| error.to_string())?;
+    let shown = shown_commands(
+        Shell::here(),
+        &branch,
+        params.title.trim(),
+        &body_file,
+        base,
     );
     let Some(gh) = find_gh(state) else {
         return Ok(SessionReviewPullRequestResult {
@@ -899,25 +1002,13 @@ pub(crate) fn pull_request(
             ..SessionReviewPullRequestResult::default()
         });
     }
-    check_repository_config(&top, "push and open the pull request")?;
+    check_repository_config(&top, Step::Push, "push and open the pull request")?;
     let refspec = format!("refs/heads/{branch}");
     run(command(&top)
         // Network transports only: never `file` or `ext` (a local program).
         .env("GIT_ALLOW_PROTOCOL", "https:http:ssh:git")
-        .args([
-            "-c",
-            "protocol.ext.allow=never",
-            "-c",
-            "protocol.file.allow=never",
-            "push",
-            "--quiet",
-            "-u",
-            "--",
-            "origin",
-            &refspec,
-        ]))?;
-    let no_hooks =
-        crate::checkpoints::records_dir(state.data_dir(), &params.session_id).join("no-hooks");
+        .args(push_args(&refspec)))?;
+    let no_hooks = records.join("no-hooks");
     std::fs::create_dir_all(&no_hooks).map_err(|error| error.to_string())?;
     let mut gh = gh_command(&gh, &top, &branch, params.title.trim(), base, &no_hooks);
     let out = run_with_input(&mut gh, params.body.clone().into_bytes())
@@ -1022,7 +1113,22 @@ mod tests {
             })
             .collect();
         let get = |key: &str| envs.get(key).cloned().flatten();
-        assert_eq!(get("GIT_CONFIG_COUNT").as_deref(), Some("2"));
+        assert_eq!(get("GIT_CONFIG_COUNT").as_deref(), Some("5"));
+        assert_eq!(
+            get("GIT_CONFIG_KEY_2").as_deref(),
+            Some("submodule.recurse")
+        );
+        assert_eq!(get("GIT_CONFIG_VALUE_2").as_deref(), Some("false"));
+        assert_eq!(
+            get("GIT_CONFIG_KEY_3").as_deref(),
+            Some("diff.ignoreSubmodules")
+        );
+        assert_eq!(get("GIT_CONFIG_VALUE_3").as_deref(), Some("all"));
+        assert_eq!(
+            get("GIT_CONFIG_KEY_4").as_deref(),
+            Some("push.recurseSubmodules")
+        );
+        assert_eq!(get("GIT_CONFIG_VALUE_4").as_deref(), Some("no"));
         assert_eq!(get("GIT_CONFIG_KEY_0").as_deref(), Some("core.fsmonitor"));
         assert_eq!(get("GIT_CONFIG_VALUE_0").as_deref(), Some("false"));
         assert_eq!(get("GIT_CONFIG_KEY_1").as_deref(), Some("core.hooksPath"));
@@ -1065,8 +1171,40 @@ mod tests {
 
     #[test]
     fn shown_commands_quote_what_needs_it() {
-        assert_eq!(quoted("feat/x"), "feat/x");
-        assert_eq!(quoted("Add \"x\" $(rm -rf ~)"), "'Add \"x\" $(rm -rf ~)'");
-        assert_eq!(quoted("it's"), r"'it'\''s'");
+        use Shell::{Posix, PowerShell};
+        assert_eq!(quoted("feat/x", Posix), "feat/x");
+        assert_eq!(quoted("feat/x", PowerShell), "feat/x");
+        assert_eq!(
+            quoted("Add \"x\" $(rm -rf ~)", Posix),
+            "'Add \"x\" $(rm -rf ~)'"
+        );
+        assert_eq!(quoted("it's", Posix), r"'it'\''s'");
+        // A title that would end the quotes and run a command, in each shell.
+        let title = "x'; calc; 'y";
+        assert_eq!(quoted(title, Posix), r"'x'\''; calc; '\''y'");
+        assert_eq!(quoted(title, PowerShell), "'x''; calc; ''y'");
+        assert_eq!(
+            quoted("a\u{2019}b $env:X", PowerShell),
+            "'a\u{2019}\u{2019}b $env:X'"
+        );
+        // The body is never on the command line, only the file it is in.
+        for shell in [Posix, PowerShell] {
+            let shown = shown_commands(shell, "main", title, Path::new("/b/body.md"), None);
+            assert!(!shown.contains("--body "), "{shown}");
+            assert!(shown.contains("--body-file /b/body.md"), "{shown}");
+            assert!(shown.contains(&quoted(title, shell)), "{shown}");
+            assert!(
+                shown
+                    .starts_with("git push --recurse-submodules=no -u origin -- refs/heads/main\n")
+            );
+        }
+    }
+
+    #[test]
+    fn pushes_never_enter_submodules() {
+        let args = push_args("refs/heads/main");
+        assert!(args.contains(&"--recurse-submodules=no"));
+        let at = args.iter().position(|arg| *arg == "--").unwrap();
+        assert_eq!(&args[at..], ["--", "origin", "refs/heads/main"]);
     }
 }
