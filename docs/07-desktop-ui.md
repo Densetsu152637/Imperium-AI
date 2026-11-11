@@ -7,7 +7,8 @@
   browser (development preview) it asks for the URL and token instead.
 - The default view below, built from columns of spanning or stacked panels with draggable
   dividers; sizes are remembered, and stacked panels fold to their header
-  ([folding](#columns-spanning-and-stacking)).
+  ([folding](#columns-spanning-and-stacking)). The [panel editor](#panel-editor-implemented)
+  moves panels between columns and adds or removes columns.
 - Session panel: the title and status at the top, conversation with assistant replies rendered
   as Markdown (GitHub-flavoured, raw HTML disabled; an option shows the raw text), inline
   permission prompts (allow, always this session, always allow by a rule, deny; see
@@ -120,8 +121,8 @@ when it is done the card offers **Switch to it** (`session.control` `set_model`)
 downloaded until Download is clicked. The answers go through `session.suggestion_respond`
 ([04](04-models-and-routing.md#model-download-suggestions)).
 
-Not yet: dragging panels and modules between columns, the edit-layout mode, project layout
-overrides, mods, and themes beyond light and dark.
+Not yet: dragging modules between panels, project layout overrides, and themes beyond light
+and dark.
 
 ## Shell
 
@@ -218,7 +219,7 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
   **stack** of panels.
 - A panel declares its height behaviour:
   - `span` — always takes the full height of its column (default for the main session panel).
-    Other panels cannot be stacked above or below it.
+    Other panels share its column only when the panel editor puts them there; it never folds.
   - `stack` — shares its column with other stackable panels, split by draggable dividers,
     collapsible to a title bar, and tabbable when space is short (default for projects and
     sessions).
@@ -243,7 +244,33 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
 - Built-in sections (environment header, context breakdown, outputs, worktrees, ...) are
   modules too, so users can reorder, remove, or swap them with mod-provided modules.
 
-### Rearranging
+### Panel editor (implemented)
+
+- The toggle at the top right of the main window, beside **Settings**, uses the icon of
+  Settings → Panels and turns the panel editor on and off (`aria-pressed`). Outside the editor
+  panels cannot be moved: there are no handles or drop zones, only the panels' own buttons and
+  the resize dividers.
+- In the editor a slim bar under the title bar says what to do and has **+ Column** (an empty
+  column at the right) and **Done**; Esc leaves the editor too (when no dialog is open). Panel
+  bodies are dimmed and inert, and each header becomes a handle with a grip, the panel's buttons
+  hidden. The session panel shows its header there as well.
+- Drag a panel by its header (it starts after a few pixels): a ghost with its title follows the
+  pointer, and an accent line shows where it lands — above another panel, at the end of a
+  column, or at a column's left or right edge, which makes a new column there with that panel.
+  Esc during a drag cancels it. An empty column reads *Drop a panel here* and offers
+  **Remove column**; panels it still lists (closed, detached, or a mod not loaded) move to the
+  column beside it. Outside the editor empty columns are not drawn.
+- The session spans its column when it is alone there; stacked with other panels it does not
+  fold. Columns left of the session's are drawn as left rails, the others as right rails.
+- The arrangement (each column's id and its panels' ids, in order) is saved as `arrangement` in
+  the local `layout` document with the sizes and closed panels ([persistence](#settings-and-persistence-implemented));
+  until the editor changes it, it is `null` and the default applies. Panels the saved
+  arrangement does not list (new built-ins, newly enabled mods) join their default column.
+  Column widths are kept per set of columns, and a new set gives the session's column the most
+  room. Settings → *Reset layout* restores the default arrangement. The rules are pure
+  functions (`layout/arrangement.ts`) with tests (`test/arrangement.test.ts`).
+
+### Rearranging (planned)
 
 - Everything is drag-and-drop: drag a panel's title bar to another column, into a stack, or
   out into a new window; drag a module between panels. Drop targets preview the result.
