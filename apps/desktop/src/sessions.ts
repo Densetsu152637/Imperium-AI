@@ -105,8 +105,9 @@ export type TaskState = {
   /** When its current run started and ended (Unix ms), from the daemon; null in older journals. */
   startedAt: number | null;
   endedAt: number | null;
+  /** Index in the session's `calls` where this task's current run (spawn or resume) began. */
+  callsFrom: number;
 };
-
 
 /** A subagent's name by id, for lines that mention it; the id when it is not known. */
 export const agentName = (session: Pick<SessionState, "tasks">, agentId: string): string =>
@@ -145,6 +146,8 @@ export type SessionState = {
   tasks: Record<string, TaskState>;
   plan: Plan | null;
   calls: ModelCall[];
+  /** Index in `calls` where the root agent's current (or latest) turn began. */
+  turnCallsFrom: number;
   /** Each agent's latest context breakdown, by agent id. */
   breakdowns: Record<string, ContextBreakdown>;
   busy: boolean;
@@ -181,6 +184,7 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   tasks: {},
   plan: null,
   calls: [],
+  turnCallsFrom: 0,
   breakdowns: {},
   busy: false,
   queue: [],
@@ -411,7 +415,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     );
   }
 
-  let { summary, tasks, plan, calls, breakdowns, busy, queue, browser, status, statusDetail, pause } = state;
+  let { summary, tasks, plan, calls, turnCallsFrom, breakdowns, busy, queue, browser, status, statusDetail, pause } = state;
   if (event.type === "model_changed" && agentId === ROOT) summary = { ...summary, model: event.to };
   if (event.type === "status_changed") {
     status = event.status;
@@ -457,7 +461,10 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     entries = applyToEntries(entries, agentEvent, tasks);
     if (event.type === "plan_updated") plan = event.plan;
     if (event.type === "queue_changed") queue = event.messages;
-    if (event.type === "turn_started") busy = true;
+    if (event.type === "turn_started") {
+      busy = true;
+      turnCallsFrom = calls.length;
+    }
     if (event.type === "turn_completed" || event.type === "turn_failed") busy = false;
     if (event.type === "task_spawned") {
       tasks = {
@@ -475,6 +482,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
           plan: null,
           startedAt: event.at_ms ?? null,
           endedAt: null,
+          callsFrom: calls.length,
         },
       };
     }
@@ -490,6 +498,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
           report: "",
           startedAt: event.at_ms ?? null,
           endedAt: null,
+          callsFrom: calls.length,
         },
       };
     }
@@ -531,6 +540,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     tasks,
     plan,
     calls,
+    turnCallsFrom,
     breakdowns,
     busy,
     queue,
