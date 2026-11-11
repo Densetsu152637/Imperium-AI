@@ -52,6 +52,7 @@ import { budgetNotice, budgetStop } from "./budgets";
 import { focusMainWindow, notify, onNoticeOpened } from "./notify";
 import {
   EnvironmentsPanel,
+  SessionSortSelect,
   SessionsPanel,
   environmentOf,
   type EnvironmentActions,
@@ -924,13 +925,16 @@ export function App() {
       id: "sessions",
       title: "Sessions",
       actions: (
-        <button
-          onClick={newSessionView}
-          disabled={!client}
-          title={client ? "Start a session: choose its options and write the first message in the middle panel" : "Not connected to imperium-core"}
-        >
-          <Plus aria-hidden="true" /> New session
-        </button>
+        <>
+          <SessionSortSelect sort={sessionSort} onSort={setSessionSort} />
+          <button
+            onClick={newSessionView}
+            disabled={!client}
+            title={client ? "Start a session: choose its options and write the first message in the middle panel" : "Not connected to imperium-core"}
+          >
+            <Plus aria-hidden="true" /> New session
+          </button>
+        </>
       ),
       body: (
         <SessionsPanel
@@ -939,7 +943,6 @@ export function App() {
           scope={envView ? environment : null}
           selected={selected}
           sort={sessionSort}
-          onSort={setSessionSort}
           onSelect={selectSession}
           onSetPinned={setSessionPinned}
           onSetArchived={setSessionArchived}
