@@ -430,7 +430,8 @@ mod tests {
     #[test]
     fn output_keeps_only_the_tail() {
         let mut output = Output::default();
-        output.push(&vec![b'a'; MAX_BUFFER]);
+        let full: Vec<u8> = std::iter::repeat_n(b'a', MAX_BUFFER).collect();
+        output.push(&full);
         output.push(b"end");
         assert_eq!(output.bytes.len(), MAX_BUFFER);
         assert_eq!(output.dropped, 3);

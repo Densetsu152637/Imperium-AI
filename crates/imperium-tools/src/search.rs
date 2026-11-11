@@ -283,9 +283,8 @@ pub fn grep_files(
                     }
                     _ => from,
                 };
-                for index in from..=to {
+                for (index, line) in lines.iter().enumerate().take(to + 1).skip(from) {
                     let separator = if hits.contains(&index) { ':' } else { '-' };
-                    let line = lines[index];
                     let line = if line.chars().count() > MAX_LINE_CHARS {
                         let cut: String = line.chars().take(MAX_LINE_CHARS).collect();
                         format!("{cut}…")
