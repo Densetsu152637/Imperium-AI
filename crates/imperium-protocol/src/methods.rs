@@ -554,8 +554,11 @@ impl Method for SessionBranch {
 #[ts(export)]
 pub struct SessionBranchParams {
     pub session_id: String,
-    /// The index of an event in the source's `session.subscribe` history.
-    pub at: u32,
+    /// The index of an event in the source's `session.subscribe` history; the session's current
+    /// point when absent.
+    #[serde(default)]
+    #[ts(optional)]
+    pub at: Option<u32>,
     /// The branch's title; by default the source's with " (branch)".
     #[serde(default)]
     pub title: Option<String>,

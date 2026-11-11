@@ -266,7 +266,7 @@ impl DaemonState {
     ) -> Result<SessionBranchResult, String> {
         let branched = self.branch_session(&BranchRequest {
             source: params.session_id.clone(),
-            at: Some(params.at),
+            at: params.at,
             title: params.title.clone(),
             comparison_id: None,
             worktree: params.worktree,

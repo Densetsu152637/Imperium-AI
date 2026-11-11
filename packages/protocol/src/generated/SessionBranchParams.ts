@@ -2,9 +2,10 @@
 
 export type SessionBranchParams = { session_id: string, 
 /**
- * The index of an event in the source's `session.subscribe` history.
+ * The index of an event in the source's `session.subscribe` history; the session's current
+ * point when absent.
  */
-at: number, 
+at?: number, 
 /**
  * The branch's title; by default the source's with " (branch)".
  */
