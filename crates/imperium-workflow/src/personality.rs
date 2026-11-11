@@ -160,7 +160,7 @@ impl Sources {
             Some(_) => {}
             None => found.push(built_in_default().info),
         }
-        found.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        found.sort_by_key(|info| info.name.to_lowercase());
         found
     }
 
