@@ -8,7 +8,9 @@ use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::{Endpoint, Pricing};
 use imperium_protocol::session::{AgentEvent, PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
-use imperium_tools::permissions::{PermissionRule, Permissions, RuleAction, SharedRules};
+use imperium_tools::permissions::{
+    PermissionMode, PermissionRule, Permissions, RuleAction, SharedRules,
+};
 use tokio::sync::broadcast;
 
 /// A fake endpoint that replays one scripted SSE body per request.
@@ -556,4 +558,157 @@ async fn a_single_call_subagent_ignores_stray_tool_calls() {
     let result = run_single_call(body).await;
     assert!(result.ok);
     assert_eq!(result.report, "x = 2");
+}
+
+/// Every event until the turn ends, answering permission requests with `answer` (and recording
+/// which tools asked).
+async fn run_turn(
+    session: &Session,
+    events: &mut broadcast::Receiver<AgentEvent>,
+    answer: PermissionDecision,
+) -> (Vec<SessionEvent>, Vec<String>) {
+    let mut seen = Vec::new();
+    let mut asked = Vec::new();
+    loop {
+        let event = next(events).await;
+        if let SessionEvent::PermissionRequested {
+            request_id, tool, ..
+        } = &event
+        {
+            asked.push(tool.clone());
+            session.respond(request_id.clone(), answer).unwrap();
+        }
+        let done = matches!(
+            event,
+            SessionEvent::TurnCompleted { .. } | SessionEvent::TurnFailed { .. }
+        );
+        seen.push(event);
+        if done {
+            return (seen, asked);
+        }
+    }
+}
+
+fn finished(events: &[SessionEvent]) -> Vec<(bool, String)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::ToolFinished { ok, output, .. } => Some((*ok, output.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn plan_mode_refuses_writes_and_commands_but_reads() {
+    let endpoint = scripted_endpoint(vec![
+        tool_call_body("write_file", r#"{"path":"plan.txt","content":"x"}"#),
+        tool_call_body("run_command", r#"{"command":"echo ran > ran.txt"}"#),
+        tool_call_body("read_file", r#"{"path":"notes.txt"}"#),
+        text_body("Here is the plan."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "context").unwrap();
+    // Even an allow rule for everything does not lift plan mode.
+    let permissions = Permissions::new(
+        rules(&[("*", "", RuleAction::Allow)]),
+        SharedRules::default(),
+    )
+    .with_mode(PermissionMode::Plan);
+    let workspace = Workspace::new(dir.path())
+        .unwrap()
+        .with_permissions(permissions);
+    let session = start_in(endpoint, dir.path(), workspace);
+    let mut events = session.subscribe();
+    session.send("plan it".into()).unwrap();
+    let (seen, asked) = run_turn(&session, &mut events, PermissionDecision::Allow).await;
+    assert!(asked.is_empty(), "nothing asks in plan mode: {asked:?}");
+    let results = finished(&seen);
+    assert_eq!(results.len(), 3, "{results:?}");
+    assert!(
+        !results[0].0 && results[0].1.contains("plan mode"),
+        "{results:?}"
+    );
+    assert!(
+        !results[1].0 && results[1].1.contains("plan mode"),
+        "{results:?}"
+    );
+    assert!(
+        results[2].0 && results[2].1.contains("context"),
+        "{results:?}"
+    );
+    assert!(!dir.path().join("plan.txt").exists());
+    assert!(!dir.path().join("ran.txt").exists());
+}
+
+#[tokio::test]
+async fn full_access_runs_without_asking_but_deny_rules_and_the_floor_hold() {
+    let endpoint = scripted_endpoint(vec![
+        tool_call_body("write_file", r#"{"path":"made.txt","content":"x"}"#),
+        tool_call_body("write_file", r#"{"path":"blocked.txt","content":"x"}"#),
+        tool_call_body("run_command", r#"{"command":"rm -rf made.txt"}"#),
+        text_body("Done."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let permissions = Permissions::new(
+        rules(&[("write_file", "blocked.txt", RuleAction::Deny)]),
+        SharedRules::default(),
+    );
+    let workspace = Workspace::new(dir.path())
+        .unwrap()
+        .with_permissions(permissions);
+    let session = start_in(endpoint, dir.path(), workspace);
+    session.set_permission_mode(PermissionMode::Full);
+    assert_eq!(session.permission_mode(), PermissionMode::Full);
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+    let (seen, asked) = run_turn(&session, &mut events, PermissionDecision::Deny).await;
+    // Only the destructive command asked (and was denied).
+    assert_eq!(asked, ["run_command"]);
+    let results = finished(&seen);
+    assert!(results[0].0, "{results:?}");
+    assert!(
+        results[1].1.contains("permission rule denies"),
+        "{results:?}"
+    );
+    assert!(dir.path().join("made.txt").exists());
+    assert!(!dir.path().join("blocked.txt").exists());
+}
+
+#[tokio::test]
+async fn background_commands_are_killed_when_the_session_stops() {
+    let slow = if cfg!(windows) {
+        "ping -n 60 127.0.0.1"
+    } else {
+        "sleep 60"
+    };
+    let endpoint = scripted_endpoint(vec![
+        tool_call_body(
+            "run_command",
+            &serde_json::json!({"command": slow, "background": true}).to_string(),
+        ),
+        text_body("Started."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(endpoint, dir.path());
+    session.set_permission_mode(PermissionMode::Full);
+    let mut events = session.subscribe();
+    session.send("serve".into()).unwrap();
+    let (seen, asked) = run_turn(&session, &mut events, PermissionDecision::Deny).await;
+    assert!(asked.is_empty(), "{asked:?}");
+    let results = finished(&seen);
+    assert!(results[0].1.contains("started p1"), "{results:?}");
+    let processes = session.workspace().processes().clone();
+    assert_eq!(processes.running(), 1);
+    session.stop();
+    for _ in 0..100 {
+        if processes.running() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(processes.running(), 0, "stopping the session kills it");
 }

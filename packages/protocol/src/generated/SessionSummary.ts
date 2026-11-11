@@ -28,6 +28,11 @@ model: string | null,
  */
 effort?: "low" | "medium" | "high" | "max", 
 /**
+ * How the session's calls are approved beside the permission rules (`session.control`
+ * `set_permission_mode`), kept across restarts; absent from daemons that predate it.
+ */
+permission_mode?: "ask" | "default" | "accept_edits" | "plan" | "full", 
+/**
  * Whether the session's model can reason, so its effort applies (clients show the effort
  * control only then).
  */

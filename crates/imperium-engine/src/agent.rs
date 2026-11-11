@@ -17,7 +17,10 @@ use imperium_protocol::session::{
     PermissionDecision, Plan, PlanStep, Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
 };
 use imperium_protocol::tools as contract;
-use imperium_tools::permissions::{PermissionRule, RuleAction, Target, suggest};
+use imperium_tools::permissions::{
+    CallKind, Decision, PermissionMode, PermissionRule, Refusal, RuleAction, Target, decide_call,
+    safety_floor, suggest,
+};
 use imperium_tools::{Access, Invocation, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
@@ -1254,19 +1257,26 @@ impl Agent {
         self.shared.workspace.permissions().evaluate(tool, target)
     }
 
-    /// Asks the user to approve a call to `tool`, unless they allowed it for the session.
+    /// Asks the user to approve a call to `tool`, unless they allowed it for the session (and
+    /// the session is not in ask-every-time mode).
     async fn approve(&self, tool: &str, summary: &str) -> bool {
-        self.approve_with(tool, summary, None).await
+        let sticky = self.shared.workspace.permissions().mode() != PermissionMode::Ask;
+        self.approve_with(tool, summary, None, sticky).await
     }
 
-    /// Like [`Agent::approve`], offering `suggested` as the rule "always allow" would add.
+    /// Like [`Agent::approve`], offering `suggested` as the rule "always allow" would add. With
+    /// `sticky` false (ask-every-time mode, the safety floor) a tool allowed for the session
+    /// still asks; tools an unattended session was started with pre-approved never ask.
     async fn approve_with(
         &self,
         tool: &str,
         summary: &str,
         suggested: Option<PermissionRule>,
+        sticky: bool,
     ) -> bool {
-        if lock(&self.shared.allowed_tools).contains(tool) {
+        if self.shared.pre_approved.contains(tool)
+            || (sticky && lock(&self.shared.allowed_tools).contains(tool))
+        {
             return true;
         }
         let (request_id, answer) = self.shared.broker.request();
@@ -1303,8 +1313,10 @@ impl Agent {
             Err(error) => return finish(false, format!("error: {error}")),
         };
         let rule = self.rule_for(name, &Target::Other);
-        if rule == Some(RuleAction::Deny) {
-            return finish(false, denied_by_rule(&check.summary));
+        let mode = self.shared.workspace.permissions().mode();
+        let decision = decide_call(mode, CallKind::Other { asks: check.ask }, rule, false);
+        if let Decision::Refuse(why) = decision {
+            return finish(false, refused(why, &check.summary));
         }
         if let Some(blocked) = self.before_tool(name, arguments).await {
             return finish(false, blocked);
@@ -1314,14 +1326,9 @@ impl Agent {
         {
             return finish(false, missing);
         }
-        let ask = match rule {
-            Some(RuleAction::Allow) => false,
-            Some(RuleAction::Ask) => true,
-            _ => check.ask,
-        };
-        if ask
+        if let Decision::Ask { sticky } = decision
             && !self
-                .approve_with(name, &check.summary, suggest(name, &Target::Other))
+                .approve_with(name, &check.summary, suggest(name, &Target::Other), sticky)
                 .await
         {
             return finish(false, "The user denied this action.".into());
@@ -1663,16 +1670,21 @@ impl Agent {
         };
         let tool = invocation.tool_name();
         let summary = invocation.summary();
-        let target = match &invocation {
-            Invocation::RunCommand { command, .. } => Target::Command(command.clone()),
-            Invocation::ReadFile { path, .. }
-            | Invocation::WriteFile { path, .. }
-            | Invocation::EditFile { path, .. }
-            | Invocation::ListDir { path } => self.shared.workspace.rule_target(path),
+        let target = match (&invocation, invocation.path()) {
+            (Invocation::RunCommand { command, .. }, _) => Target::Command(command.clone()),
+            (_, Some(path)) => self.shared.workspace.rule_target(path),
+            (_, None) => Target::Other,
         };
         let rule = self.rule_for(tool, &target);
-        if rule == Some(RuleAction::Deny) {
-            return finish(false, denied_by_rule(&summary));
+        let kind = match invocation.access() {
+            Access::Read => CallKind::Read,
+            Access::Write => CallKind::Edit,
+            Access::Execute => CallKind::Execute,
+        };
+        let mode = self.shared.workspace.permissions().mode();
+        let decision = decide_call(mode, kind, rule, safety_floor(kind, &target));
+        if let Decision::Refuse(why) = decision {
+            return finish(false, refused(why, &summary));
         }
         if let Some(blocked) = self.before_tool(tool, &call.function.arguments).await {
             return finish(false, blocked);
@@ -1682,14 +1694,9 @@ impl Agent {
         {
             return finish(false, missing);
         }
-        let ask = match rule {
-            Some(RuleAction::Allow) => false,
-            Some(RuleAction::Ask) => true,
-            _ => invocation.access() != Access::Read,
-        };
-        if ask
+        if let Decision::Ask { sticky } = decision
             && !self
-                .approve_with(tool, &summary, suggest(tool, &target))
+                .approve_with(tool, &summary, suggest(tool, &target), sticky)
                 .await
         {
             return finish(false, "The user denied this action.".into());
@@ -3101,6 +3108,18 @@ fn denied_by_rule(summary: &str) -> String {
         "A permission rule denies this action ({summary}). Do not retry it; find another way or \
          ask the user to change the rule."
     )
+}
+
+/// What the model is told about a call refused without asking.
+fn refused(why: Refusal, summary: &str) -> String {
+    match why {
+        Refusal::Rule => denied_by_rule(summary),
+        Refusal::Plan => format!(
+            "The session is in plan mode, which only reads: {summary} was not run. Read and \
+             search what you need, then present your plan; the user switches the mode when \
+             they want it carried out."
+        ),
+    }
 }
 
 /// A rule as the protocol carries it.

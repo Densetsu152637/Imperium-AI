@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
-use imperium_api::{Effort, ToolProvider};
+use imperium_api::{Effort, PermissionMode, ToolProvider};
 use imperium_config::RoutingSettings;
 use imperium_protocol::methods::SessionHold;
 use imperium_protocol::session::{
@@ -401,9 +401,27 @@ impl Session {
     /// again on resume), holding no local-model slot, and queued messages wait. The stop is
     /// journalled, so it survives a restart. Stopping a stopped session changes nothing.
     pub fn stop(&self) {
+        self.stop_processes();
         if !self.controls.is_stopped() {
             self.emitter.emit(ROOT_AGENT, SessionEvent::WorkStopped {});
         }
+    }
+
+    /// Kills every command the session's agents started in the background (when it is stopped
+    /// or deleted).
+    pub fn stop_processes(&self) {
+        self.workspace.processes().stop_all();
+    }
+
+    /// How the session's calls are approved beside the rules.
+    pub fn permission_mode(&self) -> PermissionMode {
+        self.workspace.permissions().mode()
+    }
+
+    /// Changes the session's permission mode from every agent's next call on, also while a
+    /// turn runs.
+    pub fn set_permission_mode(&self, mode: PermissionMode) {
+        self.workspace.permissions().set_mode(mode);
     }
 
     /// Resumes a stopped session: every agent goes on from where it halted.
@@ -604,6 +622,10 @@ pub(crate) struct Shared {
     pub max_steps: u32,
     /// Tools the user allowed for the rest of the session, for every agent.
     pub allowed_tools: Mutex<HashSet<String>>,
+    /// Tools an unattended session's starter allowed up front: they run without asking in
+    /// every mode but plan, including what the safety floor would ask about, since nobody is
+    /// there to answer.
+    pub pre_approved: HashSet<String>,
     /// Tool providers, started before the first turn.
     pub tools: Vec<Arc<dyn ToolProvider>>,
     pub extensions: Extensions,
@@ -722,7 +744,8 @@ async fn run(
         routing: config.routing,
         local: config.local,
         max_steps: config.max_steps,
-        allowed_tools: Mutex::new(config.pre_approved.into_iter().collect()),
+        allowed_tools: Mutex::new(config.pre_approved.iter().cloned().collect()),
+        pre_approved: config.pre_approved.into_iter().collect(),
         tools: config.tools,
         extensions: config.extensions,
         loaded_skills: Mutex::new(loaded_skills),

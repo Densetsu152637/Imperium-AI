@@ -61,7 +61,13 @@ import { SentAttachments } from "../components/AttachmentChips";
 import { Composer } from "./Composer";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { ModelSuggestionCard } from "./ModelSuggestionCard";
-import { EffortSelect, SessionModelSelect, type Effort } from "./ModelSelect";
+import {
+  EffortSelect,
+  PermissionModeSelect,
+  SessionModelSelect,
+  type Effort,
+  type PermissionMode,
+} from "./ModelSelect";
 import { StatusBadge } from "./StatusBadge";
 import { useSettings } from "../settings";
 import { canStop, isStopShortcut, isStopped } from "../stop";
@@ -97,6 +103,8 @@ type Props = {
   onSetModel: (model: string) => Promise<SessionControlResult>;
   /** Sets the session's reasoning effort; rejects with the daemon's reason. */
   onSetEffort?: (effort: Effort) => Promise<SessionControlResult>;
+  /** Sets the session's permission mode; rejects with the daemon's reason. */
+  onSetPermissionMode?: (mode: PermissionMode) => Promise<SessionControlResult>;
   /** For answering model download suggestions and following their downloads. */
   client?: DaemonClient | null;
   /** Resumes an archived session. */
@@ -135,6 +143,7 @@ export function SessionPanel({
   onOpenLocalModels,
   onSetModel,
   onSetEffort,
+  onSetPermissionMode,
   client = null,
   onUnarchive,
   budgets = [],
@@ -435,6 +444,14 @@ export function SessionPanel({
             current={session.summary.effort}
             disabled={archived}
             onChange={onSetEffort}
+          />
+        )}
+        {onSetPermissionMode && (
+          <PermissionModeSelect
+            key={`mode-${session.summary.session_id}`}
+            current={session.summary.permission_mode}
+            disabled={archived}
+            onChange={onSetPermissionMode}
           />
         )}
         <span className="session-footer-spacer" />

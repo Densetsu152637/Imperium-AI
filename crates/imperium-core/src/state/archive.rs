@@ -96,6 +96,7 @@ impl DaemonState {
             model: imperium_engine::journalled_model(journal)
                 .or_else(|| meta["model"].as_str().map(str::to_string)),
             effort: meta["effort"].as_str().map(str::to_string),
+            permission_mode: meta["permission_mode"].as_str().map(str::to_string),
             // An archived session calls no model.
             reasoning: false,
             isolation: meta["isolation"].as_str().unwrap_or_default().to_string(),
@@ -226,6 +227,7 @@ impl DaemonState {
         meta["status"] = serde_json::to_value(summary.status).unwrap_or(Value::Null);
         meta["status_detail"] = summary.status_detail.clone().into();
         std::fs::write(&path, meta.to_string())?;
+        session.stop_processes();
         // Dropping the daemon's handle stops the session once its current step ends.
         self.sessions
             .lock()

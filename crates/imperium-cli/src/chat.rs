@@ -79,7 +79,8 @@ pub fn run(
             "Type a message. While the agent works, messages queue and run in order; /steer \
              <text> adds a message to the running turn, /queue lists what waits. /context shows \
              what the model is reading, /model <id> switches models, /effort <low|medium|high|max> \
-             sets how hard a reasoning model thinks, /compact summarises older turns, /rewind lists \
+             sets how hard a reasoning model thinks, /mode <ask|default|accept_edits|plan|full> \
+             sets how actions are approved, /compact summarises older turns, /rewind lists \
              checkpoints and puts files and the conversation back to one; /download, /dismiss, or /never answer a model download suggestion; an \
              empty line (when idle) or /exit quits."
         );
@@ -275,10 +276,11 @@ impl Chat {
                 print!("{}", describe_queue(&queue.messages));
             }
             Some(Command::Control(action)) => {
-                let (action, model, effort) = match action {
-                    Control::SetModel(model) => ("set_model", Some(model), None),
-                    Control::SetEffort(effort) => ("set_effort", None, Some(effort)),
-                    Control::Compact => ("compact", None, None),
+                let (action, model, effort, permission_mode) = match action {
+                    Control::SetModel(model) => ("set_model", Some(model), None, None),
+                    Control::SetEffort(effort) => ("set_effort", None, Some(effort), None),
+                    Control::SetMode(mode) => ("set_permission_mode", None, None, Some(mode)),
+                    Control::Compact => ("compact", None, None, None),
                 };
                 let result = client
                     .call::<SessionControl>(SessionControlParams {
@@ -289,11 +291,16 @@ impl Chat {
                         pull_request: None,
                         model,
                         effort,
+                        permission_mode,
                         pinned: None,
                         title: None,
                     })
                     .await;
                 match result {
+                    Ok(result) if action == "set_permission_mode" => println!(
+                        "{}",
+                        describe_mode(result.permission_mode.as_deref().unwrap_or_default())
+                    ),
                     Ok(result) if action == "set_effort" => println!(
                         "{}",
                         describe_effort(
@@ -924,6 +931,8 @@ enum Control {
     SetModel(String),
     /// `/effort <level>`: how hard a model that can reason thinks.
     SetEffort(String),
+    /// `/mode <mode>`: how the session's actions are approved.
+    SetMode(String),
     /// `/compact`: summarise older turns now.
     Compact,
 }
@@ -935,6 +944,10 @@ fn control_command(text: &str) -> Option<Control> {
     if let Some(effort) = text.strip_prefix("/effort ") {
         let effort = effort.trim();
         return (!effort.is_empty()).then(|| Control::SetEffort(effort.to_ascii_lowercase()));
+    }
+    if let Some(mode) = text.strip_prefix("/mode ") {
+        let mode = mode.trim();
+        return (!mode.is_empty()).then(|| Control::SetMode(mode.to_ascii_lowercase()));
     }
     let model = text.strip_prefix("/model ")?.trim();
     (!model.is_empty()).then(|| Control::SetModel(model.to_string()))
@@ -950,6 +963,18 @@ fn describe_effort(effort: &str, reasoning: bool) -> String {
              once the session is on one that can."
         )
     }
+}
+
+/// One line on a permission-mode change, saying what the mode does.
+fn describe_mode(mode: &str) -> String {
+    let what = match mode {
+        "ask" => "every write, edit, and command asks, whatever the allow rules say",
+        "accept_edits" => "file edits run without asking; commands follow the rules",
+        "plan" => "agents only read and plan; writes and commands are refused",
+        "full" => "everything runs without asking except what deny rules or the safety floor stop",
+        _ => "writes, edits, and commands ask unless a rule allows them",
+    };
+    format!("Permission mode set to {mode}: {what}.")
 }
 
 /// One line on a model switch or compaction: `Switched to x:y; compacted 30.1k -> 9.2k tokens
@@ -1275,6 +1300,12 @@ mod tests {
             Some(Control::SetEffort("high".into()))
         );
         assert_eq!(control_command("/effort "), None);
+        assert_eq!(
+            control_command("/mode Plan"),
+            Some(Control::SetMode("plan".into()))
+        );
+        assert_eq!(control_command("/mode "), None);
+        assert!(describe_mode("plan").contains("refused"));
         assert!(describe_effort("max", true).ends_with("max."));
         assert!(describe_effort("low", false).contains("cannot reason"));
         assert_eq!(control_command("tell me about /model x"), None);

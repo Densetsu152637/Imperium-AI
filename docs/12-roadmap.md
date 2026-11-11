@@ -75,7 +75,7 @@ the wait reason in the desktop.
    writable path grants outside environments (global package caches, toolchains) with per-OS
    presets, carried into the OS sandbox and container mounts
    ([05](05-tools-and-isolation.md#permissions), [07](07-desktop-ui.md#permissions-implemented)).
-   Permission modes (ask every time, accept edits, plan only, full access) remain to do.
+   Permission modes (ask every time, accept edits, plan only, full access) came with item 25.
 3. **Budgets and alerts** (implemented). Daily, weekly, and monthly token and cost budgets
    globally, per environment, per endpoint, and per model (configurable week start and monthly
    reset day, local time), with usage persisted across restarts; alerts at configurable
@@ -207,13 +207,21 @@ the wait reason in the desktop.
     load chosen ones (or all) up front. Hooks stay active from the start, since a hook may be a
     security check that must see every call
     ([06](06-extensibility.md#lazy-skills-and-plugins-implemented)).
-24. **Context and transcripts.** Items 24–35 are described in the design docs but not built
+24. **Context and transcripts.** Items 24–35 are described in the design docs and, unless marked implemented, not built
     yet (their *planned* and *later work* notes; each links to where it is described). Automatic compaction mid-turn when an agent nears its context
     limit, and transcripts, task trees, and artefacts browsable and exportable
     ([03](03-agent-engine.md)).
-25. **More tools and permission modes.** Glob and grep file tools, background processes for
-    `run_command`, and permission modes: ask every time, accept edits, plan only, full access
-    ([05](05-tools-and-isolation.md)).
+25. **More tools and permission modes** (implemented). `glob` and `grep` file tools that
+    honour `.gitignore`, folder checks, and deny rules, with paged output
+    ([05](05-tools-and-isolation.md#glob-and-grep-implemented)); background processes for
+    `run_command` with `command_output` and `command_stop`, capped and buffered per session and
+    killed with it ([05](05-tools-and-isolation.md#background-commands-implemented)); and
+    per-session permission modes (`ask`, `default`, `accept_edits`, `plan`, `full`) under deny
+    rules and a built-in safety floor, set by `permissions.mode`, `session.control`
+    `set_permission_mode`, `/mode` in the CLI, and the session footer
+    ([05](05-tools-and-isolation.md#permission-modes-implemented),
+    [07](07-desktop-ui.md#environments-and-sessions-implemented)). Remote runtimes do not have
+    the search tools or background commands yet.
 26. **Worktrees for parallel writers.** Parallel writing subagents each work in their own git
     worktree so concurrent edits never collide
     ([14](14-projects-and-automation.md#worktrees)).
