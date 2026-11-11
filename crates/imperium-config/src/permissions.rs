@@ -12,7 +12,7 @@
 //! ]
 //! ```
 
-use imperium_api::{PathGrant, PathMode, PermissionRule, RuleAction};
+use imperium_api::{PathGrant, PathMode, PermissionMode, PermissionRule, RuleAction};
 use serde::{Deserialize, Serialize};
 use toml_edit::{Array, InlineTable, Item, Table, Value};
 
@@ -25,6 +25,9 @@ use crate::{Paths, SetError};
 pub struct PermissionSettings {
     pub grants: Vec<PathGrant>,
     pub rules: Vec<PermissionRule>,
+    /// The permission mode new sessions start in (`ask`, `default`, `accept_edits`, `plan`,
+    /// `full`); each session can change its own.
+    pub mode: PermissionMode,
 }
 
 /// Replaces the user file's `[permissions]` grants and rules (an empty list removes its key).
@@ -126,6 +129,7 @@ mod tests {
                     action: RuleAction::Ask,
                 },
             ],
+            mode: PermissionMode::Default,
         };
         let saved = save_permissions(&paths, &wanted, Vec::new()).unwrap();
         assert_eq!(saved, wanted);

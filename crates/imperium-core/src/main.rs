@@ -14,6 +14,8 @@ use tokio::sync::oneshot;
 use tracing_subscriber::EnvFilter;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// How long shutdown waits for sessions' background commands to be killed.
+const BACKGROUND_STOP_WAIT: Duration = Duration::from_secs(5);
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -104,6 +106,8 @@ async fn run() -> anyhow::Result<()> {
         () = daemon.shutdown_requested() => {}
     }
     tracing::info!("shutting down");
+    // Background commands must not outlive the daemon.
+    daemon.stop_background_processes(BACKGROUND_STOP_WAIT).await;
     stop.send(()).ok();
     // Open WebSocket connections can hold graceful shutdown; stop waiting after a grace period.
     match tokio::time::timeout(SHUTDOWN_GRACE, server).await {
