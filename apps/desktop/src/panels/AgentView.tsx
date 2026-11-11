@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Attachment, PermissionDecision, PermissionRule, RuntimeInstallJob, SendMode } from "@imperium/protocol";
 
 import { RESUME_TEXT, agentComposerHint, formatElapsed, taskElapsed } from "../agentView";
+import { JumpToLatest } from "../components/JumpToLatest";
 import { ModelName } from "../components/ModelName";
 import { ToolGroup } from "../components/ToolGroup";
 import { WaitLine } from "../components/WaitLine";
@@ -21,6 +22,7 @@ import { agentName, formatCost, sessionTitle, type SessionState, type TaskState 
 import { useSettings } from "../settings";
 import { isStopped, shownTaskStatus } from "../stop";
 import { groupToolRuns } from "../toolCalls";
+import { useFollowScroll } from "../useFollowScroll";
 import { describeWait } from "../waits";
 import { useNow } from "./AgentsPanel";
 import { Composer } from "./Composer";
@@ -80,6 +82,19 @@ export function AgentView({
   const wait =
     running && !stopped && !archived ? describeWait({ wait: session.waits[task.taskId], install: runtimeInstall }) : null;
   const name = (id: string) => agentName(session, id);
+
+  // Follows the subagent's newest output until the reader scrolls up (roadmap item 20).
+  const last = task.entries.at(-1);
+  const follow = useFollowScroll({
+    count: items.length + requests.length,
+    activity: `${task.entries.length}:${last && "text" in last ? last.text.length : 0}:${requests.length}`,
+    enabled: settings.autoScroll,
+    resetKey: `${session.summary.session_id}/${task.taskId}`,
+  });
+  const send: Props["onSend"] = (text, mode, attachments) => {
+    follow.resume();
+    onSend(text, mode, attachments);
+  };
 
   // Escape (outside a text field) goes back to the session.
   useEffect(() => {
@@ -155,7 +170,7 @@ export function AgentView({
 
       {task.plan && <PlanView plan={task.plan} />}
 
-      <div className="conversation" aria-live="polite">
+      <div className="conversation" aria-live="polite" ref={follow.ref}>
         {items.map((item) =>
           item.kind === "tools" ? (
             <ToolGroup key={item.index} calls={item.calls} />
@@ -194,6 +209,7 @@ export function AgentView({
           </p>
         )}
       </div>
+      <JumpToLatest follow={follow} />
 
       {task.queue.length > 0 && <QueueView queue={task.queue} busy={running} onChange={onChangeQueued} />}
 
@@ -203,7 +219,7 @@ export function AgentView({
         hidden={archived}
         client={client}
         placeholder={agentComposerHint(task.title, task.status, settings.sendKey === "enter")}
-        onSend={onSend}
+        onSend={send}
       />
 
       <footer className="session-footer" aria-label="Subagent status">

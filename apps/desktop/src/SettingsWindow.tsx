@@ -208,7 +208,7 @@ const FIELDS: Field[] = [
     key: "autoScroll",
     section: "chat",
     label: "Follow new output",
-    description: "Scroll to the newest message as the agent writes.",
+    description: "Scroll to the newest message as the agent writes, until you scroll up.",
     control: { type: "toggle" },
   },
   {

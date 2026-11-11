@@ -112,6 +112,21 @@ shows a cross when any failed, otherwise a check. Opening it lists the calls as 
 each still opening on its own. A lone call stays its own row. A subagent's log folds its calls the same way, and a session search hit on a folded call lands on its group's
 line (`apps/desktop/src/toolCalls.ts`, `components/ToolGroup.tsx`).
 
+### Free scroll while streaming (implemented)
+
+The session transcript and a subagent's log follow the newest output as the agent writes, while
+*Follow new output* (Settings → Chat) is on. Scrolling up by wheel, keyboard (Up, Page Up, Home,
+Shift+Space), touch, or the scroll bar stops following at once, even mid-stream, and from then
+on new text, tool groups opening or closing, and Markdown re-rendering leave the reader's place
+alone (the browser's scroll anchoring keeps what is on screen still). A quiet **Jump to latest**
+pill with a down arrow floats over the bottom of the transcript while it is not at the end; it
+shows how many items arrived since following stopped, or a dot when only streamed text did.
+Choosing it, scrolling back to within 32 px of the bottom, sending a message, or opening another
+session or subagent follows again. A session search hit stops following so the hit stays in view.
+The rules are pure functions in `apps/desktop/src/follow.ts` (tested in `test/follow.test.ts`);
+`useFollowScroll.ts` wires them to the transcript for both views, and
+`components/JumpToLatest.tsx` draws the pill.
+
 ### Waiting status line (implemented)
 
 After a message is sent, and before the agent's first output (a streamed token, a tool call,
