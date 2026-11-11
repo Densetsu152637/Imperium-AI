@@ -3088,6 +3088,66 @@ button.setup-action small {
   border-radius: var(--radius);
 }
 
+.browser,
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-height: 0;
+}
+
+.browser-bar,
+.preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.browser-who {
+  flex: 1;
+}
+
+.browser-address {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.browser-address input,
+.preview-bar input {
+  flex: 1;
+  min-width: 0;
+}
+
+.browser-note,
+.preview-note {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.browser-page {
+  outline: none;
+}
+
+.browser-page:focus-visible img {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.browser-view img.driving {
+  cursor: pointer;
+}
+
+.preview-frame {
+  width: 100%;
+  min-height: 24rem;
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  /* Pages assume a white canvas whatever the app's theme is. */
+  background: #fff;
+}
+
 /* Pet */
 .pet {
   display: flex;

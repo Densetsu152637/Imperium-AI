@@ -31,8 +31,36 @@ profile, so no saved logins), headless by default (`web.headless`), started on f
 shared by a session's agents. Opening a page follows the `web_fetch` domain rule; clicking and
 typing always ask unless allowed for the session. After every action the session emits a
 `browser_view` event with the page's URL, title, and a JPEG screenshot, which the desktop's
-Browser panel shows, so the user sees what the agent sees. Screenshots for vision models,
-tabs, downloads, and a visible pane the user can take over are later work.
+Browser panel shows, so the user sees what the agent sees. The user can take the browser over
+from that panel ([07](07-desktop-ui.md#preview-and-browser-panels-implemented)):
+`session.browser_control` sets who drives, `session.browser_act` carries the user's click, typing,
+key, scroll, and navigation, and while the user drives every `browser_*` call is refused before
+any approval with a message saying so (a call already waiting for the browser re-checks once it
+holds it). Giving the browser back restores the agent's tools. Screenshots for vision models,
+tabs, and downloads are later work; the browser is one page.
+
+### Live preview (implemented)
+
+`preview_open` shows a page the project serves in the desktop's Preview panel, with either a
+loopback `url` or a `command` and the `port` it listens on (`preview_close` closes it).
+
+- **Commands** run as one background process per session, under the session's isolation tier
+  and permission rules: the call asks like `run_command` unless a `run_command` allow rule
+  matches the command, and a deny rule refuses it. The process is started in its own process
+  group (a tree kill on Windows), readiness is the port accepting connections on the loopback
+  address (60 s), the last output is returned if it exits early, and a port already in use is
+  refused rather than shown. Opening another preview, `preview_close`, and the session ending
+  stop the server and everything it started. Sessions in a remote environment, and the
+  container or no-network OS tiers (where the app could not reach the port), refuse commands
+  with the reason. Background commands in general (`run_command` with a managed process table)
+  are separate work; this is a minimal managed process just for previews.
+- **URLs** are limited to `localhost`, `127.0.0.1`, and `[::1]` over http or https with no
+  user name or password, parsed as a browser would (so `localhost.evil.com`,
+  `localhost@evil.com`, and `127.0.0.1:80@evil.com` are refused). The reason: the page runs
+  scripts inside the app window next to the daemon's controls, so remote pages are never shown
+  there; the agent's own browser is the way to read remote pages. Showing a loopback page needs
+  no approval; starting a server does.
+- The dev server's own hot reload keeps the page current; Imperium only shows it.
 
 Implemented in phase 1 (`imperium-tools`): paths resolve inside the project folder and may not
 escape it through `..`, absolute paths, or symbolic links (tier 0). Reads and listings run

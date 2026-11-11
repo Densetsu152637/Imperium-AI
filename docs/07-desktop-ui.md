@@ -200,6 +200,34 @@ It uses `session.review`, `session.review_hunk`, `session.review_commit`,
 ([review pane](14-projects-and-automation.md#review-pane-implemented)). Sessions outside git say
 why there is nothing to review.
 
+### Preview and Browser panels (implemented)
+
+Two panels show pages beside the chat (roadmap item 9). Both are closable and detachable like
+the others and follow the open session.
+
+- **Preview** shows the page the session's project serves. An agent opens it with
+  `preview_open` ([05](05-tools-and-isolation.md#live-preview-implemented)); a `preview_changed`
+  event (`url`, and the `command` that serves it) fills the panel, and the panel says which
+  command it started and that it stops with the session. The page is an iframe, so the dev
+  server's own hot reload keeps it current; *Reload* fetches it again. The address bar also
+  takes an address the user types, which wins until the agent opens a different page. Only
+  `localhost`, `127.0.0.1`, and `[::1]` (http or https, no user name or password) are shown:
+  the page runs scripts inside the app window, so `previewUrl` (`src/preview.ts`) refuses
+  anything else with the reason, the daemon applies the same rule to agents' URLs, and the
+  window's content security policy allows frames from loopback origins only, so a redirect
+  cannot load a remote site either. The iframe is sandboxed (scripts, forms, and modals; no
+  popups or top navigation) and sends no referrer.
+- **Browser** mirrors the agent's browser (`browser_view`) and lets the user take it over.
+  *Take over* (`session.browser_control`, `user: true`) starts the browser if needed, shows its
+  page, and replaces the bar with Back, Forward, Reload, an address field, and *Give back to
+  agent*. While the user drives, a click on the screenshot clicks that spot, typed characters
+  and keys (Enter, Backspace, arrows, and the like) go to the focused element, and the wheel
+  scrolls the page, each through `session.browser_act`, which answers with a fresh screenshot
+  (no streaming; the page updates on interaction). Tab and Escape stay with the app so the
+  keyboard is never trapped. The agent's `browser_*` tools are refused with a message saying the
+  user is driving until *Give back to agent*; `browser_control` events keep every client's
+  panel in step. The browser stays one page: no tabs, no downloads.
+
 ### Resources panel (implemented)
 
 The Resources panel (in Settings → Panels, closable and detachable like the others) shows what
