@@ -52,6 +52,8 @@ type Props = {
   client: DaemonClient | null;
   placeholder: string;
   onSend: (text: string, mode: SendMode, attachments: Attachment[]) => void;
+  /** Text to put in the message box (a message branched from, to edit); `nonce` repeats it. */
+  prefill?: { text: string; nonce: number } | null;
 };
 
 let nextKey = 0;
@@ -59,7 +61,7 @@ const chipKey = () => `chip-${++nextKey}`;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-export function Composer({ sessionId, busy, hidden, client, placeholder, onSend }: Props) {
+export function Composer({ sessionId, busy, hidden, client, placeholder, onSend, prefill = null }: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
   const [chips, setChips] = useState<Chip[]>([]);
@@ -78,6 +80,13 @@ export function Composer({ sessionId, busy, hidden, client, placeholder, onSend 
     setDraft("");
     setChips([]);
   }, [sessionId]);
+
+  // A message branched from comes back for editing.
+  useEffect(() => {
+    if (!prefill) return;
+    setDraft(prefill.text);
+    requestAnimationFrame(() => field.current?.focus());
+  }, [prefill?.nonce]);
 
   // ---- Attachments ----
 

@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -497,6 +498,9 @@ impl Workspace {
             {
                 return Ok(None);
             }
+            let Some(name) = creatable_name(name) else {
+                return Ok(None);
+            };
             resolved.push(name);
         }
         Ok(Some(resolved))
@@ -532,6 +536,33 @@ fn existing_dir(path: &Path) -> std::io::Result<PathBuf> {
         ));
     }
     Ok(path)
+}
+
+/// The name a not-yet-existing path component gets when it is created. Win32 drops trailing
+/// dots and spaces from a name, so `key.pem.` creates `key.pem`; resolving it that way lets
+/// rule patterns, containment, and the write all see the same file. `None` when nothing is
+/// left (`...`, a lone space) or when the name has a `:`, which on NTFS names an alternate
+/// data stream (`key.pem::$DATA` and `key.pem:x` write to `key.pem`) that no rule pattern for
+/// the file would match.
+fn creatable_name(name: OsString) -> Option<OsString> {
+    if !cfg!(windows) {
+        return Some(name);
+    }
+    let Some(text) = name.to_str() else {
+        return Some(name);
+    };
+    if text.contains(':') {
+        return None;
+    }
+    match without_trailing_dots_and_spaces(text) {
+        "" => None,
+        trimmed if trimmed.len() == text.len() => Some(name),
+        trimmed => Some(trimmed.into()),
+    }
+}
+
+fn without_trailing_dots_and_spaces(name: &str) -> &str {
+    name.trim_end_matches(['.', ' '])
 }
 
 /// The ways to read a path a model wrote for this machine, the likeliest first: as written
@@ -616,6 +647,56 @@ mod tests {
             workspace.resolve(&absolute),
             Err(ToolError::OutsideWorkspace(_))
         ));
+    }
+
+    #[test]
+    fn trailing_dots_and_spaces_are_dropped_from_names_win32_would_drop_them_from() {
+        assert_eq!(without_trailing_dots_and_spaces("key.pem."), "key.pem");
+        assert_eq!(without_trailing_dots_and_spaces("key.pem . "), "key.pem");
+        assert_eq!(without_trailing_dots_and_spaces(".env"), ".env");
+        assert_eq!(without_trailing_dots_and_spaces("..."), "");
+        assert_eq!(
+            creatable_name("key.pem.".into()),
+            if cfg!(windows) {
+                Some("key.pem".into())
+            } else {
+                Some("key.pem.".into())
+            }
+        );
+        assert_eq!(creatable_name(" ".into()).is_none(), cfg!(windows));
+        for stream in ["key.pem::$DATA", "key.pem:foo", ":x"] {
+            assert_eq!(creatable_name(stream.into()).is_none(), cfg!(windows));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_new_name_with_a_trailing_dot_or_space_matches_the_rule_for_the_real_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let plain = workspace.rule_target("key.pem");
+        for evasion in ["key.pem.", "key.pem ", "key.pem. .", "sub./key.pem"] {
+            let target = workspace.rule_target(evasion);
+            if evasion.starts_with("sub") {
+                let Target::Path { relative, .. } = target else {
+                    panic!("a path target");
+                };
+                assert_eq!(relative.as_deref(), Some("sub/key.pem"));
+                continue;
+            }
+            assert_eq!(target, plain, "{evasion} is the same file as key.pem");
+            assert_eq!(
+                workspace.resolve_writable(evasion).unwrap(),
+                workspace.resolve_writable("key.pem").unwrap()
+            );
+        }
+        assert!(workspace.resolve_writable("...").is_err());
+        for stream in ["key.pem::$DATA", "key.pem:foo", "sub/key.pem:foo"] {
+            assert!(
+                workspace.resolve_writable(stream).is_err(),
+                "{stream} is a stream of key.pem"
+            );
+        }
     }
 
     #[test]

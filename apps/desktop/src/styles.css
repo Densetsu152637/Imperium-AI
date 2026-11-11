@@ -6287,6 +6287,213 @@ button.select.open .select-chevron {
   vertical-align: -0.1em;
 }
 
+/* Branching and comparison (roadmap item 7). The branch action sits quietly beside a message and shows
+   on hover or focus; branches are indented, one-line rows under their source; a comparison is columns. */
+.message {
+  position: relative;
+}
+
+.message-action {
+  position: absolute;
+  top: 0.15rem;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  opacity: 0;
+  color: var(--muted);
+}
+
+.message-action .lucide {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.message.assistant > .message-action {
+  right: 0;
+}
+
+.message.user > .message-action {
+  left: -2rem;
+}
+
+.message:hover > .message-action,
+.message:focus-within > .message-action {
+  opacity: 0.75;
+}
+
+.message > .message-action:hover,
+.message > .message-action:focus-visible {
+  opacity: 1;
+}
+
+.branch-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0 calc(var(--space) * 3);
+  font-size: 0.8rem;
+}
+
+.branch-note .lucide {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex: none;
+}
+
+.list li.branch-row > .session-row {
+  margin-left: calc(var(--branch-depth, 1) * 0.9rem);
+  border-left: 1px solid var(--border);
+}
+
+.compare-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space);
+  padding: calc(var(--space) * 2);
+}
+
+.compare-form h3,
+.compare-form p {
+  margin: 0;
+}
+
+.compare-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.compare-models label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-bubble);
+  cursor: pointer;
+}
+
+.compare-models label.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.compare-form textarea {
+  resize: vertical;
+}
+
+.compare-form-actions {
+  display: flex;
+  gap: var(--space);
+}
+
+.compare {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: var(--space);
+}
+
+.compare-head {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--space) * 2);
+  padding: calc(var(--space) * 1.5) calc(var(--space) * 2) 0;
+}
+
+.compare-message {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compare-columns {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  gap: var(--space);
+  padding: 0 calc(var(--space) * 2) calc(var(--space) * 2);
+  overflow: auto;
+}
+
+.compare-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-bubble);
+  background: var(--surface-2);
+}
+
+.compare-column.archived {
+  opacity: 0.6;
+}
+
+.compare-column > header,
+.compare-column > footer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: var(--space) calc(var(--space) * 1.5);
+}
+
+.compare-column > footer {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space);
+  border-top: 1px solid var(--border);
+}
+
+.compare-column h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.compare-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.9rem;
+  margin: 0;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.compare-stats > div {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.compare-stats dt {
+  color: var(--muted);
+}
+
+.compare-stats dd {
+  margin: 0;
+}
+
+.compare-stats dd.standout {
+  color: var(--accent-strong);
+}
+
+.compare-reply {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0 calc(var(--space) * 1.5);
+  overflow: auto;
+  font-size: 0.95rem;
+
 /* The review pane: changed files as quiet unified diffs. Hunk and file tools are row tools,
    shown on hover or focus; added and removed lines are tinted, context stays plain. */
 .review {
