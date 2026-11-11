@@ -104,6 +104,12 @@ fn daemon(home: &Path, base_url: &str, extra: &str) -> Arc<DaemonState> {
     // settings from the same layers.
     let paths = imperium_config::Paths::under(home);
     write(&paths.user_config_file(), &config);
+    reopen(home)
+}
+
+/// A daemon started again on the config folder under `home`, as after a restart.
+fn reopen(home: &Path) -> Arc<DaemonState> {
+    let paths = imperium_config::Paths::under(home);
     let loaded =
         imperium_config::load(&paths, None, std::iter::empty::<(String, String)>()).unwrap();
     let state = DaemonState::new(paths, loaded.settings().unwrap(), None);
@@ -517,13 +523,16 @@ async fn an_installed_plugin_with_a_server_stays_off_until_the_user_turns_it_on(
     assert!(!*ok, "{output}");
     assert_eq!(starts.load(Ordering::SeqCst), 0, "the server was started");
 
-    // Once the user turns it on in Connectors, a new session can activate it.
-    rpc(
+    // Once the user turns it on in Connectors (a setting the daemon reads at start), a new
+    // session can activate it.
+    let saved = rpc(
         &mut connection,
         "config.set",
         json!({"key": "extensions.disabled_plugins", "value": null}),
     )
     .unwrap();
+    assert_eq!(saved["restart"], true);
+    let state = reopen(home.path());
     let (_, turn) = run_prompt(&state, project.path(), deny, "activate words").await;
     let (tool, ok, output) = &turn.tools[0];
     assert_eq!(tool, "activate_plugin");
