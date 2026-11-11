@@ -16,9 +16,13 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 /// From starting the browser to having a page to drive; cold starts on CI runners are slow.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest one request to the browser's debugger may take.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 /// Longest page text returned by `read`.
 const MAX_TEXT: usize = 20_000;
+/// How much of the browser's output an error reports.
+const LOG_TAIL: usize = 2_000;
 
 /// What the page looks like after an action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,11 +91,16 @@ impl Browser {
         headless: bool,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(profile_dir).map_err(|error| error.to_string())?;
-        let port_file = profile_dir.join("DevToolsActivePort");
-        let _ = std::fs::remove_file(&port_file);
+        let log_path = profile_dir.join("imperium-browser.log");
         let mut command = Command::new(program);
+        let deadline = Instant::now() + START_TIMEOUT;
+        // We choose the port ourselves and poll the debugger over HTTP: the port file the
+        // browser writes for `--remote-debugging-port=0` is not reliably written on CI runners.
+        let port = free_port()?;
+        let log = std::fs::File::create(&log_path).map_err(|error| error.to_string())?;
         command
-            .arg("--remote-debugging-port=0")
+            .arg(format!("--remote-debugging-port={port}"))
+            .arg("--remote-debugging-address=127.0.0.1")
             .arg(format!("--user-data-dir={}", profile_dir.display()))
             .args([
                 "--no-first-run",
@@ -99,19 +108,36 @@ impl Browser {
                 "--window-size=1280,900",
             ])
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(
+                log.try_clone().map_err(|error| error.to_string())?,
+            ))
+            .stderr(Stdio::from(log))
             .kill_on_drop(true);
         if headless {
             command.arg("--headless=new");
         }
         command.arg("about:blank");
-        let process = command
+        let mut process = command
             .spawn()
             .map_err(|error| format!("could not start {}: {error}", program.display()))?;
-        let deadline = Instant::now() + START_TIMEOUT;
-        let port = wait_for_port(&port_file, deadline).await?;
-        let socket_url = wait_for_page(port, deadline).await?;
+        let waited = wait_for_page(port, profile_dir, deadline, || {
+            matches!(process.try_wait(), Ok(Some(_)))
+        })
+        .await;
+        let socket_url = match waited {
+            Ok(url) => url,
+            Err(reason) => {
+                let status = match process.try_wait() {
+                    Ok(Some(status)) => format!("the browser exited ({status})"),
+                    Ok(None) => "the browser was still running".to_string(),
+                    Err(error) => format!("the browser state is unknown ({error})"),
+                };
+                return Err(format!(
+                    "{reason}; {status}; output: {}",
+                    log_tail(&log_path)
+                ));
+            }
+        };
         let (socket, _) = tokio_tungstenite::connect_async(socket_url.as_str())
             .await
             .map_err(|error| format!("could not connect to the browser: {error}"))?;
@@ -275,49 +301,106 @@ impl Browser {
     }
 }
 
-/// Waits for the browser to list its first page and returns that page's debugger socket. The
-/// port file can appear before the page target is registered (slow starts, notably Edge on
-/// Windows), so an empty list or a refused connection is retried until `deadline`.
-async fn wait_for_page(port: u16, deadline: Instant) -> Result<String, String> {
-    let list = format!("http://127.0.0.1:{port}/json/list");
-    let mut last_error = "the browser has no page to drive".to_string();
-    while Instant::now() < deadline {
-        match reqwest::get(&list).await {
-            Ok(response) => match response.json::<Value>().await {
-                Ok(pages) => {
-                    if let Some(url) = pages
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .find(|target| target["type"] == "page")
-                        .and_then(|target| target["webSocketDebuggerUrl"].as_str())
-                    {
-                        return Ok(url.to_string());
-                    }
-                }
-                Err(error) => last_error = error.to_string(),
-            },
-            Err(error) => last_error = error.to_string(),
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(last_error)
+/// A port nothing is listening on right now.
+fn free_port() -> Result<u16, String> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+    listener
+        .local_addr()
+        .map(|address| address.port())
+        .map_err(|error| error.to_string())
 }
 
-/// Waits for the browser to write the port it listens on.
-async fn wait_for_port(file: &Path, deadline: Instant) -> Result<u16, String> {
+/// The last part of the browser's output, for error messages.
+fn log_tail(path: &Path) -> String {
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let tail = &bytes[bytes.len().saturating_sub(LOG_TAIL)..];
+    let text = String::from_utf8_lossy(tail);
+    let text = text.trim();
+    if text.is_empty() {
+        "none".into()
+    } else {
+        text.to_string()
+    }
+}
+
+/// The debugger URL of the first page in a `/json/list` reply, if it points at the browser we
+/// started: a loopback host and the port we chose.
+fn page_socket(pages: &Value, port: u16) -> Result<Option<String>, String> {
+    let Some(url) = pages
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|target| target["type"] == "page")
+        .and_then(|target| target["webSocketDebuggerUrl"].as_str())
+    else {
+        return Ok(None);
+    };
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|error| format!("the browser gave an unusable debugger URL {url}: {error}"))?;
+    let local = matches!(
+        parsed.host_str(),
+        Some("127.0.0.1" | "localhost" | "[::1]" | "::1")
+    );
+    if !local || parsed.port_or_known_default() != Some(port) {
+        return Err(format!(
+            "the debugger URL {url} is not on 127.0.0.1:{port}, the browser we started"
+        ));
+    }
+    Ok(Some(url.to_string()))
+}
+
+/// Waits for the browser to list its first page and returns that page's debugger socket. The
+/// debugger can come up after the process starts, and the page target after the debugger
+/// (slow starts, notably Edge on Windows), so a refused connection or an empty list is
+/// retried until `deadline`, unless `exited` reports the browser is gone. A port file in
+/// `profile_dir` naming a different port, or a debugger URL that is not ours, fails at once.
+async fn wait_for_page(
+    port: u16,
+    profile_dir: &Path,
+    deadline: Instant,
+    mut exited: impl FnMut() -> bool,
+) -> Result<String, String> {
+    let list = format!("http://127.0.0.1:{port}/json/list");
+    let client = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut last_error = "the browser has no page to drive".to_string();
     while Instant::now() < deadline {
-        if let Ok(text) = std::fs::read_to_string(file)
-            && let Some(port) = text
+        if exited() {
+            return Err(format!(
+                "the browser exited before opening its debugging port ({last_error})"
+            ));
+        }
+        if let Ok(text) = std::fs::read_to_string(profile_dir.join("DevToolsActivePort"))
+            && let Some(named) = text
                 .lines()
                 .next()
-                .and_then(|line| line.trim().parse().ok())
+                .and_then(|line| line.trim().parse::<u16>().ok())
+            && named != port
         {
-            return Ok(port);
+            return Err(format!(
+                "the browser listens on port {named}, not the {port} we asked for"
+            ));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let request = tokio::time::timeout(remaining, async {
+            client.get(&list).send().await?.json::<Value>().await
+        });
+        match request.await {
+            Ok(Ok(pages)) => {
+                if let Some(url) = page_socket(&pages, port)? {
+                    return Ok(url);
+                }
+            }
+            Ok(Err(error)) => last_error = error.to_string(),
+            Err(_) => break,
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Err("the browser did not open its debugging port".into())
+    Err(format!(
+        "the browser did not open its debugging port ({last_error})"
+    ))
 }
 
 #[cfg(test)]
@@ -325,6 +408,56 @@ mod tests {
     use super::*;
     use axum::Router;
     use axum::routing::get;
+
+    #[tokio::test]
+    async fn a_debugger_that_never_replies_is_given_up_on_at_the_deadline() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok(connection) = listener.accept().await {
+                held.push(connection);
+            }
+        });
+        let profile = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(3);
+        let error = wait_for_page(port, profile.path(), deadline, || false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("debugging port"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(6));
+    }
+
+    #[test]
+    fn only_our_own_loopback_debugger_is_accepted() {
+        let list = |url: &str| json!([{"type": "page", "webSocketDebuggerUrl": url}]);
+        let ours = "ws://127.0.0.1:9222/devtools/page/A";
+        assert_eq!(
+            page_socket(&list(ours), 9222).unwrap().as_deref(),
+            Some(ours)
+        );
+        assert!(page_socket(&list("ws://localhost:9222/devtools/page/A"), 9222).is_ok());
+        assert!(page_socket(&list("ws://[::1]:9222/devtools/page/A"), 9222).is_ok());
+        assert!(page_socket(&list("ws://evil.example:9222/devtools/page/A"), 9222).is_err());
+        assert!(page_socket(&list("ws://127.0.0.1:9333/devtools/page/A"), 9222).is_err());
+        assert_eq!(page_socket(&json!([]), 9222).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_port_file_naming_another_port_is_an_error() {
+        let profile = tempfile::tempdir().unwrap();
+        std::fs::write(
+            profile.path().join("DevToolsActivePort"),
+            "9333\n/devtools/x",
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let error = wait_for_page(9222, profile.path(), deadline, || false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("9333"), "{error}");
+    }
 
     /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
     #[tokio::test]
