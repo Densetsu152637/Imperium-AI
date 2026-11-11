@@ -37,29 +37,44 @@
 
 ### Agents panel (implemented)
 
-The Agents panel lists the subagents of the selected session: each row shows the task id, its
-status (`running`, `paused`, `finished`, or `failed`), model, cost, brief, the messages it was given and
-its tool calls (the same collapsed rows as the transcript, [below](#tool-calls-implemented)),
-and its latest report. Subagents keep their state when they finish
-([agent state](03-agent-engine.md#agent-state)), so a finished or failed row's ⋯ menu has
-**Continue with…**: it opens a follow-up box under the row (Ctrl+Enter sends, Escape
-cancels), and the follow-up is sent with `session.agent_resume`. The subagent works again with
-its earlier conversation: its row goes back to `running`, the transcript notes
-"Continued t1 on …", and its new report replaces the old one when it finishes (the cost shown
-adds up across runs). While it runs, the menu item is disabled; archived sessions show no menu.
-Subagents a daemon restart cut off are shown as failed with a report saying so, and can be
-continued the same way. A subagent paused by a steering message
-([below](#environments-and-sessions-implemented)) shows a `paused` badge, its progress as its
-report, and **Resume** (continues from its saved conversation), **Re-brief…** (the follow-up
-box), and **Cancel** (`session.agent_cancel`) until the root agent or the user decides.
-A running subagent that has not produced output yet shows the same status line as the
-session ([waiting status line](#waiting-status-line-implemented)) under its summary, with
-**Stop** (stops the session's work; a running subagent cannot be cancelled on its own).
+The Agents panel is a compact list of the selected session's subagents, one line each: a status
+dot (`running` pulses, `paused`, `finished`, `failed`), the subagent's title, and how long its
+current run has taken (counting up while it runs, from the `at_ms` times on its task events;
+older journals show none). Hovering a line shows its task id, model, and cost. Titles are the
+3-to-6-word names the root agent gives `spawn_agent` (or ones derived from the brief,
+[03](03-agent-engine.md#subagent-titles)); task ids such as `t1` are secondary everywhere: the
+transcript's delegation line (*→ Audit the auth flow · t1 · model*), permission requests from a
+subagent, the context breakdown's agent list, and "Continued <title> on …" notices all name the
+title. While the session is stopped, running subagents show as `paused`. A paused subagent's ⋯
+menu also has **Resume** and **Cancel** (`session.agent_cancel`); archived sessions offer neither.
 
+Choosing a line (or the subagent's title in the transcript) opens its log in the main session
+panel in place of the root's transcript; choosing it again, the breadcrumb's **←
+<session title>**, or Escape outside a text field goes back (`panels/AgentView.tsx`). The log is
+the subagent's transcript drawn exactly as the root's (its brief and follow-ups as messages,
+steering, replies, tool calls and their [folded groups](#tool-calls-implemented)), its plan,
+permission requests it waits on, the [waiting status line](#waiting-status-line-implemented)
+before its first output, and its failure or pause. The footer shows its task id, model, run
+time, and cost.
+
+The view's composer messages the subagent directly, as the root composer does the root:
+
+- While it runs, Enter queues the message for its next turn (`session.send` with its
+  `agent_id`); its queue shows above the composer with **Edit**, **Steer**, and **Remove**
+  (`session.queue` with its `agent_id`), and **Steer** (or Ctrl+Shift+Enter) joins its running
+  turn at its next safe point. Steering a subagent pauses nothing; it reads the message as
+  steering, as the root does ([03](03-agent-engine.md#queueing-and-steering)).
+- A finished or failed subagent takes the message as a follow-up (`session.agent_resume`): it
+  continues with its earlier conversation, its line goes back to `running`, and its cost adds
+  up across runs. A subagent a daemon restart cut off is shown as failed and is continued the
+  same way. Files attached to a follow-up are named in its text, since follow-ups carry none.
+- A paused subagent (stopped for a steering message to the root) shows **Resume** (continues
+  from its saved conversation) and **Cancel** in the view's header; a message re-briefs it.
+- A message sent just as the subagent finished is sent again as a follow-up.
 ### Tool calls (implemented)
 
-Every tool call, the session's own in the transcript and each subagent's in its Agents panel
-row, is one quiet line, collapsed by default: a spinner, check, or cross, the tool's name, a
+Every tool call, the session's own in the transcript and each subagent's in its log
+([above](#agents-panel-implemented)), is one quiet line, collapsed by default: a spinner, check, or cross, the tool's name, a
 short summary of what it does (`write src/main.rs`), and how long it ran. Opening the line
 shows the arguments (JSON, indented) and the result; text over about 1,200 characters or 16
 lines folds behind **Show more**. A call denied or blocked before it ran shows its reason on
@@ -74,8 +89,7 @@ order each kind first ran (*Read 3 files, ran 2 commands, searched 1 time*; tool
 kind count as *used 2 other tools*, or *Used 4 tools* when none has one). While any of them
 runs the line shows a spinner and the latest running call's summary; once all have ended it
 shows a cross when any failed, otherwise a check. Opening it lists the calls as the rows above,
-each still opening on its own. A lone call stays its own row. The Agents panel folds a
-subagent's calls the same way, and a session search hit on a folded call lands on its group's
+each still opening on its own. A lone call stays its own row. A subagent's log folds its calls the same way, and a session search hit on a folded call lands on its group's
 line (`apps/desktop/src/toolCalls.ts`, `components/ToolGroup.tsx`).
 
 ### Waiting status line (implemented)

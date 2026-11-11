@@ -58,6 +58,8 @@ import {
 import { SessionPanel } from "./panels/SessionPanel";
 import { NewSessionPanel, type NewSessionOptions } from "./panels/NewSessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
+import { AgentView } from "./panels/AgentView";
+import { agentDelivery, finishedMeanwhile, followUpText } from "./agentView";
 import { queueParams, type QueueChange } from "./queue";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
@@ -173,6 +175,8 @@ export function App() {
   /** Environments with a folder in a git repository: new sessions there may start on worktrees. */
   const [gitEnvironments, setGitEnvironments] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(restore ? saved.session : null);
+  /** A subagent whose log the main panel shows in place of its session's transcript. */
+  const [agentView, setAgentView] = useState<{ sessionId: string; agentId: string } | null>(null);
   const [hidden, setHidden] = useState<string[]>(saved.hidden);
   const [detached, setDetached] = useState<Record<string, DetachedPanel>>(saved.detached);
   /** Which panels sit in which columns, as the panel editor left them (null: the default). */
@@ -457,6 +461,8 @@ export function App() {
 
   const allSessions = useMemo(() => Object.values(sessions), [sessions]);
   const session = selected ? (sessions[selected] ?? null) : null;
+  const openAgent = session && agentView?.sessionId === selected ? agentView.agentId : null;
+  const viewedTask = openAgent ? (session?.tasks[openAgent] ?? null) : null;
   const client = status.kind === "connected" ? status.client : null;
   const modHost = useMemo(
     () => ({ sessions: snapshotSessions(allSessions, environments), selected, client }),
@@ -644,6 +650,45 @@ export function App() {
   const changeQueued = (id: string, change: QueueChange) => {
     if (!client || !selected) return;
     client.call("session.queue", queueParams(selected, id, change)).catch(report);
+  };
+
+  /** Opens a subagent's log in the main panel (`null`: back to the session's transcript). */
+  const showAgent = (agentId: string | null) =>
+    setAgentView(agentId && selected ? { sessionId: selected, agentId } : null);
+
+  /**
+   * Messages a subagent from its view. While it runs this is `session.send` with its
+   * `agent_id`: queued for its next turn, or steering its running turn, as for the root. A
+   * finished or paused subagent gets the message as a follow-up (`session.agent_resume`); so
+   * does one that finished between the click and the call.
+   */
+  const sendToAgent = (agentId: string, text: string, mode: SendMode, attachments: Attachment[]) => {
+    if (!client || !selected) return;
+    const task = sessionsRef.current[selected]?.tasks[agentId];
+    if (!task) return;
+    const followUp = () => resumeAgent(agentId, followUpText(text, attachments)).catch(() => {});
+    const delivery = agentDelivery(task.status, mode);
+    if (delivery.kind === "resume") {
+      void followUp();
+      return;
+    }
+    const params: SessionSendParams = {
+      session_id: selected,
+      text,
+      mode: delivery.mode,
+      agent_id: agentId,
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
+    client.call("session.send", params).catch((error: unknown) => {
+      if (finishedMeanwhile(error)) void followUp();
+      else report(error);
+    });
+  };
+
+  /** Edits, removes, or steers a message waiting for a running subagent. */
+  const changeAgentQueued = (agentId: string, id: string, change: QueueChange) => {
+    if (!client || !selected) return;
+    client.call("session.queue", queueParams(selected, id, change, agentId)).catch(report);
   };
 
   /** Ends a paused subagent without resuming it; it reports through `task_finished`. */
@@ -865,7 +910,24 @@ export function App() {
   const sessionPanel: PanelSpec = {
     id: "session",
     title: "Session",
-    body: session ? (
+    body: session && viewedTask ? (
+      <AgentView
+        key={`${session.summary.session_id}/${viewedTask.taskId}`}
+        session={session}
+        task={viewedTask}
+        onBack={() => showAgent(null)}
+        onSend={(text, mode, attachments) => sendToAgent(viewedTask.taskId, text, mode, attachments)}
+        onChangeQueued={(id, change) => changeAgentQueued(viewedTask.taskId, id, change)}
+        onRespond={respond}
+        onAlwaysAllow={alwaysAllow}
+        onAnswer={answer}
+        onResume={client ? resumeAgent : undefined}
+        onCancel={client ? cancelAgent : undefined}
+        onStop={client ? () => stopSession(true) : undefined}
+        client={client}
+        runtimeInstall={runtimeInstall}
+      />
+    ) : session ? (
       <SessionPanel
         session={session}
         icons={icons}
@@ -888,6 +950,7 @@ export function App() {
         focusEvent={searchFocus?.sessionId === session.summary.session_id ? searchFocus : null}
         runtimeInstall={runtimeInstall}
         onBudget={answerBudget}
+        onOpenAgent={showAgent}
       />
     ) : (
       <NewSessionPanel
@@ -906,13 +969,19 @@ export function App() {
     ),
   };
   const rightPanels: PanelSpec[] = [
-    { id: "agents", title: "Agents", body: <AgentsPanel
+    {
+      id: "agents",
+      title: "Agents",
+      body: (
+        <AgentsPanel
           session={session}
+          openAgent={viewedTask ? openAgent : null}
+          onOpen={selected ? (agentId) => showAgent(agentId === openAgent ? null : agentId) : undefined}
           onResume={client && selected ? resumeAgent : undefined}
           onCancel={client && selected ? cancelAgent : undefined}
-          onStop={client && selected ? () => stopSession(true) : undefined}
-          runtimeInstall={runtimeInstall}
-        /> },
+        />
+      ),
+    },
     { id: "models", title: "Models", body: <ModelsPanel table={modelTable} onConfigure={() => setModelDialog({ tab: "table" })} /> },
     {
       id: "local-models",

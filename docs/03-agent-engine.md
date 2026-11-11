@@ -99,6 +99,23 @@ share the session's permission approvals. Events carry an `agent_id` (`root`, or
 and the session emits `task_spawned` and `task_finished` (status, report, tokens, cost).
 Not yet: `send_to_task`, budgets per task, deeper trees, and cancellation.
 
+### Subagent titles
+
+**Implemented:** every subagent has a short title that clients show instead of its task id
+(`t1` stays as secondary, hover information). `spawn_agent` takes an optional `title`, 3 to 6
+words naming the task (the root prompt asks for one on every call); a given title is tidied (first
+line, no markdown or quotes, at most 8 words and 60 characters). Without one, and for
+`delegate_chunks` tasks, the engine derives a title from the brief
+(`crates/imperium-engine/src/title.rs`): the first sentence that says what to do, skipping
+section labels (`Context:`) and role preambles (`You are a subagent…`), dropping lead-ins
+(`Your task is to`, `Please`, `Goal:`), cut to 6 words without trailing filler (`the`, `and`,
+`to`, …) and capitalised; an empty brief gives `Subagent task`. `task_spawned` carries the
+`title`, and the agent record ([agent state](#agent-state)) keeps it, so `session.agents`,
+`list_agents`, and the root's status of paused subagents name it too. Journals written before
+titles have none: records derive one from the brief, and the desktop shows the brief's first
+line. `task_spawned`, `task_resumed`, `task_paused`, and `task_finished` also carry `at_ms`
+(Unix milliseconds) so clients can show how long a subagent has run.
+
 ### Large inputs and `delegate_chunks`
 
 **Implemented.** An input that would take more than 75 % of the root's context window never enters the
@@ -462,7 +479,10 @@ wait, or join the running turn when the user asks.
   runs as a further turn of the subagent before it reports, and its report (what
   `await_tasks` returns) is the last turn's reply with every turn's usage. A subagent that
   has reported takes no more messages (`-32602`) until it is resumed
-  ([agent state](#agent-state)); a resumed subagent is reached the same way.
+  ([agent state](#agent-state)); a resumed subagent is reached the same way. Steering a
+  subagent pauses nothing (only steering the root pauses its running subagents). The desktop's
+  subagent view sends the user's messages this way
+  ([07](07-desktop-ui.md#agents-panel-implemented)).
 - **Root over subagents:** the root agent has `steer_agent` and `queue_agent`
   (`agent_id`, `text`) beside `spawn_agent` and `await_tasks`, for subagents it started and
   has not collected. Like the other delegation tools they run without a permission prompt and
@@ -517,7 +537,7 @@ its full earlier context, for example handing more work on a module to the subag
 already explored it.
 
 - **What is kept.** One record per agent: id, parent (the root for subagents), role, title
-  (the brief's first line) and brief, model spec and whether it is local (a local model's slot
+  (its [title](#subagent-titles)) and brief, model spec and whether it is local (a local model's slot
   is taken again for each turn), status, turns, message count, usage and cost summed over
   every model call it made, its latest plan, and its latest report. A subagent's record also
   holds its conversation after its instructions: the brief, every reply, tool call, and tool

@@ -31,6 +31,7 @@ import { ProjectIcon, projectName, type ProjectIcons } from "../projectIcons";
 import { entryForEvent } from "../sessionSearch";
 import {
   ROOT,
+  agentName,
   breakdownUsed,
   describeUse,
   formatCost,
@@ -101,6 +102,8 @@ type Props = {
   runtimeInstall?: RuntimeInstallJob | null;
   /** Answers the status line's budget question: send the waiting message anyway, or drop it. */
   onBudget?: (confirm: boolean) => void;
+  /** Opens a subagent's log in this panel (from its line in the transcript). */
+  onOpenAgent?: (agentId: string) => void;
 };
 
 /** What the footer has opened above the composer. */
@@ -128,6 +131,7 @@ export function SessionPanel({
   focusEvent = null,
   runtimeInstall = null,
   onBudget,
+  onOpenAgent,
 }: Props) {
   const settings = useSettings();
   const [rendered, setRendered] = useState(settings.renderMarkdown);
@@ -255,6 +259,8 @@ export function SessionPanel({
               onRespond={onRespond}
               onAlwaysAllow={onAlwaysAllow}
               onAnswer={onAnswer}
+              onOpenAgent={onOpenAgent}
+              agentName={(id) => agentName(session, id)}
             />
           ),
         )}
@@ -579,18 +585,24 @@ function QuestionsView({
   );
 }
 
-function EntryView({
+/** One transcript entry; the session panel and a subagent's view (AgentView) both draw with it. */
+export function EntryView({
   entry,
   rendered,
   onRespond,
   onAlwaysAllow,
   onAnswer,
+  onOpenAgent,
+  agentName = (id) => id,
 }: {
   entry: Entry;
   rendered: boolean;
   onRespond: Props["onRespond"];
   onAlwaysAllow?: Props["onAlwaysAllow"];
   onAnswer: Props["onAnswer"];
+  onOpenAgent?: (agentId: string) => void;
+  /** A subagent's title by id, for lines that mention one. */
+  agentName?: (agentId: string) => string;
 }) {
   switch (entry.kind) {
     case "user":
@@ -618,15 +630,30 @@ function EntryView({
       return <ToolCall entry={entry} />;
     case "task":
       return (
-        <div className="task-line">
-          → <strong>{entry.taskId}</strong> on {entry.model}: {entry.brief.split("\n")[0]}
+        <div className="task-line" title={`${entry.taskId} on ${entry.model}\n${entry.brief}`}>
+          →{" "}
+          {onOpenAgent ? (
+            <button type="button" className="link task-open" onClick={() => onOpenAgent(entry.taskId)}>
+              {entry.title}
+            </button>
+          ) : (
+            <strong>{entry.title}</strong>
+          )}{" "}
+          <span className="muted">
+            {entry.taskId} · {entry.model}
+          </span>
         </div>
       );
     case "permission":
       return (
         <div className="permission" role="group" aria-label="Permission request">
           <span>
-            {entry.agentId !== "root" && <span className="badge running">{entry.agentId}</span>} Allow{" "}
+            {entry.agentId !== "root" && (
+              <span className="badge running" title={entry.agentId}>
+                {agentName(entry.agentId)}
+              </span>
+            )}{" "}
+            Allow{" "}
             <strong>{entry.summary}</strong>?
           </span>
           {entry.answered ? (
@@ -684,7 +711,7 @@ function composerHint(enterSends: boolean, busy: boolean): string {
  * the running turn, or removed until it is delivered; one that is steering waits for the
  * agent's next safe point and can only be removed.
  */
-function QueueView({
+export function QueueView({
   queue,
   busy,
   onChange,
@@ -889,7 +916,7 @@ const STEP_MARK: Record<Plan["steps"][number]["status"], string> = {
   skipped: "–",
 };
 
-function PlanView({ plan }: { plan: Plan }) {
+export function PlanView({ plan }: { plan: Plan }) {
   const done = plan.steps.filter((step) => step.status === "done").length;
   return (
     <details className="plan" open>

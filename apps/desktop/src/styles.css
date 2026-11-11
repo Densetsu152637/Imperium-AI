@@ -2136,126 +2136,131 @@ button.danger:hover:not(:disabled) {
   color: var(--warn);
 }
 
-.task-paused-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: calc(var(--space) * 0.5);
-  margin-top: calc(var(--space) * 0.5);
-}
-
-.task-paused-actions button {
-  display: inline-flex;
+/* Agents panel: one line per subagent, like the session list's rows. */
+.list button.agent-row-main {
+  flex-direction: row;
   align-items: center;
-  gap: calc(var(--space) * 0.35);
+  gap: 0.5rem;
 }
 
-.task-paused-actions button svg {
-  width: 0.9rem;
-  height: 0.9rem;
-}
-
-.tasks {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space);
-}
-
-.tasks > li {
-  padding: var(--space);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-2);
-  box-shadow: var(--highlight);
-}
-
-.tasks > li.task-row {
-  position: relative;
-}
-
-/* The row's ⋯ menu sits in the corner, outside the summary so it does not toggle it. */
-.task-menu {
-  position: absolute;
-  top: calc(var(--space) * 0.5);
-  right: calc(var(--space) * 0.5);
-}
-
-.task-row summary {
-  padding-right: 2rem;
-}
-
-.task-activity .task-turn {
-  list-style: none;
-  margin-left: -1.1rem;
-  color: var(--text);
-}
-
-.task-follow-up {
-  display: flex;
-  flex-direction: column;
-  gap: calc(var(--space) * 0.5);
-  margin-top: calc(var(--space) * 0.5);
-}
-
-.task-follow-up textarea {
-  width: 100%;
-  resize: vertical;
-  font: inherit;
-}
-
-.task-follow-up-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: calc(var(--space) * 0.5);
-}
-
-.tasks summary {
-  cursor: pointer;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.4rem;
-}
-
-.tasks .brief {
-  flex-basis: 100%;
-  font-size: 0.85rem;
+.agent-row-main > .name {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.task-activity {
-  margin: calc(var(--space) * 0.5) 0;
-  padding-left: 1.1rem;
-  font-size: 0.8rem;
+.agent-elapsed {
+  flex: none;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.status-dot.task-running {
+  background: var(--accent);
+  opacity: 1;
+  animation: status-dot-pulse 1.6s ease-in-out infinite;
+}
+
+.status-dot.task-finished {
+  background: var(--ok);
+  opacity: 1;
+}
+
+.status-dot.task-failed {
+  background: var(--danger);
+  opacity: 1;
+}
+
+.status-dot.task-paused {
+  background: transparent;
+  border: 1px solid var(--warn);
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-dot.task-running {
+    animation: none;
+  }
+}
+
+/* A subagent's log in the main panel: "← <session> / <subagent>" heads it. */
+.agent-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.agent-crumbs .session-title {
+  min-width: 0;
+}
+
+button.agent-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  max-width: 45%;
+  padding: 0.15rem 0.4rem;
   color: var(--muted);
 }
 
-.task-activity .failed {
-  color: var(--danger);
+button.agent-back:hover {
+  color: var(--text);
 }
 
-/* A subagent's tool calls: the transcript's rows, at the activity list's size. */
-.task-activity .task-tool {
-  list-style: none;
-  margin-left: -1.1rem;
+button.agent-back svg {
+  flex: none;
+  width: 0.95rem;
+  height: 0.95rem;
 }
 
-.task-activity .tool {
-  font-size: inherit;
-  max-width: none;
+.agent-crumb-session {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.task-report {
-  font-size: 0.85rem;
-  border-left: 2px solid var(--silver);
-  padding-left: var(--space);
+.agent-crumb-separator {
+  color: var(--muted);
 }
 
+.agent-view .session-head > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.agent-view .session-head > button svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.agent-footer-id {
+  font-size: 0.75rem;
+}
+
+/* A subagent's line in the root's transcript opens its log. */
+button.task-open {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 2px;
+}
+
+button.task-open:hover {
+  color: var(--accent);
+}
 /* Model table */
 .models-toolbar {
   display: flex;

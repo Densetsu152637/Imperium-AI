@@ -30,15 +30,16 @@ export function steeredLabel(paused: readonly string[]): string {
   return `Steered — ${paused.length} ${paused.length === 1 ? "subagent" : "subagents"} paused`;
 }
 
-/** The `session.queue` request for a change. */
-export function queueParams(sessionId: string, id: string, change: QueueChange): SessionQueueParams {
+/** The `session.queue` request for a change; `agentId` names a running subagent's queue. */
+export function queueParams(sessionId: string, id: string, change: QueueChange, agentId?: string): SessionQueueParams {
+  const agent = agentId ? { agent_id: agentId } : {};
   switch (change.kind) {
     case "edit":
-      return { session_id: sessionId, action: "edit", id, text: change.text };
+      return { session_id: sessionId, action: "edit", id, text: change.text, ...agent };
     case "remove":
-      return { session_id: sessionId, action: "remove", id };
+      return { session_id: sessionId, action: "remove", id, ...agent };
     case "steer":
-      return { session_id: sessionId, action: "steer", id };
+      return { session_id: sessionId, action: "steer", id, ...agent };
   }
 }
 
