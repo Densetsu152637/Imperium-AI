@@ -19,7 +19,9 @@ pub use local::{
     LocalPresence, LocalRequest, LocalWait, Priority, ResumeFuture, SuspendFuture, holder,
     holder_session,
 };
-pub use permissions::{PathGrant, PathMode, PermissionRule, RuleAction};
+pub use permissions::{
+    PathGrant, PathMode, PermissionMode, PermissionRule, RuleAction, UnknownMode,
+};
 pub use pricing::Pricing;
 pub use tools::{
     StartFuture, ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,
