@@ -103,7 +103,7 @@ export function NewSessionPanel({
   const options = [
     // Without a configured default a session may start with no model; its messages wait.
     ...(defaultSpec ? [] : [{ value: "", label: "No model", description: "Pick one later; messages wait until then" }]),
-    ...modelOptions(models, localModels, defaultSpec),
+    ...modelOptions(models, localModels, model || null, settings.modelMarks),
   ];
   const blocker = !client
     ? "Not connected to imperium-core"

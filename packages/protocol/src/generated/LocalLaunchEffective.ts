@@ -3,7 +3,29 @@
 /**
  * The llama.cpp settings a local model is started with.
  */
-export type LocalLaunchEffective = { context: number, pool_tokens: number, slots: number, cache_type_k: string, cache_type_v: string, flash_attn: "auto" | "on" | "off", 
+export type LocalLaunchEffective = { 
+/**
+ * Most tokens one agent may use; 0 in `defaults` when the default is `auto`, which is
+ * sized per model.
+ */
+context: number, 
+/**
+ * The context is sized automatically.
+ */
+context_auto: boolean, 
+/**
+ * The KV pool the model starts with (or is running with), or the fixed pool.
+ */
+pool_tokens: number, 
+/**
+ * A setting fixes the pool, so it never grows.
+ */
+pool_fixed: boolean, 
+/**
+ * The fixed pool did not fit beside the weights on the GPU and was cut to `pool_tokens`,
+ * so the layers stay on the GPU.
+ */
+pool_clamped: boolean, slots: number, cache_type_k: string, cache_type_v: string, flash_attn: "auto" | "on" | "off", 
 /**
  * Absent: as many as the planner fits.
  */

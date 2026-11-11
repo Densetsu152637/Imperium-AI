@@ -511,9 +511,9 @@ short, so the swap-out save still finds the slots of agents asleep in `await_tas
 pressure llama-server purges idle slots anyway, and an agent whose slot was purged reads its
 prompt again on return (the pinned-slot switch above is a separate path and still works). There
 is **no global cap** on sessions using local models: the per-model `slots` (default the larger of
-8 and `runtime.llamacpp.parallel`) is how many calls one server decodes at once, not an admission
-limit, and calls beyond it queue in Imperium, first come, first served. `parallel` only sizes the
-default pool, `pool_tokens = context × parallel`. Every setting can be set per model, in
+16 and `runtime.llamacpp.parallel`; also written `max_slots`) is how many calls one server decodes at once, not an admission
+limit, and calls beyond it queue in Imperium, first come, first served. Every setting can be set
+per model, in
 `[runtime.llamacpp.models."<id>"]` or from the desktop's model settings dialog
 ([10](10-configuration.md#layers)): context, pool, slots, K and V cache types, flash attention, a
 cap on GPU layers, the wait cap, `max_output_tokens`, and extra arguments. Changing the settings
@@ -524,7 +524,146 @@ claim of any session remains. `max_wait_s` and `max_output_tokens` only shape wa
 reservations, so they apply to a loaded model without a restart. A load starts its server with the
 settings in effect when it was planned; if they change while it loads, the new server serves the
 call that loaded it and then restarts the same way. A `config` restart saves only the slots its
-new server can restore (same context, pool and cache types); the others are read again.
+new server can restore (same context, cache types and, when fixed, pool); the others are read
+again.
+
+**Implemented: the most context each agent can use, reserved as it is used.** llama.cpp reserves
+the whole KV cache (`--ctx-size`) when the server starts and cannot grow it in place. Reserved but
+empty cells cost VRAM capacity, not memory bandwidth (attention reads only the filled cells), so
+what Imperium keeps small is the reservation, while each agent may use as much context as the
+model and the machine allow (`imperium-local/src/context.rs`):
+
+- **The ceiling** (`context`, what one agent may use and what compaction is planned against) is
+  the least of what the model was trained for (its header's `context_length`), the configured
+  limit, and the largest pool that fits on an empty machine beside the weights. While every layer
+  fits on the GPU, only pools that keep them all there count, so context never pushes layers off
+  the GPU; a model already split between GPU and RAM may use what fits in both. The fit is
+  estimated with the planner's KV size per token at the model's cache types, against the budget
+  measured when the daemon started. `runtime.llamacpp.context` and the per-model `context` are
+  `"auto"` (the default: no limit of their own) or a number of tokens. A model whose header does
+  not say what it was trained for gets an `auto` ceiling of 32,768 tokens. The ceiling never
+  drops below a working context of 8,192 tokens (or the configured context, if smaller).
+- **The pool** starts at 16,384 tokens (with a fixed context, `context × parallel` if that is
+  smaller; never more than fits), or at what the call that loads the model needs: its prompt estimate plus
+  `max_output_tokens`. One agent may use all of it, up to the ceiling: `--kv-unified-per-slot` is
+  only passed when the ceiling is below the pool. When a call's prompt and reply no longer fit,
+  the model is marked to grow: no new call takes a slot on it, and as soon as the calls running on
+  it are done it restarts (swap reason `grow`) with the pool doubled until the call fits, rounded
+  up to 1,024 tokens and capped at the ceiling. Unlike a `config` restart this does not wait for
+  agents to finish their turns, since the agent that needs the room is mid-turn itself: the slots
+  of agents that can come back are saved and restored into the larger pool (the slot key leaves
+  out a pool that grows), and a slot that cannot be restored is read again. A model that is
+  unloaded (idle, swapped out for room, or `models.unload`) forgets its grown pool and starts
+  small again next time, so the memory goes back once the sessions that needed it are done. A
+  fixed `pool_tokens` never grows and caps the ceiling.
+- **Weights on the GPU first (fix: keep weights on GPU by shrinking the KV pool instead of
+  offloading layers).** On a discrete GPU the KV memory gives way before the layers do: when the
+  weights and the runtime overhead fit in the VRAM free at start, the ceiling and the pool are cut
+  to the tokens left beside them, never below 8,192 tokens (or the context, if smaller). This also
+  applies to a pool fixed with `pool_tokens`: one that does not fit is cut to what fits (logged,
+  `pool_clamped` in `models.local` and `models.config`, a warning in the model settings dialog),
+  and `--ctx-size` and `--kv-unified-per-slot` use the cut pool, rather than offloading most
+  layers to the CPU as before (a pinned `8 × 40960` pool of a 4B model on a card with 8 GB free
+  used to start with 5 of 36 layers on the GPU; it now starts with all 36 and about 133k
+  tokens). Only when the weights and that minimum do not fit are layers split between GPU and
+  RAM as before; `max_gpu_layers` and a CPU-lane pin are respected (the pool then fits what
+  those placements leave). The Local models panel shows the layers on the GPU (*36/36 layers on
+  GPU*) and says when the rest run on the CPU.
+- **Slots are not reservations.** With `--kv-unified` every sequence takes cells from the one
+  pool as it needs them, so `--parallel` itself costs almost nothing (a little per-slot state).
+  Models start with a high slot ceiling (`slots`, also written `max_slots`, default the larger of
+  16 and `parallel`), the per-slot cap (`--kv-unified-per-slot`) is the context ceiling, and the
+  pool is never sized as slots × context: it follows demand. The most it may grow to
+  (`pool_max`) is what fits beside the weights, at most every slot at the full context.
+- **Growing with the work.** Besides one call that does not fit, a call that fits but finds the
+  pool filled by the others' reservations (the high-water mark: it would have to wait) grows the
+  pool, by doubling, towards `pool_max`, the same way: between calls, slots saved and restored.
+  So the pool follows how many agents work at once. It shrinks back when the model is unloaded
+  (after `idle_unload_s`, or swapped out for room), which is the hysteresis: it grows at once and
+  shrinks only when nothing has used it for a while. A full pool that cannot grow makes new calls
+  wait their turn; llama-server itself purges idle slots' cells when the pool runs short.
+- **Several models in parallel.** A model loaded beside others gets its weights on the GPU first
+  and the KV pool from the VRAM left (the arbiter places it with the memory the loaded models
+  hold already deducted): when its pool would push layers off the GPU, the pool is cut to fit,
+  down to a working context, rather than offloading layers, and the model is marked squeezed (its
+  agents' ceiling is then its pool, and it does not grow until next loaded). Only when its
+  weights and a working pool do not fit beside the loaded models do the usual choices apply:
+  swapping a free model out, waiting, or partial offload as a last resort. The arbiter, use
+  claims and KV pool code are the same; nothing runs beside them.
+- **Why a call waits.** While a model call waits for a local model the agent emits
+  `local_model_waiting` (`agent_id`, `model`, `reason`) each time the reason changes: `loading`,
+  `growing_pool`, `kv_room`, `slot`, `other_model` (another model's calls come first, or it
+  must unload to make room), `making_room` (models in the way finish before they give way, so
+  the call does not run on the CPU), `saving_context` (the contexts on a model swapped out for
+  it are saved), or `restoring_context` (its own context, saved while it waited, comes back).
+  The CLI prints it; the desktop does not show it yet.
+- **What the lists show.** `models.local` rows carry the loader's own estimate for each model
+  under its settings (the same placer and pool sizing, beside the models loaded now, against the
+  budget measured at start): layers on the GPU (`gpu_layers` of `layers`), `vram_bytes`,
+  `ram_bytes`, the context ceiling and the starting pool; a loaded model reports its live
+  values instead. They are recomputed on every listing, so a saved setting shows at once.
+- **Why not a llama.cpp fork.** llama.cpp allocates the KV cache when it creates the context,
+  and the unified pool already hands out cells per sequence, so dynamic slots need no engine
+  change; only growing the cache in place would, which means maintaining a fork against a fast
+  moving upstream. Restarting between calls with the slots saved and restored gets the same
+  result at the cost of a server start per doubling; an in-place resize remains a possible later
+  option.
+- **Memory savers.** The K and V cache types can be set per model (`cache_type_k`,
+  `cache_type_v`; `q8_0` about halves the KV cache of `f16`, and a quantised V cache needs flash
+  attention on or `auto`). The ceiling is computed at those types, so `q8_0` roughly doubles the
+  context that fits.
+
+A growth restart reads the prompts of agents whose slots could not be restored again, and costs a
+server start; doubling keeps restarts to a few per session. Not measured on hardware yet: the
+restore of a slot into a larger pool, and the compute buffers llama.cpp allocates for large
+contexts (the planner still counts a flat runtime overhead).
+
+**Implemented: KV residency and the GPU rule.** What sits on the GPU follows who is working, at
+the grain of one agent's slot as well as one model:
+
+- **The GPU rule.** No agent runs on the CPU alone while no other agent is generating, so every
+  agent gets a turn on the GPU. A call that would run on the CPU, or split across GPU and RAM,
+  beside the loaded models while none of them has a call running makes everything not
+  generating give way: idle models, models of agents mid-turn between calls, and models of
+  agents waiting. Their slots are saved first. `min_residency_s` and the swaps per minute do
+  not hold this up; `max_swaps_per_min = 0` still does, and so does a model the user used
+  lately when the newcomer is background work. CPU or partial placement is allowed in two
+  cases: while another agent generates on the GPU, or when the model cannot fit an empty GPU
+  (it then gets the most layers it can). A newcomer also never takes fewer GPU layers than it
+  would get once idle models gave way (the `swap_gain` comparison now only breaks ties
+  between placements with the same layers on the GPU).
+- **Checked at every call.** When a call starts on a loaded model that runs partly or wholly on
+  the CPU while nothing generates anywhere, and it would get more layers on the GPU once the
+  models not generating gave way, the model is not used as it is. A warning is logged and it
+  restarts between calls (swap reason `promote`, wait reason `making_room`) to be placed again.
+  So an agent that ran on the CPU beside a generating one moves to the GPU at its next call
+  once that agent is done.
+- **Waiting agents give up their cells.** While an agent waits (for its subagents in
+  `await_tasks`, an approval, an answer) and another agent takes a slot on the same model, the
+  waiting agent's slot is saved to the slot files and its cells are freed
+  (`POST /slots/{id}?action=erase`), so its subagents use the GPU pool. Its next call restores
+  the prompt before it is sent (`restoring_context`). A session the user stops releases its
+  agents' slots at once (`LocalModels::suspend` at the safe point where each halts). When an
+  agent goes on, after Resume or after a steering message wakes the root, the engine
+  (`ensure_resident`) checks `LocalModels::suspended` and restores the context ahead of the
+  next call with a near-empty interactive call. That loads the model if it was swapped out and
+  puts the agent ahead of idle subagents. A waiting agent was already no claim on its
+  model, so a subagent on another model that does not fit beside it swaps it out (slots saved)
+  rather than running on the CPU, and it comes back with its slots restored when it resumes.
+- **The critic.** A CPU-lane model (`placement = "cpu"`) runs on the CPU beside the agents
+  generating on the GPU. When an agent of its own session is waiting on it, nothing generates,
+  and no other session is working, it is placed on the GPU for that load. The waiting root's
+  model gives way (slots saved) and comes back with its context restored when the root
+  resumes. When another session is working it stays on the CPU lane.
+- **Order.** Calls running now are never interrupted; an agent that resumes comes back on its
+  next call (restoring its context, loading its model if it was swapped out); subagents and
+  other newcomers take what the idle and waiting leave. `min_residency_s` and the swaps per
+  minute still damp swapping between agents that are all working.
+
+Not done yet: a resuming root does not jump the queue of a model whose slots are all busy; a
+waiting agent's slot is only suspended when a free slot permit lets it be taken (with every
+slot busy, llama-server may reuse it and its prompt then comes from the prompt cache or is read
+again).
 
 `models.config` returns, for every local model and every model-table row, what `models.toml`
 saves (`saved`), what is in effect (`effective`, from the daemon's settings snapshot), the memory
@@ -553,7 +692,7 @@ tier = "strong"
 tags = ["critique", "review"]
 placement = "cpu"                         # auto (default) | cpu
 # parallel = 1                            # slots; default 1 for a CPU-pinned row
-# context = 32768                         # tokens per session; default runtime.llamacpp.context
+# context = 32768                         # most tokens per agent; default runtime.llamacpp.context
 # max_wait_s = 3600                       # longest a call waits for a slot or for room; default
 #                                         # 3600, or runtime.llamacpp.max_wait_s if longer
 ```
@@ -566,8 +705,8 @@ placement = "cpu"                         # auto (default) | cpu
   off the GPU without relying on it following `--device`. What is guaranteed is exactly that:
   Imperium plans zero VRAM for the model, passes those flags, and never counts it against the
   VRAM budget. The planner places it with
-  `place_on_cpu`: weights, the KV pool (`context x parallel` unless the model's settings say
-  otherwise), and the runtime overhead all count against RAM, so loading it leaves the GPU models' placements as they were. Nothing here has
+  `place_on_cpu`: weights, the KV pool (as it starts or has grown, unless the model's settings
+  fix it), and the runtime overhead all count against RAM, so loading it leaves the GPU models' placements as they were. Nothing here has
   been measured on hardware (a driver may still hold a little memory for the process). The
   existing "partial" placement is different: it splits a model that does not fit the GPU, and
   still prefers the GPU. `placement = "cpu"` is validated at startup: it needs
@@ -739,8 +878,8 @@ required = weights + kv_bytes_per_token × pool_tokens + runtime_overhead
 fits     = required ≤ free_vram (full offload)  or  partial offload within RAM headroom
 ```
 
-In the implementation, the KV cache is one pool of `pool_tokens` shared by every slot (by
-default `context × parallel`), so llama.cpp is started with `--ctx-size pool_tokens
+In the implementation, the KV cache is one pool of `pool_tokens` shared by every slot (it
+starts small and grows on demand, see above), so llama.cpp is started with `--ctx-size pool_tokens
 --kv-unified`; the key and value caches may have different types, each counted at its size.
 `max_gpu_layers` caps the layers offloaded, with the memory split recomputed for the capped
 count. When a model does not fit on the GPU, as many whole layers as

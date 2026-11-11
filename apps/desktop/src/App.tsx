@@ -76,7 +76,17 @@ import {
   snapshotSessions,
   type SessionState,
 } from "./sessions";
-import { applySettings, loadSettings, modEnabled, resolvedTheme, saveSettings, SettingsContext, type AppSettings } from "./settings";
+import {
+  applySettings,
+  ChangeSettingsContext,
+  loadSettings,
+  modEnabled,
+  resolvedTheme,
+  saveSettings,
+  SettingsContext,
+  type AppSettings,
+  type ChangeSettings,
+} from "./settings";
 import { SETTINGS_SECTIONS, SettingsWindow } from "./SettingsWindow";
 import { appCommands } from "./commands/appCommands";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
@@ -687,6 +697,13 @@ export function App() {
     setSettings(next);
     saveSettings(next);
   };
+  // For panels that change a setting of their own (model favourites and hidden models).
+  const changeSettings: ChangeSettings = (change) =>
+    setSettings((current) => {
+      const next = change(current);
+      saveSettings(next);
+      return next;
+    });
 
   // Approvals, finished and failed turns, and downloads notify from the daemon's notification
   // handler above; an update notifies once its build has downloaded.
@@ -896,6 +913,7 @@ export function App() {
       environments,
       models: modelTable?.models ?? [],
       localModels: localModels?.models ?? [],
+      modelMarks: settings.modelMarks,
       panels: [...PANELS.filter((p) => p.id !== "approvals" || approvals.length > 0), { id: "session", title: "Session" }, ...[...leftPanels, ...rightPanels].filter((p) => p.id.startsWith("mod:"))].map((p) => ({
         id: p.id,
         title: p.title,
@@ -970,11 +988,13 @@ export function App() {
   if (detachedId !== null) {
     return (
       <SettingsContext.Provider value={settings}>
+      <ChangeSettingsContext.Provider value={changeSettings}>
         <div className="app app-panel">
           {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={null} />}
           <PanelWindow id={detachedId} panel={findPanel(detachedId) ?? null} />
           <CommandPalette detached />
         </div>
+      </ChangeSettingsContext.Provider>
       </SettingsContext.Provider>
     );
   }
@@ -989,6 +1009,7 @@ export function App() {
 
   return (
     <SettingsContext.Provider value={settings}>
+      <ChangeSettingsContext.Provider value={changeSettings}>
     <div className="app">
       <header className="titlebar">
         <strong className="brand">Imperium</strong>
@@ -1077,7 +1098,8 @@ export function App() {
         </main>
       )}
     </div>
-    </SettingsContext.Provider>
+    </ChangeSettingsContext.Provider>
+      </SettingsContext.Provider>
   );
 }
 

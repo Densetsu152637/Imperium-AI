@@ -227,6 +227,8 @@ impl ProcessServer {
         }
         let (tokens, bytes) = match action {
             "save" => ("n_saved", "n_written"),
+            // Erasing frees cells; it moves no bytes.
+            "erase" => ("n_erased", "n_bytes_none"),
             _ => ("n_restored", "n_read"),
         };
         Ok(SlotTransfer {
@@ -247,6 +249,11 @@ impl Server for ProcessServer {
 
     fn restore_slot<'a>(&'a self, slot: u32, file: &'a str) -> SlotFuture<'a> {
         Box::pin(self.slot_action(slot, "restore", file))
+    }
+
+    /// `POST /slots/{slot}?action=erase` (llama.cpp b12180): frees the slot's KV cells.
+    fn erase_slot(&self, slot: u32) -> SlotFuture<'_> {
+        Box::pin(self.slot_action(slot, "erase", ""))
     }
 
     fn stop(&self) -> StopFuture<'_> {

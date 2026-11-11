@@ -56,7 +56,7 @@ box), and **Cancel** (`session.agent_cancel`) until the root agent or the user d
 The Resources panel (in Settings → Panels, closable and detachable like the others) shows what
 the machine and the sessions are using: CPU, RAM, and per GPU its utilisation and VRAM as bars
 with a two-minute sparkline each (hover a bar for per-core figures or swap), a table of the
-local models loaded, in use or idle, with placement (or the CPU lane), the context per session
+local models loaded, in use or idle, with placement (or the CPU lane), the most context one agent may use
 and the KV pool's reserved and total tokens, memory, busy slots and queued calls (or "held by a
 turn" while an agent is mid-turn on it) or the idle-unload countdown, the sessions on each, and
 an Unload button for idle ones, and a table of the hosted
@@ -278,7 +278,8 @@ search box over:
   their own; choosing one opens it.
 - **Environments:** show one (its sessions and new sessions there), or edit it.
 - **Models:** switch the open session's model to any usable model-table row or local model
-  (`session.control` `set_model`, as the model selector does).
+  (`session.control` `set_model`, as the model selector does); favourites first, hidden models
+  left out ([favourite and hidden models](#environments-and-sessions-implemented)).
 - **Panels:** open a closed panel, close or detach a docked one, show or dock a detached one
   (the Usage and Local models panels among them; mod panels too).
 - **Settings:** every section by name (*Settings: Budgets*, *Settings: Keyboard*, …), opened
@@ -562,10 +563,33 @@ summary*. (Before this, the picker sat among the header pills as a borderless na
 that read like plain text, listed only the table, and fell back to plain text when the table
 was empty — so it was easy to miss and absent for local-only setups.) Each local model's option
 (and each table row that names a local model) says what it is under its name: quantisation,
-the context it was trained for and the per-session context it is started with when different,
-its size on disk, and how it fits this machine, such as *Q4_K_M · 256k ctx (8k per session) ·
-2.3 GB · GPU + RAM · llama.cpp*. A local model that cannot run here (a vLLM folder off Linux) is
+the context it was trained for, the most one agent may use (with *(auto)* when it is sized
+automatically), the KV cache reserved (now while loaded, or at first) when that is less, and the
+daemon's plan for it under its settings: layers on the GPU and the VRAM and RAM it takes (live
+values while loaded), such as *Q4_K_M · 256k ctx · up to 128k/agent (auto) · 16k reserved ·
+36/36 layers GPU · 3.1 GB VRAM · llama.cpp*, *22/48 layers GPU · 9.8 GB VRAM + 11.2 GB RAM* when
+it would split, or *CPU · 6.2 GB RAM* on the CPU lane. The context meter below the input measures
+a local model's conversation against that per-agent ceiling, so compaction starts near the
+ceiling, not near the current reservation. The Local models panel shows the layers on the GPU
+(*36/36 layers on GPU*), says when the rest run on the CPU, and when a fixed KV pool was cut to
+fit the GPU. A local model that cannot run here (a vLLM folder off Linux) is
 listed but cannot be chosen. The new-session composer's model list is the same.
+
+**Favourite and hidden models (implemented):** every row of the Models panel (the model table,
+hosted and local) and of the Local models panel has a star (favourite) and an eye (hide). A
+model has one mark at most, so favouriting a hidden model shows it again. Marks are kept by the
+spec a session uses (`<runtime>:<id>` for a local model, the row's spec for a table row), so a
+local model marked in either panel is marked in both; they are app settings, saved in the
+`settings` document in `desktop/` ([persistence](#settings-and-persistence-implemented)), and
+survive updates and reinstalls. In the model panels favourites come first, then the other
+models in the panel's own order, then the hidden ones in a collapsed *Hidden (n)* group at the
+end, dimmed, each with its eye to show it again. The model configuration dialog's list follows
+the same order with *favourite* and *hidden* badges. The session's model selector, the
+new-session composer's model list, and the command palette's *Use …* commands list favourites
+first (under *Favourites*, the rest under *Models*, when any model is marked) and leave hidden
+models out; the session's current model stays listed, dimmed under *Hidden*, while it is
+hidden, so the selector still shows what is selected. Hiding a model only affects these lists:
+delegation and routing still see it in the model table.
 
 ### Session search (implemented)
 
@@ -753,9 +777,16 @@ A modal (a native `<dialog>`, so Esc and the backdrop close it) edits model sett
 from *Models…* in the settings menu, from *Configure* in the Local models panel (Local tab) and
 from *Configure* in the Models panel (Model table tab). The Local tab lists the models in
 `models.folders`; each form field is optional, shows the effective value as its placeholder and
-has a *reset* that clears the saved value. Fields: context per session, KV pool tokens, slots, K
-and V cache types, flash attention, max GPU layers, max wait, max output tokens (0 is uncapped)
-and extra arguments (one per line). For a vLLM model the cache types, flash attention and GPU
+has a *reset* that clears the saved value. Fields: max context per agent (a number of tokens or
+*auto*, offered in the field's list; the placeholder shows the sized ceiling, such as *auto
+(131072)*), KV pool tokens (empty: starts small and grows on demand; a number fixes it), slots, K
+and V cache types (`q8_0` about halves the KV memory), flash attention, max GPU layers, max wait,
+max output tokens (0 is uncapped) and extra arguments (one per line). The summary says how much
+context one agent gets, and warns when a fixed KV pool was cut to keep the layers on the GPU or
+when the weights do not fit on the GPU. *Apply* (or Ctrl+S) saves without closing: the dialog
+shows "Saved" for a moment and the values now in effect (such as a cut pool or the layers on the
+GPU), and closing it afterwards keeps what was applied; *Save* saves and closes. Both are
+disabled while nothing has changed. For a vLLM model the cache types, flash attention and GPU
 layers are disabled. A debounced (500 ms) `models.set_config` dry run shows the memory the model
 would need, its KV pool and its placement, or the server's error. The Model table tab edits
 existing rows only (enabled, tier, tags, context window, prices; both prices or neither); it

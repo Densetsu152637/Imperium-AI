@@ -5,6 +5,7 @@
 
 import { createContext, useContext } from "react";
 
+import { toggleMark, type ModelMark, type ModelMarks } from "./modelPrefs";
 import { getDoc, setDoc, takeLegacy } from "./store";
 import type { PttKey } from "./voice";
 
@@ -67,6 +68,8 @@ export type AppSettings = {
   checkUpdatesAtLogin: boolean;
   // Mods: by id; a mod without an entry is on only if the user installed it (not bundled).
   enabledMods: Record<string, boolean>;
+  // Models: favourites and hidden ones, by spec (modelPrefs.ts).
+  modelMarks: ModelMarks;
 };
 
 /** The settings each display control used to be called. */
@@ -102,6 +105,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   updateIntervalDays: 1,
   checkUpdatesAtLogin: false,
   enabledMods: {},
+  modelMarks: {},
 };
 
 /** The saved document: the settings plus a version for future migrations. */
@@ -212,3 +216,18 @@ export function applySettings(settings: AppSettings): void {
 /** The current settings, for components that follow them (chat input, rendering). */
 export const SettingsContext = createContext<AppSettings>(DEFAULT_SETTINGS);
 export const useSettings = () => useContext(SettingsContext);
+
+/** Changes the settings from inside a panel: applied at once, saved, and shared with the other windows. */
+export type ChangeSettings = (change: (current: AppSettings) => AppSettings) => void;
+export const ChangeSettingsContext = createContext<ChangeSettings>(() => undefined);
+export const useChangeSettings = () => useContext(ChangeSettingsContext);
+
+/** The model marks (favourite, hidden) and a toggle for one, for the model lists. */
+export function useModelMarks(): { marks: ModelMarks; toggle: (spec: string, mark: ModelMark) => void } {
+  const settings = useSettings();
+  const change = useChangeSettings();
+  return {
+    marks: settings.modelMarks,
+    toggle: (spec, mark) => change((current) => ({ ...current, modelMarks: toggleMark(current.modelMarks, spec, mark) })),
+  };
+}

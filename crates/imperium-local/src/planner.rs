@@ -371,7 +371,11 @@ mod tests {
     fn launch(slots: u32, pool_tokens: u32, k: &str, v: &str) -> ModelLaunch {
         ModelLaunch {
             context: 4096,
+            context_auto: false,
             pool_tokens,
+            pool_fixed: true,
+            pool_clamped: false,
+            pool_max: pool_tokens,
             slots,
             cache_type_k: k.into(),
             cache_type_v: v.into(),

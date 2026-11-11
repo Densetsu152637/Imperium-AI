@@ -88,6 +88,11 @@ impl SlotFiles {
             .cloned()
     }
 
+    /// Whether a slot of `holder`'s is saved, on any model.
+    pub fn holds(&self, holder: &str) -> bool {
+        self.saved.iter().any(|saved| saved.holder == holder)
+    }
+
     /// Removes `holder`'s saved slot on the model with `key` from the index and its file from
     /// the folder, whether or not it was recorded: a save that failed or was cut short may have
     /// left a partial file behind.
@@ -144,9 +149,11 @@ fn session(holder: &str) -> &str {
 }
 
 /// Identifies the model a slot was saved from: a saved slot only fits a server started from the
-/// same file with the same context, pool, and cache types. The file is identified by its path,
-/// size, and modification time rather than a hash of its contents, which would mean reading
-/// gigabytes on every load.
+/// same file with the same context, cache types, and (when a setting fixes it) pool. A pool that
+/// grows on demand is left out, so an agent's prompt survives the restart that grows it; a slot
+/// that no longer fits a smaller pool fails to restore and is read again. The file is identified
+/// by its path, size, and modification time rather than a hash of its contents, which would mean
+/// reading gigabytes on every load.
 pub(crate) fn model_key(model: &LocalModel, launch: &ModelLaunch) -> u64 {
     let modified = std::fs::metadata(&model.path)
         .and_then(|metadata| metadata.modified())
@@ -159,7 +166,11 @@ pub(crate) fn model_key(model: &LocalModel, launch: &ModelLaunch) -> u64 {
         model.path.display(),
         model.size_bytes,
         launch.context,
-        launch.pool_tokens,
+        if launch.pool_fixed {
+            launch.pool_tokens
+        } else {
+            0
+        },
         launch.cache_type_k,
         launch.cache_type_v
     );

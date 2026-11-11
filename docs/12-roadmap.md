@@ -48,6 +48,21 @@ use, including models still loaded or cached for active sessions (and which sess
 them), in the desktop's Resources panel and `imperium resources [--watch]`
 ([04](04-models-and-routing.md#active-models-and-resource-monitor)).
 
+Implemented: **the most context each local agent can use, reserved as it is used.** A local
+model's agents may each use up to its ceiling: what the model was trained for, capped to what
+fits in memory beside its weights (`context = "auto"`, the new default, or a number per model or
+globally). The unified KV pool starts small and grows on demand by restarting the server between
+calls, and starts small again after the model is unloaded, so VRAM is only reserved as context is
+used; compaction is planned against the ceiling. Slots reserve nothing (16 by default), and the
+pool also grows when agents fill it together. The weights stay on the GPU first, for each of
+several models loaded at once: a KV pool that does not fit beside them is cut rather than moving
+layers to the CPU. Calls say why they wait for a local model, and the model lists show the
+loader's own memory plan ([04](04-models-and-routing.md#runtimes)). Not measured on hardware
+yet: restoring saved slots into a grown pool, and llama.cpp's compute buffers at large contexts.
+Next: shrinking a loaded pool after sustained low fill (today it shrinks on unload), growing a
+squeezed pool once other models leave, fill read from llama-server's own metrics, and showing
+the wait reason in the desktop.
+
 ## Next (in order)
 
 1. **OS notifications** (implemented). System notifications for approvals, finished and failed
@@ -99,6 +114,49 @@ them), in the desktop's Resources panel and `imperium resources [--watch]`
     and an OpenAI-compatible local API server for other tools.
 11. **Sharing and sync (design).** Design plans for session sharing and export, and for team
     sync.
+12. **Environment file access** (bug, from use of the app so far, like the items after it). Agents fail to read paths an environment grants them:
+    an agent could not open the Imperium-AI checkout given as the environment's first project
+    path. Start from `list_dir` and the path checks behind it (environment roots, path
+    normalisation on Windows, the sandbox grant), then add a test that every project path is
+    readable from inside the environment.
+13. **Worktrees by default.** An environment's sessions get its project-specific worktrees
+    without extra setup.
+14. **Visible tool calls.** The transcript shows each tool call, with arguments and result, for
+    the session and for every subagent, collapsed by default.
+15. **Reasoning effort.** Models that can reason get a per-session effort setting (low,
+    medium, high, max), mapped to each backend's reasoning controls and hidden for models
+    without them.
+16. **Memory control in core.** Review loading and unloading end to end: imperium-core
+    should own every decision about which models and KV caches are resident, loaded, or
+    unloaded (the local runtime only carries them out), with the reason for each move visible.
+    The KV-residency work and the GPU rule are the starting point; measure on real hardware.
+17. **Session titles and list.** Titles are generated automatically from the first exchange
+    and can be renamed; session rows are compact, one line, as in the Claude interface.
+18. **Quieter interface.** Panels carry too many buttons. Keep the primary action visible,
+    move the rest into overflow menus or hover actions, and tighten spacing and type for a
+    sleeker look.
+19. **Emperor behaviour.** Train Emperor towards the working style of frontier agent models,
+    and reinforce it in the system and root prompts:
+    - concise, structured answers; the big picture first, more detail only when asked;
+    - use tools and delegate rather than pasting code at the user;
+    - few emojis, and plain explanations instead of many tables;
+    - search for information rather than relying on what was learned in training.
+20. **Free scroll while streaming.** Scrolling up while an agent is writing stops following
+    the output and keeps the user's place; a *Jump to latest* button (and scrolling back to
+    the bottom) resumes following the newest text.
+21. **Model awareness for the root agent.** The root agent can list the local models it may
+    use (only those visible to the session, with whether each fits in memory now). It can also
+    retrieve, through the RAG layer, what each model is good at (coding, writing, research,
+    and so on), from model cards and Imperium's own measurements. The root agent uses this to
+    pick a model when it delegates.
+22. **Agents manage the app config.** By default, and outside configured environment
+    projects too, agents may add to the user's local app config: filling in model cards, and
+    downloading and installing mods, plugins, and skills. Each change goes through the
+    permission rules, so the user can narrow it to *ask* or *deny*, and is recorded so it can be
+    undone. Installs show where they came from.
+23. **Lazy skills and plugins.** Only each skill's and plugin's name and short description are
+    loaded up front. The rest (instructions, tools, hooks) is loaded when an agent first uses
+    it, keeping context and start-up cost low.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.

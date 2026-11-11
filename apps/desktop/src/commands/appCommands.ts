@@ -29,6 +29,7 @@ import {
 
 import type { EnvironmentInfo, LocalModelRow, ModelRow } from "@imperium/protocol";
 
+import { chooserModels, type ModelMarks } from "../modelPrefs";
 import type { Command } from "./registry";
 
 /** What the palette needs from the app: its state, and the handlers it already has. */
@@ -41,6 +42,8 @@ export type AppCommandContext = {
   environments: EnvironmentInfo[];
   models: ModelRow[];
   localModels: LocalModelRow[];
+  /** Favourite and hidden models by spec: favourites are offered first, hidden ones not at all. */
+  modelMarks: ModelMarks;
   /** Panels that can be opened, closed, or detached, with where each is now. */
   panels: { id: string; title: string; state: "docked" | "closed" | "detached"; closable: boolean }[];
   /** Settings sections by id. */
@@ -76,8 +79,11 @@ const PANEL_ICONS: Record<string, LucideIcon> = {
   projects: FolderOpen,
 };
 
-/** The models a session can switch to, by spec: usable table rows, then local models the table does not list. */
-function modelChoices(models: ModelRow[], local: LocalModelRow[]): { spec: string; label: string; detail: string }[] {
+/**
+ * The models a session can switch to, by spec: usable table rows, then local models the table
+ * does not list; favourites first and hidden models left out.
+ */
+function modelChoices(models: ModelRow[], local: LocalModelRow[], marks: ModelMarks): { spec: string; label: string; detail: string }[] {
   const choices = models
     .filter((row) => row.enabled && row.endpoint_configured)
     .map((row) => ({ spec: row.spec, label: row.id, detail: [row.id === row.spec ? null : row.spec, row.location, row.tier].filter(Boolean).join(" · ") }));
@@ -86,7 +92,9 @@ function modelChoices(models: ModelRow[], local: LocalModelRow[]): { spec: strin
     if (row.problem || choices.some((choice) => choice.spec === spec)) continue;
     choices.push({ spec, label: row.id, detail: [row.quantization, "local"].filter(Boolean).join(" · ") });
   }
-  return choices;
+  return chooserModels(choices, (choice) => choice.spec, marks).map(({ item, group }) =>
+    group === "favourite" ? { ...item, detail: ["favourite", item.detail].filter(Boolean).join(" · ") } : item,
+  );
 }
 
 export function appCommands(app: AppCommandContext): Command[] {
@@ -191,7 +199,7 @@ export function appCommands(app: AppCommandContext): Command[] {
 
   // ---- Models: switch the open session's model ----
   if (current && app.connected && !current.archived) {
-    for (const choice of modelChoices(app.models, app.localModels)) {
+    for (const choice of modelChoices(app.models, app.localModels, app.modelMarks)) {
       if (choice.spec === current.model || choice.label === current.model) continue;
       add({
         id: `model:${choice.spec}`,

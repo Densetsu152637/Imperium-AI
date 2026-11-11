@@ -8,7 +8,9 @@ import { useEffect, useState } from "react";
 import type { LocalModelRow, ModelRow, RuntimeInfo, SessionControlResult } from "@imperium/protocol";
 
 import { Select, type SelectOption } from "../components/Select";
+import { chooserModels, type ModelGroup, type ModelMarks } from "../modelPrefs";
 import { formatTokens } from "../sessions";
+import { useSettings } from "../settings";
 
 const RUNTIMES: Record<LocalModelRow["runtime"], string> = { llamacpp: "llama.cpp", vllm: "vLLM" };
 
@@ -28,39 +30,70 @@ export function sizeShort(bytes: number): string {
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
-const FIT: Record<LocalModelRow["placement"], string> = {
-  gpu: "fits GPU",
-  partial: "GPU + RAM",
-  cpu: "CPU",
-  none: "too large",
-};
+/**
+ * Where a local model runs, from the daemon's plan for it under its settings (live values while
+ * it is loaded): "36/36 layers GPU · 3.1 GB VRAM + 0.4 GB RAM", "22/48 layers GPU · 9.8 GB VRAM +
+ * 11.2 GB RAM" when it would split, "CPU · 6.2 GB RAM" on the CPU lane, "too large" when it does
+ * not fit this machine.
+ */
+export function memoryPlan(row: LocalModelRow): string {
+  if (row.problem) return "cannot run here";
+  if (!row.loaded && row.placement === "none") return "too large";
+  const memory = [row.vram_bytes > 0 ? `${sizeShort(row.vram_bytes)} VRAM` : null, row.ram_bytes > 0 ? `${sizeShort(row.ram_bytes)} RAM` : null]
+    .filter(Boolean)
+    .join(" + ");
+  const onGpu = row.gpu_layers ?? 0;
+  if (row.cpu_lane || (onGpu === 0 && row.vram_bytes === 0)) return ["CPU", memory].filter(Boolean).join(" · ");
+  const layers = row.layers != null ? `${Math.min(onGpu, row.layers)}/${row.layers} layers GPU` : "GPU";
+  return [layers, memory].filter(Boolean).join(" · ");
+}
 
 /**
- * A local model in a line: quantisation, context (the trained length, and the per-session
- * context it is started with when different), size on disk, and how it fits this machine —
- * such as "Q4_K_M · 256k ctx (32k per session) · 2.3 GB · fits GPU · llama.cpp".
+ * A local model in a line: quantisation, context (the trained length, the most one agent may
+ * use, and the KV cache reserved, now while loaded or at first, when it is less), the daemon's
+ * memory plan for it ([`memoryPlan`]), and the runtime — such as "Q4_K_M · 256k ctx · up to
+ * 128k/agent (auto) · 16k reserved · 36/36 layers GPU · 3.1 GB VRAM · loaded · llama.cpp".
  */
 export function localDescription(row: LocalModelRow): string {
   const parts: string[] = [];
   parts.push(row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?"));
-  if (row.context_length) {
-    const configured = row.context > 0 && row.context !== row.context_length ? ` (${tokensShort(row.context)} per session)` : "";
-    parts.push(`${tokensShort(row.context_length)} ctx${configured}`);
-  } else if (row.context > 0) {
-    parts.push(`${tokensShort(row.context)} ctx`);
+  if (row.context_length) parts.push(`${tokensShort(row.context_length)} ctx`);
+  if (row.context > 0) {
+    parts.push(`up to ${tokensShort(row.context)}/agent${row.context_auto ? " (auto)" : ""}`);
+    if (row.runtime === "llamacpp" && row.pool_tokens > 0 && row.pool_tokens < row.context) {
+      parts.push(`${tokensShort(row.pool_tokens)} reserved`);
+    }
   }
-  parts.push(sizeShort(row.size_bytes));
-  parts.push(row.problem ? "cannot run here" : row.loaded ? "loaded" : FIT[row.placement]);
+  parts.push(memoryPlan(row));
+  if (row.loaded) parts.push("loaded");
   parts.push(RUNTIMES[row.runtime]);
   return parts.join(" · ");
 }
 
 /**
  * The models a session can use, by spec: table rows first (rows whose endpoint is not configured
- * are listed but cannot be chosen), then local models the table does not already list. A
- * `current` model outside both is listed as is, so the list always shows it.
+ * are listed but cannot be chosen), then local models the table does not already list. With
+ * `marks` ([`chooserModels`]), favourites come first under "Favourites" and hidden models are
+ * left out unless one is `current`. A `current` model outside both is listed as is, so the list
+ * always shows it.
  */
-export function modelOptions(models: ModelRow[], local: LocalModelRow[], current: string | null): SelectOption[] {
+export function modelOptions(models: ModelRow[], local: LocalModelRow[], current: string | null, marks?: ModelMarks): SelectOption[] {
+  const all = allModelOptions(models, local);
+  const chosen = chooserModels(all, (option) => option.value, marks, current);
+  const grouped = chosen.some((entry) => entry.group !== "normal");
+  const options: SelectOption[] = chosen.map(({ item, group }) =>
+    grouped ? { ...item, group: GROUP_LABELS[group], dimmed: group === "hidden" } : item,
+  );
+  if (current && !options.some((option) => option.value === current)) {
+    options.unshift({ value: current, label: current });
+  }
+  return options;
+}
+
+const GROUP_LABELS: Record<ModelGroup, string> = { favourite: "Favourites", normal: "Models", hidden: "Hidden" };
+
+/** Every model a session could use, in the table's order, before favourites and hidden models apply. */
+function allModelOptions(models: ModelRow[], local: LocalModelRow[]): SelectOption[] {
   const options: SelectOption[] = models.map((row) => {
     // A table row that names a local model also says what that model is.
     const localRow = local.find((candidate) => localSpec(candidate) === row.spec);
@@ -84,9 +117,6 @@ export function modelOptions(models: ModelRow[], local: LocalModelRow[], current
       description: localDescription(row),
       disabled: row.problem != null,
     });
-  }
-  if (current && !options.some((option) => option.value === current)) {
-    options.unshift({ value: current, label: current });
   }
   return options;
 }
@@ -128,12 +158,15 @@ export function SessionModelSelect({
   /** Switches the model; rejects with the daemon's reason. */
   onSwitch: (model: string) => Promise<SessionControlResult>;
 }) {
+  const settings = useSettings();
   const [pending, setPending] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A llama.cpp model chosen while no runtime is ready, waiting for "Use anyway".
   const [unready, setUnready] = useState<string | null>(null);
+  // A llama.cpp model chosen while its runtime will be installed on first use.
+  const [installInfo, setInstallInfo] = useState(false);
 
   const switchTo = (spec: string) => {
     setSwitching(true);
@@ -175,10 +208,13 @@ export function SessionModelSelect({
       setPending(null);
       return;
     }
+    setInstallInfo(false);
     if (needsRuntime(spec, runtime)) {
       setUnready(spec);
       return;
     }
+    // No runtime yet, but it is fetched on first use: say so, without stopping the switch.
+    if (spec.startsWith("llamacpp:") && runtime != null && !runtime.installed) setInstallInfo(true);
     apply(spec);
   };
 
@@ -189,7 +225,7 @@ export function SessionModelSelect({
         aria-label="Model"
         className="model-select-button"
         value={value}
-        options={modelOptions(models, local, current)}
+        options={modelOptions(models, local, current, settings.modelMarks)}
         placeholder="No model"
         disabled={disabled || switching}
         onChange={choose}
@@ -221,6 +257,11 @@ export function SessionModelSelect({
       {error && !switching && (
         <span className="model-status error" role="alert" title={error}>
           {error}
+        </span>
+      )}
+      {installInfo && unready === null && (
+        <span className="model-status muted" role="status">
+          {INSTALL_ON_FIRST_USE}
         </span>
       )}
       {unready !== null && (
@@ -268,7 +309,13 @@ export function SessionModelSelect({
 export const NO_RUNTIME =
   "No llama.cpp runtime yet — open Local models → Runtime to install one or choose an existing llama-server.";
 
-/** Whether `spec` is a llama.cpp model and `runtime` says no `llama-server` is there to load it. */
+/** What the session selector says when a llama.cpp model is chosen and the runtime is fetched on first use. */
+export const INSTALL_ON_FIRST_USE = "llama.cpp will be installed on first use.";
+
+/**
+ * Whether `spec` is a llama.cpp model and `runtime` says no `llama-server` is there to load it
+ * and none will be installed by itself (`auto_install` off).
+ */
 export function needsRuntime(spec: string, runtime: RuntimeInfo | null | undefined): boolean {
-  return spec.startsWith("llamacpp:") && runtime != null && !runtime.installed;
+  return spec.startsWith("llamacpp:") && runtime != null && !runtime.installed && !runtime.auto_install;
 }

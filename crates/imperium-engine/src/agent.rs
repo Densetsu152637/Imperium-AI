@@ -58,6 +58,24 @@ const CHUNK_WINDOW_PERCENT: u64 = 60;
 const DEFAULT_WINDOW_TOKENS: u64 = 32_768;
 /// How long `ask_user` waits for an answer before taking the recommendations.
 const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+/// How often a call waiting for a local model looks at why it waits.
+const WAIT_REASON_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// A local runtime's wait reason as the protocol says it.
+fn wait_reason(reason: crate::LocalWait) -> imperium_protocol::session::LocalWaitReason {
+    use crate::LocalWait as Wait;
+    use imperium_protocol::session::LocalWaitReason as Reason;
+    match reason {
+        Wait::Loading => Reason::Loading,
+        Wait::GrowingPool => Reason::GrowingPool,
+        Wait::KvRoom => Reason::KvRoom,
+        Wait::Slot => Reason::Slot,
+        Wait::OtherModel => Reason::OtherModel,
+        Wait::MakingRoom => Reason::MakingRoom,
+        Wait::SavingContext => Reason::SavingContext,
+        Wait::RestoringContext => Reason::RestoringContext,
+    }
+}
 
 /// What a turn produced, for a parent awaiting a subagent.
 pub struct TurnOutcome {
@@ -366,14 +384,35 @@ impl Agent {
         reports
     }
 
-    /// Makes sure the root agent is ready to work again after waiting on subagents: its model
-    /// loaded and its context restored.
-    ///
-    /// INTEGRATION POINT: the local runtime is gaining an explicit "restore root slot" call
-    /// (slot-level KV residency); wire it in here once it lands. Until then nothing extra is
-    /// needed: the next model call's `acquire` loads the model if it was swapped out and gives
-    /// this agent back its saved slot, and a hosted model keeps no state between calls.
-    async fn ensure_resident(&self) {}
+    /// Makes sure the agent is ready to work again after waiting (on subagents, or a stopped
+    /// session): when the local runtime saved its context and freed its cells meanwhile, its
+    /// model is loaded and its context restored now, as the user's work, ahead of idle
+    /// subagents, rather than at its next call. A hosted model keeps no state between calls.
+    async fn ensure_resident(&self) {
+        let Some(local) = self.local_models() else {
+            return;
+        };
+        let holder = self.holder();
+        if !local.suspended(&holder) {
+            return;
+        }
+        // A call that reserves almost nothing: taking the slot restores the context into it,
+        // and releasing it leaves the slot this agent's for its next call.
+        let request = LocalRequest {
+            priority: Priority::Interactive,
+            prompt_tokens: Some(0),
+            uncapped: false,
+        };
+        match local
+            .acquire_with(&self.model.model, &holder, request)
+            .await
+        {
+            Ok(lease) => drop(lease),
+            Err(error) => {
+                tracing::debug!(%holder, %error, "could not restore the agent's context ahead of its call");
+            }
+        }
+    }
 
     /// What the root reads, after a steering message, about the subagents that stopped for it.
     fn stopped_status(&self, stopped: &[TaskReport]) -> String {
@@ -428,13 +467,18 @@ impl Agent {
         let asleep = self
             .local_models()
             .map(|local| local.waiting(&self.model.model, holder));
-        // INTEGRATION POINT: an explicit slot release / save from the local runtime goes here
-        // (and its restore in `ensure_resident`); `waiting` already lets it reclaim the slot.
+        // Stopped for who knows how long: its context is saved and its cells freed at once, so
+        // other sessions use the GPU meanwhile.
+        if let Some(local) = self.local_models() {
+            local.suspend(&self.model.model, holder).await;
+        }
         let _ = stop.wait_for(|stopped| !*stopped).await;
         drop(asleep);
         *attached = self
             .local_models()
             .map(|local| local.attach(&self.model.model, holder));
+        // Resumed: its context comes back before it goes on.
+        self.ensure_resident().await;
     }
 
     /// Makes this subagent pause when the user steers the root agent from now on.
@@ -1318,18 +1362,37 @@ impl Agent {
             } else {
                 Priority::Interactive
             };
-        let lease = local
-            .acquire_with(
-                &model.model,
-                holder,
-                LocalRequest {
-                    priority,
-                    prompt_tokens,
-                    uncapped,
-                },
-            )
-            .await
-            .map_err(|error| format!("could not load local model {}: {error}", model.model))?;
+        let acquire = local.acquire_with(
+            &model.model,
+            holder,
+            LocalRequest {
+                priority,
+                prompt_tokens,
+                uncapped,
+            },
+        );
+        tokio::pin!(acquire);
+        // Says why the call waits, each time the reason changes, so clients can show it.
+        let mut told = None;
+        let lease = loop {
+            tokio::select! {
+                lease = &mut acquire => break lease,
+                () = tokio::time::sleep(WAIT_REASON_POLL) => {
+                    let reason = local.wait_reason(holder);
+                    if reason != told {
+                        if let Some(reason) = reason {
+                            self.emit(SessionEvent::LocalModelWaiting {
+                                agent_id: self.id.clone(),
+                                model: model.model.clone(),
+                                reason: wait_reason(reason),
+                            });
+                        }
+                        told = reason;
+                    }
+                }
+            }
+        }
+        .map_err(|error| format!("could not load local model {}: {error}", model.model))?;
         let endpoint = Endpoint {
             base_url: lease.base_url.clone(),
             api_key: None,

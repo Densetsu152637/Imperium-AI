@@ -135,6 +135,28 @@ impl Default for LocalRequest {
     }
 }
 
+/// Why a call for a local model is waiting, while it waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalWait {
+    /// The model is being loaded (or restarted) for it.
+    Loading,
+    /// The model restarts with a larger KV pool once the calls running on it are done.
+    GrowingPool,
+    /// The model's KV pool is full of other calls' reservations.
+    KvRoom,
+    /// Every slot of the model is busy.
+    Slot,
+    /// Another model is in the way: its calls come first, or it must unload to make room.
+    OtherModel,
+    /// Waiting for room on the GPU: models in the way are finishing their calls before they
+    /// are swapped out, so this call does not run on the CPU.
+    MakingRoom,
+    /// The contexts of agents on a model being swapped out for this call are being saved.
+    SavingContext,
+    /// This agent's own context, saved while it waited, is being restored.
+    RestoringContext,
+}
+
 /// The agent id of a holder, `<session id>/<agent id>`.
 pub fn holder(session: &str, agent: &str) -> String {
     format!("{session}/{agent}")
@@ -146,6 +168,7 @@ pub fn holder_session(holder: &str) -> &str {
 }
 
 pub type AcquireFuture<'a> = Pin<Box<dyn Future<Output = Result<LocalLease, String>> + Send + 'a>>;
+pub type SuspendFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
 /// Local models the router may place work on.
 pub trait LocalModels: Send + Sync + fmt::Debug {
@@ -161,6 +184,23 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     /// the loaded server's own report replaces it.
     fn planned_context(&self, _model: &str) -> Option<u64> {
         None
+    }
+    /// Why `holder`'s call for a model waits, while it waits in [`LocalModels::acquire`];
+    /// `None` when it does not wait or the runtime does not say.
+    fn wait_reason(&self, _holder: &str) -> Option<LocalWait> {
+        None
+    }
+    /// Whether `holder`'s context was saved and its cells freed while it waited (see
+    /// [`LocalModels::waiting`]): its next [`LocalModels::acquire`] restores it before the call,
+    /// so whoever wakes it (subagents done, a steer) needs nothing else.
+    fn suspended(&self, _holder: &str) -> bool {
+        false
+    }
+    /// Saves `holder`'s context on `model` and frees its KV cells now, for an agent that will
+    /// not call for a while (a stopped session). Its next [`LocalModels::acquire`] restores it.
+    /// A runtime that cannot does nothing.
+    fn suspend<'a>(&'a self, _model: &'a str, _holder: &'a str) -> SuspendFuture<'a> {
+        Box::pin(async {})
     }
     /// Takes a slot on the model for one call, loading the model first if needed (waiting for
     /// room while the models in the way are in use, up to a limit the runtime sets) and queueing

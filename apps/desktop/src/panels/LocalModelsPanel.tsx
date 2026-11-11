@@ -20,31 +20,33 @@ import { Select } from "../components/Select";
 import type { DaemonClient } from "../daemon/client";
 import { pickFile } from "../daemon/connection";
 import { addModelFolder, ModelSetup } from "./ModelSetup";
-import { localDescription, localSpec } from "./ModelSelect";
+import { arrangeModels, markOf, type ModelMark } from "../modelPrefs";
+import { useModelMarks } from "../settings";
+import { HiddenGroupRow, ModelMarkButtons } from "./ModelMarks";
+import { localDescription, localSpec, memoryPlan } from "./ModelSelect";
 
 const GIB = 1024 ** 3;
 const MIB = 1024 ** 2;
 
 const gib = (bytes: number): string => `${(bytes / GIB).toFixed(1)} GiB`;
 
+/**
+ * How the model runs, from the daemon's plan under its settings (live values while loaded):
+ * layers on the GPU and the memory it takes, with a warning when layers would run on the CPU.
+ */
 function placement(row: LocalModelRow): string {
   if (row.problem) return "cannot run here";
+  if (!row.loaded && row.placement === "none") return "too large for this machine";
+  const clamped = row.pool_clamped ? " · KV pool cut to fit the GPU" : "";
+  const plan = memoryPlan(row);
+  const split = !row.cpu_lane && row.layers != null && (row.gpu_layers ?? 0) > 0 && (row.gpu_layers ?? 0) < row.layers;
+  const warning = split ? " · the rest of the layers run on the CPU" : "";
   if (row.loaded) {
     const queue = row.queued > 0 ? ` · ${row.queued} waiting` : "";
     const lane = row.cpu_lane ? "CPU lane · " : "";
-    return `${lane}loaded · ${row.slots_in_use}/${row.slots} busy${queue}`;
+    return `${lane}loaded · ${row.slots_in_use}/${row.slots} busy${queue} · ${plan}${warning}${clamped}`;
   }
-  if (row.cpu_lane && row.placement === "cpu") return "CPU lane (RAM only)";
-  switch (row.placement) {
-    case "gpu":
-      return "fits on GPU";
-    case "partial":
-      return `GPU + RAM · ${row.gpu_layers ?? 0} layers on GPU`;
-    case "cpu":
-      return "fits in RAM (CPU)";
-    case "none":
-      return "too large for this machine";
-  }
+  return `${row.cpu_lane ? "CPU lane · " : ""}${plan}${warning}${clamped}`;
 }
 
 /** Whether a download would fit, in words: the hint never relies on colour. */
@@ -450,7 +452,10 @@ function RuntimeCard({ client, onChanged }: { client: DaemonClient; onChanged?: 
   );
 }
 
-/** The models found, each with Use (make it the default), Test, and Settings. */
+/**
+ * The models found, each with Use (make it the default), Test, Settings, and the favourite and
+ * hide toggles: favourites first, hidden models last in a collapsed group.
+ */
 function ModelTable({
   listing,
   client,
@@ -465,6 +470,8 @@ function ModelTable({
   const [testing, setTesting] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, ModelTestResult | { error: string }>>({});
   const [error, setError] = useState<string | null>(null);
+  const [showHidden, setShowHidden] = useState(false);
+  const { marks, toggle } = useModelMarks();
 
   if (listing.models.length === 0) {
     return <p className="empty">No models in {listing.folders.join(", ")} yet. GGUF files and Hugging Face folders are recognised.</p>;
@@ -492,6 +499,27 @@ function ModelTable({
       setTesting(null);
     }
   };
+  const arranged = arrangeModels(listing.models, localSpec, marks);
+  const modelRows = (row: LocalModelRow, hidden: boolean) => {
+    const spec = localSpec(row);
+    return (
+      <ModelRows
+        key={row.id}
+        row={row}
+        isDefault={listing.default_model === spec}
+        unusable={row.problem != null || (row.placement === "none" && !row.loaded)}
+        hidden={hidden}
+        mark={markOf(marks, spec)}
+        testing={testing === row.id}
+        busy={testing !== null}
+        result={results[row.id]}
+        onUse={() => use(row)}
+        onTest={() => void test(row)}
+        onSettings={() => onConfigure(row.id)}
+        onMark={(mark) => toggle(spec, mark)}
+      />
+    );
+  };
   return (
     <>
       <table className="local-model-table">
@@ -508,26 +536,11 @@ function ModelTable({
           </tr>
         </thead>
         <tbody>
-          {listing.models.map((row) => {
-            const spec = localSpec(row);
-            const isDefault = listing.default_model === spec;
-            const result = results[row.id];
-            const unusable = row.problem != null || (row.placement === "none" && !row.loaded);
-            return (
-              <ModelRows
-                key={row.id}
-                row={row}
-                isDefault={isDefault}
-                unusable={unusable}
-                testing={testing === row.id}
-                busy={testing !== null}
-                result={result}
-                onUse={() => use(row)}
-                onTest={() => void test(row)}
-                onSettings={() => onConfigure(row.id)}
-              />
-            );
-          })}
+          {[...arranged.favourites, ...arranged.normal].map((row) => modelRows(row, false))}
+          {arranged.hidden.length > 0 && (
+            <HiddenGroupRow count={arranged.hidden.length} open={showHidden} colSpan={6} onToggle={() => setShowHidden((open) => !open)} />
+          )}
+          {showHidden && arranged.hidden.map((row) => modelRows(row, true))}
         </tbody>
       </table>
       {error && (
@@ -543,16 +556,23 @@ function ModelRows({
   row,
   isDefault,
   unusable,
+  hidden,
+  mark,
   testing,
   busy,
   result,
   onUse,
   onTest,
   onSettings,
+  onMark,
 }: {
   row: LocalModelRow;
   isDefault: boolean;
   unusable: boolean;
+  /** In the collapsed "Hidden" group, drawn dimmed. */
+  hidden: boolean;
+  mark: ModelMark | null;
+  onMark: (mark: ModelMark) => void;
   testing: boolean;
   busy: boolean;
   result: ModelTestResult | { error: string } | undefined;
@@ -563,7 +583,7 @@ function ModelRows({
   const fit = `${placement(row)}${row.tokens_per_s != null ? ` · ${row.tokens_per_s.toFixed(1)} tok/s` : ""}`;
   return (
     <>
-      <tr className={unusable ? "unusable" : undefined} title={row.path}>
+      <tr className={[unusable ? "unusable" : null, hidden ? "model-hidden" : null].filter(Boolean).join(" ") || undefined} title={row.path}>
         <td className="model-name">
           <span className="model-id">{row.id}</span>
           <span className="model-meta">
@@ -580,9 +600,15 @@ function ModelRows({
         </td>
         <td>{row.quantization ?? (row.runtime === "vllm" ? "safetensors" : "?")}</td>
         <td>{gib(row.size_bytes)}</td>
-        <td title={row.context > 0 && row.context !== row.context_length ? `Trained for ${context(row.context_length)} tokens; each session gets ${context(row.context)}` : undefined}>
+        <td
+          title={
+            row.context > 0
+              ? `Trained for ${context(row.context_length)} tokens; one agent may use up to ${context(row.context)}${row.context_auto ? " (auto: what fits in memory)" : ""}. The KV cache reserves ${context(row.pool_tokens)} now and grows on demand.`
+              : undefined
+          }
+        >
           {context(row.context_length)}
-          {row.context > 0 && row.context !== row.context_length && <span className="muted"> · {context(row.context)}/session</span>}
+          {row.context > 0 && row.context !== row.context_length && <span className="muted"> · {context(row.context)}/agent</span>}
         </td>
         <td>
           <span className={`badge ${row.loaded ? "local" : ""}`} title={row.problem ?? `needs ${gib(row.required_bytes)}`}>
@@ -605,6 +631,7 @@ function ModelRows({
           <button className="ghost icon" onClick={onSettings} aria-label={`Settings for ${row.id}`} title="Context, slots, GPU layers…">
             <SlidersHorizontal aria-hidden="true" />
           </button>
+          <ModelMarkButtons name={row.id} mark={mark} onToggle={onMark} />
         </td>
       </tr>
       {row.problem && (

@@ -179,6 +179,14 @@ pub enum SessionEvent {
         #[serde(default)]
         cause: PauseCause,
     },
+    /// A model call of `agent_id` waits for local model `model`, and why; sent when the reason
+    /// changes while it waits (not for waits under half a second). The call starts without a
+    /// further event.
+    LocalModelWaiting {
+        agent_id: String,
+        model: String,
+        reason: LocalWaitReason,
+    },
     /// The wait ended and the turn continues.
     Resumed {},
     /// The user stopped the session (`session.control` `stop`): the root and every subagent
@@ -734,6 +742,30 @@ mod tests {
         assert_eq!(value["categories"][0]["tokens"], -3);
         assert_eq!(value["prompt_tokens"], serde_json::Value::Null);
     }
+}
+
+/// Why a model call waits for a local model ([`SessionEvent::LocalModelWaiting`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum LocalWaitReason {
+    /// The model is being loaded (or restarted) for it.
+    Loading,
+    /// The model restarts with a larger KV pool once the calls running on it are done.
+    GrowingPool,
+    /// The model's KV pool is full of other calls' reservations.
+    KvRoom,
+    /// Every slot of the model is busy.
+    Slot,
+    /// Another model is in the way: its calls come first, or it must unload to make room.
+    OtherModel,
+    /// Waiting for room on the GPU (models in the way finish their calls and are swapped out)
+    /// rather than running on the CPU.
+    MakingRoom,
+    /// Saving the contexts of agents on a model swapped out for this call.
+    SavingContext,
+    /// Restoring this agent's own context, saved while it waited.
+    RestoringContext,
 }
 
 /// Why a session is [`SessionEvent::Paused`].

@@ -117,7 +117,7 @@ fn settings(cache_ram_mb: u64) -> LlamaCppSettings {
         auto_install: false,
         update_external: "off".into(),
         idle_unload_s: 900,
-        context: 4096,
+        context: 4096.into(),
         parallel: 2,
         cache_type: "f16".into(),
         slots: Some(2),
@@ -324,9 +324,14 @@ async fn cpu_lane_is_refused_and_unavailable_when_ram_is_short() {
     assert_eq!(supervisor.availability("emperor"), Availability::Fits);
     drop(supervisor.acquire("emperor", "agent").await.unwrap());
 
-    // Unpinned, the same file would have been loaded (split across the GPU and RAM).
+    // Unpinned, the same file would be loaded: the idle emperor would give way rather than the
+    // critic run partly on the CPU beside it.
     supervisor.set_cpu_pinned(HashMap::new());
-    assert_eq!(supervisor.availability("critic"), Availability::Fits);
+    assert!(
+        matches!(supervisor.availability("critic"), Availability::Swap { .. }),
+        "{:?}",
+        supervisor.availability("critic")
+    );
 }
 
 #[tokio::test]

@@ -25,8 +25,9 @@ pub use layers::{
     Config, ConfigError, Explained, Layer, Source, load, load_layers, replace_app_layer,
 };
 pub use local_models::{
-    CACHE_TYPES, CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS, DEFAULT_SLOTS, LaneRow, LocalModelSettings,
-    MAX_SLOTS, ModelLaunch, TableOverride, check_launch, check_local_model,
+    CACHE_TYPES, CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS, ContextLimit, DEFAULT_SLOTS,
+    INITIAL_POOL_TOKENS, LaneRow, LocalModelSettings, MAX_SLOTS, ModelLaunch, NO_CONTEXT_LIMIT,
+    TableOverride, check_launch, check_local_model,
 };
 pub use mcp_servers::{
     MAX_SERVER_NAME, remove_mcp_server, save_mcp_server, set_mcp_server_enabled, valid_server_name,

@@ -32,7 +32,29 @@ required_bytes: number,
 /**
  * How the model would load on this machine when nothing else is loaded.
  */
-placement: "gpu" | "partial" | "cpu" | "none", gpu_layers: number | null, loaded: boolean, slots: number, slots_in_use: number, 
+placement: "gpu" | "partial" | "cpu" | "none", 
+/**
+ * Layers on the GPU: the loaded server's, else what loading it now would give (the
+ * planner's estimate under its settings, beside the models loaded).
+ */
+gpu_layers: number | null, 
+/**
+ * VRAM it holds (loaded) or would take if loaded now, weights and KV pool included.
+ */
+vram_bytes: number, 
+/**
+ * System RAM it holds (loaded, prompt cache included) or would take if loaded now.
+ */
+ram_bytes: number, 
+/**
+ * Layers the model has, when its header says.
+ */
+layers: number | null, 
+/**
+ * A fixed `pool_tokens` did not fit beside the weights on the GPU, so the pool was cut to
+ * what fits (`pool_tokens`) to keep the layers on the GPU.
+ */
+pool_clamped: boolean, loaded: boolean, slots: number, slots_in_use: number, 
 /**
  * Calls waiting for a slot on this model.
  */
@@ -48,11 +70,17 @@ cpu_lane: boolean,
  */
 tokens_per_s: number | null, 
 /**
- * Tokens one session may use.
+ * Most tokens one agent may use: what the model was trained for, its configured limit,
+ * and what fits in memory, whichever is least. Compaction is planned against it.
  */
 context: number, 
 /**
- * Tokens of KV cache shared by the model's slots.
+ * `context` is sized automatically (the `auto` setting) rather than configured.
+ */
+context_auto: boolean, 
+/**
+ * Tokens of KV cache shared by the model's slots: what the server reserves (or would
+ * start with). It starts small and grows on demand up to `context`.
  */
 pool_tokens: number, 
 /**
