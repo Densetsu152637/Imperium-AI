@@ -27,6 +27,7 @@ mod phone;
 mod project_agent;
 pub mod residency;
 mod resources;
+mod review;
 mod rpc;
 mod runtimes;
 mod safe_git;

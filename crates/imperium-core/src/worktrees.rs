@@ -7,23 +7,21 @@
 //! `.git/info/exclude` so it is never committed. Removing one keeps its branch.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use imperium_protocol::methods::SessionWorktree;
 
-/// Runs git in `dir`, returning its trimmed output or its error message.
+/// Runs git in `dir` with nothing from the repository's config able to run (hooks and
+/// fsmonitor off, no network; [`crate::safe_git`]), returning its trimmed output or its error
+/// message.
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .map_err(|error| format!("could not run git: {error}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
+    crate::safe_git::run(crate::safe_git::command(dir).args(args))
+        .map(|out| crate::safe_git::text(&out))
+}
+
+/// Refuses a repository whose own config names programs a checkout would run (filter drivers;
+/// the review's commit list): `worktree add` checks files out in the daemon.
+fn check_filters(repo: &Path) -> Result<(), String> {
+    crate::review::check_repository_config(repo, crate::review::Step::Checkout, "add the worktree")
 }
 
 /// The top folder of the repository `folder` is in, if it is in one.
@@ -156,7 +154,8 @@ fn make(repo: &Path, branch: &str, worktree_dir: Option<&Path>) -> Result<String
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let shown = plain(&path);
-    git(repo, &["worktree", "add", "-b", branch, &shown])?;
+    check_filters(repo)?;
+    git(repo, &["worktree", "add", "-b", branch, "--", &shown])?;
     Ok(shown)
 }
 
@@ -173,14 +172,59 @@ pub fn apply(folders: &[String], worktrees: &[SessionWorktree]) -> Vec<String> {
         .collect()
 }
 
+/// The linked worktree (from the repository's own list) that holds the recorded folder `path`.
+/// Refused when a link stands at the recorded folder or between it and that worktree's top:
+/// the folder would then lead into some other worktree.
+fn registered_root(repo: &Path, path: &Path) -> Result<String, String> {
+    let listed = git(repo, &["worktree", "list", "--porcelain"])?;
+    let wanted = path
+        .canonicalize()
+        .map_err(|error| format!("the worktree is gone: {error}"))?;
+    let (_, root, canonical_root) = listed
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        // The first is the main checkout, which is never removed.
+        .skip(1)
+        .filter_map(|tree| {
+            let canonical = Path::new(tree).canonicalize().ok()?;
+            wanted
+                .starts_with(&canonical)
+                .then(|| (canonical.components().count(), plain(&canonical), canonical))
+        })
+        .max()
+        .ok_or_else(|| "not a linked worktree of its repository".to_string())?;
+    let moved = "a link stands at the recorded worktree folder; remove the worktree by hand";
+    // The recorded folder itself, as its parent sees it.
+    let through_parent = match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => parent.canonicalize().ok().map(|p| p.join(name)),
+        _ => None,
+    };
+    if through_parent.as_ref() != Some(&wanted) {
+        return Err(moved.into());
+    }
+    // And each folder from the worktree's top down to it.
+    let depth = wanted
+        .strip_prefix(&canonical_root)
+        .map_or(0, |inside| inside.components().count());
+    if path.ancestors().take(depth + 1).any(|folder| {
+        std::fs::symlink_metadata(folder).is_ok_and(|meta| meta.file_type().is_symlink())
+    }) {
+        return Err(moved.into());
+    }
+    Ok(root)
+}
+
 /// Removes the worktrees `records` name (one per repository, whatever is in them), keeping
 /// their branches. Returns the folders removed and the failures.
 pub fn remove(records: &[SessionWorktree]) -> (Vec<String>, Vec<String>) {
     let mut removed: Vec<String> = Vec::new();
     let mut failed = Vec::new();
     for record in records {
-        let root = match git(Path::new(&record.path), &["rev-parse", "--show-toplevel"]) {
-            Ok(root) => plain(Path::new(&root)),
+        // The worktree is looked up in the repository's own list (never by asking git inside
+        // the session's folder, whose `.git` the session could have rewritten): the linked
+        // worktree that holds the recorded path.
+        let root = match registered_root(Path::new(&record.repo), Path::new(&record.path)) {
+            Ok(root) => root,
             Err(error) => {
                 failed.push(format!("{}: {error}", record.path));
                 continue;
@@ -194,7 +238,7 @@ pub fn remove(records: &[SessionWorktree]) -> (Vec<String>, Vec<String>) {
         }
         match git(
             Path::new(&record.repo),
-            &["worktree", "remove", "--force", &root],
+            &["worktree", "remove", "--force", "--", &root],
         ) {
             Ok(_) => removed.push(root),
             Err(error) => failed.push(format!("{root}: {error}")),
