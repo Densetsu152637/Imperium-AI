@@ -261,7 +261,7 @@ fn build(session_id: &str, title: &str, events: &[AgentEvent], subagents: bool) 
                 let node = agents.get_mut(task_id).unwrap();
                 node.ok = Some(*ok);
                 node.report = Some(report.clone());
-                node.usage = Some(usage.clone());
+                node.usage = Some(*usage);
                 node.cost_usd = *cost_usd;
             }
             SessionEvent::TaskResumed { task_id, text, .. } => {
