@@ -20,7 +20,7 @@ export function changeDetails(change: ConfigChange): string[] {
   }
   if (change.source) details.push(`From ${sourceLabel(change.source)}`);
   if (change.path) details.push(change.path);
-  if (change.disabled) details.push("Installed turned off, since it has hooks; turn it on in Connectors.");
+  if (change.disabled) details.push("Installed turned off, since it has hooks or MCP servers; turn it on in Connectors.");
   return details;
 }
 

@@ -6,9 +6,12 @@
 //! came from to `.imperium-source.json` inside it, and moves it into place. Nothing in it runs:
 //! no install script, no build, no hook. Git clones no submodules, skips Git LFS downloads, and
 //! refuses the `ext::` transport; copies skip symbolic links and `.git`. Skills and plugins are
-//! then listed for agents and load on first use; a plugin with hooks is added to
-//! `extensions.disabled_plugins` so its hooks do not run until the user turns it on, and a mod
-//! installed by an agent shows only after the user turns it on in the desktop app.
+//! then listed for agents and load on first use; a plugin with hooks or MCP servers is added to
+//! `extensions.disabled_plugins` so neither its hooks nor its servers (which `activate_plugin`
+//! would start unasked) run until the user turns it on in Connectors, and a mod installed by an
+//! agent shows only after the user turns it on in the desktop app. Whatever the user turns on,
+//! `${VAR}` in an agent-installed plugin's `.mcp.json` never reads the daemon's environment
+//! (see `imperium_extensions::plugins`).
 //!
 //! An uninstall moves the folder aside to `<data>/config-trash/`, so undoing it puts it back.
 
@@ -21,7 +24,7 @@ use imperium_protocol::methods::InstallSource;
 use crate::state::DaemonState;
 
 /// The provenance file written into each folder an agent installs.
-pub(crate) const SOURCE_FILE: &str = ".imperium-source.json";
+pub(crate) const SOURCE_FILE: &str = imperium_extensions::plugins::SOURCE_FILE;
 /// Longest a `git clone` may take.
 const GIT_TIMEOUT: Duration = Duration::from_secs(300);
 /// Largest extension copied into the config folder.
@@ -147,7 +150,7 @@ pub(crate) struct Installed {
     pub name: String,
     pub path: PathBuf,
     pub source: InstallSource,
-    /// A plugin with hooks, added to `extensions.disabled_plugins`.
+    /// A plugin with hooks or MCP servers, added to `extensions.disabled_plugins`.
     pub disabled: bool,
     /// What the agent and the user are told about it.
     pub notes: Vec<String>,
@@ -233,7 +236,7 @@ async fn install_in(
     let mut budget = MAX_BYTES;
     copy_tree(&root, &out, &mut budget)?;
     let fallback = default_name(&request.source, subdir);
-    let (name, mut notes, hooks) = inspect(request.kind, &out, &fallback)?;
+    let (name, mut notes, Runs { hooks, servers }) = inspect(request.kind, &out, &fallback)?;
     let dest = request.kind.dir(config_dir).join(&name);
     if dest.exists() {
         return Err(format!(
@@ -262,21 +265,28 @@ async fn install_in(
     }
     move_tree(&out, &dest)?;
     let mut disabled = false;
-    if request.kind == ExtensionKind::Plugin && hooks > 0 {
+    if request.kind == ExtensionKind::Plugin && (hooks > 0 || servers > 0) {
+        let has = match (hooks, servers) {
+            (0, servers) => format!("{servers} MCP server(s), which would run its code"),
+            (hooks, 0) => format!("{hooks} hook(s), which would run on every matching event"),
+            (hooks, servers) => {
+                format!("{hooks} hook(s) and {servers} MCP server(s), which would run its code")
+            }
+        };
         match set_plugin_disabled(state, &name, true) {
             Ok(()) => {
                 disabled = true;
                 notes.push(format!(
-                    "It has {hooks} hook(s), which would run on every matching event, so it is \
-                     installed turned off; the user can turn it on in Connectors."
+                    "It has {has}, so it is installed turned off and activate_plugin cannot \
+                     start it; only the user can turn it on, in Connectors."
                 ));
             }
             Err(error) => {
-                // Without the setting its hooks would run unasked: take it out again.
+                // Without the setting its hooks or servers could run unasked: take it out again.
                 remove_tree(&dest);
                 return Err(format!(
-                    "the plugin has hooks and could not be turned off ({error}), so it was not \
-                     installed"
+                    "the plugin has hooks or servers and could not be turned off ({error}), so \
+                     it was not installed"
                 ));
             }
         }
@@ -285,9 +295,8 @@ async fn install_in(
         ExtensionKind::Skill => notes.push(format!(
             "Agents see it in the skill index of new sessions and load it with load_skill {name}."
         )),
-        ExtensionKind::Plugin if !disabled => notes.push(
-            "New sessions list it; its servers start only when an agent activates it.".into(),
-        ),
+        ExtensionKind::Plugin if !disabled => notes
+            .push("New sessions list its skills and commands; it has no hooks or servers.".into()),
         ExtensionKind::Mod => {
             notes.push("Its panels show only after the user turns it on in Settings → Mods.".into())
         }
@@ -315,13 +324,20 @@ fn check_subdir(subdir: &str) -> Result<String, String> {
     Ok(subdir.replace('\\', "/").trim_end_matches('/').to_string())
 }
 
+/// What a plugin would run once enabled: the hooks and MCP servers it declares.
+#[derive(Debug, Default, Clone, Copy)]
+struct Runs {
+    hooks: usize,
+    servers: usize,
+}
+
 /// Checks that `dir` (a copy of `original`) is a `kind`, and returns its name, notes for the
-/// user, and its hook count (plugins).
+/// user, and what a plugin would run.
 fn inspect(
     kind: ExtensionKind,
     dir: &Path,
     fallback: &str,
-) -> Result<(String, Vec<String>, usize), String> {
+) -> Result<(String, Vec<String>, Runs), String> {
     match kind {
         ExtensionKind::Skill => {
             let text = std::fs::read_to_string(dir.join("SKILL.md")).map_err(
@@ -338,7 +354,7 @@ fn inspect(
                 .get("name")
                 .cloned()
                 .unwrap_or_else(|| fallback.to_string());
-            Ok((check_name(&name)?, Vec::new(), 0))
+            Ok((check_name(&name)?, Vec::new(), Runs::default()))
         }
         ExtensionKind::Plugin => {
             if !dir.join(".claude-plugin").join("plugin.json").is_file() {
@@ -360,7 +376,14 @@ fn inspect(
             if !problems.is_empty() {
                 notes.push(format!("Problems: {}", problems.join("; ")));
             }
-            Ok((check_name(&plugin.name)?, notes, plugin.hooks.len()))
+            Ok((
+                check_name(&plugin.name)?,
+                notes,
+                Runs {
+                    hooks: plugin.hooks.len(),
+                    servers: plugin.servers.len(),
+                },
+            ))
         }
         ExtensionKind::Mod => {
             if !dir.join("mod.json").is_file() {
@@ -369,7 +392,7 @@ fn inspect(
                 );
             }
             let info = crate::mods::load(dir, false)?;
-            Ok((check_name(&info.id)?, Vec::new(), 0))
+            Ok((check_name(&info.id)?, Vec::new(), Runs::default()))
         }
     }
 }

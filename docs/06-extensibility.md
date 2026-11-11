@@ -36,7 +36,11 @@ permissions, UI mod entry points, and router hints.
 - **Plugins:** folders with `.claude-plugin/plugin.json` in `<config>/plugins/` or
   `extensions.plugin_dirs` contribute skills, commands, `hooks/hooks.json`, and `.mcp.json`
   servers (named `<plugin>_<server>`), with `${CLAUDE_PLUGIN_ROOT}` expanded. A plugin's
-  servers start when an agent activates it (below). `agents/` and `imperium-plugin.toml` are
+  servers start when an agent activates it (below). Other `${VAR}` and `${VAR:-default}` in
+  `.mcp.json` read the daemon's environment, except in a plugin an agent installed (its folder
+  has `.imperium-source.json`, [below](#agents-manage-the-app-config-implemented)): there only
+  `${CLAUDE_PLUGIN_ROOT}` expands, so downloaded content cannot put the daemon's secrets into a
+  server's command, arguments, headers, or URL. `agents/` and `imperium-plugin.toml` are
   reported as not yet supported.
 - **Hooks:** see below. Problems (a skill without a description, an unsupported hook event)
   are shown as session notices.
@@ -108,12 +112,20 @@ copied. Either way `.git` and symbolic links are left out, the copy is limited t
 result must be the kind asked for (`SKILL.md` with a description, `.claude-plugin/plugin.json`
 that loads, or a valid `mod.json`). It lands in `<config>/skills/<name>`, `<config>/plugins/<name>`
 or `<config>/mods/<id>`, never over an existing one, and no install script, build, or hook runs.
-After that, the usual rules apply: skills and plugins are listed in the index of new sessions
-and load when an agent first uses them ([lazy loading](#lazy-skills-and-plugins-implemented)); a
-plugin with hooks is added to `extensions.disabled_plugins`, since hooks are active from a
-session's start, and stays off until the user turns it on in Connectors; a mod an agent
+After that, the usual rules apply: skills are listed in the index of new sessions and load when
+an agent first uses them ([lazy loading](#lazy-skills-and-plugins-implemented)); a mod an agent
 installed is opt-in in Settings → Mods, like the bundled ones. Imperium has no extension
 registry yet, so a bare name is refused.
+
+**A plugin with hooks or MCP servers installs turned off.** Its hooks are active from a session's
+start, and an agent's `activate_plugin` would start its servers: downloaded code running as the
+user with no approval, which is the same as the install running it. So the install adds the
+plugin to `extensions.disabled_plugins` and tells the agent so. A disabled plugin is not offered
+to sessions, `activate_plugin` cannot start it, and nothing in it runs until the user turns it on
+in Connectors, where its source (URL, commit, and the installing session) is shown. A plugin
+with neither (skills and commands only) is listed at once. Agent-installed plugins also never
+read the daemon's environment through `${VAR}` in `.mcp.json` (see [Compatibility](#compatibility-with-existing-formats)),
+even after the user turns them on.
 
 **Provenance.** Each install writes `.imperium-source.json` into its folder: `kind` (`git` or
 `path`), `location` (the URL or folder), `revision` (the commit installed) and `requested` (the
