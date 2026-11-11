@@ -306,6 +306,11 @@ pub enum SessionEvent {
         #[ts(type = "number")]
         request_id: u64,
     },
+    /// The agent started summarising older messages to fit `model`'s context window; the
+    /// agent waits until `context_compacted` (or, on failure, the turn's failure or a notice).
+    /// For the root this can come before the turn's `turn_started`, since a message is fitted
+    /// before it is added.
+    CompactionStarted { model: String },
 }
 
 /// A message waiting for an agent.

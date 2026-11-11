@@ -1220,6 +1220,62 @@ button.danger:hover:not(:disabled) {
   color: var(--muted);
 }
 
+/* A message sent from this window that has not started its turn yet. */
+.conversation > .message.user.pending {
+  opacity: 0.7;
+}
+
+/* What the core is doing before the agent's first output (components/WaitLine.tsx). */
+.wait-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  max-width: var(--prose-max);
+  margin: 0 auto;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.wait-line.compact {
+  max-width: none;
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+}
+
+.wait-line .wait-text {
+  color: var(--text);
+}
+
+.wait-line .wait-elapsed {
+  font-variant-numeric: tabular-nums;
+}
+
+.wait-line .wait-spinner {
+  width: 0.95rem;
+  height: 0.95rem;
+  color: var(--accent);
+  animation: spin 1.2s linear infinite;
+}
+
+.reduce-motion .wait-line .wait-spinner {
+  animation: none;
+}
+
+.wait-line button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.5rem;
+}
+
+.wait-line button svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
 .turn-summary {
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;

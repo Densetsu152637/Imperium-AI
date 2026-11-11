@@ -21,6 +21,7 @@ import type {
   QueuedMessage,
   ResumePolicy,
   RuntimeInfo,
+  RuntimeInstallJob,
   SendMode,
   SessionControlResult,
 } from "@imperium/protocol";
@@ -33,6 +34,7 @@ import {
   describeUse,
   formatCost,
   formatCount,
+  formatResumeTime,
   formatTokens,
   sessionTitle,
   totals,
@@ -44,6 +46,8 @@ import { describeRule } from "../components/PermissionsEditor";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { ToolState } from "../components/ToolState";
+import { WaitLine } from "../components/WaitLine";
+import { describeWait } from "../waits";
 import type { DaemonClient } from "../daemon/client";
 import { ContextBreakdownView } from "./ContextBreakdown";
 import { ModelSuggestionCard } from "./ModelSuggestionCard";
@@ -88,6 +92,10 @@ type Props = {
   budgets?: BudgetStatus[];
   /** Scrolls to the entry holding this history event (a session search hit); `nonce` repeats it. */
   focusEvent?: { index: number; nonce: number } | null;
+  /** llama.cpp being installed, named in the status line while a model waits to load. */
+  runtimeInstall?: RuntimeInstallJob | null;
+  /** Answers the status line's budget question: send the waiting message anyway, or drop it. */
+  onBudget?: (confirm: boolean) => void;
 };
 
 /** What the footer has opened above the composer. */
@@ -113,6 +121,8 @@ export function SessionPanel({
   onUnarchive,
   budgets = [],
   focusEvent = null,
+  runtimeInstall = null,
+  onBudget,
 }: Props) {
   const settings = useSettings();
   const [draft, setDraft] = useState("");
@@ -166,6 +176,20 @@ export function SessionPanel({
   const stopped = isStopped(session);
   const runningTasks = Object.values(session.tasks).filter((task) => task.status === "running").length;
   const stoppable = !archived && canStop(session, runningTasks);
+  // What the root agent waits on before its first output; the stopped banner says when it is
+  // stopped (only a budget question still shows then, since it is about a message not yet sent).
+  const described = archived
+    ? null
+    : describeWait({
+        wait: session.waits[ROOT],
+        sent: session.sent,
+        pause:
+          session.pause && !stopped
+            ? { cause: session.pause.cause, until: session.pause.untilMs > 0 ? formatResumeTime(session.pause.untilMs) : null }
+            : null,
+        install: runtimeInstall,
+      });
+  const wait = stopped && described?.action !== "budget" ? null : described;
   // Ctrl+. (Cmd+. on macOS) stops a running session or resumes a stopped one.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -234,7 +258,18 @@ export function SessionPanel({
             />
           ),
         )}
-        {session.busy && <p className="working">Working…</p>}
+        {session.sent && <div className="message user prose pending">{session.sent.text}</div>}
+        {wait ? (
+          <WaitLine
+            view={wait}
+            onStop={stoppable || session.sent ? () => onStop(true) : undefined}
+            onResume={() => onStop(false)}
+            onResumeNow={onResumeNow}
+            onBudget={onBudget}
+          />
+        ) : (
+          session.busy && <p className="working">Working…</p>
+        )}
         <div ref={end} />
       </div>
 

@@ -30,6 +30,7 @@ import type {
   SessionEventParams,
   DownloadJob,
   LocalModelListResult,
+  RuntimeInstallJob,
   ModListResult,
   ModelListResult,
   SessionListResult,
@@ -70,9 +71,11 @@ import {
   DEFAULT_RESUME_POLICY,
   markAnswered,
   markQuestionsAnswered,
+  markSent,
   newSession,
   sessionTitle,
   snapshotSessions,
+  updateSent,
   type SessionState,
 } from "./sessions";
 import {
@@ -181,6 +184,8 @@ export function App() {
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
   const [mods, setMods] = useState<ModListResult | null>(null);
+  /** llama.cpp being installed (`runtime.install_progress`), named in a waiting agent's status line. */
+  const [runtimeInstall, setRuntimeInstall] = useState<RuntimeInstallJob | null>(null);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   /** Where each budget stands (`budgets.get`, then `budgets.changed`), for the session's indicator. */
   const [budgets, setBudgets] = useState<BudgetsResult | null>(null);
@@ -304,9 +309,13 @@ export function App() {
             });
             setSessions((all) => ({
               ...all,
-              [summary.session_id]: history.reduce(applyEvent, newSession(summary, Date.now())),
+              [summary.session_id]: history.reduce((state, event) => applyEvent(state, event), newSession(summary, Date.now())),
             }));
           }, 500);
+          return;
+        }
+        if (notification.method === "runtime.install_progress") {
+          setRuntimeInstall(notification.params as RuntimeInstallJob);
           return;
         }
         if (notification.method === "models.download_progress") {
@@ -340,7 +349,7 @@ export function App() {
             session_id: summary.session_id,
           });
           // Restored sessions keep the daemon's order (later ones first) until they change here.
-          return [summary.session_id, history.reduce(applyEvent, newSession(summary, index))] as const;
+          return [summary.session_id, history.reduce((state, event) => applyEvent(state, event), newSession(summary, index))] as const;
         }),
       );
       known.current = new Set(restored.map(([id]) => id));
@@ -551,21 +560,49 @@ export function App() {
     void sendWithBudget(client, params);
   };
 
+  /** Changes one session's state here, if it is listed. */
+  const changeSession = (id: string, change: (session: SessionState) => SessionState) =>
+    setSessions((all) => (all[id] ? { ...all, [id]: change(all[id]) } : all));
+
   /**
-   * Sends a message; when a used-up budget asks first, asks the user and sends it again confirmed,
-   * and when one blocks, says so.
+   * Sends a message. One that starts a turn gets a status line under it until the agent's
+   * first output (waits.ts); when a used-up budget asks first, that line asks instead and
+   * [`answerBudget`] sends it again confirmed or drops it. A blocking budget is reported.
    */
   const sendWithBudget = async (daemon: DaemonClient, params: SessionSendParams) => {
+    const id = params.session_id;
+    const current = sessionsRef.current[id];
+    // A message for a busy session waits in the queue, which shows it; a new session is idle.
+    const starts = params.mode !== "steer" && (!current || !current.busy);
+    if (starts) changeSession(id, (session) => markSent(session, params.text));
     try {
       await daemon.call("session.send", params);
     } catch (error) {
       const stop = budgetStop(error);
-      if (stop?.action === "ask" && window.confirm(stop.message)) {
-        await daemon.call("session.send", { ...params, confirm_budget: true }).catch(report);
+      if (stop?.action === "ask") {
+        changeSession(id, (session) => updateSent(session.sent ? session : markSent(session, params.text), stop.message));
         return;
       }
+      changeSession(id, (session) => updateSent(session, undefined));
       if (!stop || stop.action === "block") report(error);
     }
+  };
+
+  /** Answers the selected session's budget question: send the waiting message anyway, or drop it. */
+  const answerBudget = (confirm: boolean) => {
+    const id = selected;
+    const sent = id ? sessions[id]?.sent : null;
+    if (!client || !id || !sent) return;
+    if (!confirm) {
+      changeSession(id, (session) => updateSent(session, undefined));
+      return;
+    }
+    changeSession(id, (session) => updateSent(session, null));
+    const params: SessionSendParams = { session_id: id, text: sent.text, mode: "queue", confirm_budget: true };
+    client.call("session.send", params).catch((error: unknown) => {
+      changeSession(id, (session) => updateSent(session, undefined));
+      report(error);
+    });
   };
 
   /**
@@ -817,6 +854,8 @@ export function App() {
         onUnarchive={() => setSessionArchived(session.summary.session_id, false)}
         budgets={budgets?.status ?? []}
         focusEvent={searchFocus?.sessionId === session.summary.session_id ? searchFocus : null}
+        runtimeInstall={runtimeInstall}
+        onBudget={answerBudget}
       />
     ) : (
       <NewSessionPanel
@@ -839,6 +878,8 @@ export function App() {
           session={session}
           onResume={client && selected ? resumeAgent : undefined}
           onCancel={client && selected ? cancelAgent : undefined}
+          onStop={client && selected ? () => stopSession(true) : undefined}
+          runtimeInstall={runtimeInstall}
         /> },
     { id: "models", title: "Models", body: <ModelsPanel table={modelTable} onConfigure={() => setModelDialog({ tab: "table" })} /> },
     {

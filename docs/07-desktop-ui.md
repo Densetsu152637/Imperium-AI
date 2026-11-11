@@ -50,6 +50,39 @@ continued the same way. A subagent paused by a steering message
 ([below](#environments-and-sessions-implemented)) shows a `paused` badge, its progress as its
 report, and **Resume** (continues from its saved conversation), **Re-brief…** (the follow-up
 box), and **Cancel** (`session.agent_cancel`) until the root agent or the user decides.
+A running subagent that has not produced output yet shows the same status line as the
+session ([waiting status line](#waiting-status-line-implemented)) under its summary, with
+**Stop** (stops the session's work; a running subagent cannot be cancelled on its own).
+
+### Waiting status line (implemented)
+
+After a message is sent, and before the agent's first output (a streamed token, a tool call,
+or the end of its turn), the core may be busy with work that holds the turn up. A status line
+under the sent message says what, with an elapsed timer and the action that ends or answers the
+wait; it clears on the first output. A message this window sent shows at once, dimmed, until
+its `turn_started` adds it to the transcript (or `message_queued` puts it in the queue, or the
+session turns out to need a model). The line reads, from the session's events
+(`apps/desktop/src/waits.ts`):
+
+- `local_model_waiting` by reason: *Loading model…*, *Growing context pool…*, *Waiting for room
+  in the context cache…*, *Waiting for a free slot…* (queued behind other agents' calls on
+  the model), *Waiting for another model…*, *Making room on the GPU…*, *Saving context…*,
+  *Restoring context…*; a reason a newer daemon adds is worded from its name. While a model
+  waits to load and llama.cpp is being installed (`runtime.install_progress`) it reads
+  *Installing llama.cpp (42%)…*. These offer **Stop** (`session.control` `stop`).
+- `compaction_started` until `context_compacted` (or a notice or the turn's failure):
+  *Compacting conversation…*, with **Stop**.
+- An unanswered approval or questions: *Waiting for your approval…* / *Waiting for your
+  answers…* (the card above has the actions).
+- A pause: *Usage limit reached; waiting until 14:00*, *Paused while the machine is busy…*, or
+  *Waiting for a quiet machine…*, with **Resume now**. A stopped session has its own banner.
+- A used-up budget that asks first (`-32008` with `ask`): *A budget is used up: …* with **Send
+  anyway** (sends again with `confirm_budget`) and **Don't send**, in place of the native
+  confirmation dialog this used before.
+- Sent, with nothing reported yet: *Starting…*. Once the turn runs with no known wait, the line
+  is the usual *Working…*.
+
+A message sent while the agent is busy waits in the queue, which already shows it.
 
 ### Resources panel (implemented)
 

@@ -8,10 +8,14 @@ import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import type { RuntimeInstallJob } from "@imperium/protocol";
+
 import { RowMenu } from "../components/RowMenu";
 import { ToolState } from "../components/ToolState";
+import { WaitLine } from "../components/WaitLine";
 import { formatCost, type SessionState, type TaskState } from "../sessions";
 import { isStopped, shownTaskStatus } from "../stop";
+import { describeWait, type WaitView } from "../waits";
 
 /** What a paused subagent is told when the user resumes it without a follow-up of their own. */
 const RESUME_TEXT = "Continue where you left off.";
@@ -21,9 +25,17 @@ type Actions = {
   onResume?: (taskId: string, text: string) => Promise<unknown>;
   /** Ends a paused subagent (`session.agent_cancel`). */
   onCancel?: (taskId: string) => Promise<unknown>;
+  /** Stops the session's work, from a waiting subagent's status line. */
+  onStop?: () => void;
 };
 
-export function AgentsPanel({ session, onResume, onCancel }: { session: SessionState | null } & Actions) {
+export function AgentsPanel({
+  session,
+  onResume,
+  onCancel,
+  onStop,
+  runtimeInstall = null,
+}: { session: SessionState | null; runtimeInstall?: RuntimeInstallJob | null } & Actions) {
   const tasks = session ? Object.values(session.tasks) : [];
   if (tasks.length === 0) {
     return <p className="empty">Subagents appear here when the agent delegates work.</p>;
@@ -38,6 +50,12 @@ export function AgentsPanel({ session, onResume, onCancel }: { session: SessionS
           key={task.taskId}
           task={task}
           stopped={stopped}
+          wait={
+            task.status === "running" && !stopped && !archived
+              ? describeWait({ wait: session?.waits[task.taskId], install: runtimeInstall })
+              : null
+          }
+          onStop={archived ? undefined : onStop}
           onResume={archived ? undefined : onResume}
           onCancel={archived ? undefined : onCancel}
         />
@@ -46,7 +64,14 @@ export function AgentsPanel({ session, onResume, onCancel }: { session: SessionS
   );
 }
 
-function TaskRow({ task, stopped, onResume, onCancel }: { task: TaskState; stopped: boolean } & Actions) {
+function TaskRow({
+  task,
+  stopped,
+  wait,
+  onResume,
+  onCancel,
+  onStop,
+}: { task: TaskState; stopped: boolean; wait: WaitView | null } & Actions) {
   const [composing, setComposing] = useState(false);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -102,6 +127,7 @@ function TaskRow({ task, stopped, onResume, onCancel }: { task: TaskState; stopp
           </span>
           <span className="brief">{task.brief}</span>
         </summary>
+        {wait && <WaitLine view={wait} compact onStop={onStop} />}
         <ul className="task-activity">
           {task.entries
             .filter((entry) => entry.kind === "tool" || entry.kind === "user")

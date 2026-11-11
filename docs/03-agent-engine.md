@@ -379,7 +379,11 @@ in the model folders (`-32004` otherwise, or when no local runtime is set up).
   session stays on the selected model and usable: sending again retries, and picking another
   model (going back to the one switched from leaves nothing to fit) makes the next turn use it.
 - **Events and results:** selecting emits `model_changed` (`from`, `to`, `compacted` false); the
-  session summary's `model` follows. Compaction at the first turn emits `context_compacted`
+  session summary's `model` follows. Every compaction emits `compaction_started` (`model`)
+  when the summarising begins, so clients can say the agent waits on it; for the root it comes
+  before the turn's `turn_started`, since the message is fitted before it is added. A
+  compaction that fails ends with the turn's failure or a notice instead of
+  `context_compacted`. Compaction at the first turn emits `context_compacted`
   (the target, tokens before and after, messages summarised, budget, window, counting method,
   and the summarising model). `session.control` returns `model` and `context` (`tokens`,
   `context_window`, `budget`, `method`, and for `compact`, `compaction` with the token counts
