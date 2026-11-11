@@ -44,6 +44,7 @@ use crate::suggestions::{SuggestTool, Suggestions};
 
 mod agent_config;
 mod archive;
+mod branch;
 mod model_awareness;
 mod session_search;
 mod titles;
@@ -104,6 +105,10 @@ struct Placement {
     /// A project agent: like an environment's persistent agent, it runs while the daemon does
     /// and is never archived.
     project_agent: bool,
+    /// Branched from another session (`session.branch`); recorded in the meta file.
+    branched_from: Option<imperium_protocol::methods::BranchOrigin>,
+    /// The comparison a branch belongs to (`session.compare`).
+    comparison_id: Option<String>,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -844,7 +849,7 @@ impl DaemonState {
             let (Some(meta), true) = (meta, recent) else {
                 continue;
             };
-            match self.resume_from_meta(&id, &meta, &journal) {
+            match self.resume_from_meta(&id, &meta, &journal, false) {
                 Ok(_) => resumed += 1,
                 Err(error) => tracing::warn!(session = %id, %error, "could not resume the session"),
             }
@@ -858,6 +863,7 @@ impl DaemonState {
         id: &str,
         meta: &serde_json::Value,
         journal: &Path,
+        worktree: bool,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
         let id = id.to_string();
         {
@@ -870,6 +876,9 @@ impl DaemonState {
                 resume_id: Some(id.clone()),
                 background: meta["background"].as_bool().unwrap_or(false),
                 run_now: meta["run_now"].as_bool().unwrap_or(false),
+                // A branch asking for a worktree of its own gets a new one.
+                worktree,
+                id: worktree.then(|| id.clone()),
                 // A session that never had a model keeps waiting for one.
                 may_wait_for_model: model.is_none(),
                 worktrees: serde_json::from_value(meta["worktrees"].clone()).unwrap_or_default(),
@@ -1290,6 +1299,8 @@ impl DaemonState {
             title: None,
             title_by_user: false,
             project_agent: options.launcher.is_some(),
+            branched_from: None,
+            comparison_id: None,
         };
         // A remote runtime's folders are not on this machine: project files (instructions,
         // skills, project memory) are not read from them.
@@ -1355,6 +1366,8 @@ impl DaemonState {
                 .map(str::to_string);
             placement.title_by_user =
                 placement.title.is_some() && meta["title_by_user"].as_bool() == Some(true);
+            placement.branched_from = serde_json::from_value(meta["branched_from"].clone()).ok();
+            placement.comparison_id = meta["comparison_id"].as_str().map(str::to_string);
         }
         // Tool providers in the order their tools are offered (MCP tools always come first).
         let mut tools: Vec<Arc<dyn ToolProvider>> = Vec::new();
@@ -1469,6 +1482,8 @@ impl DaemonState {
                 "pinned": placement.pinned,
                 "title": placement.title,
                 "title_by_user": placement.title_by_user,
+                "branched_from": placement.branched_from,
+                "comparison_id": placement.comparison_id,
                 "effort": effort.as_str(),
             });
             let path = self.meta_path(&id);
@@ -1769,6 +1784,8 @@ impl DaemonState {
             persistent: placement.persistent,
             worktrees: placement.worktrees,
             pinned: placement.pinned,
+            branched_from: placement.branched_from,
+            comparison_id: placement.comparison_id,
             created_at: created_at(&self.journal_path(session.id())),
             title: placement
                 .title
@@ -2028,7 +2045,7 @@ impl DaemonState {
         }
         std::fs::write(self.meta_path(&new_id), meta.to_string())
             .map_err(|error| error.to_string())?;
-        if let Err(error) = self.resume_from_meta(&new_id, &meta, &new_journal) {
+        if let Err(error) = self.resume_from_meta(&new_id, &meta, &new_journal, false) {
             let _ = std::fs::remove_file(self.meta_path(&new_id));
             return Err(error.to_string());
         }
@@ -2115,6 +2132,8 @@ fn summary(session: &Session) -> SessionSummary {
         archived: false,
         archived_at: None,
         created_at: None,
+        branched_from: None,
+        comparison_id: None,
     }
 }
 

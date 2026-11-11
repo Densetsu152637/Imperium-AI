@@ -847,7 +847,13 @@ async fn run(
                 Some(Command::Compact { reply }) => {
                     let result = root.compact_now().await;
                     if result.is_ok() {
-                        save_messages(&shared, &messages_path, root.messages());
+                        save_messages(
+                            &shared,
+                            &config.journal_path,
+                            &messages_path,
+                            root.messages(),
+                            true,
+                        );
                     }
                     let _ = reply.send(result);
                     continue;
@@ -870,7 +876,13 @@ async fn run(
             // a local model) and compact it if it does not fit, before the message is added.
             match root.settle_model().await {
                 Ok(Some(fit)) if fit.compaction.is_some() => {
-                    save_messages(&shared, &messages_path, root.messages());
+                    save_messages(
+                        &shared,
+                        &config.journal_path,
+                        &messages_path,
+                        root.messages(),
+                        true,
+                    );
                 }
                 Ok(_) => {}
                 Err(error) => {
@@ -894,7 +906,13 @@ async fn run(
             // Over the budget, older turns are summarised before the new message is added.
             match root.fit_current().await {
                 Ok(fit) if fit.compaction.is_some() => {
-                    save_messages(&shared, &messages_path, root.messages());
+                    save_messages(
+                        &shared,
+                        &config.journal_path,
+                        &messages_path,
+                        root.messages(),
+                        true,
+                    );
                 }
                 Ok(_) => {}
                 Err(error) => shared.emitter.emit(
@@ -945,7 +963,13 @@ async fn run(
             }
             handles_open
         };
-        save_messages(&shared, &messages_path, root.messages());
+        save_messages(
+            &shared,
+            &config.journal_path,
+            &messages_path,
+            root.messages(),
+            false,
+        );
         if let Some(checkpoints) = checkpoints.clone() {
             let _ = tokio::task::spawn_blocking(move || checkpoints.after_turn()).await;
         }
@@ -1025,6 +1049,11 @@ pub(crate) struct Emitter {
 }
 
 impl Emitter {
+    /// How many events the session has recorded.
+    pub fn event_count(&self) -> usize {
+        self.history.lock().len()
+    }
+
     /// Records and broadcasts an event, followed by a status change it causes.
     pub fn emit(&self, agent_id: &str, event: SessionEvent) {
         let event = AgentEvent {
@@ -1258,14 +1287,24 @@ impl Shared {
 /// Keeps the root conversation so the session can continue after a daemon restart.
 fn save_messages(
     shared: &Shared,
+    journal: &std::path::Path,
     path: &std::path::Path,
     messages: &[imperium_models::ChatMessage],
+    compacted: bool,
 ) {
     shared.agents.save_conversation(ROOT_AGENT, messages);
     match serde_json::to_vec(messages) {
         Ok(bytes) => {
             if let Err(error) = std::fs::write(path, bytes) {
                 tracing::warn!(path = %path.display(), %error, "could not save the conversation");
+            } else {
+                // Where the conversation stood, so a branch can start from this point.
+                crate::branch::mark_turn(
+                    journal,
+                    shared.emitter.event_count(),
+                    messages.len(),
+                    compacted,
+                );
             }
         }
         Err(error) => tracing::warn!(%error, "could not serialise the conversation"),

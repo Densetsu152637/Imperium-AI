@@ -74,6 +74,10 @@ use imperium_protocol::methods::{
 };
 use imperium_protocol::methods::{SessionAttach, SessionAttachParams, VoiceTranscribe};
 use imperium_protocol::methods::{
+    SessionBranch, SessionBranchParams, SessionCompare, SessionCompareParams, SessionComparePick,
+    SessionComparePickParams,
+};
+use imperium_protocol::methods::{
     SessionCheckpoints, SessionCheckpointsParams, SessionRewind, SessionRewindParams,
 };
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
@@ -678,6 +682,34 @@ impl Connection {
                     async move { blocking(move || crate::checkpoints::rewind(&state, &params)).await }
                 },
             ),
+            SessionBranch::NAME => call_later::<SessionBranch, _>(
+                request.params,
+                &mut later,
+                |params: SessionBranchParams| {
+                    let state = Arc::clone(&self.state);
+                    async move { blocking(move || state.branch(&params)).await }
+                },
+            ),
+            SessionCompare::NAME => call_later::<SessionCompare, _>(
+                request.params,
+                &mut later,
+                |params: SessionCompareParams| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        state
+                            .compare(params)
+                            .await
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                    }
+                },
+            ),
+            SessionComparePick::NAME => {
+                call::<SessionComparePick>(request.params, |params: SessionComparePickParams| {
+                    self.state
+                        .compare_pick(&params)
+                        .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                })
+            }
             SessionAgentCancel::NAME => {
                 call::<SessionAgentCancel>(request.params, |params: SessionAgentCancelParams| {
                     self.session(&params.session_id)?
