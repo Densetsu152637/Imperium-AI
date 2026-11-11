@@ -15,6 +15,7 @@ use imperium_api::{Availability, LocalModels};
 use imperium_config::LlamaCppSettings;
 use imperium_local::gguf::GgufInfo;
 use imperium_local::hardware::{Gpu, Hardware};
+use imperium_local::residency::{Move, Reason};
 use imperium_local::scan::{Format, LocalModel};
 use imperium_local::supervisor::{
     LaunchError, LaunchFuture, LaunchSpec, Launcher, Runtimes, Server, SlotFuture, SlotTransfer,
@@ -348,6 +349,38 @@ fn record(supervisor: &Supervisor) -> Arc<Mutex<Vec<(Instant, SwapEvent)>>> {
         }
     });
     events
+}
+
+/// Collects every move the supervisor reports.
+fn record_moves(supervisor: &Supervisor) -> Arc<Mutex<Vec<Move>>> {
+    let moves = Arc::new(Mutex::new(Vec::new()));
+    let mut receiver = supervisor.moves();
+    let sink = Arc::clone(&moves);
+    tokio::spawn(async move {
+        while let Ok(moved) = receiver.recv().await {
+            lock(&sink).push(moved);
+        }
+    });
+    moves
+}
+
+/// Waits until a move `action` (`load`, `unload`, `save_slot`, ...) of `model` was reported, and
+/// returns its reason.
+async fn reason_of(moves: &Mutex<Vec<Move>>, action: &str, model: &str) -> Reason {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let found = lock(moves)
+                .iter()
+                .find(|m| m.action.name() == action && m.action.model() == Some(model))
+                .map(|m| m.reason);
+            if let Some(reason) = found {
+                return reason;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no {action} of {model} in {:?}", lock(moves)))
 }
 
 fn swaps(events: &[(Instant, SwapEvent)], direction: SwapDirection) -> Vec<String> {
@@ -968,6 +1001,7 @@ async fn a_waiting_root_gives_its_kv_cells_to_its_subagents_on_the_same_model() 
         slots: Some(4),
         ..quick()
     });
+    let moves = record_moves(&supervisor);
     let root = "s/root";
     let turn = supervisor.attach("emperor", root);
     let (_, slot) = call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
@@ -1010,6 +1044,16 @@ async fn a_waiting_root_gives_its_kv_cells_to_its_subagents_on_the_same_model() 
     );
     assert!(!supervisor.suspended(root));
     assert_eq!(log.files(), Vec::<String>::new());
+    // Each move says why: the root yielded its cells, and its call brought them back.
+    assert_eq!(
+        reason_of(&moves, "save_slot", "emperor").await,
+        Reason::Yield
+    );
+    assert_eq!(
+        reason_of(&moves, "restore_slot", "emperor").await,
+        Reason::Call
+    );
+    assert_eq!(reason_of(&moves, "load", "emperor").await, Reason::Call);
     drop(turn);
 }
 
@@ -1018,6 +1062,7 @@ async fn a_subagent_swaps_its_waiting_root_out_rather_than_run_on_the_cpu() {
     // With RAM to spare the worker could run beside the emperor, part of it on the CPU; the
     // root on the emperor only waits for it, so the emperor gives way.
     let (supervisor, log) = start_with_ram(quick(), 32);
+    let moves = record_moves(&supervisor);
     let root = "s/root";
     let _turn = supervisor.attach("emperor", root);
     call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
@@ -1031,18 +1076,48 @@ async fn a_subagent_swaps_its_waiting_root_out_rather_than_run_on_the_cpu() {
         log.steps()[1..4],
         ["save emperor 0", "stop emperor", "launch worker"]
     );
+    // The waiting root yielded the GPU to its subagent: the subagent gets more of its layers
+    // on the GPU without it, and the root's slot was saved for the same reason.
+    let yielded = reason_of(&moves, "unload", "emperor").await;
+    assert_eq!(yielded, Reason::MoreGpu);
+    assert_eq!(reason_of(&moves, "save_slot", "emperor").await, yielded);
     drop(lease);
-    // The root comes back with its prompt restored, ahead of the idle subagent's model.
+    // A steering message wakes the root: its model is loaded again and its prompt restored
+    // ahead of its call, ahead of the idle subagent's model, as a resume.
     drop(waiting);
-    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
+    LocalModels::resume(supervisor.as_ref(), "emperor", root)
+        .await
+        .unwrap();
     assert!(log.steps().contains(&"restore emperor 0".to_string()));
     assert_eq!(supervisor.loaded()[0].model_id, "emperor");
+    assert_eq!(reason_of(&moves, "load", "emperor").await, Reason::Call);
+    // The recorder runs in a task of its own.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let reloads: Vec<Reason> = lock(&moves)
+        .iter()
+        .filter(|m| m.action.model() == Some("emperor") && m.action.name() != "unload")
+        .map(|m| m.reason)
+        .collect();
+    assert!(
+        reloads.ends_with(&[Reason::Resume, Reason::Resume]),
+        "{reloads:?}"
+    );
+    assert_eq!(
+        lock(&moves)
+            .iter()
+            .find(|m| m.action.name() == "unload" && m.action.model() == Some("worker"))
+            .map(|m| m.reason),
+        Some(Reason::MoreGpu),
+        "the idle subagent's model gives way to the resuming root"
+    );
+    call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
 }
 
 #[tokio::test]
 async fn a_call_runs_on_the_cpu_only_beside_a_generating_agent_and_moves_to_the_gpu_after() {
     let (supervisor, _log) = start_with_ram(quick(), 32);
     let mut swaps = supervisor.swap_events();
+    let moves = record_moves(&supervisor);
     // Another session generates on the emperor: the worker may run beside it, partly on the
     // CPU, rather than wait.
     let generating = supervisor.acquire("emperor", "a/root").await.unwrap();
@@ -1078,11 +1153,13 @@ async fn a_call_runs_on_the_cpu_only_beside_a_generating_agent_and_moves_to_the_
         "{reasons:?}"
     );
     drop(lease);
+    assert_eq!(reason_of(&moves, "unload", "worker").await, Reason::Promote);
 }
 
 #[tokio::test]
 async fn the_critic_gets_the_gpu_while_its_session_waits_on_it_and_nobody_else_works() {
     let (supervisor, log) = start_with_ram(quick(), 32);
+    let moves = record_moves(&supervisor);
     supervisor.set_cpu_pinned(HashMap::from([(
         "helper".to_string(),
         imperium_local::supervisor::CpuLane::default(),
@@ -1099,6 +1176,7 @@ async fn the_critic_gets_the_gpu_while_its_session_waits_on_it_and_nobody_else_w
     assert_eq!(loaded[0].model_id, "helper");
     assert!(!loaded[0].cpu_pinned && loaded[0].all_layers_on_gpu);
     assert!(log.steps().contains(&"save emperor 0".to_string()));
+    assert_eq!(reason_of(&moves, "unload", "emperor").await, Reason::Critic);
     drop(review);
     // The root resumes with its prompt restored.
     drop(waiting);
@@ -1137,6 +1215,7 @@ async fn the_critic_stays_on_the_cpu_lane_while_another_session_works() {
 #[tokio::test]
 async fn a_stopped_agents_slot_is_released_at_once_and_comes_back_on_resume() {
     let (supervisor, log) = start(quick());
+    let moves = record_moves(&supervisor);
     let root = "s/root";
     call(&supervisor, &log, "emperor", root, Duration::ZERO).await;
     // The session is stopped: the engine suspends the agent's slot explicitly.
@@ -1159,5 +1238,9 @@ async fn a_stopped_agents_slot_is_released_at_once_and_comes_back_on_resume() {
         .unwrap();
     assert!(log.steps().contains(&"restore emperor 0".to_string()));
     assert!(!supervisor.suspended(root));
+    assert_eq!(
+        reason_of(&moves, "save_slot", "emperor").await,
+        Reason::Stopped
+    );
     drop(lease);
 }

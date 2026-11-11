@@ -23,8 +23,8 @@ pub use agents::agents_dir;
 pub use compact::SwitchError;
 pub use imperium_api::{
     AcquireFuture, Availability, Load, LoadView, LocalLease, LocalModels, LocalPresence,
-    LocalRequest, LocalWait, Priority, SuspendFuture, ToolCheck, ToolContext, ToolEvent,
-    ToolFuture, ToolGroup, ToolProvider,
+    LocalRequest, LocalWait, Priority, ResumeFuture, SuspendFuture, ToolCheck, ToolContext,
+    ToolEvent, ToolFuture, ToolGroup, ToolProvider,
 };
 pub use imperium_models::{ChatClient, ChatClients, ChatRequest, Endpoint};
 pub use journal::{journalled_model, read_events as journal_events};

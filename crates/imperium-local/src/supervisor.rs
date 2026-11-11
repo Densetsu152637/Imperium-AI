@@ -25,8 +25,15 @@
 //! model that is not loaded wait in arrival order, and a loaded model takes on new agents only
 //! while no earlier call for another model is waiting, so work is batched by model and nothing
 //! waits longer than the batch ahead of it. Loads and unloads run one at a time, swaps are
-//! limited per minute (past the limit a call that needs one waits for the minute), no call waits
-//! longer than `max_wait_s`, and idle models are unloaded after `idle_unload_s`.
+//! limited per minute (past the limit a call that needs one waits for the minute), and no call
+//! waits longer than `max_wait_s`.
+//!
+//! The supervisor carries out residency decisions; it does not make them on its own. It has no
+//! timer and starts no task that unloads anything: idle unloads, settings restarts, explicit
+//! unloads, a resuming agent's context and the memory budget are ordered by `imperium-core`'s
+//! residency controller through [`Supervisor::execute`], and a call that needs room asks the
+//! installed [`ResidencyPolicy`] what to swap out. Every move is reported with its reason
+//! ([`Supervisor::moves`], see [`crate::residency`]).
 //!
 //! A model can be pinned to the CPU lane ([`Supervisor::set_cpu_pinned`]): it is served with no
 //! GPU layers, its weights, KV cache and prompt cache count against the RAM budget alone, and it
@@ -45,7 +52,7 @@ use std::time::{Duration, Instant};
 
 use imperium_api::{
     AcquireFuture, Availability, Load as MachineLoad, LoadView, LocalLease, LocalModels,
-    LocalPresence, LocalRequest, LocalWait, Priority, SuspendFuture, holder_session,
+    LocalPresence, LocalRequest, LocalWait, Priority, ResumeFuture, SuspendFuture, holder_session,
 };
 pub use imperium_config::{CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS};
 use imperium_config::{LaneRow, LlamaCppSettings, LocalModelSettings, ModelLaunch, VllmSettings};
@@ -56,12 +63,12 @@ use crate::backend::{self, RuntimeBackend};
 use crate::context;
 use crate::hardware::Hardware;
 use crate::planner::{self, Budget, Footprint, Placement, prompt_cache_mb};
+use crate::residency::{Action, LoadAsk, Move, Reason, ResidencyPolicy, Standard};
 use crate::scan::{Format, LocalModel};
 use crate::slot_files::{self, Saved, SlotFiles};
 
 const MIB: u64 = 1024 * 1024;
-/// How often idle models are checked for unloading.
-const IDLE_CHECK: Duration = Duration::from_secs(15);
+
 /// How often a call waiting for room looks again when nothing has changed, for waits that end
 /// with time: another model's residency, the swap limit's window.
 const RECHECK: Duration = Duration::from_millis(250);
@@ -738,8 +745,6 @@ struct State {
     load_seconds: HashMap<String, f64>,
     /// How fast each model has generated, kept after it is unloaded.
     throughput: HashMap<String, Throughput>,
-    /// A task is restarting models whose settings changed.
-    stale_task: bool,
 }
 
 /// Tokens generated over the seconds spent generating them, over a model's recent calls.
@@ -966,6 +971,9 @@ enum Step {
     /// A background call gives way to the user's calls, or to a saturated machine; waiting
     /// this way does not count against `max_wait_s`.
     Yield,
+    /// The model must restart (its pool grows, or it moves to the GPU) and nothing runs on it
+    /// any more: this call restarts it, then asks again.
+    Restart,
 }
 
 /// What the call that may load a model found once loads were its own.
@@ -997,6 +1005,8 @@ struct Load {
     served_pool: u32,
     /// It is pinned to the CPU lane.
     cpu_pinned: bool,
+    /// Why the victims give way.
+    why: Reason,
 }
 
 /// Supervises local model servers. Cheap to share: hand out `Arc<Supervisor>`.
@@ -1010,7 +1020,11 @@ pub struct Supervisor {
     backends: Vec<Arc<dyn RuntimeBackend>>,
     launcher: Arc<dyn Launcher>,
     /// Memory free when the supervisor started, less the RAM headroom.
-    budget: Budget,
+    start_budget: Budget,
+    /// The budget loads are planned against now; the residency controller refreshes it.
+    budget_now: Mutex<Budget>,
+    /// Decides how to make room for a call ([`Supervisor::set_policy`]).
+    policy: Mutex<Arc<dyn ResidencyPolicy>>,
     state: Mutex<State>,
     presence: Arc<Presence>,
     /// Raised whenever a slot, a call, an agent's presence, or the loaded models change.
@@ -1029,6 +1043,8 @@ pub struct Supervisor {
     /// Why each waiting holder's call waits, while it does.
     waits: Mutex<HashMap<String, LocalWait>>,
     events: broadcast::Sender<SwapEvent>,
+    /// Every move, with its reason ([`Supervisor::moves`]).
+    moves: broadcast::Sender<Move>,
     /// How background calls give way to the user's.
     background: Mutex<BackgroundPolicy>,
     /// Itself, for swap-outs that run in a task of their own.
@@ -1059,7 +1075,7 @@ impl fmt::Debug for Supervisor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Supervisor")
             .field("models", &lock(&self.models).len())
-            .field("budget", &self.budget)
+            .field("budget", &self.budget())
             .field("backends", &self.backends)
             .field("launcher", &self.launcher)
             .finish_non_exhaustive()
@@ -1072,8 +1088,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Supervisor {
-    /// Creates a supervisor with the built-in runtimes ([`backend::builtin`]) and starts its
-    /// idle-unload task on the current Tokio runtime.
+    /// Creates a supervisor with the built-in runtimes ([`backend::builtin`]). It starts no task
+    /// of its own: idle unloads and settings restarts are the residency controller's to order
+    /// ([`Supervisor::execute`]).
     pub fn start(
         models: Vec<LocalModel>,
         settings: LlamaCppSettings,
@@ -1085,9 +1102,8 @@ impl Supervisor {
         Self::with_backends(models, settings, backends, hardware, launcher)
     }
 
-    /// Creates a supervisor serving models with `backends`, in order of preference, and starts
-    /// its idle-unload task on the current Tokio runtime. Slots are saved to the launcher's
-    /// [`Launcher::slot_dir`] unless `swap_cache_mb` is 0.
+    /// Creates a supervisor serving models with `backends`, in order of preference. Slots are
+    /// saved to the launcher's [`Launcher::slot_dir`] unless `swap_cache_mb` is 0.
     pub fn with_backends(
         models: Vec<LocalModel>,
         settings: LlamaCppSettings,
@@ -1114,7 +1130,9 @@ impl Supervisor {
             settings,
             backends,
             launcher,
-            budget,
+            start_budget: budget,
+            budget_now: Mutex::new(budget),
+            policy: Mutex::new(Arc::new(Standard)),
             state: Mutex::new(State::default()),
             presence: Arc::default(),
             changed: Arc::new(Notify::new()),
@@ -1124,14 +1142,13 @@ impl Supervisor {
             grown: Mutex::default(),
             waits: Mutex::default(),
             events: broadcast::channel(64).0,
+            moves: broadcast::channel(256).0,
             background: Mutex::new(BackgroundPolicy {
                 view: None,
                 hold: DEFAULT_INTERACTIVE_HOLD,
             }),
             me: Weak::clone(me),
         });
-        let weak = Arc::downgrade(&supervisor);
-        tokio::spawn(unload_idle(weak));
         supervisor
     }
 
@@ -1145,8 +1162,16 @@ impl Supervisor {
         *lock(&self.models) = models;
     }
 
+    /// The memory loads are planned against now: measured when the supervisor started, and
+    /// replaced by the residency controller's live readings ([`Action::SetBudget`]).
     pub fn budget(&self) -> Budget {
-        self.budget
+        *lock(&self.budget_now)
+    }
+
+    /// The memory measured when the supervisor started. Context ceilings are sized against it,
+    /// so they do not move with the live budget (a pool that does not fit is cut instead).
+    pub fn start_budget(&self) -> Budget {
+        self.start_budget
     }
 
     pub fn settings(&self) -> &LlamaCppSettings {
@@ -1156,6 +1181,141 @@ impl Supervisor {
     /// Models swapped out and in, as they happen.
     pub fn swap_events(&self) -> broadcast::Receiver<SwapEvent> {
         self.events.subscribe()
+    }
+
+    /// Everything done to memory (loads, unloads, slots saved and restored, pools resized, the
+    /// budget), each with its reason, as it happens.
+    pub fn moves(&self) -> broadcast::Receiver<Move> {
+        self.moves.subscribe()
+    }
+
+    /// Raised whenever a slot, a call, an agent's presence, or the loaded models change, so a
+    /// controller can look again.
+    pub fn changes(&self) -> Arc<Notify> {
+        Arc::clone(&self.changed)
+    }
+
+    /// Decides how calls make room from now on ([`Standard`] until this is called).
+    pub fn set_policy(&self, policy: Arc<dyn ResidencyPolicy>) {
+        *lock(&self.policy) = policy;
+        self.changed.notify_waiters();
+    }
+
+    /// Plans loads against `budget` from now on; returns whether it changed. Models already
+    /// loaded keep their placement.
+    pub fn set_budget(&self, budget: Budget, reason: Reason) -> bool {
+        {
+            let mut now = lock(&self.budget_now);
+            if *now == budget {
+                return false;
+            }
+            tracing::info!(
+                vram_mib = budget.vram_bytes / MIB,
+                ram_mib = budget.ram_bytes / MIB,
+                was_vram_mib = now.vram_bytes / MIB,
+                was_ram_mib = now.ram_bytes / MIB,
+                reason = reason.name(),
+                "the local memory budget changed"
+            );
+            *now = budget;
+        }
+        self.record(Move::done(
+            Action::SetBudget {
+                vram_bytes: budget.vram_bytes,
+                ram_bytes: budget.ram_bytes,
+            },
+            reason,
+        ));
+        self.changed.notify_waiters();
+        true
+    }
+
+    /// Carries out what the residency controller decided. Nothing in use is ever moved:
+    ///
+    /// - [`Action::Unload`] unloads a model nobody uses (no slot in use, no call queued, no
+    ///   agent mid-turn on it), saving its slots; [`Reason::Config`] restarts a model whose
+    ///   settings changed the same way.
+    /// - [`Action::SaveSlot`] saves an agent's slot and frees its cells (it must not be in use).
+    /// - [`Action::RestoreSlot`] and [`Action::Load`] bring an agent's context back ahead of its
+    ///   next call, loading its model if needed, with a call that reserves almost nothing.
+    /// - [`Action::ResizePool`] makes a model restart with a pool of at least `tokens` once no
+    ///   call runs on it.
+    /// - [`Action::SetBudget`] replaces the memory budget.
+    pub async fn execute(&self, action: Action, reason: Reason) -> Result<(), String> {
+        match action {
+            Action::Unload { model } if reason == Reason::Config => {
+                let swapping = Arc::clone(&self.swapping).lock_owned().await;
+                self.restart_where(swapping, |(id, entry)| {
+                    *id == model && !entry.growing && !entry.promoting
+                })
+                .await;
+                Ok(())
+            }
+            Action::Unload { model } => self
+                .unload_for(&model, reason)
+                .await
+                .map_err(|error| error.to_string()),
+            Action::SaveSlot { model, holder } => {
+                if self.suspend_for(&model, &holder, reason).await {
+                    Ok(())
+                } else {
+                    Err(format!("{holder} holds no idle saved-able slot on {model}"))
+                }
+            }
+
+            Action::RestoreSlot { model, holder } => self.bring_back(&model, &holder, reason).await,
+            Action::Load { model } => self.bring_back(&model, "residency", reason).await,
+            Action::ResizePool { model, tokens } => {
+                let busy = {
+                    let mut state = lock(&self.state);
+                    let Some(entry) = state.loaded.get_mut(&model) else {
+                        return Err(format!("{model} is not loaded"));
+                    };
+                    if entry.pool.tokens.is_none() || entry.launch.pool_fixed {
+                        return Err(format!("the KV pool of {model} cannot grow"));
+                    }
+                    entry.stale = true;
+                    entry.growing = true;
+                    entry.busy()
+                };
+                self.grow_to(&model, tokens);
+                self.changed.notify_waiters();
+                if !busy {
+                    let swapping = Arc::clone(&self.swapping).lock_owned().await;
+                    self.restart_flagged(&model, swapping).await;
+                }
+                Ok(())
+            }
+            Action::SetBudget {
+                vram_bytes,
+                ram_bytes,
+            } => {
+                let unified = self.budget().unified;
+                self.set_budget(
+                    Budget {
+                        vram_bytes,
+                        ram_bytes,
+                        unified,
+                    },
+                    reason,
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Takes a slot on `model` for `holder` with a call that reserves almost nothing, so its
+    /// saved context (if any) is restored and the model loaded if needed, then lets it go: the
+    /// slot stays `holder`'s for its next call.
+    async fn bring_back(&self, model: &str, holder: &str, reason: Reason) -> Result<(), String> {
+        let request = LocalRequest {
+            priority: Priority::Interactive,
+            prompt_tokens: Some(0),
+            uncapped: false,
+        };
+        self.acquire_slot(model, holder, request, reason)
+            .await
+            .map(drop)
     }
 
     /// Sets how background calls give way to the user's: they wait while `view` reports
@@ -1214,37 +1374,28 @@ impl Supervisor {
     }
 
     /// Replaces the per-model settings. Loaded models whose launch shape changed are marked
-    /// stale and restart once nothing is using them (see `unload_stale_now`); this never waits.
+    /// stale; the residency controller restarts them once nothing is using them (see
+    /// `unload_stale_now`). This never waits.
     pub fn set_model_settings(&self, settings: BTreeMap<String, LocalModelSettings>) {
         *lock(&self.model_settings) = settings;
         self.mark_stale();
     }
 
-    /// Marks the loaded models whose launch shape differs from the settings now, and starts the
-    /// task that restarts them if none runs.
+    /// Marks the loaded models whose launch shape differs from the settings now. The residency
+    /// controller restarts them once nothing is using them ([`Reason::Config`]).
     fn mark_stale(&self) {
-        let spawn = {
+        {
             let mut state = lock(&self.state);
             let ids: Vec<String> = state.loaded.keys().cloned().collect();
-            let mut any = false;
             for id in ids {
                 let now = self.launch(&id);
                 if let Some(entry) = state.loaded.get_mut(&id) {
                     entry.stale = entry.launch.restarts_for(&now);
                     entry.retune(&now);
-                    any |= entry.stale;
                 }
             }
-            let spawn = any && !state.stale_task;
-            if spawn {
-                state.stale_task = true;
-            }
-            spawn
-        };
-        self.changed.notify_waiters();
-        if spawn {
-            tokio::spawn(unload_stale(Weak::clone(&self.me)));
         }
+        self.changed.notify_waiters();
     }
 
     /// How `id` is served if it is pinned to the CPU lane.
@@ -1306,9 +1457,9 @@ impl Supervisor {
                 },
             );
             if cpu {
-                backend.place_on_cpu(footprint, self.budget)
+                backend.place_on_cpu(footprint, self.start_budget)
             } else {
-                backend.place(footprint, self.budget)
+                backend.place(footprint, self.start_budget)
             }
         };
         let Some(base) = place(context::MIN_FIT_TOKENS) else {
@@ -1438,13 +1589,13 @@ impl Supervisor {
                 },
             );
             Budget {
-                vram_bytes: self.budget.vram_bytes.saturating_sub(vram),
-                ram_bytes: self.budget.ram_bytes.saturating_sub(ram),
-                unified: self.budget.unified,
+                vram_bytes: self.budget().vram_bytes.saturating_sub(vram),
+                ram_bytes: self.budget().ram_bytes.saturating_sub(ram),
+                unified: self.budget().unified,
             }
         };
         let place = self.placer(model, backend);
-        let placement = place(left).or_else(|| place(self.budget))?;
+        let placement = place(left).or_else(|| place(self.budget()))?;
         Some((placement, Self::placed_pool(model, &launch, &placement)))
     }
 
@@ -1472,7 +1623,7 @@ impl Supervisor {
                 })
                 .collect()
         };
-        planner::fit_beside(&held, self.budget, self.placer(model, backend))
+        planner::fit_beside(&held, self.budget(), self.placer(model, backend))
     }
 
     /// The KV pool `placement` (from [`Supervisor::placer`]) was made with: the launch's pool,
@@ -1503,9 +1654,9 @@ impl Supervisor {
         let footprint = Footprint::of(model, launch);
         let placement = self.backend(model.format).and_then(|backend| {
             if self.cpu_slots(&model.id).is_some() {
-                backend.place_on_cpu(footprint, self.budget)
+                backend.place_on_cpu(footprint, self.budget())
             } else {
-                backend.place(footprint, self.budget)
+                backend.place(footprint, self.budget())
             }
         });
         (footprint, placement)
@@ -1522,7 +1673,7 @@ impl Supervisor {
     /// Where `model` would go on an empty machine, for listings.
     pub fn placement_when_idle(&self, model: &LocalModel) -> Option<Placement> {
         let backend = Arc::clone(self.backend(model.format)?);
-        self.placer(model, backend)(self.budget)
+        self.placer(model, backend)(self.budget())
     }
 
     /// How fast `id` has generated in its recent calls, in tokens per second; `None` before a
@@ -1583,6 +1734,11 @@ impl Supervisor {
     /// queued for one, and no agent mid-turn on it (between its calls). Waits its turn behind
     /// a load or unload in flight.
     pub async fn unload(&self, id: &str) -> Result<(), UnloadError> {
+        self.unload_for(id, Reason::Request).await
+    }
+
+    /// [`Supervisor::unload`], reporting the move with `reason`.
+    async fn unload_for(&self, id: &str, reason: Reason) -> Result<(), UnloadError> {
         let swapping = Arc::clone(&self.swapping).lock_owned().await;
         let victim = {
             let mut state = lock(&self.state);
@@ -1607,9 +1763,9 @@ impl Supervisor {
                 .into_iter()
                 .collect::<Vec<_>>()
         };
-        tracing::info!(model = %id, "unloading model on request");
+        tracing::info!(model = %id, reason = reason.name(), "unloading model");
         self.shrink(id);
-        if let Err(error) = self.swap_out_detached(victim, "request", swapping).await {
+        if let Err(error) = self.swap_out_detached(victim, reason, None, swapping).await {
             tracing::warn!(%error, model = %id, "could not unload a model");
         }
         self.changed.notify_waiters();
@@ -1706,11 +1862,15 @@ impl Supervisor {
         }
     }
 
+    /// Takes a slot on `id` for `holder`'s call, loading the model first if needed; `cause` is
+    /// the reason reported for the load and the restore of a saved slot ([`Reason::Call`], or
+    /// [`Reason::Resume`] for an agent's context brought back ahead of its next call).
     async fn acquire_slot(
         &self,
         id: &str,
         holder: &str,
         request: LocalRequest,
+        cause: Reason,
     ) -> Result<LocalLease, String> {
         let priority = request.priority;
         let model = self
@@ -1750,12 +1910,12 @@ impl Supervisor {
                 self.step(id, holder, &request, &ticket)?
             };
             if matches!(step, Step::Leased(..) | Step::Queued(_)) {
-                self.suspend_waiters(id, holder);
+                self.yield_waiters(id, holder);
             }
             match step {
                 Step::Leased(lease, restore) => {
                     let lease = lease.with_wait(waited);
-                    return Ok(self.restore(holder, lease, restore).await);
+                    return Ok(self.restore(id, holder, lease, restore, cause).await);
                 }
                 Step::Queued(mut queued) => {
                     let pool = Arc::clone(&queued.pool);
@@ -1799,7 +1959,7 @@ impl Supervisor {
                         self.lease_if_current(id, &pool, granted, holder, priority, ticket.seq)?
                     {
                         let lease = lease.with_wait(waited);
-                        return Ok(self.restore(holder, lease, restore).await);
+                        return Ok(self.restore(id, holder, lease, restore, cause).await);
                     }
                     // Unloaded meanwhile: wait for it again, keeping the place in line.
                     continue;
@@ -1821,7 +1981,7 @@ impl Supervisor {
                                 LocalWait::SavingContext
                             });
                             return self
-                                .swap_in(&model, holder, &request, *load, swapping)
+                                .swap_in(&model, holder, &request, *load, swapping, cause)
                                 .await
                                 .map(|lease| lease.with_wait(waited));
                         }
@@ -1835,6 +1995,15 @@ impl Supervisor {
                     }
                 }
                 Step::Wait => waiting.set(self.why_waiting(id)),
+                Step::Restart => {
+                    waiting.set(self.why_waiting(id));
+                    let swapping = Arc::clone(&self.swapping).lock_owned();
+                    let swapping = tokio::time::timeout_at(deadline, swapping)
+                        .await
+                        .map_err(|_| too_long())?;
+                    self.restart_flagged(id, swapping).await;
+                    continue;
+                }
                 // Giving way to the user is not a failure to get room: the wait starts over.
                 Step::Yield => {
                     waiting.set(LocalWait::Slot);
@@ -1888,7 +2057,7 @@ impl Supervisor {
                 other.generating = true;
             }
         }
-        let room = arbiter::room_after_yield(self.budget, &others);
+        let room = arbiter::room_after_yield(self.budget(), &others);
         let now = entry.placement.gpu_layers;
         self.placer_on(&model, backend, false)(room).is_some_and(|best| best.gpu_layers > now)
     }
@@ -1915,39 +2084,35 @@ impl Supervisor {
         let Some(entry) = state.loaded.get_mut(id) else {
             return Ok(Step::Wait);
         };
-        // Growing or moving: nothing new starts on it, so the calls running drain and it
-        // restarts.
+        // Growing or moving: nothing new starts on it, so the calls running drain, and the
+        // first call waiting for it restarts it.
         if entry.growing || entry.promoting {
-            return Ok(Step::Wait);
+            return Ok(if entry.busy() {
+                Step::Wait
+            } else {
+                Step::Restart
+            });
         }
         if promote {
             tracing::warn!(model = %id, gpu_layers = entry.placement.gpu_layers, "a call would run on the CPU while the GPU is idle; the model is placed on the GPU again");
             entry.stale = true;
             entry.promoting = true;
+            let busy = entry.busy();
             state.set_admitted(ticket.seq, false);
-            let spawn = !state.stale_task;
-            state.stale_task = true;
             drop(state);
             self.changed.notify_waiters();
-            if spawn {
-                tokio::spawn(unload_stale(Weak::clone(&self.me)));
-            }
-            return Ok(Step::Wait);
+            return Ok(if busy { Step::Wait } else { Step::Restart });
         }
         if let Some(target) = entry.growth(request) {
             tracing::info!(model = %id, from = entry.pool.pool_tokens, to = target, "a call needs a larger KV pool; the model restarts with it once its running calls are done");
             self.grow_to(id, target);
             entry.stale = true;
             entry.growing = true;
+            let busy = entry.busy();
             state.set_admitted(ticket.seq, false);
-            let spawn = !state.stale_task;
-            state.stale_task = true;
             drop(state);
             self.changed.notify_waiters();
-            if spawn {
-                tokio::spawn(unload_stale(Weak::clone(&self.me)));
-            }
-            return Ok(Step::Wait);
+            return Ok(if busy { Step::Wait } else { Step::Restart });
         }
         // An agent already in the model's batch carries on; a newcomer joins only while no
         // earlier call for another model is waiting for the room, and not while the model
@@ -2080,17 +2245,27 @@ impl Supervisor {
         // GPU; when the agent it reviews waits on it, nothing generates and no other session
         // is working, it gets the GPU too: the models in the way give way like any (their
         // agents' slots saved, restored when they resume).
-        let on_cpu = self.cpu_lane(&model.id).is_some()
+        let lane = self.cpu_lane(&model.id).is_some();
+        let on_cpu = lane
             && (residents.iter().any(|r| r.generating)
                 || !critic_may_have_gpu(&users, holder_session(holder)));
-        let decision = arbiter::decide(
-            self.placer_on(model, Arc::clone(&backend), on_cpu),
-            self.budget,
-            &residents,
-            ticket.since.elapsed(),
-            policy,
-        );
-        let (evict, placement) = match decision {
+        let budget = self.budget();
+        let decider = Arc::clone(&*lock(&self.policy));
+        let place = self.placer_on(model, Arc::clone(&backend), on_cpu);
+        let ask = |residents: &[Resident]| {
+            decider.decide(&LoadAsk {
+                model: &model.id,
+                holder,
+                priority,
+                place: &place,
+                budget,
+                residents,
+                waited: ticket.since.elapsed(),
+                limits: policy,
+            })
+        };
+        let decision = ask(&residents);
+        let (evict, placement, why) = match decision {
             Decision::TooBig => return Err(no_room()),
             Decision::SwapsOff => {
                 return Err(format!(
@@ -2104,22 +2279,23 @@ impl Supervisor {
                 // what holds this load up; any other wait keeps the `max_wait_s` cap.
                 let yielded = protected && {
                     let (unprotected, _) = self.residents(&state, &users, None, requester);
-                    !matches!(
-                        arbiter::decide(
-                            self.placer_on(model, Arc::clone(&backend), on_cpu),
-                            self.budget,
-                            &unprotected,
-                            ticket.since.elapsed(),
-                            policy,
-                        ),
-                        Decision::Wait
-                    )
+                    !matches!(ask(&unprotected), Decision::Wait)
                 };
                 return Ok(Plan::Wait { yielded });
             }
-            Decision::Load { evict, placement } => (evict, placement),
+            Decision::Load {
+                evict,
+                placement,
+                why,
+            } => (evict, placement, why),
         };
-        let cache_room = arbiter::cache_room(self.budget, &residents, &evict, &placement);
+        // The critic taking the GPU from the agents it reviews says so.
+        let why = if lane && !on_cpu && !evict.is_empty() {
+            Reason::Critic
+        } else {
+            why
+        };
+        let cache_room = arbiter::cache_room(budget, &residents, &evict, &placement);
         // Out of the loaded set at once, so nobody takes a slot on them while they are saved.
         let victims: Vec<_> = evict
             .iter()
@@ -2142,6 +2318,7 @@ impl Supervisor {
             served_pool: Self::placed_pool(model, &launch, &placement),
             launch,
             cpu_pinned: on_cpu,
+            why,
         })))
     }
 
@@ -2153,6 +2330,7 @@ impl Supervisor {
         request: &LocalRequest,
         load: Load,
         swapping: OwnedMutexGuard<()>,
+        cause: Reason,
     ) -> Result<LocalLease, String> {
         let Load {
             backend,
@@ -2164,6 +2342,7 @@ impl Supervisor {
             mut launch,
             cpu_pinned,
             served_pool,
+            why,
         } = load;
         // A pool cut to keep the layers on the GPU beside the loaded models: one agent may use
         // at most all of it. `launch` stays what the settings ask, so the model is not taken
@@ -2182,7 +2361,9 @@ impl Supervisor {
             tracing::info!(model = %model.id, pool_tokens = served_pool, wanted = launch.pool_tokens, "the KV pool is cut to keep every layer on the GPU beside the loaded models");
         }
         let replaced = !victims.is_empty();
-        let swapping = self.swap_out_detached(victims, "room", swapping).await?;
+        let swapping = self
+            .swap_out_detached(victims, why, Some(&model.id), swapping)
+            .await?;
         lock(&self.waits).insert(holder.to_string(), LocalWait::Loading);
         // The prompt cache takes what the setting asks of the RAM left after the model, and
         // counts against the budget like the model does.
@@ -2209,7 +2390,7 @@ impl Supervisor {
         let spec = LaunchSpec {
             backend: Arc::clone(&backend),
             format: model.format,
-            gpu_memory_utilization: backend.gpu_memory_utilization(&placement, self.budget),
+            gpu_memory_utilization: backend.gpu_memory_utilization(&placement, self.budget()),
             model_id: model.id.clone(),
             model_path: model.path.clone(),
             mmproj: model.mmproj.clone(),
@@ -2229,7 +2410,7 @@ impl Supervisor {
         if launch.pool_clamped {
             tracing::warn!(model = %model.id, pool_tokens = launch.pool_tokens, "the model's fixed KV pool does not fit beside its weights on the GPU; it is cut to what fits so the layers stay on the GPU");
         }
-        if !cpu_pinned && !placement.all_layers_on_gpu && self.budget.vram_bytes > 0 {
+        if !cpu_pinned && !placement.all_layers_on_gpu && self.budget().vram_bytes > 0 {
             tracing::warn!(model = %model.id, gpu_layers = placement.gpu_layers, "the model's weights do not fit on the GPU beside what is loaded; some layers run on the CPU");
         }
         let started = Instant::now();
@@ -2242,15 +2423,35 @@ impl Supervisor {
             }
             launched => launched,
         };
+        let load_action = Action::Load {
+            model: model.id.clone(),
+        };
         let server: Arc<dyn Server> = match launched {
             Ok(server) => Arc::from(server),
             Err(error) => {
                 drop(swapping);
                 self.changed.notify_waiters();
+                self.record(
+                    Move::failed(load_action, cause, error.message.clone())
+                        .took(started.elapsed().as_secs_f64(), 0),
+                );
                 return Err(error.message);
             }
         };
         let seconds = started.elapsed().as_secs_f64();
+        self.record(
+            Move::done(load_action, cause)
+                .took(seconds, placement.vram_bytes + placement.ram_bytes)
+                .detail(format!(
+                    "{} of {} layers on the GPU, KV pool {} tokens",
+                    placement.gpu_layers,
+                    model
+                        .info
+                        .block_count
+                        .map_or_else(|| "?".to_string(), |n| n.to_string()),
+                    served.pool_tokens
+                )),
+        );
         let pool = SlotPool::new(
             server.base_url().to_string(),
             &served,
@@ -2282,7 +2483,7 @@ impl Supervisor {
         launch.max_output_tokens = now.max_output_tokens;
         pool.max_output_tokens
             .store(now.max_output_tokens, Ordering::SeqCst);
-        let spawn_stale = {
+        {
             let mut state = lock(&self.state);
             state.load_seconds.insert(model.id.clone(), seconds);
             state.set_admitted(call, true);
@@ -2305,17 +2506,9 @@ impl Supervisor {
                     promoting: false,
                 },
             );
-            let spawn = stale && !state.stale_task;
-            if spawn {
-                state.stale_task = true;
-            }
-            spawn
-        };
+        }
         drop(swapping);
         self.changed.notify_waiters();
-        if spawn_stale {
-            tokio::spawn(unload_stale(Weak::clone(&self.me)));
-        }
         if replaced || restorable > 0 {
             self.emit(SwapEvent {
                 direction: SwapDirection::In,
@@ -2327,7 +2520,7 @@ impl Supervisor {
             });
         }
         let restore = Restore { server, key };
-        Ok(self.restore(holder, lease, restore).await)
+        Ok(self.restore(&model.id, holder, lease, restore, cause).await)
     }
 
     /// Gives the holders of slots saved from a model with `key` their slots back on its new
@@ -2352,19 +2545,24 @@ impl Supervisor {
     async fn swap_out_detached(
         &self,
         victims: Vec<(String, Loaded)>,
-        reason: &'static str,
+        reason: Reason,
+        made_room_for: Option<&str>,
         swapping: OwnedMutexGuard<()>,
     ) -> Result<OwnedMutexGuard<()>, String> {
         if victims.is_empty() {
             return Ok(swapping);
         }
+        let made_room_for = made_room_for.map(str::to_string);
         // Whoever calls holds an `Arc` to it, so it is always there.
         let Some(supervisor) = self.me.upgrade() else {
-            self.swap_out(victims, reason).await;
+            self.swap_out(victims, reason, made_room_for.as_deref())
+                .await;
             return Ok(swapping);
         };
         tokio::spawn(async move {
-            supervisor.swap_out(victims, reason).await;
+            supervisor
+                .swap_out(victims, reason, made_room_for.as_deref())
+                .await;
             swapping
         })
         .await
@@ -2372,25 +2570,44 @@ impl Supervisor {
     }
 
     /// Saves the occupied slots of models taken out of the loaded set, then stops them.
-    async fn swap_out(&self, victims: Vec<(String, Loaded)>, reason: &'static str) {
+    async fn swap_out(
+        &self,
+        victims: Vec<(String, Loaded)>,
+        reason: Reason,
+        made_room_for: Option<&str>,
+    ) {
         if victims.is_empty() {
             return;
         }
         for (id, loaded) in victims {
             let started = Instant::now();
-            let (bytes, slots) = self.save_slots(&loaded).await;
+            let pool_tokens = loaded.pool.pool_tokens;
+            let (bytes, slots) = self.save_slots(&id, &loaded, reason).await;
             // Wait for the process to exit, so the next model finds its memory free.
             loaded.server.stop().await;
             drop(loaded);
             let seconds = started.elapsed().as_secs_f64();
-            tracing::info!(model = %id, reason, slots, bytes, seconds, "swapped out local model");
+            tracing::info!(model = %id, reason = reason.name(), made_room_for, slots, bytes, seconds, "swapped out local model");
+            let action = if reason == Reason::Grow {
+                Action::ResizePool {
+                    model: id.clone(),
+                    tokens: lock(&self.grown).get(&id).copied().unwrap_or(pool_tokens),
+                }
+            } else {
+                Action::Unload { model: id.clone() }
+            };
+            let mut moved = Move::done(action, reason).took(seconds, bytes);
+            if let Some(newcomer) = made_room_for {
+                moved = moved.detail(format!("made room for {newcomer}"));
+            }
+            self.record(moved);
             self.emit(SwapEvent {
                 direction: SwapDirection::Out,
                 model_id: id,
                 seconds,
                 bytes,
                 slots,
-                reason,
+                reason: reason.swap_label(),
             });
         }
         self.changed.notify_waiters();
@@ -2399,7 +2616,7 @@ impl Supervisor {
     /// Saves each slot holding the prompt of a holder that can still come back (one mid-turn or
     /// waiting for subagents, not one whose turn is over); returns the bytes written and slots
     /// saved.
-    async fn save_slots(&self, loaded: &Loaded) -> (u64, u32) {
+    async fn save_slots(&self, id: &str, loaded: &Loaded, reason: Reason) -> (u64, u32) {
         let (Some(key), Some(files)) = (loaded.key, &self.slot_files) else {
             return (0, 0);
         };
@@ -2419,10 +2636,15 @@ impl Supervisor {
                 holder: &holder,
                 key,
             };
+            let action = Action::SaveSlot {
+                model: id.to_string(),
+                holder: holder.clone(),
+            };
             match loaded.server.save_slot(slot, &file).await {
                 Ok(saved) => {
                     bytes += saved.bytes;
                     slots += 1;
+                    self.record(Move::done(action, reason).took(0.0, saved.bytes));
                     let saved = Saved {
                         holder: holder.clone(),
                         key,
@@ -2435,6 +2657,7 @@ impl Supervisor {
                 }
                 Err(error) => {
                     tracing::warn!(%holder, slot, %error, "could not save a slot before unloading its model");
+                    self.record(Move::failed(action, reason, error));
                 }
             }
         }
@@ -2444,7 +2667,9 @@ impl Supervisor {
     /// Suspends, in the background, the slots of the agents waiting (for subagents, an
     /// approval, an answer) whose prompts sit on `model`, now that `holder` uses it: they
     /// hold cells nobody uses until they resume.
-    fn suspend_waiters(&self, model: &str, holder: &str) {
+    ///
+    /// Which of them give way is the policy's to say ([`ResidencyPolicy::yield_slots`]).
+    fn yield_waiters(&self, model: &str, holder: &str) {
         if self.slot_files.is_none() {
             return;
         }
@@ -2458,9 +2683,13 @@ impl Supervisor {
             })
             .map(|(other, _)| other.clone())
             .collect();
-        for other in waiting {
+        if waiting.is_empty() {
+            return;
+        }
+        let policy = Arc::clone(&*lock(&self.policy));
+        for other in policy.yield_slots(model, holder, waiting) {
             let (me, model) = (Arc::clone(&me), model.to_string());
-            tokio::spawn(async move { me.suspend_slot(&model, &other).await });
+            tokio::spawn(async move { me.suspend_for(&model, &other, Reason::Yield).await });
         }
     }
 
@@ -2470,8 +2699,14 @@ impl Supervisor {
     /// slot it gets ([`Supervisor::restore`]). Nothing happens when slots are not saved, the
     /// model is not loaded, or the holder holds no idle slot on it.
     pub async fn suspend_slot(&self, model: &str, holder: &str) {
+        self.suspend_for(model, holder, Reason::Stopped).await;
+    }
+
+    /// [`Supervisor::suspend_slot`], reporting the move with `reason`; returns whether the slot
+    /// was saved.
+    async fn suspend_for(&self, model: &str, holder: &str, reason: Reason) -> bool {
         let Some(files) = &self.slot_files else {
-            return;
+            return false;
         };
         // The slot is taken like a call takes one, so nobody uses it while it is saved.
         let found = {
@@ -2490,8 +2725,13 @@ impl Supervisor {
             })
         };
         let Some((server, pool, key, slot, _permit)) = found else {
-            return;
+            return false;
         };
+        let action = Action::SaveSlot {
+            model: model.to_string(),
+            holder: holder.to_string(),
+        };
+        let started = Instant::now();
         let present: HashSet<String> = lock(&self.presence.users).keys().cloned().collect();
         let present = |holder: &str| present.contains(holder);
         let file = SlotFiles::file_name(key, holder);
@@ -2509,30 +2749,44 @@ impl Supervisor {
                     present,
                 );
                 unrecorded.keep();
-                match server.erase_slot(slot).await {
+                let erased = server.erase_slot(slot).await;
+                let moved =
+                    Move::done(action, reason).took(started.elapsed().as_secs_f64(), saved.bytes);
+                match erased {
                     Ok(_) => {
-                        tracing::info!(%holder, model, slot, tokens = saved.tokens, "suspended a waiting agent's slot");
+                        tracing::info!(%holder, model, slot, tokens = saved.tokens, reason = reason.name(), "suspended a waiting agent's slot");
+                        self.record(moved);
                         true
                     }
                     Err(error) => {
                         tracing::debug!(%holder, slot, %error, "could not free a suspended slot's cells");
+                        self.record(moved.detail(format!("saved; its cells stay: {error}")));
                         false
                     }
                 }
             }
             Err(error) => {
                 tracing::warn!(%holder, slot, %error, "could not save a waiting agent's slot");
+                self.record(Move::failed(action, reason, error));
                 false
             }
         };
         // Erased, the slot holds nobody's prompt: anyone may take it first.
         lock(&pool.table).give_back_suspended(slot, holder, kept);
         self.changed.notify_waiters();
+        kept
     }
 
     /// Restores `holder`'s saved slot, if it has one for this server's model, into the slot it
     /// was just leased, before the lease is used.
-    async fn restore(&self, holder: &str, lease: LocalLease, restore: Restore) -> LocalLease {
+    async fn restore(
+        &self,
+        model: &str,
+        holder: &str,
+        lease: LocalLease,
+        restore: Restore,
+        cause: Reason,
+    ) -> LocalLease {
         let (Some(slot), Some(key), Some(files)) = (lease.slot, restore.key, &self.slot_files)
         else {
             return lease;
@@ -2545,12 +2799,21 @@ impl Supervisor {
         // It stays recorded while it is read, and is forgotten with its file once read, failed,
         // or cancelled, so no file is left on disk outside the index.
         let _forget = Forget { files, holder, key };
+        let action = Action::RestoreSlot {
+            model: model.to_string(),
+            holder: holder.to_string(),
+        };
+        let started = Instant::now();
         match restore.server.restore_slot(slot, &saved.file).await {
             Ok(restored) => {
                 tracing::info!(%holder, slot, tokens = restored.tokens, bytes = restored.bytes, "restored a saved slot");
+                self.record(
+                    Move::done(action, cause).took(started.elapsed().as_secs_f64(), restored.bytes),
+                );
             }
             Err(error) => {
                 tracing::warn!(%holder, slot, %error, "could not restore a saved slot; its prompt will be read again");
+                self.record(Move::failed(action, cause, error));
             }
         }
         lease
@@ -2559,6 +2822,11 @@ impl Supervisor {
     fn emit(&self, event: SwapEvent) {
         // No receivers just means nobody is listening.
         let _ = self.events.send(event);
+    }
+
+    /// Reports a move to whoever listens ([`Supervisor::moves`]).
+    fn record(&self, moved: Move) {
+        let _ = self.moves.send(moved);
     }
 
     /// Unloads models nobody is using and nobody has used for `idle_for`, saving their slots. A
@@ -2590,7 +2858,10 @@ impl Supervisor {
         for (id, _) in &victims {
             self.shrink(id);
         }
-        if let Err(error) = self.swap_out_detached(victims, "idle", swapping).await {
+        if let Err(error) = self
+            .swap_out_detached(victims, Reason::Idle, None, swapping)
+            .await
+        {
             tracing::warn!(%error, "could not unload idle models");
         }
     }
@@ -2602,6 +2873,25 @@ impl Supervisor {
     /// Used by the daemon's tick and by tests.
     pub async fn unload_stale_now(&self) {
         let swapping = Arc::clone(&self.swapping).lock_owned().await;
+        self.restart_where(swapping, |_| true).await;
+    }
+
+    /// Restarts `id` if it waits to grow its pool or to move to the GPU and no call runs on it:
+    /// the call waiting for it does this ([`Step::Restart`]).
+    async fn restart_flagged(&self, id: &str, swapping: OwnedMutexGuard<()>) {
+        self.restart_where(swapping, |candidate| {
+            candidate.0 == id && (candidate.1.growing || candidate.1.promoting)
+        })
+        .await;
+    }
+
+    /// Restarts the stale models `chosen` picks that nobody is using (see
+    /// [`Supervisor::unload_stale_now`]), holding loads (`swapping`) while they stop.
+    async fn restart_where(
+        &self,
+        swapping: OwnedMutexGuard<()>,
+        chosen: impl Fn((&String, &Loaded)) -> bool,
+    ) {
         let victims: Vec<_> = {
             let mut state = lock(&self.state);
             let users = lock(&self.presence.users);
@@ -2615,6 +2905,7 @@ impl Supervisor {
                             || entry.promoting
                             || Presence::claims(&users, id, &entry.batch, None) == Claim::None)
                 })
+                .filter(|&(id, entry)| chosen((id, entry)))
                 .map(|(id, _)| id.clone())
                 .collect();
             stale
@@ -2640,23 +2931,33 @@ impl Supervisor {
             victims.into_iter().partition(|(_, entry)| entry.promoting);
         let (grow, config): (Vec<_>, Vec<_>) =
             victims.into_iter().partition(|(_, entry)| entry.growing);
-        let swapping = match self.swap_out_detached(promote, "promote", swapping).await {
+        let swapping = match self
+            .swap_out_detached(promote, Reason::Promote, None, swapping)
+            .await
+        {
             Ok(swapping) => swapping,
             Err(error) => {
                 tracing::warn!(%error, "could not restart models to place them on the GPU");
                 return;
             }
         };
-        let swapping = match self.swap_out_detached(grow, "grow", swapping).await {
+        let swapping = match self
+            .swap_out_detached(grow, Reason::Grow, None, swapping)
+            .await
+        {
             Ok(swapping) => swapping,
             Err(error) => {
                 tracing::warn!(%error, "could not restart models to grow their KV pool");
                 return;
             }
         };
-        if let Err(error) = self.swap_out_detached(config, "config", swapping).await {
+        if let Err(error) = self
+            .swap_out_detached(config, Reason::Config, None, swapping)
+            .await
+        {
             tracing::warn!(%error, "could not restart models after a settings change");
         }
+        self.changed.notify_waiters();
     }
 
     /// Why a call for `id` that must wait its turn waits.
@@ -2668,10 +2969,6 @@ impl Supervisor {
             Some(entry) if entry.stale => LocalWait::Loading,
             _ => LocalWait::OtherModel,
         }
-    }
-
-    fn any_stale(&self) -> bool {
-        lock(&self.state).loaded.values().any(|entry| entry.stale)
     }
 }
 
@@ -2754,44 +3051,6 @@ impl Drop for Slot {
     }
 }
 
-async fn unload_idle(supervisor: Weak<Supervisor>) {
-    let mut ticks = tokio::time::interval(IDLE_CHECK);
-    loop {
-        ticks.tick().await;
-        let Some(supervisor) = supervisor.upgrade() else {
-            return;
-        };
-        let idle_for = Duration::from_secs(supervisor.settings.idle_unload_s);
-        supervisor.unload_idle_now(idle_for).await;
-        // Catches a settings change whose notification was missed.
-        if supervisor.any_stale() {
-            supervisor.unload_stale_now().await;
-        }
-    }
-}
-
-/// Restarts models whose settings changed as soon as nothing is using them, until none is stale.
-async fn unload_stale(supervisor: Weak<Supervisor>) {
-    loop {
-        let Some(supervisor) = supervisor.upgrade() else {
-            return;
-        };
-        // Listen before looking, so a change between the two is not missed.
-        let changed = supervisor.changed.notified();
-        tokio::pin!(changed);
-        changed.as_mut().enable();
-        supervisor.unload_stale_now().await;
-        {
-            let mut state = lock(&supervisor.state);
-            if !state.loaded.values().any(|entry| entry.stale) {
-                state.stale_task = false;
-                return;
-            }
-        }
-        let _ = tokio::time::timeout(RECHECK, changed.as_mut()).await;
-    }
-}
-
 impl Supervisor {
     /// Where `id` stands for a requester of `session` (`None`: every claim is another session's).
     fn availability_of(&self, id: &str, session: Option<&str>) -> Availability {
@@ -2815,7 +3074,7 @@ impl Supervisor {
         let (residents, _) = self.residents(&state, &users, None, session);
         drop(users);
         let policy = self.policy(&mut state);
-        let outlook = arbiter::outlook(place, self.budget, &residents, policy);
+        let outlook = arbiter::outlook(place, self.budget(), &residents, policy);
         match outlook {
             Outlook::Fits => Availability::Fits,
             Outlook::Swap => Availability::Swap {
@@ -2895,7 +3154,7 @@ impl LocalModels for Supervisor {
         holder: &'a str,
         request: LocalRequest,
     ) -> AcquireFuture<'a> {
-        Box::pin(self.acquire_slot(id, holder, request))
+        Box::pin(self.acquire_slot(id, holder, request, Reason::Call))
     }
 
     fn attach(&self, model: &str, holder: &str) -> LocalPresence {
@@ -2918,6 +3177,11 @@ impl LocalModels for Supervisor {
 
     fn suspend<'a>(&'a self, model: &'a str, holder: &'a str) -> SuspendFuture<'a> {
         Box::pin(self.suspend_slot(model, holder))
+    }
+
+    /// Brings `holder`'s context back ahead of its next call, reported as [`Reason::Resume`].
+    fn resume<'a>(&'a self, model: &'a str, holder: &'a str) -> ResumeFuture<'a> {
+        Box::pin(self.bring_back(model, holder, Reason::Resume))
     }
 
     fn record_throughput(&self, model: &str, completion_tokens: u64, generating: Duration) {
@@ -3705,5 +3969,101 @@ mod tests {
         // Settled after one restart: using either again loads nothing.
         drop(supervisor.acquire("second", "h").await.unwrap());
         assert_eq!(launcher.launches.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_runtime_never_unloads_on_its_own() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = Supervisor::start(
+            vec![model("a", 6)],
+            LlamaCppSettings {
+                idle_unload_s: 0,
+                ..settings()
+            },
+            Runtimes::default(),
+            &hardware(),
+            Arc::clone(&launcher) as Arc<dyn Launcher>,
+        );
+        drop(supervisor.acquire("a", "holder").await.unwrap());
+        // Idle past `idle_unload_s` many times over: only the residency controller may unload
+        // it, and none runs here.
+        tokio::time::sleep(Duration::from_secs(3600)).await;
+        assert_eq!(supervisor.loaded().len(), 1);
+        // Told to, it unloads, and says why.
+        let mut moves = supervisor.moves();
+        supervisor
+            .execute(Action::Unload { model: "a".into() }, Reason::Idle)
+            .await
+            .unwrap();
+        assert!(supervisor.loaded().is_empty());
+        let moved = moves.try_recv().unwrap();
+        assert_eq!(
+            (moved.action, moved.reason, moved.ok),
+            (Action::Unload { model: "a".into() }, Reason::Idle, true)
+        );
+    }
+
+    /// Counts the decisions it is asked for, and decides as the arbiter does.
+    #[derive(Debug, Default)]
+    struct Counting {
+        decisions: AtomicUsize,
+    }
+
+    impl ResidencyPolicy for Counting {
+        fn decide(&self, ask: &LoadAsk<'_>) -> Decision {
+            self.decisions.fetch_add(1, Ordering::SeqCst);
+            Standard.decide(ask)
+        }
+    }
+
+    #[tokio::test]
+    async fn every_load_asks_the_installed_policy_and_reports_its_reason() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = supervisor(Arc::clone(&launcher));
+        let policy = Arc::new(Counting::default());
+        supervisor.set_policy(Arc::clone(&policy) as Arc<dyn ResidencyPolicy>);
+        let mut moves = supervisor.moves();
+        drop(supervisor.acquire("a", "holder").await.unwrap());
+        drop(supervisor.acquire("b", "holder").await.unwrap());
+        assert_eq!(policy.decisions.load(Ordering::SeqCst), 2);
+        let mut seen = Vec::new();
+        while let Ok(moved) = moves.try_recv() {
+            seen.push((
+                moved.action.name(),
+                moved.action.model().map(str::to_string),
+                moved.reason,
+            ));
+        }
+        assert_eq!(
+            seen,
+            [
+                ("load", Some("a".to_string()), Reason::Call),
+                // "b" does not fit beside "a" (no RAM to spill into).
+                ("unload", Some("a".to_string()), Reason::Room),
+                ("load", Some("b".to_string()), Reason::Call),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_budget_is_replaced_when_told_and_reported() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = supervisor(Arc::clone(&launcher));
+        let mut moves = supervisor.moves();
+        let smaller = Budget {
+            vram_bytes: 4 * GIB,
+            ..supervisor.budget()
+        };
+        assert!(supervisor.set_budget(smaller, Reason::Budget));
+        assert!(!supervisor.set_budget(smaller, Reason::Budget), "no change");
+        assert_eq!(supervisor.budget(), smaller);
+        // The ceilings stay sized against the memory measured at start.
+        assert_eq!(supervisor.start_budget().vram_bytes, 10 * GIB);
+        // A 6 GiB model no longer fits the GPU; with no RAM it does not fit at all.
+        let error = supervisor.acquire("a", "holder").await.unwrap_err();
+        assert!(error.contains("not enough memory"), "{error}");
+        let moved = moves.try_recv().unwrap();
+        assert_eq!(moved.action.name(), "set_budget");
+        assert_eq!(moved.reason, Reason::Budget);
     }
 }

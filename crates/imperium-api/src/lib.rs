@@ -16,7 +16,7 @@ pub use effort::{Effort, UnknownEffort, reasoning_by_name, reasoning_from_tags, 
 pub use load::{Load, LoadView};
 pub use local::{
     AcquireFuture, Availability, LocalLease, LocalModels, LocalPresence, LocalRequest, LocalWait,
-    Priority, SuspendFuture, holder, holder_session,
+    Priority, ResumeFuture, SuspendFuture, holder, holder_session,
 };
 pub use permissions::{PathGrant, PathMode, PermissionRule, RuleAction};
 pub use pricing::Pricing;

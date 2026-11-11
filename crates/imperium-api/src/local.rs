@@ -169,6 +169,7 @@ pub fn holder_session(holder: &str) -> &str {
 
 pub type AcquireFuture<'a> = Pin<Box<dyn Future<Output = Result<LocalLease, String>> + Send + 'a>>;
 pub type SuspendFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+pub type ResumeFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 /// Local models the router may place work on.
 pub trait LocalModels: Send + Sync + fmt::Debug {
@@ -207,6 +208,20 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     /// A runtime that cannot does nothing.
     fn suspend<'a>(&'a self, _model: &'a str, _holder: &'a str) -> SuspendFuture<'a> {
         Box::pin(async {})
+    }
+    /// Brings `holder`'s context on `model` back now, ahead of its next call, for an agent that
+    /// goes on after waiting (its subagents done, a steering message, Resume): the model is
+    /// loaded if it was swapped out and the saved context restored, as the user's work. The
+    /// default takes a slot with a call that reserves almost nothing and lets it go.
+    fn resume<'a>(&'a self, model: &'a str, holder: &'a str) -> ResumeFuture<'a> {
+        Box::pin(async move {
+            let request = LocalRequest {
+                priority: Priority::Interactive,
+                prompt_tokens: Some(0),
+                uncapped: false,
+            };
+            self.acquire_with(model, holder, request).await.map(drop)
+        })
     }
     /// Takes a slot on the model for one call, loading the model first if needed (waiting for
     /// room while the models in the way are in use, up to a limit the runtime sets) and queueing
