@@ -18,9 +18,9 @@ use imperium_media::{ImageConfig, ImageGenerators, Media, MediaTools, Service};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
-    EnvironmentRuntime, LocalModelListResult, MODEL_SWAPPED_IN, MODEL_SWAPPED_OUT, ModelListResult,
-    ModelRow, ModelSwap, SESSION_CREATED, SessionDeleteParams, SessionDeleteResult, SessionSummary,
-    SessionWorktree,
+    EnvironmentRuntime, LocalModelListResult, MODEL_RESIDENCY, MODEL_SWAPPED_IN, MODEL_SWAPPED_OUT,
+    ModelListResult, ModelResidency, ModelRow, ModelSwap, SESSION_CREATED, SessionDeleteParams,
+    SessionDeleteResult, SessionSummary, SessionWorktree,
 };
 use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
@@ -265,6 +265,7 @@ impl DaemonState {
             local.set_runtime_hooks(crate::llama_runtime::Hooks::new(&state));
             if tokio::runtime::Handle::try_current().is_ok() {
                 state.announce_swaps(local);
+                state.announce_moves(local);
             }
         }
         state
@@ -365,6 +366,42 @@ impl DaemonState {
                         bytes: event.bytes,
                         slots: event.slots,
                         reason: event.reason.to_string(),
+                    },
+                );
+            }
+        });
+    }
+
+    /// Tells every client each move of local-model memory, with its reason
+    /// (`model.residency`).
+    fn announce_moves(self: &Arc<Self>, local: &LocalRuntime) {
+        let mut moves = local.supervisor.moves();
+        let state = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                let moved = match moves.recv().await {
+                    Ok(moved) => moved,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                let bytes = match moved.action {
+                    imperium_local::residency::Action::SetBudget { vram_bytes, .. } => vram_bytes,
+                    _ => moved.bytes,
+                };
+                state.announce(
+                    MODEL_RESIDENCY,
+                    ModelResidency {
+                        action: moved.action.name().to_string(),
+                        model_id: moved.action.model().map(str::to_string),
+                        holder: moved.action.holder().map(str::to_string),
+                        reason: moved.reason.name().to_string(),
+                        ok: moved.ok,
+                        detail: moved.detail,
+                        seconds: moved.seconds,
+                        bytes,
                     },
                 );
             }
@@ -1026,15 +1063,12 @@ impl DaemonState {
     ///
     /// A model with a slot in use, a call queued, or an agent mid-turn on it is not unloaded.
     pub async fn unload_local_model(&self, model: &str) -> Result<(), String> {
-        let supervisor = self
+        let residency = self
             .local
             .get()
-            .map(|local| Arc::clone(&local.supervisor))
+            .map(|local| Arc::clone(&local.residency))
             .ok_or_else(|| format!("{model} is not loaded: no local runtime is running"))?;
-        supervisor
-            .unload(model)
-            .await
-            .map_err(|error| error.to_string())
+        residency.unload(model).await
     }
 
     /// The memory local models may use, when the local runtime is running.
@@ -1057,6 +1091,7 @@ impl DaemonState {
                 local.set_runtime_hooks(crate::llama_runtime::Hooks::new(self));
                 self.apply_local_settings(local);
                 self.announce_swaps(local);
+                self.announce_moves(local);
             }
         } else if let Some(local) = self.local.get() {
             // Another download started it first, perhaps before this one's files landed.

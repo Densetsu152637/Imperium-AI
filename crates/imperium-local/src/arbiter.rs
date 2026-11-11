@@ -1,6 +1,8 @@
-//! How the supervisor makes room for a local model: which loaded models to swap out, or whether
-//! to wait. Pure functions over a snapshot of the loaded models, so the policy is tested without
-//! servers.
+//! How to make room for a local model: which loaded models to swap out, and why, or whether to
+//! wait. Pure functions over a snapshot of the loaded models, so the rules are tested without
+//! servers. The supervisor asks them through the installed
+//! [`ResidencyPolicy`](crate::residency::ResidencyPolicy), which `imperium-core`'s residency
+//! controller owns.
 //!
 //! - A model with a slot in use, or a call queued for one, is never swapped out ([`Use::Busy`]).
 //! - The GPU rule: no call runs (partly) on the CPU while nothing generates. When the newcomer
@@ -26,10 +28,11 @@
 use std::time::Duration;
 
 use crate::planner::{Budget, Placement};
+use crate::residency::Reason;
 
 /// What a loaded model is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Use {
+pub enum Use {
     /// A slot is in use or a call is queued for one.
     Busy,
     /// No slot is in use, but an agent of the requester's own session that took one this time
@@ -41,7 +44,7 @@ pub(crate) enum Use {
 
 /// A loaded model as the arbiter sees it.
 #[derive(Debug, Clone)]
-pub(crate) struct Resident {
+pub struct Resident {
     pub id: String,
     /// Memory it holds, its prompt cache included.
     pub vram_bytes: u64,
@@ -63,7 +66,7 @@ pub(crate) struct Resident {
 
 /// Whether models may be swapped out now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Swaps {
+pub enum Swaps {
     Allowed,
     /// The swaps allowed this minute are used up.
     Spent,
@@ -72,7 +75,7 @@ pub(crate) enum Swaps {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Policy {
+pub struct Policy {
     pub min_residency: Duration,
     pub swaps: Swaps,
     /// How many times the GPU memory a newcomer gets beside the loaded models it must get once
@@ -87,11 +90,13 @@ impl Policy {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Decision {
-    /// Unload `evict` (in order), then load the model at `placement`.
+pub enum Decision {
+    /// Unload `evict` (in order), then load the model at `placement`. `why` is the reason the
+    /// evicted models give way ([`Reason::Call`] when nothing is evicted).
     Load {
         evict: Vec<String>,
         placement: Placement,
+        why: Reason,
     },
     /// Wait for a loaded model to finish, settle, or age.
     Wait,
@@ -103,7 +108,7 @@ pub(crate) enum Decision {
 
 /// What loading a model would take, for routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Outlook {
+pub enum Outlook {
     /// It fits beside the loaded models well enough not to swap them out.
     Fits,
     /// It needs models nobody has a slot on swapped out.
@@ -115,7 +120,7 @@ pub(crate) enum Outlook {
 
 /// How to make room for a model that `place` places within a budget, `waited` after it was
 /// first asked for.
-pub(crate) fn decide(
+pub fn decide(
     place: impl Fn(Budget) -> Option<Placement>,
     budget: Budget,
     residents: &[Resident],
@@ -129,7 +134,14 @@ pub(crate) fn decide(
     let free = candidates(residents, |r| r.use_ == Use::Free);
     let best_now = place(left_after(budget, residents, &free));
     if policy.may_swap() && worth_swapping(&best_now, &beside, policy.gain) {
-        return evict_fewest(&place, budget, residents, &free, &best_now);
+        let why = if beside.is_none() {
+            Reason::Room
+        } else if better(&best_now, &beside) {
+            Reason::MoreGpu
+        } else {
+            Reason::SwapGain
+        };
+        return evict_fewest(&place, budget, residents, &free, &best_now, why);
     }
     // Nothing generates anywhere: no call may run on the CPU while the GPU is idle. When the
     // newcomer would run (partly) on the CPU beside the loaded models, everything not
@@ -141,7 +153,14 @@ pub(crate) fn decide(
     if !generating && policy.swaps != Swaps::Off && beside.is_some() {
         let most = place(left_after(budget, residents, &yieldable));
         if better(&most, &beside) {
-            return evict_fewest(&place, budget, residents, &yieldable, &most);
+            return evict_fewest(
+                &place,
+                budget,
+                residents,
+                &yieldable,
+                &most,
+                Reason::GpuRule,
+            );
         }
     }
     let aged = waited >= policy.min_residency;
@@ -161,6 +180,7 @@ pub(crate) fn decide(
         return Decision::Load {
             evict: Vec::new(),
             placement,
+            why: Reason::Call,
         };
     }
     match policy.swaps {
@@ -177,11 +197,28 @@ pub(crate) fn decide(
     if best.is_none() {
         return Decision::Wait;
     }
-    evict_fewest(&place, budget, residents, &movable, &best)
+    match evict_fewest(&place, budget, residents, &movable, &best, Reason::Room) {
+        // A model an agent is mid-turn on gave way only because it had been loaded long enough.
+        Decision::Load {
+            evict, placement, ..
+        } if evict.iter().any(|id| {
+            residents
+                .iter()
+                .any(|r| &r.id == id && r.use_ == Use::Claimed)
+        }) =>
+        {
+            Decision::Load {
+                evict,
+                placement,
+                why: Reason::Aged,
+            }
+        }
+        decision => decision,
+    }
 }
 
 /// Whether a model fits beside the loaded ones, needs a swap, or cannot run now.
-pub(crate) fn outlook(
+pub fn outlook(
     place: impl Fn(Budget) -> Option<Placement>,
     budget: Budget,
     residents: &[Resident],
@@ -207,7 +244,7 @@ pub(crate) fn outlook(
 /// less room for the models it displaced that would fit back beside it without their own prompt
 /// caches. A model swapped out only because another's cache took the RAM then comes back beside
 /// it with a smaller cache, rather than swapping the newcomer out in turn.
-pub(crate) fn cache_room(
+pub fn cache_room(
     budget: Budget,
     residents: &[Resident],
     evicted: &[String],
@@ -232,7 +269,7 @@ pub(crate) fn cache_room(
 }
 
 /// The budget left once every resident not generating (and not protected) has given way.
-pub(crate) fn room_after_yield(budget: Budget, residents: &[Resident]) -> Budget {
+pub fn room_after_yield(budget: Budget, residents: &[Resident]) -> Budget {
     let yieldable = candidates(residents, |r| !r.generating && !r.protected);
     left_after(budget, residents, &yieldable)
 }
@@ -274,6 +311,7 @@ fn evict_fewest(
     residents: &[Resident],
     candidates: &[&Resident],
     target: &Option<Placement>,
+    why: Reason,
 ) -> Decision {
     for count in 1..=candidates.len() {
         let evicted = &candidates[..count];
@@ -284,6 +322,7 @@ fn evict_fewest(
             return Decision::Load {
                 evict: evicted.iter().map(|r| r.id.clone()).collect(),
                 placement,
+                why,
             };
         }
     }
@@ -669,7 +708,10 @@ mod tests {
             resident("gpu2", Use::Free, 2),
         ];
         let decision = decide(cpu, ram, &residents, Duration::ZERO, policy());
-        let Decision::Load { evict, placement } = decision else {
+        let Decision::Load {
+            evict, placement, ..
+        } = decision
+        else {
             panic!("{decision:?}")
         };
         assert!(evict.is_empty());
@@ -723,5 +765,63 @@ mod tests {
         let room = cache_room(ram, &[resident], &["first".into()], &placement);
         // 12 GiB less 4 GiB kept for the first model to come back beside the newcomer.
         assert_eq!(room.ram_bytes, 8 * GIB);
+    }
+
+    fn why(decision: &Decision) -> Option<Reason> {
+        match decision {
+            Decision::Load { why, .. } => Some(*why),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn every_eviction_says_why() {
+        // Beside an idle 8 GiB model the newcomer would run partly on the CPU.
+        let decision = decide(
+            six_gib,
+            budget(),
+            &[resident("idle", Use::Free, 8)],
+            Duration::ZERO,
+            policy(),
+        );
+        assert_eq!(why(&decision), Some(Reason::MoreGpu));
+        // It does not fit beside a model filling the GPU and the RAM.
+        let no_ram = Budget {
+            ram_bytes: 0,
+            ..budget()
+        };
+        let decision = decide(
+            six_gib,
+            no_ram,
+            &[resident("idle", Use::Free, 10)],
+            Duration::ZERO,
+            policy(),
+        );
+        assert_eq!(why(&decision), Some(Reason::Room));
+        // The GPU rule moves an orchestrator mid-turn while nothing generates.
+        let mut orchestrator = resident("orchestrator", Use::Claimed, 8);
+        orchestrator.resident_for = Duration::ZERO;
+        let decision = decide(six_gib, budget(), &[orchestrator], Duration::ZERO, policy());
+        assert_eq!(why(&decision), Some(Reason::GpuRule));
+        // With another agent generating, a claimed model goes only once aged.
+        let claimed = resident("other", Use::Claimed, 8);
+        let decision = decide(
+            six_gib,
+            no_ram,
+            &[claimed, generator()],
+            Duration::from_secs(40),
+            policy(),
+        );
+        assert_eq!(evicted(&decision), Some(vec!["other".into()]));
+        assert_eq!(why(&decision), Some(Reason::Aged));
+        // Nothing evicted: the call's own load.
+        let decision = decide(
+            six_gib,
+            budget(),
+            &[resident("small", Use::Free, 3)],
+            Duration::ZERO,
+            policy(),
+        );
+        assert_eq!(why(&decision), Some(Reason::Call));
     }
 }

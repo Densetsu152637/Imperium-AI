@@ -147,10 +147,14 @@ the wait reason in the desktop.
     `spawn_agent` may set one for a subagent, and whether a model reasons comes from its table
     row, its tags, a local model's chat template, or its name
     ([04](04-models-and-routing.md#reasoning-effort), [07](07-desktop-ui.md)).
-16. **Memory control in core.** Review loading and unloading end to end: imperium-core
-    should own every decision about which models and KV caches are resident, loaded, or
-    unloaded (the local runtime only carries them out), with the reason for each move visible.
-    The KV-residency work and the GPU rule are the starting point; measure on real hardware.
+16. **Memory control in core** (implemented). imperium-core's residency controller owns every
+    decision about which models and KV caches are resident: a plan loop for idle unloads and
+    settings restarts, the policy calls ask to make room, `models.unload`, resumes, and a
+    memory budget refreshed from live readings. The local runtime only carries them out, and
+    every move is reported with its reason (`model.residency`)
+    ([04](04-models-and-routing.md#residency-controller-implemented)). Still to do: the races
+    the review found (titles, crashed servers, a yield racing a resume), the desktop wait line,
+    and measuring on real hardware.
 17. **Session titles and list** (implemented). After a session's first exchange the core
     titles it in the background with a model that is cheap to ask now (the session's model
     when it is local and loaded with a free slot, another loaded local model, or the session's

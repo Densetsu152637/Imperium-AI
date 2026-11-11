@@ -478,9 +478,11 @@ memory arbiter for every session (`crates/imperium-local/src/arbiter.rs` holds t
   `--cache-ram` took the RAM it needs, the newcomer's cache is sized to leave room for it to come
   back without its cache, so after one restart both stay loaded with smaller caches instead of
   taking turns.
-- **Visibility.** Every client receives `model.swapped_out` and `model.swapped_in` notifications
-  (`ModelSwap`: `model_id`, `seconds`, `bytes`, `slots`, and a `reason`: `room`, `idle`, `config`
-  or `request` (`models.unload`) out, `swap` or `restore` in). Out counts the slot bytes written and the time to save and stop; in
+- **Visibility.** Every client receives `model.residency` for every move with its reason (see
+  [the residency controller](#residency-controller-implemented)), and `model.swapped_out` and
+  `model.swapped_in` notifications
+  (`ModelSwap`: `model_id`, `seconds`, `bytes`, `slots`, and a `reason`: `room`, `idle`, `config`,
+  `grow`, `promote` or `request` (`models.unload`) out, `swap` or `restore` in). Out counts the slot bytes written and the time to save and stop; in
   counts the memory taken and the time to start, and `slots` is how many saved slots wait for
   their agents.
 
@@ -599,7 +601,7 @@ model and the machine allow (`imperium-local/src/context.rs`):
   The CLI prints it; the desktop does not show it yet.
 - **What the lists show.** `models.local` rows carry the loader's own estimate for each model
   under its settings (the same placer and pool sizing, beside the models loaded now, against the
-  budget measured at start): layers on the GPU (`gpu_layers` of `layers`), `vram_bytes`,
+  budget now, which the residency controller refreshes): layers on the GPU (`gpu_layers` of `layers`), `vram_bytes`,
   `ram_bytes`, the context ceiling and the starting pool; a loaded model reports its live
   values instead. They are recomputed on every listing, so a saved setting shows at once.
 - **Why not a llama.cpp fork.** llama.cpp allocates the KV cache when it creates the context,
@@ -645,8 +647,8 @@ the grain of one agent's slot as well as one model:
   the prompt before it is sent (`restoring_context`). A session the user stops releases its
   agents' slots at once (`LocalModels::suspend` at the safe point where each halts). When an
   agent goes on, after Resume or after a steering message wakes the root, the engine
-  (`ensure_resident`) checks `LocalModels::suspended` and restores the context ahead of the
-  next call with a near-empty interactive call. That loads the model if it was swapped out and
+  (`ensure_resident`) checks `LocalModels::suspended` and calls `LocalModels::resume`, which
+  restores the context ahead of the next call with a near-empty interactive call (`resume`). That loads the model if it was swapped out and
   puts the agent ahead of idle subagents. A waiting agent was already no claim on its
   model, so a subagent on another model that does not fit beside it swaps it out (slots saved)
   rather than running on the CPU, and it comes back with its slots restored when it resumes.
@@ -664,6 +666,91 @@ Not done yet: a resuming root does not jump the queue of a model whose slots are
 waiting agent's slot is only suspended when a free slot permit lets it be taken (with every
 slot busy, llama-server may reuse it and its prompt then comes from the prompt cache or is read
 again).
+
+### Residency controller (implemented)
+
+**Implemented (roadmap item 16):** `imperium-core` owns every decision about which local models
+and KV caches are in memory; the `imperium-local` supervisor carries them out and decides
+nothing on its own. The controller (`crates/imperium-core/src/residency.rs`) is a plan → actions
+loop over one vocabulary (`imperium-local::residency`): actions `load`, `unload`, `save_slot`,
+`restore_slot`, `resize_pool` and `set_budget`, each with a reason.
+
+- **The plan loop.** Whenever the supervisor signals a change (a slot freed, an agent waiting or
+  going on, settings changed) and at least every 15 s, the controller reads the loaded models
+  and plans: a model whose settings changed restarts once no slot, queued call or mid-turn agent
+  of any session holds it (`config`), and a model nobody has used for `idle_unload_s` unloads
+  (`idle`). The supervisor executes each action (`Supervisor::execute`) and refuses one that would
+  move a model or slot in use, or an idle unload of a model used again since it was planned. The
+  supervisor no longer runs an idle-unload timer or a settings-restart task of its own.
+- **Calls ask it.** A call whose model is not loaded asks the installed `ResidencyPolicy` what to
+  swap out. The controller installs `CorePolicy`: the arbiter's rules above (never a model in
+  use, the GPU rule and the critic exception, `min_residency_s`, the swaps per minute,
+  `swap_gain`), with every eviction logged and reported with why it gave way. Waiting agents
+  yield their KV cells to an agent on the same model through the policy too
+  (`ResidencyPolicy::yield_slots`). What a call in flight needs it still does at once, as
+  before, because the call is waiting for it: load its model, restore its saved context, and
+  restart a pool that must grow or a model the GPU rule moves to the GPU, the restart now made
+  by the first call waiting for the model once its running calls are done instead of by a
+  background task.
+- **Resume.** An agent that goes on after waiting (subagents done, a steering message waking
+  the root, Resume after a stop) calls `LocalModels::resume`, which loads its model if it was
+  swapped out and restores its context ahead of its next call, as the user's work, reported as
+  `resume`. A stopped session's slots are saved as `stopped`.
+- **The budget follows the machine.** Every 30 s the controller reads the free VRAM (and, while
+  no model is loaded, the available RAM) the way the start did, `[hardware]` overrides included,
+  and moves the budget when it changed by 512 MiB or more: VRAM is what is free plus what the
+  loaded models hold, so memory another program takes (a training run, a game) or gives back is
+  planned around. RAM is not read while a model is loaded, since weights are memory-mapped and
+  prompt caches fill lazily; a reading with no GPU where the start found one keeps the VRAM
+  budget. Context ceilings stay sized against the memory measured at start (a pool that does
+  not fit the live budget is cut, as beside other models), so a budget change never makes a
+  loaded model stale.
+- **Every move says why.** The supervisor reports each move (`Supervisor::moves`) and the daemon
+  sends it to every client as `model.residency` (`ModelResidency`: `action`, `model_id`,
+  `holder`, `reason`, `ok`, `detail`, `seconds`, `bytes`). Reasons: `call`, `resume`, `room`,
+  `more_gpu`, `swap_gain`, `gpu_rule`, `critic`, `aged`, `idle`, `config`, `grow`, `promote`,
+  `request`, `yield`, `stopped`, `budget`. An eviction's `detail` names the model it made room
+  for, a load's its placement. `model.swapped_out` keeps its coarser reasons (every eviction for
+  a load is `room`).
+
+**Review (before the controller).** Every path that moved local-model memory, who decided, and
+on what signal:
+
+| Path | Decided by | Signal | Reported |
+| ---- | ---------- | ------ | -------- |
+| Load for a call, and its evictions | supervisor (`plan` → arbiter) | a call for a model not loaded | `model.swapped_in/out`, every eviction as `room` |
+| Idle unload | supervisor's own 15 s task | `idle_unload_s` | `idle` |
+| Settings restart | supervisor's own task, spawned by a settings change or a load that raced one | `models.set_config`, rescan, CPU-lane pins | `config` |
+| Pool growth | supervisor (`context.rs` via `Loaded::growth`), restarted by the same task | a call that does not fit, or a full pool | `grow` (missing from the protocol docs) |
+| GPU-rule promotion | supervisor (`promotes`), same task | a call on a model running on the CPU while nothing generates | `promote` (missing from the protocol docs), a warning |
+| Waiting agent's slot save and erase | supervisor, a task per waiting agent spawned from `acquire` | another agent took a slot on the model | a log line only |
+| Stopped session's slots | engine (`hold_while_stopped` → `LocalModels::suspend`) | the user stops the session | a log line only |
+| Resume restore and reload | engine (`ensure_resident`, a near-empty call) | steering, subagents done, Resume | indistinguishable from a call |
+| `models.unload` | daemon RPC → supervisor | the user | `request` |
+| Background calls giving way | supervisor, with the load view and `interactive_hold_min` core hands it | the quiet-machine rule | `local_model_waiting` only |
+| Titles | core (`title_model`: only a model `Loaded` with a free slot) | first exchange | none |
+| Prompt cache size | supervisor (`cache_room`) | each load | a log line |
+| Saved-slot disk cache | `slot_files` (`swap_cache_mb`, oldest of the busiest session first) | each save | none |
+| Budget | measured once at start | none | none |
+
+Findings: decisions were split across the supervisor's two background tasks, its call path, the
+engine and the RPC handler; nothing could see why a model moved beyond `room`/`idle`; slot saves
+and restores, resumes and the budget were not reported at all; the budget never followed other
+programs on the GPU; and `model.swapped_out`'s documented reasons left out `grow` and `promote`.
+Races found: (1) a waiting agent's slot save runs in a detached task and can finish after the
+agent resumed and took another slot, so its next call restores the older context (llama.cpp
+then re-reads from where the prompts diverge: wasted work, not a wrong answer); (2) titles check
+that a model is `Loaded` and then call it, so a swap-out in between makes the title call load
+the model it meant not to; (3) there is no supervisor restart of a crashed `llama-server`: a
+server that dies stays listed as loaded until it is unloaded, and its calls fail. The controller
+removes the split and the missing reasons; the races are listed below.
+
+Not done yet: an `if_loaded` call for titles (race 2); a health check that unloads a crashed
+server (with reason) so the next call reloads it (race 3); cancelling an in-flight yield when the
+waiting agent resumes (race 1); the desktop showing `model.residency` and `local_model_waiting`
+on the wait line; reading free VRAM through NVML instead of `nvidia-smi`, and other vendors;
+saved-slot cache evictions and prompt-cache sizing as reported moves; and measuring all of it on
+a 16 GB GPU (swap and restore times, the budget refresh beside another GPU process).
 
 `models.config` returns, for every local model and every model-table row, what `models.toml`
 saves (`saved`), what is in effect (`effective`, from the daemon's settings snapshot), the memory
@@ -828,9 +915,10 @@ and passing it to `Supervisor::with_backends`.
 NVIDIA GPUs (`nvidia-smi`); Apple Silicon is planned as unified memory. `[hardware] vram_mb`
 and `ram_mb` override the probe for GPUs it cannot read, or to plan as if memory were smaller.
 The budget is the free VRAM and the available RAM less `runtime.llamacpp.ram_headroom_mb`,
-measured once at start; loaded models reserve what the planner estimated (the runtime overhead
-is a fixed 512 MiB). AMD/Intel/Metal probes, live re-measurement, and calibration against
-measured usage are later work. `backend = "auto"` picks `cuda13` for an NVIDIA driver of the
+measured at start and again every 30 s by the [residency
+controller](#residency-controller-implemented) (VRAM always, RAM while no model is loaded);
+loaded models reserve what the planner estimated (the runtime overhead is a fixed 512 MiB).
+AMD/Intel/Metal probes and calibration against measured usage are later work. `backend = "auto"` picks `cuda13` for an NVIDIA driver of the
 580 series or newer, `cuda12` for older drivers, `metal` on Apple Silicon, and `cpu`
 otherwise; set `vulkan` or `rocm` explicitly.
 

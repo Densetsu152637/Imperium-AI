@@ -2047,6 +2047,51 @@ pub const MODEL_SWAPPED_OUT: &str = "model.swapped_out";
 /// or comes back with saved slots. The payload is a [`ModelSwap`].
 pub const MODEL_SWAPPED_IN: &str = "model.swapped_in";
 
+/// Notification sent to every client for each move of local-model memory the daemon's residency
+/// controller makes or the runtime makes for a call: a model loaded or unloaded, an agent's
+/// slot saved or restored, a KV pool resized, or the memory budget changed. The payload is a
+/// [`ModelResidency`].
+pub const MODEL_RESIDENCY: &str = "model.residency";
+
+/// One move of local-model memory and why it happened.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelResidency {
+    /// `load`, `unload`, `save_slot`, `restore_slot`, `resize_pool`, or `set_budget`.
+    pub action: String,
+    /// The model moved; absent for `set_budget`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_id: Option<String>,
+    /// The agent (`<session>/<agent>`) whose slot was saved or restored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub holder: Option<String>,
+    /// Why: `call` (a model call needed it), `resume` (an agent going on after waiting got its
+    /// context back), `room` (another model did not fit beside it), `more_gpu` (another model
+    /// gets more layers on the GPU without it), `swap_gain` (another model gets `swap_gain`
+    /// times the GPU memory without it), `gpu_rule` (nothing generated, so models not
+    /// generating gave way rather than let a call run on the CPU), `critic` (the CPU-lane
+    /// critic took the GPU while its session waits on it), `aged` (held mid-turn, but loaded at
+    /// least `min_residency_s` and nothing else fitted), `idle` (`idle_unload_s`), `config`
+    /// (its settings changed), `grow` (a call needs a larger KV pool), `promote` (it ran on the
+    /// CPU while the GPU was idle), `request` (`models.unload`), `yield` (a waiting agent gave
+    /// its KV cells to another agent on the same model), `stopped` (the session was stopped),
+    /// or `budget` (the free memory measured changed).
+    pub reason: String,
+    /// Whether it happened; when not, `detail` says why.
+    pub ok: bool,
+    /// More about it: the model an eviction made room for, a load's placement, or the error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detail: Option<String>,
+    pub seconds: f64,
+    /// Bytes moved: slot state written or read, or the memory a load took. For `set_budget`,
+    /// the VRAM budget.
+    #[ts(type = "number")]
+    pub bytes: u64,
+}
+
 /// A local model swapped out or in.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -2060,7 +2105,10 @@ pub struct ModelSwap {
     /// Out: slots saved. In: saved slots waiting to be restored on their agents' next calls.
     pub slots: u32,
     /// Out: `room` (another model needed the memory), `idle`, `config` (its settings
-    /// changed), or `request` (`models.unload`). In: `swap` (it replaced a model) or `restore` (it came back with saved slots).
+    /// changed), `grow` (a call needs a larger KV pool), `promote` (it ran on the CPU while the
+    /// GPU was idle and restarts on the GPU), or `request` (`models.unload`). In: `swap` (it
+    /// replaced a model) or `restore` (it came back with saved slots). `model.residency` says
+    /// in more detail why each move happened.
     pub reason: String,
 }
 
