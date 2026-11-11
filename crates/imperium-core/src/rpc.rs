@@ -79,7 +79,9 @@ use imperium_protocol::methods::{
     SessionComparePickParams,
 };
 use imperium_protocol::methods::{
-    SessionCheckpoints, SessionCheckpointsParams, SessionRewind, SessionRewindParams,
+    SessionCheckpoints, SessionCheckpointsParams, SessionReview, SessionReviewCommit,
+    SessionReviewCommitParams, SessionReviewHunk, SessionReviewHunkParams, SessionReviewParams,
+    SessionReviewPullRequest, SessionReviewPullRequestParams, SessionRewind, SessionRewindParams,
 };
 use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionControlResult};
 use imperium_protocol::methods::{
@@ -716,6 +718,38 @@ impl Connection {
                         .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
                 })
             }
+            SessionReview::NAME => call_later::<SessionReview, _>(
+                request.params,
+                &mut later,
+                |params: SessionReviewParams| {
+                    let state = Arc::clone(&self.state);
+                    async move { blocking(move || crate::review::review(&state, &params)).await }
+                },
+            ),
+            SessionReviewHunk::NAME => call_later::<SessionReviewHunk, _>(
+                request.params,
+                &mut later,
+                |params: SessionReviewHunkParams| {
+                    let state = Arc::clone(&self.state);
+                    async move { blocking(move || crate::review::act_on_hunk(&state, &params)).await }
+                },
+            ),
+            SessionReviewCommit::NAME => call_later::<SessionReviewCommit, _>(
+                request.params,
+                &mut later,
+                |params: SessionReviewCommitParams| {
+                    let state = Arc::clone(&self.state);
+                    async move { blocking(move || crate::review::commit(&state, &params)).await }
+                },
+            ),
+            SessionReviewPullRequest::NAME => call_later::<SessionReviewPullRequest, _>(
+                request.params,
+                &mut later,
+                |params: SessionReviewPullRequestParams| {
+                    let state = Arc::clone(&self.state);
+                    async move { blocking(move || crate::review::pull_request(&state, &params)).await }
+                },
+            ),
             SessionAgentCancel::NAME => {
                 call::<SessionAgentCancel>(request.params, |params: SessionAgentCancelParams| {
                     self.session(&params.session_id)?

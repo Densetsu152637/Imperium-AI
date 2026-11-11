@@ -560,3 +560,47 @@ async fn only_known_sessions_can_be_branched() {
         assert!(refused.is_err(), "{id:?}");
     }
 }
+
+#[tokio::test]
+async fn a_branch_with_a_worktree_runs_no_hook_from_the_repository() {
+    let url = serve().await;
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url);
+    let mut connection = connect(&state).await;
+    let (id, _tree) = session_on_a_worktree(&state, &mut connection, repo.path()).await;
+    // Planted after the source's own worktree exists, so only the branch's could run it.
+    let marker = home.path().join("hook-ran");
+    let hooks = repo.path().join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::write(
+        hooks.join("post-checkout"),
+        format!(
+            "#!/bin/sh\ntouch '{}'\n",
+            marker.display().to_string().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            hooks.join("post-checkout"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let history = after_turns(&state, &id, 1).await;
+    let branched: SessionBranchResult = serde_json::from_value(
+        call(
+            &mut connection,
+            "session.branch",
+            json!({"session_id": id, "at": history.len() - 1, "worktree": true}),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(branched.worktree);
+    assert!(!marker.exists(), "the post-checkout hook did not run");
+}

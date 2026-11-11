@@ -13,9 +13,9 @@ use imperium_protocol::methods::{
     SessionCheckpointsParams, SessionCheckpointsResult, SessionCompare, SessionCompareParams,
     SessionComparePick, SessionComparePickParams, SessionControl, SessionControlParams,
     SessionCreate, SessionCreateParams, SessionQueue, SessionQueueParams, SessionRespond,
-    SessionRespondParams, SessionRewind, SessionRewindParams, SessionRewindResult, SessionSend,
-    SessionSendParams, SessionSubscribe, SessionSubscribeParams, SessionSuggestionRespond,
-    SuggestionRespondParams,
+    SessionRespondParams, SessionReview, SessionReviewParams, SessionReviewResult, SessionRewind,
+    SessionRewindParams, SessionRewindResult, SessionSend, SessionSendParams, SessionSubscribe,
+    SessionSubscribeParams, SessionSuggestionRespond, SuggestionRespondParams,
 };
 use imperium_protocol::session::{
     AgentEvent, AgentStatus, AgentSummary, ContextCategory, ExtensionKind, LocalWaitReason,
@@ -82,7 +82,11 @@ pub fn run(
              <text> adds a message to the running turn, /queue lists what waits. /context shows \
              what the model is reading, /model <id> switches models, /effort <low|medium|high|max> \
              sets how hard a reasoning model thinks, /compact summarises older turns, /rewind lists \
-             checkpoints and puts files and the conversation back to one; /branch continues in a copy of this conversation, /compare <model> <model> -- <message> runs a message on several models and /pick <n> keeps one; /download, /dismiss, or /never answer a model download suggestion; an \
+             checkpoints and puts files and the conversation back to one, /diff [n] shows what \
+             the session changed (since checkpoint n); /branch continues in a copy of this \
+             conversation, /compare <model> <model> -- <message> runs a message on several \
+             models and /pick <n> keeps one; /download, /dismiss, or /never answer a \
+             model download suggestion; an \
              empty line (when idle) or /exit quits."
         );
         let mut lines = read_lines();
@@ -334,6 +338,18 @@ impl Chat {
                     .await;
                 if let Err(error) = result {
                     println!("{error}");
+                }
+            }
+            Some(Command::Diff(since)) => {
+                let result = client
+                    .call::<SessionReview>(SessionReviewParams {
+                        session_id: session_id.to_string(),
+                        since,
+                    })
+                    .await;
+                match result {
+                    Ok(review) => print!("{}", describe_review(&review)),
+                    Err(error) => println!("{error}"),
                 }
             }
             Some(Command::Rewind(None)) => {
@@ -867,6 +883,8 @@ enum Command {
     Pick(usize),
     /// A command typed in the wrong shape: its usage, printed instead of sending the line.
     Usage(&'static str),
+    /// `/diff [n]`: what the session changed since its first checkpoint (or checkpoint `n`).
+    Diff(Option<u32>),
 }
 
 const COMPARE_USAGE: &str =
@@ -951,6 +969,46 @@ fn describe_rewind(result: &SessionRewindResult) -> String {
     out
 }
 
+/// The session's changes as `/diff` prints them: a unified diff per file.
+fn describe_review(review: &SessionReviewResult) -> String {
+    if !review.available {
+        return format!(
+            "No review: {}.\n",
+            review.reason.as_deref().unwrap_or("not available")
+        );
+    }
+    if review.files.is_empty() {
+        return "The session has changed no files since its first checkpoint.\n".into();
+    }
+    let several = review.repos.len() > 1;
+    let mut out = String::new();
+    for file in &review.files {
+        let shown = if several {
+            format!("{}/{}", file.repo, file.path)
+        } else {
+            file.path.clone()
+        };
+        let (old, new) = match file.status.as_str() {
+            "added" => ("/dev/null".to_string(), format!("b/{shown}")),
+            "deleted" => (format!("a/{shown}"), "/dev/null".to_string()),
+            _ => (format!("a/{shown}"), format!("b/{shown}")),
+        };
+        out.push_str(&format!("--- {old}\n+++ {new}\n"));
+        if file.binary {
+            out.push_str("Binary or large file changed\n");
+        }
+        for hunk in &file.hunks {
+            out.push_str(&hunk.header);
+            out.push('\n');
+            for line in &hunk.lines {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 fn command(text: &str) -> Option<Command> {
     if text == "/branch" || text.starts_with("/branch ") {
         let title = text["/branch".len()..].trim();
@@ -972,6 +1030,17 @@ fn command(text: &str) -> Option<Command> {
                 .ok()
                 .map_or(Command::Usage(PICK_USAGE), Command::Pick),
         );
+    }
+    if text == "/diff" {
+        return Some(Command::Diff(None));
+    }
+    if let Some(since) = text.strip_prefix("/diff ") {
+        return since
+            .trim()
+            .trim_start_matches('#')
+            .parse()
+            .ok()
+            .map(|since| Command::Diff(Some(since)));
     }
     if text == "/rewind" || text.starts_with("/rewind ") {
         return rewind_command(&text["/rewind".len()..]).map(Command::Rewind);
@@ -1326,6 +1395,7 @@ fn choose_answer(question: &Question, input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use imperium_protocol::methods::{ReviewFile, ReviewHunk};
 
     #[test]
     fn residency_moves_print_what_moved_and_why() {
@@ -1441,6 +1511,38 @@ mod tests {
         for bad in ["/pick", "/pick x"] {
             assert_eq!(command(bad), Some(Command::Usage(PICK_USAGE)), "{bad}");
         }
+    }
+
+    #[test]
+    fn diff_prints_unified_diffs() {
+        assert_eq!(command("/diff"), Some(Command::Diff(None)));
+        assert_eq!(command("/diff 2"), Some(Command::Diff(Some(2))));
+        assert_eq!(command("/diff x"), None);
+        let review = SessionReviewResult {
+            available: true,
+            repos: vec!["/r".into()],
+            files: vec![ReviewFile {
+                repo: "/r".into(),
+                id: "f".into(),
+                path: "a.txt".into(),
+                status: "added".into(),
+                binary: false,
+                hunks: vec![ReviewHunk {
+                    id: "x".into(),
+                    header: "@@ -0,0 +1,1 @@".into(),
+                    old_start: 0,
+                    old_lines: 0,
+                    new_start: 1,
+                    new_lines: 1,
+                    lines: vec!["+hi".into()],
+                }],
+            }],
+            ..SessionReviewResult::default()
+        };
+        assert_eq!(
+            describe_review(&review),
+            "--- /dev/null\n+++ b/a.txt\n@@ -0,0 +1,1 @@\n+hi\n"
+        );
     }
 
     #[test]

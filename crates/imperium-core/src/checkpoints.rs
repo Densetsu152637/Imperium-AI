@@ -108,6 +108,10 @@ pub(crate) fn working_files(top: &Path, cache: &mut HashCache) -> Result<Files, 
             continue;
         }
         let full = top.join(&path);
+        // A path under a linked folder could lead out of the working tree; it is not read.
+        if !no_links_between(top, &full) {
+            continue;
+        }
         let Ok(meta) = std::fs::symlink_metadata(&full) else {
             continue;
         };
@@ -410,6 +414,27 @@ struct Record {
     /// The journal's length in bytes when the turn started.
     #[serde(default)]
     journal_offset: u64,
+    /// For `turn`: the files the turn changed, by repository root, so a review lists the
+    /// session's changes and not edits made between turns.
+    #[serde(default)]
+    touched: BTreeMap<String, Vec<String>>,
+}
+
+/// The paths whose entries differ between `before` and `after`, submodules aside.
+pub(crate) fn differing(before: &Files, after: &Files) -> Vec<String> {
+    let mut paths: BTreeSet<&String> = BTreeSet::new();
+    paths.extend(before.keys());
+    paths.extend(after.keys());
+    paths
+        .into_iter()
+        .filter(|path| {
+            let (a, b) = (before.get(*path), after.get(*path));
+            a != b
+                && a.is_none_or(|entry| entry.mode != "160000")
+                && b.is_none_or(|entry| entry.mode != "160000")
+        })
+        .cloned()
+        .collect()
 }
 
 /// One repository's files when a turn started.
@@ -509,6 +534,12 @@ impl SessionCheckpoints {
         tops
     }
 
+    /// The files git would see in the working tree at `top`, with the session's hash cache.
+    pub(crate) fn working_files(&self, top: &Path) -> Result<Files, String> {
+        let mut inner = self.lock();
+        working_files(top, inner.caches.entry(top.to_path_buf()).or_default())
+    }
+
     /// Whether a root turn is running (between `before_turn` and `after_turn`).
     pub(crate) fn turn_running(&self) -> bool {
         self.lock().pending.is_some()
@@ -566,12 +597,16 @@ impl SessionCheckpoints {
     fn keep(
         &self,
         kind: &str,
-        prompt: String,
-        at_unix_ms: u64,
-        journal_offset: u64,
-        messages: Option<&[u8]>,
-        snapshots: &[Snapshot],
+        taken: Pending,
+        touched: BTreeMap<String, Vec<String>>,
     ) -> Result<SessionCheckpoint, String> {
+        let Pending {
+            prompt,
+            at_unix_ms,
+            journal_offset,
+            messages,
+            snapshots,
+        } = taken;
         let number = self.next_number();
         let headline = prompt.lines().next().unwrap_or_default();
         let message = format!(
@@ -596,7 +631,7 @@ impl SessionCheckpoints {
         }
         std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
         let conversation = kind == "turn";
-        if let (true, Some(messages)) = (conversation, messages) {
+        if let (true, Some(messages)) = (conversation, messages.as_deref()) {
             std::fs::write(self.dir.join(format!("{number}.messages.json")), messages)
                 .map_err(|error| error.to_string())?;
         }
@@ -611,6 +646,7 @@ impl SessionCheckpoints {
         let record = Record {
             checkpoint: checkpoint.clone(),
             journal_offset,
+            touched,
         };
         let text = serde_json::to_string_pretty(&record).map_err(|error| error.to_string())?;
         std::fs::write(self.dir.join(format!("{number}.json")), text)
@@ -634,7 +670,28 @@ impl SessionCheckpoints {
             snapshots.push(self.snapshot(inner, top)?);
         }
         let offset = std::fs::metadata(&self.journal).map_or(0, |meta| meta.len());
-        self.keep("rewind", String::new(), now_ms(), offset, None, &snapshots)
+        let taken = Pending {
+            prompt: String::new(),
+            at_unix_ms: now_ms(),
+            journal_offset: offset,
+            messages: None,
+            snapshots,
+        };
+        self.keep("rewind", taken, BTreeMap::new())
+    }
+
+    /// The files the session's turns changed from checkpoint `since` on, by repository root.
+    pub(crate) fn touched_since(&self, since: u32) -> HashMap<String, BTreeSet<String>> {
+        let mut touched: HashMap<String, BTreeSet<String>> = HashMap::new();
+        for record in self.records() {
+            if record.checkpoint.number < since {
+                continue;
+            }
+            for (root, paths) in record.touched {
+                touched.entry(root).or_default().extend(paths);
+            }
+        }
+        touched
     }
 
     /// Puts the files back to checkpoint `record`, first keeping them as they are as a `rewind`
@@ -653,13 +710,35 @@ impl SessionCheckpoints {
         let undo = self.keep_now(&mut inner, &repos)?;
         let mut restored = Vec::new();
         let mut removed = Vec::new();
+        // Every repository is tried; a failure in one does not leave the rest unrewound.
+        let mut errors = Vec::new();
         for repo in &record.checkpoint.repos {
             let top = PathBuf::from(&repo.root);
-            let target = commit_files(&top, &repo.commit)?;
             let cache = inner.caches.entry(top.clone()).or_default();
-            let (written, gone) = restore(&top, &target, cache)?;
-            restored.extend(written);
-            removed.extend(gone);
+            match commit_files(&top, &repo.commit).and_then(|target| restore(&top, &target, cache))
+            {
+                Ok((written, gone)) => {
+                    restored.extend(written);
+                    removed.extend(gone);
+                }
+                Err(error) => errors.push(format!("{}: {error}", repo.root)),
+            }
+        }
+        if !errors.is_empty() {
+            return Err(format!(
+                "the files were only partly rewound ({}; {} restored, {} removed elsewhere: {}); \
+                 rewinding the files to checkpoint {} undoes it",
+                errors.join("; "),
+                restored.len(),
+                removed.len(),
+                restored
+                    .iter()
+                    .chain(&removed)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                undo.number
+            ));
         }
         Ok((undo.number, restored, removed))
     }
@@ -693,28 +772,25 @@ impl imperium_engine::TurnCheckpoints for SessionCheckpoints {
         let Some(pending) = inner.pending.take() else {
             return;
         };
-        let mut changed = false;
+        let mut touched = BTreeMap::new();
         for snapshot in &pending.snapshots {
             let cache = inner.caches.entry(snapshot.top.clone()).or_default();
             match working_files(&snapshot.top, cache) {
-                Ok(files) if files != snapshot.files => changed = true,
-                Ok(_) => {}
+                Ok(files) => {
+                    let changed = differing(&snapshot.files, &files);
+                    if !changed.is_empty() {
+                        touched.insert(snapshot.top.display().to_string(), changed);
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(session = %self.session_id, %error, "could not list the repository's files after the turn");
                 }
             }
         }
-        if !changed {
+        if touched.is_empty() {
             return;
         }
-        if let Err(error) = self.keep(
-            "turn",
-            pending.prompt,
-            pending.at_unix_ms,
-            pending.journal_offset,
-            pending.messages.as_deref(),
-            &pending.snapshots,
-        ) {
+        if let Err(error) = self.keep("turn", pending, touched) {
             tracing::warn!(session = %self.session_id, %error, "could not record a checkpoint");
         }
     }
@@ -739,14 +815,21 @@ pub(crate) fn forget(data_dir: &Path, session_id: &str) {
         }
     }
     let prefix = format!("{REF_PREFIX}/{session_id}/");
+    // The review's bases: `refs/imperium/review/<session>` and `<session>-<k>`.
+    let review = format!("{}/{session_id}", crate::review::REF_PREFIX);
     for root in repos {
         let top = Path::new(&root);
-        let Ok(out) = run(command(top).args(["for-each-ref", "--format=%(refname)", &prefix]))
-        else {
+        let Ok(out) = run(command(top).args([
+            "for-each-ref",
+            "--format=%(refname)",
+            &prefix,
+            crate::review::REF_PREFIX,
+        ])) else {
             continue;
         };
         for name in String::from_utf8_lossy(&out).lines() {
-            if name.starts_with(&prefix) {
+            let reviewed = name == review || name.starts_with(&format!("{review}-"));
+            if name.starts_with(&prefix) || reviewed {
                 let _ = run(command(top).args(["update-ref", "-d", name]));
             }
         }
@@ -865,4 +948,51 @@ pub(crate) fn rewind(
         result.prompt = Some(record.checkpoint.prompt.clone());
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    fn git(dir: &std::path::Path, args: &[&str]) -> (bool, String) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        )
+    }
+
+    /// An index entry under a folder that is a link out of the working tree is not read.
+    #[cfg(unix)]
+    #[test]
+    fn snapshots_do_not_follow_linked_folders_out_of_the_tree() {
+        use super::*;
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "private key\n").unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let top = repo.path().canonicalize().unwrap();
+        git(&top, &["init", "-q"]);
+        std::fs::write(top.join("a.txt"), "a\n").unwrap();
+        git(&top, &["add", "a.txt"]);
+        // `d/secret` in the index without touching the disk, then `d` made a link outside.
+        let (_, empty) = git(&top, &["hash-object", "-w", "/dev/null"]);
+        let entry = format!("100644,{empty},d/secret");
+        git(&top, &["update-index", "--add", "--cacheinfo", &entry]);
+        std::os::unix::fs::symlink(outside.path(), top.join("d")).unwrap();
+        let files = working_files(&top, &mut HashCache::default()).unwrap();
+        assert!(files.contains_key("a.txt"));
+        assert!(
+            !files.contains_key("d/secret"),
+            "nothing is read through the link"
+        );
+        let secret = outside.path().join("secret").display().to_string();
+        let (_, id) = git(&top, &["hash-object", &secret]);
+        let (stored, _) = git(&top, &["cat-file", "-e", &id]);
+        assert!(!stored, "the outside file was not stored");
+    }
 }

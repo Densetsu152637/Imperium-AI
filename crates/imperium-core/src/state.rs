@@ -141,6 +141,8 @@ pub struct DaemonState {
     pub(crate) runtime_update: Mutex<Option<imperium_protocol::methods::RuntimeUpdateJob>>,
     /// The Hugging Face Hub to use instead of the one from the environment (for tests).
     hub: OnceLock<imperium_local::hf::Hub>,
+    /// The `gh` to use instead of the one on the PATH (for tests).
+    gh: OnceLock<PathBuf>,
     /// Notifications for every connected client, such as schedule runs.
     announcements: broadcast::Sender<Notification>,
     scheduler: OnceLock<Arc<Scheduler>>,
@@ -243,6 +245,7 @@ impl DaemonState {
             runtime_install: Mutex::new(None),
             runtime_update: Mutex::new(None),
             hub: OnceLock::new(),
+            gh: OnceLock::new(),
             announcements: broadcast::channel(256).0,
             scheduler: OnceLock::new(),
             approvals: Approvals::default(),
@@ -1133,6 +1136,17 @@ impl DaemonState {
             .get()
             .cloned()
             .unwrap_or_else(|| imperium_local::hf::Hub::from_env(self.secrets.as_ref()))
+    }
+
+    /// Uses `gh` (GitHub's CLI) at this path instead of the one on the PATH, such as a fake in
+    /// tests. Call once.
+    pub fn use_gh(&self, gh: PathBuf) {
+        let _ = self.gh.set(gh);
+    }
+
+    /// The `gh` set with [`Self::use_gh`], if any.
+    pub(crate) fn gh_override(&self) -> Option<PathBuf> {
+        self.gh.get().cloned()
     }
 
     /// Uses `hub` instead of the environment's, such as a local fake in tests. Call once.
