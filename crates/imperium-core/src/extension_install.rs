@@ -507,14 +507,13 @@ pub(crate) fn move_tree(from: &Path, to: &Path) -> Result<(), String> {
     if std::fs::rename(from, to).is_ok() {
         return Ok(());
     }
-    let mut budget = u64::MAX;
-    copy_all(from, to, &mut budget)?;
+    copy_all(from, to)?;
     remove_tree(from);
     Ok(())
 }
 
 /// Copies everything (`.git` and the source file included), for moving a folder.
-fn copy_all(from: &Path, to: &Path, budget: &mut u64) -> Result<(), String> {
+fn copy_all(from: &Path, to: &Path) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|error| format!("{}: {error}", to.display()))?;
     let entries =
         std::fs::read_dir(from).map_err(|error| format!("{}: {error}", from.display()))?;
@@ -524,7 +523,7 @@ fn copy_all(from: &Path, to: &Path, budget: &mut u64) -> Result<(), String> {
             continue;
         };
         if kind.is_dir() {
-            copy_all(&entry.path(), &target, budget)?;
+            copy_all(&entry.path(), &target)?;
         } else if kind.is_file() {
             std::fs::copy(entry.path(), &target)
                 .map_err(|error| format!("{}: {error}", entry.path().display()))?;
