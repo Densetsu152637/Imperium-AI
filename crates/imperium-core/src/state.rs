@@ -1851,6 +1851,8 @@ impl DaemonState {
             .iter()
             .chain(builtin.as_ref())
             .filter_map(|root| match Pack::load(root) {
+                // Folders the user configured are trusted; the bundled snapshot is not.
+                Ok(pack) if workflow.packs.contains(root) => Some(pack.trusted()),
                 Ok(pack) => Some(pack),
                 Err(error) => {
                     notices.push(format!("workflow pack skipped: {error}"));

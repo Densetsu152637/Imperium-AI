@@ -51,8 +51,9 @@ path: string | null,
  */
 source: InstallSource | null, 
 /**
- * For `install` of a plugin with hooks: it was added to `extensions.disabled_plugins`, so
- * its hooks do not run until the user turns it on.
+ * For `install` of a plugin with hooks or MCP servers: it was added to
+ * `extensions.disabled_plugins`, so its hooks and servers do not run until the user turns
+ * it on.
  */
 disabled: boolean, 
 /**

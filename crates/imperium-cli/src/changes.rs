@@ -70,7 +70,7 @@ fn describe(change: &ConfigChange) -> String {
         text.push_str(&format!("    from: {from}\n"));
     }
     if change.disabled {
-        text.push_str("    installed turned off (it has hooks)\n");
+        text.push_str("    installed turned off (it has hooks or MCP servers)\n");
     }
     text
 }
