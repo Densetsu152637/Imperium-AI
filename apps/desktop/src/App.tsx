@@ -32,6 +32,7 @@ import type {
   DownloadJob,
   LocalModelListResult,
   RuntimeInstallJob,
+  ModelResidency,
   ModListResult,
   ModelConfigResult,
   ModelListResult,
@@ -107,6 +108,7 @@ import { getDoc, setDoc, subscribeDoc } from "./store";
 import { type Daemon, useDaemon } from "./DaemonControl";
 import { ModelConfigDialog, type ModelDialogTarget } from "./ModelConfigDialog";
 import { setModelAliases } from "./modelNames";
+import { applyResidency, type Residency } from "./waits";
 import { hiddenSpecs } from "./modelPrefs";
 import { UpdateControl, useUpdates } from "./UpdateControl";
 
@@ -204,6 +206,8 @@ export function App() {
   const [mods, setMods] = useState<ModListResult | null>(null);
   /** llama.cpp being installed (`runtime.install_progress`), named in a waiting agent's status line. */
   const [runtimeInstall, setRuntimeInstall] = useState<RuntimeInstallJob | null>(null);
+  /** The latest `model.residency` move made for each local model, which a waiting agent's status line words. */
+  const [residency, setResidency] = useState<Residency>({});
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   /** Where each budget stands (`budgets.get`, then `budgets.changed`), for the session's indicator. */
   const [budgets, setBudgets] = useState<BudgetsResult | null>(null);
@@ -334,6 +338,11 @@ export function App() {
         }
         if (notification.method === "runtime.install_progress") {
           setRuntimeInstall(notification.params as RuntimeInstallJob);
+          return;
+        }
+        if (notification.method === "model.residency") {
+          const move = notification.params as ModelResidency;
+          setResidency((all) => applyResidency(all, move, Date.now()));
           return;
         }
         if (notification.method === "models.download_progress") {
@@ -988,6 +997,7 @@ export function App() {
         onStop={client ? () => stopSession(true) : undefined}
         client={client}
         runtimeInstall={runtimeInstall}
+        residency={residency}
       />
     ) : session ? (
       <SessionPanel
@@ -1012,6 +1022,7 @@ export function App() {
         budgets={budgets?.status ?? []}
         focusEvent={searchFocus?.sessionId === session.summary.session_id ? searchFocus : null}
         runtimeInstall={runtimeInstall}
+        residency={residency}
         onBudget={answerBudget}
         onOpenAgent={showAgent}
       />
