@@ -156,9 +156,11 @@ the wait reason in the desktop.
     - use tools and delegate rather than pasting code at the user;
     - few emojis, and plain explanations instead of many tables;
     - search for information rather than relying on what was learned in training.
-20. **Free scroll while streaming.** Scrolling up while an agent is writing stops following
-    the output and keeps the user's place; a *Jump to latest* button (and scrolling back to
-    the bottom) resumes following the newest text.
+20. **Free scroll while streaming** (implemented). Scrolling up while an agent is writing stops
+    following the output and keeps the user's place; a *Jump to latest* button (and scrolling
+    back to the bottom, or sending a message) resumes following the newest text, in the session
+    transcript and in a subagent's log
+    ([07](07-desktop-ui.md#free-scroll-while-streaming-implemented)).
 21. **Model awareness for the root agent.** The root agent can list the local models it may
     use (only those visible to the session, with whether each fits in memory now). It can also
     retrieve, through the RAG layer, what each model is good at (coding, writing, research,
