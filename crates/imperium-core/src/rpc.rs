@@ -20,10 +20,10 @@ use imperium_protocol::methods::{
     ProjectMessageParams, ProjectMessageResult, ScheduleList, ScheduleListParams,
     ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionAnswer,
     SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult, SessionDelete,
-    SessionDeleteParams, SessionList, SessionListParams, SessionListResult, SessionRespond,
-    SessionRespondParams, SessionSearch, SessionSearchParams, SessionSend, SessionSendParams,
-    SessionSubscribe, SessionSubscribeParams, SessionSubscribeResult, Shutdown, ShutdownParams,
-    ShutdownResult,
+    SessionDeleteParams, SessionExport, SessionExportParams, SessionList, SessionListParams,
+    SessionListResult, SessionRespond, SessionRespondParams, SessionSearch, SessionSearchParams,
+    SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
+    SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::permissions::{
     PermissionsAddRule, PermissionsGet, PermissionsGetParams, PermissionsSet,
@@ -565,6 +565,14 @@ impl Connection {
                 sessions.extend(self.state.archived_sessions());
                 Ok(SessionListResult { sessions })
             }),
+            SessionExport::NAME => call_later::<SessionExport, _>(
+                request.params,
+                &mut later,
+                |params: SessionExportParams| {
+                    let state = Arc::clone(&self.state);
+                    async move { blocking(move || crate::export::export(&state, &params)).await }
+                },
+            ),
             SessionSearch::NAME => call_later::<SessionSearch, _>(
                 request.params,
                 &mut later,
