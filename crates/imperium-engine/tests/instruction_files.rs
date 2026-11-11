@@ -8,11 +8,13 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
+use imperium_api::{PermissionRule, RuleAction};
 use imperium_config::{Enforce, RoutingSettings};
 use imperium_engine::{ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
 use imperium_protocol::session::SessionEvent;
 use imperium_tools::Workspace;
+use imperium_tools::permissions::{Permissions, SharedRules};
 use imperium_workflow::ContextIndex;
 use serde_json::{Value, json};
 
@@ -29,21 +31,31 @@ fn call(id: usize, name: &str, arguments: Value) -> String {
 
 /// A model that explores `pkg/deep`, reads a file there, lists the parent, then answers; it
 /// keeps the last request it was sent.
-async fn explorer(last: Arc<Mutex<Option<Value>>>) -> String {
+type Script = Vec<(&'static str, Value)>;
+
+fn default_script() -> Script {
+    vec![
+        ("list_dir", json!({"path": "pkg/deep"})),
+        ("read_file", json!({"path": "pkg/deep/notes.txt"})),
+        ("list_dir", json!({"path": "pkg"})),
+    ]
+}
+
+async fn explorer(last: Arc<Mutex<Option<Value>>>, script: Script) -> String {
     let steps = Arc::new(AtomicUsize::new(0));
+    let script = Arc::new(script);
     let app = Router::new().route(
         "/v1/chat/completions",
         post(move |axum::Json(body): axum::Json<Value>| {
             let steps = Arc::clone(&steps);
             let last = Arc::clone(&last);
+            let script = Arc::clone(&script);
             async move {
                 *last.lock().unwrap() = Some(body);
                 let step = steps.fetch_add(1, Ordering::SeqCst);
-                let body = match step {
-                    0 => call(step, "list_dir", json!({"path": "pkg/deep"})),
-                    1 => call(step, "read_file", json!({"path": "pkg/deep/notes.txt"})),
-                    2 => call(step, "list_dir", json!({"path": "pkg"})),
-                    _ => sse(json!({"choices":[{"delta":{"content":"done"}}]})),
+                let body = match script.get(step) {
+                    Some((name, arguments)) => call(step, name, arguments.clone()),
+                    None => sse(json!({"choices":[{"delta":{"content":"done"}}]})),
                 };
                 ([("content-type", "text/event-stream")], body)
             }
@@ -91,12 +103,22 @@ fn project() -> tempfile::TempDir {
 /// Runs the explorer in `project` and returns the last request it saw and the references the
 /// session reported loading.
 async fn explore(project: &tempfile::TempDir, workflow: bool) -> (Value, Vec<Vec<String>>) {
+    let workspace = Workspace::new(project.path()).unwrap();
+    explore_with(project, workspace, workflow, default_script()).await
+}
+
+async fn explore_with(
+    project: &tempfile::TempDir,
+    workspace: Workspace,
+    workflow: bool,
+    script: Script,
+) -> (Value, Vec<Vec<String>>) {
     let last = Arc::new(Mutex::new(None));
-    let url = explorer(Arc::clone(&last)).await;
+    let url = explorer(Arc::clone(&last), script).await;
     let context = workflow.then(|| Arc::new(ContextIndex::new(Vec::new(), project.path())));
     let session = Session::spawn(SessionConfig {
         id: "instructions".into(),
-        workspace: Workspace::new(project.path()).unwrap(),
+        workspace,
         model: Some(model(&url)),
         catalog: Vec::new(),
         clients: Default::default(),
@@ -208,4 +230,65 @@ async fn nothing_is_loaded_when_the_workflow_is_off() {
             .all(|text| !text.contains("<workflow-instructions>"))
     );
     assert!(loaded.is_empty());
+}
+
+#[tokio::test]
+async fn denied_or_failed_calls_load_nothing() {
+    let dir = project();
+    std::fs::create_dir_all(dir.path().join("denied")).unwrap();
+    std::fs::create_dir_all(dir.path().join("empty")).unwrap();
+    std::fs::write(dir.path().join("denied/AGENTS.md"), "Denied rules.\n").unwrap();
+    std::fs::write(dir.path().join("denied/secret.txt"), "s\n").unwrap();
+    std::fs::write(dir.path().join("empty/AGENTS.md"), "Empty rules.\n").unwrap();
+    let deny = PermissionRule {
+        tool: "read_file".into(),
+        pattern: "denied/**".into(),
+        action: RuleAction::Deny,
+    };
+    let workspace = Workspace::new(dir.path())
+        .unwrap()
+        .with_permissions(Permissions::new(
+            SharedRules::new(vec![deny]),
+            SharedRules::new(Vec::new()),
+        ));
+    let script = vec![
+        ("read_file", json!({"path": "denied/secret.txt"})),
+        ("read_file", json!({"path": "empty/missing.txt"})),
+    ];
+    let (request, loaded) = explore_with(&dir, workspace, true, script).await;
+    let all = user_messages(&request).join("\n");
+    assert!(
+        !all.contains("Denied rules.") && !all.contains("Empty rules."),
+        "{all}"
+    );
+    assert!(loaded.is_empty());
+}
+
+#[tokio::test]
+async fn a_symlinked_instruction_file_leading_outside_is_not_loaded() {
+    let dir = project();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.md"), "Outside secret.\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("linked")).unwrap();
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(
+        outside.path().join("secret.md"),
+        dir.path().join("linked/AGENTS.md"),
+    );
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(
+        outside.path().join("secret.md"),
+        dir.path().join("linked/AGENTS.md"),
+    );
+    if made.is_err() {
+        return; // this platform does not permit symbolic links here
+    }
+    let workspace = Workspace::new(dir.path()).unwrap();
+    let script = vec![("list_dir", json!({"path": "linked"}))];
+    let (request, _) = explore_with(&dir, workspace, true, script).await;
+    assert!(
+        !user_messages(&request)
+            .join("\n")
+            .contains("Outside secret.")
+    );
 }

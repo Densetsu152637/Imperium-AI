@@ -219,8 +219,15 @@ manifest serves them; `run_command` has no working directory of its own, so it l
 A remote workspace (Docker, WSL, SSH) loads nothing. `workflow.enabled = false` turns all of
 this off.
 
+Only a call that succeeded counts as opening a directory: one that was denied by a rule, blocked
+by a hook, or failed loads nothing. The files in the workspace's root folder are skipped as well
+as the project folder's (a session in a worktree works in the worktree's root).
+
 The message is the record: which files an agent holds is read back from its conversation, so a
-resumed session does not load them again and compaction keeps them (above). Each load is also
+resumed session does not load them again and compaction keeps them (above). Once the
+single-carrier change for compaction lands (the `<context-manifest kept="true">` block of the
+context-transcripts work), the instruction files are carried inside that block instead of a
+separate wrapper; the loaded-once and never-summarised behaviour stays the same. Each load is also
 journaled as a `context_loaded` event whose references are `instructions:<absolute path>`.
 The context breakdown counts them under `manifest` (workflow context).
 
@@ -234,9 +241,14 @@ An import that is not a file is ignored (an `@mention`). Imported files follow t
 `CLAUDE.md` that imports the `AGENTS.md` beside it) is not repeated. Imports nest 5 levels deep;
 an import that loops back to a file being read, goes deeper, or is too large is not followed and
 is reported in the text (`[not imported: <path> (<reason>)]`). Imports outside the allowed
-locations are read only for a pack the user configured in `workflow.packs` (trusted); the
-bundled pack, the project's files, and the files found while exploring may only import from
-inside the folder they live in (a pack's folder, the workspace folders).
+locations are read only for a pack the user configured in `workflow.packs` (trusted). Nothing
+else is trusted: the bundled pack may import only from its own folder, the project's root files
+only from the project folder, and the files found while exploring from any allowed folder (the
+workspace folders, folder grants, and project worktrees), not only the one they live in. The
+same limit applies to the files themselves: a symbolic link whose target is outside the
+allowed folders is not read, whether it is an instruction file, an import, or a file loaded by
+reference. Files are read only up to the 16 KiB limit (plus one byte, to know they are cut), so
+a huge file is never read whole.
 
 For a pack, the entry index (`entry`, `AGENTS.md` by default) and a `CLAUDE.md` beside it are
 both required manifest items (`<pack>:CLAUDE.md`, "entry file"), and `context_load` returns each

@@ -187,6 +187,9 @@ pub struct Agent {
     effort: Option<Effort>,
     /// The instruction files the conversation holds; read from it on first use.
     instructions: Option<instructions::Tracker>,
+    /// Whether the latest tool call succeeded (only successful file calls load instruction
+    /// files).
+    last_tool_ok: std::sync::atomic::AtomicBool,
 }
 
 impl Agent {
@@ -303,6 +306,7 @@ impl Agent {
             shown: None,
             effort: None,
             instructions: None,
+            last_tool_ok: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -957,13 +961,18 @@ impl Agent {
                 .any(|call| call.function.name == ACTIVATE_PLUGIN);
             let mut touched: Vec<PathBuf> = Vec::new();
             for call in completion.tool_calls {
+                self.last_tool_ok.store(false, Ordering::SeqCst);
                 let output = self.run_tool(&call).await;
                 let output = self.guard_input(output, window);
-                if let Some(dir) = instructions::touched_dir(
-                    &self.shared.workspace,
-                    &call.function.name,
-                    &call.function.arguments,
-                ) && !touched.contains(&dir)
+                // Only a call that worked counts as opening the directory: not one that was
+                // denied, refused by a hook, or failed.
+                if self.last_tool_ok.load(Ordering::SeqCst)
+                    && let Some(dir) = instructions::touched_dir(
+                        &self.shared.workspace,
+                        &call.function.name,
+                        &call.function.arguments,
+                    )
+                    && !touched.contains(&dir)
                 {
                     touched.push(dir);
                 }
@@ -1417,6 +1426,7 @@ impl Agent {
         output: String,
         started: Option<Instant>,
     ) -> String {
+        self.last_tool_ok.store(ok, Ordering::SeqCst);
         self.emit(SessionEvent::ToolFinished {
             call_id: call.id.clone(),
             ok,

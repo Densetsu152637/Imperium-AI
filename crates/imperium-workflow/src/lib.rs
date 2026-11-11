@@ -263,8 +263,18 @@ impl ContextIndex {
                 skip: served,
                 ..imports::Policy::default()
             };
-            if let Ok(expanded) = imports::expand(&file, &policy) {
-                return Ok(expanded.text);
+            return imports::expand(&file, &policy)
+                .map(|expanded| expanded.text)
+                .map_err(|error| LoadError::Io(reference.into(), error));
+        }
+        // A symbolic link must not lead a source that is not trusted out of its folder.
+        if !trusted {
+            let inside = match (std::fs::canonicalize(&file), std::fs::canonicalize(root)) {
+                (Ok(file), Ok(root)) => file.starts_with(root),
+                _ => true,
+            };
+            if !inside {
+                return Err(LoadError::Outside(reference.into()));
             }
         }
         let text = std::fs::read_to_string(&file)
@@ -358,6 +368,39 @@ mod tests {
         // ...and followed for one the user configured.
         let (_, claude) = load(true);
         assert!(claude.contains("Shared outside the pack."));
+    }
+
+    #[test]
+    fn symlinks_leading_outside_are_refused_for_untrusted_sources() {
+        let pack = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        write(outside.path(), "secret.md", "secret\n");
+        write(pack.path(), "AGENTS.md", "Entry.\n");
+        let linked = imports::tests::try_symlink(
+            &outside.path().join("secret.md"),
+            &pack.path().join("CLAUDE.md"),
+        ) && imports::tests::try_symlink(
+            &outside.path().join("secret.md"),
+            &pack.path().join("notes.md"),
+        );
+        if !linked {
+            return;
+        }
+        let project = project();
+        let load = |trusted: bool, path: &str| {
+            let mut pack = Pack::load(pack.path()).unwrap();
+            pack.trusted = trusted;
+            let index = ContextIndex::new(vec![pack], project.path());
+            let name = index.packs()[0].name.clone();
+            index.load(&format!("{name}:{path}"))
+        };
+        assert!(load(false, "CLAUDE.md").is_err());
+        assert!(matches!(
+            load(false, "notes.md"),
+            Err(LoadError::Outside(_))
+        ));
+        assert!(load(true, "CLAUDE.md").unwrap().contains("secret"));
+        assert!(load(true, "notes.md").unwrap().contains("secret"));
     }
 
     #[test]

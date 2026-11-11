@@ -216,7 +216,9 @@ pub(crate) fn discover(
         .filter_map(|root| std::fs::canonicalize(root).ok())
         .collect();
     roots.dedup();
+    // The manifest serves the project's files; a session in a worktree works in its root.
     let project = std::fs::canonicalize(context.project_dir()).ok();
+    let served_root = std::fs::canonicalize(workspace.root()).ok();
     let mut out = Vec::new();
     for dir in touched {
         let Some(root) = roots
@@ -227,7 +229,7 @@ pub(crate) fn discover(
             continue;
         };
         for file in imports::instruction_files(dir, root) {
-            if file.parent() == project.as_deref() {
+            if file.parent() == project.as_deref() || file.parent() == served_root.as_deref() {
                 continue;
             }
             let path = imports::display_path(&file);

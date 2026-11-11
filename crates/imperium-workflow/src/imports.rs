@@ -88,6 +88,11 @@ pub fn instruction_files(dir: &Path, root: &Path) -> Vec<PathBuf> {
 /// `text` cut to at most `max` bytes at a line or character boundary, with a note saying how
 /// much was left out. Returns whether it was cut.
 pub fn cap(text: &str, max: usize) -> (String, bool) {
+    cap_of(text, max, text.len())
+}
+
+/// [`cap`] for text read from a file of `total` bytes, of which only a prefix was read.
+fn cap_of(text: &str, max: usize, total: usize) -> (String, bool) {
     if text.len() <= max {
         return (text.to_string(), false);
     }
@@ -103,16 +108,45 @@ pub fn cap(text: &str, max: usize) -> (String, bool) {
             "{}\n[truncated: {} of {} bytes shown]",
             &text[..end],
             end,
-            text.len()
+            total
         ),
         true,
     )
 }
 
+/// At most [`MAX_FILE_BYTES`] + 1 bytes of `file` (so a longer file is known to be cut without
+/// reading it all), and the file's size.
+fn read_bounded(file: &Path) -> std::io::Result<(String, usize)> {
+    use std::io::Read;
+    let handle = std::fs::File::open(file)?;
+    let total = usize::try_from(handle.metadata()?.len()).unwrap_or(usize::MAX);
+    let mut bytes = Vec::new();
+    handle
+        .take(MAX_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    Ok((String::from_utf8_lossy(&bytes).into_owned(), total))
+}
+
 /// Reads `file` and the files it imports under `policy`.
 pub fn expand(file: &Path, policy: &Policy) -> std::io::Result<Expanded> {
     let canonical = std::fs::canonicalize(file)?;
-    let text = std::fs::read_to_string(&canonical)?;
+    // A symbolic link must not lead the file out of the allowed folders.
+    if !policy.trusted
+        && !policy
+            .allowed
+            .iter()
+            .filter_map(|path| std::fs::canonicalize(path).ok())
+            .any(|root| canonical.starts_with(root))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "{} is outside the allowed locations",
+                display_path(&canonical)
+            ),
+        ));
+    }
+    let (text, total) = read_bounded(&canonical)?;
     let mut state = State {
         policy,
         allowed: policy
@@ -136,7 +170,7 @@ pub fn expand(file: &Path, policy: &Policy) -> std::io::Result<Expanded> {
         },
         imported_bytes: 0,
     };
-    let (body, cut) = cap(&text, MAX_FILE_BYTES);
+    let (body, cut) = cap_of(&text, MAX_FILE_BYTES, total);
     state.out.truncated |= cut;
     state.out.text = body;
     let mut blocks = String::new();
@@ -192,7 +226,7 @@ impl State<'_> {
                 self.skip_note(blocks, &shown, "it is outside the allowed locations");
                 continue;
             }
-            let Ok(imported) = std::fs::read_to_string(&canonical) else {
+            let Ok((imported, total)) = read_bounded(&canonical) else {
                 self.skip_note(blocks, &shown, "it could not be read");
                 continue;
             };
@@ -200,7 +234,7 @@ impl State<'_> {
                 self.skip_note(blocks, &shown, "the imports are too large");
                 continue;
             }
-            let (body, cut) = cap(&imported, MAX_FILE_BYTES);
+            let (body, cut) = cap_of(&imported, MAX_FILE_BYTES, total);
             self.imported_bytes += body.len();
             self.out.truncated |= cut;
             self.seen.insert(canonical.clone());
@@ -300,7 +334,7 @@ pub fn import_tokens(text: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn write(root: &Path, relative: &str, text: &str) -> PathBuf {
@@ -446,6 +480,48 @@ mod tests {
             ["AGENTS.md", "a/CLAUDE.md", "a/b/AGENTS.md", "a/b/CLAUDE.md"]
         );
         assert!(instruction_files(&root.join("a"), &root.join("a/b")).is_empty());
+    }
+
+    /// Makes `link` a symbolic link to `target`; false when the platform does not permit it.
+    pub(crate) fn try_symlink(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        made.is_ok()
+    }
+
+    #[test]
+    fn a_symlinked_file_leading_outside_is_not_read_unless_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = write(outside.path(), "secret.md", "secret\n");
+        if !try_symlink(&secret, &dir.path().join("AGENTS.md")) {
+            return;
+        }
+        let error = expand(&dir.path().join("AGENTS.md"), &policy(dir.path())).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        let trusted = Policy {
+            trusted: true,
+            ..policy(dir.path())
+        };
+        assert!(
+            expand(&dir.path().join("AGENTS.md"), &trusted)
+                .unwrap()
+                .text
+                .contains("secret")
+        );
+    }
+
+    #[test]
+    fn long_files_are_read_only_up_to_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = format!("{}\n", "x".repeat(100)).repeat(1_000);
+        let file = write(dir.path(), "AGENTS.md", &big);
+        let expanded = expand(&file, &policy(dir.path())).unwrap();
+        assert!(expanded.truncated);
+        assert!(expanded.text.len() < MAX_FILE_BYTES + 100);
+        assert!(expanded.text.contains(&format!("of {} bytes", big.len())));
     }
 
     #[test]
