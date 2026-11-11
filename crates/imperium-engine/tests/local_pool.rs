@@ -148,6 +148,7 @@ fn start(pool: &Arc<Pool>, script: &Arc<Script>, dir: &std::path::Path) -> Sessi
         instructions: None,
         max_steps: 5,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),

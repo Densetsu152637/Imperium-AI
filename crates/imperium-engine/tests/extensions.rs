@@ -122,6 +122,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         instructions: None,
         max_steps: 5,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),

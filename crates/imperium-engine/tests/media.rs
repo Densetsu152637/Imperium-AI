@@ -124,6 +124,7 @@ async fn agents_generate_images_and_audio() {
         })))],
         max_steps: 6,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),

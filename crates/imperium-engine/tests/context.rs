@@ -217,6 +217,7 @@ fn start(dir: &std::path::Path, base_url: String, local: bool) -> Session {
         instructions: Some(INSTRUCTIONS.into()),
         max_steps: 5,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),

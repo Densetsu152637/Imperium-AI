@@ -111,6 +111,7 @@ fn start(endpoint: Endpoint, dir: &std::path::Path) -> Session {
         instructions: None,
         max_steps: 5,
         background: None,
+        checkpoints: None,
         auto_compact: false,
         keep_agent_state: true,
         effort: Default::default(),

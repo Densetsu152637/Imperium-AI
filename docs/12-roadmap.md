@@ -96,9 +96,17 @@ the wait reason in the desktop.
    composer through `[media.transcription]`
    ([07](07-desktop-ui.md#attachments-and-voice-input-implemented)). Describing images for models
    without vision, rendering drawn PDF pages, and a supervised local whisper remain to do.
-6. **Review pane and checkpoints.** Diffs of an agent's changes with accept or reject per hunk,
-   then commit or open a pull request; git-based checkpoints to rewind a session's files and
-   conversation.
+6. **Review pane and checkpoints** (checkpoints implemented). Diffs of an agent's changes with
+   accept or reject per hunk, then commit or open a pull request; git-based checkpoints to
+   rewind a session's files and conversation. Checkpoints: before each root turn that changes
+   files in a git repository, the session's files (tracked and untracked, not ignored) are kept
+   as a commit on a private ref, `refs/imperium/checkpoints/<session>/<n>`, built with plumbing
+   in a temporary index so the repository's index, HEAD, and branches are never touched, and
+   linked to the journal and the saved conversation; `session.checkpoints` lists them and
+   `session.rewind` (`/rewind`) puts the files back (undoable), forks the conversation at that
+   point into a new session, or both. Folders outside git have none
+   ([14](14-projects-and-automation.md#checkpoints-and-rewinding)). The review pane remains to
+   do.
 7. **Branching and comparison.** Branch a conversation from any message; run best-of-N across
    models and compare the results side by side.
 8. **Session search** (implemented). Session journals, running and archived, are indexed in the
