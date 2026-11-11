@@ -17,6 +17,7 @@ import type { SearchClient } from "../sessionSearch";
 import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
 import { SessionSearch } from "./SessionSearch";
 import { StatusBadge } from "./StatusBadge";
+import { ModelName } from "../components/ModelName";
 
 /** The environment a session works in: the one it names, else the one whose first folder it uses. */
 export function environmentOf(session: SessionState, environments: EnvironmentInfo[]): EnvironmentInfo | null {
@@ -237,7 +238,7 @@ export function SessionsPanel({
                 <StatusBadge session={session} />
                 <span className="detail">
                   {!scope && sort !== "environment" && `${place} · `}
-                  {session.summary.model ?? "No model"} · {formatCost(totals(session.calls).costUsd)}
+                  {session.summary.model ? <ModelName name={session.summary.model} /> : "No model"} · {formatCost(totals(session.calls).costUsd)}
                 </span>
               </span>
             </span>

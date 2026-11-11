@@ -9,6 +9,11 @@ export type LocalModelRow = {
  */
 id: string, 
 /**
+ * The display name set for the model (`runtime.llamacpp.models."<id>".alias`), shown
+ * instead of the id.
+ */
+alias: string | null, 
+/**
  * `llamacpp` for GGUF files, `vllm` for Hugging Face folders.
  */
 runtime: "llamacpp" | "vllm", path: string, 

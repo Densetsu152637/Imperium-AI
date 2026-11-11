@@ -907,6 +907,7 @@ id = "sonnet"
 spec = "openrouter:anthropic/claude-sonnet"
 location = "cloud"
 tier = "strong"
+alias = "Claude Sonnet"               # optional display name; the id stays what rules use
 context_window = 200000               # optional; for context breakdowns (local models report theirs)
 
 [routing]

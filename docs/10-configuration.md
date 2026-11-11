@@ -79,7 +79,7 @@ listed; edit them in the file.
 | `sessions.agent_state_keep` | `true` | Keep each agent's state (a subagent's conversation, plan, and usage) in `<data>/sessions/<id>.agents/`, so finished subagents can be resumed with a follow-up, also after a restart; deleted with the session ([agent state](03-agent-engine.md#agent-state)) |
 | `sessions.auto_archive_after_days` | `0` | Archive an idle session after this many days without activity; `0` never does. Working, waiting, pinned, and agent sessions are never archived |
 | `sessions.attachment_max_mib` | `10` | The largest file that can be attached to a message, in MiB, checked when it is attached and again when the message is sent. Uploads from the app (pasted files, browser drops) travel over the daemon connection, which carries about 12 MiB of file at most ([attachments](07-desktop-ui.md#attachments-and-voice-input-implemented)) |
-| `models.catalog` | none | The model table: `[[models.catalog]]` rows with `id`, `spec`, `location` (`local` or `cloud`), `tier` (`basic`, `standard`, `strong`, `frontier`), optional `tags`, and optional `context_window` (tokens per request, for [context breakdowns](03-agent-engine.md#context-management); llama.cpp models report their own), optional `placement` (`auto` by default, or `cpu` to pin a `location = "local"`, `llamacpp:<id>` row to the [CPU lane](04-models-and-routing.md#runtimes): served with no GPU layers, in system RAM only, never swapped out for the GPU; a cloud row or another spec is refused at startup), and, only valid with `placement = "cpu"`, optional `parallel` (slots, default `1`), `context` (tokens per slot, default `runtime.llamacpp.context`) and `max_wait_s` (longest a call waits for a slot or for room on that row, default `3600` or `runtime.llamacpp.max_wait_s` if longer); a CPU-pinned model is started with `--n-gpu-layers 0 --device none` (plus `--no-mmproj-offload` with a projector), and rows naming the same model must agree on these; see [routing](04-models-and-routing.md#routing) |
+| `models.catalog` | none | The model table: `[[models.catalog]]` rows with `id`, `spec`, `location` (`local` or `cloud`), `tier` (`basic`, `standard`, `strong`, `frontier`), optional `alias` (a [display name](#model-aliases)), optional `tags`, and optional `context_window` (tokens per request, for [context breakdowns](03-agent-engine.md#context-management); llama.cpp models report their own), optional `placement` (`auto` by default, or `cpu` to pin a `location = "local"`, `llamacpp:<id>` row to the [CPU lane](04-models-and-routing.md#runtimes): served with no GPU layers, in system RAM only, never swapped out for the GPU; a cloud row or another spec is refused at startup), and, only valid with `placement = "cpu"`, optional `parallel` (slots, default `1`), `context` (tokens per slot, default `runtime.llamacpp.context`) and `max_wait_s` (longest a call waits for a slot or for room on that row, default `3600` or `runtime.llamacpp.max_wait_s` if longer); a CPU-pinned model is started with `--n-gpu-layers 0 --device none` (plus `--no-mmproj-offload` with a projector), and rows naming the same model must agree on these; see [routing](04-models-and-routing.md#routing) |
 | `routing.prefer` | `cheapest` | Tie-breaker among suitable models: `cheapest`, `local`, or `cloud` |
 | `routing.rules` | none | `[[routing.rules]]` delegation rules with optional `when_tier`, `when_tag`, `location`, `tier` (raises the task's minimum tier), and `use` (model table ids in order) |
 | `routing.builtin_rules` | `true` | Whether the built-in [task-class rules](04-models-and-routing.md#task-classes) (hard tags prefer cloud `frontier` rows, menial tags prefer local rows at the task's own tier) apply when none of `routing.rules` matched |
@@ -104,8 +104,8 @@ listed; edit them in the file.
 | `runtime.llamacpp.cache_type` | `f16` | Default KV cache type of keys and values: `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`, `q5_0`, or `q5_1` |
 | `runtime.llamacpp.flash_attn` | `auto` | `--flash-attn`: `auto`, `on`, or `off`; a quantised V cache type needs `on` or `auto` |
 | `runtime.llamacpp.max_output_tokens` | `8192` | Most tokens one local reply may generate before it is retried once without a cap; `0` = uncapped (the call reserves the whole context). See [runtimes](04-models-and-routing.md#runtimes) |
-| `runtime.llamacpp.models."<id>".*` | none | Settings of one local model, overriding the defaults above: `context` (`"auto"` or tokens), `pool_tokens` (fixes the pool; at least `context`), `slots`, `cache_type_k`, `cache_type_v`, `flash_attn`, `max_gpu_layers` (cap on the layers placed on the GPU), `max_wait_s`, `max_output_tokens`, and `extra_args` (added after `runtime.llamacpp.extra_args`; may not contain a flag Imperium sets, such as `--ctx-size`, with or without `=value`). A CPU-lane row's `parallel`, `context` and `max_wait_s` count too; a row and this table setting different values are refused. Changing a loaded model's settings restarts it once nothing is using it; `max_wait_s` and `max_output_tokens` apply without a restart. Model ids may contain dots: write them as quoted keys |
-| `models.overrides."<id>".*` | none | What the app changes on a model-table row: `enabled`, `tier`, `tags`, `context_window`, and both `input_usd_per_mtok` and `output_usd_per_mtok` (the endpoint price for that model). An id that names no row is ignored. `enabled` is also accepted on `[[models.catalog]]` rows; `false` leaves the row out of routing |
+| `runtime.llamacpp.models."<id>".*` | none | Settings of one local model, overriding the defaults above: `alias` (a [display name](#model-aliases); never restarts the model), `context` (`"auto"` or tokens), `pool_tokens` (fixes the pool; at least `context`), `slots`, `cache_type_k`, `cache_type_v`, `flash_attn`, `max_gpu_layers` (cap on the layers placed on the GPU), `max_wait_s`, `max_output_tokens`, and `extra_args` (added after `runtime.llamacpp.extra_args`; may not contain a flag Imperium sets, such as `--ctx-size`, with or without `=value`). A CPU-lane row's `parallel`, `context` and `max_wait_s` count too; a row and this table setting different values are refused. Changing a loaded model's settings restarts it once nothing is using it; `max_wait_s` and `max_output_tokens` apply without a restart. Model ids may contain dots: write them as quoted keys |
+| `models.overrides."<id>".*` | none | What the app changes on a model-table row: `alias` (a [display name](#model-aliases), over the row's own), `enabled`, `tier`, `tags`, `context_window`, and both `input_usd_per_mtok` and `output_usd_per_mtok` (the endpoint price for that model). An id that names no row is ignored. `enabled` is also accepted on `[[models.catalog]]` rows; `false` leaves the row out of routing |
 | `runtime.llamacpp.idle_unload_s` | `900` | Seconds an unused model stays loaded |
 | `runtime.llamacpp.ram_headroom_mb` | `2048` | System memory kept free when placing models; the one RAM budget is free RAM less this, shared by GPU models' RAM share, every server's `--cache-ram`, and models pinned to the CPU lane (their weights and KV) |
 | `runtime.llamacpp.cache_ram_mb` | `8192` | Host memory (MiB) for llama.cpp's prompt cache (`--cache-ram`), which restores the prompt of an agent that lost its slot to another instead of reading it again; capped to the RAM left in the budget after the model and the models that stay loaded beside it (and room for a model swapped out only because of a cache), counted as RAM held by the model, `0` turns it off |
@@ -257,6 +257,7 @@ slots = 16                # most calls one server decodes at once; no cap on ses
 
 # What the desktop's model settings dialog writes to <config>/models.toml:
 [runtime.llamacpp.models."Qwen3-8B-Q4_K_M"]
+alias = "Qwen 3 (8B)"
 context = 32768
 slots = 4
 cache_type_k = "q8_0"
@@ -290,6 +291,19 @@ personality = "luxion"
 otlp_endpoint = ""
 prometheus = false
 ```
+
+## Model aliases
+
+Any model, local or in the model table, may have an `alias`: a display name, such as
+`Qwen 3 (4B)` for `Qwen3-4B-Instruct-2507-Q4_K_M`, that clients show instead of its id. A local
+model's alias is `runtime.llamacpp.models."<id>".alias`; a model-table row's is `alias` on its
+`[[models.catalog]]` row, or `models.overrides."<id>".alias` (what the desktop's model dialog
+writes), which wins. A table row with no alias of its own is shown by the alias of the local model
+its spec names. The id is unchanged: config, `[[routing.rules]]`, `spawn_agent`, `--model` and
+`models.default` still use ids and specs, and an alias is never accepted in their place. An
+alias is trimmed, non-blank, without control characters and at most 80 characters; an invalid
+one is refused naming the key. `models.list` and `models.local` report each model's `alias`
+(`null` without one), and `imperium models local` prints it under the id.
 
 ## Other recommended options
 

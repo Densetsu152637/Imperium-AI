@@ -5,6 +5,10 @@
  */
 export type LocalLaunchSettings = { 
 /**
+ * Display name shown instead of the id; null shows the id.
+ */
+alias: string | null, 
+/**
  * Most tokens one agent may use (vLLM `--max-model-len`), capped to what the model was
  * trained for and what fits in memory. Ignored when `context_auto` is true.
  */

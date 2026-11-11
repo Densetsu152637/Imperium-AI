@@ -1,6 +1,7 @@
 // Per-call telemetry: tokens, time to first token, throughput, and cost for every model call.
 
 import { formatCost, formatCount, totals, type SessionState } from "../sessions";
+import { modelAliases } from "../modelNames";
 
 export function TelemetryPanel({ session }: { session: SessionState | null }) {
   if (!session || session.calls.length === 0) {
@@ -39,7 +40,7 @@ export function TelemetryPanel({ session }: { session: SessionState | null }) {
         <tbody>
           {[...session.calls].reverse().map((call) => (
             <tr key={call.at + call.durationMs}>
-              <td title={call.model}>{call.model.split(":").slice(1).join(":") || call.model}</td>
+              <td title={call.model}>{modelAliases().get(call.model) ?? (call.model.split(":").slice(1).join(":") || call.model)}</td>
               <td>{formatCount(call.usage.prompt_tokens)}</td>
               <td>{formatCount(call.usage.completion_tokens)}</td>
               <td>{call.ttftMs === null ? "—" : `${call.ttftMs} ms`}</td>

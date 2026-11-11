@@ -1146,6 +1146,10 @@ pub struct CatalogEntry {
     pub id: String,
     /// `<endpoint>:<model>`.
     pub spec: String,
+    /// A display name clients show instead of the id, such as `Qwen 3 (4B)`; the id stays
+    /// what rules, agents and `--model` use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
     /// Whether the model runs on this machine (or one you control) or at a hosted provider.
     pub location: Location,
     pub tier: Tier,

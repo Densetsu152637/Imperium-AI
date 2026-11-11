@@ -949,6 +949,10 @@ pub struct ModelRow {
     pub id: String,
     /// `<endpoint>:<model>`.
     pub spec: String,
+    /// The display name set for the row (its `alias`, or the app's override), shown instead of
+    /// the id; the id is what rules, agents and `--model` use.
+    #[serde(default)]
+    pub alias: Option<String>,
     #[ts(type = "\"local\" | \"cloud\"")]
     pub location: String,
     #[ts(type = "\"basic\" | \"standard\" | \"strong\" | \"frontier\"")]
@@ -1006,6 +1010,10 @@ pub struct LocalModelListResult {
 pub struct LocalModelRow {
     /// Use as `<runtime>:<id>` (`llamacpp:` or `vllm:`) in `[[models.catalog]]`.
     pub id: String,
+    /// The display name set for the model (`runtime.llamacpp.models."<id>".alias`), shown
+    /// instead of the id.
+    #[serde(default)]
+    pub alias: Option<String>,
     /// `llamacpp` for GGUF files, `vllm` for Hugging Face folders.
     #[ts(type = "\"llamacpp\" | \"vllm\"")]
     pub runtime: String,
@@ -1676,6 +1684,9 @@ pub struct LocalModelConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct LocalLaunchSettings {
+    /// Display name shown instead of the id; null shows the id.
+    #[serde(default)]
+    pub alias: Option<String>,
     /// Most tokens one agent may use (vLLM `--max-model-len`), capped to what the model was
     /// trained for and what fits in memory. Ignored when `context_auto` is true.
     #[serde(default)]
@@ -1769,6 +1780,9 @@ pub struct TableModelConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TableModelSettings {
+    /// Display name shown instead of the id; null keeps the row's own `alias`.
+    #[serde(default)]
+    pub alias: Option<String>,
     /// False leaves the row out of routing.
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -1791,6 +1805,9 @@ pub struct TableModelSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TableModelEffective {
+    /// The display name in effect, if any.
+    #[serde(default)]
+    pub alias: Option<String>,
     pub enabled: bool,
     #[ts(type = "\"basic\" | \"standard\" | \"strong\" | \"frontier\"")]
     pub tier: String,

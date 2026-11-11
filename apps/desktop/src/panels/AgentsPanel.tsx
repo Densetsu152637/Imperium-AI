@@ -16,6 +16,7 @@ import { WaitLine } from "../components/WaitLine";
 import { formatCost, type SessionState, type TaskState } from "../sessions";
 import { isStopped, shownTaskStatus } from "../stop";
 import { describeWait, type WaitView } from "../waits";
+import { ModelName } from "../components/ModelName";
 
 /** What a paused subagent is told when the user resumes it without a follow-up of their own. */
 const RESUME_TEXT = "Continue where you left off.";
@@ -123,7 +124,7 @@ function TaskRow({
             {shownTaskStatus(task.status, stopped)}
           </span> <strong>{task.taskId}</strong>{" "}
           <span className="muted">
-            {task.model} · {formatCost(task.costUsd)}
+            <ModelName name={task.model} /> · {formatCost(task.costUsd)}
           </span>
           <span className="brief">{task.brief}</span>
         </summary>

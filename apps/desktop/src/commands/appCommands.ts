@@ -83,14 +83,23 @@ const PANEL_ICONS: Record<string, LucideIcon> = {
  * The models a session can switch to, by spec: usable table rows, then local models the table
  * does not list; favourites first and hidden models left out.
  */
-function modelChoices(models: ModelRow[], local: LocalModelRow[], marks: ModelMarks): { spec: string; label: string; detail: string }[] {
+function modelChoices(models: ModelRow[], local: LocalModelRow[], marks: ModelMarks): { spec: string; id: string; label: string; detail: string }[] {
   const choices = models
     .filter((row) => row.enabled && row.endpoint_configured)
-    .map((row) => ({ spec: row.spec, label: row.id, detail: [row.id === row.spec ? null : row.spec, row.location, row.tier].filter(Boolean).join(" · ") }));
+    .map((row) => {
+      // Shown by its alias (or the local model's it names), with the id in the detail.
+      const alias = row.alias ?? local.find((candidate) => `${candidate.runtime}:${candidate.id}` === row.spec)?.alias ?? null;
+      return {
+        spec: row.spec,
+        id: row.id,
+        label: alias ?? row.id,
+        detail: [alias ? row.id : null, row.id === row.spec ? null : row.spec, row.location, row.tier].filter(Boolean).join(" · "),
+      };
+    });
   for (const row of local) {
     const spec = `${row.runtime}:${row.id}`;
     if (row.problem || choices.some((choice) => choice.spec === spec)) continue;
-    choices.push({ spec, label: row.id, detail: [row.quantization, "local"].filter(Boolean).join(" · ") });
+    choices.push({ spec, id: row.id, label: row.alias ?? row.id, detail: [row.alias ? row.id : null, row.quantization, "local"].filter(Boolean).join(" · ") });
   }
   return chooserModels(choices, (choice) => choice.spec, marks).map(({ item, group }) =>
     group === "favourite" ? { ...item, detail: ["favourite", item.detail].filter(Boolean).join(" · ") } : item,
@@ -200,13 +209,13 @@ export function appCommands(app: AppCommandContext): Command[] {
   // ---- Models: switch the open session's model ----
   if (current && app.connected && !current.archived) {
     for (const choice of modelChoices(app.models, app.localModels, app.modelMarks)) {
-      if (choice.spec === current.model || choice.label === current.model) continue;
+      if (choice.spec === current.model || choice.id === current.model) continue;
       add({
         id: `model:${choice.spec}`,
         group: "models",
         title: `Use ${choice.label}`,
         subtitle: choice.detail,
-        keywords: ["switch model", choice.spec],
+        keywords: ["switch model", choice.spec, choice.id],
         icon: Boxes,
         run: () => app.setModel(choice.spec),
       });
