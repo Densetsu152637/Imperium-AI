@@ -12,6 +12,8 @@ import type {
   TableModelSettings,
 } from "@imperium/protocol";
 import type { DaemonClient } from "./daemon/client";
+import { arrangeModels, markOf } from "./modelPrefs";
+import { useSettings } from "./settings";
 
 export type ModelDialogTarget = { tab: "local" | "table"; id?: string };
 
@@ -223,6 +225,7 @@ export function ModelConfigDialog({
   onSaved: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const { modelMarks } = useSettings();
   const [config, setConfig] = useState<ModelConfigResult | null>(null);
   const [tab, setTab] = useState(target.tab);
   const [selected, setSelected] = useState<string | null>(target.id ?? null);
@@ -387,7 +390,14 @@ export function ModelConfigDialog({
   const setTable = (row: TableModelConfig, patch: Partial<TableDraft>) =>
     setTableDrafts((all) => ({ ...all, [row.id]: { ...(all[row.id] ?? tableDraft(row.saved)), ...patch } }));
 
-  const items: Array<LocalModelConfig | TableModelConfig> = tab === "local" ? (config?.local ?? []) : (config?.table ?? []);
+  // Favourites first and hidden models last, as in the model panels (modelPrefs.ts).
+  const specOf = (item: LocalModelConfig | TableModelConfig) => ("spec" in item ? item.spec : `${item.runtime}:${item.id}`);
+  const arranged = arrangeModels<LocalModelConfig | TableModelConfig>(
+    tab === "local" ? (config?.local ?? []) : (config?.table ?? []),
+    specOf,
+    modelMarks,
+  );
+  const items = [...arranged.favourites, ...arranged.normal, ...arranged.hidden];
 
   return (
     <dialog
@@ -424,13 +434,15 @@ export function ModelConfigDialog({
             const local = "runtime" in item ? item : undefined;
             const row = "spec" in item ? item : undefined;
             return (
-              <li key={item.id}>
+              <li key={item.id} className={markOf(modelMarks, specOf(item)) === "hidden" ? "model-hidden" : undefined}>
                 <button
                   className={selected === item.id ? "primary" : "ghost"}
                   onClick={() => setSelected(item.id)}
                   aria-pressed={selected === item.id}
                 >
                   <span>{item.id}</span>
+                  {markOf(modelMarks, specOf(item)) === "favourite" && <span className="badge">favourite</span>}
+                  {markOf(modelMarks, specOf(item)) === "hidden" && <span className="badge off">hidden</span>}
                   {local && <span className="badge">{local.runtime}</span>}
                   {row && <span className={`badge ${row.location}`}>{row.location}</span>}
                   {local?.loaded && <span className="badge local">loaded</span>}

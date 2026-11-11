@@ -8,7 +8,16 @@ import { Check, ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
-export type SelectOption = { value: string; label: string; description?: string; disabled?: boolean };
+export type SelectOption = {
+  value: string;
+  label: string;
+  description?: string;
+  disabled?: boolean;
+  /** A heading drawn above the first option of each run of options with the same group. */
+  group?: string;
+  /** Drawn dimmed (a hidden model kept in the list because it is the current one). */
+  dimmed?: boolean;
+};
 
 type Props = {
   value: string;
@@ -254,7 +263,12 @@ export function Select({ value, options, onChange, disabled, placeholder = "Choo
               }
             }}
           >
-            {options.map((option, index) => (
+            {options.map((option, index) => [
+              option.group && option.group !== options[index - 1]?.group && (
+                <li key={`group:${index}`} role="presentation" className="select-group">
+                  {option.group}
+                </li>
+              ),
               <li
                 key={option.value}
                 id={optionId(index)}
@@ -262,7 +276,7 @@ export function Select({ value, options, onChange, disabled, placeholder = "Choo
                 role="option"
                 aria-selected={option.value === value}
                 aria-disabled={option.disabled || undefined}
-                className={`select-option${index === active ? " active" : ""}`}
+                className={`select-option${index === active ? " active" : ""}${option.dimmed ? " dimmed" : ""}`}
                 onPointerMove={() => !option.disabled && index !== active && setActive(index)}
                 onClick={() => choose(index)}
               >
@@ -273,8 +287,8 @@ export function Select({ value, options, onChange, disabled, placeholder = "Choo
                   <span>{option.label}</span>
                   {option.description && <span className="select-option-description">{option.description}</span>}
                 </span>
-              </li>
-            ))}
+              </li>,
+            ])}
           </ul>,
           document.body,
         )}
