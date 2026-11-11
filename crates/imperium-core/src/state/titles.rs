@@ -159,7 +159,7 @@ pub(super) fn watch(
                 continue;
             }
             match event.event {
-                SessionEvent::TurnStarted { text } => {
+                SessionEvent::TurnStarted { text, .. } => {
                     if message.is_none() {
                         message = Some(text);
                     }
@@ -207,7 +207,10 @@ async fn generate(
         ChatMessage::System {
             content: INSTRUCTIONS.into(),
         },
-        ChatMessage::User { content: exchange },
+        ChatMessage::User {
+            content: exchange,
+            images: Vec::new(),
+        },
     ];
     let holder = format!("{session_id}:title");
     let call = async {
