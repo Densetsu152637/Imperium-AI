@@ -225,7 +225,10 @@ as the project folder's when they are the project's own file (same path) or have
 bytes; a worktree root file that differs from what the manifest serves is loaded.
 
 The message is the record: which files an agent holds is read back from its conversation, so a
-resumed session does not load them again and compaction keeps them (above). Each load is also
+resumed session does not load them again, and compaction keeps them: it carries each file
+verbatim, once, in the `<context-manifest kept="true">` block that holds the other loaded
+workflow context ([03](03-agent-engine.md#context-management)), which the tracker reads back
+too. Each load is also
 journaled as a `context_loaded` event whose references are `instructions:<absolute path>`.
 The context breakdown counts them under `manifest` (workflow context).
 

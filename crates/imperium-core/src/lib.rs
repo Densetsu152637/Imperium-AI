@@ -12,6 +12,7 @@ mod connectors;
 mod downloads;
 mod endpoint;
 mod environments;
+mod export;
 mod extension_install;
 mod llama_runtime;
 mod load;

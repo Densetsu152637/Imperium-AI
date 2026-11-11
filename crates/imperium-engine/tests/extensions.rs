@@ -125,6 +125,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         background: None,
         checkpoints: None,
         auto_compact: false,
+        auto_compact_at: None,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: project.path().join(".journal.jsonl"),

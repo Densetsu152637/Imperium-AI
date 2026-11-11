@@ -48,6 +48,96 @@ pub fn store_write(name: String, contents: String) -> Result<(), String> {
     std::fs::rename(&partial, &path).map_err(|error| error.to_string())
 }
 
+/// The largest transcript the shell will save.
+const EXPORT_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+/// Whether `filename` is a plain `.md` or `.json` name (a suggestion for the save dialog, never
+/// a path) and `contents` is a size worth saving; returns the extension.
+fn check_export(filename: &str, contents: &str) -> Result<&'static str, String> {
+    let extension = if filename.ends_with(".md") {
+        "md"
+    } else if filename.ends_with(".json") {
+        "json"
+    } else {
+        return Err(format!("not an export file name: {filename:?}"));
+    };
+    let plain = filename.len() <= 120
+        && !filename.starts_with('.')
+        && filename.chars().all(|c| {
+            !c.is_control() && !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+        });
+    if !plain {
+        return Err(format!("not an export file name: {filename:?}"));
+    }
+    if contents.len() > EXPORT_MAX_BYTES {
+        return Err("the transcript is too large to save".into());
+    }
+    Ok(extension)
+}
+
+/// What to ask before saving a transcript the daemon warned about, if anything. The question is
+/// asked here, in the shell, so the page cannot skip or fake it.
+fn confirmation(warning: Option<&str>) -> Option<String> {
+    let warning = warning?.trim();
+    (!warning.is_empty()).then(|| format!("{warning}\n\nSave it anyway?"))
+}
+
+/// Saves an exported transcript: asks first when the daemon `warning`ed that it looks like it
+/// holds a credential, then opens the save dialog itself, suggesting `filename`, and writes
+/// `contents` to the one path the user picks there. Returns false when either was cancelled.
+/// The page cannot choose where the file goes, so it cannot write anywhere on its own.
+#[tauri::command]
+pub async fn save_export(
+    app: tauri::AppHandle,
+    filename: String,
+    contents: String,
+    warning: Option<String>,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let extension = check_export(&filename, &contents)?;
+    if let Some(question) = confirmation(warning.as_deref()) {
+        let asker = app.clone();
+        let proceed = tauri::async_runtime::spawn_blocking(move || {
+            asker
+                .dialog()
+                .message(question)
+                .title("Export transcript")
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Save anyway".into(),
+                    "Cancel".into(),
+                ))
+                .blocking_show()
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        if !proceed {
+            return Ok(false);
+        }
+    }
+    let label = if extension == "json" {
+        "JSON"
+    } else {
+        "Markdown"
+    };
+    let chosen = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Export transcript")
+            .set_file_name(&filename)
+            .add_filter(label, &[extension])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let Some(path) = chosen else {
+        return Ok(false);
+    };
+    let path = path.into_path().map_err(|error| error.to_string())?;
+    std::fs::write(path, contents).map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
 /// The folder, so the interface can tell the user where their settings are.
 #[tauri::command]
 pub fn store_folder() -> Result<String, String> {
@@ -65,5 +155,36 @@ mod tests {
         for bad in ["", "../config", "a/b", "Settings", "x.json", "a\\b"] {
             assert!(file(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn only_a_warned_export_is_confirmed_first() {
+        assert_eq!(confirmation(None), None);
+        assert_eq!(confirmation(Some("  \n")), None);
+        let question = confirmation(Some("Looks like a GitHub token.")).unwrap();
+        assert!(question.starts_with("Looks like a GitHub token."));
+        assert!(question.ends_with("Save it anyway?"));
+    }
+
+    #[test]
+    fn exports_take_only_plain_md_and_json_names_of_a_sane_size() {
+        assert_eq!(check_export("fix-the-parser.md", "# x"), Ok("md"));
+        assert_eq!(check_export("session.json", "{}"), Ok("json"));
+        for bad in [
+            "",
+            "notes.txt",
+            "../x.md",
+            "a/b.md",
+            "a\\b.json",
+            "C:evil.md",
+            ".hidden.md",
+            "bad\u{0}.md",
+            "x.md.exe",
+        ] {
+            assert!(check_export(bad, "x").is_err(), "{bad:?}");
+        }
+        assert!(check_export(&format!("{}.md", "a".repeat(200)), "x").is_err());
+        let huge = "x".repeat(EXPORT_MAX_BYTES + 1);
+        assert!(check_export("big.md", &huge).is_err());
     }
 }

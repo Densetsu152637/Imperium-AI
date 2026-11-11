@@ -132,7 +132,13 @@ summarised_messages: number,
 /**
  * The tokens the conversation may use: the window less room for the reply.
  */
-budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, paused: Array<string>, attachments?: Array<Attachment>, } | { "type": "model_suggestion", 
+budget: number, context_window: number | null, method: TokenCountMethod, summary_model: string, 
+/**
+ * The compaction carried workflow context (loaded skills, workflow references) over
+ * verbatim, so a skill an agent loaded is still loaded. Absent in journals written
+ * before that, whose compactions summarised them.
+ */
+kept_context?: boolean, } | { "type": "model_changed", from: string, to: string, compacted: boolean, } | { "type": "message_queued", id: string, text: string, steer: boolean, } | { "type": "queue_changed", messages: Array<QueuedMessage>, } | { "type": "steered", id: string, text: string, paused: Array<string>, attachments?: Array<Attachment>, } | { "type": "model_suggestion", 
 /**
  * Names the suggestion in `session.suggestion_respond` and `model_suggestion_update`.
  */

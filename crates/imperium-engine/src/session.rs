@@ -87,6 +87,9 @@ pub struct SessionConfig {
     /// Compact the root conversation at the start of a turn when it has grown past the model's
     /// context budget (for long-lived sessions such as an environment's persistent agent).
     pub auto_compact: bool,
+    /// Compact an agent's conversation mid-turn when the next model call would read this share
+    /// of its model's context window (`context.auto_compact_at`); `None` or 0 turns it off.
+    pub auto_compact_at: Option<f64>,
     /// Keep every agent's state (a subagent's conversation included) in
     /// `<journal>.agents/`, so finished subagents can be resumed after a restart
     /// (`sessions.agent_state_keep`). Off, it is kept in memory while the session runs.
@@ -606,6 +609,7 @@ pub(crate) struct Shared {
     pub routing: RoutingSettings,
     pub local: Option<Arc<dyn LocalModels>>,
     pub max_steps: u32,
+    pub auto_compact_at: Option<f64>,
     /// Tools the user allowed for the rest of the session, for every agent.
     pub allowed_tools: Mutex<HashSet<String>>,
     /// Tool providers, started before the first turn.
@@ -648,8 +652,9 @@ impl Shared {
 }
 
 /// What a resumed session had loaded, from its journal: skills each agent loaded, as (agent id,
-/// skill name), and the plugins activated, in order. An agent's compaction drops its skills,
-/// since the summary replaced their instructions.
+/// skill name), and the plugins activated, in order.
+/// A compaction that carried context over (`kept_context`) keeps skills loaded; older journals' compactions
+/// summarised their instructions, so those drop the agent's skills.
 fn replay_extensions(history: &[AgentEvent]) -> (HashSet<(String, String)>, Vec<String>) {
     let mut skills = HashSet::new();
     let mut plugins = Vec::new();
@@ -667,9 +672,11 @@ fn replay_extensions(history: &[AgentEvent]) -> (HashSet<(String, String)>, Vec<
                 name,
                 ..
             } if !plugins.contains(name) => plugins.push(name.clone()),
-            SessionEvent::ContextCompacted { .. } => {
-                skills.retain(|(agent, _)| agent != agent_id);
-            }
+            // Compactions before workflow context was carried over summarised the skills.
+            SessionEvent::ContextCompacted {
+                kept_context: false,
+                ..
+            } => skills.retain(|(agent, _)| agent != agent_id),
             _ => {}
         }
     }
@@ -728,6 +735,7 @@ async fn run(
         routing: config.routing,
         local: config.local,
         max_steps: config.max_steps,
+        auto_compact_at: config.auto_compact_at,
         allowed_tools: Mutex::new(config.pre_approved.into_iter().collect()),
         tools: config.tools,
         extensions: config.extensions,
@@ -1308,5 +1316,50 @@ impl Emitter {
                 _ => None,
             })
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use imperium_protocol::session::TokenCountMethod;
+
+    fn compacted(agent: &str, kept_context: bool) -> AgentEvent {
+        AgentEvent {
+            agent_id: agent.into(),
+            event: SessionEvent::ContextCompacted {
+                model: "m".into(),
+                before_tokens: 10,
+                after_tokens: 5,
+                summarised_messages: 2,
+                budget: 100,
+                context_window: Some(120),
+                method: TokenCountMethod::Estimated,
+                summary_model: "m".into(),
+                kept_context,
+            },
+        }
+    }
+
+    fn skill(agent: &str) -> AgentEvent {
+        AgentEvent {
+            agent_id: agent.into(),
+            event: SessionEvent::ExtensionLoaded {
+                kind: ExtensionKind::Skill,
+                name: "review".into(),
+                tools: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn old_compactions_drop_loaded_skills_and_new_ones_keep_them() {
+        let (old, _) = replay_extensions(&[skill("root"), compacted("root", false)]);
+        assert!(old.is_empty());
+        let (kept, _) = replay_extensions(&[skill("root"), compacted("root", true)]);
+        assert!(kept.contains(&("root".to_string(), "review".to_string())));
+        // Another agent's old compaction leaves this one's skills.
+        let (other, _) = replay_extensions(&[skill("root"), compacted("t1", false)]);
+        assert_eq!(other.len(), 1);
     }
 }

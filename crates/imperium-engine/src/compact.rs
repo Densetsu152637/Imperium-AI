@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use imperium_api::truncate_chars;
 use imperium_models::ChatMessage;
 
-use crate::breakdown::{Category, Measured, PART_SEPARATOR, Spans, restored_spans};
+use crate::breakdown::{
+    Category, KEPT_CLOSE, KEPT_OPEN, Measured, PART_SEPARATOR, Spans, restored_spans,
+};
 use crate::instructions;
 
 /// Share of a context window held back for the model's reply (no per-model output limit is
@@ -19,6 +21,11 @@ pub(crate) const REPLY_RESERVE_PERCENT: u64 = 15;
 /// When compacting, the conversation aims to use at most this share of the budget, so it can
 /// keep going for a while before it is full again.
 pub(crate) const TARGET_PERCENT: u64 = 60;
+/// The lowest share of the window `context.auto_compact_at` may be: lower, compaction could
+/// not get the conversation under its own trigger.
+pub(crate) const MIN_TRIGGER: f64 = 0.5;
+/// A mid-turn compaction aims at this share of its trigger.
+pub(crate) const BELOW_TRIGGER_PERCENT: u64 = 80;
 /// The longest summary asked for, in tokens.
 pub(crate) const MAX_SUMMARY_TOKENS: u64 = 2_048;
 /// The shortest summary worth keeping, in tokens.
@@ -70,6 +77,19 @@ pub enum SwitchError {
     NoModel,
     #[error("the session has stopped")]
     Closed,
+}
+
+/// The tokens at which a mid-turn compaction starts: `at` (kept between [`MIN_TRIGGER`] and 1)
+/// of `window`.
+pub(crate) fn trigger_tokens(window: u64, at: f64) -> u64 {
+    (window as f64 * at.clamp(MIN_TRIGGER, 1.0)) as u64
+}
+
+/// Whether a mid-turn compaction can help: not when the system prompt, tools, and carried
+/// context (`fixed`) already take 80% of the trigger, since the conversation could not get
+/// under it however much is summarised.
+pub(crate) fn worth_compacting(fixed: u64, trigger: u64) -> bool {
+    fixed * 100 < trigger * 80
 }
 
 /// The tokens a conversation may use in `window`: the window less the reply's reserve.
@@ -174,8 +194,9 @@ fn transcript(messages: &[ChatMessage]) -> String {
                 ));
             }
             ChatMessage::User { content, .. } => {
-                // Instruction files are kept as they are, not summarised.
-                let content = instructions::strip(content);
+                // Instruction files and carried-over context are kept as they are, not
+                // summarised.
+                let content = instructions::strip(&without_pinned(content));
                 if !content.is_empty() {
                     out.push_str(&format!(
                         "### User\n{}\n\n",
@@ -212,6 +233,126 @@ fn transcript(messages: &[ChatMessage]) -> String {
     out
 }
 
+/// The block a compaction carries workflow context in; `restored_spans` recognises it by the
+/// same tags, so a conversation restored after a restart reads it as one part.
+const PINNED_HEAD: &str = "<context-manifest kept=\"true\">\nWorkflow context loaded earlier in this conversation, kept verbatim:\n\n";
+const PINNED_CLOSE: &str = KEPT_CLOSE;
+/// Between the items in the block, so a later compaction can take them apart again.
+const ITEM_SEP: &str = "\n[next kept item]\n";
+/// `text` with the strings that delimit the kept block made harmless, so an item cannot close
+/// the block or split itself into two items.
+fn escape_item(text: &str) -> String {
+    text.replace("[end of kept context]", "\\[end of kept context]")
+        .replace("[next kept item]", "\\[next kept item]")
+}
+
+/// The tools whose results are workflow context: loaded workflow companions and skills.
+const PINNED_TOOLS: [&str; 2] = ["context_load", "load_skill"];
+
+/// The workflow context in `messages[1..cut]`, which a compaction keeps verbatim instead of
+/// summarising: the latest context manifest, the references `context_load` returned, and
+/// the instructions `load_skill` returned (the system prompt, which holds the policy index,
+/// project instruction files, and eager skills, is never summarised at all). Context carried
+/// over by an earlier compaction is carried again, each item once: a manifest replaces the
+/// one before it, and a result that holds an earlier one replaces it. Empty when there is
+/// none.
+pub(crate) fn pinned_context(
+    messages: &[ChatMessage],
+    spans: &HashMap<usize, Spans>,
+    cut: usize,
+) -> String {
+    let mut names: HashMap<&str, &str> = HashMap::new();
+    let mut items: Vec<String> = Vec::new();
+    // `escaped`: the item was read back from a kept block, which holds it escaped already.
+    let mut add = |item: &str, escaped: bool| {
+        if item.trim().is_empty() {
+            return;
+        }
+        let owned;
+        let item = if escaped {
+            item
+        } else {
+            owned = escape_item(item);
+            owned.as_str()
+        };
+        if item.starts_with("<context-manifest") {
+            items.retain(|kept| !kept.starts_with("<context-manifest"));
+        } else if items.iter().any(|kept| kept.contains(item)) {
+            return;
+        } else {
+            items.retain(|kept| !item.contains(kept.as_str()));
+        }
+        items.push(item.to_string());
+    };
+    let mut keep = |text: &str| {
+        if let Some(inner) = text
+            .strip_prefix(PINNED_HEAD)
+            .and_then(|inner| inner.strip_suffix(PINNED_CLOSE))
+        {
+            inner.split(ITEM_SEP).for_each(|item| add(item, true));
+        } else if text.starts_with(instructions::OPEN) {
+            // Instruction files met while exploring travel here too, one item per file.
+            for (_, block) in instructions::blocks_in(text) {
+                add(&block, false);
+            }
+        } else {
+            add(text, false);
+        }
+    };
+    for (index, message) in messages.iter().enumerate().take(cut).skip(1) {
+        match message {
+            ChatMessage::Assistant { tool_calls, .. } => {
+                for call in tool_calls {
+                    names.insert(&call.id, &call.function.name);
+                }
+            }
+            ChatMessage::User { content, .. } => {
+                let parts = spans
+                    .get(&index)
+                    .cloned()
+                    .unwrap_or_else(|| restored_spans(content));
+                for (category, range) in parts {
+                    if category == Category::Manifest
+                        && let Some(text) = content.get(range)
+                    {
+                        keep(text);
+                    }
+                }
+            }
+            ChatMessage::Tool {
+                tool_call_id,
+                content,
+            } => {
+                let pinned = names
+                    .get(tool_call_id.as_str())
+                    .is_some_and(|name| PINNED_TOOLS.contains(name));
+                if pinned
+                    && !content.starts_with("error")
+                    && !content.contains("skill is already loaded")
+                {
+                    keep(content);
+                }
+            }
+            ChatMessage::System { .. } => {}
+        }
+    }
+    if items.is_empty() {
+        return String::new();
+    }
+    format!("{PINNED_HEAD}{}{PINNED_CLOSE}", items.join(ITEM_SEP))
+}
+
+/// `content` without a block of carried-over workflow context.
+fn without_pinned(content: &str) -> String {
+    if let Some(start) = content.find(KEPT_OPEN)
+        && let Some(end) = content[start..].find(PINNED_CLOSE)
+    {
+        let end = start + end + PINNED_CLOSE.len();
+        return format!("{}{}", &content[..start], &content[end..]);
+    }
+    content.to_string()
+}
+
 /// The summary as it is put into the conversation, tagged so a restored conversation's
 /// breakdown recognises it.
 pub(crate) fn summary_block(summary: &str) -> String {
@@ -221,35 +362,31 @@ pub(crate) fn summary_block(summary: &str) -> String {
     )
 }
 
-/// The instruction files in `messages[1..cut]`, as they are kept: compaction never summarises
-/// them, it carries them over verbatim after the summary. Empty when there are none.
-pub(crate) fn preserved_text(messages: &[ChatMessage], cut: usize) -> String {
-    let blocks = instructions::preserved(&messages[1..cut.min(messages.len())]);
-    if blocks.is_empty() {
-        String::new()
-    } else {
-        instructions::wrap(&blocks)
-    }
-}
-
-/// The conversation with `messages[1..cut]` replaced by `summary`, and its recorded parts moved
-/// to the new message indices. The summary goes before the first kept message when that is a
-/// user message (so roles keep alternating), else in a user message of its own. Instruction
-/// files from the replaced messages follow the summary unchanged.
+/// The conversation with `messages[1..cut]` replaced by `block`, and its recorded parts moved
+/// to the new message indices. The block goes before the first kept message when that is a
+/// user message (so roles keep alternating), else in a user message of its own. `pinned` (the
+/// [`pinned_context`], if any) follows the summary in the same message.
 pub(crate) fn rebuild(
     messages: &[ChatMessage],
     spans: &HashMap<usize, Spans>,
     cut: usize,
     summary: &str,
+    pinned: &str,
 ) -> (Vec<ChatMessage>, HashMap<usize, Spans>) {
-    let kept = preserved_text(messages, cut);
-    let mut head_parts = vec![(Category::Summary, 0..summary.len())];
-    let block = if kept.is_empty() {
-        summary.to_string()
+    let (block, head) = if pinned.is_empty() {
+        (
+            summary.to_string(),
+            vec![(Category::Summary, 0..summary.len())],
+        )
     } else {
         let start = summary.len() + PART_SEPARATOR.len();
-        head_parts.push((Category::Manifest, start..start + kept.len()));
-        format!("{summary}{PART_SEPARATOR}{kept}")
+        (
+            format!("{summary}{PART_SEPARATOR}{pinned}"),
+            vec![
+                (Category::Summary, 0..summary.len()),
+                (Category::Manifest, start..start + pinned.len()),
+            ],
+        )
     };
     let block = block.as_str();
     let mut out = vec![messages[0].clone()];
@@ -264,7 +401,7 @@ pub(crate) fn rebuild(
                 .get(&cut)
                 .cloned()
                 .unwrap_or_else(|| restored_spans(content));
-            let mut parts = head_parts;
+            let mut parts = head;
             parts.extend(
                 inner
                     .into_iter()
@@ -278,7 +415,7 @@ pub(crate) fn rebuild(
             cut + 1
         }
         _ => {
-            new_spans.insert(1, head_parts);
+            new_spans.insert(1, head);
             out.push(ChatMessage::user(block));
             cut
         }
@@ -412,7 +549,7 @@ mod tests {
         let messages = conversation();
         let spans = HashMap::from([(5, vec![(Category::User, 0..3)])]);
         let block = summary_block("earlier work");
-        let (rebuilt, new_spans) = rebuild(&messages, &spans, 5, &block);
+        let (rebuilt, new_spans) = rebuild(&messages, &spans, 5, &block, "");
         assert_eq!(rebuilt.len(), 5);
         let ChatMessage::User { content, .. } = &rebuilt[1] else {
             panic!("a user message")
@@ -424,7 +561,7 @@ mod tests {
         assert_eq!(rebuilt[2..], messages[6..]);
 
         // Cut inside a turn: the summary is a user message of its own before the assistant.
-        let (rebuilt, _) = rebuild(&messages, &spans, 6, &block);
+        let (rebuilt, _) = rebuild(&messages, &spans, 6, &block, "");
         assert!(matches!(&rebuilt[1], ChatMessage::User { content, .. } if content == &block));
         assert_eq!(rebuilt[2..], messages[6..]);
     }
@@ -453,30 +590,50 @@ mod tests {
     fn compaction_carries_instruction_files_over_unchanged() {
         let (messages, blocks) = with_instructions();
         let spans = HashMap::new();
-        let block = summary_block("earlier work");
         // Cut before the second turn: the instruction message is summarised away.
         let at = messages
             .iter()
             .position(|m| matches!(m, ChatMessage::User { content, .. } if content == "two"))
             .unwrap();
-        let (rebuilt, new_spans) = rebuild(&messages, &spans, at, &block);
+        let pinned = pinned_context(&messages, &spans, at);
+        let (rebuilt, new_spans) =
+            rebuild(&messages, &spans, at, &summary_block("earlier"), &pinned);
         let ChatMessage::User { content, .. } = &rebuilt[1] else {
             panic!("a user message")
         };
         assert!(content.starts_with("<conversation-summary>"));
         assert!(content.ends_with("two"));
-        let kept: Vec<String> = instructions::blocks_in(content)
-            .into_iter()
-            .map(|(_, block)| block)
-            .collect();
-        assert_eq!(kept, blocks, "verbatim and in order");
+        let found = |content: &str| -> Vec<String> {
+            instructions::blocks_in(content)
+                .into_iter()
+                .map(|(_, block)| block)
+                .collect()
+        };
+        assert_eq!(found(content), blocks, "verbatim, in order, once");
         let parts = &new_spans[&1];
         assert_eq!(parts[0].0, Category::Summary);
         assert_eq!(parts[1].0, Category::Manifest);
-        assert!(content[parts[1].1.clone()].starts_with(instructions::OPEN));
-        // A second compaction keeps them once more, not twice.
-        let (again, _) = rebuild(&rebuilt, &new_spans, rebuilt.len(), &block);
-        assert_eq!(instructions::preserved(&again[1..]), blocks);
+        assert!(content[parts[1].1.clone()].starts_with(KEPT_OPEN));
+
+        // Compacting again, from the restored text alone, still holds each file once.
+        let restored = HashMap::new();
+        let mut conversation = rebuilt;
+        for _ in 0..2 {
+            conversation.push(reply("fine"));
+            conversation.push(user("more"));
+            conversation.push(reply("ok"));
+            let cut = conversation.len() - 2;
+            let carried = pinned_context(&conversation, &restored, cut);
+            let (next, _) = rebuild(&conversation, &restored, cut, &summary_block("t"), &carried);
+            let ChatMessage::User { content, .. } = &next[1] else {
+                panic!("a user message")
+            };
+            assert_eq!(found(content), blocks);
+            // And the tracker still knows them, so they are not loaded again.
+            let tracker = instructions::Tracker::from_messages(&next);
+            assert!(tracker.holds("/p/a/AGENTS.md") && tracker.holds("/p/a/b/CLAUDE.md"));
+            conversation = next;
+        }
     }
 
     #[test]
@@ -493,8 +650,254 @@ mod tests {
     }
 
     #[test]
+    fn the_trigger_is_kept_in_a_sane_range() {
+        assert_eq!(trigger_tokens(10_000, 0.85), 8_500);
+        assert_eq!(trigger_tokens(10_000, 0.1), 5_000);
+        assert_eq!(trigger_tokens(10_000, 7.0), 10_000);
+    }
+
+    #[test]
     fn the_budget_leaves_room_for_the_reply() {
         assert_eq!(budget(1_000), 850);
         assert_eq!(budget(32_768), 27_852);
+    }
+
+    fn calling_tool(id: &str, name: &str) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: id.into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: name.into(),
+                    arguments: "{}".into(),
+                },
+            }],
+        }
+    }
+
+    fn tool_result(id: &str, content: &str) -> ChatMessage {
+        ChatMessage::Tool {
+            tool_call_id: id.into(),
+            content: content.into(),
+        }
+    }
+
+    /// A conversation with workflow context: a manifest in the first user message, a
+    /// `context_load` and a `load_skill` result, and ordinary work.
+    fn with_context() -> (Vec<ChatMessage>, HashMap<usize, Spans>, [String; 3]) {
+        let manifest =
+            "<context-manifest role=\"root\">\n- AGENTS.md (required)\n</context-manifest>";
+        let loaded =
+            "<loaded reference=\"workflows/AGENTS.leaf.md\">\n# Leaf\nKeep  spacing.\n</loaded>\n";
+        let skill = "# Skill: review\nRead the diff first.\n";
+        let first = format!("{manifest}{PART_SEPARATOR}fix the parser");
+        let spans = HashMap::from([(
+            1,
+            vec![
+                (Category::Manifest, 0..manifest.len()),
+                (
+                    Category::User,
+                    manifest.len() + PART_SEPARATOR.len()..first.len(),
+                ),
+            ],
+        )]);
+        let messages = vec![
+            ChatMessage::System {
+                content: "system prompt\n\nProject instructions: AGENTS.md".into(),
+            },
+            user(&first),
+            calling_tool("a", "context_load"),
+            tool_result("a", loaded),
+            calling_tool("b", "load_skill"),
+            tool_result("b", skill),
+            calling("c"),
+            tool_result("c", "ordinary output that may be summarised"),
+            reply("done"),
+            user("next"),
+            reply("ok"),
+        ];
+        (
+            messages,
+            spans,
+            [manifest.into(), loaded.into(), skill.into()],
+        )
+    }
+
+    #[test]
+    fn compaction_keeps_the_system_prompt_and_workflow_context_verbatim() {
+        let (messages, spans, [manifest, loaded, skill]) = with_context();
+        let cut = 9;
+        let pinned = pinned_context(&messages, &spans, cut);
+        for text in [&manifest, &loaded, &skill] {
+            assert!(pinned.contains(text.as_str()), "{text}");
+        }
+        assert!(!pinned.contains("ordinary output"));
+
+        let (rebuilt, new_spans) = rebuild(&messages, &spans, cut, &summary_block("s"), &pinned);
+        // The system prompt is untouched, byte for byte.
+        assert_eq!(rebuilt[0], messages[0]);
+        let ChatMessage::User { content, .. } = &rebuilt[1] else {
+            panic!("a user message")
+        };
+        // Workflow context is in the kept message verbatim; older work is only summarised.
+        for text in [&manifest, &loaded, &skill] {
+            assert!(content.contains(text.as_str()), "{text}");
+        }
+        assert!(content.contains("<conversation-summary>"));
+        assert!(!content.contains("ordinary output"));
+        assert!(!content.contains("fix the parser"));
+        assert!(new_spans[&1].iter().any(|(c, _)| *c == Category::Manifest));
+
+        // A second compaction carries the same context forward without repeating it.
+        let mut again = rebuilt.clone();
+        again.push(user("more"));
+        again.push(reply("fine"));
+        let carried = pinned_context(&again, &new_spans, 3);
+        for text in [&manifest, &loaded, &skill] {
+            assert_eq!(carried.matches(text.as_str()).count(), 1, "{text}");
+        }
+        let (second, _) = rebuild(&again, &new_spans, 3, &summary_block("t"), &carried);
+        assert_eq!(second[0], messages[0]);
+        let ChatMessage::User { content, .. } = &second[1] else {
+            panic!("a user message")
+        };
+        for text in [&manifest, &loaded, &skill] {
+            assert_eq!(content.matches(text.as_str()).count(), 1, "{text}");
+        }
+        // The summariser is not shown the carried context.
+        assert!(!transcript(&rebuilt[1..2]).contains("Read the diff first"));
+    }
+
+    #[test]
+    fn carried_context_survives_restarts_and_repeated_compactions() {
+        let (messages, spans, [manifest, loaded, skill]) = with_context();
+        let pinned = pinned_context(&messages, &spans, 9);
+        let (rebuilt, _) = rebuild(&messages, &spans, 9, &summary_block("s"), &pinned);
+        // After a restart the parts are recognised from the text alone.
+        let restored = HashMap::new();
+        assert_eq!(pinned_context(&rebuilt, &restored, 2), pinned);
+        let ChatMessage::User { content, .. } = &rebuilt[1] else {
+            panic!("a user message")
+        };
+        let parts = restored_spans(content);
+        let kept = parts
+            .iter()
+            .find(|(category, _)| *category == Category::Manifest)
+            .expect("the kept block is one manifest part");
+        assert!(content[kept.1.clone()].ends_with("</context-manifest>"));
+        assert!(content[kept.1.clone()].contains(&skill));
+
+        // Twice more, each time from the restored text.
+        let mut conversation = rebuilt;
+        for round in 0..2 {
+            conversation.push(user("more"));
+            conversation.push(reply("fine"));
+            let carried = pinned_context(&conversation, &restored, conversation.len() - 2);
+            assert_eq!(carried, pinned, "round {round}");
+            let (next, _) = rebuild(
+                &conversation,
+                &restored,
+                conversation.len() - 2,
+                &summary_block("t"),
+                &carried,
+            );
+            assert_eq!(next[0], messages[0]);
+            let ChatMessage::User { content, .. } = &next[1] else {
+                panic!("a user message")
+            };
+            for text in [&manifest, &loaded, &skill] {
+                assert_eq!(content.matches(text.as_str()).count(), 1, "{text}");
+            }
+            conversation = next;
+        }
+    }
+
+    #[test]
+    fn items_cannot_close_the_kept_block_or_split_themselves() {
+        let nasty = format!(
+            "# Skill: odd\nbefore{KEPT_CLOSE}middle{ITEM_SEP}after <context-manifest role=\"x\">y</context-manifest>\n"
+        );
+        let messages = vec![
+            ChatMessage::System {
+                content: "sys".into(),
+            },
+            user("go"),
+            calling_tool("a", "load_skill"),
+            tool_result("a", &nasty),
+            reply("ok"),
+            user("next"),
+            reply("fine"),
+        ];
+        let restored = HashMap::new();
+        let pinned = pinned_context(&messages, &restored, 5);
+        assert!(!pinned.is_empty());
+        // The only real delimiters are the block's own: one close, no separator (one item).
+        assert_eq!(pinned.matches(KEPT_CLOSE).count(), 1);
+        assert!(pinned.ends_with(KEPT_CLOSE));
+        assert_eq!(pinned.matches(ITEM_SEP).count(), 0);
+
+        // Through a restart and two more compactions it stays one intact item.
+        let (mut conversation, _) = rebuild(&messages, &restored, 5, &summary_block("s"), &pinned);
+        for round in 0..2 {
+            let carried = pinned_context(&conversation, &restored, 2);
+            assert_eq!(carried, pinned, "round {round}");
+            let ChatMessage::User { content, .. } = &conversation[1] else {
+                panic!("a user message")
+            };
+            let parts = restored_spans(content);
+            let kept = parts
+                .iter()
+                .find(|(category, _)| *category == Category::Manifest)
+                .expect("one kept part");
+            assert_eq!(&content[kept.1.clone()], pinned);
+            conversation.push(reply("more"));
+            conversation.push(user("again"));
+            conversation.push(reply("done"));
+            let cut = conversation.len() - 2;
+            let (next, _) = rebuild(&conversation, &restored, cut, &summary_block("t"), &carried);
+            conversation = next;
+        }
+    }
+
+    #[test]
+    fn a_fixed_part_near_the_trigger_is_not_worth_compacting() {
+        assert!(worth_compacting(3_000, 10_000));
+        assert!(!worth_compacting(8_000, 10_000));
+        assert!(!worth_compacting(9_500, 10_000));
+    }
+
+    #[test]
+    fn only_the_latest_manifest_and_the_fullest_load_are_carried() {
+        let old = "<context-manifest role=\"root\">\n- old\n</context-manifest>";
+        let new = "<context-manifest role=\"root\">\n- new\n</context-manifest>";
+        let small = "<loaded reference=\"a.md\">\nA\n</loaded>\n";
+        let big = format!("{small}<loaded reference=\"b.md\">\nB\n</loaded>\n");
+        let messages = vec![
+            ChatMessage::System {
+                content: "sys".into(),
+            },
+            user(old),
+            calling_tool("a", "context_load"),
+            tool_result("a", small),
+            user(new),
+            calling_tool("b", "context_load"),
+            tool_result("b", &big),
+            reply("done"),
+        ];
+        let restored = HashMap::from([
+            (1, vec![(Category::Manifest, 0..old.len())]),
+            (4, vec![(Category::Manifest, 0..new.len())]),
+        ]);
+        let pinned = pinned_context(&messages, &restored, messages.len());
+        assert!(pinned.contains("- new") && !pinned.contains("- old"));
+        assert_eq!(pinned.matches("<loaded reference=\"a.md\">").count(), 1);
+        assert!(pinned.contains("<loaded reference=\"b.md\">"));
+    }
+
+    #[test]
+    fn a_conversation_without_workflow_context_pins_nothing() {
+        let messages = conversation();
+        assert_eq!(pinned_context(&messages, &HashMap::new(), 9), "");
     }
 }

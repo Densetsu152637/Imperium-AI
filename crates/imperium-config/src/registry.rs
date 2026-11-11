@@ -202,6 +202,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("resume.at_time", "Resume at", STRING, "Local HH:MM time to resume, for at_time."),
     def("resume.retry_every_minutes", "Retry every (minutes)", Integer, "Retry interval, for retry_every."),
     def("resume.max_wait_hours", "Longest wait (hours)", Integer, "Longest a session waits in one turn."),
+    live(def("context.auto_compact_at", "Compact at", Number, "Compact an agent's conversation mid-turn when the next model call would use this share of its model's context window (0.85 is 85%); 0 never does. Needs a known context window.")),
     def("sessions.auto_archive_after_days", "Archive idle sessions after (days)", Integer, "Archive a session after this many days without activity; 0 never does. Working, waiting, pinned, and project-agent sessions are never archived."),
     def("sessions.auto_archive_on_pr_close", "Archive when the pull request closes", Bool, "Archive a session once the pull request it watches is merged or closed."),
     def("sessions.agent_state_keep", "Keep agent state", Bool, "Keep each agent's conversation, plan, and usage beside the session's files, so finished subagents can be resumed with a follow-up, also after a restart. Deleted with the session."),

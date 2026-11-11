@@ -64,6 +64,7 @@ fn main() {
             store::store_read,
             store::store_write,
             store::store_folder,
+            store::save_export,
             update::update_status,
             update::update_check,
             update::update_set_channel,

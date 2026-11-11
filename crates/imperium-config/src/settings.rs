@@ -130,6 +130,9 @@ pub struct Settings {
     pub load: LoadSettings,
     #[serde(default)]
     pub sessions: SessionSettings,
+    /// `[context]`: when agents compact their conversations (see docs/03).
+    #[serde(default)]
+    pub context: ContextSettings,
     /// `[permissions]`: path grants and rules for every environment (see docs/05).
     #[serde(default)]
     pub permissions: crate::PermissionSettings,
@@ -361,6 +364,23 @@ impl Default for AutofixSettings {
             max_attempts_per_pr: 3,
             poll_s: 120,
             model: None,
+        }
+    }
+}
+
+/// `[context]`: how agents manage their context windows (see docs/03-agent-engine.md).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ContextSettings {
+    /// Compact an agent's conversation mid-turn when the next model call would read this share
+    /// of its model's context window (0.85 is 85%); 0 turns it off.
+    pub auto_compact_at: f64,
+}
+
+impl Default for ContextSettings {
+    fn default() -> Self {
+        ContextSettings {
+            auto_compact_at: 0.85,
         }
     }
 }
