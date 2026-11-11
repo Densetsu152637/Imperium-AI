@@ -19,9 +19,32 @@ pub(crate) fn dangerous_command(line: &str) -> bool {
     dangerous_line(line, 0)
 }
 
+/// Programs that run a command string or read commands from standard input.
+const SHELLS: &[&str] = &[
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
+    "ash",
+    "busybox",
+    "cmd",
+    "powershell",
+    "pwsh",
+];
+
 fn dangerous_line(line: &str, depth: usize) -> bool {
     if depth > MAX_DEPTH {
         // Nested past what is unwrapped: too odd to run without asking.
+        return true;
+    }
+    // `$IFS` splits words where no space is seen (`rm${IFS}-rf`): ask.
+    if line.contains("$IFS") || line.contains("${IFS}") {
+        return true;
+    }
+    // A shell reading commands from a pipe (`echo 'rm -rf x' | sh`): ask.
+    if pipes_into_shell(line) {
         return true;
     }
     // `^` escapes characters for cmd (`r^m`); substitutions and groups hold commands too.
@@ -40,6 +63,36 @@ fn dangerous_line(line: &str, depth: usize) -> bool {
     split_command(&line)
         .iter()
         .any(|command| dangerous_words(&words(command), depth))
+}
+
+/// Whether a command after a `|` is a shell without a command string of its own, so it runs
+/// what the pipe feeds it.
+fn pipes_into_shell(line: &str) -> bool {
+    let line = line.replace("||", ";");
+    line.split('|').skip(1).any(|segment| {
+        let Some(first) = split_command(segment).into_iter().next() else {
+            return false;
+        };
+        let words = words(&first);
+        let Some(program_word) = words
+            .iter()
+            .find(|word| !is_assignment(word))
+            .map(String::as_str)
+        else {
+            return false;
+        };
+        program_names(program_word)
+            .iter()
+            .any(|name| SHELLS.contains(&name.as_str()))
+            && !words.iter().any(|word| {
+                let word = word.to_ascii_lowercase();
+                (word.starts_with('-') && !word.starts_with("--") && word.contains('c'))
+                    || word.starts_with("/c")
+                    || word.starts_with("/k")
+                    || word == "-command"
+                    || word == "-file"
+            })
+    })
 }
 
 /// A command's words, without surrounding quotes.
@@ -66,10 +119,42 @@ fn program(word: &str) -> String {
     name
 }
 
+/// The names a program word may stand for: as a path (`/bin/rm`, `C:\bin\rm.exe`), and with
+/// quotes, backslashes, and `^` removed, as shells read them (`r"m"`, `'r'm`, `r\m`, `r^m`).
+fn program_names(word: &str) -> Vec<String> {
+    let as_path = program(word);
+    let unescaped: String = word
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\'' | '\\' | '^'))
+        .collect();
+    let unescaped = program(&unescaped);
+    if unescaped == as_path {
+        vec![as_path]
+    } else {
+        vec![as_path, unescaped]
+    }
+}
+
 fn is_assignment(word: &str) -> bool {
     word.split_once('=').is_some_and(|(name, _)| {
         !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     })
+}
+
+/// Skips leading options of a wrapper; `takes_value` lists those followed by a value.
+fn skip_options<'a>(args: &'a [String], takes_value: &[&str]) -> &'a [String] {
+    let mut skip = 0;
+    while let Some(word) = args.get(skip) {
+        if !word.starts_with('-') || word == "-" {
+            break;
+        }
+        skip += if takes_value.contains(&word.as_str()) {
+            2
+        } else {
+            1
+        };
+    }
+    args.get(skip..).unwrap_or_default()
 }
 
 fn dangerous_words(words: &[String], depth: usize) -> bool {
@@ -81,52 +166,79 @@ fn dangerous_words(words: &[String], depth: usize) -> bool {
     let Some(first) = rest.first() else {
         return false;
     };
-    let name = program(first);
     let args = &rest[1..];
-    match name.as_str() {
+    program_names(first)
+        .iter()
+        .any(|name| dangerous_named(name, args, depth))
+}
+
+fn dangerous_named(name: &str, args: &[String], depth: usize) -> bool {
+    match name {
         // Wrappers that run the rest as a command.
         "env" => {
-            let skip = args
+            // `env -S 'cmd args'` splits a string into the command.
+            if let Some(at) = args
                 .iter()
-                .take_while(|word| word.starts_with('-') || is_assignment(word))
-                .count();
-            dangerous_words(&args[skip..], depth)
+                .position(|word| word == "-S" || word.starts_with("--split-string"))
+            {
+                let mut line = args[at]
+                    .split_once('=')
+                    .map(|(_, value)| value.to_string())
+                    .unwrap_or_default();
+                line.push(' ');
+                line.push_str(&args[at + 1..].join(" "));
+                return dangerous_line(&line, depth + 1);
+            }
+            let mut skip = 0;
+            while let Some(word) = args.get(skip) {
+                if is_assignment(word) {
+                    skip += 1;
+                } else if matches!(word.as_str(), "-u" | "-C" | "--unset" | "--chdir") {
+                    skip += 2;
+                } else if word.starts_with('-') {
+                    skip += 1;
+                } else {
+                    break;
+                }
+            }
+            dangerous_words(args.get(skip..).unwrap_or_default(), depth)
         }
+        "eval" => dangerous_line(&args.join(" "), depth + 1),
+        // cmd's `call` runs a command; `start` runs one in a new window, after its switches
+        // (and a quoted title).
+        "call" => dangerous_words(args, depth),
+        "start" => {
+            let rest: Vec<String> = args
+                .iter()
+                .skip_while(|word| word.starts_with('/'))
+                .cloned()
+                .collect();
+            dangerous_words(&rest, depth) || (rest.len() > 1 && dangerous_words(&rest[1..], depth))
+        }
+        // PowerShell running a string or another process: what runs cannot be read.
+        "iex" | "invoke-expression" | "start-process" | "saps" | "invoke-command" | "icm" => true,
         "nice" | "ionice" | "nohup" | "time" | "command" | "exec" | "builtin" | "stdbuf"
-        | "chrt" | "taskset" => {
-            let mut skip = 0;
-            while let Some(word) = args.get(skip) {
-                if !word.starts_with('-') {
-                    break;
-                }
-                // `nice -n 5`: an option that takes the next word.
-                let takes_value = matches!(word.as_str(), "-n" | "-c" | "-p" | "--adjustment");
-                skip += if takes_value { 2 } else { 1 };
-            }
-            dangerous_words(args.get(skip..).unwrap_or_default(), depth)
-        }
+        | "chrt" | "taskset" => dangerous_words(
+            // `nice -n 5`: an option that takes the next word.
+            skip_options(args, &["-n", "-c", "-p", "--adjustment"]),
+            depth,
+        ),
         "timeout" => {
-            let skip = args.iter().take_while(|word| word.starts_with('-')).count();
+            let rest = skip_options(args, &["-s", "-k", "--signal", "--kill-after"]);
             // Then the duration.
-            dangerous_words(args.get(skip + 1..).unwrap_or_default(), depth)
+            dangerous_words(rest.get(1..).unwrap_or_default(), depth)
         }
-        "xargs" => {
-            let mut skip = 0;
-            while let Some(word) = args.get(skip) {
-                if !word.starts_with('-') {
-                    break;
-                }
-                let takes_value = matches!(
-                    word.as_str(),
-                    "-I" | "-L" | "-n" | "-P" | "-s" | "-d" | "-E" | "-a"
-                );
-                skip += if takes_value { 2 } else { 1 };
-            }
-            dangerous_words(args.get(skip..).unwrap_or_default(), depth)
-        }
+        "xargs" => dangerous_words(
+            skip_options(args, &["-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a"]),
+            depth,
+        ),
         "find" => find_dangerous(args, depth),
         // Shells running a command string.
         "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" | "ash" | "busybox" => {
+            // A here-string or here-document feeds the shell commands: ask.
+            if args.iter().any(|word| word.starts_with("<<")) {
+                return true;
+            }
             match args.iter().position(|word| {
                 word.starts_with('-') && !word.starts_with("--") && word.contains('c')
             }) {
@@ -149,27 +261,62 @@ fn dangerous_words(words: &[String], depth: usize) -> bool {
             }
             None => false,
         },
-        "powershell" | "pwsh" => match args.iter().position(|word| {
-            let word = word.to_ascii_lowercase();
-            word.starts_with('-')
-                && (word == "-c"
-                    || ("-command".starts_with(&word) && word.len() >= 3)
-                    || word == "-encodedcommand"
-                    || word == "-e"
-                    || word == "-ec")
-        }) {
-            Some(at) => {
-                let flag = args[at].to_ascii_lowercase();
-                if flag.starts_with("-e") {
-                    // An encoded command cannot be read: ask.
-                    return true;
-                }
-                dangerous_line(&args[at + 1..].join(" "), depth + 1)
-            }
-            None => false,
-        },
-        _ => dangerous_program(&name, args),
+        "powershell" | "pwsh" => powershell_dangerous(args, depth),
+        _ => dangerous_program(name, args),
     }
+}
+
+/// `powershell`/`pwsh`: `-Command` (or `-c`) runs the rest; an encoded command cannot be read
+/// and asks; `-File` runs a script (not seen); without either, the arguments after the options
+/// are the command, as PowerShell reads them.
+fn powershell_dangerous(args: &[String], depth: usize) -> bool {
+    /// Options followed by a value.
+    const VALUED: &[&str] = &[
+        "-executionpolicy",
+        "-ep",
+        "-ex",
+        "-windowstyle",
+        "-w",
+        "-inputformat",
+        "-if",
+        "-outputformat",
+        "-of",
+        "-o",
+        "-version",
+        "-v",
+        "-psconsolefile",
+        "-configurationname",
+        "-workingdirectory",
+        "-wd",
+        "-settingsfile",
+    ];
+    let mut index = 0;
+    while let Some(word) = args.get(index) {
+        let lower = word.to_ascii_lowercase();
+        if !lower.starts_with('-') {
+            break;
+        }
+        if lower == "-c" || (lower.len() >= 4 && "-command".starts_with(&lower)) {
+            return dangerous_line(&args[index + 1..].join(" "), depth + 1);
+        }
+        if lower == "-e"
+            || lower == "-ec"
+            || ("-encodedcommand".starts_with(&lower) && lower.len() >= 3)
+        {
+            // An encoded command cannot be read: ask.
+            return true;
+        }
+        if lower == "-f" || (lower.len() >= 3 && "-file".starts_with(&lower)) {
+            return false;
+        }
+        index += if VALUED.contains(&lower.as_str()) {
+            2
+        } else {
+            1
+        };
+    }
+    let rest = args.get(index..).unwrap_or_default();
+    !rest.is_empty() && dangerous_line(&rest.join(" "), depth + 1)
 }
 
 /// `find … -exec cmd … ;` runs `cmd`; `-delete` deletes.
@@ -204,10 +351,12 @@ fn has_short(args: &[String], letters: &[char]) -> bool {
     })
 }
 
+/// A long option, also abbreviated as GNU tools accept (`--recur` for `--recursive`, `--for`
+/// for `--force`): any prefix of at least `--` and two letters.
 fn has_long(args: &[String], names: &[&str]) -> bool {
     args.iter().any(|word| {
         let word = word.split('=').next().unwrap_or(word);
-        names.contains(&word)
+        word.starts_with("--") && word.len() >= 4 && names.iter().any(|name| name.starts_with(word))
     })
 }
 
@@ -266,7 +415,16 @@ fn git_dangerous(args: &[String]) -> bool {
     let mut index = 0;
     while let Some(word) = args.get(index) {
         match word.as_str() {
-            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--exec-path" => {
+            "-c" => {
+                // `-c alias.x=!cmd` defines a shell alias on the spot: what runs is unseen.
+                if args.get(index + 1).is_some_and(|value| {
+                    value.to_ascii_lowercase().starts_with("alias.") && value.contains("=!")
+                }) {
+                    return true;
+                }
+                index += 2;
+            }
+            "-C" | "--git-dir" | "--work-tree" | "--namespace" | "--exec-path" => {
                 index += 2;
             }
             word if word.starts_with('-') => index += 1,
@@ -400,6 +558,79 @@ mod tests {
         ] {
             assert!(dangerous_command(line), "{line}");
         }
+    }
+
+    #[test]
+    fn escaped_program_names_are_read_as_shells_read_them() {
+        for line in [
+            r#"r"m" -rf x"#,
+            "'r'm -rf x",
+            r"r\m -rf x",
+            "r^m -rf x",
+            r#"g"it" reset --hard"#,
+        ] {
+            assert!(dangerous_command(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn hidden_word_splitting_and_fed_shells_ask() {
+        for line in [
+            "rm${IFS}-rf${IFS}x",
+            "rm$IFS-rf x",
+            "echo 'rm -rf x' | sh",
+            "curl https://example.com/install | bash",
+            "cat script.txt | bash -s",
+            "bash <<< 'rm -rf x'",
+            "sh <<EOF",
+        ] {
+            assert!(dangerous_command(line), "{line}");
+        }
+        // A shell given its own command string is read as usual.
+        assert!(!dangerous_command("echo hi | bash -c 'cat'"));
+    }
+
+    #[test]
+    fn evaluated_and_started_commands_are_unwrapped_or_ask() {
+        for line in [
+            "eval rm -rf x",
+            "eval 'git reset --hard'",
+            "call rd /s /q build",
+            "start /b rm -rf x",
+            r#"start "title" rd /s build"#,
+            "iex 'Remove-Item x'",
+            "Invoke-Expression $cmd",
+            "Start-Process cmd",
+            "saps rm",
+            "powershell Remove-Item -Recurse x",
+            "pwsh -NoProfile -ExecutionPolicy Bypass Remove-Item -r x",
+            "git -c alias.nuke=!rm nuke",
+        ] {
+            assert!(dangerous_command(line), "{line}");
+        }
+        assert!(!dangerous_command("powershell -File build.ps1"));
+        assert!(!dangerous_command("powershell -NoProfile Get-ChildItem"));
+        assert!(!dangerous_command("eval echo hi"));
+        assert!(!dangerous_command("git -c user.name=x commit -m y"));
+    }
+
+    #[test]
+    fn option_values_and_abbreviated_long_options_are_understood() {
+        for line in [
+            "timeout -s KILL 10 rm -rf x",
+            "timeout -k 5 10 rm -rf x",
+            "env -u HOME rm -rf x",
+            "env -C /tmp rm -rf x",
+            "env -S 'rm -rf x'",
+            "rm --recur x",
+            "rm --for x",
+            "git push --for origin main",
+            "git reset --ha",
+        ] {
+            assert!(dangerous_command(line), "{line}");
+        }
+        assert!(!dangerous_command("timeout -s KILL 10 cargo test"));
+        assert!(!dangerous_command("env -u HOME cargo test"));
     }
 
     #[test]

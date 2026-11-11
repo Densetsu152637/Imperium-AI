@@ -86,10 +86,14 @@ the last read, or from byte `since`, at most 30,000 bytes per call with the offs
 from; `command_stop(id)` kills it with every process it started and waits up to 10 s for it to
 end. Everything a command starts stays reachable after the command itself exits (`sh -c 'x &'`,
 `start /b x`): on Unix the command leads its own process group, which is killed as a whole; on
-Windows it runs in a Job Object that kills every process in it when closed; a container-tier
+Windows it runs in a Job Object that kills every process in it when closed (and its process
+tree is killed first, for a child started before it joined the job); a container-tier
 command's container (named uniquely per daemon, session, and command) is removed with
-`docker rm -f`. A command that exited but left processes running says so in its status and
-still counts as running. Reading and stopping touch only what the session started, so they
+`docker rm -f`. A command that exited but left processes running says so in its status, still
+counts as running, and is never dropped from the table while they run. On Unix, a descendant
+that leaves the process group on purpose (`setsid`, `setpgid`, daemonising tools) escapes
+`command_stop` on the policy tier and on macOS; the Linux OS tier's process namespace and the
+container tier still end it with the command. Reading and stopping touch only what the session started, so they
 count as reads and never ask.
 
 A session runs at most 8 background commands at once and keeps the last 32 (finished ones are
@@ -363,10 +367,16 @@ answers:
   `git checkout -f`; `git restore`; `git stash drop` / `clear`; `filter-branch`), with git's
   global options (`-C dir`, `-c k=v`, `--git-dir`) skipped. Each command of a line is checked,
   including inside `$( )`, backticks, and parentheses; shells running a command string
-  (`sh`/`bash`/`zsh -c`, `cmd /c`, `powershell`/`pwsh -Command`; an encoded PowerShell command
-  always asks) and wrappers (`env`, `nice`, `nohup`, `time`, `timeout`, `command`, `exec`,
-  `xargs`, `find -exec`) are unwrapped; program names are compared without folder, extension,
-  or case, and cmd's `^` escapes are dropped.
+  (`sh`/`bash`/`zsh -c`, `cmd /c`, `powershell`/`pwsh` with `-Command` or with the command
+  as its arguments; an encoded PowerShell command always asks) and wrappers (`env`, including
+  `-u`/`-C` values and `-S` strings; `nice`; `nohup`; `time`; `timeout`, including `-s`/`-k`
+  values; `command`; `exec`; `eval`; `xargs`; `find -exec`; cmd's `call` and `start`) are
+  unwrapped; program names are compared without folder, extension, or case, and with quotes,
+  backslashes, and `^` removed (`r"m"`, `'r'm`, `r\m`, `r^m`); long options may be abbreviated
+  (`--recur`, `--for`). These always ask: `$IFS` in a line, a shell fed commands by a pipe or a
+  here-string (`… | sh`, `bash <<< …`), PowerShell running a string or another process
+  (`iex`, `Invoke-Expression`, `Start-Process`, `saps`, `Invoke-Command`), and `git -c
+  alias.<name>=!…`.
 - Writing files that hold secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
   `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`) or anything with a `.git` folder
   in its absolute path, such as a linked worktree's main repository's hooks.

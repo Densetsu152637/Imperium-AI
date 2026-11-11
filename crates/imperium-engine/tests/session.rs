@@ -615,6 +615,50 @@ fn finished(events: &[SessionEvent]) -> Vec<(bool, String)> {
         .collect()
 }
 
+/// Counts the sessions an agent asks to start.
+#[derive(Debug, Default)]
+struct CountingLauncher(AtomicUsize);
+
+impl imperium_engine::SessionLauncher for CountingLauncher {
+    fn launch<'a>(
+        &'a self,
+        _brief: &'a str,
+        _model: Option<&'a str>,
+    ) -> imperium_engine::LaunchFuture<'a> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok("launched".to_string()) })
+    }
+}
+
+#[tokio::test]
+async fn plan_mode_refuses_to_start_a_session() {
+    let endpoint = scripted_endpoint(vec![
+        tool_call_body("start_session", r#"{"brief":"write the release notes"}"#),
+        text_body("Here is the plan."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let launcher = Arc::new(CountingLauncher::default());
+    let mut config = config(endpoint, dir.path(), Workspace::new(dir.path()).unwrap());
+    config.launcher = Some(Arc::clone(&launcher) as Arc<dyn imperium_engine::SessionLauncher>);
+    let session = Session::spawn(config).unwrap();
+    session.set_permission_mode(PermissionMode::Plan);
+    let mut events = session.subscribe();
+    session.send("plan the release".into()).unwrap();
+    let (seen, asked) = run_turn(&session, &mut events, PermissionDecision::Allow).await;
+    assert!(asked.is_empty(), "{asked:?}");
+    let results = finished(&seen);
+    assert!(
+        !results[0].0 && results[0].1.contains("plan mode"),
+        "{results:?}"
+    );
+    assert_eq!(
+        launcher.0.load(Ordering::SeqCst),
+        0,
+        "no session was started"
+    );
+}
+
 #[tokio::test]
 async fn plan_mode_refuses_writes_and_commands_but_reads() {
     let endpoint = scripted_endpoint(vec![

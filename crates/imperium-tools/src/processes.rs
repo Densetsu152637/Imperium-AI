@@ -174,14 +174,18 @@ impl Killer {
     fn kill(&self) {
         #[cfg(windows)]
         {
-            // Closing the job kills every process in it.
             let job = lock(&self.0.job).take();
-            if job.is_none()
-                && let Some(pid) = self.0.pid
-            {
-                // No job (assigning failed): kill the tree that is still attached.
+            // Kill the tree first: a child started before the command joined its job is not in
+            // the job but is still in the tree. With a job, only while the command is in it
+            // (so the id is still the command's, not a reused one).
+            let ours = job.as_ref().is_none_or(|job| {
+                job.query_process_id_list()
+                    .is_ok_and(|pids| self.0.pid.is_some_and(|pid| pids.contains(&(pid as usize))))
+            });
+            if ours && let Some(pid) = self.0.pid {
                 quietly("taskkill", &["/PID", &pid.to_string(), "/T", "/F"]);
             }
+            // Then close the job, which kills every process in it.
             drop(job);
         }
         #[cfg(not(windows))]
@@ -348,9 +352,10 @@ impl Processes {
             }
             let _ = status_tx.send(Some(ended));
         });
-        // Make room: drop the oldest finished processes beyond the limit.
+        // Make room: drop the oldest finished processes beyond the limit, only those with
+        // nothing left running (dropping one loses its killer).
         while table.entries.len() >= MAX_KEPT {
-            match table.entries.iter().position(|entry| !entry.running()) {
+            match table.entries.iter().position(|entry| !entry.active()) {
                 Some(index) => {
                     table.entries.remove(index);
                 }
@@ -641,6 +646,32 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert!(members.iter().all(|pid| !exists(*pid)));
+    }
+
+    #[tokio::test]
+    async fn pruning_keeps_a_command_whose_children_still_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let processes = workspace.processes().clone();
+        let orphaning = if cfg!(windows) {
+            "start /b ping -n 300 127.0.0.1 > NUL & echo started"
+        } else {
+            "sleep 300 & echo started"
+        };
+        let first = processes.start(&workspace, orphaning).unwrap();
+        wait_for_output(&processes, &first, "exited with code 0").await;
+        // Fill the table with commands that finish, past the number kept.
+        for _ in 0..MAX_KEPT {
+            let id = processes.start(&workspace, "echo done").unwrap();
+            wait_for_output(&processes, &id, "exited with code 0").await;
+        }
+        assert!(
+            processes.output(&first, Some(0)).is_ok(),
+            "the command whose children run was not pruned (its killer would be lost)"
+        );
+        assert_eq!(processes.running(), 1);
+        processes.stop_all_and_wait(Duration::from_secs(10)).await;
+        assert_eq!(processes.running(), 0);
     }
 
     #[test]
