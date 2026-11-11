@@ -232,8 +232,8 @@ decide how a pull or an import applies it ([2.3](#decision-23-trust-model)):
 
 | Direction | Meaning | Keys |
 | --- | --- | --- |
-| Narrow-only | Applies automatically | Deny and ask rules; budget limits that lower an allowance or set `ask`/`block`; model-card text and alias changes that do not retarget a model |
-| Widen-needs-review | Shown as a diff; applied only after the user accepts, per machine | Allow rules and any ask-to-allow or deny-to-ask change; new or changed endpoints and **any `base_url` change**; raised budgets; **runtime kind or image changes** in an environment template; **policy pack pin changes** (a new URL or revision); **alias retargeting** (an alias pointing at a different model); new skills, plugins and mods |
+| Narrow-only | Applies automatically | Deny and ask rules; budget limits that lower an allowance or set `ask`/`block` (a default until the managed tier exists) |
+| Widen-needs-review | Shown as a diff; applied only after the user accepts, per machine | Allow rules and any ask-to-allow or deny-to-ask change; new or changed endpoints and **any `base_url` change**; raised budgets; **runtime kind or image changes** in an environment template; **policy pack pin changes** (a new URL or revision); **alias retargeting** (an alias pointing at a different model); **model-card text changes** (cards are read by agents, a prompt-injection vector, see Risks); new skills, plugins and mods |
 | Never | Not in the allow-list | Everything in the "never" rows above |
 
 The rule that makes this enforceable: sync works on an **allow-listed set of keys and
@@ -290,7 +290,9 @@ the user's files, most conflicts do not occur.
 
 - Local override wins for ordinary keys. A *locked* team key (marked in `team.toml`) cannot
   be overridden locally and is shown as managed; locks are for safety-relevant values only
-  (budgets set to `block`, denied tools), never preferences.
+  (budgets set to `block`, denied tools), never preferences. Locks bind only once the managed
+  tier exists (Phase 4, below); until then every team value, scalar locks such as a budget's
+  `block` included, is a default that local layers can override.
 - Lists merge by identity: model rows by id, budgets by `id`, permission rules by
   (tool, pattern), the key `permissions.add_rule` already replaces on
   ([05](05-tools-and-isolation.md#permissions)). An identity collision between a team and a
@@ -319,17 +321,20 @@ Principles:
 
 1. **The safety floor is not syncable.** Nothing in a team layer can disable permission
    prompts for destructive actions or secret handling ([08](08-agent-policy.md#layering-and-overrides)).
-2. **Sync can only narrow by default; widening needs the user.** Deny and ask rules, lower
-   budgets and stricter isolation apply once the user has joined. Allow rules,
-   new endpoints, new plugins and loosened isolation are *proposals*: shown as a diff and
-   applied only after the user accepts, per change, on each machine.
+2. **Sync can only narrow by default; widening needs the user.** The direction table above
+   decides each key. Narrow-only changes (deny and ask rules, lower budgets, stricter
+   isolation) apply once the user has joined. Allow rules, new endpoints, new plugins,
+   loosened isolation, policy pack pin changes, runtime or image changes, alias retargeting,
+   model-card changes and raised budgets are *proposals*: shown as a diff and applied only
+   after the user accepts, per change, on each machine.
 3. **Plugins keep the PR #122 rule.** A synced plugin or mod is installed through the same
    install path as an agent's, with the same outcome: one with hooks or MCP servers is added to
    `extensions.disabled_plugins` and does not run until the user turns it on in Connectors,
    where the source, commit and "installed by team sync `<name>`" are shown
    ([06](06-extensibility.md#agents-manage-the-app-config-implemented)). Team-installed
    plugins do not read the daemon's environment through `${VAR}`, as for agent-installed ones.
-   Skills and commands without hooks or servers are listed at once. Installs are logged in
+   Skills and commands without hooks or servers are listed at once as a proposal, not
+   installed until the user accepts, as the direction table requires. Installs are logged in
    the config change journal with undo.
 4. **Who may push** is the team repository's own access control (write access), plus an
    optional **signed commits requirement** (`require_signed = true` in `team.toml`, checked
@@ -343,7 +348,7 @@ Principles:
 | Option | Trade-offs |
 | --- | --- |
 | **A. Trust the repository fully** | One consent; a compromised or careless commit turns on code and allow rules on every machine |
-| **B. Narrow automatically, widen on review** (recommended) | Matches how installs already work (PR #122) and the "deny wins" ordering; more prompts, but only when a push widens something |
+| **B. Narrow automatically, widen on review** (recommended) | Matches how installs already work (PR #122); more prompts, but only when a push widens something |
 | **C. Admin roles in a server** | Fine-grained roles; requires the optional server (decision 2.1 B), not available in phase 1 |
 
 **Recommendation: B**, with signed commits as an opt-in for teams that want an author check.
@@ -366,7 +371,7 @@ Principles:
 | Decision | Recommendation |
 | --- | --- |
 | Transport | Git repository first, optional server later |
-| Conflicts | Layered precedence, locks for safety keys, merge lists by identity, fast-forward pushes |
+| Conflicts | Layered precedence, locks for safety keys (binding once the managed tier exists in Phase 4; until then team values are defaults), merge lists by identity, fast-forward pushes |
 | Trust | Narrow automatically, widen on per-machine review; PR #122 plugin rule; signed commits optional |
 | Offline | Last good pull applies; sync never blocks a session |
 
@@ -437,5 +442,5 @@ with hooks leaves it disabled; a pull with no network leaves the daemon and sess
 | S2 | Redaction is shared code with known-value matching and a mandatory preview | Model-assisted redaction becomes safe to run locally by default |
 | S3 | Imports are read-only; forking is explicit and never replays code | Users need one-step continue and accept the risk |
 | T1 | Team sync starts as a git repository read as a config layer | Teams need push notification or roles |
-| T2 | Local layers override team defaults; safety keys can be locked; lists merge by identity | Silent drift between machines becomes a problem |
+| T2 | Local layers override team defaults; safety keys can be locked once the managed tier exists (Phase 4; until then team values are defaults); lists merge by identity | Silent drift between machines becomes a problem |
 | T3 | Sync narrows automatically and widens only on per-machine review; plugins follow PR #122 | A signed-commit workflow makes review redundant for a team |
