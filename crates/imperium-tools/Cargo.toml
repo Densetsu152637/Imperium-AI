@@ -17,6 +17,10 @@ serde_json = "1.0.154"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["process", "fs", "time", "io-util", "rt", "macros", "sync"] }
 
+[target.'cfg(windows)'.dependencies]
+# Background commands run in a Job Object that kills every process in it when it is closed.
+win32job = "2.0.3"
+
 [lints]
 workspace = true
 

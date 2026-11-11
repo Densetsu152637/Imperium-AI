@@ -40,14 +40,43 @@ struct Found {
     full: PathBuf,
 }
 
-/// Files under the scope's folder, sorted by path, minus those deny rules cover for `tool`.
-/// The flag says whether the walk stopped early at [`MAX_VISITED`].
+/// What a walk found.
+struct Walked {
+    files: Vec<Found>,
+    /// Whether it stopped early at [`MAX_VISITED`].
+    stopped: bool,
+    /// Matching files left out because a rule asks about or denies them.
+    withheld: usize,
+}
+
+impl Walked {
+    /// Notes on what was left out, one per line.
+    fn notes(&self) -> String {
+        let mut notes = String::new();
+        if self.withheld > 0 {
+            notes.push_str(&format!(
+                "\n[{} matching file(s) left out: a permission rule asks about or denies reading \
+                 them; use read_file to have the user approve one]",
+                self.withheld
+            ));
+        }
+        if self.stopped {
+            notes.push_str(&format!(
+                "\n[stopped after {MAX_VISITED} entries: search a smaller folder]"
+            ));
+        }
+        notes
+    }
+}
+
+/// Files under the scope's folder, sorted by path, minus those a rule asks about or denies for
+/// `tool` or for `read_file` (a search never asks per file, so it leaves them out).
 fn walk(
     workspace: &Workspace,
     tool: &str,
     scope: &Scope,
     mut keep: impl FnMut(&str) -> bool,
-) -> Result<(Vec<Found>, bool), ToolError> {
+) -> Result<Walked, ToolError> {
     if workspace.runtime().is_some() {
         return Err(ToolError::Invalid(format!(
             "{tool} is not available in remote runtimes yet; use run_command with find or grep"
@@ -71,10 +100,11 @@ fn walk(
         .filter_entry(|entry| entry.file_name() != ".git")
         .sort_by_file_name(|a, b| a.cmp(b));
     let permissions = workspace.permissions();
-    let check_rules = permissions.has_deny_rules();
+    let check_rules = permissions.has_ask_or_deny_rules();
     let mut found = Vec::new();
     let mut visited = 0;
     let mut stopped = false;
+    let mut withheld = 0;
     for entry in builder.build() {
         visited += 1;
         if visited > MAX_VISITED {
@@ -103,14 +133,24 @@ fn walk(
         }
         if check_rules {
             let target = workspace.rule_target_resolved(&full);
-            let denied = |name: &str| permissions.evaluate(name, &target) == Some(RuleAction::Deny);
-            if denied(tool) || denied("read_file") {
+            let guarded = |name: &str| {
+                matches!(
+                    permissions.evaluate(name, &target),
+                    Some(RuleAction::Deny | RuleAction::Ask)
+                )
+            };
+            if guarded(tool) || guarded("read_file") {
+                withheld += 1;
                 continue;
             }
         }
         found.push(Found { full });
     }
-    Ok((found, stopped))
+    Ok(Walked {
+        files: found,
+        stopped,
+        withheld,
+    })
 }
 
 /// `pattern` with `{a,b}` alternatives expanded into separate patterns.
@@ -179,9 +219,10 @@ pub fn glob_files(
     scope: &Scope,
 ) -> Result<String, ToolError> {
     let names = NamePattern::new(pattern)?;
-    let (found, stopped) = walk(workspace, "glob", scope, |relative| names.matches(relative))?;
-    let total = found.len();
-    let page: Vec<String> = found
+    let walked = walk(workspace, "glob", scope, |relative| names.matches(relative))?;
+    let total = walked.files.len();
+    let page: Vec<String> = walked
+        .files
         .iter()
         .skip(scope.offset)
         .take(scope.max_results)
@@ -198,11 +239,7 @@ pub fn glob_files(
         out.push('\n');
         out.push_str(&note);
     }
-    if stopped {
-        out.push_str(&format!(
-            "\n[stopped after {MAX_VISITED} entries: search a smaller folder]"
-        ));
-    }
+    out.push_str(&walked.notes());
     Ok(out)
 }
 
@@ -228,7 +265,7 @@ pub fn grep_files(
         .build()
         .map_err(|error| ToolError::Invalid(format!("bad pattern: {error}")))?;
     let names = query.glob.as_deref().map(NamePattern::new).transpose()?;
-    let (found, stopped) = walk(workspace, "grep", scope, |relative| {
+    let walked = walk(workspace, "grep", scope, |relative| {
         names.as_ref().is_none_or(|names| names.matches(relative))
     })?;
     let context = query.context.min(MAX_CONTEXT);
@@ -237,7 +274,7 @@ pub fn grep_files(
     let mut more = false;
     let mut out = String::new();
     let mut truncated = false;
-    'files: for file in &found {
+    'files: for file in &walked.files {
         let Ok(metadata) = std::fs::metadata(&file.full) else {
             continue;
         };
@@ -324,12 +361,9 @@ pub fn grep_files(
             scope.offset + shown
         ));
     }
-    if stopped {
-        out.push_str(&format!(
-            "[stopped after {MAX_VISITED} entries: search a smaller folder]\n"
-        ));
-    }
-    Ok(out.trim_end().to_string())
+    let mut out = out.trim_end().to_string();
+    out.push_str(&walked.notes());
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -490,11 +524,30 @@ mod tests {
             ));
         let found = grep_files(&denied, &query, &scope(".")).unwrap();
         assert!(!found.contains(".env"), "{found}");
+        assert!(found.contains("1 matching file(s) left out"), "{found}");
         assert!(
             !glob_files(&denied, ".*", &scope("."))
                 .unwrap()
                 .contains(".env")
         );
+
+        // A file an ask rule guards for read_file is left out too: a search cannot ask.
+        let asked = Workspace::new(dir.path())
+            .unwrap()
+            .with_permissions(Permissions::new(
+                SharedRules::default(),
+                SharedRules::new(vec![PermissionRule {
+                    tool: "read_file".into(),
+                    pattern: ".env".into(),
+                    action: RuleAction::Ask,
+                }]),
+            ));
+        let found = grep_files(&asked, &query, &scope(".")).unwrap();
+        assert!(!found.contains(".env:1:"), "{found}");
+        assert!(found.contains("1 matching file(s) left out"), "{found}");
+        let listed = glob_files(&asked, ".env", &scope(".")).unwrap();
+        assert!(listed.starts_with("no files match"), "{listed}");
+        assert!(listed.contains("left out"), "{listed}");
     }
 
     #[test]

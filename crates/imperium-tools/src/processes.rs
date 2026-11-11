@@ -53,15 +53,46 @@ struct Entry {
     output: Arc<Mutex<Output>>,
     /// The exit, once the process has ended.
     status: watch::Receiver<Option<String>>,
-    /// Sending (or dropping) it kills the process.
+    /// Sending (or dropping) it tells the waiter the process was stopped.
     kill: Option<oneshot::Sender<()>>,
+    /// Ends the command and everything it started.
+    killer: Killer,
+    /// Whether it was stopped (so nothing it started is left).
+    killed: bool,
     /// Where the previous `command_output` call stopped.
     read_to: u64,
 }
 
 impl Entry {
+    /// Whether the command itself is still running.
     fn running(&self) -> bool {
         self.status.borrow().is_none()
+    }
+
+    /// Whether the command or anything it started may still be running (counted against the
+    /// cap, since a command that exits after starting children in the background leaves them).
+    fn active(&self) -> bool {
+        !self.killed && (self.running() || self.killer.alive())
+    }
+
+    /// Kills it now; returns the killer to run (it is synchronous).
+    fn stop(&mut self) -> Killer {
+        if let Some(kill) = self.kill.take() {
+            let _ = kill.send(());
+        }
+        self.killed = true;
+        self.killer.clone()
+    }
+}
+
+impl Drop for Table {
+    /// The session went away: nothing it started may outlive it.
+    fn drop(&mut self) {
+        for entry in &mut self.entries {
+            if entry.active() {
+                entry.stop().kill();
+            }
+        }
     }
 }
 
@@ -91,54 +122,139 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// How to end a process and everything it started.
+/// Ends a background command and everything it started, also after the command itself has
+/// exited and left children behind (`sh -c 'x &'`, `start /b x`): on Unix the command leads its
+/// own process group, which is killed as a whole; on Windows it runs in a Job Object that kills
+/// every process in it when closed. A container-tier command's container is removed by name.
+/// Killing is synchronous and may be repeated.
 #[derive(Debug, Clone)]
-enum Killer {
-    /// The process (group on Unix, tree on Windows).
-    Tree(Option<u32>),
-    /// A container, removed by name with its runtime.
-    Container { runtime: String, name: String },
+struct Killer(Arc<KillerInner>);
+
+#[derive(Debug)]
+struct KillerInner {
+    /// The command's process id (its process group's id on Unix).
+    pid: Option<u32>,
+    /// The job holding the command and its descendants; closing it kills them all.
+    #[cfg(windows)]
+    job: Mutex<Option<win32job::Job>>,
+    /// A container to remove: its runtime and name.
+    container: Option<(String, String)>,
+}
+
+/// Runs a short helper program and waits for it, ignoring its output.
+fn quietly(program: &str, args: &[&str]) -> bool {
+    std::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 impl Killer {
-    async fn kill(&self) {
-        match self {
-            Killer::Tree(Some(pid)) => kill_tree(*pid).await,
-            Killer::Tree(None) => {}
-            Killer::Container { runtime, name } => {
-                let _ = tokio::process::Command::new(runtime)
-                    .args(["rm", "-f", name])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .await;
+    fn new(child: &tokio::process::Child, container: Option<(String, String)>) -> Self {
+        #[cfg(windows)]
+        let job = child.raw_handle().and_then(|handle| {
+            let mut limits = win32job::ExtendedLimitInfo::new();
+            limits.limit_kill_on_job_close();
+            let job = win32job::Job::create_with_limit_info(&limits).ok()?;
+            job.assign_process(handle as isize).ok()?;
+            Some(job)
+        });
+        Killer(Arc::new(KillerInner {
+            pid: child.id(),
+            #[cfg(windows)]
+            job: Mutex::new(job),
+            container,
+        }))
+    }
+
+    /// Kills the command, everything it started, and its container.
+    fn kill(&self) {
+        #[cfg(windows)]
+        {
+            // Closing the job kills every process in it.
+            let job = lock(&self.0.job).take();
+            if job.is_none()
+                && let Some(pid) = self.0.pid
+            {
+                // No job (assigning failed): kill the tree that is still attached.
+                quietly("taskkill", &["/PID", &pid.to_string(), "/T", "/F"]);
+            }
+            drop(job);
+        }
+        #[cfg(not(windows))]
+        if let Some(pid) = self.0.pid {
+            quietly("kill", &["-KILL", "--", &format!("-{pid}")]);
+        }
+        if let Some((runtime, name)) = &self.0.container {
+            quietly(runtime, &["rm", "-f", name]);
+        }
+    }
+
+    /// Whether any process the command started may still be alive.
+    fn alive(&self) -> bool {
+        #[cfg(windows)]
+        {
+            lock(&self.0.job).as_ref().is_some_and(|job| {
+                job.query_process_id_list()
+                    .is_ok_and(|pids| !pids.is_empty())
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            self.0
+                .pid
+                .is_some_and(|pid| quietly("kill", &["-0", "--", &format!("-{pid}")]))
+        }
+    }
+
+    /// The ids of the processes still alive, for tests.
+    #[cfg(test)]
+    fn members(&self) -> Vec<u32> {
+        #[cfg(windows)]
+        {
+            lock(&self.0.job)
+                .as_ref()
+                .and_then(|job| job.query_process_id_list().ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|pid| u32::try_from(pid).ok())
+                .collect()
+        }
+        #[cfg(not(windows))]
+        {
+            if self.alive() {
+                self.0.pid.into_iter().collect()
+            } else {
+                Vec::new()
             }
         }
     }
 }
 
-#[cfg(windows)]
-async fn kill_tree(pid: u32) {
-    let _ = tokio::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
+/// Runs `killers` off the async runtime's threads when there is one, else here.
+fn kill_all(killers: Vec<Killer>) {
+    if killers.is_empty() {
+        return;
+    }
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => {
+            runtime.spawn_blocking(move || killers.iter().for_each(Killer::kill));
+        }
+        Err(_) => killers.iter().for_each(Killer::kill),
+    }
 }
 
-#[cfg(not(windows))]
-async fn kill_tree(pid: u32) {
-    // The command leads its own process group, so the group ends with everything it started.
-    let _ = tokio::process::Command::new("kill")
-        .args(["-KILL", "--", &format!("-{pid}")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
+/// A process name unlikely to be used by anything else, for a container-tier command.
+fn container_name(id: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    format!("imperium-bg-{}-{nanos:x}-{serial}-{id}", std::process::id())
 }
 
 async fn pump(mut pipe: impl AsyncRead + Unpin, output: Arc<Mutex<Output>>) {
@@ -162,7 +278,7 @@ impl Processes {
             ));
         }
         let mut table = lock(&self.0);
-        let running = table.entries.iter().filter(|entry| entry.running()).count();
+        let running = table.entries.iter().filter(|entry| entry.active()).count();
         if running >= MAX_RUNNING {
             return Err(ToolError::Invalid(format!(
                 "{MAX_RUNNING} background commands are already running; stop one with \
@@ -171,7 +287,8 @@ impl Processes {
         }
         table.next += 1;
         let id = format!("p{}", table.next);
-        let container = format!("imperium-bg-{}-{id}", std::process::id());
+        // Unique across sessions and daemons sharing the container runtime.
+        let container = container_name(&id);
         let roots = workspace.command_roots();
         let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
         let mut process = workspace.sandbox().named_command(
@@ -190,13 +307,14 @@ impl Processes {
         let mut child = process
             .spawn()
             .map_err(|error| ToolError::Io(format!("could not start the command: {error}")))?;
-        let killer = match workspace.sandbox() {
-            Sandbox::Container { runtime, .. } => Killer::Container {
-                runtime: runtime.clone(),
-                name: container,
+        let killer = Killer::new(
+            &child,
+            match workspace.sandbox() {
+                Sandbox::Container { runtime, .. } => Some((runtime.clone(), container)),
+                _ => None,
             },
-            _ => Killer::Tree(child.id()),
-        };
+        );
+        let waiter_killer = killer.clone();
         let output = Arc::new(Mutex::new(Output::default()));
         let mut pumps = Vec::new();
         if let Some(stdout) = child.stdout.take() {
@@ -218,7 +336,7 @@ impl Processes {
                 },
                 // Asked to stop, or the table (and with it the session) went away.
                 _ = killed => {
-                    killer.kill().await;
+                    let _ = tokio::task::spawn_blocking(move || waiter_killer.kill()).await;
                     let _ = child.kill().await;
                     "stopped".to_string()
                 }
@@ -246,6 +364,8 @@ impl Processes {
             output,
             status,
             kill: Some(kill),
+            killer,
+            killed: false,
             read_to: 0,
         });
         Ok(id)
@@ -275,6 +395,9 @@ impl Processes {
         drop(output);
         entry.read_to = to;
         let state = match status {
+            Some(ended) if !entry.killed && entry.killer.alive() => {
+                format!("{ended}; processes it started are still running (command_stop ends them)")
+            }
             Some(ended) => ended,
             None => format!("running for {} s", entry.started.elapsed().as_secs()),
         };
@@ -297,14 +420,17 @@ impl Processes {
 
     /// Stops the process and everything it started, and waits briefly for it to end.
     pub async fn stop(&self, id: &str) -> Result<String, ToolError> {
-        let mut status = {
+        let (mut status, killer) = {
             let mut table = lock(&self.0);
             let entry = find(&mut table, id)?;
-            if let Some(kill) = entry.kill.take() {
-                let _ = kill.send(());
-            }
-            entry.status.clone()
+            // Kill whenever anything may be left: the command may have exited and left
+            // children running.
+            let killer = entry.active().then(|| entry.stop());
+            (entry.status.clone(), killer)
         };
+        if let Some(killer) = killer {
+            let _ = tokio::task::spawn_blocking(move || killer.kill()).await;
+        }
         let ended = tokio::time::timeout(STOP_WAIT, status.wait_for(Option::is_some))
             .await
             .ok()
@@ -316,22 +442,41 @@ impl Processes {
         })
     }
 
-    /// Kills every process (the session stopped or was deleted). Does not wait.
-    pub fn stop_all(&self) {
+    /// The killers of every command that may still have something running, marked stopped.
+    fn stop_entries(&self) -> Vec<Killer> {
         let mut table = lock(&self.0);
-        for entry in &mut table.entries {
-            if let Some(kill) = entry.kill.take() {
-                let _ = kill.send(());
-            }
-        }
+        table
+            .entries
+            .iter_mut()
+            .filter(|entry| entry.active())
+            .map(Entry::stop)
+            .collect()
     }
 
-    /// How many processes are still running.
+    /// Kills every command and everything it started (the session stopped or was deleted).
+    /// Does not wait for the kills to finish.
+    pub fn stop_all(&self) {
+        kill_all(self.stop_entries());
+    }
+
+    /// Like [`Processes::stop_all`], waiting up to `timeout` for the kills to finish (the
+    /// daemon is shutting down).
+    pub async fn stop_all_and_wait(&self, timeout: Duration) {
+        let killers = self.stop_entries();
+        if killers.is_empty() {
+            return;
+        }
+        let kills = tokio::task::spawn_blocking(move || killers.iter().for_each(Killer::kill));
+        let _ = tokio::time::timeout(timeout, kills).await;
+    }
+
+    /// How many commands are still running, counting those that exited but left processes
+    /// they started running.
     pub fn running(&self) -> usize {
         lock(&self.0)
             .entries
             .iter()
-            .filter(|entry| entry.running())
+            .filter(|entry| entry.active())
             .count()
     }
 }
@@ -425,6 +570,83 @@ mod tests {
             wait_for_output(&processes, id, ": stopped").await;
         }
         assert_eq!(processes.running(), 0);
+    }
+
+    /// Whether a process with this id exists.
+    fn exists(pid: u32) -> bool {
+        if cfg!(windows) {
+            let out = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).contains(&pid.to_string())
+        } else {
+            quietly("kill", &["-0", "--", &format!("-{pid}")])
+        }
+    }
+
+    #[tokio::test]
+    async fn children_left_by_an_exited_command_count_and_are_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let processes = workspace.processes().clone();
+        // The shell exits at once and leaves its child running.
+        let orphaning = if cfg!(windows) {
+            "start /b ping -n 300 127.0.0.1 > NUL & echo started"
+        } else {
+            "sleep 300 & echo started"
+        };
+        let id = processes.start(&workspace, orphaning).unwrap();
+        wait_for_output(&processes, &id, "exited with code 0").await;
+        let members = {
+            let table = lock(&processes.0);
+            table.entries[0].killer.members()
+        };
+        assert!(!members.is_empty(), "the child outlived the shell");
+        assert!(members.iter().all(|pid| exists(*pid)));
+        // It still counts against the cap, and its output says what is left.
+        assert_eq!(processes.running(), 1);
+        let output = processes.output(&id, Some(0)).unwrap();
+        assert!(output.contains("still running"), "{output}");
+
+        processes.stop_all();
+        for _ in 0..100 {
+            if members.iter().all(|pid| !exists(*pid)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            members.iter().all(|pid| !exists(*pid)),
+            "stop_all killed the group"
+        );
+        assert_eq!(processes.running(), 0);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_table_kills_what_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let processes = workspace.processes().clone();
+        let id = processes.start(&workspace, slow_printer()).unwrap();
+        wait_for_output(&processes, &id, "started").await;
+        let members = lock(&processes.0).entries[0].killer.members();
+        assert!(!members.is_empty());
+        drop(processes);
+        drop(workspace);
+        for _ in 0..100 {
+            if members.iter().all(|pid| !exists(*pid)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(members.iter().all(|pid| !exists(*pid)));
+    }
+
+    #[test]
+    fn container_names_differ_for_the_same_id() {
+        assert_ne!(container_name("p1"), container_name("p1"));
+        assert!(container_name("p1").starts_with("imperium-bg-"));
     }
 
     #[test]

@@ -1996,6 +1996,19 @@ impl DaemonState {
         }
     }
 
+    /// Kills every session's background commands and waits up to `timeout` for the kills, so
+    /// none outlives the daemon (called on shutdown).
+    pub async fn stop_background_processes(&self, timeout: Duration) {
+        let mut sessions = self.sessions();
+        sessions.extend(self.project_agents.sessions());
+        let mut stops = tokio::task::JoinSet::new();
+        for session in &sessions {
+            let processes = session.workspace().processes().clone();
+            stops.spawn(async move { processes.stop_all_and_wait(timeout).await });
+        }
+        let _ = tokio::time::timeout(timeout, stops.join_all()).await;
+    }
+
     /// Every running session, ordered by id.
     pub fn sessions(&self) -> Vec<Arc<Session>> {
         let mut sessions: Vec<_> = self

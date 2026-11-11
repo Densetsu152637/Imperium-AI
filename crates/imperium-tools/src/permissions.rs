@@ -120,13 +120,14 @@ impl Permissions {
         evaluate(&self.global.get(), &self.environment.get(), tool, target)
     }
 
-    /// Whether any rule could deny something, so callers can skip per-file checks without.
-    pub fn has_deny_rules(&self) -> bool {
+    /// Whether any rule could ask about or deny something, so callers can skip per-file checks
+    /// without.
+    pub fn has_ask_or_deny_rules(&self) -> bool {
         self.global
             .get()
             .iter()
             .chain(self.environment.get().iter())
-            .any(|rule| rule.action == RuleAction::Deny)
+            .any(|rule| rule.action != RuleAction::Allow)
     }
 
     /// The session's permission mode now.
@@ -179,7 +180,7 @@ pub enum Refusal {
 ///
 /// Deny rules win in every mode. Plan mode refuses edits, commands, and tools that would ask.
 /// The safety floor asks (every time) in every other mode, whatever the allow rules say. Ask
-/// rules ask in every mode; otherwise:
+/// rules ask every time in every mode, even for a tool allowed for the session; otherwise:
 ///
 /// | Mode | Read | Edit | Execute | Other tools |
 /// |---|---|---|---|---|
@@ -202,10 +203,12 @@ pub fn decide_call(
         CallKind::Edit | CallKind::Execute => true,
         CallKind::Other { asks } => asks,
     };
+    // An ask rule asks every time: an "always this session" approval does not lift it.
+    let ask_rule = rule == Some(RuleAction::Ask);
     if mode == PermissionMode::Plan {
-        return if kind == CallKind::Read || !(asks_by_default || rule == Some(RuleAction::Ask)) {
-            if rule == Some(RuleAction::Ask) {
-                Decision::Ask { sticky: true }
+        return if kind == CallKind::Read || !(asks_by_default || ask_rule) {
+            if ask_rule {
+                Decision::Ask { sticky: false }
             } else {
                 Decision::Run
             }
@@ -213,11 +216,8 @@ pub fn decide_call(
             Decision::Refuse(Refusal::Plan)
         };
     }
-    if floor && kind != CallKind::Read {
+    if (floor && kind != CallKind::Read) || ask_rule {
         return Decision::Ask { sticky: false };
-    }
-    if rule == Some(RuleAction::Ask) {
-        return Decision::Ask { sticky: true };
     }
     let allowed = rule == Some(RuleAction::Allow);
     let ask = match mode {
@@ -788,10 +788,27 @@ mod tests {
             decide_call(Plan, CallKind::Edit, allow, false),
             Decision::Refuse(Refusal::Plan)
         );
-        // Ask rules ask in every mode, full access included.
+        // Ask rules ask every time in every mode, full access included: a session's "always"
+        // approval does not lift them.
         let ask = Some(RuleAction::Ask);
-        assert_eq!(decide_call(Full, CallKind::Execute, ask, false), ASK);
-        assert_eq!(decide_call(Plan, CallKind::Read, ask, false), ASK);
+        for mode in PermissionMode::ALL {
+            assert_eq!(
+                decide_call(mode, CallKind::Read, ask, false),
+                ASK_EVERY_TIME,
+                "{mode}"
+            );
+            if mode != Plan {
+                assert_eq!(
+                    decide_call(mode, CallKind::Execute, ask, false),
+                    ASK_EVERY_TIME,
+                    "{mode}"
+                );
+            }
+        }
+        assert_eq!(
+            decide_call(Ask, CallKind::Execute, ask, false),
+            ASK_EVERY_TIME
+        );
     }
 
     #[test]

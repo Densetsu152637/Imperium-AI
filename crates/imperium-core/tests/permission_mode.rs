@@ -12,8 +12,13 @@ use imperium_protocol::methods::SessionControlResult;
 use serde_json::{Value, json};
 
 fn daemon(home: &std::path::Path) -> Arc<DaemonState> {
+    daemon_with(home, "accept_edits", "")
+}
+
+fn daemon_with(home: &std::path::Path, mode: &str, extra: &str) -> Arc<DaemonState> {
     // Nothing listens on this endpoint; no model call is made.
-    let config = r#"
+    let config = format!(
+        r#"
 [models]
 default = "a:gpt-4o"
 
@@ -21,11 +26,16 @@ default = "a:gpt-4o"
 base_url = "http://127.0.0.1:9/v1"
 
 [permissions]
-mode = "accept_edits"
+mode = "{mode}"
 
 [workflow]
 enabled = false
-"#;
+
+[memory]
+enabled = false
+{extra}
+"#
+    );
     let settings = imperium_config::Config::from_layers([
         imperium_config::Layer::defaults(),
         imperium_config::Layer::new(
@@ -112,4 +122,53 @@ async fn set_permission_mode_changes_the_session_and_survives_a_restart() {
         restarted.session(&session_id).unwrap().permission_mode(),
         PermissionMode::Plan
     );
+}
+
+#[tokio::test]
+async fn a_project_agent_starts_in_default_mode_whatever_the_config_says() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().display().to_string().replace('\\', "/");
+    let state = daemon_with(
+        home.path(),
+        "plan",
+        &format!("[[projects]]\npath = \"{path}\"\nagent = true\n"),
+    );
+    state.start_project_agents();
+    let agents = state.project_agents().list();
+    let agent = state.session(&agents[0].1).unwrap();
+    assert_eq!(agent.permission_mode(), PermissionMode::Default);
+    // A session a person starts takes the configured mode.
+    let (session, _) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    assert_eq!(session.permission_mode(), PermissionMode::Plan);
+}
+
+#[tokio::test]
+async fn shutting_down_kills_every_sessions_background_commands() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let state = daemon(home.path());
+    let (session, _) = state
+        .create_session(&project.path().display().to_string(), None)
+        .unwrap();
+    let workspace = session.workspace().clone();
+    let slow = if cfg!(windows) {
+        "ping -n 300 127.0.0.1 > NUL"
+    } else {
+        "sleep 300"
+    };
+    workspace.processes().start(&workspace, slow).unwrap();
+    assert_eq!(workspace.processes().running(), 1);
+    state
+        .stop_background_processes(Duration::from_secs(10))
+        .await;
+    for _ in 0..100 {
+        if workspace.processes().running() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(workspace.processes().running(), 0);
 }

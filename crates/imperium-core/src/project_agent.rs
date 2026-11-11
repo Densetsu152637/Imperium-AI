@@ -93,6 +93,13 @@ impl ProjectAgents {
         self.agents.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Every project and environment agent session.
+    pub fn sessions(&self) -> Vec<Arc<Session>> {
+        let mut sessions: Vec<Arc<Session>> = self.lock().values().cloned().collect();
+        sessions.extend(self.lock_environments().values().cloned());
+        sessions
+    }
+
     /// The agent session for a project folder, if it has one.
     pub fn get(&self, project: &Path) -> Option<Arc<Session>> {
         self.lock().get(&canonical(project)).cloned()
@@ -206,6 +213,9 @@ fn start_one(
             SessionOptions {
                 launcher: Some(Arc::clone(&launcher) as Arc<dyn SessionLauncher>),
                 instructions: Some(INSTRUCTIONS.into()),
+                // Unattended: its approvals go to a queue, so it never starts in the user's
+                // `permissions.mode` (plan would stall it, ask would flood the queue).
+                permission_mode: Some(imperium_api::PermissionMode::Default),
                 ..SessionOptions::default()
             },
         )
