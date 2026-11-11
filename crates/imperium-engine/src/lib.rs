@@ -17,6 +17,7 @@ mod queue;
 mod quiet;
 mod session;
 mod status;
+mod title;
 
 pub use agents::agents_dir;
 pub use compact::SwitchError;
@@ -33,6 +34,7 @@ pub use queue::QueueError;
 pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
 pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};
 pub use status::next_attempt;
+pub use title::task_title;
 
 /// The resume policy used when nothing is configured: wait for the provider's reset, retrying
 /// every five minutes, for up to twelve hours.

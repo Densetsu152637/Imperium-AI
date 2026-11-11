@@ -121,6 +121,14 @@ pub enum SessionEvent {
         task_id: String,
         brief: String,
         model: String,
+        /// A short name for the task (3 to 6 words), from the delegator or derived from the
+        /// brief; shown instead of the task id. Empty in journals written before titles.
+        #[serde(default)]
+        title: String,
+        /// When it happened, in milliseconds since the Unix epoch; absent in older journals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        at_ms: Option<u64>,
     },
     /// A subagent finished; its parent receives `report` when it awaits the task.
     TaskFinished {
@@ -130,6 +138,10 @@ pub enum SessionEvent {
         report: String,
         usage: TokenUsage,
         cost_usd: Option<f64>,
+        /// When it happened, in milliseconds since the Unix epoch; absent in older journals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        at_ms: Option<u64>,
     },
     /// A subagent stopped at its next safe point because the user steered the root agent (an
     /// in-flight tool call finished first; an in-flight model request was cancelled). Its
@@ -139,6 +151,10 @@ pub enum SessionEvent {
         task_id: String,
         /// What it had done so far, and any messages queued for it that were not delivered.
         progress: String,
+        /// When it happened, in milliseconds since the Unix epoch; absent in older journals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        at_ms: Option<u64>,
     },
     /// A finished subagent was given a follow-up (`resume_agent`, or `session.agent_resume`)
     /// and works again with its earlier conversation; `task_finished` follows as for a new
@@ -148,6 +164,10 @@ pub enum SessionEvent {
         /// The follow-up message.
         text: String,
         model: String,
+        /// When it happened, in milliseconds since the Unix epoch; absent in older journals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(as = "Option<f64>", optional)]
+        at_ms: Option<u64>,
     },
     /// The agent finished the turn.
     TurnCompleted {
@@ -512,7 +532,7 @@ pub struct AgentSummary {
     pub parent: Option<String>,
     /// The workflow role it loads files for: `root`, `leaf`, or what its delegator asked.
     pub role: String,
-    /// The first line of its brief, for lists.
+    /// A short name for lists: the title it was spawned with (or one derived from its brief).
     pub title: String,
     /// Its brief (empty for the root).
     pub task: String,

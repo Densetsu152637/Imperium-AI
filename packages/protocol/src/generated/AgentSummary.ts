@@ -20,7 +20,7 @@ parent: string | null,
  */
 role: string, 
 /**
- * The first line of its brief, for lists.
+ * A short name for lists: the title it was spawned with (or one derived from its brief).
  */
 title: string, 
 /**

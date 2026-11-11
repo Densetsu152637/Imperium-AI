@@ -32,7 +32,8 @@ work yourself.
 
 ## Choosing where work runs
 
-Set `tier` and the task-class `tags` on every `spawn_agent` call. Set `location` only when it
+Set `tier`, the task-class `tags` and a `title` (3 to 6 words naming the task; the user sees it
+instead of the task id) on every `spawn_agent` call. Set `location` only when it
 must be a hard requirement (for example, code execution must stay `"local"`); otherwise leave it
 out and let the tags' built-in preference choose.
 

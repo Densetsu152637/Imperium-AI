@@ -3,7 +3,8 @@
 //! model call, after the tool round, without breaking tool-call pairs; the root agent steers
 //! and queues messages for its subagents with tools; a resumed session restores its queue; a
 //! queued message can be turned into steering in place; and steering the root pauses its
-//! running subagents, which can then be resumed from their saved state or cancelled.
+//! running subagents, which can then be resumed from their saved state or cancelled. The user
+//! can also steer and queue for a running subagent directly, as the desktop's agent view does.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -78,6 +79,19 @@ async fn answer(body: &Value) -> String {
     if !is_subagent(body) && first_user == "delegate long" {
         return match last["role"].as_str() {
             Some("user") => call("spawn", "spawn_agent", json!({"brief": "long work"})),
+            Some("tool") if said.starts_with("started t1") => {
+                call("await", "await_tasks", json!({}))
+            }
+            _ => text("done"),
+        };
+    }
+    if !is_subagent(body) && first_user == "delegate quietly" {
+        return match last["role"].as_str() {
+            Some("user") => call(
+                "spawn",
+                "spawn_agent",
+                json!({"brief": "sub work", "title": "Read the a file"}),
+            ),
             Some("tool") if said.starts_with("started t1") => {
                 call("await", "await_tasks", json!({}))
             }
@@ -652,6 +666,86 @@ async fn a_queued_message_steers_in_place_and_the_rest_keep_their_order() {
     );
 }
 
+#[tokio::test]
+async fn the_user_steers_and_queues_for_a_running_subagent() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha").unwrap();
+    let session = start(&url, dir.path(), false);
+    let mut events = session.subscribe();
+
+    // The root spawns t1 (naming it) and awaits it; the user writes to t1 directly, as the
+    // desktop's agent view does with `session.send` and its `agent_id`.
+    session.send("delegate quietly".into()).unwrap();
+    let spawned = until(&mut events, "t1", |event| {
+        matches!(event, SessionEvent::TurnStarted { .. })
+    })
+    .await;
+    assert!(spawned.iter().any(|event| matches!(&event.event,
+        SessionEvent::TaskSpawned { task_id, title, at_ms: Some(_), .. }
+            if task_id == "t1" && title == "Read the a file")));
+    let steer = session
+        .send_message("focus on b".into(), SendMode::Steer, Some("t1"))
+        .unwrap();
+    session
+        .send_message("also check c".into(), SendMode::Queue, Some("t1"))
+        .unwrap();
+    assert_eq!(
+        session
+            .queue(Some("t1"))
+            .unwrap()
+            .iter()
+            .map(|message| (message.text.as_str(), message.steer))
+            .collect::<Vec<_>>(),
+        [("focus on b", true), ("also check c", false)]
+    );
+
+    let mut seen = spawned;
+    seen.extend(until(&mut events, "root", root_turn_ended).await);
+    let sub: Vec<&SessionEvent> = seen
+        .iter()
+        .filter(|event| event.agent_id == "t1")
+        .map(|event| &event.event)
+        .collect();
+    // The steering joined t1's running turn after its tool round; the root was not steered
+    // and nothing was paused.
+    assert!(sub.iter().any(|event| matches!(event,
+        SessionEvent::Steered { id, text, paused, .. }
+            if *id == steer && text == "focus on b" && paused.is_empty())));
+    assert!(!seen.iter().any(
+        |event| event.agent_id == "root" && matches!(event.event, SessionEvent::Steered { .. })
+    ));
+    assert!(
+        !seen
+            .iter()
+            .any(|event| matches!(event.event, SessionEvent::TaskPaused { .. }))
+    );
+    // The queued message ran as t1's next turn, and its report is the follow-up's.
+    let turns: Vec<&String> = sub
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::TurnStarted { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(turns, ["sub work", "also check c"]);
+    assert!(sub.iter().any(|event| matches!(event,
+        SessionEvent::TaskFinished { ok: true, report, at_ms: Some(_), .. }
+            if report == "follow-up done")));
+    let sub_requests: Vec<Value> = fake.requests().into_iter().filter(is_subagent).collect();
+    let messages = sub_requests[1]["messages"].as_array().unwrap();
+    let steering = messages.last().unwrap()["content"].as_str().unwrap();
+    assert!(steering.starts_with("<steering>") && steering.contains("focus on b"));
+    // The title is kept on its agent record.
+    let t1 = session
+        .agents()
+        .into_iter()
+        .find(|agent| agent.agent_id == "t1")
+        .unwrap();
+    assert_eq!(t1.title, "Read the a file");
+}
+
 /// Starts `delegate long`, waits until the root awaits its subagent, then steers the root.
 /// Returns the events of the root's turn.
 async fn steer_while_awaiting(
@@ -723,7 +817,8 @@ async fn steering_the_root_pauses_its_subagents_and_wakes_it_with_their_status()
     let steering = messages.last().unwrap()["content"].as_str().unwrap();
     assert!(steering.contains("change of plan"), "{steering}");
     assert!(steering.contains("- t1 (paused;"), "{steering}");
-    assert!(steering.contains("long work"), "{steering}");
+    // Named by its title, derived from the brief.
+    assert!(steering.contains("Long work"), "{steering}");
     // await_tasks stopped waiting for it.
     let waited = messages[messages.len() - 2]["content"].as_str().unwrap();
     assert!(

@@ -486,14 +486,21 @@ impl Chat {
                 task_id,
                 brief,
                 model,
+                title,
+                ..
             } => println!(
                 "\n{tag}→ {task_id} on {model}: {}",
-                brief.lines().next().unwrap_or_default()
+                if title.is_empty() {
+                    brief.lines().next().unwrap_or_default()
+                } else {
+                    title.as_str()
+                }
             ),
             SessionEvent::TaskResumed {
                 task_id,
                 text,
                 model,
+                ..
             } => println!(
                 "\n{tag}→ {task_id} resumed on {model}: {}",
                 text.lines().next().unwrap_or_default()
