@@ -7,7 +7,7 @@
 // archived sessions are kept apart in a collapsed Archived group at the bottom. A search box above
 // the sessions searches what was said and done in them (SessionSearch.tsx).
 
-import { Archive, ArchiveRestore, ArrowLeft, FolderOpen, Pencil, Pin, PinOff, Trash } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, Download, FolderOpen, Pencil, Pin, PinOff, Trash } from "lucide-react";
 import { useState, type KeyboardEvent } from "react";
 
 import type { EnvironmentInfo, SessionStatus } from "@imperium/protocol";
@@ -184,6 +184,7 @@ export function SessionsPanel({
   onSetPinned,
   onSetArchived,
   onRename,
+  onExport,
   onShowEnvironment,
   onShowAll,
   client = null,
@@ -202,6 +203,8 @@ export function SessionsPanel({
   onSetArchived: (sessionId: string, archived: boolean) => void;
   /** Renames a session; an empty title lets it be titled automatically again. */
   onRename: (sessionId: string, title: string) => void;
+  /** Exports a session's transcript (running or archived) as Markdown or JSON; no export items without it. */
+  onExport?: (sessionId: string, format: "markdown" | "json") => void;
   onShowEnvironment: (id: string) => void;
   onShowAll: () => void;
   /** Searches sessions; no search box without one. */
@@ -307,6 +310,12 @@ export function SessionsPanel({
                       disabled: persistent,
                     },
                   ]),
+              ...(onExport
+                ? [
+                    { label: "Export as Markdown", icon: Download, onSelect: () => onExport(id, "markdown") },
+                    { label: "Export as JSON", icon: Download, onSelect: () => onExport(id, "json") },
+                  ]
+                : []),
               {
                 label: `Show ${place}`,
                 icon: FolderOpen,

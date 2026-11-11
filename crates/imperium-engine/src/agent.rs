@@ -185,6 +185,11 @@ pub struct Agent {
     shown: Option<String>,
     /// The reasoning effort this subagent was spawned with, over the session's.
     effort: Option<Effort>,
+    /// How many messages the conversation had when mid-turn compaction last ran or was last
+    /// tried: another needs at least two more (a reply and a result), so it cannot loop.
+    compact_mark: Option<usize>,
+    /// Mid-turn compaction made no progress this turn; it is not tried again until the next.
+    compact_stalled: bool,
     /// The instruction files the conversation holds; read from it on first use.
     instructions: Option<instructions::Tracker>,
     /// Whether the latest tool call succeeded (only successful file calls load instruction
@@ -305,6 +310,8 @@ impl Agent {
             previous: None,
             shown: None,
             effort: None,
+            compact_mark: None,
+            compact_stalled: false,
             instructions: None,
             last_tool_ok: std::sync::atomic::AtomicBool::new(false),
         }
@@ -728,6 +735,7 @@ impl Agent {
         });
         self.checkpoint();
         let (mut tools, mut tool_texts) = self.offered_tools();
+        self.compact_stalled = false;
         let mut total = Usage::default();
         let mut reply = String::new();
         let max_steps = self.shared.max_steps;
@@ -748,6 +756,7 @@ impl Agent {
                 return self.pause_turn(total, step - 1, &reply);
             }
             self.take_steering().await;
+            self.compact_near_limit(&tool_texts).await;
             let mut waits = 0;
             let mut waited = std::time::Duration::ZERO;
             // A reply cut short by its reservation is retried once without a cap.
@@ -2392,6 +2401,94 @@ fn single_call_prompt(root: &str) -> String {
 /// Tool arguments as JSON for hooks, or the raw text when they do not parse.
 /// Switching models and compacting the conversation; see [`compact`](crate::compact).
 impl Agent {
+    /// Tokens the next model call is expected to read: the latest reported prompt size plus an
+    /// estimate of the messages added since, else the whole request estimated.
+    fn context_tokens(&self, tools: &[(Category, String)]) -> u64 {
+        match self.last_reported {
+            Some((covered, prompt)) if covered <= self.messages.len() => {
+                prompt
+                    + self.messages[covered..]
+                        .iter()
+                        .map(|message| {
+                            let text = serde_json::to_string(message).unwrap_or_default();
+                            estimate_tokens(&text) + compact::MESSAGE_FORMATTING
+                        })
+                        .sum::<u64>()
+            }
+            _ => Request {
+                messages: &self.messages,
+                spans: &self.spans,
+                tools,
+            }
+            .estimate(),
+        }
+    }
+
+    /// Mid-turn compaction: before a model call, when the conversation has reached
+    /// `context.auto_compact_at` of this model's context window, older messages are replaced by
+    /// a summary (the same compaction a model switch runs) and the turn goes on. Needs a known
+    /// window. Never twice without progress: another attempt waits for two more messages, and
+    /// a compaction that did not shrink the conversation stops them for the turn. A failure is
+    /// a notice; the turn goes on with the conversation as it is.
+    async fn compact_near_limit(&mut self, tools: &[(Category, String)]) {
+        let Some(at) = self.shared.auto_compact_at.filter(|at| *at > 0.0) else {
+            return;
+        };
+        if self.single_call || self.compact_stalled || self.messages.len() <= 3 {
+            return;
+        }
+        if self
+            .compact_mark
+            .is_some_and(|mark| self.messages.len() < mark + 2)
+        {
+            return;
+        }
+        let Some(window) = self.known_window(&self.model) else {
+            return;
+        };
+        let trigger = compact::trigger_tokens(window, at);
+        let tokens = self.context_tokens(tools);
+        if tokens < trigger {
+            return;
+        }
+        // What compaction cannot shrink: the system prompt, the tools, and the carried context.
+        let fixed = estimate_tokens(&serde_json::to_string(&self.messages[0]).unwrap_or_default())
+            + tools
+                .iter()
+                .map(|(_, text)| estimate_tokens(text))
+                .sum::<u64>()
+            + estimate_tokens(&compact::pinned_context(
+                &self.messages,
+                &self.spans,
+                self.messages.len(),
+            ));
+        if !compact::worth_compacting(fixed, trigger) {
+            // Summarising would not get the conversation under its trigger; ask again later.
+            self.compact_mark = Some(self.messages.len() + 4);
+            return;
+        }
+        self.compact_mark = Some(self.messages.len());
+        let model = self.model.clone();
+        match self.fit_with(&model, false, Some(trigger)).await {
+            Ok(fit) => {
+                if let Some(compaction) = fit.compaction {
+                    self.compact_mark = Some(self.messages.len());
+                    // Only a compaction that ran and did not shrink the conversation stops
+                    // the attempts for the turn.
+                    self.compact_stalled = compaction.after_tokens >= compaction.before_tokens;
+                    self.checkpoint();
+                }
+            }
+            Err(error) => {
+                // A failed summary is not tried again until the conversation has grown.
+                self.compact_mark = Some(self.messages.len() + 4);
+                self.emit(SessionEvent::Notice {
+                    message: format!("the conversation could not be compacted: {error}"),
+                });
+            }
+        }
+    }
+
     /// Switches this agent to `target` from its next turn, without loading or calling it: the
     /// switch is journalled now, and the conversation is measured against the target (and
     /// compacted if it does not fit) when the next turn starts ([`Agent::settle_model`]).
@@ -2519,6 +2616,17 @@ impl Agent {
         target: &ResolvedModel,
         force: bool,
     ) -> Result<ContextFit, SwitchError> {
+        self.fit_with(target, force, None).await
+    }
+
+    /// [`fit_to`](Self::fit_to) that also compacts when the conversation reaches `trigger`
+    /// tokens, whether or not it is over the budget (mid-turn compaction).
+    async fn fit_with(
+        &mut self,
+        target: &ResolvedModel,
+        force: bool,
+        trigger: Option<u64>,
+    ) -> Result<ContextFit, SwitchError> {
         let (_, tools) = self.offered_tools();
         let scale = self.calibration(&tools);
         let before = self
@@ -2545,15 +2653,19 @@ impl Agent {
             method: before.method,
             compaction: None,
         };
-        if before_tokens <= budget && !force {
+        let triggered = trigger.is_some_and(|trigger| before_tokens >= trigger);
+        if before_tokens <= budget && !force && !triggered {
             return Ok(unchanged);
         }
         // The system prompt and the tools stay whatever happens, with at least a short summary.
-        let base = before.fixed + before.messages[0] + compact::MESSAGE_FORMATTING;
+        // Workflow context loaded so far is carried over verbatim, so it is part of the base.
+        let pinned_all = compact::pinned_context(&self.messages, &self.spans, self.messages.len());
+        let pinned_tokens = estimate_tokens(&pinned_all);
+        let base = before.fixed + before.messages[0] + compact::MESSAGE_FORMATTING + pinned_tokens;
         if base + compact::MIN_SUMMARY_TOKENS > budget {
             return Err(SwitchError::TooLarge {
                 model: target.spec.clone(),
-                needed: before.fixed + before.messages[0],
+                needed: before.fixed + before.messages[0] + pinned_tokens,
                 budget,
             });
         }
@@ -2568,7 +2680,12 @@ impl Agent {
         };
         // Aim well under the budget so the conversation can go on; a third of that room goes
         // to the summary and the rest to the most recent messages.
-        let free = (budget * compact::TARGET_PERCENT / 100).saturating_sub(base);
+        let mut aim = budget * compact::TARGET_PERCENT / 100;
+        if let Some(trigger) = trigger {
+            // Well under the trigger, or the next call would trigger it again.
+            aim = aim.min(trigger * compact::BELOW_TRIGGER_PERCENT / 100);
+        }
+        let free = aim.saturating_sub(base);
         let allowance = (free / 3).clamp(compact::MIN_SUMMARY_TOKENS, compact::MAX_SUMMARY_TOKENS);
         let mut cut = compact::choose_cut(
             &self.messages,
@@ -2582,7 +2699,9 @@ impl Agent {
         let (mut summary, mut summary_model) = self.summarise(target, cut, allowance).await?;
         for _ in 0..compact::MAX_ATTEMPTS {
             let block = compact::summary_block(&summary);
-            let (messages, spans) = compact::rebuild(&self.messages, &self.spans, cut, &block);
+            let pinned = compact::pinned_context(&self.messages, &self.spans, cut);
+            let (messages, spans) =
+                compact::rebuild(&self.messages, &self.spans, cut, &block, &pinned);
             let after = self
                 .measure_for(target, &messages, &spans, &tools, scale)
                 .await?;
@@ -2593,9 +2712,6 @@ impl Agent {
                 self.spans = spans;
                 self.last_reported = None;
                 self.last_call = None;
-                // The summary replaced any skill instructions loaded before: they may be
-                // loaded again (the replayed journal does the same after a restart).
-                lock(&self.shared.loaded_skills).retain(|(agent, _)| *agent != self.id);
                 self.emit(SessionEvent::ContextCompacted {
                     model: target.spec.clone(),
                     before_tokens,
@@ -2605,6 +2721,7 @@ impl Agent {
                     context_window: Some(window),
                     method: after.method,
                     summary_model: summary_model.clone(),
+                    kept_context: true,
                 });
                 return Ok(ContextFit {
                     tokens: after_tokens,
@@ -2625,11 +2742,9 @@ impl Agent {
             } else {
                 compact::MESSAGE_FORMATTING
             };
-            // The instruction files kept verbatim sit in the same message as the summary.
-            let kept_instructions = estimate_tokens(&compact::preserved_text(&self.messages, cut));
             let summary_tokens = after.messages[1]
                 .saturating_sub(host)
-                .saturating_sub(kept_instructions);
+                .saturating_sub(estimate_tokens(&pinned));
             let others = after_tokens.saturating_sub(summary_tokens);
             if others + compact::MIN_SUMMARY_TOKENS <= budget {
                 // A shorter summary is enough.

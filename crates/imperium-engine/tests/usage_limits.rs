@@ -82,6 +82,7 @@ fn start(url: &str, dir: &std::path::Path, policy: ResumePolicy) -> Session {
         background: None,
         checkpoints: None,
         auto_compact: false,
+        auto_compact_at: None,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.join("u.jsonl"),

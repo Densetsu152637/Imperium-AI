@@ -64,6 +64,7 @@ import {
   type EnvironmentActions,
   type SessionSort,
 } from "./panels/NavigationPanels";
+import { exportSession } from "./exportSession";
 import { SessionPanel } from "./panels/SessionPanel";
 import { ComparePanel } from "./panels/ComparePanel";
 import { branchRun, comparisonMembers, comparisonOpen } from "./branches";
@@ -590,6 +591,12 @@ export function App() {
     control(sessionId, { action: archived ? "archive" : "unarchive" }).catch(report);
   };
 
+  /** Saves a session's transcript as Markdown or JSON through the save dialog (a download in a browser). */
+  const exportSessionTranscript = (sessionId: string, format: "markdown" | "json") => {
+    if (!client) return;
+    exportSession(client, sessionId, format).catch(report);
+  };
+
   const showEnvironment = (id: string) => {
     setEnvId(id);
     setEnvView(true);
@@ -1056,6 +1063,7 @@ export function App() {
           onSetPinned={setSessionPinned}
           onSetArchived={setSessionArchived}
           onRename={renameSession}
+          onExport={exportSessionTranscript}
           onShowEnvironment={showEnvironment}
           onShowAll={() => setEnvView(false)}
           client={client}

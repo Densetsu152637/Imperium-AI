@@ -141,6 +141,7 @@ fn start_with(
         personality: None,
         max_steps: 5,
         auto_compact,
+        auto_compact_at: None,
         background: None,
         checkpoints: None,
         keep_agent_state: true,

@@ -872,6 +872,56 @@ pub struct SessionSubscribeResult {
     pub history: Vec<crate::session::AgentEvent>,
 }
 
+/// `session.export`: a session's transcript, read from its journal, so it works for running
+/// and archived sessions alike: messages, tool calls with their arguments and results, the
+/// subagent task tree with each subagent's own log, and the files agents attached or created.
+#[derive(Debug)]
+pub struct SessionExport;
+
+impl Method for SessionExport {
+    const NAME: &'static str = "session.export";
+    type Params = SessionExportParams;
+    type Result = SessionExportResult;
+}
+
+/// The formats `session.export` writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ExportFormat {
+    /// Readable text, for sharing or reading offline.
+    Markdown,
+    /// The same transcript as a structured document, for tools.
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionExportParams {
+    pub session_id: String,
+    pub format: ExportFormat,
+    /// Include each subagent's own log under the task that started it; `true` when left out.
+    /// Off, subagents appear only as tasks with their briefs and reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub include_subagents: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionExportResult {
+    pub format: ExportFormat,
+    /// A file name to save it under, such as `fix-the-parser.md`.
+    pub filename: String,
+    /// The transcript as text (a JSON document for `json`).
+    pub content: String,
+    /// Set when the transcript looks like it holds a credential. Exports are verbatim: they
+    /// include whatever the agents read and ran, so check before sharing one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub warning: Option<String>,
+}
+
 /// `session.search`: searches what was said and done in sessions, running and archived. The
 /// daemon indexes session journals in the background; ranking is by keyword, fused with vector
 /// similarity when `memory.embedding_model` is set (see docs/17-memory.md#session-search).

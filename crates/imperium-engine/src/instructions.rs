@@ -6,7 +6,8 @@
 //! They arrive as a user message wrapped in `<workflow-instructions>` after the tool results of
 //! the round that touched the directory. The message is the record: which files an agent holds
 //! is read back from the conversation, so a resumed or compacted conversation needs nothing
-//! else. Compaction keeps these blocks verbatim (see [`preserved`]) instead of summarising them.
+//! else. Compaction keeps these blocks verbatim instead of summarising them: they travel inside the
+//! kept-context block that `compact::pinned_context` builds, once per file.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -51,7 +52,8 @@ impl Tracker {
             let ChatMessage::User { content, .. } = message else {
                 continue;
             };
-            if !content.contains(OPEN) {
+            // Compaction carries the files inside its kept-context block, without the wrapper.
+            if !content.contains(OPEN) && !content.contains(FILE_OPEN) {
                 continue;
             }
             for prefix in [FILE_OPEN, IMPORT_OPEN] {
@@ -65,6 +67,13 @@ impl Tracker {
                 .sum::<usize>();
         }
         tracker
+    }
+}
+
+#[cfg(test)]
+impl Tracker {
+    pub(crate) fn holds(&self, path: &str) -> bool {
+        self.loaded.contains(path)
     }
 }
 
@@ -143,26 +152,6 @@ pub(crate) fn strip(content: &str) -> String {
     }
     out.push_str(rest);
     out.trim().to_string()
-}
-
-/// The blocks in `messages`, in order and once per path, for compaction to keep.
-pub(crate) fn preserved(messages: &[ChatMessage]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut blocks = Vec::new();
-    for message in messages {
-        let ChatMessage::User { content, .. } = message else {
-            continue;
-        };
-        if !content.contains(OPEN) {
-            continue;
-        }
-        for (path, block) in blocks_in(content) {
-            if seen.insert(path) {
-                blocks.push(block);
-            }
-        }
-    }
-    blocks
 }
 
 /// The directory a file tool call works in, when it is one.
@@ -335,6 +324,5 @@ mod tests {
         ];
         let tracker = Tracker::from_messages(&messages);
         assert!(tracker.loaded.contains("/p/a/AGENTS.md"));
-        assert_eq!(preserved(&messages).len(), 1);
     }
 }

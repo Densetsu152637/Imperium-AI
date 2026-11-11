@@ -860,6 +860,24 @@ archive); *Open* shows a column's branch as an ordinary session, whose note link
 side-by-side view. The column state, standouts and form rules are in
 `apps/desktop/src/branches.ts` (tested in `test/branches.test.ts`).
 
+### Exporting transcripts (implemented)
+
+A session's ⋯ menu in the Sessions panel has **Export as Markdown** and **Export as JSON**,
+for running and archived sessions alike. The app asks the daemon for `session.export`, which
+builds the transcript from the session's journal, and saves it through the native save dialog
+(a download in a browser build). In the app the shell opens the save dialog itself and
+writes only the file picked there (`save_export`; the page cannot name a path, only a `.md` or
+`.json` file name to suggest, and transcripts over 64 MiB are refused). Exports are verbatim,
+so they can hold anything an agent read or ran, secrets included: when one looks like it
+holds a credential (a known key prefix, a private key, a JWT; git hashes do not count) the
+shell asks before opening the save dialog, and the CLI prints a warning. No warning does not
+mean no secrets: read an export before sharing it. The transcript holds every message, each tool call with its arguments and result, the
+subagent task tree with each subagent's own log under the task that started it, compaction
+notices, and the files attached to messages or created by agents. Subagents of an archived
+session open in the agent view like any other (read-only: no *Resume* or *Cancel*, no
+composer). The CLI does the same with `imperium session export <id> [--format md|json]
+[--no-subagents] [-o file]` ([02](02-architecture.md)).
+
 ### Session search (implemented)
 
 A search box sits at the top of the Sessions panel (*Search sessions*, or *Search this

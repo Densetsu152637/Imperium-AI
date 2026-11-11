@@ -66,7 +66,8 @@ enum Command {
         #[arg(long, value_name = "BRANCH", num_args = 0..=1, default_missing_value = "")]
         worktree: Option<String>,
     },
-    /// Manage running sessions.
+    /// Manage sessions (also `sessions`).
+    #[command(alias = "sessions")]
     Session {
         #[command(subcommand)]
         command: SessionCommand,
@@ -287,6 +288,20 @@ enum SessionCommand {
     Archive { session_id: String },
     /// Resume an archived session.
     Unarchive { session_id: String },
+    /// Export a session's transcript (messages, tool calls, subagents, files), also an
+    /// archived session's: Markdown or JSON, to a file or standard output.
+    Export {
+        session_id: String,
+        /// `md` (default) or `json`.
+        #[arg(long, value_name = "FORMAT", default_value = "md")]
+        format: String,
+        /// Leave out each subagent's own log (their tasks and reports stay).
+        #[arg(long)]
+        no_subagents: bool,
+        /// Write to this file instead of standard output.
+        #[arg(short = 'o', long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
     /// Stop and forget a session so it does not continue after a restart.
     Delete {
         session_id: String,
@@ -498,6 +513,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             SessionCommand::List { archived } => session::list(archived),
             SessionCommand::Archive { session_id } => session::set_archived(session_id, true),
             SessionCommand::Unarchive { session_id } => session::set_archived(session_id, false),
+            SessionCommand::Export {
+                session_id,
+                format,
+                no_subagents,
+                output,
+            } => session::export(session_id, &format, no_subagents, output),
             SessionCommand::Delete {
                 session_id,
                 remove_worktrees,
