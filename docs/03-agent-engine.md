@@ -81,6 +81,10 @@ what it found and what is left undone or not verified. Tests in `imperium-engine
 assembled root prompt) and `imperium-protocol` (`emperor-root.md`) pin these rules, so an edit
 that drops one fails.
 
+The selected [personality](08-agent-policy.md#personalities) (Marcus Aurelius by default)
+follows these rules in the root prompt, framed as tone only, so the rules still hold; subagents
+never get it.
+
 ## Planning
 
 **Implemented (phase 3):** the `update_plan` tool (a goal and steps with `pending`,

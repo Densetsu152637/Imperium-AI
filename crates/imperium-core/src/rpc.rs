@@ -40,7 +40,8 @@ use imperium_engine::ModelError;
 use imperium_protocol::methods::SessionSuggestionRespond;
 use imperium_protocol::methods::{
     ConfigChanges, ConfigChangesParams, ConfigChangesResult, ConfigDescribe, ConfigDescribeParams,
-    ConfigSet, ConfigSetParams, ConfigUndo, ConfigUndoParams,
+    ConfigSet, ConfigSetParams, ConfigUndo, ConfigUndoParams, PersonalitiesList,
+    PersonalitiesListParams,
 };
 use imperium_protocol::methods::{
     EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
@@ -271,6 +272,11 @@ impl Connection {
             ConfigSet::NAME => call::<ConfigSet>(request.params, |params: ConfigSetParams| {
                 crate::config::set(&self.state, params)
             }),
+            PersonalitiesList::NAME => {
+                call::<PersonalitiesList>(request.params, |_: PersonalitiesListParams| {
+                    Ok(crate::config::personalities(&self.state))
+                })
+            }
             McpList::NAME => call::<McpList>(request.params, |_: McpListParams| {
                 Ok(crate::connectors::list(&self.state))
             }),
@@ -1423,6 +1429,48 @@ mod tests {
             Some(Outcome::Result(result)) => result,
             other => panic!("expected a result, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn personalities_are_listed_and_a_new_choice_applies_to_new_sessions_at_once() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let state = DaemonState::new(paths.clone(), settings, None);
+        let mut connection = Connection::new(Arc::clone(&state));
+        connection.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        let local = paths.config_dir().join("personalities");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(local.join("luxion.md"), "# My Luxion\n\nLocal.\n").unwrap();
+
+        let listed =
+            result(connection.handle_text(&request(2, PersonalitiesList::NAME, json!({}))));
+        assert_eq!(listed["default"], "marcus_aurelius");
+        let list = listed["personalities"].as_array().unwrap();
+        let find = |id: &str| list.iter().find(|p| p["id"] == id).unwrap().clone();
+        let marcus = find("marcus_aurelius");
+        assert_eq!(
+            (&marcus["name"], &marcus["source"]),
+            (&json!("Marcus Aurelius"), &json!("builtin"))
+        );
+        let luxion = find("luxion");
+        assert_eq!(
+            (&luxion["name"], &luxion["source"], &luxion["overrides"]),
+            (&json!("My Luxion"), &json!("local"), &json!(true))
+        );
+
+        assert_eq!(state.settings().policy.personality, "marcus_aurelius");
+        let set = result(connection.handle_text(&request(
+            3,
+            ConfigSet::NAME,
+            json!({"key": "policy.personality", "value": "luxion"}),
+        )));
+        assert_eq!(set["restart"], false);
+        assert_eq!(state.settings().policy.personality, "luxion");
     }
 
     #[test]

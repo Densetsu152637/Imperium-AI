@@ -569,7 +569,7 @@ pub async fn runtime_status(state: Arc<DaemonState>) -> RuntimeStatusResult {
 }
 
 /// Applies a setting `config.set` just saved, for the settings this module applies live
-/// (`models.default`, `models.folders`, `runtime.llamacpp.custom_path`); others are left for
+/// (`models.default`, `models.folders`, `runtime.llamacpp.custom_path`, `policy.personality`); others are left for
 /// a restart. New folders are scanned in the background.
 pub(crate) fn apply_setting(state: &DaemonState, key: &str) {
     let applied = match key {
@@ -578,6 +578,10 @@ pub(crate) fn apply_setting(state: &DaemonState, key: &str) {
         }),
         "models.folders" => apply_saved(state, |next, fresh| {
             next.models.folders.clone_from(&fresh.models.folders);
+        }),
+        // Read when a session starts, so new sessions use it at once.
+        "policy.personality" => apply_saved(state, |next, fresh| {
+            next.policy.clone_from(&fresh.policy);
         }),
         "runtime.llamacpp.custom_path" => apply_saved(state, |next, fresh| {
             next.runtime

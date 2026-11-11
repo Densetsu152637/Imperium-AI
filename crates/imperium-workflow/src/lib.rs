@@ -5,12 +5,14 @@
 
 mod docs;
 pub mod pack;
+pub mod personality;
 mod text;
 
 use std::path::{Component, Path, PathBuf};
 
 pub use docs::DocChunk;
 pub use pack::{Candidate, Pack, PackError};
+pub use personality::{DEFAULT_PERSONALITY, Personality, PersonalityInfo};
 
 /// The prefix of references to the project's own files.
 const PROJECT: &str = "project";
