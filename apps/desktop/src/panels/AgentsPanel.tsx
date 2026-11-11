@@ -12,6 +12,8 @@ import type { RuntimeInstallJob } from "@imperium/protocol";
 
 import { RowMenu } from "../components/RowMenu";
 import { ToolCall } from "../components/ToolCall";
+import { ToolGroup } from "../components/ToolGroup";
+import { groupToolRuns } from "../toolCalls";
 import { WaitLine } from "../components/WaitLine";
 import { formatCost, type SessionState, type TaskState } from "../sessions";
 import { isStopped, shownTaskStatus } from "../stop";
@@ -129,19 +131,21 @@ function TaskRow({
         </summary>
         {wait && <WaitLine view={wait} compact onStop={onStop} />}
         <ul className="task-activity">
-          {task.entries
-            .filter((entry) => entry.kind === "tool" || entry.kind === "user")
-            .map((entry, index) =>
-              entry.kind === "user" ? (
-                <li key={index} className="task-turn">
-                  {entry.text.split("\n")[0]}
-                </li>
-              ) : entry.kind === "tool" ? (
-                <li key={index} className="task-tool">
-                  <ToolCall entry={entry} />
-                </li>
-              ) : null,
-            )}
+          {groupToolRuns(task.entries.filter((entry) => entry.kind === "tool" || entry.kind === "user")).map((item) =>
+            item.kind === "tools" ? (
+              <li key={item.index} className="task-tool">
+                <ToolGroup calls={item.calls} />
+              </li>
+            ) : item.entry.kind === "user" ? (
+              <li key={item.index} className="task-turn">
+                {item.entry.text.split("\n")[0]}
+              </li>
+            ) : item.entry.kind === "tool" ? (
+              <li key={item.index} className="task-tool">
+                <ToolCall entry={item.entry} />
+              </li>
+            ) : null,
+          )}
         </ul>
         {task.report && (
           <div className="task-report prose">

@@ -68,6 +68,16 @@ so long transcripts stay light. The daemon sends the arguments on `tool_started`
 name and run time on `tool_finished`, each cut to 8,000 characters for display; the model
 always receives the full result ([03](03-agent-engine.md#agent-loop)).
 
+Consecutive calls, with no other entry (assistant text, a message, an approval) between them,
+fold into one line so a busy turn does not flood the transcript: what they did by kind, in the
+order each kind first ran (*Read 3 files, ran 2 commands, searched 1 time*; tools without a
+kind count as *used 2 other tools*, or *Used 4 tools* when none has one). While any of them
+runs the line shows a spinner and the latest running call's summary; once all have ended it
+shows a cross when any failed, otherwise a check. Opening it lists the calls as the rows above,
+each still opening on its own. A lone call stays its own row. The Agents panel folds a
+subagent's calls the same way, and a session search hit on a folded call lands on its group's
+line (`apps/desktop/src/toolCalls.ts`, `components/ToolGroup.tsx`).
+
 ### Waiting status line (implemented)
 
 After a message is sent, and before the agent's first output (a streamed token, a tool call,
