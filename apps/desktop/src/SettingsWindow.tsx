@@ -36,11 +36,9 @@ import {
   Boxes,
   GitPullRequest,
   Workflow,
-  X,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 
 import type {
   ConfigDescribeResult,
@@ -54,6 +52,7 @@ import type {
 import { BudgetsSection } from "./components/BudgetsEditor";
 import { PermissionsEditor, samePermissions } from "./components/PermissionsEditor";
 import { Select } from "./components/Select";
+import { matches, ModalNavGroup, ModalNavItem, SettingsModal } from "./components/SettingsModal";
 import { Row } from "./components/SettingsRow";
 import { Switch as Toggle } from "./components/Switch";
 import type { DaemonClient } from "./daemon/client";
@@ -378,12 +377,6 @@ const SHORTCUTS: [string, string][] = [
   ["Shift+Enter", "New line in a message"],
 ];
 
-function matches(query: string, ...texts: string[]): boolean {
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const haystack = texts.join(" ").toLowerCase();
-  return words.every((word) => haystack.includes(word));
-}
-
 export function SettingsWindow(props: Props) {
   const { settings, onChange, client, onClose } = props;
   const [section, setSection] = useState(props.request?.section ?? "general");
@@ -397,14 +390,6 @@ export function SettingsWindow(props: Props) {
   const [config, setConfig] = useState<ConfigDescribeResult | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
   const [needsRestart, setNeedsRestart] = useState(false);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   useEffect(() => {
     if (!client) return;
@@ -584,76 +569,67 @@ export function SettingsWindow(props: Props) {
   const groups = [...new Set(sections.map((s) => s.group))];
   const title = query.trim() ? "Search" : (sections.find((s) => s.id === section)?.label ?? "Settings");
 
-  // Rendered into the body, above the workspace's own stacking layers.
-  return createPortal(
-    <div className="settings-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="settings-window" role="dialog" aria-modal="true" aria-label="Settings">
-        <nav className="settings-nav">
-          <label className="search-field settings-search">
-            <Search aria-hidden="true" />
-            <input
-              type="search"
-              placeholder="Search settings"
-              aria-label="Search settings"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              autoFocus
-            />
-          </label>
-          {groups.map((group) => (
-            <div key={group} className="settings-group">
-              <span className="settings-group-label">{group}</span>
-              {sections
-                .filter((s) => s.group === group)
-                .map((s) => (
-                  <button
-                    key={s.id}
-                    className={`settings-nav-item${s.id === section && !query.trim() ? " active" : ""}`}
-                    onClick={() => {
-                      setSection(s.id);
-                      setQuery("");
-                    }}
-                    aria-current={s.id === section && !query.trim() ? "page" : undefined}
-                  >
-                    {(() => {
-                      const Icon = SECTION_ICONS[s.id] ?? SlidersHorizontal;
-                      return <Icon aria-hidden="true" />;
-                    })()}
-                    {s.label}
-                  </button>
-                ))}
-            </div>
-          ))}
-        </nav>
-        <section className="settings-content">
-          <header className="settings-content-header">
-            <h2>{title}</h2>
-            <button className="ghost icon-only" onClick={onClose} aria-label="Close settings" title="Close (Esc)">
-              <X />
+  const nav = (
+    <>
+      <label className="search-field settings-search">
+        <Search aria-hidden="true" />
+        <input
+          type="search"
+          placeholder="Search settings"
+          aria-label="Search settings"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          autoFocus
+        />
+      </label>
+      {groups.map((group) => (
+        <ModalNavGroup key={group} label={group}>
+          {sections
+            .filter((s) => s.group === group)
+            .map((s) => (
+              <ModalNavItem
+                key={s.id}
+                icon={SECTION_ICONS[s.id] ?? SlidersHorizontal}
+                active={s.id === section && !query.trim()}
+                onClick={() => {
+                  setSection(s.id);
+                  setQuery("");
+                }}
+              >
+                {s.label}
+              </ModalNavItem>
+            ))}
+        </ModalNavGroup>
+      ))}
+    </>
+  );
+
+  const notice = (
+    <>
+      {needsRestart && (
+        <div className="settings-notice">
+          Restart imperium-core to apply daemon settings.
+          {props.daemon?.status.can_start && (
+            <button
+              className="primary"
+              onClick={() => {
+                props.daemon?.run("restart");
+                setNeedsRestart(false);
+              }}
+            >
+              Restart now
             </button>
-          </header>
-          {needsRestart && (
-            <div className="settings-notice">
-              Restart imperium-core to apply daemon settings.
-              {props.daemon?.status.can_start && (
-                <button
-                  className="primary"
-                  onClick={() => {
-                    props.daemon?.run("restart");
-                    setNeedsRestart(false);
-                  }}
-                >
-                  Restart now
-                </button>
-              )}
-            </div>
           )}
-          {configError && <p className="error">{configError}</p>}
-          <div className="settings-rows">{body()}</div>
-        </section>
-      </div>
-    </div>,
-    document.body,
+        </div>
+      )}
+      {configError && <p className="error">{configError}</p>}
+    </>
+  );
+
+  return (
+    <SettingsModal label="Settings" title={title} nav={nav} notice={notice} onClose={onClose}>
+      {body()}
+    </SettingsModal>
   );
 }
 

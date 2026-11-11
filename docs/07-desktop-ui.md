@@ -615,7 +615,7 @@ local model marked in either panel is marked in both; they are app settings, sav
 `settings` document in `desktop/` ([persistence](#settings-and-persistence-implemented)), and
 survive updates and reinstalls. In the model panels favourites come first, then the other
 models in the panel's own order, then the hidden ones in a collapsed *Hidden (n)* group at the
-end, dimmed, each with its eye to show it again. The model configuration dialog's list follows
+end, dimmed, each with its eye to show it again. The model configuration dialog's navigation follows
 the same order with *favourite* and *hidden* badges. The session's model selector, the
 new-session composer's model list, and the command palette's *Use …* commands list favourites
 first (under *Favourites*, the rest under *Models*, when any model is marked) and leave hidden
@@ -739,10 +739,13 @@ drawn. Session totals and recent outputs follow.
 
 ## Model configuration dialog (implemented)
 
-A modal (a native `<dialog>`, so Esc and the backdrop close it) edits model settings. It opens
-from *Models…* in the settings menu, from *Configure* in the Local models panel (Local tab) and
-from *Configure* in the Models panel (Model table tab). The Local tab lists the models in
-`models.folders`; each form field is optional, shows the effective value as its placeholder and
+A modal edits model settings. It uses the Settings window's shell (`SettingsModal`: the same
+sheet, sizing, header with the title and ×, navigation column, and Esc or a click on the backdrop
+to close), with a footer for its actions. It opens from *Configure models* in Settings (Models and
+Local runtime), from *Configure* in the Local models panel (on that model) and from *Configure* in
+the Models panel (on the model table). The navigation column has a *Search models* field and two
+groups, *Local models* (the models in `models.folders`) and *Model table*, each model with its
+badges; the selected model's id is the heading. Each local form field is optional, shows the effective value as its placeholder and
 has a *reset* that clears the saved value. Fields: max context per agent (a number of tokens or
 *auto*, offered in the field's list; the placeholder shows the sized ceiling, such as *auto
 (131072)*), KV pool tokens (empty: starts small and grows on demand; a number fixes it), slots, K
@@ -754,9 +757,10 @@ shows "Saved" for a moment and the values now in effect (such as a cut pool or t
 GPU), and closing it afterwards keeps what was applied; *Save* saves and closes. Both are
 disabled while nothing has changed. For a vLLM model the cache types, flash attention and GPU
 layers are disabled. A debounced (500 ms) `models.set_config` dry run shows the memory the model
-would need, its KV pool and its placement, or the server's error. The Model table tab edits
+would need, its KV pool and its placement, or the server's error. A model-table row's form edits
 existing rows only (enabled, tier, tags, context window, prices; both prices or neither); it
-does not add or remove rows. *Save* sends only the models that differ from what is saved, each
+does not add or remove rows. The footer shows the file the settings are saved to, *Cancel* (or
+*Close* once nothing is pending), *Apply* and *Save*. *Save* sends only the models that differ from what is saved, each
 as a whole-settings update, then closes and refreshes the panels; a failure keeps the dialog
 open with the message. *Reset model* clears all of a model's saved settings. A loaded model's
 badge reads `loaded · <in use>/<slots> busy · pool <reserved>/<pool>`, and a disabled table row
