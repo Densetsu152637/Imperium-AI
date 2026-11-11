@@ -47,6 +47,14 @@ fn dangerous_line(line: &str, depth: usize) -> bool {
     if pipes_into_shell(line) {
         return true;
     }
+    // A program the floor cannot read, before groups and substitutions are split apart.
+    if split_command(line).iter().any(|command| {
+        command_start(&words(command))
+            .first()
+            .is_some_and(|program| unreadable_program(program))
+    }) {
+        return true;
+    }
     // `^` escapes characters for cmd (`r^m`); substitutions and groups hold commands too.
     let line: String = line
         .chars()
@@ -74,11 +82,7 @@ fn pipes_into_shell(line: &str) -> bool {
             return false;
         };
         let words = words(&first);
-        let Some(program_word) = words
-            .iter()
-            .find(|word| !is_assignment(word))
-            .map(String::as_str)
-        else {
+        let Some(program_word) = command_start(&words).first().map(String::as_str) else {
             return false;
         };
         program_names(program_word)
@@ -157,12 +161,42 @@ fn skip_options<'a>(args: &'a [String], takes_value: &[&str]) -> &'a [String] {
     args.get(skip..).unwrap_or_default()
 }
 
-fn dangerous_words(words: &[String], depth: usize) -> bool {
+/// Shell keywords that may come before a command (`if rm …`, `do rm …`, `! rm …`).
+const KEYWORDS: &[&str] = &[
+    "do", "then", "else", "elif", "if", "while", "until", "!", "time", "{",
+];
+
+/// The command's words from its program on: leading assignments, shell keywords, and
+/// redirections (`>out`, `2> err`, `< in`) skipped.
+fn command_start(words: &[String]) -> &[String] {
     let mut rest = words;
-    // Leading `NAME=value` assignments.
-    while rest.first().is_some_and(|word| is_assignment(word)) {
-        rest = &rest[1..];
+    while let Some(word) = rest.first() {
+        let redirect = word.trim_start_matches(|c: char| c.is_ascii_digit());
+        if is_assignment(word) || KEYWORDS.contains(&word.as_str()) {
+            rest = &rest[1..];
+        } else if redirect.starts_with('>') || redirect.starts_with('<') {
+            // A bare operator (`>`, `2>`, `<<`) takes the next word as its target.
+            let bare = redirect.trim_start_matches(['>', '<', '&', '|']).is_empty();
+            rest = rest.get(if bare { 2 } else { 1 }..).unwrap_or_default();
+        } else {
+            break;
+        }
     }
+    rest
+}
+
+/// A program word the floor cannot read: a variable or substitution (`$x`, `` `…` ``), a brace
+/// expansion (`{r,}m`), or one with a redirection glued to it (`rm>out`, `bash<<<…`).
+fn unreadable_program(word: &str) -> bool {
+    word.starts_with('$')
+        || word.starts_with('`')
+        || (word.contains('{') && word.contains(',') && word.contains('}'))
+        || word.contains('<')
+        || word.contains('>')
+}
+
+fn dangerous_words(words: &[String], depth: usize) -> bool {
+    let rest = command_start(words);
     let Some(first) = rest.first() else {
         return false;
     };
@@ -297,7 +331,12 @@ fn powershell_dangerous(args: &[String], depth: usize) -> bool {
             break;
         }
         if lower == "-c" || (lower.len() >= 4 && "-command".starts_with(&lower)) {
-            return dangerous_line(&args[index + 1..].join(" "), depth + 1);
+            let rest = &args[index + 1..];
+            // `-Command -` reads the commands from standard input: ask.
+            if rest.first().is_none_or(|word| word == "-") {
+                return true;
+            }
+            return dangerous_line(&rest.join(" "), depth + 1);
         }
         if lower == "-e"
             || lower == "-ec"
@@ -418,7 +457,9 @@ fn git_dangerous(args: &[String]) -> bool {
             "-c" => {
                 // `-c alias.x=!cmd` defines a shell alias on the spot: what runs is unseen.
                 if args.get(index + 1).is_some_and(|value| {
-                    value.to_ascii_lowercase().starts_with("alias.") && value.contains("=!")
+                    let value: String =
+                        value.chars().filter(|c| !matches!(c, '"' | '\'')).collect();
+                    value.to_ascii_lowercase().starts_with("alias.") && value.contains('!')
                 }) {
                     return true;
                 }
@@ -631,6 +672,48 @@ mod tests {
         }
         assert!(!dangerous_command("timeout -s KILL 10 cargo test"));
         assert!(!dangerous_command("env -u HOME cargo test"));
+    }
+
+    #[test]
+    fn round_three_bypasses_ask() {
+        for line in [
+            // A quoted alias value.
+            "git -c alias.x='!rm -rf .' x",
+            "git -c \"alias.x=!rm -rf .\" x",
+            // Shell keywords before the command.
+            "if rm -rf x; then echo; fi",
+            "while true; do rm -rf x; done",
+            "for f in a b; do rm -rf $f; done",
+            "! rm -rf x",
+            "until false; do git reset --hard; done",
+            "for %i in (a) do rd /s /q %i",
+            // Programs the floor cannot read.
+            "$RM -rf x",
+            "${cmd} -rf x",
+            "{r,}m -rf x",
+            "`echo rm` -rf x",
+            "rm>out -rf x",
+            // Leading redirections.
+            ">out rm -rf x",
+            "2> err rm -rf x",
+            "< in rm -rf x",
+            // Fed shells.
+            "bash<<<'rm -rf x'",
+            "powershell -Command -",
+            "pwsh -c -",
+            // A harmless redirect glued to the program is stripped, not a disguise.
+            "rm>/dev/null -rf x",
+        ] {
+            assert!(dangerous_command(line), "{line}");
+        }
+        for line in [
+            "if cargo test; then echo ok; fi",
+            "for f in a b; do echo $f; done",
+            "cargo build > build.log",
+            "git -c core.autocrlf=false status",
+        ] {
+            assert!(!dangerous_command(line), "{line}");
+        }
     }
 
     #[test]

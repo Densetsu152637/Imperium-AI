@@ -374,10 +374,14 @@ answers:
   values; `command`; `exec`; `eval`; `xargs`; `find -exec`; cmd's `call` and `start`) are
   unwrapped; program names are compared without folder, extension, or case, and with quotes,
   backslashes, and `^` removed (`r"m"`, `'r'm`, `r\m`, `r^m`); long options may be abbreviated
-  (`--recur`, `--for`). These always ask: `$IFS` in a line, a shell fed commands by a pipe or a
-  here-string (`… | sh`, `bash <<< …`), PowerShell running a string or another process
-  (`iex`, `Invoke-Expression`, `Start-Process`, `saps`, `Invoke-Command`), and `git -c
-  alias.<name>=!…`.
+  (`--recur`, `--for`); shell keywords (`if`, `then`, `do`, `while`, `until`, `!`, …) and
+  redirections (`>out`, `2> err`) before a command are skipped. These always ask: `$IFS` in a
+  line; a program word the floor cannot read (starting with `$` or a backtick, a brace
+  expansion such as `{r,}m`, or one with `<` or `>` glued to it); a shell fed commands by a
+  pipe, a here-string, or standard input (`… | sh`, `bash <<< …`, `bash<<<…`,
+  `powershell -Command -`); PowerShell running a string or another process (`iex`,
+  `Invoke-Expression`, `Start-Process`, `saps`, `Invoke-Command`); and `git -c alias.<name>=…`
+  with a `!` (shell) alias, quoted or not.
 - Writing files that hold secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
   `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`) or anything with a `.git` folder
   in its absolute path, such as a linked worktree's main repository's hooks.
