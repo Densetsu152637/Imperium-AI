@@ -13,8 +13,8 @@ use imperium_api::{
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
 use imperium_protocol::session::{
-    AgentStatus, ContextItem, ContextPointer, PauseCause, PermissionDecision, Plan, PlanStep,
-    Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
+    AgentStatus, Attachment, ContextItem, ContextPointer, PauseCause, PermissionDecision, Plan,
+    PlanStep, Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
 };
 use imperium_protocol::tools as contract;
 use imperium_tools::permissions::{PermissionRule, RuleAction, Target, suggest};
@@ -324,14 +324,24 @@ impl Agent {
                 text.push_str(&status);
                 listed = paused.clone();
             }
+            let rendered = render_attachments(&message.attachments).await;
             self.emit(SessionEvent::Steered {
                 id: message.id,
                 text: message.text,
                 paused: listed,
+                attachments: message.attachments,
             });
-            let (content, spans) = join_parts(vec![(Category::User, text)]);
+            let mut parts = Vec::new();
+            if !rendered.text.is_empty() {
+                parts.push((Category::Attachments, rendered.text));
+            }
+            parts.push((Category::User, text));
+            let (content, spans) = join_parts(parts);
             self.spans.insert(self.messages.len(), spans);
-            self.messages.push(ChatMessage::User { content });
+            self.messages.push(ChatMessage::User {
+                content,
+                images: rendered.images,
+            });
         }
     }
 
@@ -615,6 +625,17 @@ impl Agent {
     /// `context` (recalled memories) is given to the model before the message but not shown
     /// as part of it.
     pub async fn run_turn(&mut self, text: String, context: Option<String>) -> TurnOutcome {
+        self.run_turn_with(text, Vec::new(), context).await
+    }
+
+    /// [`run_turn`](Self::run_turn) for a message with files attached: they are read now and
+    /// go before the message's text (images as image parts for a vision model).
+    pub async fn run_turn_with(
+        &mut self,
+        text: String,
+        attachments: Vec<Attachment>,
+        context: Option<String>,
+    ) -> TurnOutcome {
         let text = if self.can_delegate {
             let window = self.window().await;
             self.guard_input(text, window)
@@ -622,7 +643,11 @@ impl Agent {
             text
         };
         let shown = self.shown.take().unwrap_or_else(|| text.clone());
-        self.emit(SessionEvent::TurnStarted { text: shown });
+        let rendered = render_attachments(&attachments).await;
+        self.emit(SessionEvent::TurnStarted {
+            text: shown,
+            attachments,
+        });
         let mut parts = Vec::new();
         if !self.single_call
             && let Some(index) = &self.shared.context
@@ -635,10 +660,16 @@ impl Agent {
             }
         }
         parts.extend(context.map(|memories| (Category::Memories, memories)));
+        if !rendered.text.is_empty() {
+            parts.push((Category::Attachments, rendered.text));
+        }
         parts.push((Category::User, text));
         let (content, spans) = join_parts(parts);
         self.spans.insert(self.messages.len(), spans);
-        self.messages.push(ChatMessage::User { content });
+        self.messages.push(ChatMessage::User {
+            content,
+            images: rendered.images,
+        });
         self.checkpoint();
         let (tools, mcp) = self.tool_specs();
         let tool_texts = tool_texts(&tools, mcp);
@@ -2025,7 +2056,7 @@ impl Agent {
         let message = self
             .shared
             .inboxes
-            .send(&args.agent_id, id, args.text, steer)
+            .send(&args.agent_id, id, args.text, steer, Vec::new())
             .map_err(|error| match error {
                 QueueError::Empty => error.to_string(),
                 _ => format!(
@@ -2696,7 +2727,9 @@ async fn run_subagent(
     while !outcome.paused
         && let Some(message) = agent.inbox().pop_or_close()
     {
-        let next = agent.run_turn(message.text, None).await;
+        let next = agent
+            .run_turn_with(message.text, message.attachments, None)
+            .await;
         outcome = TurnOutcome {
             text: next.text,
             ok: next.ok,
@@ -2954,6 +2987,18 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
         },
         _ => return None,
     })
+}
+
+/// A message's attachments read for the model, off the async runtime (PDF extraction and
+/// large files take a while). Nothing attached reads nothing.
+async fn render_attachments(attachments: &[Attachment]) -> imperium_media::attachments::Rendered {
+    if attachments.is_empty() {
+        return Default::default();
+    }
+    let owned = attachments.to_vec();
+    tokio::task::spawn_blocking(move || imperium_media::attachments::render(&owned))
+        .await
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

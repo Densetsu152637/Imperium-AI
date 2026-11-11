@@ -105,7 +105,7 @@ async fn sessions_continue_after_a_restart() {
     let resumed = start(&url, dir.path(), true);
     let (history, _) = resumed.subscribe_with_history();
     assert!(history.iter().any(|event| matches!(&event.event,
-        SessionEvent::TurnStarted { text } if text == "remember the number 7")));
+        SessionEvent::TurnStarted { text, .. } if text == "remember the number 7")));
     finish_turn(&resumed, "what was the number?").await;
     // First call: system + user. After resuming: system + user + reply + new user.
     assert_eq!(*seen.lock().unwrap(), [2, 4]);

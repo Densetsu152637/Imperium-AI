@@ -155,7 +155,7 @@ pub(crate) fn summary_request(older: &[ChatMessage], words: u64) -> Vec<ChatMess
         ChatMessage::System {
             content: SUMMARY_SYSTEM.into(),
         },
-        ChatMessage::User { content: prompt },
+        ChatMessage::user(prompt),
     ]
 }
 
@@ -170,7 +170,7 @@ fn transcript(messages: &[ChatMessage]) -> String {
                     truncate_chars(content, MESSAGE_CHARS)
                 ));
             }
-            ChatMessage::User { content } => {
+            ChatMessage::User { content, .. } => {
                 out.push_str(&format!(
                     "### User\n{}\n\n",
                     truncate_chars(content, MESSAGE_CHARS)
@@ -229,7 +229,7 @@ pub(crate) fn rebuild(
         new_spans.insert(0, system.clone());
     }
     let rest = match messages.get(cut) {
-        Some(ChatMessage::User { content }) => {
+        Some(ChatMessage::User { content, images }) => {
             let offset = block.len() + PART_SEPARATOR.len();
             let inner = spans
                 .get(&cut)
@@ -244,14 +244,13 @@ pub(crate) fn rebuild(
             new_spans.insert(1, parts);
             out.push(ChatMessage::User {
                 content: format!("{block}{PART_SEPARATOR}{content}"),
+                images: images.clone(),
             });
             cut + 1
         }
         _ => {
             new_spans.insert(1, vec![(Category::Summary, 0..block.len())]);
-            out.push(ChatMessage::User {
-                content: block.to_string(),
-            });
+            out.push(ChatMessage::user(block));
             cut
         }
     };
@@ -292,9 +291,7 @@ mod tests {
     use imperium_protocol::session::TokenCountMethod;
 
     fn user(text: &str) -> ChatMessage {
-        ChatMessage::User {
-            content: text.into(),
-        }
+        ChatMessage::user(text)
     }
 
     fn calling(id: &str) -> ChatMessage {
@@ -388,7 +385,7 @@ mod tests {
         let block = summary_block("earlier work");
         let (rebuilt, new_spans) = rebuild(&messages, &spans, 5, &block);
         assert_eq!(rebuilt.len(), 5);
-        let ChatMessage::User { content } = &rebuilt[1] else {
+        let ChatMessage::User { content, .. } = &rebuilt[1] else {
             panic!("a user message")
         };
         assert!(content.starts_with("<conversation-summary>"));
@@ -399,7 +396,7 @@ mod tests {
 
         // Cut inside a turn: the summary is a user message of its own before the assistant.
         let (rebuilt, _) = rebuild(&messages, &spans, 6, &block);
-        assert!(matches!(&rebuilt[1], ChatMessage::User { content } if content == &block));
+        assert!(matches!(&rebuilt[1], ChatMessage::User { content, .. } if content == &block));
         assert_eq!(rebuilt[2..], messages[6..]);
     }
 

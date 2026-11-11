@@ -303,7 +303,7 @@ async fn a_finished_subagent_is_resumed_with_its_conversation() {
         .iter()
         .filter(|event| event.agent_id == "t1")
         .filter_map(|event| match &event.event {
-            SessionEvent::TurnStarted { text } => Some(text),
+            SessionEvent::TurnStarted { text, .. } => Some(text),
             _ => None,
         })
         .collect();

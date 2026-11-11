@@ -188,7 +188,7 @@ pub async fn stream_chat(
 fn request_body(request: ChatRequest<'_>) -> serde_json::Value {
     let mut body = json!({
         "model": request.model,
-        "messages": request.messages,
+        "messages": request.messages.iter().map(ChatMessage::to_wire).collect::<Vec<_>>(),
         "stream": true,
         "stream_options": { "include_usage": true },
     });
@@ -390,9 +390,7 @@ mod tests {
             &endpoint,
             ChatRequest {
                 model: "m",
-                messages: &[ChatMessage::User {
-                    content: "hi".into(),
-                }],
+                messages: &[ChatMessage::user("hi")],
                 tools: &[],
                 slot: None,
                 max_tokens: None,

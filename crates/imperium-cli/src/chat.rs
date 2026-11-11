@@ -374,6 +374,7 @@ impl Chat {
                 mode: steer.then_some(SendMode::Steer),
                 agent_id: None,
                 confirm_budget: None,
+                attachments: Vec::new(),
             })
             .await?;
         if !self.busy {
@@ -392,7 +393,7 @@ impl Chat {
             format!("[{agent_id}] ")
         };
         match event {
-            SessionEvent::TurnStarted { text } if root => {
+            SessionEvent::TurnStarted { text, .. } if root => {
                 self.busy = true;
                 if !std::mem::take(&mut self.sent_while_idle) {
                     println!("\n» {}", text.lines().next().unwrap_or_default());
@@ -1059,11 +1060,13 @@ mod tests {
                 id: "q1".into(),
                 text: "then add tests\nmore".into(),
                 steer: false,
+                attachments: Vec::new(),
             },
             QueuedMessage {
                 id: "q2".into(),
                 text: "use tabs".into(),
                 steer: true,
+                attachments: Vec::new(),
             },
         ];
         assert_eq!(

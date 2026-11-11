@@ -506,6 +506,7 @@ mod tests {
             agent_id: "root".into(),
             event: SessionEvent::TurnStarted {
                 text: message.into(),
+                attachments: Vec::new(),
             },
         };
         writeln!(journal, "{}", serde_json::to_string(&event).unwrap()).unwrap();
