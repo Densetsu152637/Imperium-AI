@@ -617,8 +617,10 @@ or *SSH* with that runtime's fields (the image and an optional running container
 distribution, or the host), *Test*, which calls `environments.test_runtime` for the saved
 runtime and shows its answer in green or red (for example *Docker is running but image rust:1
 is not present; get it with: docker pull rust:1*), and the *Persistent agent* switch for the
-environment's [persistent agent](14-projects-and-automation.md#persistent-agent-implemented).
-Both apply with *Create* or *Save*. For a remote runtime the folders are paths inside it
+environment's [persistent agent](14-projects-and-automation.md#persistent-agent-implemented),
+and the *Project worktrees* switch (on by default, disabled for a remote runtime), which opens the
+folders' [git worktrees](14-projects-and-automation.md#worktrees) to its sessions. They apply
+with *Create* or *Save*. For a remote runtime the folders are paths inside it
 ([runtimes](14-projects-and-automation.md#runtimes-implemented)), typed in with *Add path*
 instead of the folder picker.
 

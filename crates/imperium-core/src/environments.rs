@@ -124,6 +124,7 @@ impl Environments {
             pet: params.pet.filter(|pet| !pet.is_empty()),
             pinned: false,
             permissions,
+            project_worktrees: params.project_worktrees.unwrap_or(true),
         };
         self.change(|list| {
             list.push(env.clone());
@@ -175,6 +176,9 @@ impl Environments {
             }
             if let Some(permissions) = permissions {
                 env.permissions = permissions;
+            }
+            if let Some(on) = params.project_worktrees {
+                env.project_worktrees = on;
             }
             Ok(())
         })

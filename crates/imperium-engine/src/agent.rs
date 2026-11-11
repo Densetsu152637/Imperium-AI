@@ -224,6 +224,20 @@ impl Agent {
                 others.join(", ")
             ));
         }
+        // The project's other git worktrees, open like its folders.
+        let worktrees: Vec<String> = shared
+            .workspace
+            .project_worktrees()
+            .iter()
+            .map(|tree| imperium_tools::plain_path(tree))
+            .collect();
+        if !worktrees.is_empty() {
+            system.push_str(&format!(
+                " The project's git worktrees are open to the tools too, by absolute path: {}. \
+                 Worktrees added later with `git worktree add` are open as well.",
+                worktrees.join(", ")
+            ));
+        }
         // Paths outside the environment that grants open (package caches, toolchains).
         let grants: Vec<String> = shared
             .workspace

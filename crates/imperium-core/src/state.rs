@@ -1208,12 +1208,24 @@ impl DaemonState {
         model: Option<&str>,
         options: SessionOptions,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
-        let workspace = self.workspace(
+        let mut workspace = self.workspace(
             project_dir,
             &options.folders,
             &options.runtime,
             options.environment_id.as_deref(),
         )?;
+        // An environment's sessions also get its repositories' worktrees, unless it turned them
+        // off. A session started on its own worktrees keeps to them, so its edits stay apart
+        // from the user's checkout.
+        if options.worktrees.is_empty()
+            && options
+                .environment_id
+                .as_deref()
+                .and_then(|id| self.environments.get(id))
+                .is_some_and(|env| env.project_worktrees)
+        {
+            workspace = workspace.with_project_worktrees();
+        }
         let mut placement = Placement {
             environment_id: options.environment_id.clone(),
             folders: workspace.folders_display(),

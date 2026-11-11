@@ -46,4 +46,11 @@ agent_session_id: string | null,
  * Paths outside the folders the tools may use, and allow / ask / deny rules, for this
  * environment's sessions (on top of the global ones).
  */
-permissions: PermissionSet, };
+permissions: PermissionSet, 
+/**
+ * Whether sessions also get the git worktrees of the repositories its local folders are
+ * in (the ones `git worktree list` shows, including ones added while a session runs), as
+ * writable as the folders. On unless turned off. Sessions started on their own worktree
+ * (`session.create` `worktree`) and remote runtimes do not get them.
+ */
+project_worktrees: boolean, };
