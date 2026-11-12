@@ -50,6 +50,7 @@ mod tests {
             url: "ws://127.0.0.1:1/rpc".into(),
             token: "t".into(),
             pid: 42,
+            socket: None,
             protocol: imperium_protocol::PROTOCOL_VERSION,
         };
 

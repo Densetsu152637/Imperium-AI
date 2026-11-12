@@ -20,7 +20,7 @@ use ts_rs::TS;
 /// The protocol version this build speaks.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 25,
+    minor: 26,
 };
 
 /// Protocol version exchanged in the handshake. Peers are compatible when majors match.

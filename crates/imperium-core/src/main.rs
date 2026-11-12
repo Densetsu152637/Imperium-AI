@@ -10,7 +10,7 @@ use imperium_core::{AccessToken, DaemonState, EndpointFile};
 use imperium_protocol::PROTOCOL_VERSION;
 use imperium_protocol::discovery::DaemonEndpoint;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -54,6 +54,16 @@ async fn run() -> anyhow::Result<()> {
     .with_context(|| format!("could not listen on port {}", settings.daemon.port))?;
     let address = listener.local_addr()?;
     let token = AccessToken::generate().context("could not generate an access token")?;
+    // Opt-in (`daemon.socket`): the same protocol on a socket only this user can open. It is
+    // bound after the single-instance lock, so a leftover socket from a crash is safe to replace.
+    let ipc = if settings.daemon.socket {
+        let listener = imperium_ipc::Listener::bind(paths.data_dir())
+            .context("could not open the local socket")?;
+        tracing::info!(socket = %listener.address(), "listening on a local socket");
+        Some(listener)
+    } else {
+        None
+    };
     let _endpoint = EndpointFile::write(
         &paths.daemon_endpoint_file(),
         &DaemonEndpoint {
@@ -61,12 +71,13 @@ async fn run() -> anyhow::Result<()> {
             token: token.as_str().to_string(),
             pid: std::process::id(),
             protocol: PROTOCOL_VERSION,
+            socket: ipc.as_ref().map(imperium_ipc::Listener::address),
         },
     )
     .context("could not write the endpoint file")?;
     tracing::info!(%address, protocol = %PROTOCOL_VERSION, "imperium-core listening");
 
-    let (stop, stopped) = oneshot::channel();
+    let (stop, _) = watch::channel(false);
     let local = imperium_core::LocalRuntime::start(&paths, &settings);
     let secrets: Arc<dyn SecretStore> = Arc::new(KeychainSecrets);
     let daemon = DaemonState::with_secrets(paths.clone(), settings, local, secrets);
@@ -101,13 +112,19 @@ async fn run() -> anyhow::Result<()> {
     daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));
     daemon.start_auto_archive();
     daemon.start_session_index();
+    let ipc_server = ipc.map(|listener| {
+        tokio::spawn(imperium_core::serve_ipc(
+            listener,
+            token.clone(),
+            daemon.clone(),
+            wait_for_stop(stop.subscribe()),
+        ))
+    });
     let server = tokio::spawn(imperium_core::serve(
         listener,
         token,
         daemon.clone(),
-        async {
-            stopped.await.ok();
-        },
+        wait_for_stop(stop.subscribe()),
     ));
     // Ctrl+C, or a client's `system.shutdown` (the desktop app's Stop, `imperium daemon stop`).
     tokio::select! {
@@ -117,13 +134,28 @@ async fn run() -> anyhow::Result<()> {
     tracing::info!("shutting down");
     // Background commands must not outlive the daemon.
     daemon.stop_background_processes(BACKGROUND_STOP_WAIT).await;
-    stop.send(()).ok();
+    stop.send(true).ok();
     // Open WebSocket connections can hold graceful shutdown; stop waiting after a grace period.
-    match tokio::time::timeout(SHUTDOWN_GRACE, server).await {
-        Ok(joined) => joined.context("server task failed")??,
+    // The local socket's file is removed when its server ends.
+    let both = async {
+        if let Some(ipc_server) = ipc_server {
+            ipc_server
+                .await
+                .context("local socket server task failed")??;
+        }
+        server.await.context("server task failed")??;
+        anyhow::Ok(())
+    };
+    match tokio::time::timeout(SHUTDOWN_GRACE, both).await {
+        Ok(result) => result?,
         Err(_) => tracing::warn!("connections still open after the grace period; exiting"),
     }
     Ok(())
+}
+
+/// Resolves when the daemon is told to stop (or its sender is gone, which means the same).
+async fn wait_for_stop(mut signal: watch::Receiver<bool>) {
+    let _ = signal.wait_for(|stopping| *stopping).await;
 }
 
 fn acquire_single_instance_lock(paths: &Paths) -> anyhow::Result<File> {
