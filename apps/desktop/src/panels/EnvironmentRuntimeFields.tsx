@@ -1,6 +1,5 @@
 // Where an environment's tools run (this machine, Docker, WSL, or SSH), a Test button that checks
-// the saved runtime can be reached, and the switch for the environment's persistent agent
-// session. Controlled: the host (the environment window) keeps the values and saves them.
+// the saved runtime can be reached, and the project-worktrees switch. Controlled: the host (the environment window) keeps the values and saves them.
 
 import { useState } from "react";
 
@@ -57,8 +56,6 @@ export const sameRuntime = (a: EnvironmentRuntime | undefined, b: RuntimeDraft) 
 export function EnvironmentRuntimeFields({
   draft,
   onChange,
-  persistentAgent,
-  onPersistentAgent,
   projectWorktrees,
   onProjectWorktrees,
   disabled,
@@ -67,8 +64,6 @@ export function EnvironmentRuntimeFields({
 }: {
   draft: RuntimeDraft;
   onChange: (draft: RuntimeDraft) => void;
-  persistentAgent: boolean;
-  onPersistentAgent: (on: boolean) => void;
   /** Whether sessions also get the git worktrees of the folders' repositories. */
   projectWorktrees: boolean;
   onProjectWorktrees: (on: boolean) => void;
@@ -147,12 +142,6 @@ export function EnvironmentRuntimeFields({
             {result.message}
           </span>
         )}
-      </div>
-      <div className="runtime-row">
-        <span className="environment-label" title="An always-available session that keeps its conversation across days">
-          Persistent agent
-        </span>
-        <Switch label="Persistent agent" checked={persistentAgent} disabled={disabled} onChange={onPersistentAgent} />
       </div>
       <div className="runtime-row">
         <span
