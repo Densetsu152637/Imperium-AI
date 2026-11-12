@@ -215,7 +215,7 @@ mod tests {
         let item = r#"{"text":"a","source":"b"}"#;
         let many = format!(
             r#"{{"summary":"s","items":[{}]}}"#,
-            vec![item; MAX_ITEMS + 1].join(",")
+            [item; MAX_ITEMS + 1].join(",")
         );
         assert!(checked_digest(&many).unwrap_err().contains("at most"));
     }

@@ -420,7 +420,8 @@ async fn the_user_starts_a_suggestion_with_one_call_and_dismisses_another() {
         .filter_map(|body| {
             let messages = body["messages"].as_array()?;
             let system = content(&messages[0]);
-            (!system.contains("persistent agent")).then(|| content(messages.last()?))
+            let last = content(messages.last()?);
+            (!system.contains("persistent agent")).then_some(last)
         })
         .next()
         .expect("the session called the model");

@@ -447,7 +447,7 @@ impl InitiativeBook {
 
     // --- sessions the agent starts ----------------------------------------------------
 
-    pub(crate) fn started_today(&self, agent_id: &str) -> u32 {
+    pub fn started_today(&self, agent_id: &str) -> u32 {
         let today = Local::now().date_naive();
         self.read(agent_id, |env| {
             let count = env
@@ -459,7 +459,7 @@ impl InitiativeBook {
         })
     }
 
-    pub(crate) fn running(&self, agent_id: &str) -> u32 {
+    pub fn running(&self, agent_id: &str) -> u32 {
         let live = lock(&self.inner.live);
         live.running.get(agent_id).map_or(0, |counter| {
             u32::try_from(counter.load(Ordering::SeqCst)).unwrap_or(u32::MAX)
