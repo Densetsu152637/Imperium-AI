@@ -4,6 +4,7 @@
 //! sessions in the default permission mode, and in `off` mode it does nothing on its own. Fake
 //! models stand in for every agent.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,6 +44,10 @@ fn text_body(text: &str) -> String {
 /// Every request the fake model got, in order.
 type Log = Arc<Mutex<Vec<Value>>>;
 
+/// While set, the first session an agent starts ("(part 0)") does not answer, so tests can see
+/// the limits on sessions running at once without racing a clock.
+type Hold = Arc<AtomicBool>;
+
 fn content(message: &Value) -> String {
     message["content"].as_str().unwrap_or_default().to_string()
 }
@@ -53,11 +58,12 @@ fn content(message: &Value) -> String {
 /// how many succeed); after the report of the first session it started it tries to start
 /// another; when a user asks it to start something it does. Every other session (one the agent
 /// started, or the user's) answers with what it was told.
-async fn fake_model(log: Log) -> String {
+async fn fake_model(log: Log, hold: Hold) -> String {
     let app = Router::new().route(
         "/v1/chat/completions",
         post(move |axum::Json(body): axum::Json<Value>| {
             let log = Arc::clone(&log);
+            let hold = Arc::clone(&hold);
             async move {
                 log.lock().unwrap().push(body.clone());
                 let messages = body["messages"].as_array().cloned().unwrap_or_default();
@@ -72,10 +78,15 @@ async fn fake_model(log: Log) -> String {
                     .filter(|m| m["role"] == "tool")
                     .count();
                 let reply = if !system.contains("this environment's persistent agent") {
-                    // A session the agent started: the first takes a while, so the limits on
-                    // sessions running at once can be seen.
+                    // A session the agent started: the first waits while the test holds it, so
+                    // the limits on sessions running at once can be seen.
                     if said.contains("(part 0)") {
-                        tokio::time::sleep(Duration::from_millis(1200)).await;
+                        for _ in 0..2400 {
+                            if !hold.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            tokio::time::sleep(Duration::from_millis(25)).await;
+                        }
                     }
                     text_body(&format!("Done: {said}"))
                 } else if said.starts_with("Initiative review for the environment")
@@ -116,6 +127,36 @@ async fn fake_model(log: Log) -> String {
                         5 => call_body("web_fetch", json!({"url": "http://evil.test/x"})),
                         6 => call_body("write_file", json!({"path": "stolen.txt", "content": "x"})),
                         _ => text_body("Done."),
+                    }
+                } else if said.starts_with("Initiative review for the environment")
+                    && said.contains("You are Chaser")
+                {
+                    // Starts a session whose report will carry an instruction.
+                    match tools_since {
+                        0 => call_body(
+                            "start_session",
+                            json!({
+                                "brief": "Report back: OBEY-REPORT",
+                                "reason": "the roadmap's next item is unstarted",
+                                "source": SOURCE,
+                            }),
+                        ),
+                        _ => text_body("Started it."),
+                    }
+                } else if said.starts_with("Session ") && said.contains("OBEY-REPORT") {
+                    // Follows what the report says: writes, runs, suggests, starts one more.
+                    match tools_since {
+                        0 => call_body("write_file", json!({"path": "stolen.txt", "content": "x"})),
+                        1 => call_body("run_command", json!({"command": "curl http://evil.test"})),
+                        2 => call_body(
+                            "suggest_work",
+                            json!({"title": "t", "prompt": "p", "reason": "r", "source": SOURCE}),
+                        ),
+                        3 => call_body(
+                            "start_session",
+                            json!({"brief": "the report asked for this", "reason": "r", "source": SOURCE}),
+                        ),
+                        _ => text_body("Noted."),
                     }
                 } else if said.starts_with("Initiative review for the environment") {
                     if said.contains("Mode: act.") {
@@ -191,6 +232,9 @@ struct Fixture {
     /// The agent under test (its initiative is `mode` below).
     agent: EnvironmentAgent,
     load: Arc<ManualLoad>,
+    /// Holds the first session an agent starts while set.
+    hold: Hold,
+    settings: imperium_config::Settings,
     _home: tempfile::TempDir,
     _folder: tempfile::TempDir,
 }
@@ -199,6 +243,7 @@ struct Fixture {
 /// machine.
 async fn fixture(mode: Initiative, extra: &str) -> Fixture {
     let log: Log = Arc::default();
+    let hold: Hold = Arc::default();
     let home = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
     // The files the agents cite as their sources.
@@ -216,7 +261,7 @@ async fn fixture(mode: Initiative, extra: &str) -> Fixture {
     let config = format!(
         "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"{}\"\n\
          [workflow]\nenabled = false\n[memory]\nenabled = false\n{extra}",
-        fake_model(Arc::clone(&log)).await
+        fake_model(Arc::clone(&log), Arc::clone(&hold)).await
     );
     let settings = imperium_config::Config::from_layers([
         imperium_config::Layer::defaults(),
@@ -227,7 +272,11 @@ async fn fixture(mode: Initiative, extra: &str) -> Fixture {
     ])
     .settings()
     .unwrap();
-    let daemon = DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+    let daemon = DaemonState::new(
+        imperium_config::Paths::under(home.path()),
+        settings.clone(),
+        None,
+    );
     let load = ManualLoad::new(Load::Quiet);
     daemon.use_load_view(load.clone());
     let env = daemon
@@ -256,6 +305,8 @@ async fn fixture(mode: Initiative, extra: &str) -> Fixture {
         env,
         agent,
         load,
+        hold,
+        settings,
         _home: home,
         _folder: folder,
     }
@@ -305,33 +356,45 @@ impl Fixture {
             .collect()
     }
 
-    async fn wait_until_idle(&self) {
-        for _ in 0..200 {
-            let agent = self.daemon.project_agents().agent(&self.agent.id).unwrap();
-            let working = self
-                .daemon
-                .sessions()
-                .iter()
-                .any(|s| s.status().0 == imperium_protocol::session::SessionStatus::Working);
-            if self.daemon.initiative().running(&self.agent.id) == 0
-                && !working
-                && agent.status().0 == imperium_protocol::session::SessionStatus::Idle
-            {
-                // Reports reach the agent a moment after the sessions end.
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                if !self
-                    .daemon
-                    .sessions()
-                    .iter()
-                    .any(|s| s.status().0 == imperium_protocol::session::SessionStatus::Working)
+    /// Reports the fake model was shown as the agents' messages (each once).
+    fn reports_seen(&self) -> usize {
+        let mut seen: Vec<String> = Vec::new();
+        for body in self.log.lock().unwrap().iter() {
+            for message in body["messages"].as_array().into_iter().flatten() {
+                let text = content(message);
+                if message["role"] == "user"
+                    && text.starts_with("Session ")
+                    && text.contains("finished")
+                    && !seen.contains(&text)
                 {
-                    return;
+                    seen.push(text);
                 }
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        panic!("the sessions did not settle");
+        seen.len()
     }
+
+    /// Waits until every session the agent started has ended and been reported to it, and the
+    /// agent's turns on those reports are over: nothing working, nothing running, and as many
+    /// reports shown to the model as there are sessions.
+    async fn wait_until_idle(&self) {
+        until("the sessions and their reports to settle", || {
+            settled(&self.daemon, &[self.agent.id.as_str()], self.reports_seen())
+        })
+        .await;
+    }
+}
+
+/// Whether nothing is running or working, the agents are idle, and every session other than
+/// the persistent agents has been reported (`reports` is how many reports the model saw).
+fn settled(daemon: &Arc<DaemonState>, agents: &[&str], reports: usize) -> bool {
+    use imperium_protocol::session::SessionStatus::Idle;
+    let workers = worker_sessions(daemon).len();
+    daemon.sessions().iter().all(|s| s.status().0 == Idle)
+        && agents
+            .iter()
+            .all(|agent| daemon.initiative().running(agent) == 0)
+        && workers == reports
 }
 
 fn drain(
@@ -604,6 +667,7 @@ async fn act_mode_runs_one_session_at_a_time_and_a_follow_up_follows_the_same_ru
         "[initiative]\nmax_sessions_per_day = 5\nmax_concurrent = 1\nidle_min = 0\n",
     )
     .await;
+    fixture.hold.store(true, Ordering::SeqCst);
     assert_eq!(fixture.daemon.initiative_tick().await.len(), 1);
     // While the first session runs, the review's other two asks are held back.
     assert!(
@@ -614,6 +678,9 @@ async fn act_mode_runs_one_session_at_a_time_and_a_follow_up_follows_the_same_ru
         "{:?}",
         fixture.tool_results()
     );
+    assert_eq!(fixture.daemon.initiative().running(&fixture.agent.id), 1);
+    assert_eq!(fixture.other_sessions().len(), 1, "only the first started");
+    fixture.hold.store(false, Ordering::SeqCst);
     fixture.wait_until_idle().await;
 
     // The first session, and the one the agent started after its report (a turn that follows
@@ -853,29 +920,13 @@ fn worker_sessions(daemon: &Arc<DaemonState>) -> Vec<imperium_protocol::methods:
         .collect()
 }
 
-/// Waits until nothing is running or working and the agents are idle, twice in a row.
-async fn settle(daemon: &Arc<DaemonState>, agents: &[&str]) {
-    for _ in 0..400 {
-        let busy = daemon
-            .sessions()
-            .iter()
-            .any(|s| s.status().0 != imperium_protocol::session::SessionStatus::Idle)
-            || agents
-                .iter()
-                .any(|agent| daemon.initiative().running(agent) > 0);
-        if !busy {
-            tokio::time::sleep(Duration::from_millis(400)).await;
-            let still = daemon
-                .sessions()
-                .iter()
-                .any(|s| s.status().0 != imperium_protocol::session::SessionStatus::Idle);
-            if !still {
-                return;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("the sessions did not settle");
+/// Waits until nothing is running or working, the agents are idle, and every session the
+/// agents started has been reported to them.
+async fn settle(fixture: &Fixture, agents: &[&str]) {
+    until("the sessions and their reports to settle", || {
+        settled(&fixture.daemon, agents, fixture.reports_seen())
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -987,7 +1038,7 @@ async fn two_agents_in_act_mode_each_have_their_own_limits_and_tags() {
 
     let reviewed = fixture.daemon.initiative_tick().await;
     assert_eq!(reviewed.len(), 2, "{reviewed:?}");
-    settle(&fixture.daemon, &ids).await;
+    settle(&fixture, &ids).await;
 
     // Each agent asked for three sessions and, after the first report, for another; the day
     // allows each one: two sessions in all, one per agent, each tagged with its own agent.
@@ -1116,10 +1167,15 @@ async fn a_review_waiting_on_an_unanswered_approval_is_stopped_and_stays_restric
         "the review gives up waiting"
     );
     until("the agent to stop", || session.is_stopped()).await;
-    // The turn has not ended, so the restrictions have not: still a review, still plan mode,
-    // and nothing outside reading and recording may run if the agent is resumed.
+    // The turn has not ended, so the restrictions have not: still plan mode, and nothing outside
+    // reading and recording may run if the agent is resumed. The app is told it is paused, not
+    // that it is reviewing.
     let state = initiative_state(&fixture, &stuck.id);
-    assert_eq!(state["reviewing"], true, "{state}");
+    assert_eq!(state["reviewing"], false, "{state}");
+    assert!(
+        state["waiting"].as_str().unwrap().starts_with("paused"),
+        "{state}"
+    );
     assert_eq!(
         session.permission_mode(),
         imperium_api::PermissionMode::Plan
@@ -1147,13 +1203,12 @@ async fn a_review_waiting_on_an_unanswered_approval_is_stopped_and_stays_restric
     );
     session.resume_work();
     until("the turn to end", || {
-        initiative_state(&fixture, &stuck.id)["reviewing"] == false
+        session.permission_mode() == imperium_api::PermissionMode::Default
+            && initiative_state(&fixture, &stuck.id)["waiting"]
+                .as_str()
+                .is_none_or(|waiting| !waiting.starts_with("paused"))
     })
     .await;
-    assert_eq!(
-        session.permission_mode(),
-        imperium_api::PermissionMode::Default
-    );
     assert!(worker_sessions(&fixture.daemon).is_empty());
     // The failed review waits out its interval and says why.
     let state = initiative_state(&fixture, &stuck.id);
@@ -1193,6 +1248,130 @@ async fn turning_an_agent_off_during_its_review_stops_it() {
     );
 }
 
+/// Whether any file under `dir` contains `needle`.
+fn mentions(dir: &std::path::Path, needle: &str) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                mentions(&path, needle)
+            } else {
+                std::fs::read_to_string(&path).is_ok_and(|text| text.contains(needle))
+            }
+        })
+}
+
+#[tokio::test]
+async fn a_restart_during_a_review_leaves_the_agent_in_the_users_mode() {
+    let (fixture, stuck, _notices) = stuck_fixture("[initiative]\nreview_timeout_s = 600\n").await;
+    let session = fixture.daemon.project_agents().agent(&stuck.id).unwrap();
+    let review = {
+        let daemon = Arc::clone(&fixture.daemon);
+        let id = stuck.id.clone();
+        tokio::spawn(async move { daemon.initiative_review_now(&id).await })
+    };
+    until("the review to start", || {
+        initiative_state(&fixture, &stuck.id)["reviewing"] == true
+    })
+    .await;
+    assert_eq!(
+        session.permission_mode(),
+        imperium_api::PermissionMode::Plan
+    );
+    // The review's mode lives in memory only: nothing on disk records it.
+    assert!(
+        !mentions(fixture._home.path(), "\"permission_mode\":\"plan\""),
+        "the review's mode was written down"
+    );
+
+    // The daemon restarts mid-review: a new daemon over the same files.
+    let restarted = DaemonState::new(
+        imperium_config::Paths::under(fixture._home.path()),
+        fixture.settings.clone(),
+        None,
+    );
+    restarted.sync_environment_agent(&fixture.env.id);
+    let again = restarted
+        .project_agents()
+        .agent(&stuck.id)
+        .expect("the agent starts again");
+    assert_eq!(
+        again.permission_mode(),
+        imperium_api::PermissionMode::Default,
+        "the agent is in the user's mode, not the review's"
+    );
+    let mut connection = connect(&restarted);
+    let state = rpc(
+        &mut connection,
+        "initiative.get",
+        json!({"environment_id": fixture.env.id, "agent_id": stuck.id}),
+    )
+    .unwrap();
+    assert_eq!(state["mode"], "suggest");
+    assert_eq!(state["reviewing"], false, "{state}");
+    review.abort();
+}
+
+#[tokio::test]
+async fn the_turn_on_a_started_sessions_report_is_held_to_the_reviews_tools() {
+    let fixture = fixture(
+        Initiative::Off,
+        "[initiative]\nmax_sessions_per_day = 5\nmax_concurrent = 3\nidle_min = 0\n",
+    )
+    .await;
+    let mut connection = connect(&fixture.daemon);
+    // Rules that allow writing and commands, as an "always allow" would.
+    rpc(
+        &mut connection,
+        "environments.update",
+        json!({"id": fixture.env.id, "permissions": {"grants": [], "rules": [
+            {"tool": "write_file", "pattern": "", "action": "allow"},
+            {"tool": "run_command", "pattern": "", "action": "allow"}
+        ]}}),
+    )
+    .unwrap();
+    let chaser = add_agent(&fixture, "Chaser", Initiative::Act);
+    assert_eq!(
+        fixture.daemon.initiative_tick().await,
+        vec![chaser.id.clone()]
+    );
+    // The session it started reports back with an instruction in the report's text; the
+    // agent's turn on that report follows it and is refused.
+    until("the agent's turn on the report to end", || {
+        let results = fixture.tool_results();
+        let refused = |tool: &str| {
+            results
+                .iter()
+                .any(|r| r.contains(&format!("{tool} is not available while you follow up")))
+        };
+        refused("write_file")
+            && refused("run_command")
+            && refused("suggest_work")
+            && settled(
+                &fixture.daemon,
+                &[chaser.id.as_str()],
+                fixture.reports_seen(),
+            )
+    })
+    .await;
+    assert!(
+        !fixture._folder.path().join("stolen.txt").exists(),
+        "nothing was written"
+    );
+    // `start_session` stays available to the follow-up, through the same limits: the one the
+    // report asked for was started and counted.
+    assert_eq!(fixture.daemon.initiative().started_today(&chaser.id), 2);
+    // The agent is itself again.
+    let session = fixture.daemon.project_agents().agent(&chaser.id).unwrap();
+    assert_eq!(
+        session.permission_mode(),
+        imperium_api::PermissionMode::Default
+    );
+}
+
 #[tokio::test]
 async fn a_review_cannot_write_run_or_reach_out_even_where_the_rules_allow_it() {
     let fixture = fixture(
@@ -1224,7 +1403,7 @@ async fn a_review_cannot_write_run_or_reach_out_even_where_the_rules_allow_it() 
         fixture.daemon.initiative_tick().await,
         vec![injected.id.clone()]
     );
-    settle(&fixture.daemon, &[injected.id.as_str()]).await;
+    settle(&fixture, &[injected.id.as_str()]).await;
 
     // The agent did what the file said; the daemon held it to its limits and its tools.
     let results = fixture.tool_results();
@@ -1348,4 +1527,52 @@ fn restricted_connections_do_not_hear_about_initiative() {
         assert!(full.receives(&notification), "{method}");
         assert!(!phone.receives(&notification), "{method}");
     }
+}
+
+#[test]
+fn a_subscription_narrows_initiative_notifications_but_never_reaches_a_restricted_connection() {
+    let home = tempfile::tempdir().unwrap();
+    let daemon = DaemonState::new(
+        imperium_config::Paths::under(home.path()),
+        imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+            .settings()
+            .unwrap(),
+        None,
+    );
+    let changed = Notification::new("initiative.changed", json!({}));
+
+    // An unrestricted connection that chose other topics hears nothing of initiative until it
+    // names it.
+    let mut full = connect(&daemon);
+    rpc(
+        &mut full,
+        "events.subscribe",
+        json!({"topics": ["session.event"]}),
+    )
+    .unwrap();
+    assert!(!full.receives(&changed));
+    rpc(
+        &mut full,
+        "events.subscribe",
+        json!({"topics": ["initiative.*"]}),
+    )
+    .unwrap();
+    assert!(full.receives(&changed));
+
+    // A restricted connection never does, whatever it subscribes to.
+    let mut phone = Connection::restricted(Arc::clone(&daemon), vec!["events.subscribe"]);
+    rpc(
+        &mut phone,
+        "system.handshake",
+        json!({"client": {"name": "test", "version": "0"}, "protocol": {"major": 0, "minor": 2}}),
+    )
+    .unwrap();
+    rpc(
+        &mut phone,
+        "events.subscribe",
+        json!({"topics": ["initiative.*", "*"]}),
+    )
+    .unwrap();
+    assert!(!phone.receives(&changed));
+    assert!(phone.receives(&Notification::new("session.updated", json!({}))));
 }

@@ -147,8 +147,9 @@ What an agent with initiative does, and when:
   the user becomes active while a review runs, the daemon stops waiting for it (the review is
   read-only and finishes on its own; a message to the agent waits behind it). A review that takes
   longer than `initiative.review_timeout_s`, or whose agent is turned off meanwhile, **stops the
-  agent**; the agent stays in plan mode with its restricted tools until its turn ends (when the user
-  resumes it), and a review does not start while that turn is open. A failed review waits out its
+  agent**; the agent stays paused until you resume it, in plan mode with its restricted tools until
+  its turn ends, and `initiative.get` shows it as *paused: the review was stopped*, not as
+  reviewing. A review does not start while that turn is open. A failed review waits out its
   interval. A budget that is used up (turn-start check, and the per-call gate while it works)
   stops it like any turn; one that asks first is not asked on the schedule, and a person's
   **Review now** (`initiative.review`) reports it to them. **Review now** skips the interval,
@@ -172,7 +173,8 @@ What an agent with initiative does, and when:
   subagents it spawns. No write, command, web, MCP, plugin, memory-write or app-config tool
   runs, whatever the user's rules and "always allow" approvals say elsewhere, and nothing can
   lift the restriction until the review's turn has ended. The agent's own permission mode is
-  put back when the turn ends, and the temporary mode is never written to disk.
+  put back when the turn ends. The review's plan mode is set in memory only and never written to
+  disk, so a daemon restart in the middle of a review leaves the agent in the mode the user chose.
 - **`suggest`.** The agent records each piece of work with `suggest_work { title, prompt, reason,
   source }` (at most `initiative.max_suggestions`, 5, per review; every field is required, and
   the source must be a file or folder inside the environment's folders, optionally with
@@ -194,9 +196,13 @@ What an agent with initiative does, and when:
   [background session](#quiet-periods) (it gives way to the user and waits for a quiet machine),
   with the [safety floor](05-tools-and-isolation.md#permission-modes-implemented) on top: anything
   that asks waits in the approval queue. It never starts work while the user is active in the
-  environment (checked again at each start). The same limits apply to the **follow-up turn** after
-  the report of a session it started on its own initiative (the daemon knows the report it sent,
-  it does not read the text), so a report cannot be used to start more. A session that runs past
+  environment (checked again at each start). The agent's **follow-up turn** after the report of a
+  session it started on its own initiative is held to the review's tools, minus recording: it
+  may read and search and call `start_session` within the same limits, but it cannot write, run
+  commands, use the web, MCP or plugins, or call `suggest_work` or `work_digest`, whatever the
+  user's rules say, and its permission requests reach the user like a review's. The daemon tells
+  that turn by a mark it sets itself when it delivers the report to an idle agent, not by reading
+  the report's text, so a report cannot be used to start more or to get past the restriction. A session that runs past
   the hour the agent waits for it is stopped, not left running unaccounted for. Every session
   it starts is tagged (`started_by` in `session.list`: the agent, the environment, `kind`
   `initiative`, the reason and the source), shown in the desktop as a note on the session and in
