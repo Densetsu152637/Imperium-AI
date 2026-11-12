@@ -87,6 +87,9 @@ use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionCo
 use imperium_protocol::methods::{
     SessionQueue, SessionQueueParams, SessionQueueResult, SessionSendResult,
 };
+use imperium_protocol::workspaces::{
+    WorkspacesMove, WorkspacesOpen, WorkspacesWhere, WorkspacesWhereParams,
+};
 
 /// A session's events, to be forwarded to this connection as notifications.
 #[derive(Debug)]
@@ -271,6 +274,28 @@ impl Connection {
                     crate::config::describe(&self.state)
                 })
             }
+            WorkspacesWhere::NAME => {
+                call::<WorkspacesWhere>(request.params, |_: WorkspacesWhereParams| {
+                    Ok(self.state.workspaces_where())
+                })
+            }
+            WorkspacesMove::NAME => {
+                call_later::<WorkspacesMove, _>(request.params, &mut later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        tokio::task::spawn_blocking(move || state.move_workspaces(&params.path))
+                            .await
+                            .map_err(|error| refused(error.to_string()))?
+                            .map_err(refused)
+                    }
+                })
+            }
+            WorkspacesOpen::NAME => call::<WorkspacesOpen>(request.params, |p| {
+                self.state
+                    .open_workspace(&p.environment_id, &p.target)
+                    .map_err(refused)?;
+                Ok(Accepted {})
+            }),
             ConfigSet::NAME => call::<ConfigSet>(request.params, |params: ConfigSetParams| {
                 crate::config::set(&self.state, params)
             }),
@@ -1268,6 +1293,11 @@ where
         work.await.map(|result| to_value(&result))
     }));
     Ok(Value::Null)
+}
+
+/// A working-folder request the daemon refused, with the reason.
+fn refused(message: String) -> ErrorObject {
+    ErrorObject::new(codes::INVALID_PARAMS, message)
 }
 
 fn decode<M: Method>(params: Option<Value>) -> Result<M::Params, ErrorObject> {

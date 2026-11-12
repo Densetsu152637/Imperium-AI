@@ -11,6 +11,7 @@ pub mod methods;
 pub mod permissions;
 pub mod session;
 pub mod tools;
+pub mod workspaces;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -18,7 +19,7 @@ use ts_rs::TS;
 /// The protocol version this build speaks.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 16,
+    minor: 18,
 };
 
 /// Protocol version exchanged in the handshake. Peers are compatible when majors match.

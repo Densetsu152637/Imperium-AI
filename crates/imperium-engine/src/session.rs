@@ -16,6 +16,7 @@ use tokio::task::JoinHandle;
 
 use imperium_config::{Enforce, MemorySettings, WritePolicy};
 use imperium_extensions::{Extensions, HookEvent, Verdict};
+use imperium_memory::environment::EnvironmentMemory;
 use imperium_memory::{Scope, Store};
 use imperium_models::ChatClients;
 use imperium_workflow::ContextIndex;
@@ -1248,9 +1249,15 @@ impl Shared {
 pub struct SessionMemory {
     pub store: Store,
     pub settings: MemorySettings,
+    /// The `Memory.md` of the session's environment, when it is in one on this machine.
+    pub environment: Option<EnvironmentMemory>,
 }
 
 impl SessionMemory {
+    pub(crate) fn environment_policy(&self) -> WritePolicy {
+        self.settings.write.environment
+    }
+
     pub(crate) fn policy(&self, scope: Scope) -> WritePolicy {
         let write = &self.settings.write;
         match scope {

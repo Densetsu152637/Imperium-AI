@@ -36,6 +36,8 @@ pub struct Workspace {
     permissions: Permissions,
     /// The folders' repositories' worktrees, when they are open too.
     worktrees: Option<Arc<ProjectWorktrees>>,
+    /// The session's own scratch folder (canonical), which is also one of the writable grants.
+    scratch: Option<PathBuf>,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -90,6 +92,7 @@ impl Workspace {
             remote: None,
             permissions: Permissions::default(),
             worktrees: None,
+            scratch: None,
         })
     }
 
@@ -131,6 +134,7 @@ impl Workspace {
             }),
             permissions: Permissions::default(),
             worktrees: None,
+            scratch: None,
         })
     }
 
@@ -273,6 +277,26 @@ impl Workspace {
             }
         }
         self
+    }
+
+    /// The same workspace with `dir`, the session's scratch folder, open for reading and
+    /// writing as a grant (so the permission rules, deny rules and the safety floor apply to it
+    /// like to any other path). A folder that does not exist, or a remote workspace, gets none.
+    pub fn with_scratch(mut self, dir: &Path) -> Self {
+        if self.remote.is_some() {
+            return self;
+        }
+        self = self.with_grants(&[PathGrant {
+            path: dir.display().to_string(),
+            mode: PathMode::ReadWrite,
+        }]);
+        self.scratch = dir.canonicalize().ok();
+        self
+    }
+
+    /// The session's scratch folder, when it has one.
+    pub fn scratch(&self) -> Option<&Path> {
+        self.scratch.as_deref()
     }
 
     /// The same workspace with the git worktrees of its folders' repositories open as folders

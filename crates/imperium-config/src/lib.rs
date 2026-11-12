@@ -52,6 +52,7 @@ pub use settings::{
     MemoryWrite, ModelPlacement, ModelSettings, PetSettings, PhoneSettings, PolicySettings,
     Preference, ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings, RuntimeSettings,
     ScheduleSettings, SecretRef, SessionSearchScope, SessionSettings, Settings, Tier,
-    TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings, WritePolicy,
+    TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings,
+    WorkspacesSettings, WritePolicy, default_workspaces_root,
 };
 pub use settings::{SuggestionCandidate, default_suggestions};

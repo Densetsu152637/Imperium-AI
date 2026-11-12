@@ -28,11 +28,47 @@ and the `memory.*` protocol methods.
 | **Global**         | Facts about the user and how they like to work, across every project | `<data>/memory/global/`                    | Every project       |
 | **Project (shared)** | Project conventions, architecture notes, decisions worth reusing | `<project>/.imperium/memory/` (can be committed) | Everyone who clones the project |
 | **Project (private)** | The user's own notes about a project, never committed       | `<data>/memory/projects/<project-id>/`            | This user only      |
+| **Environment**    | Notes about one environment only: its conventions, quirks and decisions | `<workspaces.root>/<environment-id>/Memory.md` (default `<data>/workspaces/…`) | Every session in that environment |
 | **Session**        | Working memory for one session: scratch notes and the plan    | The session journal                               | That session's agents |
 
 Projects are environments ([14](14-projects-and-automation.md)), so "environment memory" and
-project memory are the same thing. On an SSH host, project memory lives on that host; global
-memory stays on the local machine unless the user enables syncing it to the host.
+project memory used to be the same thing; they are now different scopes: **project** memory is the
+folder's own (`<project>/.imperium/memory/`, shared with whoever clones it), while **environment**
+memory (below) belongs to the environment as the user set it up and stays on their machine. On an
+SSH host, project memory lives on that host; global and environment memory stay on the local
+machine unless the user enables syncing them to the host.
+
+## Environment memory (implemented)
+
+Each environment has one Markdown file, `Memory.md`, in its
+[working folder](14-projects-and-automation.md#environment-working-folders-implemented). It holds
+what is true of this environment and not elsewhere: how its repositories are built, which accounts
+or machines it uses, decisions made while working in it. The user can open and edit it any time
+(the environment window's *Open Memory.md*), and agents add to it.
+
+- **Read into context like workflow context.** The text of `Memory.md` (up to 24,000 characters;
+  the rest stays on disk and `memory_read` with the name `Memory.md` returns the whole file) goes
+  into the instructions of every agent of every session in that environment when the session
+  starts, in an `<environment-memory>` block after the index of saved memories. It is part of the
+  system prompt, so [compaction](03-agent-engine.md#context-management) never summarises or
+  drops it, however long the session runs. It is read once per session: what an agent writes
+  during a session reaches sessions started afterwards (and the writing agent already knows it).
+  Sessions in other environments never see it. Without a file the block says it is empty.
+- **Writing.** `memory_remember` takes `scope: "environment"`. The entry becomes a `## <name>`
+  section of `Memory.md` (a description line, then the body); a section of the same name is
+  replaced, and everything else in the file, including what the user wrote by hand, is kept. The
+  usual checks apply (kebab-case name, one of the entry types, no secrets), and the file is
+  replaced atomically. The root agent can write; subagents read. Write policy:
+  `memory.write.environment` (`auto` by default, since the file is private to this machine; `ask`
+  shows the entry in a permission prompt; `off`). A session outside any environment has no
+  `Memory.md`, and asking to write the scope fails with a message saying so.
+- **Which wins.** Global memory is the default; environment memory is more specific. Where they
+  disagree for work in that environment, **environment memory wins**, and the agent's
+  instructions say so. Project memory entries are facts about the repository and are not
+  overridden; an agent that finds environment and project memory in conflict says so instead of
+  choosing silently.
+- Environment memory is not in the search index or the recalled-memories block: it is already in
+  context in full.
 
 ## Memory entries
 

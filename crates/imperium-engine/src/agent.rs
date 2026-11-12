@@ -234,11 +234,19 @@ impl Agent {
                 worktrees.join(", ")
             ));
         }
+        // The session's own scratch folder, kept apart from the environment's folders.
+        if let Some(scratch) = shared.workspace.scratch() {
+            system.push_str(&format!(
+                " Your scratch folder is {}: it is yours alone, writable, and deleted when this                  session is archived. Put temporary files, notes to yourself and generated                  intermediates there rather than in the environment's folders; anything meant to                  last belongs in the folders or in memory.",
+                imperium_tools::plain_path(scratch)
+            ));
+        }
         // Paths outside the environment that grants open (package caches, toolchains).
         let grants: Vec<String> = shared
             .workspace
             .grants()
             .iter()
+            .filter(|grant| shared.workspace.scratch() != Some(grant.path.as_path()))
             .map(|grant| grant.describe())
             .collect();
         if !grants.is_empty() {
@@ -1169,8 +1177,23 @@ impl Agent {
             name: String,
         }
         let args: Args = parse(arguments)?;
-        let entry = self
-            .memory()?
+        let memory = self.memory()?;
+        if args
+            .name
+            .eq_ignore_ascii_case(imperium_memory::environment::FILE_NAME)
+        {
+            let environment = memory
+                .environment
+                .as_ref()
+                .ok_or("this session is not in an environment, so it has no Memory.md")?;
+            let text = environment.read();
+            return Ok(if text.trim().is_empty() {
+                "Memory.md is empty.".to_string()
+            } else {
+                format!("Memory.md (environment):\n\n{text}")
+            });
+        }
+        let entry = memory
             .store
             .get(&args.name)
             .ok_or_else(|| format!("no memory named {:?}", args.name))?;
@@ -1188,20 +1211,14 @@ impl Agent {
     /// Saves a memory under the scope's write policy: `auto` saves, `ask` asks the user
     /// first, `off` refuses.
     async fn memory_remember(&self, arguments: &str) -> Result<String, String> {
-        #[derive(Deserialize)]
-        struct Args {
-            name: String,
-            description: String,
-            #[serde(rename = "type")]
-            kind: String,
-            scope: String,
-            body: String,
-        }
-        let args: Args = parse(arguments)?;
+        let args: RememberArgs = parse(arguments)?;
         let memory = self.memory()?;
+        if args.scope == "environment" {
+            return self.environment_remember(memory, args).await;
+        }
         let scope = Scope::parse(&args.scope).ok_or_else(|| {
             format!(
-                "unknown scope {:?}; use global, project, or project-private",
+                "unknown scope {:?}; use global, environment, project, or project-private",
                 args.scope
             )
         })?;
@@ -1239,6 +1256,47 @@ impl Agent {
             scope: scope.as_str().into(),
         });
         Ok(format!("saved {} ({})", entry.name, scope.as_str()))
+    }
+
+    /// Writes a section of the environment's `Memory.md` under the `environment` write policy.
+    async fn environment_remember(
+        &self,
+        memory: &SessionMemory,
+        args: RememberArgs,
+    ) -> Result<String, String> {
+        let environment = memory
+            .environment
+            .as_ref()
+            .ok_or("this session is not in an environment, so it has no Memory.md")?;
+        match memory.environment_policy() {
+            WritePolicy::Off => {
+                return Err("saving environment memories is turned off".into());
+            }
+            WritePolicy::Ask => {
+                let summary = format!(
+                    "save environment memory {}: {}\n{}",
+                    args.name,
+                    args.description,
+                    truncate(&args.body, 600)
+                );
+                if !self.approve("memory_remember", &summary).await {
+                    return Err("The user declined to save this memory.".into());
+                }
+            }
+            WritePolicy::Auto => {}
+        }
+        let replaced = environment
+            .remember(&args.name, &args.description, &args.kind, &args.body)
+            .map_err(|error| error.to_string())?;
+        self.emit(SessionEvent::MemorySaved {
+            name: args.name.clone(),
+            scope: "environment".into(),
+        });
+        Ok(format!(
+            "{} {} in this environment's Memory.md (sessions started from now on read it)",
+            if replaced { "replaced" } else { "saved" },
+            args.name
+        ))
     }
 
     fn load_skill(&self, arguments: &str) -> Result<String, String> {
@@ -2869,6 +2927,17 @@ impl Agent {
     }
 }
 
+/// The arguments of `memory_remember`.
+#[derive(Deserialize)]
+struct RememberArgs {
+    name: String,
+    description: String,
+    #[serde(rename = "type")]
+    kind: String,
+    scope: String,
+    body: String,
+}
+
 fn tool_input(arguments: &str) -> serde_json::Value {
     serde_json::from_str(arguments).unwrap_or_else(|_| arguments.into())
 }
@@ -2896,6 +2965,29 @@ fn memory_instructions(memory: &SessionMemory, can_write: bool) -> String {
     } else {
         text.push_str("\nSaved memories:\n");
         text.push_str(&index);
+    }
+    if let Some(environment) = &memory.environment {
+        let notes = imperium_memory::environment::for_context(&environment.read());
+        text.push_str(
+            "\n\nEnvironment memory (Memory.md): notes the user and earlier sessions kept for \
+             this environment only. It is read once when the session starts and never \
+             compacted. Where it disagrees with the global memories above, follow it for work \
+             in this environment.",
+        );
+        if can_write {
+            text.push_str(
+                " Save to it with memory_remember, scope environment, for what holds only here \
+                 (this environment's conventions, quirks, decisions); use scope global for what \
+                 holds everywhere.",
+            );
+        }
+        if notes.is_empty() {
+            text.push_str("\nIt is empty.");
+        } else {
+            text.push_str("\n<environment-memory>\n");
+            text.push_str(&notes);
+            text.push_str("\n</environment-memory>");
+        }
     }
     text
 }
@@ -2971,7 +3063,7 @@ fn memory_remember_spec() -> ToolSpec {
             "name": {"type": "string", "description": "kebab-case, unique within the scope"},
             "description": {"type": "string", "description": "One line, used to decide relevance"},
             "type": {"type": "string", "enum": ["user", "feedback", "project", "reference", "lesson"]},
-            "scope": {"type": "string", "enum": ["global", "project", "project-private"]},
+            "scope": {"type": "string", "enum": ["global", "environment", "project", "project-private"], "description": "environment writes this environment's Memory.md (what holds only here); global holds for the user everywhere"},
             "body": {"type": "string", "description": "The fact; for feedback, include why and how to apply it"}
         }, "required": ["name", "description", "type", "scope", "body"]}),
     }

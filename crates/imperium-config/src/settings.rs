@@ -130,6 +130,9 @@ pub struct Settings {
     pub load: LoadSettings,
     #[serde(default)]
     pub sessions: SessionSettings,
+    /// `[workspaces]`: where each environment's working folder lives (see docs/10).
+    #[serde(default)]
+    pub workspaces: WorkspacesSettings,
     /// `[context]`: when agents compact their conversations (see docs/03).
     #[serde(default)]
     pub context: ContextSettings,
@@ -419,6 +422,37 @@ impl Default for SessionSettings {
             attachment_max_mib: 10,
         }
     }
+}
+
+/// `[workspaces]`: the folder that holds a working folder for every environment: its
+/// `Memory.md` and one scratch folder per session (see
+/// docs/14-projects-and-automation.md#environment-working-folders-implemented). Changing it moves what is
+/// there to the new place.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WorkspacesSettings {
+    /// The folder, absolute. Unset: `<data>/workspaces`.
+    pub root: Option<PathBuf>,
+}
+
+impl WorkspacesSettings {
+    /// The folder in use: the setting, else `<data>/workspaces`.
+    pub fn root(&self, paths: &crate::Paths) -> PathBuf {
+        match self
+            .root
+            .as_ref()
+            .filter(|root| !root.as_os_str().is_empty())
+        {
+            Some(root) => root.clone(),
+            None => default_workspaces_root(paths),
+        }
+    }
+}
+
+/// `<data>/workspaces`, where environments' working folders are kept unless `workspaces.root`
+/// says otherwise.
+pub fn default_workspaces_root(paths: &crate::Paths) -> PathBuf {
+    paths.data_dir().join("workspaces")
 }
 
 /// How sessions wait when a provider's usage or rate limit is hit (each session can override).
@@ -824,6 +858,8 @@ pub struct MemoryWrite {
     pub global: WritePolicy,
     pub project: WritePolicy,
     pub project_private: WritePolicy,
+    /// An environment's `Memory.md` (see docs/17-memory.md#environment-memory).
+    pub environment: WritePolicy,
 }
 
 impl Default for MemoryWrite {
@@ -832,6 +868,7 @@ impl Default for MemoryWrite {
             global: WritePolicy::Ask,
             project: WritePolicy::Ask,
             project_private: WritePolicy::Auto,
+            environment: WritePolicy::Auto,
         }
     }
 }

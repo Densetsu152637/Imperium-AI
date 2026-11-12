@@ -4,6 +4,7 @@
 //! ([`sessions`]) that makes past sessions searchable, and the model cards agents search when
 //! they choose a model ([`models`]), on the same retrieval primitives ([`retrieval`]).
 
+pub mod environment;
 pub mod models;
 pub mod retrieval;
 mod search;

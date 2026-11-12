@@ -693,6 +693,8 @@ environment in the daemon. The first time the app connects after environments ar
 project folder it knew (opened folders, the selected project, folders of running sessions)
 becomes an environment of its own, keeping the icon it had.
 
+**Working folder (implemented):** an existing environment's window has a *Working folder* section showing where its [working folder](14-projects-and-automation.md#environment-working-folders-implemented) is (from `workspaces.where`) with *Open Memory.md* and *Open folder* (`workspaces.open`, which hands the file or folder to the computer's own editor or file manager and creates an empty `Memory.md` first if needed). Settings → *Working folders* holds `workspaces.root` as a path with *Choose folder…*; saving it moves the folders, shows the move's progress (`workspaces.progress`), and keeps the old value with the daemon's reason when the move is refused or fails.
+
 **Runtime and persistent agent (implemented):** the environment window (create and edit) has a
 *Runtime* section (`EnvironmentRuntimeFields`): a select for *This machine*, *Docker*, *WSL*,
 or *SSH* with that runtime's fields (the image and an optional running container, the

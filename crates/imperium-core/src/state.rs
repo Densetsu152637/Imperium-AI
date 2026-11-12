@@ -48,7 +48,9 @@ mod branch;
 mod model_awareness;
 mod session_search;
 mod titles;
+mod workspaces;
 pub use archive::ArchiveError;
+pub(crate) use workspaces::ROOT_SETTING as WORKSPACES_ROOT_SETTING;
 
 /// Options for [`DaemonState::create_session_with`].
 #[derive(Debug, Default)]
@@ -187,6 +189,10 @@ pub struct DaemonState {
     checkpoints: Mutex<HashMap<String, Arc<crate::checkpoints::SessionCheckpoints>>>,
     /// Test hook: make `session.compare` fail after creating this many branches (0: never).
     compare_fault: std::sync::atomic::AtomicUsize,
+    /// Serialises moves of the environments' working folders.
+    workspaces_lock: Mutex<()>,
+    /// Why the working folders are not where the configuration says (a move that failed at start).
+    workspaces_warning: Mutex<Option<String>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -270,6 +276,8 @@ impl DaemonState {
             model_cards: imperium_memory::models::CardIndex::new(),
             checkpoints: Mutex::new(HashMap::new()),
             compare_fault: std::sync::atomic::AtomicUsize::new(0),
+            workspaces_lock: Mutex::new(()),
+            workspaces_warning: Mutex::new(None),
         });
         state.apply_load_view();
         if let Some(local) = state.local.get() {
@@ -1371,6 +1379,16 @@ impl DaemonState {
         } else {
             workspace
         };
+        // Its own scratch folder, in its environment's working folder: made now (an unarchived
+        // session gets a new, empty one), deleted when the session is archived or deleted.
+        let local = workspace.runtime().is_none();
+        let workspace = match (&placement.environment_id, remember && local) {
+            (Some(environment), true) => match self.session_scratch(environment, &id) {
+                Some(dir) => workspace.with_scratch(&dir),
+                None => workspace,
+            },
+            _ => workspace,
+        };
         if resume {
             // A resumed session keeps its pin and its title.
             let meta = std::fs::read_to_string(self.meta_path(&id))
@@ -1481,6 +1499,10 @@ impl DaemonState {
             memory: self.settings().memory.enabled.then(|| SessionMemory {
                 store: Store::new(self.paths.data_dir(), (!remote).then_some(project_dir_path)),
                 settings: self.settings().memory.clone(),
+                environment: placement.environment_id.as_deref().and_then(|environment| {
+                    crate::workspaces::memory_file(&self.workspaces_root(), environment)
+                        .map(imperium_memory::environment::EnvironmentMemory::new)
+                }),
             }),
             max_steps: self.settings().agents.max_steps,
             auto_compact: options.auto_compact,
@@ -1632,6 +1654,7 @@ impl DaemonState {
             // An archived session is deleted the same way, from its record.
             .or_else(|| {
                 self.take_archived(id).map(|summary| Placement {
+                    environment_id: summary.environment_id,
                     worktrees: summary.worktrees,
                     ..Placement::default()
                 })
@@ -1651,6 +1674,10 @@ impl DaemonState {
         let _ = std::fs::remove_file(sessions.join(format!("{id}.meta.json")));
         // So do its checkpoints: their refs in each repository and their records.
         crate::checkpoints::forget(self.paths.data_dir(), id);
+        // So does its scratch folder.
+        if let Some(environment) = &placement.environment_id {
+            self.remove_session_scratch(environment, id);
+        }
         // Its agents' kept state goes with it.
         let agents = imperium_engine::agents_dir(&sessions.join(format!("{id}.jsonl")));
         if agents.exists()

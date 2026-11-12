@@ -36,6 +36,7 @@ mod server;
 mod state;
 mod suggestions;
 mod token;
+mod workspaces;
 mod worktrees;
 
 pub use approvals::Approvals;

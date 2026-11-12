@@ -70,6 +70,7 @@ async fn run() -> anyhow::Result<()> {
     let daemon = DaemonState::with_secrets(paths.clone(), settings, local, secrets);
     daemon.remember_config(&config);
     daemon.start_pets();
+    daemon.reconcile_workspaces();
     let resumed = daemon.resume_sessions();
     if resumed > 0 {
         tracing::info!(

@@ -216,6 +216,7 @@ impl DaemonState {
         if !retired_agent && (placement.persistent || placement.project_agent) {
             return Err(ArchiveError::Persistent(id.to_string()));
         }
+        let environment = placement.environment_id.clone();
         let mut summary = self.summary(&session);
         summary.archived = true;
         summary.archived_at = Some(now_ms(now));
@@ -251,6 +252,11 @@ impl DaemonState {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id);
         self.archived_map().insert(id.to_string(), summary.clone());
+        // An archived session keeps its journal, not its scratch folder; unarchiving makes a
+        // new, empty one.
+        if let Some(environment) = environment {
+            self.remove_session_scratch(&environment, id);
+        }
         tracing::info!(session = %id, "archived the session");
         self.announce(SESSION_UPDATED, &summary);
         Ok(summary)

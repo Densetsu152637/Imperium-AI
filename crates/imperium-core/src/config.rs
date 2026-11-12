@@ -29,19 +29,46 @@ pub fn describe(state: &DaemonState) -> Result<ConfigDescribeResult, ErrorObject
 
 /// Writes one setting to the user file; an invalid change is refused and nothing is saved.
 pub fn set(state: &DaemonState, params: ConfigSetParams) -> Result<ConfigSetResult, ErrorObject> {
-    let updated = imperium_config::set_user_setting(
-        state.paths(),
-        &params.key,
-        &params.value,
-        std::env::vars(),
-    )
-    .map_err(|error| {
-        let code = match error {
-            SetError::Write { .. } => codes::INTERNAL_ERROR,
-            _ => codes::INVALID_PARAMS,
+    // Changing the working folders' place moves them first; the move saves the setting.
+    if params.key == crate::state::WORKSPACES_ROOT_SETTING {
+        let path = match &params.value {
+            serde_json::Value::Null => "",
+            serde_json::Value::String(path) => path,
+            _ => {
+                return Err(ErrorObject::new(
+                    codes::INVALID_PARAMS,
+                    "workspaces.root takes a folder path, or null for the default",
+                ));
+            }
         };
-        ErrorObject::new(code, error.to_string())
-    })?;
+        state
+            .move_workspaces(path)
+            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))?;
+    }
+    // The move above already saved the setting; this writes the same value again to describe it.
+    let moved;
+    let value = if params.key == crate::state::WORKSPACES_ROOT_SETTING {
+        moved = state
+            .settings()
+            .workspaces
+            .root
+            .as_ref()
+            .map_or(serde_json::Value::Null, |root| {
+                serde_json::Value::String(root.display().to_string())
+            });
+        &moved
+    } else {
+        &params.value
+    };
+    let updated =
+        imperium_config::set_user_setting(state.paths(), &params.key, value, std::env::vars())
+            .map_err(|error| {
+                let code = match error {
+                    SetError::Write { .. } => codes::INTERNAL_ERROR,
+                    _ => codes::INVALID_PARAMS,
+                };
+                ErrorObject::new(code, error.to_string())
+            })?;
     tracing::info!(key = %params.key, "a client changed a setting in the user config");
     if params.key == crate::suggestions::SETTING {
         state
