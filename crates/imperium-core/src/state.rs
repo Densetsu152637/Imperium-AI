@@ -1712,11 +1712,39 @@ impl DaemonState {
                 .into_iter()
                 .flat_map(|summary| summary.worktrees.into_iter().map(|tree| tree.path)),
         );
+        // Sessions with a meta file on disk that are neither running nor archived (not resumed
+        // yet, or past `agents.resume_days`) still own their worktrees.
+        if let Ok(entries) = std::fs::read_dir(self.paths.data_dir().join("sessions")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".meta.json"))
+                {
+                    continue;
+                }
+                let Some(meta) = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                else {
+                    continue;
+                };
+                if let Some(trees) = meta["worktrees"].as_array() {
+                    paths.extend(
+                        trees
+                            .iter()
+                            .filter_map(|tree| tree["path"].as_str().map(str::to_string)),
+                    );
+                }
+            }
+        }
         paths
     }
 
-    /// Test hook: `session.compare` fails after creating its `branches`th branch.
-    #[doc(hidden)]
+    /// Test hook: `session.compare` fails after creating its `branches`th branch. Compiled only
+    /// for this crate's tests or with the `testing` feature.
+    #[cfg(any(test, feature = "testing"))]
     pub fn inject_compare_failure(&self, branches: usize) {
         self.compare_fault
             .store(branches, std::sync::atomic::Ordering::Relaxed);
