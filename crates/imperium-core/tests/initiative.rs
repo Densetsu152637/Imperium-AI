@@ -216,11 +216,14 @@ impl Fixture {
             .lock()
             .unwrap()
             .iter()
+            // A review is one turn of several model calls; count the calls that start one (the
+            // review message is the last in the conversation only on the first call).
             .filter(|body| {
                 body["messages"].as_array().is_some_and(|messages| {
-                    messages
-                        .iter()
-                        .any(|m| content(m).starts_with("Initiative review for the environment"))
+                    messages.last().is_some_and(|last| {
+                        last["role"] == "user"
+                            && content(last).starts_with("Initiative review for the environment")
+                    })
                 })
             })
             .count()
@@ -412,19 +415,27 @@ async fn the_user_starts_a_suggestion_with_one_call_and_dismisses_another() {
     let by = summary.started_by.as_ref().unwrap();
     assert_eq!(by.kind, "suggestion");
     assert_eq!(by.source.as_deref(), Some(SOURCE));
-    let first = fixture
-        .log
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|body| {
-            let messages = body["messages"].as_array()?;
-            let system = content(&messages[0]);
-            let last = content(messages.last()?);
-            (!system.contains("persistent agent")).then_some(last)
-        })
-        .next()
-        .expect("the session called the model");
+    // The session's first model call follows a moment after the call returns.
+    let mut found = None;
+    for _ in 0..200 {
+        found = fixture
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|body| {
+                let messages = body["messages"].as_array()?;
+                let system = content(&messages[0]);
+                let last = content(messages.last()?);
+                (!system.contains("persistent agent")).then_some(last)
+            })
+            .next();
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let first = found.expect("the session called the model");
     assert!(first.starts_with("Improve my timeline"), "{first}");
     assert!(first.contains(SOURCE), "{first}");
 
@@ -729,7 +740,7 @@ async fn a_used_up_budget_stops_the_review_before_it_spends_anything() {
         .initiative_review_now(&fixture.agent.id)
         .await
         .unwrap_err();
-    assert!(error.to_lowercase().contains("budget"), "{error}");
+    assert!(error.contains("used up"), "{error}");
 }
 
 #[test]
