@@ -1220,6 +1220,80 @@ Agents write cards with `set_model_card`, recorded and undoable
 ([06](06-extensibility.md#agents-manage-the-app-config-implemented)). Not yet: measurements are
 kept in memory only (they start again with the daemon).
 
+## OpenAI-compatible local API (implemented)
+
+Other tools (editors, chat front ends, scripts) can use Imperium's local models through an
+OpenAI-style HTTP API. It is a listener of its own in `imperium-core`, **off by default**, and
+speaks only what those tools need: `GET /v1/models` (also `GET /v1/models/{id}`) and
+`POST /v1/chat/completions`, streamed (server-sent events) and not. Completions, embeddings,
+and the other endpoints are not served, and no CORS headers are sent, so browser pages on other
+origins cannot call it.
+
+```toml
+[api.openai_compatible]
+enabled = false           # on: listen as below; off: stop at once
+port = 0                  # 0 until chosen: the first enable picks a free port (from 11500) and saves it
+bind = "127.0.0.1"        # loopback only, unless allow_lan is set
+allow_lan = false         # risky: lets bind be an address other computers can reach
+expose = []               # specs of hosted models to serve; local models need no entry
+```
+
+Settings → API, `imperium api enable|disable|status|token [rotate]`, and `api.get` / `api.set` /
+`api.token` change these and apply them at once ([07](07-desktop-ui.md#api-settings-implemented),
+[02](02-architecture.md#protocol)); the keys also work through `config.set`.
+
+- **Where it listens.** `bind` must be a loopback address (`127.0.0.1`, `::1`, or `localhost`).
+  Any other address is refused, the server does not start, and `api.get` reports why, unless
+  `allow_lan = true` is also set. That serves plain HTTP to the network: anyone who learns the
+  token can use the models (and the hosted ones exposed), so the setting is documented as
+  risky and logged at start. The port is chosen once and kept, so tools need configuring once;
+  if it is taken later the server reports the error instead of moving.
+- **Authentication.** Every request, unknown routes included, needs
+  `Authorization: Bearer <token>`; otherwise the answer is `401` with `invalid_api_key`. The
+  token is separate from the daemon's: 32 random bytes made on first use, kept in the secret
+  store as `api.openai-token` (the keychain), compared in constant time, never written to the
+  config, the data folder, or the logs, and shown or rotated only through `api.token`
+  (Settings → API, `imperium api token`). Rotating ends every tool's access at once.
+- **Models.** The ids are Imperium specs (`llamacpp:qwen3-4b`, `vllm:<folder>`), with the
+  alias as the display `name` in the listing. Every local model the runtime found is served,
+  except those it cannot run here and those hidden in `models.hidden`. A **hosted** model (any
+  row of the model table reached over an endpoint) is served only when its spec is in `expose`,
+  because each call spends the user's key and money; `api.set` accepts only specs of hosted
+  rows, and a request for one that is not exposed gets `404 model_not_found` that says so.
+  The endpoint's key never leaves the daemon.
+- **Calls.** A chat completion takes a slot on its model exactly as a session's call does
+  ([residency controller](#residency-controller-implemented)): the model is loaded if needed,
+  the call queues first-come, first-served while every slot is busy and while room is made, up
+  to `runtime.llamacpp.max_wait_s`, the move is reported through `model.residency`, and the
+  slot is released when the response ends or the client disconnects (which also stops the
+  generation). API calls rank as interactive. The response begins when the slot is held, so a
+  client with a short timeout should allow for a model load. Nothing bypasses the controller.
+  The reply of a local model is capped by the slot's token reservation (`max_tokens` is
+  clamped to it, which `runtime.llamacpp.max_output_tokens` sets; raise it, or set 0 for no
+  cap, to allow longer replies).
+- **Request fields.** `messages`, `temperature`, `top_p`, `max_tokens` (or
+  `max_completion_tokens`), `stop`, `seed`, the penalties, `logit_bias`, `response_format`,
+  `logprobs`, `stream`, `stream_options.include_usage`, and `reasoning_effort` (mapped like a
+  session's [effort](#reasoning-effort), and only for models that reason) are relayed;
+  `n` above 1 is refused, and every other field, including llama.cpp's own (`id_slot`,
+  `grammar`, ...), is dropped, because the runtime owns them. `tools` and `tool_choice` are
+  passed through only to a backend that takes them: llama.cpp (always started with `--jinja`)
+  and hosted endpoints do; a vLLM model does when `--enable-auto-tool-choice` is among
+  `runtime.vllm.extra_args`; otherwise the request fails with `400`. Responses are the server's
+  own, with `model` rewritten to the id the client used and llama.cpp's `timings` removed.
+  A streamed response includes a usage chunk only if the client asked for one.
+- **Budgets.** Each call is recorded in the usage ledger with the source `api` (tokens from the
+  server's usage report, else an estimate; cost from the endpoint's prices), so it counts
+  toward global, endpoint, and model budgets and toward a budget of scope `source` with target
+  `api` ([budgets](10-configuration.md#budgets)) that caps API use alone. A budget that is
+  used up and blocks or asks refuses the call before it reaches the model, with
+  `429` and `{"error": {"type": "insufficient_quota", "code": "budget_exceeded", ...}}`;
+  nobody can be asked through the API, so an asking budget refuses as a blocking one does.
+- **Errors** use OpenAI's shape, `{"error": {"message", "type", "param", "code"}}`: `400` for a
+  bad request or one the model's server rejects (such as a prompt that does not fit), `401`,
+  `404` for an unknown or unexposed model or URL, `429` for budgets (or the endpoint's own rate
+  limit), `502` when the model's endpoint fails, and `503` when a local model cannot be loaded.
+
 ## Cost accounting
 
 Every call records prompt, cached, and completion tokens, latency, time-to-first-token,

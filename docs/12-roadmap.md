@@ -136,7 +136,14 @@ the wait reason in the desktop.
 9. **Live preview and browser.** A live preview of the app being built and an integrated
    browser the user drives, beside the agent's own browser view.
 10. **Local-model extras.** Speculative decoding with draft models, a local model benchmark,
-    and an OpenAI-compatible local API server for other tools.
+    and an OpenAI-compatible local API server for other tools. The API server is implemented:
+    opt-in, loopback by default, with its own token in the secret store, `/v1/models` and
+    `/v1/chat/completions` (streamed or not), calls that go through the residency controller
+    and count toward budgets as the `api` source, hosted models only by explicit per-model
+    opt-in, Settings → API and `imperium api`
+    ([04](04-models-and-routing.md#openai-compatible-local-api-implemented),
+    [07](07-desktop-ui.md#api-settings-implemented), [10](10-configuration.md)). Speculative
+    decoding and the benchmark are not.
 11. **Sharing and sync (design).** Design plans for session sharing and export, and for team
     sync.
 12. **Environment file access** (implemented; bug, from use of the app so far, like the items

@@ -30,6 +30,7 @@ const SCOPES: { value: BudgetScope; label: string }[] = [
   { value: "environment", label: "Environment" },
   { value: "endpoint", label: "Endpoint" },
   { value: "model", label: "Model" },
+  { value: "source", label: "API calls" },
 ];
 
 const WINDOWS: { value: BudgetWindow; label: string }[] = [
@@ -240,7 +241,7 @@ export function BudgetsSection({ client }: { client: DaemonClient }) {
                   onChange={(scope) =>
                     setBudget(index, {
                       scope: scope as BudgetScope,
-                      target: scope === "environment" ? (environments[0]?.id ?? "") : "",
+                      target: scope === "environment" ? (environments[0]?.id ?? "") : scope === "source" ? "api" : "",
                     })
                   }
                 />
