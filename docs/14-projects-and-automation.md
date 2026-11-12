@@ -90,7 +90,7 @@ the environment's own memory and for each session's scratch files. All of them l
 folder, `workspaces.root` (`<data>/workspaces` unless the user picks another place, for example
 on the drive where their other data is kept):
 
-```
+```text
 <workspaces.root>/
   <environment-id>/
     Memory.md                    notes for this environment only (see below)

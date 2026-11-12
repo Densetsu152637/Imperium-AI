@@ -344,7 +344,7 @@ struct Ticker {
 impl Ticker {
     fn file(&mut self, phase: &'static str, total: u64, progress: &mut dyn FnMut(MoveProgress)) {
         self.done += 1;
-        if self.done % 64 == 0 || self.done == total {
+        if self.done.is_multiple_of(64) || self.done == total {
             progress(MoveProgress {
                 phase,
                 files_done: self.done,
