@@ -776,9 +776,12 @@ it and when it resets.
 The Environments panel lists the daemon's
 [environments](14-projects-and-automation.md#environments-implemented), one row each: the
 environment's icon and name, a pin mark when pinned, and a *⋯* menu on the right with *Edit*,
-*Pin*/*Unpin*, and *Delete*. Pinned environments are listed first. Clicking a row selects the
+*Pin*/*Unpin*, and *Delete*. The built-in [Home](14-projects-and-automation.md#home-implemented)
+environment (a house icon) is always listed first, then pinned environments, and has no *Delete*
+(its environment window has no delete button either). Clicking a row selects the
 environment (new sessions start there) and shows its sessions; double-clicking opens it for
-editing.
+editing. The new-session composer starts on Home when no other environment is selected, and
+allows it without a folder: its sessions work in their own scratch folders.
 
 *New environment* (the *+* in the Environments header) and *Edit* open the **environment window**, a sheet over the workspace like
 Settings (Escape or a click outside closes it): the name; the icon, picked from a searchable grid

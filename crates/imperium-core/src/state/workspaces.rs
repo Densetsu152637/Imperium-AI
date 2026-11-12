@@ -343,6 +343,90 @@ impl DaemonState {
             .unwrap_or_else(PoisonError::into_inner) = Some(message);
     }
 
+    /// At start, after sessions were resumed and the agents started: deletes scratch folders
+    /// left behind by sessions that no longer exist (killed before they could clean up, or
+    /// deleted while the daemon was off). A folder is kept when its session is running, is an
+    /// environment's or project's agent, or has a record that is not known to be archived.
+    /// Only folders directly in `<root>/<environment-id>/sessions/` are touched, with a safe
+    /// environment name and a generated session id (16 hex digits), and never through a link
+    /// (symlink or junction) at any of the three levels. Returns how many were deleted.
+    pub fn sweep_orphan_scratch(&self) -> usize {
+        let _moving = self
+            .workspaces_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let root = self.workspaces_root();
+        let mut swept = 0;
+        let Ok(environments) = std::fs::read_dir(&root) else {
+            return 0;
+        };
+        for environment in environments.flatten() {
+            let name = environment.file_name().to_string_lossy().into_owned();
+            if !workspaces::safe_id(&name) || !real_dir(&environment.path()) {
+                continue;
+            }
+            let Some(sessions) = workspaces::sessions_dir(&root, &name) else {
+                continue;
+            };
+            if !real_dir(&sessions) {
+                continue;
+            }
+            let Ok(folders) = std::fs::read_dir(&sessions) else {
+                continue;
+            };
+            for folder in folders.flatten() {
+                let id = folder.file_name().to_string_lossy().into_owned();
+                let path = folder.path();
+                if !workspaces::is_generated_session_id(&id)
+                    || !real_dir(&path)
+                    || self.session_is_kept(&id)
+                {
+                    continue;
+                }
+                match std::fs::remove_dir_all(&path) {
+                    Ok(()) => swept += 1,
+                    Err(error) => {
+                        tracing::warn!(path = %path.display(), %error, "could not delete an orphan scratch folder");
+                    }
+                }
+            }
+        }
+        if swept > 0 {
+            tracing::info!(
+                swept,
+                "deleted scratch folders of sessions that no longer exist"
+            );
+        }
+        swept
+    }
+
+    /// Whether session `id`'s folder must stay: it is running, it is an agent's session, or it
+    /// has a record that is not known to be archived. Only a missing record, or one that says
+    /// archived, makes a session gone; a record that cannot be read or parsed keeps it.
+    fn session_is_kept(&self, id: &str) -> bool {
+        if self.session(id).is_some()
+            || self.environments.list().iter().any(|env| {
+                env.agent_session_id.as_deref() == Some(id)
+                    || env
+                        .agents
+                        .iter()
+                        .any(|agent| agent.session_id.as_deref() == Some(id))
+            })
+            || self
+                .project_agents()
+                .list()
+                .iter()
+                .any(|(_, session)| session == id)
+        {
+            return true;
+        }
+        match std::fs::read_to_string(self.meta_path(id)) {
+            Ok(text) => serde_json::from_str::<serde_json::Value>(&text)
+                .map_or(true, |meta| meta["archived"] != true),
+            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        }
+    }
+
     /// `workspaces.open`: shows an environment's folder or `Memory.md` with the computer's own
     /// programs.
     pub fn open_workspace(&self, environment: &str, target: &str) -> Result<(), String> {
@@ -368,6 +452,11 @@ impl DaemonState {
         }
         open_with_system(&path)
     }
+}
+
+/// A folder that is one itself, not a link to one.
+fn real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir())
 }
 
 /// The path as people write it.

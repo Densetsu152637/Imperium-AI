@@ -999,11 +999,10 @@ impl Connection {
                 }
                 Err(error) => Err(error.into()),
             },
+            // No environment or project chosen: the built-in Home environment.
             (None, None) => {
-                return Err(ErrorObject::new(
-                    codes::INVALID_PARAMS,
-                    "give environment_id (or project_dir) for the session",
-                ));
+                self.state
+                    .create_in_environment(crate::environments::HOME_ID, model, options())
             }
         };
         let (session, events) = created.map_err(|error| {
@@ -2235,8 +2234,10 @@ mod tests {
         );
         assert_eq!(session.model(), None);
 
-        let neither = connection.handle_text(&request(6, SessionCreate::NAME, json!({})));
-        assert_eq!(error_code(&neither), Some(codes::INVALID_PARAMS));
+        // Neither an environment nor a project: the built-in Home environment.
+        let neither =
+            result_of(&connection.handle_text(&request(6, SessionCreate::NAME, json!({}))));
+        assert_eq!(neither["environment_id"], "home");
     }
 
     #[test]
@@ -2278,7 +2279,7 @@ mod tests {
         assert_eq!(removed["folders"].as_array().unwrap().len(), 1);
         let listed =
             result_of(&connection.handle_text(&request(7, "environments.list", json!({}))));
-        assert_eq!(listed["environments"].as_array().unwrap().len(), 2);
+        assert_eq!(listed["environments"].as_array().unwrap().len(), 3);
 
         let missing = connection.handle_text(&request(
             8,
@@ -2297,7 +2298,7 @@ mod tests {
         assert_eq!(error_code(&deleted), None);
         let listed =
             result_of(&connection.handle_text(&request(11, "environments.list", json!({}))));
-        assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["environments"].as_array().unwrap().len(), 2);
         let bogus = connection.handle_text(&request(12, "environments.nothing", json!({})));
         assert_eq!(error_code(&bogus), Some(codes::METHOD_NOT_FOUND));
     }
