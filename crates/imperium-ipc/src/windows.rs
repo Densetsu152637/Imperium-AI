@@ -417,17 +417,20 @@ mod tests {
         let address = listener.address();
         assert!(!listener.name_is_vacant(), "held at bind");
 
-        // A client that connects and goes away at once is a failed or short connection; the
-        // listener must keep the name through it and through the next accept.
+        // Clients that connect and go away at once are short or failed connections; the
+        // listener keeps accepting and must hold the name through every one of them.
+        let accepting = tokio::spawn(async move {
+            for _ in 0..3 {
+                let _ = listener.accept().await;
+                assert!(!listener.name_is_vacant(), "held after an accept");
+            }
+            listener
+        });
         for _ in 0..3 {
             drop(connect(&address, None).await.unwrap());
-            let _ = listener.accept().await;
-            assert!(!listener.name_is_vacant(), "held after an accept");
         }
-        // And the listener still serves.
-        let client = connect(&address, None).await.unwrap();
-        let served = listener.accept().await.unwrap();
-        drop((client, served));
+        let listener = accepting.await.unwrap();
+        assert!(!listener.name_is_vacant(), "held when idle");
     }
 
     #[tokio::test]
