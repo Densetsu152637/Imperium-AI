@@ -282,6 +282,11 @@ impl Settings {
                     "routing.rules[{index}]: {unknown:?} is not an id in models.catalog"
                 ));
             }
+            if let Some(unknown) = rule.escalate.iter().find(|id| !seen.contains(id.as_str())) {
+                return Err(format!(
+                    "routing.rules[{index}].escalate: {unknown:?} is not an id in models.catalog"
+                ));
+            }
         }
         let mut schedule_ids = std::collections::BTreeSet::new();
         for schedule in &self.schedules {
@@ -1492,6 +1497,40 @@ pub struct RoutingSettings {
     /// [`RoutingSettings::builtin_rules`]). Default true.
     #[serde(default = "default_true")]
     pub builtin_rules: bool,
+    /// Whether the built-in rules sending `critique`, `review`, `verify` and `proof-check`
+    /// tasks to a CPU-lane row apply (see [`RoutingSettings::cpu_lane_rules`]). A rule of your
+    /// own for the same tag replaces them. Default true.
+    #[serde(default = "default_true")]
+    pub builtin_cpu_lane: bool,
+    /// Longest expected wait (seconds) for a slot on a local model that routing accepts: past
+    /// it the next eligible route is used, with a notice. `0` turns the check off. Rows reached
+    /// only by a rule or a name (the CPU lane) are never skipped for this. Default 120.
+    #[serde(default = "default_max_queue_wait_s")]
+    pub max_queue_wait_s: u32,
+    /// Tokens of context a model needs to count as `long_context` for a task that requires it.
+    /// Default 100000.
+    #[serde(default = "default_long_context_tokens")]
+    pub long_context_tokens: u32,
+    /// How many times a failed subagent is retried on a stronger route; `0` turns escalation
+    /// off. Default 1.
+    #[serde(default = "default_escalation_attempts")]
+    pub escalation_attempts: u32,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn default_max_queue_wait_s() -> u32 {
+    120
+}
+
+fn default_long_context_tokens() -> u32 {
+    100_000
+}
+
+fn default_escalation_attempts() -> u32 {
+    1
 }
 
 fn default_true() -> bool {
@@ -1504,12 +1543,19 @@ impl Default for RoutingSettings {
             prefer: Preference::default(),
             rules: Vec::new(),
             builtin_rules: true,
+            builtin_cpu_lane: true,
+            max_queue_wait_s: default_max_queue_wait_s(),
+            long_context_tokens: default_long_context_tokens(),
+            escalation_attempts: default_escalation_attempts(),
         }
     }
 }
 
 /// Task tags the built-in rules send to small local models.
 pub const MENIAL_TAGS: [&str; 5] = ["refactor", "tests", "ui", "format", "docs"];
+
+/// Task tags the built-in rules send to the CPU lane when it can take them.
+pub const CPU_LANE_TAGS: [&str; 4] = ["critique", "review", "verify", "proof-check"];
 
 /// Task tags the built-in rules send to cloud frontier models.
 pub const HARD_TAGS: [&str; 5] = ["architecture", "math", "proof", "algorithm", "design"];
@@ -1536,6 +1582,20 @@ impl RoutingSettings {
                     .iter()
                     .map(|tag| class(tag, Location::Local, None)),
             )
+            .collect()
+    }
+
+    /// The built-in rules preferring the CPU lane for work that can wait: checked after the
+    /// task-class rules, and only when `builtin_cpu_lane` is on and none of `rules` matched.
+    /// With no CPU-lane row that can take the task, routing carries on as if they were absent.
+    pub fn cpu_lane_rules() -> Vec<RoutingRule> {
+        CPU_LANE_TAGS
+            .iter()
+            .map(|tag| RoutingRule {
+                when_tag: Some((*tag).to_string()),
+                cpu_lane: true,
+                ..RoutingRule::default()
+            })
             .collect()
     }
 }
@@ -1577,6 +1637,40 @@ pub struct RoutingRule {
     /// Model table ids to use, in order of preference.
     #[serde(default, rename = "use")]
     pub use_models: Vec<String>,
+    /// Capabilities every model chosen for a matching task must have (`vision`, `tools`,
+    /// `long_context`); a model without one is skipped, with a reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub require: Vec<Capability>,
+    /// Prefer a model pinned to the CPU lane (`placement = "cpu"`) that can take the task now;
+    /// when none can, the usual choice applies.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cpu_lane: bool,
+    /// Model table ids to retry a failed task on, in order, one per escalation attempt; when
+    /// they run out the next tier up is used.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub escalate: Vec<String>,
+}
+
+/// What a model must be able to do for a task to be sent to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    /// Reads images; a model table row declares it with the tag `vision`.
+    Vision,
+    /// Calls tools; every model has it unless its row carries the tag `no-tools`.
+    Tools,
+    /// Reads at least `routing.long_context_tokens` per request.
+    LongContext,
+}
+
+impl Capability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Capability::Vision => "vision",
+            Capability::Tools => "tools",
+            Capability::LongContext => "long_context",
+        }
+    }
 }
 
 /// How capable a model is; tasks ask for a minimum tier.

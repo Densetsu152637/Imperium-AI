@@ -820,12 +820,24 @@ struct Crash {
 struct Throughput {
     tokens: f64,
     seconds: f64,
+    /// Calls over the same recent window as `tokens` and `seconds`.
+    calls: f64,
 }
+
+/// What a call is assumed to take, in seconds, before any has been measured, for the queue
+/// wait routing expects.
+const DEFAULT_CALL_SECONDS: f64 = 30.0;
 
 impl Throughput {
     fn add(&mut self, tokens: f64, seconds: f64) {
         self.tokens = self.tokens * THROUGHPUT_KEEP + tokens;
         self.seconds = self.seconds * THROUGHPUT_KEEP + seconds;
+        self.calls = self.calls * THROUGHPUT_KEEP + 1.0;
+    }
+
+    /// Seconds a recent call spent generating, on average.
+    fn seconds_per_call(&self) -> Option<f64> {
+        (self.calls > 0.0 && self.seconds > 0.0).then(|| self.seconds / self.calls)
     }
 
     fn per_second(&self) -> Option<f64> {
@@ -3674,6 +3686,25 @@ impl LocalModels for Supervisor {
 
     fn tokens_per_s(&self, model: &str) -> Option<f64> {
         Supervisor::tokens_per_s(self, model)
+    }
+
+    fn queue_wait_s(&self, model: &str) -> u32 {
+        let state = lock(&self.state);
+        let Some(loaded) = state.loaded.get(model) else {
+            return 0;
+        };
+        if loaded.pool.permits.available_permits() > 0 {
+            return 0;
+        }
+        // Every call queued ahead of this one, and this one, share the slots.
+        let ahead = f64::from(loaded.pool.waiting.load(Ordering::SeqCst)) + 1.0;
+        let slots = f64::from(loaded.pool.slots.max(1));
+        let per_call = state
+            .throughput
+            .get(model)
+            .and_then(Throughput::seconds_per_call)
+            .unwrap_or(DEFAULT_CALL_SECONDS);
+        (ahead / slots * per_call).ceil() as u32
     }
 }
 

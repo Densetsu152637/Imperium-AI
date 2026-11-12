@@ -1,7 +1,7 @@
 use imperium_api::{Availability, LocalModels};
 use imperium_config::{
-    LLAMACPP_ENDPOINT, Location, Preference, RoutingRule, RoutingSettings, SecretError, SecretName,
-    Settings, Tier, VLLM_ENDPOINT,
+    Capability, LLAMACPP_ENDPOINT, Location, Preference, RoutingRule, RoutingSettings, SecretError,
+    SecretName, Settings, Tier, VLLM_ENDPOINT,
 };
 use imperium_models::{Endpoint, Pricing};
 
@@ -138,6 +138,9 @@ pub struct CatalogModel {
     /// the CPU lane (`placement = "cpu"`, slow and for work that can wait), and a local model
     /// outside the model table, which `list_models` offers by name.
     pub named_only: bool,
+    /// The row is pinned to the CPU lane (`placement = "cpu"`): the one the built-in rules for
+    /// `critique`, `review` and `verify` tasks prefer.
+    pub cpu_lane: bool,
 }
 
 /// What a delegating agent asked for.
@@ -150,25 +153,22 @@ pub struct TaskRequest<'a> {
     pub tags: &'a [String],
     /// The delegating session: local models other sessions are using are not available to it.
     pub session: Option<&'a str>,
+    /// The subagent will call tools, so a model that cannot (`no-tools` on its row) is skipped.
+    /// False for a `single_call` subagent, which gets none.
+    pub needs_tools: bool,
 }
 
-/// Picks a subagent's model. Local models are considered only when `local` reports they can run
-/// (loaded with a free slot, fitting in free memory, or fitting once idle models are swapped
-/// out); a loaded model is preferred to loading one, and loading to swapping, and nothing in use
-/// is evicted, so when memory is short the choice falls to hosted models.
-///
-/// 1. a model the agent named, if it is in the table;
-/// 2. the first `[[routing.rules]]` entry matching the task's tier and tags decides: its `use`
-///    list is tried in order (an explicit choice, so tier is not checked; location is), then
-///    its location restriction applies to the rest. When no rule matched and
-///    `routing.builtin_rules` is on, the first matching built-in task-class rule applies, but
-///    its location and tier are preferences: with no suitable model there, its tier is tried in
-///    every allowed location, then the task's own tier;
-/// 3. otherwise the suitable models (at or above the tier, in the requested location) are
-///    ranked by `routing.prefer`, then by price, with unpriced models counted as free; rows
-///    pinned to the CPU lane are left out, since only work that can wait belongs there and a
-///    rule or a name sends it;
-/// 4. otherwise `fallback`, the session's model.
+/// A routing choice and what routing said about it on the way.
+#[derive(Debug, Clone)]
+pub struct Routed {
+    pub model: ResolvedModel,
+    /// Sentences for the user: the rule that sent the task to the CPU lane, and the models that
+    /// were skipped, with the reason (a missing capability, a backed-up queue). Empty when
+    /// routing had nothing out of the ordinary to say.
+    pub notes: Vec<String>,
+}
+
+/// Picks a subagent's model, as [`route_noted`] does, and drops the notes.
 pub fn route(
     catalog: &[CatalogModel],
     routing: &RoutingSettings,
@@ -176,6 +176,41 @@ pub fn route(
     request: TaskRequest<'_>,
     local: Option<&dyn LocalModels>,
 ) -> ResolvedModel {
+    route_noted(catalog, routing, fallback, request, local).model
+}
+
+/// Picks a subagent's model. Local models are considered only when `local` reports they can run
+/// (loaded with a free slot, fitting in free memory, or fitting once idle models are swapped
+/// out); a loaded model is preferred to loading one, and loading to swapping, and nothing in use
+/// is evicted, so when memory is short the choice falls to hosted models.
+///
+/// Models are skipped, with a reason in the notes, when they lack a capability the task needs
+/// (`vision`, `tools`, `long_context`: from the task's tags, the delegating call, or the
+/// matching rule's `require`), or when a local model's expected queue wait is over
+/// `routing.max_queue_wait_s` (rows reached only by a rule or a name are never skipped for
+/// that).
+///
+/// 1. a model the agent named, if it is in the table;
+/// 2. the first `[[routing.rules]]` entry matching the task's tier and tags decides: its `use`
+///    list is tried in order (an explicit choice, so tier is not checked; location is), then
+///    its location restriction applies to the rest. When no rule matched and
+///    `routing.builtin_rules` is on, the first matching built-in task-class rule applies, but
+///    its location and tier are preferences: with no suitable model there, its tier is tried in
+///    every allowed location, then the task's own tier. Failing that, the built-in rules for
+///    `critique`, `review`, `verify` and `proof-check` tasks prefer a CPU-lane row that can take
+///    the task now (`routing.builtin_cpu_lane`), else the ranking decides;
+/// 3. otherwise the suitable models (at or above the tier, in the requested location) are
+///    ranked by `routing.prefer`, then by price, with unpriced models counted as free; rows
+///    pinned to the CPU lane are left out, since only work that can wait belongs there and a
+///    rule or a name sends it;
+/// 4. otherwise `fallback`, the session's model.
+pub fn route_noted(
+    catalog: &[CatalogModel],
+    routing: &RoutingSettings,
+    fallback: &ResolvedModel,
+    request: TaskRequest<'_>,
+    local: Option<&dyn LocalModels>,
+) -> Routed {
     let availability = |c: &CatalogModel| match (c.model.local, local) {
         (false, _) => Availability::Loaded,
         (true, Some(local)) => match request.session {
@@ -184,15 +219,6 @@ pub fn route(
         },
         (true, None) => Availability::Unavailable,
     };
-    let usable = |c: &&CatalogModel| availability(c) != Availability::Unavailable;
-    if let Some(named) = request.named
-        && let Some(chosen) = catalog
-            .iter()
-            .filter(usable)
-            .find(|c| c.id == named || c.model.spec == named)
-    {
-        return chosen.model.clone();
-    }
     let matches = |rule: &&RoutingRule| {
         rule.when_tier.is_none_or(|tier| tier == request.tier)
             && rule
@@ -200,7 +226,8 @@ pub fn route(
                 .as_ref()
                 .is_none_or(|tag| request.tags.contains(tag))
     };
-    // User rules first; the built-in task-class rules apply only when none of them matched.
+    // User rules first; the built-in task-class rules apply only when none of them matched,
+    // and the built-in CPU-lane rules only when neither did.
     let user_rule = routing.rules.iter().find(matches);
     let builtin_rule = if user_rule.is_none() && routing.builtin_rules {
         RoutingSettings::builtin_rules()
@@ -209,7 +236,82 @@ pub fn route(
     } else {
         None
     };
-    let rule = user_rule.or(builtin_rule.as_ref());
+    let lane_rule = if user_rule.is_none()
+        && builtin_rule.is_none()
+        && routing.builtin_rules
+        && routing.builtin_cpu_lane
+    {
+        RoutingSettings::cpu_lane_rules()
+            .into_iter()
+            .find(|r| matches(&r))
+    } else {
+        None
+    };
+    let rule = user_rule.or(builtin_rule.as_ref()).or(lane_rule.as_ref());
+    // What the task needs of a model: from the call, its tags, and the matching rule.
+    let mut required: Vec<Capability> = Vec::new();
+    if request.needs_tools {
+        required.push(Capability::Tools);
+    }
+    if request.tags.iter().any(|tag| tag == "vision") {
+        required.push(Capability::Vision);
+    }
+    if request.tags.iter().any(|tag| tag == "long-context") {
+        required.push(Capability::LongContext);
+    }
+    if let Some(rule) = rule {
+        required.extend(rule.require.iter().copied());
+    }
+    let missing = |c: &CatalogModel| -> Option<String> {
+        required.iter().find_map(|capability| match capability {
+            Capability::Vision => (!c.tags.iter().any(|tag| tag == "vision"))
+                .then(|| "it reads no images (its row lacks the tag `vision`)".to_string()),
+            Capability::Tools => c
+                .tags
+                .iter()
+                .any(|tag| tag == "no-tools")
+                .then(|| "it cannot call tools (its row has the tag `no-tools`)".to_string()),
+            Capability::LongContext => {
+                let wanted = u64::from(routing.long_context_tokens);
+                let window = c.model.context_window.or_else(|| {
+                    local
+                        .filter(|_| c.model.local)
+                        .and_then(|local| local.planned_context(&c.model.model))
+                });
+                match window {
+                    Some(window) if window >= wanted => None,
+                    Some(window) => Some(format!(
+                        "its context window of {window} tokens is under {wanted}"
+                    )),
+                    None => Some(format!(
+                        "its context window is unknown, and {wanted} tokens are needed"
+                    )),
+                }
+            }
+        })
+    };
+    let queue_wait = |c: &CatalogModel| match (c.model.local, local) {
+        (true, Some(local)) => local.queue_wait_s(&c.model.model),
+        _ => 0,
+    };
+    let backed_up =
+        |c: &CatalogModel| routing.max_queue_wait_s > 0 && queue_wait(c) > routing.max_queue_wait_s;
+    // Why the router passes over a row that could otherwise take the task. Rows reached only
+    // by a rule or a name (the CPU lane) are slow on purpose and never skipped for their queue.
+    let skip = |c: &CatalogModel| -> Option<String> {
+        if let Some(reason) = missing(c) {
+            return Some(reason);
+        }
+        (!c.named_only && backed_up(c)).then(|| {
+            format!(
+                "its expected queue wait of {} s is over the {} s limit (routing.max_queue_wait_s)",
+                queue_wait(c),
+                routing.max_queue_wait_s
+            )
+        })
+    };
+    let usable =
+        |c: &&CatalogModel| availability(c) != Availability::Unavailable && skip(c).is_none();
     // A user rule's tier is a requirement; a built-in rule's is a preference.
     let tier = user_rule
         .and_then(|rule| rule.tier)
@@ -226,6 +328,35 @@ pub fn route(
         .or_else(|| user_rule.and_then(|rule| rule.location));
     let preferred_location = builtin_rule.as_ref().and_then(|rule| rule.location);
     let in_location = |c: &CatalogModel| location.is_none_or(|wanted| c.location == wanted);
+    // The models passed over that were in the running, for the user to read.
+    let skipped = || -> Option<String> {
+        let passed_over: Vec<String> = catalog
+            .iter()
+            .filter(|c| availability(c) != Availability::Unavailable)
+            .filter(|c| {
+                request
+                    .named
+                    .is_some_and(|named| c.id == named || c.model.spec == named)
+                    || rule.is_some_and(|rule| rule.use_models.contains(&c.id))
+                    || (!c.named_only && c.tier >= tier && in_location(c))
+            })
+            .filter_map(|c| skip(c).map(|reason| format!("{} ({reason})", c.id)))
+            .collect();
+        (!passed_over.is_empty()).then(|| format!("routing skipped {}", passed_over.join("; ")))
+    };
+    let finish = |model: ResolvedModel, note: Option<String>| Routed {
+        model,
+        notes: note.into_iter().chain(skipped()).collect(),
+    };
+    if let Some(named) = request.named
+        && let Some(chosen) = catalog
+            .iter()
+            .filter(usable)
+            .find(|c| c.id == named || c.model.spec == named)
+    {
+        return finish(chosen.model.clone(), None);
+    }
+    let mut note = None;
     if let Some(rule) = rule {
         let preferred = rule
             .use_models
@@ -234,7 +365,31 @@ pub fn route(
             .filter(usable)
             .find(|c| in_location(c));
         if let Some(chosen) = preferred {
-            return chosen.model.clone();
+            return finish(chosen.model.clone(), None);
+        }
+        if rule.cpu_lane {
+            // Work that can wait prefers the slow lane, but only a row that can take it now:
+            // a lane backed up past the limit is passed over like any other local model.
+            let lane = catalog
+                .iter()
+                .filter(usable)
+                .filter(|c| c.cpu_lane && c.tier >= tier && in_location(c) && !backed_up(c))
+                .min_by_key(|c| (std::cmp::Reverse(c.tier), availability(c)));
+            let tag = rule.when_tag.as_deref().unwrap_or("this");
+            if let Some(chosen) = lane {
+                return finish(
+                    chosen.model.clone(),
+                    Some(format!(
+                        "{tag} tasks prefer the CPU lane: sent to {}",
+                        chosen.id
+                    )),
+                );
+            }
+            if catalog.iter().any(|c| c.cpu_lane) {
+                note = Some(format!(
+                    "no CPU-lane row can take the {tag} task now, so it was routed by tier"
+                ));
+            }
         }
     }
     let rank = |c: &CatalogModel| {
@@ -268,10 +423,86 @@ pub fn route(
                     .then(a_rank.2.cmp(&b_rank.2))
             })
     };
-    best(preferred_location, preferred_tier)
+    let model = best(preferred_location, preferred_tier)
         .or_else(|| best(None, preferred_tier))
         .or_else(|| best(None, tier))
-        .map_or_else(|| fallback.clone(), |chosen| chosen.model.clone())
+        .map_or_else(|| fallback.clone(), |chosen| chosen.model.clone());
+    finish(model, note)
+}
+
+/// The next tier up from `tier`; `None` for the highest.
+fn tier_above(tier: Tier) -> Option<Tier> {
+    match tier {
+        Tier::Basic => Some(Tier::Standard),
+        Tier::Standard => Some(Tier::Strong),
+        Tier::Strong => Some(Tier::Frontier),
+        Tier::Frontier => None,
+    }
+}
+
+/// A stronger route for a task whose model `failed` (a `<endpoint>:<model>` spec) failed it or
+/// answered with low confidence, or `None` when there is none to try. `attempt` counts the
+/// retries including this one, starting at 1; the caller stops at
+/// `routing.escalation_attempts`, which this function does not check, and checks the budget.
+///
+/// The first rule matching the task whose `escalate` list has an entry for this attempt names
+/// the model (when it is usable and has the capabilities the task needs); otherwise the task
+/// is routed again from the tier above the failed model's, never to the failed model. The
+/// highest tier has nowhere to go.
+pub fn escalate(
+    catalog: &[CatalogModel],
+    routing: &RoutingSettings,
+    fallback: &ResolvedModel,
+    request: TaskRequest<'_>,
+    failed: &str,
+    attempt: u32,
+    local: Option<&dyn LocalModels>,
+) -> Option<Routed> {
+    let rest: Vec<CatalogModel> = catalog
+        .iter()
+        .filter(|c| c.model.spec != failed)
+        .cloned()
+        .collect();
+    let in_rest = |model: &ResolvedModel| rest.iter().any(|c| c.model.spec == model.spec);
+    let listed = routing
+        .rules
+        .iter()
+        .find(|rule| {
+            rule.when_tier.is_none_or(|tier| tier == request.tier)
+                && rule
+                    .when_tag
+                    .as_ref()
+                    .is_none_or(|tag| request.tags.contains(tag))
+        })
+        .and_then(|rule| {
+            let index = usize::try_from(attempt.saturating_sub(1)).ok()?;
+            rule.escalate.get(index)
+        });
+    if let Some(id) = listed {
+        let named = TaskRequest {
+            named: Some(id.as_str()),
+            ..request
+        };
+        let routed = route_noted(&rest, routing, fallback, named, local);
+        if in_rest(&routed.model)
+            && catalog
+                .iter()
+                .any(|c| &c.id == id && c.model.spec == routed.model.spec)
+        {
+            return Some(routed);
+        }
+    }
+    let failed_tier = catalog
+        .iter()
+        .find(|c| c.model.spec == failed)
+        .map_or(request.tier, |c| c.tier);
+    let stronger = TaskRequest {
+        named: None,
+        tier: tier_above(failed_tier)?,
+        ..request
+    };
+    let routed = route_noted(&rest, routing, fallback, stronger, local);
+    in_rest(&routed.model).then_some(routed)
 }
 
 #[cfg(test)]
@@ -398,6 +629,7 @@ tier = "basic"
                 location,
                 tags: tags.iter().map(|tag| tag.to_string()).collect(),
                 named_only: false,
+                cpu_lane: false,
             }
         };
         vec![
@@ -836,5 +1068,394 @@ tier = "basic"
             resolve_model(&self::settings(""), None, |_| Ok(None)),
             Err(ModelError::NoDefault)
         ));
+    }
+
+    /// Local models with fixed availability and queue waits, standing in for the supervisor.
+    #[derive(Debug)]
+    struct BusyLocal(Vec<(&'static str, Availability, u32)>);
+
+    impl LocalModels for BusyLocal {
+        fn availability(&self, model: &str) -> Availability {
+            self.0
+                .iter()
+                .find(|(id, ..)| *id == model)
+                .map_or(Availability::Unavailable, |(_, availability, _)| {
+                    *availability
+                })
+        }
+
+        fn queue_wait_s(&self, model: &str) -> u32 {
+            self.0
+                .iter()
+                .find(|(id, ..)| *id == model)
+                .map_or(0, |(.., wait)| *wait)
+        }
+
+        fn acquire<'a>(
+            &'a self,
+            _model: &'a str,
+            _holder: &'a str,
+        ) -> imperium_api::AcquireFuture<'a> {
+            Box::pin(async { Err("not used".to_string()) })
+        }
+    }
+
+    fn tagged(rows: &mut [CatalogModel], id: &str, tags: &[&str]) {
+        let row = rows.iter_mut().find(|c| c.id == id).unwrap();
+        row.tags = tags.iter().map(|tag| tag.to_string()).collect();
+    }
+
+    #[test]
+    fn capability_filters_skip_models_with_a_reason() {
+        let routing = RoutingSettings::default();
+        let mut rows = catalog();
+        tagged(&mut rows, "big", &["vision"]);
+        tagged(&mut rows, "cheap", &["no-tools"]);
+        rows.iter_mut()
+            .find(|c| c.id == "mid")
+            .unwrap()
+            .model
+            .context_window = Some(200_000);
+        rows.iter_mut()
+            .find(|c| c.id == "cheap")
+            .unwrap()
+            .model
+            .context_window = Some(8_000);
+        let run = |request: TaskRequest<'_>, rows: &[CatalogModel]| {
+            route_noted(rows, &routing, &fallback(), request, None)
+        };
+        let basic = TaskRequest {
+            tier: Tier::Basic,
+            ..TaskRequest::default()
+        };
+        // Without a need, the cheapest model (the unpriced one) is chosen and nothing is said.
+        let plain = run(basic, &rows);
+        assert_eq!(plain.model.model, "local");
+        assert!(plain.notes.is_empty());
+        // A task tagged `vision` goes to the row that declares it.
+        let tags = ["vision".to_string()];
+        let seeing = run(
+            TaskRequest {
+                tags: &tags,
+                ..basic
+            },
+            &rows,
+        );
+        assert_eq!(seeing.model.model, "big");
+        assert!(seeing.notes[0].contains("cheap") && seeing.notes[0].contains("vision"));
+        // A subagent that calls tools skips a row marked `no-tools`.
+        let tools = run(
+            TaskRequest {
+                needs_tools: true,
+                ..basic
+            },
+            &rows,
+        );
+        assert_eq!(tools.model.model, "local");
+        assert!(tools.notes[0].contains("cheap") && tools.notes[0].contains("no-tools"));
+        // Long context needs a known window of at least `long_context_tokens`.
+        let tags = ["long-context".to_string()];
+        let long = run(
+            TaskRequest {
+                tags: &tags,
+                ..basic
+            },
+            &rows,
+        );
+        assert_eq!(long.model.model, "mid");
+        assert!(long.notes[0].contains("8000") && long.notes[0].contains("unknown"));
+        // A rule can require a capability for the tasks it matches, and a named model that
+        // lacks it is passed over too.
+        let rule_routing = RoutingSettings {
+            rules: vec![RoutingRule {
+                when_tag: Some("scan".into()),
+                require: vec![Capability::Vision],
+                ..RoutingRule::default()
+            }],
+            ..RoutingSettings::default()
+        };
+        let tags = ["scan".to_string()];
+        let scan = TaskRequest {
+            tags: &tags,
+            named: Some("cheap"),
+            ..basic
+        };
+        let routed = route_noted(&rows, &rule_routing, &fallback(), scan, None);
+        assert_eq!(routed.model.model, "big");
+        assert!(routed.notes[0].contains("cheap"));
+        // No model qualifies: the session's model carries on.
+        let mut blind = catalog();
+        tagged(&mut blind, "big", &[]);
+        let none = run(
+            TaskRequest {
+                tags: &["vision".to_string()],
+                ..basic
+            },
+            &blind,
+        );
+        assert_eq!(none.model.model, "session");
+    }
+
+    #[test]
+    fn a_backed_up_local_model_falls_to_the_next_route_with_a_notice() {
+        let routing = RoutingSettings {
+            prefer: Preference::Local,
+            ..RoutingSettings::default()
+        };
+        let request = TaskRequest::default();
+        let run = |routing: &RoutingSettings, local: &BusyLocal, request: TaskRequest<'_>| {
+            route_noted(&local_catalog(), routing, &fallback(), request, Some(local))
+        };
+        let loaded = |small: u32, large: u32| {
+            BusyLocal(vec![
+                ("small", Availability::Loaded, small),
+                ("large", Availability::Loaded, large),
+            ])
+        };
+        // Idle or within the limit: the first local row wins as before, with nothing said.
+        let calm = run(&routing, &loaded(0, 0), request);
+        assert_eq!(calm.model.model, "small");
+        assert!(calm.notes.is_empty());
+        assert_eq!(run(&routing, &loaded(120, 0), request).model.model, "small");
+        // Past the limit: the next eligible local row, with the reason.
+        let backed_up = run(&routing, &loaded(300, 10), request);
+        assert_eq!(backed_up.model.model, "large");
+        assert!(backed_up.notes[0].contains("small") && backed_up.notes[0].contains("300"));
+        // Every local row backed up: the hosted model takes the task.
+        assert_eq!(run(&routing, &loaded(300, 400), request).model.model, "mid");
+        // The limit is configurable; zero turns the check off.
+        let patient = RoutingSettings {
+            max_queue_wait_s: 600,
+            ..routing.clone()
+        };
+        assert_eq!(
+            run(&patient, &loaded(300, 10), request).model.model,
+            "small"
+        );
+        let off = RoutingSettings {
+            max_queue_wait_s: 0,
+            ..routing.clone()
+        };
+        assert_eq!(run(&off, &loaded(9999, 9999), request).model.model, "small");
+        // A named local model that is backed up is passed over like the ranking's choice.
+        let named = TaskRequest {
+            named: Some("small"),
+            ..request
+        };
+        assert_eq!(run(&routing, &loaded(300, 10), named).model.model, "large");
+    }
+
+    #[test]
+    fn rows_reached_by_name_are_not_skipped_for_their_queue() {
+        let mut rows = local_catalog();
+        let lane = rows.iter_mut().find(|c| c.id == "large").unwrap();
+        lane.named_only = true;
+        lane.cpu_lane = true;
+        let local = BusyLocal(vec![
+            ("small", Availability::Fits, 0),
+            ("large", Availability::Loaded, 3600),
+        ]);
+        let named = TaskRequest {
+            named: Some("large"),
+            ..TaskRequest::default()
+        };
+        let routed = route_noted(
+            &rows,
+            &RoutingSettings::default(),
+            &fallback(),
+            named,
+            Some(&local),
+        );
+        assert_eq!(routed.model.model, "large");
+        assert!(routed.notes.is_empty());
+    }
+
+    fn lane_catalog() -> Vec<CatalogModel> {
+        let mut rows = local_catalog();
+        let lane = rows.iter_mut().find(|c| c.id == "large").unwrap();
+        lane.named_only = true;
+        lane.cpu_lane = true;
+        lane.tier = Tier::Strong;
+        rows
+    }
+
+    #[test]
+    fn critique_review_and_verify_prefer_the_cpu_lane_when_it_can_take_them() {
+        let rows = lane_catalog();
+        let routing = RoutingSettings::default();
+        let idle = BusyLocal(vec![
+            ("small", Availability::Fits, 0),
+            ("large", Availability::Fits, 0),
+        ]);
+        for tag in ["critique", "review", "verify", "proof-check"] {
+            let tags = [tag.to_string()];
+            let request = TaskRequest {
+                tags: &tags,
+                ..TaskRequest::default()
+            };
+            let routed = route_noted(&rows, &routing, &fallback(), request, Some(&idle));
+            assert_eq!(routed.model.model, "large", "{tag}");
+            assert!(routed.notes[0].contains("CPU lane"), "{tag}");
+        }
+        let tags = ["review".to_string()];
+        let review = TaskRequest {
+            tags: &tags,
+            ..TaskRequest::default()
+        };
+        // An ordinary task never lands on the lane by ranking.
+        let plain = route_noted(
+            &rows,
+            &routing,
+            &fallback(),
+            TaskRequest::default(),
+            Some(&idle),
+        );
+        assert_ne!(plain.model.model, "large");
+        // The lane cannot take the task (RAM short), or is backed up past the limit: the
+        // ranking decides, and the notice says why the lane was not used.
+        let short = BusyLocal(vec![
+            ("small", Availability::Fits, 0),
+            ("large", Availability::Unavailable, 0),
+        ]);
+        let busy = BusyLocal(vec![
+            ("small", Availability::Fits, 0),
+            ("large", Availability::Loaded, 500),
+        ]);
+        for local in [&short, &busy] {
+            let routed = route_noted(&rows, &routing, &fallback(), review, Some(local));
+            assert_eq!(routed.model.model, "small");
+            assert!(routed.notes[0].contains("no CPU-lane row"));
+        }
+        // A task that asks for a tier above the lane's goes by tier.
+        let frontier = TaskRequest {
+            tier: Tier::Frontier,
+            ..review
+        };
+        assert_ne!(
+            route_noted(&rows, &routing, &fallback(), frontier, Some(&idle))
+                .model
+                .model,
+            "large"
+        );
+        // A rule of the user's for the same tag replaces the built-in one, and the switches
+        // turn it off.
+        let own = RoutingSettings {
+            rules: vec![RoutingRule {
+                when_tag: Some("review".into()),
+                location: Some(Location::Cloud),
+                ..RoutingRule::default()
+            }],
+            ..RoutingSettings::default()
+        };
+        assert_eq!(
+            route_noted(&rows, &own, &fallback(), review, Some(&idle))
+                .model
+                .model,
+            "mid"
+        );
+        for off in [
+            RoutingSettings {
+                builtin_cpu_lane: false,
+                ..RoutingSettings::default()
+            },
+            RoutingSettings {
+                builtin_rules: false,
+                ..RoutingSettings::default()
+            },
+        ] {
+            let routed = route_noted(&rows, &off, &fallback(), review, Some(&idle));
+            assert_ne!(routed.model.model, "large");
+            assert!(routed.notes.is_empty());
+        }
+    }
+
+    #[test]
+    fn escalation_retries_on_a_stronger_route_and_never_on_the_failed_model() {
+        let routing = RoutingSettings::default();
+        let rows = catalog();
+        let request = TaskRequest {
+            tier: Tier::Basic,
+            ..TaskRequest::default()
+        };
+        // From the basic row, the cheapest model of the tier above.
+        let up = escalate(
+            &rows,
+            &routing,
+            &fallback(),
+            request,
+            "endpoint:cheap",
+            1,
+            None,
+        )
+        .unwrap();
+        assert_eq!(up.model.model, "local");
+        // From the strong row, the frontier tier has nothing in the table, so no retry.
+        let strong = TaskRequest {
+            tier: Tier::Strong,
+            ..TaskRequest::default()
+        };
+        assert!(
+            escalate(
+                &rows,
+                &routing,
+                &fallback(),
+                strong,
+                "endpoint:big",
+                1,
+                None
+            )
+            .is_none()
+        );
+        // A rule lists the models to try, one per attempt, then the tier above takes over.
+        let listed = RoutingSettings {
+            rules: vec![RoutingRule {
+                when_tag: Some("code".into()),
+                escalate: vec!["big".into()],
+                ..RoutingRule::default()
+            }],
+            ..RoutingSettings::default()
+        };
+        let tags = ["code".to_string()];
+        let coding = TaskRequest {
+            tags: &tags,
+            ..request
+        };
+        let first = escalate(
+            &rows,
+            &listed,
+            &fallback(),
+            coding,
+            "endpoint:cheap",
+            1,
+            None,
+        )
+        .unwrap();
+        assert_eq!(first.model.model, "big");
+        let second = escalate(
+            &rows,
+            &listed,
+            &fallback(),
+            coding,
+            "endpoint:cheap",
+            2,
+            None,
+        )
+        .unwrap();
+        assert_eq!(second.model.model, "local");
+        // The session's own model is not a stronger route.
+        let mut only = catalog();
+        only.retain(|c| c.id == "cheap");
+        assert!(
+            escalate(
+                &only,
+                &routing,
+                &fallback(),
+                request,
+                "endpoint:cheap",
+                1,
+                None
+            )
+            .is_none()
+        );
     }
 }

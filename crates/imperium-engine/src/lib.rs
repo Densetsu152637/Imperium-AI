@@ -36,7 +36,10 @@ pub use imperium_api::{
 pub use imperium_models::{ChatClient, ChatClients, ChatRequest, Endpoint};
 pub use journal::{journalled_model, messages_path, read_events as journal_events};
 pub use launcher::{LaunchFuture, SessionLauncher};
-pub use model::{CatalogModel, ModelError, ResolvedModel, TaskRequest, resolve_model, route};
+pub use model::{
+    CatalogModel, ModelError, ResolvedModel, Routed, TaskRequest, escalate, resolve_model, route,
+    route_noted,
+};
 pub use queue::QueueError;
 pub use quiet::{Background, RunNow, Waited, wait_for_quiet};
 pub use session::{Session, SessionClosed, SessionConfig, SessionMemory, new_session_id};

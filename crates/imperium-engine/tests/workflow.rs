@@ -151,6 +151,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
             location: Location::Cloud,
             tags: Vec::new(),
             named_only: false,
+            cpu_lane: false,
         },
         CatalogModel {
             id: "local".into(),
@@ -159,6 +160,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
             location: Location::Local,
             tags: Vec::new(),
             named_only: false,
+            cpu_lane: false,
         },
     ];
     let context = ContextIndex::new(vec![Pack::load(pack.path()).unwrap()], project.path());

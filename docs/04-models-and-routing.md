@@ -885,10 +885,8 @@ placement = "cpu"                         # auto (default) | cpu
   If the lane is unavailable (RAM short), the rule falls through to the ranking and, failing
   that, the session's model.
 
-TODO (merge with stage 2e): the plan's built-in rules sending `critique`, `review`, `verify`,
-and `proof-check` to the CPU lane (tier `strong`, location `local`) belong with stage 2e's
-built-in task-class rules (`feat/task-class-routing`), not here; until the branches merge the
-four rules above are the user's to write. Likewise not done here: giving CPU tasks a longer
+The four rules above are now built in, as [routing extras](#routing-extras-implemented): write
+your own only to change where those tags go. Not done: giving CPU tasks a longer
 `max_wall_s` and never sending a task with a short deadline to the lane. There is no task
 deadline in the task contract on this branch; `LocalModels::tokens_per_s` is the measurement
 that scheduling will use. The lane serves one call at a time unless `parallel` is raised, so
@@ -1189,8 +1187,9 @@ so when memory is short the choice falls to the next suitable row, typically hos
 needs a swap carries the expected seconds (the model's last measured load, or its size at
 2 GiB/s), for stage 2e's comparison of the swap with a hosted model's price per task class; until
 then a local row that can swap wins on price like any local row.
-A session's own model can also be `llamacpp:<id>`. The cost scoring with load latency and
-queue delay, capability filters, and escalation below are later work.
+A session's own model can also be `llamacpp:<id>`. Queue-delay handling, capability filters,
+escalation and the built-in CPU-lane rules are [routing extras](#routing-extras-implemented);
+the cost scoring with load latency below is later work.
 
 For each task, the router builds the candidate set and scores it:
 
@@ -1217,6 +1216,52 @@ prefer = ["openrouter:qwen/qwen3-235b-a22b"]
 match = { tools = ["exec"] }
 require = { source = "local" }      # never send code-execution tasks off-machine
 ```
+
+### Routing extras (implemented)
+
+Four additions to the choice above. Each applies in the router's decision, which the unit tests
+exercise with fake models and fake load views; none touches budgets, permission modes or the
+safety floor, since the chosen model is checked against its budget and runs under the session's
+permissions as before.
+
+- **Queue-delay handling.** A local runtime reports how long a call made now is expected to
+  wait for a slot (`LocalModels::queue_wait_s`: calls queued ahead and the busy slots, times the
+  model's recent seconds per call; 30 s per call before any is measured; 0 when a slot is free
+  or the model is not loaded). A local model whose wait is over `routing.max_queue_wait_s`
+  (default `120`; `0` turns it off) is skipped for the next eligible route, hosted if the call
+  and rules allow it, and the task's notice says which model was skipped and the wait. Rows
+  reached only by a rule or a name (the CPU lane) are never skipped for their queue; their wait
+  is bounded by the row's `max_wait_s`.
+- **Capability filters.** A task needs *vision* when it carries the tag `vision`, *long
+  context* with the tag `long-context`, and *tools* unless it is `single_call`; a rule can add
+  to these with `require = ["vision", "tools", "long_context"]` for the tasks it matches. A
+  model declares them on its table row: the tag `vision` for vision, the tag `no-tools` for a
+  model that cannot call tools (tools are assumed otherwise), and a context window (the row's
+  `context_window`, or a local model's planned context) of at least
+  `routing.long_context_tokens` (default `100000`; an unknown window does not qualify). A model
+  without a needed capability is skipped, even when named, and the notice gives the reason; when
+  none qualifies the session's model carries on.
+- **Escalation.** A subagent that fails, or whose report begins `CONFIDENCE: LOW` (the subagent
+  prompt asks for it when the task is beyond the model), is run again with its report appended
+  to the brief on a stronger route, up to `routing.escalation_attempts` times (default `1`;
+  `0` turns it off). The route comes from the first matching rule's `escalate = ["id", ...]`
+  (one id per attempt, in order), else the router runs again from the tier above the failed
+  model's, never choosing the failed model; at the top tier there is nowhere to go and the
+  failure is reported. A model whose budget blocks is not tried and one whose budget asks is
+  approved at its first call, as for any subagent. Writer subagents (`access: "write"`) are not
+  retried: their edits stay in their worktree. A notice marks each retry; the task keeps its id.
+- **Built-in CPU-lane rules.** Tasks tagged `critique`, `review`, `verify` or `proof-check`
+  prefer a row pinned to the [CPU lane](#runtimes) that can take them now (at or above the
+  task's tier, within its location, and not backed up past the queue limit), choosing the
+  highest tier, then the most ready. With no such row the usual ranking decides, and when a lane
+  row exists the notice says why it was not used. They apply only when none of your
+  `[[routing.rules]]` and none of the [task-class rules](#task-classes) matched, so a rule of
+  yours for the same tag replaces them, and `routing.builtin_cpu_lane = false` (or
+  `routing.builtin_rules = false`) turns them off. A rule can also set `cpu_lane = true` to
+  ask the same for its own tags.
+
+Notices appear where the task starts, in the same place as other session notices (the desktop
+app's session view, `imperium chat`); there is no protocol change.
 
 ## Model awareness and model cards (implemented)
 

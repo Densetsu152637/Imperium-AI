@@ -44,11 +44,11 @@ pub use secrets::{
     load_secret, store_secret,
 };
 pub use settings::{
-    ActionSettings, AgentSettings, ApiSettings, AutofixSettings, CatalogEntry, ConditionSettings,
-    ContextSettings, DaemonSettings, EndpointSettings, Enforce, ExtensionSettings, GithubSettings,
-    GithubWatch, HardwareSettings, HookSettings, ImageSettings, IsolationSettings,
-    LLAMACPP_ENDPOINT, ListModelsScope, LlamaCppSettings, LoadSettings, Location,
-    McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings, MemorySettings,
+    ActionSettings, AgentSettings, ApiSettings, AutofixSettings, Capability, CatalogEntry,
+    ConditionSettings, ContextSettings, DaemonSettings, EndpointSettings, Enforce,
+    ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HookSettings, ImageSettings,
+    IsolationSettings, LLAMACPP_ENDPOINT, ListModelsScope, LlamaCppSettings, LoadSettings,
+    Location, McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings, MemorySettings,
     MemoryWrite, ModelPlacement, ModelSettings, OpenAiApiSettings, PetSettings, PhoneSettings,
     PolicySettings, Preference, ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings,
     RuntimeSettings, ScheduleSettings, SecretRef, SessionSearchScope, SessionSettings, Settings,

@@ -777,6 +777,51 @@ max_wait_s = 9",
     }
 
     #[test]
+    fn routing_extras_have_defaults_and_read_rule_fields() {
+        let defaults = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let routing = &defaults.routing;
+        assert!(routing.builtin_cpu_lane);
+        assert_eq!(routing.max_queue_wait_s, 120);
+        assert_eq!(routing.long_context_tokens, 100_000);
+        assert_eq!(routing.escalation_attempts, 1);
+        let table = r#"
+            [routing]
+            max_queue_wait_s = 0
+            escalation_attempts = 2
+
+            [[models.catalog]]
+            id = "big"
+            spec = "openrouter:big"
+            location = "cloud"
+            tier = "frontier"
+
+            [[routing.rules]]
+            when_tag = "scan"
+            require = ["vision", "long_context"]
+            escalate = ["big"]
+        "#;
+        let settings =
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), table)])
+                .settings()
+                .unwrap();
+        assert_eq!(settings.routing.max_queue_wait_s, 0);
+        assert_eq!(settings.routing.escalation_attempts, 2);
+        let rule = &settings.routing.rules[0];
+        assert_eq!(
+            rule.require,
+            [crate::Capability::Vision, crate::Capability::LongContext]
+        );
+        assert_eq!(rule.escalate, ["big"]);
+        assert!(!rule.cpu_lane);
+        let unknown = table.replace("escalate = [\"big\"]", "escalate = [\"nope\"]");
+        let error =
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), &unknown)])
+                .settings()
+                .unwrap_err();
+        assert!(error.to_string().contains("escalate"), "{error}");
+    }
+
+    #[test]
     fn local_model_settings_have_defaults() {
         let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
         let llamacpp = &settings.runtime.llamacpp;
