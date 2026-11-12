@@ -423,6 +423,7 @@ impl Environments {
                 .find(|env| env.id == id)
                 .ok_or_else(|| EnvironmentError::NotFound(id.to_string()))?;
             edit(env)?;
+            normalize(env);
             changed = Some(env.clone());
             Ok(())
         })?;
