@@ -91,6 +91,13 @@ pub trait ToolProvider: Send + Sync + fmt::Debug {
         true
     }
 
+    /// Whether writer subagents (which work in git worktrees of their own) are offered the
+    /// tools; false keeps them to agents working in the session's own folders, for tools tied
+    /// to the session's folders, such as the live preview.
+    fn for_writers(&self) -> bool {
+        true
+    }
+
     /// Prepares the tools before the session's first turn (such as starting servers).
     fn start(&self) -> StartFuture<'_> {
         Box::pin(async { Vec::new() })

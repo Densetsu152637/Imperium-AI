@@ -13,6 +13,24 @@ mod update;
 
 use tauri::Manager;
 
+/// Colours the window's native background to the saved theme (the system's under "system"),
+/// matching `--bg` in styles.css. The configuration's dark colour covers the gap before this runs.
+fn paint_background(window: &tauri::WebviewWindow) {
+    let light = match store::saved_theme() {
+        Some("light") => true,
+        Some("dark") => false,
+        _ => window
+            .theme()
+            .is_ok_and(|theme| theme == tauri::Theme::Light),
+    };
+    let color = if light {
+        tauri::window::Color(0xf4, 0xf5, 0xf7, 0xff)
+    } else {
+        tauri::window::Color(0x0b, 0x0c, 0x0e, 0xff)
+    };
+    let _ = window.set_background_color(Some(color));
+}
+
 fn main() {
     let background = update::background();
     tauri::Builder::default()
@@ -34,7 +52,20 @@ fn main() {
             // never shows one.
             if !background {
                 for window in &app.config().app.windows {
-                    tauri::WebviewWindowBuilder::from_config(app.handle(), window)?.build()?;
+                    // Built hidden and shown once its native background matches the theme, so
+                    // the system's white never shows before the interface paints.
+                    let mut builder = tauri::WebviewWindowBuilder::from_config(app.handle(), window)?
+                        .visible(false);
+                    // With no remembered theme in the webview (first launch after an upgrade,
+                    // cleared data) the saved one is handed to boot.js before the first paint.
+                    if let Some(theme) = store::saved_theme() {
+                        builder = builder.initialization_script(format!(
+                            "try{{if(window.top===window)localStorage.setItem(\"imperium.theme\",\"{theme}\")}}catch(e){{}}"
+                        ));
+                    }
+                    let built = builder.build()?;
+                    paint_background(&built);
+                    built.show()?;
                 }
             }
             update::setup(app.handle());

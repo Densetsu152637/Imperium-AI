@@ -1267,12 +1267,24 @@ impl Shared {
         tool: Option<&str>,
         payload: serde_json::Value,
     ) -> Verdict {
+        self.hook_in(&self.workspace, event, tool, payload).await
+    }
+
+    /// [`Shared::hook`] for an agent working in `workspace` (a writer subagent's own
+    /// worktrees): the hooks run in its working directory.
+    pub(crate) async fn hook_in(
+        &self,
+        workspace: &Workspace,
+        event: HookEvent,
+        tool: Option<&str>,
+        payload: serde_json::Value,
+    ) -> Verdict {
         if self.extensions.hooks.is_empty() {
             return Verdict::Allow;
         }
         self.extensions
             .hooks
-            .run(event, tool, &payload, &self.workspace.local_dir())
+            .run(event, tool, &payload, &workspace.local_dir())
             .await
     }
 

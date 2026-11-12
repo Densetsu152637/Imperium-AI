@@ -112,6 +112,7 @@ import {
 import { PANELS_ICON, SETTINGS_SECTIONS, SettingsWindow } from "./SettingsWindow";
 import { appCommands } from "./commands/appCommands";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
+import { splashDone } from "./boot";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
 import { ConnectorsWindow } from "./ConnectorsWindow";
 import { EnvironmentWindow } from "./EnvironmentWindow";
@@ -240,6 +241,9 @@ export function App() {
   folderIconsRef.current = folderIcons;
 
   useEffect(() => applySettings(settings), [settings]);
+
+  // The panels have rendered (child effects run first), so the loading screen can fade out.
+  useEffect(() => splashDone(), []);
 
   // Settings changed in another window apply here too.
   useEffect(() => subscribeDoc("settings", () => setSettings(loadSettings())), []);

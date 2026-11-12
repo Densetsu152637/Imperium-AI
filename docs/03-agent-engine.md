@@ -125,6 +125,17 @@ share the session's permission approvals. Events carry an `agent_id` (`root`, or
 and the session emits `task_spawned` and `task_finished` (status, report, tokens, cost).
 Not yet: `send_to_task`, budgets per task, deeper trees, and cancellation.
 
+### Parallel writers (implemented)
+
+`spawn_agent` takes `access`: `read` (default; the subagent shares the root's folders) or
+`write`. A writer gets git worktrees of its own on its own branch, its tools and commands work
+there, and when it stops working its changes are committed on the branch and its report leads
+with the branch, files, and whether it merges cleanly; the root merges it with git, and
+conflicts are reported, never resolved for it. Outside git the writer shares the folders with a
+notice; plan mode refuses a writer, and a rule denying `git_commit` keeps its changes
+uncommitted in its worktree. Details, placement and cleanup:
+[worktrees](14-projects-and-automation.md#worktrees).
+
 ### Choosing a model
 
 **Implemented:** the root agent has `list_models`, which lists the models it may delegate to,
