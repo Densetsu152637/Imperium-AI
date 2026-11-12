@@ -24,6 +24,13 @@ pub enum EnvironmentError {
     Folder(String, std::io::Error),
     #[error("could not save the environments: {0}")]
     Save(std::io::Error),
+    /// The saved environments could not be read at start, so nothing is saved over them.
+    #[error(
+        "the saved environments could not be read ({0}); the file was set aside as \
+         environments.json.unreadable, and changes are refused so it is not replaced. Restore \
+         the file and restart the daemon"
+    )]
+    ReadOnly(String),
 }
 
 /// The id of the built-in Home environment: fixed, and valid as a folder name
@@ -64,22 +71,23 @@ struct File {
 pub struct Environments {
     path: PathBuf,
     list: Mutex<Vec<EnvironmentInfo>>,
+    /// Why the saved file could not be read, when it could not: every change is then refused.
+    read_only: Option<String>,
 }
 
 impl Environments {
-    /// Reads `path`; a missing file is an empty store, an unreadable one is set aside with a
-    /// warning so it is not overwritten.
+    /// Reads `path`; a missing file is an empty store. An unreadable one is set aside with a
+    /// warning, and the store is then read-only: it lists Home, but every change fails with
+    /// [`EnvironmentError::ReadOnly`] so nothing is saved over what could not be read.
     pub fn load(path: PathBuf) -> Self {
-        // Whether the file was left where it is although it could not be read: then Home is not
-        // saved over it.
-        let mut keep_file = false;
+        let mut read_only: Option<String> = None;
         let mut set_aside = |path: &Path, error: &dyn std::fmt::Display| {
             let aside = path.with_extension("json.unreadable");
             tracing::warn!(path = %path.display(), %error, "could not read the environments; setting the file aside");
-            if let Err(error) = std::fs::rename(path, aside) {
-                tracing::warn!(%error, "could not set the environments file aside; it is left as it is");
-                keep_file = true;
+            if let Err(rename) = std::fs::rename(path, aside) {
+                tracing::warn!(error = %rename, "could not set the environments file aside; it is left as it is");
             }
+            read_only = Some(error.to_string());
         };
         let list = match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<File>(&text) {
@@ -109,11 +117,13 @@ impl Environments {
         if migrated && let Err(error) = save(&path, &list) {
             tracing::warn!(path = %path.display(), %error, "could not save the migrated environments");
         }
+        let save_home = read_only.is_none();
         let store = Environments {
             path,
             list: Mutex::new(list),
+            read_only,
         };
-        store.ensure_home(!keep_file);
+        store.ensure_home(save_home);
         store
     }
 
@@ -494,6 +504,9 @@ impl Environments {
         &self,
         edit: impl FnOnce(&mut Vec<EnvironmentInfo>) -> Result<(), EnvironmentError>,
     ) -> Result<(), EnvironmentError> {
+        if let Some(reason) = &self.read_only {
+            return Err(EnvironmentError::ReadOnly(reason.clone()));
+        }
         let mut list = self.lock();
         let mut next = list.clone();
         edit(&mut next)?;
@@ -1043,6 +1056,18 @@ mod tests {
         let listed = envs.list();
         assert!(listed.len() == 1 && listed[0].builtin, "only Home is left");
         assert!(data.path().join("environments.json.unreadable").exists());
+        // Changes are refused, and nothing is written in the file's place.
+        assert!(matches!(
+            new(&envs, "Work", None, &[]),
+            Err(EnvironmentError::ReadOnly(_))
+        ));
+        assert!(matches!(
+            envs.delete("anything"),
+            Err(EnvironmentError::ReadOnly(_))
+        ));
+        assert!(!data.path().join("environments.json").exists());
+        let message = new(&envs, "Work", None, &[]).unwrap_err().to_string();
+        assert!(message.contains("could not be read"), "{message}");
     }
 
     #[test]
