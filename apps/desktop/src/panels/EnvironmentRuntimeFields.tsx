@@ -1,11 +1,14 @@
 // Where an environment's tools run (this machine, Docker, WSL, or SSH), a Test button that checks
-// the saved runtime can be reached, and the project-worktrees switch. Controlled: the host (the environment window) keeps the values and saves them.
+// the saved runtime can be reached, and the project-worktrees switch, as rows of the environment
+// window's Folders & runtime section. Controlled: the host (the environment window) keeps the
+// values and saves them.
 
 import { useState } from "react";
 
 import type { EnvironmentRuntime, RuntimeTestResult } from "@imperium/protocol";
 
 import { Select } from "../components/Select";
+import { Row, RowNote } from "../components/SettingsRow";
 import { Switch } from "../components/Switch";
 
 type Kind = EnvironmentRuntime["kind"];
@@ -78,9 +81,10 @@ export function EnvironmentRuntimeFields({
   const [result, setResult] = useState<RuntimeTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const field = (key: keyof Omit<RuntimeDraft, "kind">, label: string, placeholder: string) => (
-    <label className="runtime-field">
-      <span>{label}</span>
+    <Row label={label} sub>
       <input
+        type="text"
+        aria-label={label}
         value={draft[key]}
         placeholder={placeholder}
         disabled={disabled}
@@ -89,13 +93,12 @@ export function EnvironmentRuntimeFields({
           onChange({ ...draft, [key]: event.target.value });
         }}
       />
-    </label>
+    </Row>
   );
 
   return (
-    <section className="environment-section environment-runtime" aria-label="Runtime">
-      <div className="environment-section-head">
-        <span className="environment-label">Runtime</span>
+    <>
+      <Row label="Runtime" description="Where this environment's tools run.">
         {fixedLocal ? (
           <span className="muted">This machine</span>
         ) : (
@@ -110,7 +113,7 @@ export function EnvironmentRuntimeFields({
             }}
           />
         )}
-      </div>
+      </Row>
       {draft.kind === "docker" && (
         <>
           {field("image", "Image", "ubuntu:24.04")}
@@ -120,50 +123,51 @@ export function EnvironmentRuntimeFields({
       {draft.kind === "wsl" && field("distro", "Distribution", "Ubuntu")}
       {draft.kind === "ssh" && field("host", "Host", "devbox or me@host:22")}
       {draft.kind !== "local" && (
-        <p className="muted runtime-hint">
-          {isRemote(draft)
-            ? "Folders are paths inside the runtime, such as /home/me/project."
-            : "Each command runs in a fresh container with the folders mounted."}
-        </p>
+        <RowNote sub>
+          <p className="muted runtime-hint">
+            {isRemote(draft)
+              ? "Folders are paths inside the runtime, such as /home/me/project."
+              : "Each command runs in a fresh container with the folders mounted."}
+          </p>
+        </RowNote>
       )}
-      <div className="runtime-row">
-        <button
-          type="button"
-          disabled={disabled || testing || !!testBlocked}
-          title={testBlocked ?? "Check that the runtime can be reached"}
-          onClick={async () => {
-            setTesting(true);
-            try {
-              setResult(await onTest());
-            } catch (error) {
-              setResult({ ok: false, message: error instanceof Error ? error.message : String(error) });
-            } finally {
-              setTesting(false);
-            }
-          }}
-        >
-          {testing ? "Testing…" : "Test"}
-        </button>
-        {result && (
-          <span className={result.ok ? "runtime-result ok" : "runtime-result error"} role="status">
-            {result.message}
-          </span>
-        )}
-      </div>
-      <div className="runtime-row">
-        <span
-          className="environment-label"
-          title="Sessions can also use the git worktrees of the folders' repositories (the ones git worktree list shows, including new ones), as they use the folders. Local folders only; a session started in its own worktree keeps to it."
-        >
-          Project worktrees
+      <Row label="Test runtime" description="Check that the saved runtime can be reached.">
+        <span className="runtime-test">
+          {result && (
+            <span className={result.ok ? "runtime-result ok" : "runtime-result error"} role="status">
+              {result.message}
+            </span>
+          )}
+          <button
+            type="button"
+            disabled={disabled || testing || !!testBlocked}
+            title={testBlocked ?? "Check that the runtime can be reached"}
+            onClick={async () => {
+              setTesting(true);
+              try {
+                setResult(await onTest());
+              } catch (error) {
+                setResult({ ok: false, message: error instanceof Error ? error.message : String(error) });
+              } finally {
+                setTesting(false);
+              }
+            }}
+          >
+            {testing ? "Testing…" : "Test"}
+          </button>
         </span>
+      </Row>
+      <Row
+        label="Project worktrees"
+        description="Sessions can also use the git worktrees of the folders' repositories (the ones git worktree list shows, including new ones), as they use the folders. Local folders only; a session started in its own worktree keeps to it."
+      >
         <Switch
           label="Project worktrees"
           checked={projectWorktrees}
           disabled={disabled || isRemote(draft)}
           onChange={onProjectWorktrees}
         />
-      </div>
-    </section>
+      </Row>
+    </>
   );
 }
