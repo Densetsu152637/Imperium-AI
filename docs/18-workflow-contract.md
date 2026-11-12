@@ -222,7 +222,10 @@ this off.
 Only a call that succeeded counts as opening a directory: one that was denied by a rule, blocked
 by a hook, or failed loads nothing. The files in the workspace's root folder are skipped as well
 as the project folder's when they are the project's own file (same path) or have the same
-bytes; a worktree root file that differs from what the manifest serves is loaded.
+bytes (compared by length first, then in bounded chunks); a worktree root file that differs
+from what the manifest serves is loaded. A discovered file that is refused (a symbolic link
+leading outside the allowed folders, or a file that is not UTF-8) is skipped silently: nothing
+is loaded and no note is added.
 
 The message is the record: which files an agent holds is read back from its conversation, so a
 resumed session does not load them again, and compaction keeps them: it carries each file
