@@ -682,6 +682,7 @@ async fn a_session_parked_on_an_approval_holds_no_claim() {
         max_steps: 10,
         background: None,
         checkpoints: None,
+        budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
         keep_agent_state: true,

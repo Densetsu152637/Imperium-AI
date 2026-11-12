@@ -6,6 +6,7 @@ mod attachments;
 mod autofix;
 mod browser_control;
 mod budgets;
+pub use budgets::{CallGate, CallUsage};
 mod checkpoints;
 mod config;
 mod config_changes;

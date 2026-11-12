@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, Weak};
 use std::time::{Duration, Instant};
@@ -191,6 +191,10 @@ pub struct DaemonState {
     model_cards: imperium_memory::models::CardIndex,
     /// Each running session's checkpoints, when it records them.
     checkpoints: Mutex<HashMap<String, Arc<crate::checkpoints::SessionCheckpoints>>>,
+    /// Budget stops the person approved, by session, budget, and window.
+    budget_confirmed: Mutex<HashSet<String>>,
+    /// Test hook: the day budgets count as today (`None`: the local date).
+    budget_day: Mutex<Option<chrono::NaiveDate>>,
     /// Each running session's browser, for the user to take over and drive.
     browsers: Mutex<HashMap<String, BrowserSetup>>,
     /// Test hook: make `session.compare` fail after creating this many branches (0: never).
@@ -278,6 +282,8 @@ impl DaemonState {
             measurements: model_awareness::Measurements::default(),
             model_cards: imperium_memory::models::CardIndex::new(),
             checkpoints: Mutex::new(HashMap::new()),
+            budget_confirmed: Mutex::new(HashSet::new()),
+            budget_day: Mutex::new(None),
             browsers: Mutex::new(HashMap::new()),
             compare_fault: std::sync::atomic::AtomicUsize::new(0),
         });
@@ -1486,6 +1492,10 @@ impl DaemonState {
         let session = Session::spawn(SessionConfig {
             effort,
             journal_path,
+            budget_gate: Some(Arc::new(crate::budgets::CallGate::new(
+                self.me.clone(),
+                id.clone(),
+            ))),
             checkpoints: checkpoints.clone().map(|checkpoints| {
                 let hook: Arc<dyn imperium_engine::TurnCheckpoints> = checkpoints;
                 hook
@@ -1795,6 +1805,39 @@ impl DaemonState {
     /// The permission rules running sessions check calls against, and the global grants.
     pub fn budgets(&self) -> &crate::budgets::BudgetBook {
         &self.budgets
+    }
+
+    /// Whether the person approved this budget stop (an `ask` budget) for the session.
+    pub(crate) fn budget_confirmed(&self, key: &str) -> bool {
+        self.budget_confirmed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(key)
+    }
+
+    /// The day budgets count as today.
+    pub(crate) fn budget_today(&self) -> chrono::NaiveDate {
+        (*self
+            .budget_day
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
+        .unwrap_or_else(|| chrono::Local::now().date_naive())
+    }
+
+    /// Test hook: makes budgets count `day` as today for session gates (`None` undoes it).
+    #[doc(hidden)]
+    pub fn set_budget_today(&self, day: Option<chrono::NaiveDate>) {
+        *self
+            .budget_day
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = day;
+    }
+
+    pub(crate) fn confirm_budget(&self, key: &str) {
+        self.budget_confirmed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.to_string());
     }
 
     pub fn permissions(&self) -> &crate::permissions::PermissionStore {

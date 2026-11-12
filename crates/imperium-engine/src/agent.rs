@@ -762,6 +762,13 @@ impl Agent {
                 return self.pause_turn(total, step - 1, &reply);
             }
             self.take_steering().await;
+            // A compaction is a model call too: a used-up budget stops it, and the turn.
+            if let Some(message) = self.budget_stop().await {
+                self.emit(SessionEvent::TurnFailed {
+                    message: message.clone(),
+                });
+                return self.outcome(message, false, total);
+            }
             self.compact_near_limit(&tool_texts).await;
             let mut waits = 0;
             let mut waited = std::time::Duration::ZERO;
@@ -770,6 +777,13 @@ impl Agent {
             // What the reservation counted for the prompt, to compare with what it was.
             let mut estimate: u32;
             let (client, queue_wait, started, first_text, result) = loop {
+                // A used-up budget stops spend here, before each call, mid-turn included.
+                if let Some(message) = self.budget_stop().await {
+                    self.emit(SessionEvent::TurnFailed {
+                        message: message.clone(),
+                    });
+                    return self.outcome(message, false, total);
+                }
                 // A local model's slot is held for this one request, not for the turn: tool
                 // calls, `await_tasks`, and usage-limit pauses run without one. The model is
                 // loaded here if needed.
@@ -1634,6 +1648,39 @@ impl Agent {
         Ok((endpoint, Some(lease)))
     }
 
+    /// Why the next call to this agent's model must not happen.
+    async fn budget_stop(&self) -> Option<String> {
+        self.budget_stop_for(&self.model.spec).await
+    }
+
+    /// Why a call to the model `spec` must not happen: a used-up budget that blocks, or one
+    /// that asks and the person declined. A budget that asks waits here for approval, once for
+    /// the rest of the session's window; agents running in parallel raise one prompt, not one
+    /// each (the check is repeated once the prompt lock is held).
+    async fn budget_stop_for(&self, spec: &str) -> Option<String> {
+        let gate = self.shared.budget_gate.as_ref()?;
+        let mut turn = None;
+        loop {
+            match gate.check(spec) {
+                crate::BudgetVerdict::Go => return None,
+                crate::BudgetVerdict::Blocked(message) => return Some(message),
+                crate::BudgetVerdict::Ask { message, key } => {
+                    if turn.is_none() {
+                        turn = Some(self.shared.budget_ask.lock().await);
+                        continue;
+                    }
+                    if !self
+                        .approve_with("budget", &message, None, false, true)
+                        .await
+                    {
+                        return Some(format!("{message} The call was not approved."));
+                    }
+                    gate.confirm(&key);
+                }
+            }
+        }
+    }
+
     fn outcome(&self, text: String, ok: bool, usage: Usage) -> TurnOutcome {
         TurnOutcome {
             text,
@@ -1898,6 +1945,13 @@ impl Agent {
             },
             self.shared.local.as_deref(),
         );
+        // A model whose budget is used up and blocks is not started; one that asks is
+        // approved at the subagent's first call.
+        if let Some(gate) = &self.shared.budget_gate
+            && let crate::BudgetVerdict::Blocked(message) = gate.check(&model.spec)
+        {
+            return Err(message);
+        }
         let task_id = self.shared.next_task_id();
         self.emit(SessionEvent::TaskSpawned {
             task_id: task_id.clone(),
@@ -2848,6 +2902,10 @@ impl Agent {
         let mut failures = Vec::new();
         let holder = self.holder();
         for model in candidates {
+            if let Some(message) = self.budget_stop_for(&model.spec).await {
+                failures.push(format!("{}: {message}", model.spec));
+                continue;
+            }
             let (client, lease) = match self.client_for(model, &holder, None, false).await {
                 Ok(client) => client,
                 Err(error) => {
@@ -2856,6 +2914,7 @@ impl Agent {
                 }
             };
             let mut ignore = |_: &str| {};
+            let started = Instant::now();
             let completion = client
                 .stream(
                     ChatRequest {
@@ -2871,6 +2930,20 @@ impl Agent {
                 )
                 .await;
             drop(lease);
+            // The summary was a paid call: it counts toward budgets like any other.
+            if let Ok(done) = &completion
+                && let Some(usage) = &done.usage
+            {
+                self.emit(SessionEvent::ModelCallCompleted {
+                    model: model.spec.clone(),
+                    usage: token_usage(usage),
+                    duration_ms: millis(started.elapsed()),
+                    queue_wait_ms: None,
+                    time_to_first_token_ms: None,
+                    tokens_per_sec: None,
+                    cost_usd: model.pricing.map(|pricing| pricing.cost_usd(usage)),
+                });
+            }
             match completion {
                 Ok(completion) if !completion.text.trim().is_empty() => {
                     return Ok((completion.text.trim().to_string(), model.spec.clone()));
