@@ -227,3 +227,216 @@ async fn used_up_budgets_ask_then_block_new_turns_and_usage_survives_a_restart()
     assert_eq!(status["status"][0]["budget"]["action"], "block");
     assert_eq!(status["status"][0]["alerted"], json!([50, 80, 100]));
 }
+
+#[tokio::test]
+async fn a_used_up_budget_stops_calls_to_its_scope_not_only_new_turns() {
+    use imperium_engine::{BudgetGate, BudgetVerdict};
+    let home = tempfile::tempdir().unwrap();
+    let url = fake_model().await;
+    let state = daemon(home.path(), &url);
+    let mut connection = Connection::new(Arc::clone(&state));
+    handshake(&mut connection);
+    // Endpoint `other` blocks and endpoint `asked` asks once 100 tokens are spent; they have been.
+    let limit = |target: &str, action: &str| {
+        json!({"id": "", "name": "", "scope": "endpoint", "target": target,
+               "window": "daily", "tokens": 100, "cost_usd": null,
+               "thresholds": null, "action": action})
+    };
+    call(
+        &mut connection,
+        2,
+        "budgets.set",
+        json!({
+            "week_start": "monday", "month_start_day": 1, "thresholds": [100],
+            "limits": [limit("other", "block"), limit("asked", "ask")]
+        }),
+    );
+    let today = chrono::Local::now().date_naive();
+    for endpoint in ["other", "asked"] {
+        state.budgets().record(
+            today,
+            &imperium_core::CallUsage {
+                environment_id: None,
+                source: None,
+                spec: format!("{endpoint}:m"),
+                tokens: 500,
+                cost_usd: None,
+            },
+        );
+    }
+
+    // The session's gate, which the engine asks before each model call and spawn: a session
+    // whose root runs on `fake` is refused a subagent on `other`.
+    let project = tempfile::tempdir().unwrap();
+    let created = call(
+        &mut connection,
+        3,
+        "session.create",
+        json!({"project_dir": project.path()}),
+    );
+    let session_id = created["session_id"].as_str().unwrap().to_string();
+    let gate = imperium_core::CallGate::new(Arc::downgrade(&state), session_id);
+    assert!(matches!(
+        gate.check("other:m"),
+        BudgetVerdict::Blocked(message) if message.contains("blocked")
+    ));
+    assert_eq!(gate.check("fake:m"), BudgetVerdict::Go);
+    let BudgetVerdict::Ask { key, .. } = gate.check("asked:m") else {
+        panic!("an asking budget should ask");
+    };
+    gate.confirm(&key);
+    assert_eq!(gate.check("asked:m"), BudgetVerdict::Go);
+}
+
+#[tokio::test]
+async fn several_used_up_ask_budgets_are_each_asked_and_confirmed_covers_all() {
+    use imperium_engine::{BudgetGate, BudgetVerdict};
+    let home = tempfile::tempdir().unwrap();
+    let url = fake_model().await;
+    let state = daemon(home.path(), &url);
+    let mut connection = Connection::new(Arc::clone(&state));
+    handshake(&mut connection);
+    let limit = |name: &str| {
+        json!({"id": "", "name": name, "scope": "endpoint", "target": "asked",
+               "window": "daily", "tokens": 100, "cost_usd": null,
+               "thresholds": null, "action": "ask"})
+    };
+    call(
+        &mut connection,
+        2,
+        "budgets.set",
+        json!({
+            "week_start": "monday", "month_start_day": 1, "thresholds": [100],
+            "limits": [limit("First"), limit("Second")]
+        }),
+    );
+    state.budgets().record(
+        chrono::Local::now().date_naive(),
+        &imperium_core::CallUsage {
+            environment_id: None,
+            source: None,
+            spec: "asked:m".into(),
+            tokens: 500,
+            cost_usd: None,
+        },
+    );
+    let project = tempfile::tempdir().unwrap();
+    let created = call(
+        &mut connection,
+        3,
+        "session.create",
+        json!({"project_dir": project.path()}),
+    );
+    let session_id = created["session_id"].as_str().unwrap().to_string();
+    let gate = imperium_core::CallGate::new(Arc::downgrade(&state), session_id);
+    let mut asked = Vec::new();
+    while let BudgetVerdict::Ask { message, key } = gate.check("asked:m") {
+        assert!(!asked.contains(&key), "asked twice about {key}");
+        asked.push(key.clone());
+        assert!(message.starts_with("First") || message.starts_with("Second"));
+        gate.confirm(&key);
+    }
+    assert_eq!(asked.len(), 2, "each budget is asked about once");
+}
+
+#[tokio::test]
+async fn an_api_budget_does_not_stop_a_sessions_calls() {
+    use imperium_engine::{BudgetGate, BudgetVerdict};
+    let home = tempfile::tempdir().unwrap();
+    let url = fake_model().await;
+    let state = daemon(home.path(), &url);
+    let mut connection = Connection::new(Arc::clone(&state));
+    handshake(&mut connection);
+    call(
+        &mut connection,
+        2,
+        "budgets.set",
+        json!({
+            "week_start": "monday", "month_start_day": 1, "thresholds": [100],
+            "limits": [{"id": "", "name": "", "scope": "source", "target": "api",
+                        "window": "daily", "tokens": 100, "cost_usd": null,
+                        "thresholds": null, "action": "block"}]
+        }),
+    );
+    // The API's budget is used up.
+    state.budgets().record(
+        chrono::Local::now().date_naive(),
+        &imperium_core::CallUsage {
+            environment_id: None,
+            source: Some("api".into()),
+            spec: "fake:m".into(),
+            tokens: 500,
+            cost_usd: None,
+        },
+    );
+    let project = tempfile::tempdir().unwrap();
+    let created = call(
+        &mut connection,
+        3,
+        "session.create",
+        json!({"project_dir": project.path()}),
+    );
+    let session_id = created["session_id"].as_str().unwrap().to_string();
+    let gate = imperium_core::CallGate::new(Arc::downgrade(&state), session_id);
+    assert_eq!(gate.check("fake:m"), BudgetVerdict::Go);
+}
+
+#[tokio::test]
+async fn an_approval_ends_when_the_budget_window_rolls_over() {
+    use imperium_engine::{BudgetGate, BudgetVerdict};
+    let home = tempfile::tempdir().unwrap();
+    let url = fake_model().await;
+    let state = daemon(home.path(), &url);
+    let mut connection = Connection::new(Arc::clone(&state));
+    handshake(&mut connection);
+    call(
+        &mut connection,
+        2,
+        "budgets.set",
+        json!({
+            "week_start": "monday", "month_start_day": 1, "thresholds": [100],
+            "limits": [{"id": "", "name": "", "scope": "endpoint", "target": "asked",
+                        "window": "daily", "tokens": 100, "cost_usd": null,
+                        "thresholds": null, "action": "ask"}]
+        }),
+    );
+    let used = |day| {
+        state.budgets().record(
+            day,
+            &imperium_core::CallUsage {
+                environment_id: None,
+                source: None,
+                spec: "asked:m".into(),
+                tokens: 500,
+                cost_usd: None,
+            },
+        );
+    };
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
+    let tomorrow = today.succ_opt().unwrap();
+    used(today);
+    used(tomorrow);
+    let project = tempfile::tempdir().unwrap();
+    let created = call(
+        &mut connection,
+        3,
+        "session.create",
+        json!({"project_dir": project.path()}),
+    );
+    let session_id = created["session_id"].as_str().unwrap().to_string();
+    let gate = imperium_core::CallGate::new(Arc::downgrade(&state), session_id);
+
+    state.set_budget_today(Some(today));
+    let BudgetVerdict::Ask { key, .. } = gate.check("asked:m") else {
+        panic!("a used-up budget that asks should ask");
+    };
+    gate.confirm(&key);
+    assert_eq!(gate.check("asked:m"), BudgetVerdict::Go);
+
+    // The next day's window is used up too: the approval does not carry over.
+    state.set_budget_today(Some(tomorrow));
+    let BudgetVerdict::Ask { key: next, .. } = gate.check("asked:m") else {
+        panic!("a new window should ask again");
+    };
+    assert_ne!(key, next);
+}

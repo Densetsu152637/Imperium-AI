@@ -104,6 +104,7 @@ async fn attachments_reach_the_model_and_the_journal() {
         max_steps: 3,
         background: None,
         checkpoints: None,
+        budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
         keep_agent_state: false,

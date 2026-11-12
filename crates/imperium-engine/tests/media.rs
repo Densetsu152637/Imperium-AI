@@ -126,6 +126,7 @@ async fn agents_generate_images_and_audio() {
         max_steps: 6,
         background: None,
         checkpoints: None,
+        budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
         keep_agent_state: true,

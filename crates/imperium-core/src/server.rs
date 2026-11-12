@@ -101,7 +101,7 @@ pub(crate) async fn run_connection(
                     Message::Ping(_) | Message::Pong(_) => continue,
                 };
                 if let Some(subscription) = handled.subscription {
-                    tokio::spawn(forward(subscription, notify.clone()));
+                    tokio::spawn(forward(subscription, notify.clone(), connection.state()));
                 }
                 if let Some(deferred) = handled.deferred {
                     let reply = reply.clone();
@@ -135,15 +135,14 @@ pub(crate) async fn run_connection(
 }
 
 /// Turns a session's events into notifications until the session or the connection ends.
-async fn forward(mut subscription: Subscription, notify: mpsc::UnboundedSender<Notification>) {
+async fn forward(
+    mut subscription: Subscription,
+    notify: mpsc::UnboundedSender<Notification>,
+    state: Arc<crate::DaemonState>,
+) {
     loop {
-        let event = match subscription.events.recv().await {
-            Ok(event) => event,
-            Err(broadcast::error::RecvError::Lagged(missed)) => {
-                tracing::warn!(session = %subscription.session_id, missed, "client fell behind; events dropped");
-                continue;
-            }
-            Err(broadcast::error::RecvError::Closed) => return,
+        let Some(event) = crate::rpc::next_event(&state, &mut subscription).await else {
+            return;
         };
         let params = SessionEventParams {
             session_id: subscription.session_id.clone(),

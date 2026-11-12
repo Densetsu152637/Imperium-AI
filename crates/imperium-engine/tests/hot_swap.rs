@@ -144,6 +144,7 @@ fn start_with(
         auto_compact_at: None,
         background: None,
         checkpoints: None,
+        budget_gate: None,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),

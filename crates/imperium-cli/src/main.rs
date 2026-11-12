@@ -16,6 +16,7 @@ mod schedule;
 mod session;
 mod settings;
 mod workflow;
+mod workspaces;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -121,6 +122,11 @@ enum Command {
     Env {
         #[command(subcommand)]
         command: EnvCommand,
+    },
+    /// Environments' working folders: each one's `Memory.md` and its sessions' scratch folders.
+    Workspaces {
+        #[command(subcommand)]
+        command: WorkspacesCommand,
     },
     /// Project agents.
     Project {
@@ -354,6 +360,15 @@ enum SessionCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum WorkspacesCommand {
+    /// Show where the working folders are, and each environment's.
+    Where,
+    /// Move the working folders to another folder (it must be empty or new, and outside the
+    /// current one) and make it `workspaces.root`. An empty path goes back to the default.
+    Move { path: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
 enum EnvCommand {
     /// List environments and their folders.
     List,
@@ -569,6 +584,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 session_id,
                 remove_worktrees,
             } => env::delete_session(session_id, remove_worktrees),
+        },
+        Command::Workspaces { command } => match command {
+            WorkspacesCommand::Where => workspaces::show(),
+            WorkspacesCommand::Move { path } => workspaces::move_to(&path),
         },
         Command::Env { command } => match command {
             EnvCommand::List => env::list(),

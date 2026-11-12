@@ -150,6 +150,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         keep_agent_state: true,
         background: None,
         checkpoints: None,
+        budget_gate: None,
         effort: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),
     })

@@ -139,6 +139,7 @@ async fn explore_with(
         max_steps: 8,
         background: None,
         checkpoints: None,
+        budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
         keep_agent_state: true,
