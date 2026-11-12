@@ -46,6 +46,7 @@ use crate::suggestions::{SuggestTool, Suggestions};
 mod agent_config;
 mod archive;
 mod branch;
+mod memory_migration;
 mod model_awareness;
 mod session_search;
 mod titles;
@@ -1460,6 +1461,11 @@ impl DaemonState {
             placement.branched_from = serde_json::from_value(meta["branched_from"].clone()).ok();
             placement.comparison_id = meta["comparison_id"].as_str().map(str::to_string);
         }
+        // Older project memory of the environment's folder is in its Memory.md before the
+        // session reads it (a no-op once merged).
+        if let Some(environment) = &placement.environment_id {
+            self.migrate_environment_memory(environment);
+        }
         // Tool providers in the order their tools are offered (MCP tools always come first).
         let mut tools: Vec<Arc<dyn ToolProvider>> = Vec::new();
         if !mcp.is_empty() {
@@ -1578,7 +1584,7 @@ impl DaemonState {
                 load: self.load_view(),
             }),
             memory: self.settings().memory.enabled.then(|| SessionMemory {
-                store: Store::new(self.paths.data_dir(), (!remote).then_some(project_dir_path)),
+                store: Store::new(self.paths.data_dir()),
                 settings: self.settings().memory.clone(),
                 // Looked up on each use, so it follows the working folders when they move.
                 environment: placement

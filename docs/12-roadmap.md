@@ -339,6 +339,16 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     no persistent agent, and cannot be deleted
     ([14](14-projects-and-automation.md#home-implemented)).
 
+38. **One project memory** (implemented). Project-private and project-shared memory are folded
+    into the environment's `Memory.md`: memory has two scopes, global and environment, in the
+    tools, the prompt and Settings. Older entries of an environment's working directory are
+    merged into its `Memory.md` at start (duplicates skipped, differing bodies kept as
+    `-legacy`, whatever exceeds the 2,000/24,000 character limits moved to `Memory.archive.md`,
+    originals backed up, recorded, idempotent); folders in no environment are left until one has
+    them. `project` and `project-private` stay accepted as names for `environment` for protocol
+    0.30 only ([17](17-memory.md#migrating-older-project-memory), [10](10-configuration.md)).
+    Protocol 0.30.
+
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
 

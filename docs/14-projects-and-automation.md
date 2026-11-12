@@ -88,7 +88,7 @@ archives it, so its history is listed with the other archived sessions. Changing
 role restarts it with the same conversation; changing the environment's runtime restarts all of
 them; saving an agent with the same name and role restarts nothing, and a restart keeps the
 agent's limits and the reports of the sessions it already started. Deleting the environment stops
-them too. Agents have no pet in the nursery. The project-private memory and the environment's `Memory.md` ([17](17-memory.md#environment-memory-implemented)) are
+them too. Agents have no pet in the nursery. The environment's `Memory.md` ([17](17-memory.md#environment-memory-implemented)), where project memory lives too, is
 shared by all its agents, so each agent is told to begin the names of the entries it saves with its own
 name (lower case, with dashes; an environment-scope entry is a section of `Memory.md` named
 the same way) and to keep its open-task list in `<name>-open-tasks`. Adding,

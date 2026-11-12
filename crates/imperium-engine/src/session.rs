@@ -64,7 +64,7 @@ pub struct SessionConfig {
     pub notices: Vec<String>,
     /// Skills, hooks, and slash commands.
     pub extensions: Extensions,
-    /// Global and project memory, when enabled.
+    /// Global memory and the session's environment memory, when enabled.
     pub memory: Option<SessionMemory>,
     /// Workflow packs and project instructions, when enabled.
     pub context: Option<Arc<ContextIndex>>,
@@ -1316,7 +1316,7 @@ impl Shared {
     }
 }
 
-/// A session's memory: the store for its project and the user's memory settings.
+/// A session's memory: the global store, its environment's `Memory.md`, and the user's memory settings.
 #[derive(Debug, Clone)]
 pub struct SessionMemory {
     pub store: Store,
@@ -1334,8 +1334,7 @@ impl SessionMemory {
         let write = &self.settings.write;
         match scope {
             Scope::Global => write.global,
-            Scope::Project => write.project,
-            Scope::ProjectPrivate => write.project_private,
+            Scope::Environment => write.environment,
         }
     }
 }

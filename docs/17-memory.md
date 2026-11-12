@@ -5,11 +5,12 @@ conventions, lessons from past mistakes, and pointers to useful resources. Memor
 editable files with a search index on top, scoped so that the right facts reach the right
 agents and nothing private leaves the machine by accident.
 
-**Implemented (phase 5, `imperium-memory`):** the three file scopes below, entries with front
-matter, a regenerated `INDEX.md` per scope, term-based search (inverse document frequency
-weighted by name, description, and body), and a redaction check that refuses entries that
-look like keys or tokens. Every agent's instructions carry the index (within
-`max_index_tokens`); agents have `memory_search` and `memory_read`, and the root also has
+**Implemented (phase 5, `imperium-memory`):** the two scopes below (global entries, and an
+environment's `Memory.md`), entries with front matter, a regenerated `INDEX.md` for the global
+scope, term-based search (inverse document frequency weighted by name, description, and body),
+and a redaction check that refuses entries that look like keys or tokens. Every agent's
+instructions carry the index of global entries (within `max_index_tokens`) and the environment's
+`Memory.md`; agents have `memory_search` and `memory_read`, and the root also has
 `memory_remember`, which follows the scope's write policy (`ask` shows the entry in a
 permission prompt). With `recall`, the best matches for each message are placed before it in
 a `<relevant-memories>` block marked as data (within `max_recall_tokens`), and the session
@@ -25,17 +26,28 @@ and the `memory.*` protocol methods.
 
 | Scope              | Holds                                                         | Stored in                                         | Shared by           |
 | ------------------ | ------------------------------------------------------------- | ------------------------------------------------- | ------------------- |
-| **Global**         | Facts about the user and how they like to work, across every project | `<data>/memory/global/`                    | Every project       |
-| **Project (shared)** | Project conventions, architecture notes, decisions worth reusing | `<project>/.imperium/memory/` (can be committed) | Everyone who clones the project |
-| **Project (private)** | The user's own notes about a project, never committed       | `<data>/memory/projects/<project-id>/`            | This user only      |
-| **Environment**    | Notes about one environment only: its conventions, quirks and decisions | `<workspaces.root>/<environment-id>/Memory.md` (default `<data>/workspaces/…`) | Every session in that environment |
+| **Global**         | Facts about the user and how they like to work, across every project | `<data>/memory/global/`                    | Every environment   |
+| **Environment**    | What is true of one environment and its projects: conventions, architecture notes, quirks and decisions | `<workspaces.root>/<environment-id>/Memory.md` (default `<data>/workspaces/…`) | Every session in that environment |
 | **Session**        | Working memory for one session: scratch notes and the plan    | The session journal                               | That session's agents |
 
-Projects are environments ([14](14-projects-and-automation.md)), so "environment memory" and
-project memory used to be the same thing; they are now different scopes: **project** memory is the
-folder's own (`<project>/.imperium/memory/`, shared with whoever clones it), while **environment**
-memory (below) belongs to the environment as the user set it up and stays on their machine. On an
-SSH host, project memory lives on that host; global and environment memory stay on the local
+There is **one** memory for a project: the environment's. Projects are environments
+([14](14-projects-and-automation.md)), so a project's private notes and its environment's notes
+were the same thing under two names, and the settings, the prompt and the tools showed both. The
+two older project scopes are gone: the user's **private** notes about a project folder
+(`<data>/memory/projects/<project-id>/`) and the project's **shared** notes
+(`<project>/.imperium/memory/`, which could be committed) are merged into the `Memory.md` of the
+environment that has the folder, by the [migration](#migrating-older-project-memory) below. Global
+and environment memory stay on the local machine, also for an SSH host, unless the user enables
+syncing them to the host.
+
+### Names kept for one protocol version
+
+`memory_remember` (and the optional `scope` of `memory_search` and `memory_read`) still accept the
+old scope names **`project`**, **`project-private`** (also `project_private`, `private`) for **one
+protocol version, 0.30**: they mean `environment`, the entry is written to the environment's
+`Memory.md`, and the tool result says the name is old. The tools no longer advertise them. A
+later protocol version removes them, and then they are refused as unknown scopes. `project` is
+still one of the entry *types* (a project's goals and constraints), which is unrelated.
 machine unless the user enables syncing them to the host.
 
 ## Environment memory (implemented)
@@ -83,9 +95,51 @@ or machines it uses, decisions made while working in it. The user can open and e
   overrides it: where the two conflict, **environment memory takes precedence over global
   memory**, and the agent's instructions say so. It is still data, so it ranks below the system
   and workflow instructions and the user's current request, and it cannot grant permissions.
-  Project memory entries are facts about the repository and are not overridden by either.
-- Environment memory is not in the search index or the recalled-memories block: it is already in
-  context in full.
+  What was the project's private or shared memory is now part of environment memory (see below)
+  and ranks with it.
+- **Searching and reading.** `memory_search` and `memory_read` take an optional `scope`
+  (`global`, `environment`, or `all`, the default): environment memory is searched by its
+  `## <name>` sections, and `memory_read` of a name returns the environment's section of that
+  name before a global entry of the same name (the name `Memory.md` returns the whole file).
+  Recalled memories (`memory.recall`) come from global entries only, since the environment's
+  `Memory.md` is already in context in full.
+
+### Migrating older project memory
+
+The first time a daemon starts with this version, and again whenever a session starts in an
+environment (so a folder added to an environment later is picked up), the entries kept for the
+environment's **working directory** (its first folder) under the two older project scopes are
+merged into that environment's `Memory.md`. Home and environments on a remote runtime (Docker
+with a container, SSH) are skipped; Home has no project, and a remote runtime's folders were never
+keyed on this machine. For each of the two source folders (the private one,
+`<data>/memory/projects/<project-id>/`, and the shared one, `<project>/.imperium/memory/`):
+
+1. The folder is **copied byte for byte** to `<data>/memory/legacy/<project-id>[-shared]/`, before
+   anything else happens.
+2. Its entries are merged **by name**: a name `Memory.md` does not have becomes a `## <name>`
+   section; a name it has with the **same body** is a duplicate and is skipped; a name it has with
+   a **different body** is kept as well, as `<name>-legacy` (`-legacy-2`, ... if taken), so
+   neither version is lost.
+3. The size limits hold (2,000 characters an entry, 24,000 for the file). Whatever does not fit
+   (a longer body, a name `Memory.md` cannot hold, text that looks like a secret, or an entry
+   that would take the file past the limit) goes to **`Memory.archive.md`** beside `Memory.md`,
+   with a comment saying why. Agents never read the archive into their instructions; the user can
+   move what still matters into `Memory.md`. Nothing is dropped.
+4. The merge is recorded in `<data>/memory/migration.json` (source, environment, date, and
+   counts of entries, added, duplicates, kept both, archived, and where the backup is). A recorded
+   source is never merged again. The private originals are removed once their entries are in
+   `Memory.md`, the archive and the backup; the shared folder lives in the project's repository
+   and is left as it is. If the record is lost, running it again still changes nothing: the
+   duplicates are recognised and the archive is not appended twice.
+
+**Folders that belong to no environment.** The private folder's name is a hash of the project
+path, so it cannot be traced back to a path, and only an environment tells which folder a
+`Memory.md` is for. Such folders are therefore **left exactly where they are** (the daemon logs
+that some exist) and are merged by the same rules the moment an environment has the folder.
+This is the normal way they arrive: a session started in a bare folder makes an environment for it
+([14](14-projects-and-automation.md)), and the migration runs as that session starts, before it
+reads `Memory.md`. They are not merged into Home: that would put every unrelated project's notes
+in front of every session that has no project, and overflow Home's 24,000 characters.
 
 ## Memory entries
 
@@ -97,7 +151,7 @@ Agent-Custom-Workflow learning lessons use, so existing memories import without 
 name: prefers-pnpm
 description: The user uses pnpm, never npm or yarn, in every JavaScript project
 type: user            # user | feedback | project | reference | lesson
-scope: global         # global | project | project-private
+scope: global         # global | environment
 created: 2026-11-07
 source: session 23e7804d62f7443a
 confidence: confirmed # confirmed (the user said so) | inferred (an agent concluded it)
@@ -116,8 +170,9 @@ Use pnpm for installs and scripts. **Why:** the user's workspaces rely on pnpm w
 
 ## How agents use memory
 
-1. **Always in context (small):** the index lines of the global and project scopes, within a
-   token budget (`memory.max_index_tokens`). The index tells the agent what exists.
+1. **Always in context (small):** the index lines of the global entries, within a token budget
+   (`memory.max_index_tokens`), which tell the agent what exists; and the environment's
+   `Memory.md` in full (up to 24,000 characters).
 2. **On demand:** agents call `memory.search` (query, scope, type) and `memory.read` (name).
    Search is hybrid: full-text (SQLite FTS5) plus vector similarity when an embedding model is
    configured (a local embedding model through llama.cpp by default, see
@@ -245,7 +300,7 @@ max_pointer_tokens = 800       # budget for documentation pointers per manifest
 ## How memory is written
 
 - Tools: `memory.remember` (new entry), `memory.update`, `memory.forget`.
-- **Write policy per scope** (`memory.write`): `auto` (save immediately), `ask` (default: the
+- **Write policy per scope** (`memory.write.global`, `memory.write.environment`; both `ask` by default): `auto` (save immediately), `ask` (the
   agent proposes, the user approves in the desktop or phone app, with the entry shown), or
   `off`.
 - **What not to save:** facts the repository or its history already records, conversation-only
@@ -261,14 +316,14 @@ max_pointer_tokens = 800       # budget for documentation pointers per manifest
 - A **consolidation** job (a built-in schedule, weekly by default, or on demand) merges
   duplicates, fixes contradictions, marks references that no longer resolve, and prunes the
   index. It runs as a normal session whose changes are proposed, not applied silently.
-- Entries are plain files, so users can edit, delete, review in Git (project scope), or sync
+- Entries are plain files, so users can edit, delete, review in Git (an environment's Memory.md can be kept in a repository), or sync
   them with their own tools.
 - **Import/export:** import from Claude Code memory folders, `AGENTS.md`/`CLAUDE.md` notes, and
   policy-pack learning lessons; export a scope as a folder or archive.
 
 ## Privacy
 
-- Global and private project memory never leave the machine except inside prompts.
+- Global and environment memory never leave the machine except inside prompts.
 - `memory.cloud` controls what reaches **cloud** models (see the model table's `location` in
   [04](04-models-and-routing.md#routing)): `allow` (default), `index-only` (names and
   descriptions, not bodies), or `deny` (memory is offered only to local models).
@@ -290,7 +345,7 @@ max_pointer_tokens = 800       # budget for documentation pointers per manifest
 ```toml
 [memory]
 enabled = true
-write = { global = "ask", project = "ask", project_private = "auto" }
+write = { global = "ask", environment = "ask" }   # project and project_private were folded into environment
 recall = true                 # inject top matches before each turn
 max_index_tokens = 1500
 max_recall_tokens = 1500

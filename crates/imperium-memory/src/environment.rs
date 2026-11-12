@@ -139,24 +139,158 @@ impl EnvironmentMemory {
     }
 
     fn write_section(&self, name: &str, section: &str) -> Result<bool, MemoryError> {
+        let mut replaced = false;
+        self.update(|existing| {
+            let (updated, was_replaced) = upsert_section(existing, name, section);
+            replaced = was_replaced;
+            within_cap(&updated)?;
+            Ok(Some(updated))
+        })?;
+        Ok(replaced)
+    }
+
+    /// Where the overflow of a migration goes: `Memory.archive.md`, beside `Memory.md`. Agents
+    /// never read it into their instructions; the user can.
+    pub fn archive_file(&self) -> PathBuf {
+        self.file().with_file_name(ARCHIVE_NAME)
+    }
+
+    /// Reads the file under the writers' lock, lets `edit` produce its new text (`None` leaves
+    /// it as it is), and replaces it atomically. The file and its folder are made when missing.
+    pub(crate) fn update(
+        &self,
+        edit: impl FnOnce(&str) -> Result<Option<String>, MemoryError>,
+    ) -> Result<(), MemoryError> {
         let _turn = WRITES
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let file = self.file();
         let existing = std::fs::read_to_string(&file).unwrap_or_default();
-        let (updated, replaced) = upsert_section(&existing, name, section);
-        within_cap(&updated)?;
+        let Some(updated) = edit(&existing)? else {
+            return Ok(());
+        };
         if let Some(parent) = file.parent() {
             std::fs::create_dir_all(parent).map_err(|error| io(parent, error))?;
         }
         let temporary = file.with_extension("md.tmp");
         std::fs::write(&temporary, updated).map_err(|error| io(&temporary, error))?;
         std::fs::rename(&temporary, &file).map_err(|error| io(&file, error))?;
-        Ok(replaced)
+        Ok(())
+    }
+
+    /// Appends `text` to the archive file under the writers' lock, creating it (with a short
+    /// header saying what it is) when missing. Nothing is appended when `text` is empty.
+    pub(crate) fn append_archive(&self, text: &str) -> Result<(), MemoryError> {
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        let _turn = WRITES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let file = self.archive_file();
+        let mut existing = std::fs::read_to_string(&file).unwrap_or_default();
+        if existing.trim().is_empty() {
+            existing = ARCHIVE_HEADER.to_string();
+        }
+        if !existing.ends_with('\n') {
+            existing.push('\n');
+        }
+        existing.push('\n');
+        existing.push_str(text.trim_end());
+        existing.push('\n');
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| io(parent, error))?;
+        }
+        let temporary = file.with_extension("md.tmp");
+        std::fs::write(&temporary, existing).map_err(|error| io(&temporary, error))?;
+        std::fs::rename(&temporary, &file).map_err(|error| io(&file, error))?;
+        Ok(())
     }
 }
 
-fn section_text(name: &str, description: &str, kind: &str, body: &str) -> String {
+/// The archive's name, beside `Memory.md`.
+pub const ARCHIVE_NAME: &str = "Memory.archive.md";
+
+const ARCHIVE_HEADER: &str = "# Memory archive\n\nMemory kept out of Memory.md because it did not \
+fit there (an entry over the size limits, or a file already full) when older project memory was \
+merged into the environment's memory. Agents do not read this file into their instructions; \
+nothing here was deleted. Move what still matters into Memory.md (entries of at most 2,000 \
+characters, the file at most 24,000).\n";
+
+/// One `## <name>` section of `Memory.md`, as `memory_remember` writes it: a description and
+/// type line (`_description (type)_`, absent in sections written by hand), then the body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    pub name: String,
+    pub description: String,
+    pub kind: String,
+    pub body: String,
+}
+
+/// The `## ` sections of `text` in order; text before the first one is not a section.
+pub fn sections(text: &str) -> Vec<Section> {
+    units(text)
+        .into_iter()
+        .filter_map(|unit| {
+            let mut lines = unit.lines();
+            let name = lines.next()?.strip_prefix("## ")?.trim().to_string();
+            let rest: Vec<&str> = lines.collect();
+            let (description, kind, body) = match rest.first().and_then(|line| meta_line(line)) {
+                Some((description, kind)) => (description, kind, &rest[1..]),
+                None => (String::new(), String::new(), &rest[..]),
+            };
+            Some(Section {
+                name,
+                description,
+                kind,
+                body: body.join("\n").trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+/// `_description (type)_` as (description, type).
+fn meta_line(line: &str) -> Option<(String, String)> {
+    let inner = line.trim().strip_prefix('_')?.strip_suffix('_')?;
+    let inner = inner.strip_suffix(')')?;
+    let open = inner.rfind(" (")?;
+    Some((inner[..open].to_string(), inner[open + 2..].to_string()))
+}
+
+/// The sections of `text` best matching `query`, best first, as entries of the
+/// [`Scope::Environment`](crate::Scope::Environment) scope, for `memory_search`.
+pub fn search(text: &str, query: &str, limit: usize) -> Vec<crate::Entry> {
+    let entries: Vec<crate::Entry> = sections(text)
+        .into_iter()
+        .map(|section| crate::Entry {
+            name: section.name,
+            description: section.description,
+            kind: if section.kind.is_empty() {
+                "project".into()
+            } else {
+                section.kind
+            },
+            scope: crate::Scope::Environment,
+            created: String::new(),
+            source: FILE_NAME.into(),
+            body: section.body,
+            path: PathBuf::new(),
+        })
+        .collect();
+    let mut scored: Vec<(f64, crate::Entry)> = crate::score(&entries, query)
+        .into_iter()
+        .zip(entries)
+        .filter(|(score, _)| *score > 0.0)
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, entry)| entry)
+        .collect()
+}
+
+pub(crate) fn section_text(name: &str, description: &str, kind: &str, body: &str) -> String {
     format!(
         "## {name}\n_{} ({kind})_\n\n{}\n",
         description.trim().replace('\n', " "),
@@ -164,7 +298,7 @@ fn section_text(name: &str, description: &str, kind: &str, body: &str) -> String
     )
 }
 
-fn within_cap(text: &str) -> Result<(), MemoryError> {
+pub(crate) fn within_cap(text: &str) -> Result<(), MemoryError> {
     if text.chars().count() > MAX_CONTEXT_CHARS {
         return Err(MemoryError::TooLong(format!(
             "Memory.md would pass {MAX_CONTEXT_CHARS} characters, which is all that fits in \
@@ -176,7 +310,7 @@ fn within_cap(text: &str) -> Result<(), MemoryError> {
 
 /// `text` with `section` (starting `## <name>`) replacing the section of that name, or
 /// appended; true when one was replaced. Lines inside fenced code blocks never start a section.
-fn upsert_section(text: &str, name: &str, section: &str) -> (String, bool) {
+pub(crate) fn upsert_section(text: &str, name: &str, section: &str) -> (String, bool) {
     let heading = format!("## {name}");
     let mut lines: Vec<&str> = text.lines().collect();
     let mut fenced = false;
@@ -225,7 +359,7 @@ fn upsert_section(text: &str, name: &str, section: &str) -> (String, bool) {
 }
 
 /// The text split into its preamble and `## ` sections, in order.
-fn units(text: &str) -> Vec<String> {
+pub(crate) fn units(text: &str) -> Vec<String> {
     let mut units: Vec<String> = vec![String::new()];
     let mut fenced = false;
     for line in text.lines() {
@@ -603,6 +737,54 @@ mod tests {
             !std::fs::read_to_string(dir.path().join("one").join(FILE_NAME))
                 .unwrap()
                 .contains("second")
+        );
+    }
+
+    #[test]
+    fn sections_are_read_back_and_searched() {
+        let (_dir, memory) = memory();
+        std::fs::create_dir_all(memory.file().parent().unwrap()).unwrap();
+        std::fs::write(
+            memory.file(),
+            "# Notes\n\nhand written\n\n## by-hand\nno meta line\n",
+        )
+        .unwrap();
+        memory
+            .remember(
+                "uses-pnpm",
+                "Package manager",
+                "project",
+                "Use pnpm, never npm.",
+            )
+            .unwrap();
+        memory
+            .remember(
+                "deploys",
+                "How releases go out",
+                "reference",
+                "Tag and push.",
+            )
+            .unwrap();
+        let found = sections(&memory.read());
+        let names: Vec<_> = found.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["by-hand", "uses-pnpm", "deploys"]);
+        assert_eq!(found[0].description, "");
+        assert_eq!(found[0].body, "no meta line");
+        assert_eq!(
+            (
+                found[1].description.as_str(),
+                found[1].kind.as_str(),
+                found[1].body.as_str()
+            ),
+            ("Package manager", "project", "Use pnpm, never npm.")
+        );
+        let hits = search(&memory.read(), "which package manager, pnpm or npm?", 5);
+        assert_eq!(hits[0].name, "uses-pnpm");
+        assert_eq!(hits[0].scope, crate::Scope::Environment);
+        assert!(search(&memory.read(), "kubernetes", 5).is_empty());
+        assert_eq!(
+            memory.archive_file(),
+            memory.file().with_file_name(ARCHIVE_NAME)
         );
     }
 
