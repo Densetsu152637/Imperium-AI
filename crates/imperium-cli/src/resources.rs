@@ -165,6 +165,11 @@ pub fn render(snapshot: &ResourceSnapshot) -> String {
         if model.queued > 0 {
             state.push_str(&format!(", {} queued", model.queued));
         }
+        match (&model.draft_model, &model.draft_notice) {
+            (Some(draft), _) => state.push_str(&format!(", draft {draft}")),
+            (None, Some(notice)) => state.push_str(&format!(", {notice}")),
+            (None, None) => {}
+        }
         let sessions = if model.sessions.is_empty() {
             String::new()
         } else {
@@ -278,6 +283,8 @@ mod tests {
                 slots_in_use: 0,
                 queued: 0,
                 cpu_pinned: false,
+                draft_model: None,
+                draft_notice: None,
                 claimed: false,
                 sessions: vec!["s1".into()],
                 pid: Some(7),
@@ -299,6 +306,12 @@ mod tests {
                 last_error: Some("rate limited".into()),
             }],
         };
+        let mut drafted = snapshot.clone();
+        drafted.local_models[0].draft_model = Some("qwen-0.5b".into());
+        assert!(render(&drafted).contains("idle, unloads in 2m05s, draft qwen-0.5b  sessions"));
+        drafted.local_models[0].draft_model = None;
+        drafted.local_models[0].draft_notice = Some("Draft model x is not used.".into());
+        assert!(render(&drafted).contains(", Draft model x is not used.  sessions"));
         let text = render(&snapshot);
         assert!(text.contains("RAM   8.0 GiB / 32.0 GiB (25%)"), "{text}");
         assert!(text.contains("GPU0  RTX  util 40%"), "{text}");
