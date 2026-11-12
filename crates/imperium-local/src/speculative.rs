@@ -71,7 +71,7 @@ pub enum Drafting {
     /// No draft is configured.
     Off,
     /// The draft is used.
-    On(Draft),
+    On(Box<Draft>),
     /// A draft is configured but cannot be used; the model loads without it. The text says why,
     /// for the notice.
     Skipped(String),
@@ -81,7 +81,7 @@ impl Drafting {
     /// The draft used, if any.
     pub fn draft(&self) -> Option<&Draft> {
         match self {
-            Drafting::On(draft) => Some(draft),
+            Drafting::On(draft) => Some(draft.as_ref()),
             _ => None,
         }
     }
@@ -151,12 +151,12 @@ pub fn resolve(main: &LocalModel, launch: &ModelLaunch, installed: &[LocalModel]
     if let Err(reason) = compatible(&main.info, &draft.info) {
         return skip(&reason);
     }
-    Drafting::On(Draft {
+    Drafting::On(Box::new(Draft {
         model: draft.clone(),
         max: *max,
         min: *min,
         gpu_layers: *gpu_layers,
-    })
+    }))
 }
 
 #[cfg(test)]

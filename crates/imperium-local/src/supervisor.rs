@@ -1656,7 +1656,7 @@ impl Supervisor {
             }
         };
         let alone = place(Footprint::of(model, &sized));
-        let with = place(drafted_footprint(model, &sized, Some(&draft), cpu));
+        let with = place(drafted_footprint(model, &sized, Some(draft.as_ref()), cpu));
         let fits = match (&alone, &with) {
             (_, None) => Err("it does not fit in memory beside the model"),
             (Some(alone), Some(with)) if alone.all_layers_on_gpu && !with.all_layers_on_gpu => {
@@ -1685,7 +1685,7 @@ impl Supervisor {
         {
             return (loaded.draft.clone(), loaded.draft_notice.clone());
         }
-        let drafting = self.drafting(model, &launch, launch.pool_tokens);
+        let drafting = self.drafting(model, launch, launch.pool_tokens);
         (
             drafting.draft().map(|draft| draft.model.id.clone()),
             drafting.notice().map(str::to_string),
