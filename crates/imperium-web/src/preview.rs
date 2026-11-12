@@ -524,11 +524,7 @@ mod tests {
 
     /// A workspace, its preview tools, and the command that serves `port` from it.
     fn served() -> (tempfile::TempDir, PreviewTools, u16, String) {
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = free_port();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("imperium-preview-port"), port.to_string()).unwrap();
         let exe = std::env::current_exe().unwrap();
@@ -538,6 +534,37 @@ mod tests {
         );
         let tools = PreviewTools::new(Workspace::new(dir.path()).unwrap());
         (dir, tools, port, command)
+    }
+
+    /// Opens the preview served by `command`, which listens on the port named in `dir`. A port
+    /// found free a moment ago can be taken by the time the server binds it (the other tests
+    /// in this binary bind ports too), so a refusal for a taken port, or a server that could not bind it, retries on another one.
+    /// Returns the port that was used.
+    async fn open_served(
+        dir: &std::path::Path,
+        tools: &PreviewTools,
+        command: &str,
+        mut port: u16,
+    ) -> (u16, Result<String, String>, Vec<ToolEvent>) {
+        for _ in 0..5 {
+            let (result, events) = open(tools, json!({"command": command, "port": port})).await;
+            if !matches!(&result, Err(error) if error.contains("already in use") || error.contains("before listening"))
+            {
+                return (port, result, events);
+            }
+            port = free_port();
+            std::fs::write(dir.join("imperium-preview-port"), port.to_string()).unwrap();
+        }
+        let (result, events) = open(tools, json!({"command": command, "port": port})).await;
+        (port, result, events)
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
     }
 
     async fn open(
@@ -569,8 +596,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_runs_in_the_background_and_close_stops_it() {
-        let (_dir, tools, port, command) = served();
-        let (result, events) = open(&tools, json!({"command": command, "port": port})).await;
+        let (dir, tools, port, command) = served();
+        let (port, result, events) = open_served(dir.path(), &tools, &command, port).await;
         result.unwrap();
         let url = format!("http://localhost:{port}/");
         assert_eq!(tools.url().as_deref(), Some(url.as_str()));
@@ -610,11 +637,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_url_on_the_servers_own_port_keeps_it_and_another_port_stops_it() {
-        let (_dir, tools, port, command) = served();
-        open(&tools, json!({"command": command, "port": port}))
-            .await
-            .0
-            .unwrap();
+        let (dir, tools, port, command) = served();
+        let (port, result, _) = open_served(dir.path(), &tools, &command, port).await;
+        result.unwrap();
         let own = format!("http://localhost:{port}/x");
         assert!(tools.is_own_server(&own));
         let (result, events) = open(&tools, json!({"url": own})).await;
@@ -648,11 +673,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_server_that_ended_is_no_longer_the_sessions_own() {
-        let (_dir, tools, port, command) = served();
-        open(&tools, json!({"command": command, "port": port}))
-            .await
-            .0
-            .unwrap();
+        let (dir, tools, port, command) = served();
+        let (port, result, _) = open_served(dir.path(), &tools, &command, port).await;
+        result.unwrap();
         let url = format!("http://localhost:{port}/");
         // Stopped behind the preview's back, as command_stop or a crash would.
         tools.workspace.processes().stop_all();
@@ -690,11 +713,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_server_stops_with_the_session() {
-        let (_dir, tools, port, command) = served();
-        open(&tools, json!({"command": command, "port": port}))
-            .await
-            .0
-            .unwrap();
+        let (dir, tools, port, command) = served();
+        let (port, result, _) = open_served(dir.path(), &tools, &command, port).await;
+        result.unwrap();
         assert!(listening(port).await);
         // The session stops: the daemon stops its background processes.
         tools.workspace.processes().stop_all();
@@ -706,11 +727,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_server_stops_when_the_session_is_dropped() {
-        let (_dir, tools, port, command) = served();
-        open(&tools, json!({"command": command, "port": port}))
-            .await
-            .0
-            .unwrap();
+        let (dir, tools, port, command) = served();
+        let (port, result, _) = open_served(dir.path(), &tools, &command, port).await;
+        result.unwrap();
         assert!(listening(port).await);
         drop(tools);
         assert!(
