@@ -66,6 +66,7 @@ impl ToolProvider for MediaTools {
             summary,
             ask: true,
             needs_context: false,
+            command: None,
         })
     }
 

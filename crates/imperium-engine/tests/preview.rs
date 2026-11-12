@@ -13,6 +13,7 @@ use imperium_engine::{ResolvedModel, Session, SessionConfig, ToolProvider};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{PermissionDecision, SessionEvent};
 use imperium_tools::Workspace;
+use imperium_tools::permissions::{Permissions, SharedRules};
 use imperium_web::{BrowserSetup, PreviewTools, USER_DRIVING, Web, WebTools};
 use serde_json::{Value, json};
 
@@ -34,11 +35,30 @@ fn call(name: &str, arguments: Value) -> String {
     )
 }
 
+/// What a test changes about its session.
+#[derive(Default)]
+struct Setup {
+    workspace: Option<Workspace>,
+    pre_approved: Vec<String>,
+    context: Option<Arc<imperium_workflow::ContextIndex>>,
+    required_context: bool,
+    resume: bool,
+}
+
 /// A session whose model makes `calls` in turn, then says it is done.
 async fn session(
     dir: &Path,
     tools: Vec<Arc<dyn ToolProvider>>,
     calls: Vec<(&str, Value)>,
+) -> Session {
+    session_with(dir, tools, calls, Setup::default()).await
+}
+
+async fn session_with(
+    dir: &Path,
+    tools: Vec<Arc<dyn ToolProvider>>,
+    calls: Vec<(&str, Value)>,
+    setup: Setup,
 ) -> Session {
     // An empty name makes the model answer in text, which ends the turn.
     let calls: Vec<String> = calls
@@ -68,7 +88,9 @@ async fn session(
     .await;
     Session::spawn(SessionConfig {
         id: "preview".into(),
-        workspace: Workspace::new(dir).unwrap(),
+        workspace: setup
+            .workspace
+            .unwrap_or_else(|| Workspace::new(dir).unwrap()),
         model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint: Endpoint {
@@ -89,11 +111,15 @@ async fn session(
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
-        context: None,
-        enforce: imperium_config::Enforce::Warn,
-        pre_approved: Vec::new(),
+        context: setup.context,
+        enforce: if setup.required_context {
+            imperium_config::Enforce::RequiredBeforeAction
+        } else {
+            imperium_config::Enforce::Warn
+        },
+        pre_approved: setup.pre_approved,
         launcher: None,
-        resume: false,
+        resume: setup.resume,
         resume_policy: imperium_engine::default_resume_policy(),
         instructions: None,
         personality: None,
@@ -115,6 +141,8 @@ async fn session(
 #[derive(Default, Debug)]
 struct Turn {
     asked: Vec<String>,
+    /// The tool each approval named, and the pattern of the rule "always allow" would add.
+    requests: Vec<(String, Option<String>)>,
     results: Vec<(bool, String)>,
     previews: Vec<Option<String>>,
 }
@@ -133,9 +161,12 @@ async fn run(session: &Session, decision: PermissionDecision) -> Turn {
             SessionEvent::PermissionRequested {
                 request_id,
                 summary,
-                ..
+                tool,
+                suggested_rule,
             } => {
                 turn.asked.push(summary);
+                turn.requests
+                    .push((tool, suggested_rule.map(|rule| rule.pattern)));
                 session.respond(request_id, decision).unwrap();
             }
             SessionEvent::ToolFinished { ok, output, .. } => turn.results.push((ok, output)),
@@ -293,4 +324,205 @@ async fn browser_tools_are_refused_while_the_user_drives_and_return_when_given_b
     let turn = run(&session, PermissionDecision::Allow).await;
     let last = turn.results.last().expect("a result");
     assert!(!last.0 && !last.1.contains(USER_DRIVING), "{turn:?}");
+}
+
+/// A folder for a stand-in dev server: the port it serves and the command that starts it.
+fn stand_in(dir: &Path) -> (u16, String) {
+    let port = free_port();
+    std::fs::write(dir.join("imperium-preview-port"), port.to_string()).unwrap();
+    let command = format!(
+        "\"{}\" --exact stand_in_dev_server --nocapture",
+        std::env::current_exe().unwrap().display()
+    );
+    (port, command)
+}
+
+fn preview_tools(workspace: &Workspace) -> Vec<Arc<dyn ToolProvider>> {
+    vec![Arc::new(PreviewTools::new(workspace.clone()))]
+}
+
+fn permissions(
+    mode: imperium_api::PermissionMode,
+    rules: Vec<imperium_api::PermissionRule>,
+) -> Permissions {
+    Permissions::new(SharedRules::new(rules), SharedRules::default()).with_mode(mode)
+}
+
+#[tokio::test]
+async fn a_preview_command_is_refused_until_the_required_context_is_loaded() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("AGENTS.md"), "Project rules.\n").unwrap();
+    let (port, command) = stand_in(dir.path());
+    let workspace = Workspace::new(dir.path()).unwrap();
+    let session = session_with(
+        dir.path(),
+        preview_tools(&workspace),
+        vec![("preview_open", json!({"command": command, "port": port}))],
+        Setup {
+            workspace: Some(workspace),
+            context: Some(Arc::new(imperium_workflow::ContextIndex::new(
+                Vec::new(),
+                dir.path(),
+            ))),
+            required_context: true,
+            ..Setup::default()
+        },
+    )
+    .await;
+    let turn = run(&session, PermissionDecision::Allow).await;
+    assert!(
+        turn.results[0]
+            .1
+            .contains("load the required context first"),
+        "{turn:?}"
+    );
+    assert!(
+        turn.asked.is_empty() && turn.previews.is_empty(),
+        "{turn:?}"
+    );
+    assert!(!listening(port).await);
+}
+
+#[tokio::test]
+async fn preview_commands_follow_run_command_rules_and_suggestions() {
+    use imperium_api::{PermissionRule, RuleAction};
+    let dir = tempfile::tempdir().unwrap();
+    let (port, command) = stand_in(dir.path());
+    // Full mode runs commands without asking, but an ask rule on run_command still asks.
+    let exe = std::env::current_exe().unwrap().display().to_string();
+    let rule = PermissionRule {
+        tool: "run_command".into(),
+        pattern: format!("\"{exe}\""),
+        action: RuleAction::Ask,
+    };
+    let workspace = Workspace::new(dir.path())
+        .unwrap()
+        .with_permissions(permissions(imperium_api::PermissionMode::Full, vec![rule]));
+    let session = session_with(
+        dir.path(),
+        preview_tools(&workspace),
+        vec![("preview_open", json!({"command": command, "port": port}))],
+        Setup {
+            workspace: Some(workspace),
+            ..Setup::default()
+        },
+    )
+    .await;
+    let turn = run(&session, PermissionDecision::Deny).await;
+    // The approval names run_command, so "always allow" cannot add a blanket preview_open rule.
+    assert_eq!(turn.requests.len(), 1, "{turn:?}");
+    assert_eq!(turn.requests[0].0, "run_command");
+    assert!(turn.requests[0].1.is_some(), "{turn:?}");
+    assert!(!listening(port).await);
+
+    // A deny rule refuses it outright.
+    let deny = PermissionRule {
+        tool: "run_command".into(),
+        pattern: String::new(),
+        action: RuleAction::Deny,
+    };
+    let workspace = Workspace::new(dir.path())
+        .unwrap()
+        .with_permissions(permissions(imperium_api::PermissionMode::Full, vec![deny]));
+    let session = session_with(
+        dir.path(),
+        preview_tools(&workspace),
+        vec![("preview_open", json!({"command": "echo hi", "port": port}))],
+        Setup {
+            workspace: Some(workspace),
+            ..Setup::default()
+        },
+    )
+    .await;
+    let turn = run(&session, PermissionDecision::Allow).await;
+    assert!(turn.requests.is_empty() && !turn.results[0].0, "{turn:?}");
+}
+
+#[tokio::test]
+async fn preview_commands_meet_the_safety_floor_and_permission_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = free_port();
+    // An unattended session was started with run_command pre-approved: an ordinary command
+    // runs without asking (it ends before listening here), a destructive one still asks.
+    let workspace = Workspace::new(dir.path()).unwrap();
+    let session = session_with(
+        dir.path(),
+        preview_tools(&workspace),
+        vec![
+            ("preview_open", json!({"command": "echo hi", "port": port})),
+            (
+                "preview_open",
+                json!({"command": "rm -rf ./nothing-here", "port": port}),
+            ),
+        ],
+        Setup {
+            workspace: Some(workspace),
+            pre_approved: vec!["run_command".into()],
+            ..Setup::default()
+        },
+    )
+    .await;
+    let turn = run(&session, PermissionDecision::Deny).await;
+    assert_eq!(turn.results.len(), 2, "{turn:?}");
+    assert!(turn.results[0].1.contains("before listening"), "{turn:?}");
+    assert_eq!(turn.requests.len(), 1, "{turn:?}");
+    assert!(turn.asked[0].contains("rm -rf"), "{turn:?}");
+    assert!(turn.results[1].1.contains("denied"), "{turn:?}");
+
+    // Plan mode only reads: a preview command is refused without asking.
+    let (port, command) = stand_in(dir.path());
+    let workspace = Workspace::new(dir.path())
+        .unwrap()
+        .with_permissions(permissions(imperium_api::PermissionMode::Plan, Vec::new()));
+    let session = session_with(
+        dir.path(),
+        preview_tools(&workspace),
+        vec![("preview_open", json!({"command": command, "port": port}))],
+        Setup {
+            workspace: Some(workspace),
+            ..Setup::default()
+        },
+    )
+    .await;
+    let turn = run(&session, PermissionDecision::Allow).await;
+    assert!(turn.requests.is_empty() && !turn.results[0].0, "{turn:?}");
+    assert!(
+        turn.results[0].1.to_lowercase().contains("plan"),
+        "{turn:?}"
+    );
+    assert!(!listening(port).await);
+}
+
+#[tokio::test]
+async fn a_resumed_session_shows_the_agent_driving_and_no_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = session(dir.path(), Vec::new(), vec![]).await;
+    first.notify(SessionEvent::BrowserControl { user: true });
+    first.notify(SessionEvent::PreviewChanged {
+        url: Some("http://localhost:5173/".into()),
+        command: Some("npm run dev".into()),
+    });
+    drop(first);
+    let resumed = session_with(
+        dir.path(),
+        Vec::new(),
+        vec![],
+        Setup {
+            resume: true,
+            ..Setup::default()
+        },
+    )
+    .await;
+    let (history, _) = resumed.subscribe_with_history();
+    let mut driver = false;
+    let mut preview = None;
+    for event in history {
+        match event.event {
+            SessionEvent::BrowserControl { user } => driver = user,
+            SessionEvent::PreviewChanged { url, .. } => preview = url,
+            _ => {}
+        }
+    }
+    assert!(!driver, "the user's takeover does not survive a restart");
+    assert_eq!(preview, None, "the preview's server did not survive it");
 }

@@ -1,42 +1,38 @@
 //! Live preview: the page the project's dev server serves, shown beside the chat.
 //!
 //! Agents declare a preview with `preview_open`: a loopback `url` to show, or a `command` and
-//! the `port` it serves on. A command runs as one managed background process per session under
-//! the session's isolation tier and permission rules; it is stopped by `preview_close`, by
-//! opening another preview, and when the session ends. The dev server reloads the page when
-//! files change; Imperium only shows it.
+//! the `port` it serves on. A command runs in the session's background process table
+//! ([`imperium_tools::Processes`]), so it runs under the session's isolation tier, is judged
+//! like `run_command` (permission rules, safety floor, permission modes), is visible to
+//! `command_output` and `command_stop`, and ends with the session. It is also stopped by
+//! `preview_close` and by opening another preview. The dev server reloads the page when files
+//! change; Imperium only shows it.
 //!
-//! Previews are limited to loopback addresses (`localhost`, `127.0.0.1`, `[::1]`) because the
-//! page runs scripts inside the desktop app's window: the app's content security policy
-//! allows frames from loopback origins only, so a preview cannot navigate to, or load, a
-//! remote site. [`loopback_url`] is the same rule applied before any URL is accepted.
+//! Previews are limited to `localhost` and `127.0.0.1` because the page runs scripts inside the
+//! desktop app's window: the app's content security policy allows frames from those origins
+//! only, so a preview cannot navigate to, or load, a remote site. (`[::1]` is left out: CSP
+//! host sources cannot name an IPv6 literal, so the window could not show it.)
+//! [`loopback_url`] is the same rule applied before any URL is accepted.
 
-use std::process::Stdio;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use imperium_api::{
-    RuleAction, ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolProvider, ToolSpec,
-    parse_arguments,
+    ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolProvider, ToolSpec, parse_arguments,
 };
-use imperium_tools::permissions::Target;
 use imperium_tools::{Sandbox, Workspace};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::net::TcpStream;
-use tokio::process::Child;
 
 /// How long a started server may take to listen.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
-/// How much of the server's output an error reports.
-const LOG_TAIL: usize = 2_000;
 
 const TOOLS: [&str; 2] = ["preview_open", "preview_close"];
 
-/// `input` as a preview URL: an http or https URL whose host is `localhost`, `127.0.0.1`, or
-/// `[::1]`, with no user name or password. Returns the URL in its normal form. Anything else
-/// is refused with the reason, as a remote page must never run inside the app.
+/// `input` as a preview URL: an http or https URL whose host is `localhost` or `127.0.0.1`,
+/// with no user name or password. Returns the URL in its normal form. Anything else is refused
+/// with the reason, as a remote page must never run inside the app.
 pub fn loopback_url(input: &str) -> Result<String, String> {
     let input = input.trim();
     let url = reqwest::Url::parse(input)
@@ -47,12 +43,11 @@ pub fn loopback_url(input: &str) -> Result<String, String> {
     let loopback = match url.host() {
         Some(url::Host::Domain(domain)) => domain == "localhost",
         Some(url::Host::Ipv4(address)) => address == std::net::Ipv4Addr::LOCALHOST,
-        Some(url::Host::Ipv6(address)) => address == std::net::Ipv6Addr::LOCALHOST,
-        None => false,
+        _ => false,
     };
     if !loopback {
         return Err(format!(
-            "{input} is not a loopback address: a preview shows only localhost, 127.0.0.1, or [::1]"
+            "{input} is not a loopback address: a preview shows only localhost or 127.0.0.1"
         ));
     }
     if !url.username().is_empty() || url.password().is_some() {
@@ -61,61 +56,19 @@ pub fn loopback_url(input: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-/// A started server and the page it serves.
+/// What the preview shows now.
+#[derive(Debug)]
 struct Running {
     url: String,
-    /// Kills the server and everything it started when dropped.
-    _server: Option<Server>,
-}
-
-/// A process tree killed on drop (the shell and the dev server it started).
-struct Server {
-    child: Child,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        if let Some(pid) = self.child.id() {
-            kill_tree(pid);
-        }
-        let _ = self.child.start_kill();
-    }
-}
-
-#[cfg(windows)]
-fn kill_tree(pid: u32) {
-    use std::os::windows::process::CommandExt;
-    let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(0x0800_0000)
-        .status();
-}
-
-#[cfg(not(windows))]
-fn kill_tree(pid: u32) {
-    // The server runs in its own process group, so one signal reaches all of it.
-    let _ = std::process::Command::new("kill")
-        .args(["-KILL", "--", &format!("-{pid}")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    /// The background process serving it and its port, when the session started one.
+    server: Option<(String, u16)>,
 }
 
 /// The session's preview tools.
 #[derive(Debug)]
 pub struct PreviewTools {
     workspace: Workspace,
-    current: Arc<Mutex<Option<Running>>>,
-}
-
-impl std::fmt::Debug for Running {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Running").field("url", &self.url).finish()
-    }
+    current: Mutex<Option<Running>>,
 }
 
 #[derive(Deserialize)]
@@ -132,7 +85,7 @@ impl PreviewTools {
     pub fn new(workspace: Workspace) -> Self {
         PreviewTools {
             workspace,
-            current: Arc::default(),
+            current: Mutex::default(),
         }
     }
 
@@ -146,125 +99,132 @@ impl PreviewTools {
     }
 
     /// Stops the preview's server, if any, and clears the page. True if there was a preview.
-    pub fn close(&self) -> bool {
-        self.lock().take().is_some()
+    pub async fn close(&self) -> bool {
+        let running = self.lock().take();
+        let Some(running) = running else {
+            return false;
+        };
+        if let Some((id, _)) = running.server {
+            let _ = self.workspace.processes().stop(&id).await;
+        }
+        true
+    }
+
+    /// Why a command cannot be previewed in this session, if so. Decided before any approval.
+    fn command_refusal(&self) -> Option<String> {
+        if self.workspace.runtime().is_some() {
+            return Some(
+                "this session runs in a remote environment; a preview there cannot be reached \
+                 from the app"
+                    .into(),
+            );
+        }
+        match self.workspace.sandbox() {
+            Sandbox::Policy | Sandbox::Os { network: true } => None,
+            sandbox @ (Sandbox::Os { network: false } | Sandbox::Container { .. }) => {
+                Some(format!(
+                    "the session's isolation ({}) keeps a server's port from being reached by the \
+                 app; use the policy tier or allow the OS sandbox network",
+                    sandbox.label()
+                ))
+            }
+        }
+    }
+
+    /// Whether `url` is the page of the server this session's own preview command started.
+    fn is_own_server(&self, url: &str) -> bool {
+        let port = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|url| url.port_or_known_default());
+        let guard = self.lock();
+        matches!(
+            (&*guard, port),
+            (Some(Running { server: Some((_, own)), .. }), Some(port)) if *own == port
+        )
     }
 
     async fn open(&self, context: &ToolContext<'_>, arguments: &str) -> Result<String, String> {
         let args: Args = parse_arguments(arguments)?;
-        let (url, command, server) = match (args.url, args.command) {
+        let mut shown_command = None;
+        let (url, server) = match (args.url, args.command) {
             (Some(_), Some(_)) => return Err("give either url or command, not both".into()),
-            (Some(url), None) => (loopback_url(&url)?, None, None),
+            (Some(url), None) => (loopback_url(&url)?, None),
             (None, Some(command)) => {
                 let port = args
                     .port
                     .filter(|port| *port != 0)
                     .ok_or("a command needs the port it serves on")?;
-                let server = match self.start(&command, port).await {
-                    Ok(server) => server,
-                    Err(error) => {
-                        // An earlier preview was stopped to make room for this one.
-                        if self.url().is_none() {
-                            (context.emit)(ToolEvent::PreviewChanged {
-                                url: None,
-                                command: None,
-                            });
-                        }
-                        return Err(error);
-                    }
-                };
-                (
-                    format!("http://localhost:{port}/"),
-                    Some(command),
-                    Some(server),
-                )
+                if let Some(reason) = self.command_refusal() {
+                    return Err(reason);
+                }
+                // The earlier preview stops first so its server frees the port.
+                if self.close().await {
+                    (context.emit)(ToolEvent::PreviewChanged {
+                        url: None,
+                        command: None,
+                    });
+                }
+                let id = self.start(&command, port).await?;
+                shown_command = Some(command);
+                (format!("http://localhost:{port}/"), Some((id, port)))
             }
             (None, None) => return Err("give a url to show, or a command and its port".into()),
         };
-        // The old server stops only now, once the new one is up (or the URL accepted).
-        *self.lock() = Some(Running {
+        // A URL replaces a server preview only now; its server stays up if it is the same one.
+        let command_shown = server.is_some();
+        let previous = self.lock().replace(Running {
             url: url.clone(),
-            _server: server,
+            server,
         });
+        if !command_shown
+            && let Some(Running {
+                server: Some((id, _)),
+                ..
+            }) = previous
+        {
+            let _ = self.workspace.processes().stop(&id).await;
+        }
         (context.emit)(ToolEvent::PreviewChanged {
             url: Some(url.clone()),
-            command,
+            command: shown_command,
         });
         Ok(format!(
             "The preview shows {url} in the Preview panel. The dev server reloads the page when files change."
         ))
     }
 
-    /// Starts `command` under the session's isolation tier and waits for `port` to listen.
-    async fn start(&self, command: &str, port: u16) -> Result<Server, String> {
-        if self.workspace.runtime().is_some() {
-            return Err(
-                "this session runs in a remote environment; a preview there cannot be reached \
-                 from the app. Start the server there and open a url only if it is forwarded \
-                 to this machine"
-                    .into(),
-            );
-        }
-        match self.workspace.sandbox() {
-            Sandbox::Policy => {}
-            Sandbox::Os { network: true } => {}
-            Sandbox::Os { network: false } | Sandbox::Container { .. } => {
-                return Err(format!(
-                    "the session's isolation ({}) keeps a server's port from being reached by \
-                     the app; use the policy tier or allow the OS sandbox network",
-                    self.workspace.sandbox().label()
-                ));
-            }
-        }
-        // Replace any earlier preview first so the old server frees its port.
-        drop(self.lock().take());
+    /// Starts `command` in the session's background processes and waits for `port` to listen.
+    /// Returns the process id.
+    async fn start(&self, command: &str, port: u16) -> Result<String, String> {
         if listening(port).await {
             return Err(format!(
                 "port {port} is already in use; stop what listens there or choose another port"
             ));
         }
-        let roots = self.workspace.command_roots();
-        let roots: Vec<&std::path::Path> = roots.iter().map(std::path::PathBuf::as_path).collect();
-        let mut process = self
-            .workspace
-            .sandbox()
-            .command(&roots, self.workspace.grants(), command)
+        let processes = self.workspace.processes();
+        let id = processes
+            .start(&self.workspace, command)
             .map_err(|error| error.to_string())?;
-        process
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        process.process_group(0);
-        let mut child = process
-            .spawn()
-            .map_err(|error| format!("could not start the command: {error}"))?;
-        let output = Arc::new(Mutex::new(String::new()));
-        if let Some(stdout) = child.stdout.take() {
-            tokio::spawn(collect(stdout, Arc::clone(&output)));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(collect(stderr, Arc::clone(&output)));
-        }
-        let mut server = Server { child };
         let deadline = Instant::now() + READY_TIMEOUT;
         loop {
             if listening(port).await {
-                return Ok(server);
+                return Ok(id);
             }
-            if let Ok(Some(status)) = server.child.try_wait() {
-                return Err(format!(
-                    "the command ended ({status}) before listening on port {port}; output: {}",
-                    tail(&output)
-                ));
-            }
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "nothing listened on port {port} within {} seconds; output: {}",
-                    READY_TIMEOUT.as_secs(),
-                    tail(&output)
-                ));
+            let ended = processes.ended(&id).map_err(|error| error.to_string())?;
+            let failure = match ended {
+                Some(ended) => Some(format!(
+                    "the command {ended} before listening on port {port}"
+                )),
+                None if Instant::now() >= deadline => Some(format!(
+                    "nothing listened on port {port} within {} seconds",
+                    READY_TIMEOUT.as_secs()
+                )),
+                None => None,
+            };
+            if let Some(failure) = failure {
+                let output = processes.output(&id, Some(0)).unwrap_or_default();
+                let _ = processes.stop(&id).await;
+                return Err(format!("{failure}; {output}"));
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
@@ -284,46 +244,14 @@ async fn listening(port: u16) -> bool {
     false
 }
 
-/// Keeps the end of what a stream prints, so the pipe never fills and errors can quote it.
-async fn collect(mut stream: impl AsyncRead + Unpin, output: Arc<Mutex<String>>) {
-    let mut buffer = [0u8; 1024];
-    while let Ok(read) = stream.read(&mut buffer).await {
-        if read == 0 {
-            break;
-        }
-        let mut text = output.lock().unwrap_or_else(PoisonError::into_inner);
-        text.push_str(&String::from_utf8_lossy(&buffer[..read]));
-        if text.len() > 4 * LOG_TAIL {
-            let mut cut = text.len() - 2 * LOG_TAIL;
-            while !text.is_char_boundary(cut) {
-                cut += 1;
-            }
-            text.drain(..cut);
-        }
-    }
-}
-
-fn tail(output: &Mutex<String>) -> String {
-    let text = output.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut start = text.len().saturating_sub(LOG_TAIL);
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
-    let tail = text[start..].trim();
-    if tail.is_empty() {
-        "none".into()
-    } else {
-        tail.to_string()
-    }
-}
-
 impl ToolProvider for PreviewTools {
     fn instructions(&self) -> Option<&str> {
         Some(
             "Preview: preview_open shows the app you are building in the user's Preview panel. \
              Give the command that starts the project's dev server and the port it listens on \
-             (it runs in the background and stops with the session), or a localhost url that is \
-             already served. Only localhost, 127.0.0.1, and [::1] are shown.",
+             (it runs in the background, is judged like run_command, and stops with the \
+             session), or a localhost url that is already served. Only localhost and 127.0.0.1 \
+             are shown.",
         )
     }
 
@@ -333,7 +261,7 @@ impl ToolProvider for PreviewTools {
                 name: "preview_open".into(),
                 description: "Show a page the project serves in the user's Preview panel: either a loopback url (http://localhost:<port>), or a command that starts a dev server plus the port it listens on, which runs in the background until preview_close or the session ends.".into(),
                 parameters: json!({"type": "object", "properties": {
-                    "url": {"type": "string", "description": "A localhost, 127.0.0.1, or [::1] URL already being served."},
+                    "url": {"type": "string", "description": "A localhost or 127.0.0.1 URL already being served."},
                     "command": {"type": "string", "description": "Shell command that starts the dev server, such as `npm run dev`."},
                     "port": {"type": "integer", "description": "The port the command's server listens on (required with command)."}
                 }}),
@@ -350,44 +278,47 @@ impl ToolProvider for PreviewTools {
         TOOLS.contains(&name)
     }
 
-    /// A URL only shows a page and never asks; a command asks unless a `run_command` rule
-    /// allows it, and is refused when a rule denies it.
+    /// A command is judged as `run_command` on it (rules, safety floor, permission modes,
+    /// required context). A URL asks unless it is the page of the server this session's own
+    /// preview command started; closing never asks.
     fn check(&self, name: &str, arguments: &str) -> Result<ToolCheck, String> {
         if name == "preview_close" {
             return Ok(ToolCheck {
                 summary: "close the preview".into(),
                 ask: false,
                 needs_context: false,
+                command: None,
             });
         }
         let args: Args = parse_arguments(arguments)?;
-        let (summary, ask) = match (&args.url, &args.command) {
-            (Some(url), None) => (format!("preview {}", loopback_url(url)?), false),
+        match (&args.url, &args.command) {
+            (Some(url), None) => {
+                let url = loopback_url(url)?;
+                Ok(ToolCheck {
+                    // Any other loopback port may be something private on this machine.
+                    ask: !self.is_own_server(&url),
+                    summary: format!("preview {url}"),
+                    needs_context: false,
+                    command: None,
+                })
+            }
             (None, Some(command)) => {
-                let rule = self
-                    .workspace
-                    .permissions()
-                    .evaluate("run_command", &Target::Command(command.clone()));
-                let ask = match rule {
-                    Some(RuleAction::Deny) => {
-                        return Err(format!("a permission rule denies running {command}"));
-                    }
-                    Some(RuleAction::Allow) => false,
-                    _ => true,
-                };
                 let port = args
                     .port
-                    .map(|port| format!(" on port {port}"))
-                    .unwrap_or_default();
-                (format!("start {command}{port} and preview it"), ask)
+                    .filter(|port| *port != 0)
+                    .ok_or("a command needs the port it serves on")?;
+                if let Some(reason) = self.command_refusal() {
+                    return Err(reason);
+                }
+                Ok(ToolCheck {
+                    summary: format!("start {command} on port {port} and preview it"),
+                    ask: true,
+                    needs_context: true,
+                    command: Some(command.clone()),
+                })
             }
-            _ => return Err("give either a url, or a command and its port".into()),
-        };
-        Ok(ToolCheck {
-            summary,
-            ask,
-            needs_context: false,
-        })
+            _ => Err("give either a url, or a command and its port".into()),
+        }
     }
 
     fn call<'a>(
@@ -398,7 +329,7 @@ impl ToolProvider for PreviewTools {
     ) -> ToolFuture<'a> {
         Box::pin(async move {
             if name == "preview_close" {
-                let closed = self.close();
+                let closed = self.close().await;
                 (context.emit)(ToolEvent::PreviewChanged {
                     url: None,
                     command: None,
@@ -424,7 +355,6 @@ mod tests {
             "http://localhost:5173",
             "http://LOCALHOST:3000/app?x=1#top",
             "http://127.0.0.1:8080/",
-            "http://[::1]:9000/index.html",
             "https://localhost:8443",
             "  http://localhost/  ",
         ] {
@@ -445,6 +375,8 @@ mod tests {
             "http://192.168.1.5:3000",
             "http://0.0.0.0:3000",
             "http://127.0.0.2:3000",
+            // The window's content security policy cannot name an IPv6 literal.
+            "http://[::1]:9000/index.html",
             "http://[::2]:3000",
             "file:///etc/passwd",
             "javascript:alert(1)",
@@ -467,17 +399,23 @@ mod tests {
     }
 
     #[test]
-    fn urls_do_not_ask_and_commands_do() {
+    fn commands_are_checked_as_run_command_and_need_context() {
         let tools = tools();
-        let url = tools
-            .check("preview_open", r#"{"url":"http://localhost:5173"}"#)
-            .unwrap();
-        assert!(!url.ask);
         let command = tools
             .check("preview_open", r#"{"command":"npm run dev","port":5173}"#)
             .unwrap();
         assert!(command.ask);
+        assert!(command.needs_context);
+        assert_eq!(command.command.as_deref(), Some("npm run dev"));
         assert!(command.summary.contains("npm run dev"));
+        let url = tools
+            .check("preview_open", r#"{"url":"http://localhost:5173"}"#)
+            .unwrap();
+        assert!(url.ask, "a port this session did not start asks");
+        assert!(!url.needs_context);
+        assert_eq!(url.command, None);
+        let close = tools.check("preview_close", "{}").unwrap();
+        assert!(!close.ask && !close.needs_context && close.command.is_none());
         assert!(
             tools
                 .check("preview_open", r#"{"url":"https://example.com"}"#)
@@ -491,7 +429,31 @@ mod tests {
                 )
                 .is_err()
         );
+        assert!(
+            tools
+                .check("preview_open", r#"{"command":"npm run dev"}"#)
+                .is_err()
+        );
         assert!(tools.check("preview_open", "{}").is_err());
+    }
+
+    #[test]
+    fn unreachable_isolation_refuses_before_any_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        for sandbox in [
+            Sandbox::Os { network: false },
+            Sandbox::Container {
+                runtime: "docker".into(),
+                image: "ubuntu".into(),
+                network: true,
+            },
+        ] {
+            let workspace = Workspace::new(dir.path()).unwrap().with_sandbox(sandbox);
+            let error = PreviewTools::new(workspace)
+                .check("preview_open", r#"{"command":"npm run dev","port":3000}"#)
+                .unwrap_err();
+            assert!(error.contains("isolation"), "{error}");
+        }
     }
 
     /// Not a test of its own: the lifecycle tests run this test binary again, in a workspace
@@ -570,13 +532,34 @@ mod tests {
         assert_eq!(
             events,
             [ToolEvent::PreviewChanged {
-                url: Some(url),
-                command: Some(command)
+                url: Some(url.clone()),
+                command: Some(command.clone())
             }]
         );
-        assert!(tools.close());
+        // It is one of the session's background processes, and its own page needs no approval.
+        assert_eq!(tools.workspace.processes().running(), 1);
+        assert!(
+            !tools
+                .check("preview_open", &json!({"url": url}).to_string())
+                .unwrap()
+                .ask
+        );
+        let other = format!("http://localhost:{}/", u32::from(port) ^ 1);
+        assert!(
+            tools
+                .check("preview_open", &json!({"url": other}).to_string())
+                .unwrap()
+                .ask
+        );
+        assert!(tools.close().await);
         assert!(stops_listening(port).await, "the server kept running");
         assert_eq!(tools.url(), None);
+        assert!(
+            tools
+                .check("preview_open", &json!({"url": url}).to_string())
+                .unwrap()
+                .ask
+        );
     }
 
     #[tokio::test]
@@ -587,7 +570,22 @@ mod tests {
             .0
             .unwrap();
         assert!(listening(port).await);
-        // The session ends: its tool providers are dropped.
+        // The session stops: the daemon stops its background processes.
+        tools.workspace.processes().stop_all();
+        assert!(
+            stops_listening(port).await,
+            "the server outlived its session"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_server_stops_when_the_session_is_dropped() {
+        let (_dir, tools, port, command) = served();
+        open(&tools, json!({"command": command, "port": port}))
+            .await
+            .0
+            .unwrap();
+        assert!(listening(port).await);
         drop(tools);
         assert!(
             stops_listening(port).await,
@@ -628,10 +626,6 @@ mod tests {
         assert!(error.contains("boom"), "{error}");
         assert!(error.contains("before listening"), "{error}");
         assert_eq!(tools.url(), None);
-        assert!(
-            events
-                .iter()
-                .all(|event| matches!(event, ToolEvent::PreviewChanged { url: None, .. }))
-        );
+        assert!(events.is_empty());
     }
 }

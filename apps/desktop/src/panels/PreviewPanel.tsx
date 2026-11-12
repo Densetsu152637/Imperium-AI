@@ -23,7 +23,10 @@ export function PreviewPanel({ session }: { session: SessionState | null }) {
 
   const agent = session.preview;
   const own = typed[sessionId];
-  const shown = own && own.over === (agent?.url ?? null) ? own.url : (agent?.url ?? own?.url ?? null);
+  const candidate = own && own.over === (agent?.url ?? null) ? own.url : (agent?.url ?? own?.url ?? null);
+  // Whatever the source (an agent's event, a typed address), only a page that passes the rule is framed.
+  const checkedShown = candidate ? previewUrl(candidate) : null;
+  const shown = checkedShown?.ok ? checkedShown.url : null;
   const text = draft && draft.for === sessionId ? draft.text : (shown ?? "");
 
   const submit = (event: FormEvent) => {
@@ -63,6 +66,11 @@ export function PreviewPanel({ session }: { session: SessionState | null }) {
           <RotateCw aria-hidden="true" />
         </button>
       </form>
+      {checkedShown && !checkedShown.ok && (
+        <p className="error" role="alert">
+          {checkedShown.reason}
+        </p>
+      )}
       {error && (
         <p className="error" role="alert">
           {error}

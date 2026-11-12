@@ -146,6 +146,7 @@ impl ToolProvider for AgentConfigTools {
                     },
                     ask: self.mode_asks(),
                     needs_context: false,
+                    command: None,
                 })
             }
             INSTALL_EXTENSION => {
@@ -158,6 +159,7 @@ impl ToolProvider for AgentConfigTools {
                     summary: install_summary(&args),
                     ask: self.mode_asks(),
                     needs_context: false,
+                    command: None,
                 })
             }
             UNINSTALL_EXTENSION => {
@@ -171,6 +173,7 @@ impl ToolProvider for AgentConfigTools {
                     // Removing what the user installed asks; it is kept aside either way.
                     ask: !by_agent || self.mode_asks(),
                     needs_context: false,
+                    command: None,
                 })
             }
             other => Err(format!("unknown tool {other}")),

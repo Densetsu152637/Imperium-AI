@@ -267,6 +267,7 @@ impl ToolProvider for WebTools {
             summary,
             ask,
             needs_context: false,
+            command: None,
         })
     }
 

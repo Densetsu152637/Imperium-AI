@@ -54,6 +54,7 @@ impl ToolProvider for Notes {
             summary: format!("add a note: {}", args.text),
             ask: true,
             needs_context: false,
+            command: None,
         })
     }
 
@@ -274,6 +275,7 @@ impl ToolProvider for RootOnly {
             summary: "root tool".into(),
             ask: false,
             needs_context: false,
+            command: None,
         })
     }
 

@@ -211,12 +211,17 @@ the others and follow the open session.
   command it started and that it stops with the session. The page is an iframe, so the dev
   server's own hot reload keeps it current; *Reload* fetches it again. The address bar also
   takes an address the user types, which wins until the agent opens a different page. Only
-  `localhost`, `127.0.0.1`, and `[::1]` (http or https, no user name or password) are shown:
-  the page runs scripts inside the app window, so `previewUrl` (`src/preview.ts`) refuses
-  anything else with the reason, the daemon applies the same rule to agents' URLs, and the
-  window's content security policy allows frames from loopback origins only, so a redirect
-  cannot load a remote site either. The iframe is sandboxed (scripts, forms, and modals; no
-  popups or top navigation) and sends no referrer.
+  `localhost` and `127.0.0.1` (http or https, no user name or password; not `[::1]`, which the
+  window's content security policy cannot name) are shown: the page runs scripts inside the
+  app window, so `previewUrl` (`src/preview.ts`) refuses anything else with the reason (and
+  checks every page it frames, including the one an agent opened), the daemon applies the same
+  rule to agents' URLs, and the window's content security policy allows frames from those
+  origins only, so a redirect cannot load a remote site either. A development build is served
+  from localhost itself, so the app's own origin is refused too. The iframe is sandboxed to
+  scripts, forms, and modals, with `allow-same-origin` so the project's page keeps its own
+  origin (cookies, storage, hot-reload socket); that is safe because its origin is never the
+  app's. No popups or top navigation, and no referrer is sent. The daemon's `preview_open` asks
+  for a URL unless it is the port the session's own preview command started.
 - **Browser** mirrors the agent's browser (`browser_view`) and lets the user take it over.
   *Take over* (`session.browser_control`, `user: true`) starts the browser if needed, shows its
   page, and replaces the bar with Back, Forward, Reload, an address field, and *Give back to

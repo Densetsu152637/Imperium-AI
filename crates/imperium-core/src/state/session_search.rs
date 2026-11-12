@@ -401,6 +401,7 @@ impl ToolProvider for SessionSearchTool {
             // Read-only, and limited to what the environment may see.
             ask: false,
             needs_context: false,
+            command: None,
         })
     }
 

@@ -44,22 +44,30 @@ tabs, and downloads are later work; the browser is one page.
 `preview_open` shows a page the project serves in the desktop's Preview panel, with either a
 loopback `url` or a `command` and the `port` it listens on (`preview_close` closes it).
 
-- **Commands** run as one background process per session, under the session's isolation tier
-  and permission rules: the call asks like `run_command` unless a `run_command` allow rule
-  matches the command, and a deny rule refuses it. The process is started in its own process
-  group (a tree kill on Windows), readiness is the port accepting connections on the loopback
-  address (60 s), the last output is returned if it exits early, and a port already in use is
-  refused rather than shown. Opening another preview, `preview_close`, and the session ending
-  stop the server and everything it started. Sessions in a remote environment, and the
-  container or no-network OS tiers (where the app could not reach the port), refuse commands
-  with the reason. Background commands in general (`run_command` with a managed process table)
-  are separate work; this is a minimal managed process just for previews.
-- **URLs** are limited to `localhost`, `127.0.0.1`, and `[::1]` over http or https with no
-  user name or password, parsed as a browser would (so `localhost.evil.com`,
-  `localhost@evil.com`, and `127.0.0.1:80@evil.com` are refused). The reason: the page runs
-  scripts inside the app window next to the daemon's controls, so remote pages are never shown
-  there; the agent's own browser is the way to read remote pages. Showing a loopback page needs
-  no approval; starting a server does.
+- **Commands** run in the session's background process table (the one background
+  `run_command` uses, so `command_output` and `command_stop` see the server), under the
+  session's isolation tier. A preview command is judged exactly as `run_command` on that
+  command: its allow, ask, and deny rules, the "always allow" rule an approval offers (a
+  `run_command` prefix, never a blanket `preview_open` rule), the safety floor (a destructive
+  command still asks in an unattended session started with `run_command` pre-approved), and
+  permission modes (plan mode refuses it). Under `required-before-action` it is also refused
+  until the required context is loaded. Readiness is the port accepting connections on the
+  loopback address (60 s); the command's output is returned if it exits early; a port already
+  in use is refused rather than shown. Opening another preview, `preview_close`, and the
+  session stopping or being deleted end the server and everything it started (a process group
+  on Unix, a Job Object that kills on close on Windows). If the daemon itself is killed
+  abruptly, a server on Unix may outlive it; Windows ends it with the daemon.
+- **Where commands are refused**, before any approval: sessions in a remote environment (they
+  are not offered the preview tools at all), the container tier, and the OS tier without
+  network, because the app could not reach the port.
+- **URLs** are limited to `localhost` and `127.0.0.1` over http or https with no user name or
+  password, parsed as a browser would (so `localhost.evil.com`, `localhost@evil.com`, and
+  `127.0.0.1:80@evil.com` are refused). `[::1]` is not accepted: the window's content security
+  policy cannot name an IPv6 literal, so it could not be shown. The reason for the rule: the
+  page runs scripts inside the app window next to the daemon's controls, so remote pages are
+  never shown there; the agent's own browser is the way to read remote pages. A URL asks first,
+  because another loopback port may be something private on this machine, unless its port is
+  the one this session's own preview command started. Closing the preview never asks.
 - The dev server's own hot reload keeps the page current; Imperium only shows it.
 
 Implemented in phase 1 (`imperium-tools`): paths resolve inside the project folder and may not

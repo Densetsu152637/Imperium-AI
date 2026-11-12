@@ -6,10 +6,15 @@
 // imperium-web), and the app's content security policy (`frame-src` in tauri.conf.json) allows
 // frames from loopback origins only, so even a page that redirects cannot load a remote site.
 
+/** The origin the app runs from (a development build is served from localhost), if known. */
+function currentOrigin(): string | null {
+  return typeof location === "undefined" ? null : location.origin;
+}
+
 export type PreviewUrl = { ok: true; url: string } | { ok: false; reason: string };
 
 /** `input` as a preview URL, or why it cannot be one. */
-export function previewUrl(input: string): PreviewUrl {
+export function previewUrl(input: string, appOrigin: string | null = currentOrigin()): PreviewUrl {
   const text = input.trim();
   if (!text) return { ok: false, reason: "Enter a localhost address, such as http://localhost:5173." };
   let url: URL;
@@ -26,8 +31,13 @@ export function previewUrl(input: string): PreviewUrl {
   }
   // WHATWG parsing normalises hosts, so `0x7f.1` becomes 127.0.0.1 and `LOCALHOST` localhost.
   const host = url.hostname;
-  if (host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]") {
-    return { ok: false, reason: "The preview shows only localhost, 127.0.0.1, or [::1]; remote pages stay out of the app." };
+  if (host !== "localhost" && host !== "127.0.0.1") {
+    return { ok: false, reason: "The preview shows only localhost or 127.0.0.1; remote pages stay out of the app." };
+  }
+  // In a development build the app is itself served from localhost: framing it would give the
+  // frame the app's own origin, which an iframe sandbox cannot contain.
+  if (appOrigin && url.origin === appOrigin) {
+    return { ok: false, reason: "That is the app itself; the preview shows the project's page, not Imperium." };
   }
   return { ok: true, url: url.toString() };
 }

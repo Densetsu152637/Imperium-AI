@@ -10,7 +10,6 @@ test("loopback http(s) addresses are previewed", () => {
     "http://localhost:5173",
     "http://LOCALHOST:3000/app?x=1#top",
     "http://127.0.0.1:8080/",
-    "http://[::1]:9000/index.html",
     "https://localhost:8443",
     "  http://localhost/  ",
   ]) {
@@ -31,6 +30,7 @@ test("remote hosts, look-alikes, and credentials are refused", () => {
     "http://192.168.1.5:3000",
     "http://0.0.0.0:3000",
     "http://127.0.0.2:3000",
+    "http://[::1]:9000/index.html", // the window's CSP cannot name an IPv6 literal
     "file:///etc/passwd",
     "javascript:alert(1)",
     "ftp://localhost/",
@@ -45,6 +45,14 @@ test("remote hosts, look-alikes, and credentials are refused", () => {
   assert.equal(previewUrl("http://evil.com\\@localhost/").ok, false);
   const refused = previewUrl("https://example.com");
   assert.equal(refused.ok === false && refused.reason.includes("localhost"), true);
+});
+
+test("the app's own origin is never framed", () => {
+  assert.equal(previewUrl("http://localhost:1420/", "http://localhost:1420").ok, false);
+  assert.equal(previewUrl("http://localhost:1420/settings?x=1", "http://localhost:1420").ok, false);
+  assert.equal(previewUrl("http://localhost:5173/", "http://localhost:1420").ok, true);
+  assert.equal(previewUrl("http://127.0.0.1:1420/", "http://localhost:1420").ok, true);
+  assert.equal(previewUrl("http://localhost:1420/", null).ok, true);
 });
 
 test("takeover and preview events update the session's state", () => {
