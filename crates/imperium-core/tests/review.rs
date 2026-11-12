@@ -725,10 +725,12 @@ async fn permission_rules_deny_or_allow_commits() {
     );
 }
 
-/// A submodule's own config is never run by the push, even when the superproject asks to push
-/// submodules on demand.
+/// A repository holding a submodule whose own config would run a program (the superproject asks
+/// to push submodules on demand) is reviewed and a pull request is attempted without that
+/// program running. The push itself is never run against the submodule (`--recurse-submodules=no`,
+/// covered by the `push_args` unit test); this test does not reach that path, it guards the rest.
 #[tokio::test]
-async fn pushes_do_not_enter_submodules() {
+async fn a_submodule_with_a_hostile_config_does_not_run_during_review() {
     let tools = tempfile::tempdir().unwrap();
     let (gh, _log) = fake_gh(tools.path());
     let repo = repository();

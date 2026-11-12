@@ -776,7 +776,20 @@ pub(crate) fn commit(
             "--",
         ])
         .args(&paths);
-    run(&mut commit)?;
+    if let Err(error) = run(&mut commit) {
+        // The failed commit leaves the session's files staged by the `add` above; put the
+        // index back as it was for them (an unborn branch has no HEAD to reset to).
+        let mut reset = command(&repo.top);
+        reset.args(["reset", "--quiet", "--"]).args(&paths);
+        if run(&mut reset).is_err() {
+            let mut unstage = command(&repo.top);
+            unstage
+                .args(["rm", "--cached", "--quiet", "-r", "--ignore-unmatch", "--"])
+                .args(&paths);
+            let _ = run(&mut unstage);
+        }
+        return Err(error);
+    }
     let head = safe_git::head(&repo.top).unwrap_or_default();
     // What was committed is reviewed: the base becomes the working tree.
     let mut files = repo.base.clone();
@@ -830,9 +843,12 @@ impl Shell {
 
 /// Quotes a word for `shell`: plain when it is only safe characters, else in single quotes,
 /// inside which nothing is expanded. A POSIX `'` becomes `'\''`; PowerShell doubles every
-/// single quote it accepts, typographic ones included.
+/// single quote it accepts, typographic ones included, and quotes a word that starts with `@`
+/// (splatting there).
 fn quoted(word: &str, shell: Shell) -> String {
+    let splat = shell == Shell::PowerShell && word.starts_with('@');
     if !word.is_empty()
+        && !splat
         && word
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_./:@".contains(c))
@@ -1179,6 +1195,10 @@ mod tests {
             "'Add \"x\" $(rm -rf ~)'"
         );
         assert_eq!(quoted("it's", Posix), r"'it'\''s'");
+        // A leading `@` is splatting in PowerShell, so it is quoted there only.
+        assert_eq!(quoted("@args", PowerShell), "'@args'");
+        assert_eq!(quoted("@args", Posix), "@args");
+        assert_eq!(quoted("a@b", PowerShell), "a@b");
         // A title that would end the quotes and run a command, in each shell.
         let title = "x'; calc; 'y";
         assert_eq!(quoted(title, Posix), r"'x'\''; calc; '\''y'");
