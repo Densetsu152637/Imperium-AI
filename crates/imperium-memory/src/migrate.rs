@@ -376,7 +376,10 @@ fn copy_folder(from: &Path, to: &Path) -> Result<(), MemoryError> {
             let target = to.join(file.file_name());
             std::fs::copy(&path, &target).map_err(|error| io(&target, error))?;
             // On disk, not only in the cache, before the originals can be removed.
-            std::fs::File::open(&target)
+            // (Opened for writing: Windows refuses to flush a file opened only for reading.)
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&target)
                 .and_then(|copy| copy.sync_all())
                 .map_err(|error| io(&target, error))?;
         }
