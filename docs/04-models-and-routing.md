@@ -1338,16 +1338,21 @@ is a separate, later item ([12](12-roadmap.md)); the benchmark is how its gain w
   takes a slot with `acquire_with` as a **background** call
   ([residency controller](#residency-controller-implemented)), so the model is loaded, queued,
   and swapped by the same rules and reported through `model.residency`, the call waits while
-  the machine is saturated and never evicts a model the user's own calls used recently
-  ([the quiet-machine rule](14-projects-and-automation.md#quiet-periods)), and it is bounded
-  by the model's `max_wait_s`. There is no second launcher. The load level at the start of each
-  model's turn (`quiet` or `busy`) is stored with its result, so a number taken while the
-  machine was busy can be told apart. While it waits, the run's step says why (loading, a busy
-  slot, another model in the way, memory being freed, or a busy machine).
-- **Cold start.** By default a model that is loaded and idle is unloaded first (through the
-  residency controller, which refuses while anything uses it), so its load time is measured. A
-  model in use is left alone and its load time is left out (`--warm` and the *Keep a loaded
-  model loaded* switch skip the unload on purpose).
+  the [load view](14-projects-and-automation.md#quiet-periods) reports the machine
+  **saturated** and never evicts a model the user's own calls used recently (the
+  `load.interactive_hold_min` hold), and it is bounded by the model's `max_wait_s`. It does not
+  wait for a fully quiet machine: a busy one is allowed, so the machine's load is stored with
+  the result. There is no second launcher. The stored `machine` is the worse of the load
+  levels (`quiet`, `busy`, `saturated`) read when the model's turn began, once it held its
+  slot, and after its last prompt, so a number taken while the machine was busy can be told
+  apart. While it waits, the run's step says why (loading, a busy slot, another model in the
+  way, memory being freed, or a saturated machine).
+- **Cold start.** By default a model that is loaded and has sat idle for longer than
+  `load.interactive_hold_min` is unloaded first (through the residency controller, which also
+  refuses while anything uses it), so its load time is measured; the unload is skipped while
+  the machine is saturated. A model used more recently, or in use, is left alone and its load
+  time is left out (`--warm` and the *Keep a loaded model loaded* switch skip the unload on
+  purpose).
 - **The prompt set.** Three prompts, fixed so results from different days compare: `short`
   (a one-line question, up to 96 tokens of reply), `medium` (a few hundred tokens of prose to
   summarise) and `long` (about five times that); the long one is left out for a model whose
@@ -1359,28 +1364,40 @@ is a separate, later item ([12](12-roadmap.md)); the benchmark is how its gain w
 
 | Metric | How |
 | ------ | --- |
-| Load time (`load_s`) | the seconds of the runtime's own `load` move made for the call; absent when the model was already loaded and in use |
+| Load time (`load_s`) | the seconds of the runtime's own `load` move made for the call; absent when the model was already loaded when the call began |
 | Time to first token (`ttft_ms`) | request sent to the first text (a thinking model's reasoning counts); the result is the median of the prompts, each prompt has its own |
-| Prompt speed (`prompt_tok_s`) | the server's reported prompt tokens over the time to the first token, summed over the prompts (a lower bound on the true prefill rate, since the time includes the first token) |
+| Prompt speed (`prompt_tok_s`) | the server's reported prompt tokens over the time to the first token, summed over the prompts (a lower bound on the true prefill rate, since the time includes the first token); absent for a prompt whose server sent no usage report, which is also left out of the sum, since its size would only be an estimate |
 | Generation speed (`gen_tok_s`) | reply tokens after the first over the time from the first text to the last, summed over the prompts; without a usage report the number of streamed chunks stands in for the tokens |
-| Peak memory (`peak_ram_bytes`, `peak_vram_bytes`) | the highest resident memory, and GPU memory when `nvidia-smi` reports it for the process, of the model's server process, read every second while the prompts run; absent when the server is not a process Imperium can read (a stand-in in tests, an unsupported GPU), never estimated |
+| Peak memory (`peak_ram_bytes`, `peak_vram_bytes`) | the highest resident memory, and GPU memory when `nvidia-smi` reports it for the process, of the model's server process, read every second from before the model loads until the prompts end (each reading of `nvidia-smi` is bounded by a timeout); absent when the server is not a process Imperium can read (a stand-in in tests, an unsupported GPU), never estimated |
 
 - **Results are saved** to `<data>/local-benchmarks.json` (the newest 200), one entry per model
   and run: the model, run id, date (UTC), the **hardware fingerprint** (a short hash of the
-  GPUs and their memory, system memory, cores and the llama.cpp runtime pack, so a different
-  GPU, memory or build counts as another machine, while free memory does not), the same in
-  words, the runtime, how it was placed (`gpu`, `partial`, `cpu`), the machine's load level,
-  every metric above and each prompt's own numbers. A model that fails to load or answer is
-  reported in the run with its reason, and not saved; the run goes on to the next model.
+  GPUs and their memory, system memory, cores and the runtime build: for llama.cpp the
+  release Imperium pins and the pack in use, for vLLM vLLM alone, so a different GPU, memory
+  or build counts as another machine, while free memory does not), the same in words, the
+  runtime, how it was placed (`gpu`, `partial`, `cpu`), the machine's load level, every metric
+  above and each prompt's own numbers. A model that fails to load or answer, or whose prompts
+  all fail or do not fit its context, is reported in the run with its reason and not saved;
+  the run goes on to the next model. A file that cannot be parsed is renamed to
+  `local-benchmarks.json.bad` and a new one started; one that cannot be read is left alone and
+  the result is not saved.
 - **Cancelling.** `models.bench_cancel` (Settings → *Cancel*, Ctrl+C in the CLI) stops the
   run's task: the request in flight is dropped, which releases the slot and ends the generation
-  at once. Models measured before keep their saved results; the one being measured has none.
-  The model stays loaded until it idles out like any other.
+  at once. The run's state changes first, under the lock that saving takes, so a result that
+  finishes at that moment is not saved afterwards. Models measured before keep their saved
+  results; the one being measured has none. The model stays loaded until it idles out like any
+  other. The CLI handles Ctrl+C from before it sends the request and cancels whatever
+  benchmark is running.
 - **Protocol.** `models.bench` returns the run (`running`) at once; `models.bench_progress`
   notifications (a `BenchRun` with its step, models done and results so far) follow every
-  step, and the last one has the state `done`, `cancelled` or `failed`. Only one run may run at
-  a time. `models.bench_results` returns the saved results newest first (optionally for one
-  model), this machine's fingerprint, and the runs since the daemon started.
+  step, and the last one has the state `done`, `cancelled` or `failed`: `failed` when no model
+  could be measured or the run's task panicked; `done` with a message when only some failed.
+  `imperium models bench` exits non-zero unless the run is `done`. Only one run may run at a
+  time, and the last 20 runs are kept in memory. `models.bench_results` returns the saved
+  results newest first (optionally for one model), this machine's fingerprints (for llama.cpp
+  and for vLLM models), and the runs since the daemon started. A paired phone's connection may
+  not call the benchmark methods and is not sent `models.bench_progress` (it names models and
+  carries error text).
 
 ## Cost accounting
 

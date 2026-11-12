@@ -14,12 +14,12 @@ export function activeRun(runs: BenchRun[]): BenchRun | undefined {
   return runs.find((run) => run.state === "running");
 }
 
-/** Newest measured result of each model on the machine with `fingerprint` (results arrive newest first). */
-export function latestHere(results: BenchResult[], fingerprint: string): BenchResult[] {
+/** Newest measured result of each model on this machine, whose fingerprints (one per runtime) are given (results arrive newest first). */
+export function latestHere(results: BenchResult[], fingerprints: string[]): BenchResult[] {
   const seen = new Set<string>();
   const latest: BenchResult[] = [];
   for (const result of results) {
-    if (result.hardware_fingerprint !== fingerprint || result.error || seen.has(result.model_id)) continue;
+    if (!fingerprints.includes(result.hardware_fingerprint) || result.error || seen.has(result.model_id)) continue;
     seen.add(result.model_id);
     latest.push(result);
   }

@@ -1,6 +1,6 @@
 //! The local model benchmark: `models.bench` loads each chosen model through the same launch and
-//! residency path every call uses (a background call, so it waits for a quiet machine and never
-//! evicts a model in use), sends a small fixed prompt set, and measures load time, time to first
+//! residency path every call uses (a background call, so it waits while the machine is saturated and
+//! never evicts a model in use), sends a small fixed prompt set, and measures load time, time to first
 //! token, prompt-processing speed and generation speed from the real stream. Results are saved
 //! per model, hardware fingerprint and date in `local-benchmarks.json` in the data folder and
 //! listed by `models.bench_results`. A run is a background task that `models.bench_cancel`
@@ -12,10 +12,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use imperium_api::{LocalModels, LocalRequest, LocalWait, Priority, holder};
+use imperium_api::{Load, LocalModels, LocalRequest, LocalWait, Priority, holder};
 use imperium_local::hardware::Hardware;
 use imperium_local::monitor::{Probe, ProcessSample, SystemProbe};
 use imperium_local::residency::Action;
+use imperium_local::runtime::llama_cpp_ref;
+use imperium_local::supervisor::Supervisor;
 use imperium_models::DataLines;
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::{
@@ -34,6 +36,8 @@ use crate::DaemonState;
 const STORE_FILE: &str = "local-benchmarks.json";
 /// Results kept; the oldest are dropped past this.
 const KEEP_RESULTS: usize = 200;
+/// Runs kept in memory for `models.bench_results`; the oldest finished ones are dropped.
+const KEEP_RUNS: usize = 20;
 /// How often the run's step is refreshed from the runtime while a model loads or waits.
 const STEP_INTERVAL: Duration = Duration::from_millis(400);
 /// How often the server process's memory is read.
@@ -138,12 +142,14 @@ impl Bench {
             else {
                 return false;
             };
-            if let Some(abort) = entry.abort.take() {
-                abort.abort();
-            }
+            // The state changes first, under the lock the task takes before it saves anything,
+            // so a result that finishes now is not saved after the run was cancelled.
             entry.run.state = "cancelled".into();
             entry.run.step = None;
             entry.run.message = Some("Stopped before it finished.".into());
+            if let Some(abort) = entry.abort.take() {
+                abort.abort();
+            }
             entry.run.clone()
         };
         state.announce(MODEL_BENCH_PROGRESS, run);
@@ -182,16 +188,23 @@ fn store_path(state: &DaemonState) -> PathBuf {
     state.data_dir().join(STORE_FILE)
 }
 
-fn read_saved(path: &Path) -> Vec<BenchResult> {
-    match std::fs::read(path) {
-        Ok(bytes) => match serde_json::from_slice::<Saved>(&bytes) {
-            Ok(saved) => saved.results,
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "benchmark results could not be read");
-                Vec::new()
-            }
-        },
-        Err(_) => Vec::new(),
+/// Reads the saved results. A missing file is an empty store; one that cannot be parsed is set
+/// aside as `*.bad` (like the environments file) so it is not overwritten, and the store starts
+/// again; one that cannot be read at all is an error, so nothing is written over it.
+fn read_saved(path: &Path) -> std::io::Result<Vec<BenchResult>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    match serde_json::from_slice::<Saved>(&bytes) {
+        Ok(saved) => Ok(saved.results),
+        Err(error) => {
+            let aside = path.with_extension("json.bad");
+            tracing::warn!(path = %path.display(), %error, "benchmark results could not be parsed; setting the file aside");
+            std::fs::rename(path, aside)?;
+            Ok(Vec::new())
+        }
     }
 }
 
@@ -200,7 +213,7 @@ fn save(state: &DaemonState, result: &BenchResult) -> std::io::Result<()> {
     let bench = state.bench();
     let _guard = bench.store.lock().unwrap_or_else(PoisonError::into_inner);
     let path = store_path(state);
-    let mut results = read_saved(&path);
+    let mut results = read_saved(&path)?;
     results.push(result.clone());
     let excess = results.len().saturating_sub(KEEP_RESULTS);
     results.drain(..excess);
@@ -221,7 +234,10 @@ pub fn results(state: &DaemonState, params: ModelBenchResultsParams) -> ModelBen
             .store
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        read_saved(&store_path(state))
+        read_saved(&store_path(state)).unwrap_or_else(|error| {
+            tracing::warn!(%error, "benchmark results could not be read");
+            Vec::new()
+        })
     };
     let mut results: Vec<BenchResult> = saved
         .into_iter()
@@ -234,7 +250,11 @@ pub fn results(state: &DaemonState, params: ModelBenchResultsParams) -> ModelBen
         .collect();
     results.reverse();
     ModelBenchResultsResult {
-        hardware_fingerprint: current_fingerprint(state).0,
+        hardware_fingerprint: current_fingerprints(state, "llamacpp").0,
+        hardware_fingerprints: ["llamacpp", "vllm"]
+            .iter()
+            .map(|runtime| current_fingerprints(state, runtime).0)
+            .collect(),
         results,
         runs: state.bench().runs(),
     }
@@ -242,8 +262,10 @@ pub fn results(state: &DaemonState, params: ModelBenchResultsParams) -> ModelBen
 
 // ---- the hardware fingerprint ----
 
-/// A short hash of the hardware and runtime pack the numbers belong to, and the same in words.
-pub(crate) fn fingerprint(hardware: &Hardware, pack: &str) -> (String, String) {
+/// A short hash of the hardware and the runtime build the numbers belong to, and the same in
+/// words. A llama.cpp model is tied to the release Imperium pins and the pack (or `custom`, or
+/// `detected`) in use; a vLLM model is tied to vLLM alone, since llama.cpp does not serve it.
+pub(crate) fn fingerprint(hardware: &Hardware, runtime: &str, pack: &str) -> (String, String) {
     const GIB: u64 = 1024 * 1024 * 1024;
     let mut gpus: Vec<String> = hardware
         .gpus
@@ -264,7 +286,11 @@ pub(crate) fn fingerprint(hardware: &Hardware, pack: &str) -> (String, String) {
     };
     parts.push(memory);
     parts.push(format!("{} cores", hardware.cpu_cores));
-    parts.push(format!("llama.cpp {pack}"));
+    parts.push(if runtime == "vllm" {
+        "vLLM".to_string()
+    } else {
+        format!("llama.cpp {} {pack}", llama_cpp_ref())
+    });
     let label = parts.join(", ");
     let digest = Sha256::digest(label.as_bytes());
     let hash: String = digest
@@ -275,9 +301,10 @@ pub(crate) fn fingerprint(hardware: &Hardware, pack: &str) -> (String, String) {
     (hash, label)
 }
 
-fn current_fingerprint(state: &DaemonState) -> (String, String) {
+/// The fingerprint and description for models of `runtime` on this machine.
+fn current_fingerprints(state: &DaemonState, runtime: &str) -> (String, String) {
     match state.local_runtime() {
-        Some(local) => fingerprint(local.hardware(), &local.server().0),
+        Some(local) => fingerprint(local.hardware(), runtime, &local.server().0),
         None => ("none".into(), "no local models".into()),
     }
 }
@@ -326,6 +353,10 @@ pub fn start(state: Arc<DaemonState>, params: ModelBenchParams) -> Result<BenchR
                 "A benchmark is already running; wait for it or cancel it.",
             ));
         }
+        // The list of runs is bounded: the oldest finished ones go.
+        while runs.len() >= KEEP_RUNS {
+            runs.remove(0);
+        }
         let number = bench.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let run = BenchRun {
             run_id: format!("bench-{number}"),
@@ -355,6 +386,27 @@ pub fn start(state: Arc<DaemonState>, params: ModelBenchParams) -> Result<BenchR
         // Cancelled before the handle was stored.
         _ => task.abort(),
     });
+    // A run whose task panics must not stay `running` for ever.
+    let watched = Arc::clone(&state);
+    let watched_id = run.run_id.clone();
+    tokio::spawn(async move {
+        if let Err(error) = task.await
+            && error.is_panic()
+        {
+            tracing::error!(run = %watched_id, "the benchmark task panicked");
+            let bench = watched.bench();
+            bench.update_entry(&watched_id, |entry| {
+                if entry.run.state == "running" {
+                    entry.abort = None;
+                    entry.run.state = "failed".into();
+                    entry.run.current = None;
+                    entry.run.step = None;
+                    entry.run.message = Some("The benchmark stopped unexpectedly.".into());
+                    watched.announce(MODEL_BENCH_PROGRESS, entry.run.clone());
+                }
+            });
+        }
+    });
     Ok(run)
 }
 
@@ -375,37 +427,76 @@ async fn run_all(state: Arc<DaemonState>, run_id: String, models: Vec<String>, c
             run.current = Some(id.clone());
             run.step = Some("starting".into());
         });
-        let outcome = measure_model(&state, &run_id, id, cold).await;
-        let result = match outcome {
-            Ok(result) => {
-                if let Err(error) = save(&state, &result) {
-                    tracing::warn!(%error, "benchmark result could not be saved");
-                }
-                result
-            }
+        let result = match measure_model(&state, &run_id, id, cold).await {
+            Ok(result) => result,
             Err(error) => {
                 tracing::warn!(model = %id, %error, "local model benchmark failed");
                 failed_result(&state, &run_id, id, error)
             }
         };
-        bench.update(&state, &run_id, |run| {
-            run.results.push(result);
-            run.models_done += 1;
-        });
+        if !bench.finish_model(&state, &run_id, result) {
+            // Cancelled meanwhile: nothing more is saved or measured.
+            return;
+        }
     }
     bench.update_entry(&run_id, |entry| {
-        if entry.run.state == "running" {
-            entry.abort = None;
-            entry.run.state = "done".into();
-            entry.run.current = None;
-            entry.run.step = None;
-            state.announce(MODEL_BENCH_PROGRESS, entry.run.clone());
+        if entry.run.state != "running" {
+            return;
         }
+        let failed = entry
+            .run
+            .results
+            .iter()
+            .filter(|result| result.error.is_some())
+            .count();
+        entry.abort = None;
+        entry.run.current = None;
+        entry.run.step = None;
+        if failed == entry.run.results.len() {
+            entry.run.state = "failed".into();
+            entry.run.message = Some("No model could be measured.".into());
+        } else {
+            entry.run.state = "done".into();
+            if failed > 0 {
+                entry.run.message = Some(format!(
+                    "{failed} of {} models could not be measured.",
+                    entry.run.results.len()
+                ));
+            }
+        }
+        state.announce(MODEL_BENCH_PROGRESS, entry.run.clone());
     });
 }
 
+impl Bench {
+    /// Records a model's result in its run and, when it measured something, saves it. Both
+    /// happen under the lock that cancelling takes, so a result is never saved after the run was
+    /// cancelled. False when the run is no longer running.
+    fn finish_model(&self, state: &DaemonState, run_id: &str, result: BenchResult) -> bool {
+        let run = {
+            let mut runs = self.lock();
+            let Some(entry) = runs
+                .iter_mut()
+                .find(|entry| entry.run.run_id == run_id && entry.run.state == "running")
+            else {
+                return false;
+            };
+            if result.error.is_none()
+                && let Err(error) = save(state, &result)
+            {
+                tracing::warn!(%error, "benchmark result could not be saved");
+            }
+            entry.run.results.push(result);
+            entry.run.models_done += 1;
+            entry.run.clone()
+        };
+        state.announce(MODEL_BENCH_PROGRESS, run);
+        true
+    }
+}
+
 fn failed_result(state: &DaemonState, run_id: &str, model: &str, error: String) -> BenchResult {
-    let (fingerprint, hardware) = current_fingerprint(state);
+    let (fingerprint, hardware) = current_fingerprints(state, "llamacpp");
     BenchResult {
         model_id: model.to_string(),
         run_id: run_id.to_string(),
@@ -432,7 +523,7 @@ fn now() -> String {
 
 // ---- measuring one model ----
 
-fn wait_text(wait: Option<LocalWait>) -> &'static str {
+fn wait_text(wait: Option<LocalWait>, level: Load) -> &'static str {
     match wait {
         Some(LocalWait::Loading) => "loading the model",
         Some(LocalWait::GrowingPool) => "waiting for the model to restart with more memory",
@@ -441,7 +532,8 @@ fn wait_text(wait: Option<LocalWait>) -> &'static str {
         Some(LocalWait::OtherModel) => "waiting for another model",
         Some(LocalWait::MakingRoom) => "waiting for memory to be freed",
         Some(LocalWait::SavingContext | LocalWait::RestoringContext) => "moving an agent's context",
-        None => "waiting for a quiet machine",
+        None if level == Load::Saturated => "waiting while the machine is saturated",
+        None => "starting the model",
     }
 }
 
@@ -454,21 +546,26 @@ async fn measure_model(
     let local = state.local_runtime().ok_or("no local models are set up")?;
     let supervisor = Arc::clone(&local.supervisor);
     let bench = state.bench();
-    let machine = state.load_view().level().label().to_string();
     let row = state
         .local_models()
         .models
         .into_iter()
         .find(|row| row.id == id)
         .ok_or_else(|| format!("{id} is no longer in the model folders"))?;
+    // Reading starts before anything loads, so the load's own memory is in the peak.
+    let memory = MemoryWatch::start(Arc::clone(&supervisor), id.to_string());
 
-    // A cold start is wanted to time the load: an idle model is unloaded first, by the
-    // residency controller, which refuses while anything uses it (then the load is not timed).
-    let was_loaded = supervisor
+    // A cold start is wanted to time the load: a model that has sat idle past the interactive
+    // hold is unloaded first, by the residency controller, which also refuses while anything
+    // uses it. A model used more recently, or any model while the machine is saturated, is
+    // left loaded and its load is not timed.
+    let hold = Duration::from_secs(state.settings().load.interactive_hold_min * 60);
+    let idle_long_enough = supervisor
         .loaded()
         .iter()
-        .any(|loaded| loaded.model_id == id);
-    if cold && was_loaded {
+        .find(|loaded| loaded.model_id == id)
+        .is_some_and(|loaded| loaded.idle_for.is_some_and(|idle| idle > hold));
+    if cold && idle_long_enough && state.load_view().level() != Load::Saturated {
         bench.update(state, run_id, |run| {
             run.step = Some("unloading the idle model to time its load".into());
         });
@@ -490,6 +587,9 @@ async fn measure_model(
             })
             .collect()
     };
+    if usable.is_empty() {
+        return Err("the model's context is too small for any benchmark prompt".into());
+    }
     let reserve = usable
         .iter()
         .map(|prompt| prompt.estimate())
@@ -511,7 +611,7 @@ async fn measure_model(
                 format!("could not load {id}: {error}")
             })?,
             () = tokio::time::sleep(STEP_INTERVAL) => {
-                let text = wait_text(supervisor.wait_reason(&caller));
+                let text = wait_text(supervisor.wait_reason(&caller), state.load_view().level());
                 bench.update(state, run_id, |run| {
                     if run.step.as_deref() != Some(text) {
                         run.step = Some(text.into());
@@ -520,6 +620,9 @@ async fn measure_model(
             }
         }
     };
+    // The machine as the model's turn began (the worse of this and the level after the last
+    // prompt is stored, since a busy machine spoils the numbers).
+    let mut level = state.load_view().level();
 
     // The load the call made, from the runtime's own record of it.
     let mut load_s = None;
@@ -535,7 +638,7 @@ async fn measure_model(
         }
     }
     if loaded_before {
-        // It was loaded and in use, so nothing was timed.
+        // It was loaded before the call, so nothing was timed.
         load_s = None;
     }
 
@@ -548,10 +651,6 @@ async fn measure_model(
         Some(loaded) if loaded.gpu_layers > 0 => "partial",
         _ => "cpu",
     };
-    let memory = status
-        .as_ref()
-        .and_then(|loaded| loaded.pid)
-        .map(MemoryWatch::start);
 
     let first_limit = match supervisor.launch(id).max_wait_s {
         0 => DEFAULT_FIRST_TOKEN_LIMIT,
@@ -587,24 +686,16 @@ async fn measure_model(
         let streamed = stream_once(&http, &url, &body, first_limit, IDLE_LIMIT)
             .await
             .map_err(|error| format!("the {} prompt failed: {error}", prompt.name))?;
-        let prompt_tokens = streamed.prompt_tokens.unwrap_or_else(|| prompt.estimate());
-        let completion_tokens = streamed.completion_tokens.unwrap_or(streamed.chunks);
-        measured.push(BenchPrompt {
-            name: prompt.name.into(),
-            prompt_tokens,
-            completion_tokens,
-            ttft_ms: streamed.ttft.as_secs_f64() * 1000.0,
-            prompt_tok_s: rate(u64::from(prompt_tokens), streamed.ttft),
-            gen_tok_s: rate(
-                u64::from(completion_tokens.saturating_sub(1)),
-                streamed.generating,
-            ),
-        });
+        measured.push(prompt_result(prompt, &streamed));
     }
+    level = level.max(state.load_view().level());
     drop(lease);
-    let peak = memory.map(MemoryWatch::finish).unwrap_or_default();
+    let peak = memory.finish();
+    if measured.is_empty() {
+        return Err("no prompt was measured".into());
+    }
     let (ttft_ms, prompt_tok_s, gen_tok_s) = summarise(&measured);
-    let (fingerprint, hardware) = current_fingerprint(state);
+    let (fingerprint, hardware) = current_fingerprints(state, &row.runtime);
     Ok(BenchResult {
         model_id: id.to_string(),
         run_id: run_id.to_string(),
@@ -613,7 +704,7 @@ async fn measure_model(
         hardware,
         runtime: row.runtime,
         placement: placement.into(),
-        machine,
+        machine: level.label().into(),
         load_s,
         ttft_ms,
         prompt_tok_s,
@@ -623,6 +714,27 @@ async fn measure_model(
         prompts: measured,
         error: None,
     })
+}
+
+/// One prompt's numbers from its stream. Without a usage report the prompt's size is only an
+/// estimate, so no prompt speed is claimed for it; the streamed chunks stand in for the reply
+/// tokens, which llama.cpp sends one at a time.
+fn prompt_result(prompt: &Prompt, streamed: &Streamed) -> BenchPrompt {
+    let prompt_tokens = streamed.prompt_tokens.unwrap_or_else(|| prompt.estimate());
+    let completion_tokens = streamed.completion_tokens.unwrap_or(streamed.chunks);
+    BenchPrompt {
+        name: prompt.name.into(),
+        prompt_tokens,
+        completion_tokens,
+        ttft_ms: streamed.ttft.as_secs_f64() * 1000.0,
+        prompt_tok_s: streamed
+            .prompt_tokens
+            .and_then(|tokens| rate(u64::from(tokens), streamed.ttft)),
+        gen_tok_s: rate(
+            u64::from(completion_tokens.saturating_sub(1)),
+            streamed.generating,
+        ),
+    }
 }
 
 // ---- the stream ----
@@ -737,8 +849,10 @@ pub(crate) fn summarise(prompts: &[BenchPrompt]) -> (Option<f64>, Option<f64>, O
         n if n % 2 == 1 => Some(ttfts[n / 2]),
         n => Some((ttfts[n / 2 - 1] + ttfts[n / 2]) / 2.0),
     };
-    let prompt_tokens: f64 = prompts.iter().map(|p| f64::from(p.prompt_tokens)).sum();
-    let prompt_seconds: f64 = prompts.iter().map(|p| p.ttft_ms / 1000.0).sum();
+    // Prompts whose server reported no usage have only an estimated size: left out.
+    let counted = || prompts.iter().filter(|p| p.prompt_tok_s.is_some());
+    let prompt_tokens: f64 = counted().map(|p| f64::from(p.prompt_tokens)).sum();
+    let prompt_seconds: f64 = counted().map(|p| p.ttft_ms / 1000.0).sum();
     let (mut generated, mut generating) = (0.0, 0.0);
     for prompt in prompts {
         if let Some(speed) = prompt.gen_tok_s.filter(|speed| *speed > 0.0) {
@@ -772,33 +886,43 @@ impl Peak {
     }
 }
 
-/// Reads the server process's memory every [`MEMORY_INTERVAL`] while a model is measured.
+/// Reads the model's server process's memory every [`MEMORY_INTERVAL`], from before the model
+/// loads until its prompts are done; the process is found by the model's id each time.
 struct MemoryWatch {
     peak: Arc<Mutex<Peak>>,
     task: JoinHandle<()>,
 }
 
 impl MemoryWatch {
-    fn start(pid: u32) -> Self {
+    fn start(supervisor: Arc<Supervisor>, model: String) -> Self {
         let peak = Arc::new(Mutex::new(Peak::default()));
         let shared = Arc::clone(&peak);
         let task = tokio::spawn(async move {
             let mut probe = SystemProbe::new();
             loop {
-                let Ok((returned, sample)) = tokio::task::spawn_blocking(move || {
-                    let sample = probe.sample(&[pid]);
-                    (probe, sample)
-                })
-                .await
-                else {
-                    return;
-                };
-                probe = returned;
-                if let Some(process) = sample.processes.iter().find(|process| process.pid == pid) {
-                    shared
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .add(process);
+                let pid = supervisor
+                    .loaded()
+                    .into_iter()
+                    .find(|loaded| loaded.model_id == model)
+                    .and_then(|loaded| loaded.pid);
+                if let Some(pid) = pid {
+                    let Ok((returned, sample)) = tokio::task::spawn_blocking(move || {
+                        let sample = probe.sample(&[pid]);
+                        (probe, sample)
+                    })
+                    .await
+                    else {
+                        return;
+                    };
+                    probe = returned;
+                    if let Some(process) =
+                        sample.processes.iter().find(|process| process.pid == pid)
+                    {
+                        shared
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .add(process);
+                    }
                 }
                 tokio::time::sleep(MEMORY_INTERVAL).await;
             }
@@ -828,7 +952,7 @@ mod tests {
             prompt_tokens,
             completion_tokens,
             ttft_ms,
-            prompt_tok_s: None,
+            prompt_tok_s: Some(1.0),
             gen_tok_s: Some(speed),
         }
     }
@@ -866,14 +990,24 @@ mod tests {
             unified_memory: false,
             overridden: false,
         };
-        let (first, label) = fingerprint(&hardware, "cuda12");
-        assert_eq!(label, "RTX 24 GB, 64 GB RAM, 16 cores, llama.cpp cuda12");
+        let (first, label) = fingerprint(&hardware, "llamacpp", "cuda12");
+        assert_eq!(
+            label,
+            format!(
+                "RTX 24 GB, 64 GB RAM, 16 cores, llama.cpp {} cuda12",
+                imperium_local::runtime::llama_cpp_ref()
+            )
+        );
         hardware.gpus[0].vram_free_bytes = 2 * GIB;
         hardware.ram_available_bytes = GIB;
-        assert_eq!(fingerprint(&hardware, "cuda12").0, first);
-        assert_ne!(fingerprint(&hardware, "vulkan").0, first);
+        assert_eq!(fingerprint(&hardware, "llamacpp", "cuda12").0, first);
+        assert_ne!(fingerprint(&hardware, "llamacpp", "vulkan").0, first);
+        // A vLLM model is not tied to a llama.cpp build.
+        let (vllm, label) = fingerprint(&hardware, "vllm", "cuda12");
+        assert!(label.ends_with(", vLLM") && vllm != first, "{label}");
+        assert_eq!(fingerprint(&hardware, "vllm", "vulkan").0, vllm);
         hardware.cpu_cores = 8;
-        assert_ne!(fingerprint(&hardware, "cuda12").0, first);
+        assert_ne!(fingerprint(&hardware, "llamacpp", "cuda12").0, first);
     }
 
     #[test]
@@ -908,6 +1042,45 @@ mod tests {
         assert_eq!(
             PROMPTS.iter().map(|p| p.name).collect::<Vec<_>>(),
             ["short", "medium", "long"]
+        );
+    }
+
+    #[test]
+    fn a_prompt_without_a_usage_report_claims_no_prompt_speed() {
+        let streamed = Streamed {
+            prompt_tokens: None,
+            completion_tokens: None,
+            chunks: 5,
+            ttft: Duration::from_millis(200),
+            generating: Duration::from_millis(400),
+        };
+        let measured = prompt_result(&PROMPTS[0], &streamed);
+        assert_eq!(measured.prompt_tok_s, None);
+        assert_eq!(measured.completion_tokens, 5);
+        assert!((measured.gen_tok_s.unwrap() - 10.0).abs() < 1e-6);
+        // And it is left out of the summary's prompt speed.
+        let reported = Streamed {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(5),
+            ttft: Duration::from_millis(500),
+            ..Streamed::default()
+        };
+        let with = prompt_result(&PROMPTS[1], &reported);
+        let (_, rate, _) = summarise(&[measured, with]);
+        assert!((rate.unwrap() - 200.0).abs() < 1e-6, "{rate:?}");
+    }
+
+    #[test]
+    fn an_unparseable_results_file_is_set_aside_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(STORE_FILE);
+        assert!(read_saved(&path).unwrap().is_empty());
+        std::fs::write(&path, b"{ not json").unwrap();
+        assert!(read_saved(&path).unwrap().is_empty());
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(path.with_extension("json.bad")).unwrap(),
+            b"{ not json"
         );
     }
 }

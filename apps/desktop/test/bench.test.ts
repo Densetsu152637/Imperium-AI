@@ -52,7 +52,7 @@ test("progress replaces the run it belongs to and appends a new one", () => {
 test("the table shows each model's newest result on this machine only", () => {
   const newest = result("a", "here", { run_id: "bench-3" });
   const results = [newest, result("b", "other"), result("a", "here"), result("c", "here", { error: "x" })];
-  const here = latestHere(results, "here");
+  const here = latestHere(results, ["here", "here-vllm"]);
   assert.deepEqual(
     here.map((r) => r.model_id),
     ["a"],

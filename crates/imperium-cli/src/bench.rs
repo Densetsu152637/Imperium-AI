@@ -1,7 +1,7 @@
 //! `imperium models bench [<id>]`: benchmarks installed local models through the daemon, which
-//! loads each one the way any call does (as a background call, waiting for a quiet machine) and
-//! saves the numbers; `--results` lists the saved ones without running anything. Ctrl+C
-//! cancels a running benchmark.
+//! loads each one the way any call does (as a background call, waiting while the machine is
+//! saturated) and saves the numbers; `--results` lists the saved ones without running anything.
+//! Ctrl+C cancels a running benchmark; a run that fails or is cancelled exits non-zero.
 
 use anyhow::Context;
 use imperium_protocol::methods::{
@@ -13,74 +13,99 @@ use crate::{block_on, connect};
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// Runs the benchmark and prints each model's result as it arrives.
+/// Runs the benchmark and prints each model's result as it arrives. Ctrl+C is handled for the
+/// whole run, from before the request is sent: it stops whatever benchmark is running.
 pub fn run(model: Option<String>, warm: bool) -> anyhow::Result<()> {
     block_on(async {
-        let (mut client, _) = connect().await?;
-        let started = client
-            .call::<ModelBench>(ModelBenchParams {
-                model,
-                cold: Some(!warm),
-            })
-            .await?;
-        println!(
-            "{}: benchmarking {} ({}). Ctrl+C cancels it.",
-            started.run_id,
-            plural(started.models.len(), "model"),
-            started.models.join(", ")
-        );
-        println!("This loads each model, so it takes a while and may unload idle models.");
-        let mut printed = 0;
-        let mut last_step = String::new();
-        let ended = loop {
-            let notification = tokio::select! {
-                notification = client.next_notification() => notification?,
-                _ = tokio::signal::ctrl_c() => {
-                    let cancelled = client
-                        .call::<ModelBenchCancel>(ModelBenchCancelParams {
-                            run_id: started.run_id.clone(),
-                        })
-                        .await?;
-                    println!(
-                        "{}",
-                        if cancelled.found { "cancelled" } else { "it had already ended" }
-                    );
-                    return Ok(());
-                }
-            };
-            if notification.method != MODEL_BENCH_PROGRESS {
-                continue;
+        tokio::select! {
+            outcome = watch(model, warm) => outcome,
+            _ = tokio::signal::ctrl_c() => {
+                let stopped = cancel_running().await?;
+                println!("{}", if stopped { "cancelled" } else { "nothing was running" });
+                Ok(())
             }
-            let update: BenchRun = serde_json::from_value(notification.params)
-                .context("could not read benchmark progress")?;
-            if update.run_id != started.run_id {
-                continue;
-            }
-            for result in &update.results[printed..] {
-                print_result(result);
-            }
-            printed = update.results.len();
-            if update.state != "running" {
-                break update;
-            }
-            let step = match (&update.current, &update.step) {
-                (Some(model), Some(step)) => format!("{model}: {step}"),
-                _ => String::new(),
-            };
-            if !step.is_empty() && step != last_step {
-                println!("  ... {step}");
-                last_step = step;
-            }
-        };
-        match ended.state.as_str() {
-            "done" => Ok(()),
-            "cancelled" => anyhow::bail!("the benchmark was cancelled"),
-            _ => anyhow::bail!(
-                "the benchmark failed: {}",
-                ended.message.as_deref().unwrap_or("no reason given")
-            ),
         }
     })
+}
+
+/// Stops every running benchmark; whether any was.
+async fn cancel_running() -> anyhow::Result<bool> {
+    let (mut client, _) = connect().await?;
+    let listing = client
+        .call::<ModelBenchResults>(ModelBenchResultsParams { model: None })
+        .await?;
+    let mut stopped = false;
+    for run in listing.runs.iter().filter(|run| run.state == "running") {
+        let cancelled = client
+            .call::<ModelBenchCancel>(ModelBenchCancelParams {
+                run_id: run.run_id.clone(),
+            })
+            .await?;
+        stopped |= cancelled.found;
+    }
+    Ok(stopped)
+}
+
+/// Starts the run and follows it to its end; an error unless it finished (`done`).
+async fn watch(model: Option<String>, warm: bool) -> anyhow::Result<()> {
+    let (mut client, _) = connect().await?;
+    let started = client
+        .call::<ModelBench>(ModelBenchParams {
+            model,
+            cold: Some(!warm),
+        })
+        .await?;
+    println!(
+        "{}: benchmarking {} ({}). Ctrl+C cancels it.",
+        started.run_id,
+        plural(started.models.len(), "model"),
+        started.models.join(", ")
+    );
+    println!("This loads each model, so it takes a while and may unload idle models.");
+    let mut printed = 0;
+    let mut last_step = String::new();
+    let ended = loop {
+        let notification = client.next_notification().await?;
+        if notification.method != MODEL_BENCH_PROGRESS {
+            continue;
+        }
+        let update: BenchRun = serde_json::from_value(notification.params)
+            .context("could not read benchmark progress")?;
+        if update.run_id != started.run_id {
+            continue;
+        }
+        for result in update.results.iter().skip(printed) {
+            print_result(result);
+        }
+        printed = update.results.len();
+        if update.state != "running" {
+            break update;
+        }
+        let step = match (&update.current, &update.step) {
+            (Some(model), Some(step)) => format!("{model}: {step}"),
+            _ => String::new(),
+        };
+        if !step.is_empty() && step != last_step {
+            println!("  ... {step}");
+            last_step = step;
+        }
+    };
+    if let Some(message) = &ended.message {
+        println!("{message}");
+    }
+    outcome(&ended)
+}
+
+/// Success only for a run that finished; a cancelled or failed one is an error, so scripts see it.
+fn outcome(run: &BenchRun) -> anyhow::Result<()> {
+    match run.state.as_str() {
+        "done" => Ok(()),
+        "cancelled" => anyhow::bail!("the benchmark was cancelled"),
+        _ => anyhow::bail!(
+            "the benchmark failed: {}",
+            run.message.as_deref().unwrap_or("no reason given")
+        ),
+    }
 }
 
 /// Lists the saved results, newest first, optionally for one model.
@@ -216,5 +241,23 @@ mod tests {
         let lines = describe(&failed);
         assert_eq!(lines.len(), 2);
         assert!(lines[1].contains("failed: could not load tiny"));
+    }
+
+    #[test]
+    fn only_a_finished_run_is_a_success() {
+        let run = |state: &str| BenchRun {
+            run_id: "bench-1".into(),
+            state: state.into(),
+            models: Vec::new(),
+            current: None,
+            step: None,
+            models_done: 0,
+            results: Vec::new(),
+            message: Some("No model could be measured.".into()),
+        };
+        assert!(outcome(&run("done")).is_ok());
+        assert!(outcome(&run("cancelled")).is_err());
+        let failed = outcome(&run("failed")).unwrap_err().to_string();
+        assert!(failed.contains("No model could be measured"), "{failed}");
     }
 }

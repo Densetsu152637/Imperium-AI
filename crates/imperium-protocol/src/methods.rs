@@ -2187,7 +2187,7 @@ pub struct ModelDownloadCancelResult {
 
 /// `models.bench`: starts a benchmark of installed local models. For each model it loads the
 /// model through the same launch and residency path every call uses (as a background call, so
-/// it waits for a quiet machine and never evicts a model in use), sends a small fixed prompt
+/// it waits while the machine is saturated and never evicts a model in use), sends a small fixed prompt
 /// set, and measures load time, time to first token, prompt-processing speed and generation
 /// speed from the real stream. The run is reported by `models.bench_progress`; each model's
 /// result is saved (per model, hardware fingerprint and date) and listed by
@@ -2236,8 +2236,12 @@ pub struct ModelBenchResultsParams {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ModelBenchResultsResult {
-    /// This machine's fingerprint, so a client can tell which results are from it.
+    /// This machine's fingerprint for llama.cpp models, so a client can tell which results are
+    /// from it.
     pub hardware_fingerprint: String,
+    /// The fingerprints of this machine for each runtime (llama.cpp, then vLLM); a result is from
+    /// this machine when its fingerprint is one of them.
+    pub hardware_fingerprints: Vec<String>,
     pub results: Vec<BenchResult>,
     /// Runs since the daemon started, oldest first; at most one is running.
     pub runs: Vec<BenchRun>,
@@ -2284,7 +2288,7 @@ pub struct BenchRun {
     /// The model being measured now.
     #[serde(default)]
     pub current: Option<String>,
-    /// What the run is doing now, such as "waiting for a quiet machine" or "prompt 2 of 3".
+    /// What the run is doing now, such as "waiting while the machine is saturated" or "prompt 2 of 3".
     #[serde(default)]
     pub step: Option<String>,
     /// Models finished (measured or failed).
@@ -2305,7 +2309,8 @@ pub struct BenchResult {
     pub run_id: String,
     /// When it was measured, RFC 3339 UTC.
     pub date: String,
-    /// A short hash of the hardware and runtime the numbers belong to.
+    /// A short hash of the hardware and the runtime build (the llama.cpp release and pack, or
+    /// vLLM) the numbers belong to.
     pub hardware_fingerprint: String,
     /// The hardware in words, such as `NVIDIA RTX 4090 24 GB, 64 GB RAM, 16 cores`.
     pub hardware: String,
@@ -2313,7 +2318,8 @@ pub struct BenchResult {
     pub runtime: String,
     /// How it was placed: `gpu`, `partial` or `cpu`.
     pub placement: String,
-    /// The load level of the machine when the model's turn began (`quiet`, `busy`).
+    /// The worse of the machine's load levels (`quiet`, `busy`, `saturated`) when the model's
+    /// turn began and when its last prompt ended; a busy machine spoils the numbers.
     pub machine: String,
     /// Seconds to start the model's server and make it ready; absent when it was already
     /// loaded and in use.

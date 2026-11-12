@@ -194,6 +194,17 @@ impl Connection {
         self.resources.is_some()
     }
 
+    /// Whether a daemon-wide announcement goes to this connection: resource snapshots only to
+    /// connections that asked for them, and benchmark progress (model ids, error text) never to a
+    /// restricted connection such as a paired phone.
+    pub fn receives(&self, notification: &imperium_protocol::jsonrpc::Notification) -> bool {
+        match notification.method.as_str() {
+            imperium_protocol::methods::RESOURCES_CHANGED => self.watches_resources(),
+            imperium_protocol::methods::MODEL_BENCH_PROGRESS => self.allowed.is_none(),
+            _ => true,
+        }
+    }
+
     /// Handles one text frame.
     pub fn handle_text(&mut self, text: &str) -> Handled {
         let value: Value = match serde_json::from_str(text) {

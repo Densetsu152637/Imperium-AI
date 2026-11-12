@@ -221,7 +221,7 @@ enum ModelsCommand {
         prompt: Option<String>,
     },
     /// Benchmark local models: load time, time to first token, prompt and generation speed,
-    /// peak memory. Loads each model like any call does, waiting for a quiet machine; saves
+    /// peak memory. Loads each model like any call does, waiting while the machine is saturated; saves
     /// the numbers per model and machine. Ctrl+C cancels.
     Bench {
         /// A local model id (from `imperium models local`); every model that can run when

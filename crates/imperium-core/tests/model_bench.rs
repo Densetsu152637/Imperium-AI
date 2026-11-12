@@ -38,11 +38,22 @@ struct Behaviour {
     gap_ms: AtomicU64,
     /// Never sends the second token: the answer hangs part-way.
     stall: AtomicBool,
+    /// Sends no usage report.
+    no_usage: AtomicBool,
+    /// Answers every request with a server error.
+    fail: AtomicBool,
+    /// Milliseconds the fake launcher takes to "start" a model.
+    launch_ms: Arc<AtomicU64>,
     /// The bodies received.
     received: Mutex<Vec<Value>>,
 }
 
 const TOKENS: u64 = 5;
+/// The fake model's schedule: 400 ms to the first token, then 150 ms between tokens.
+const FIRST_MS: u64 = 400;
+const GAP_MS: u64 = 150;
+/// How long the fake launcher takes to "start" a model.
+const LAUNCH_MS: u64 = 300;
 const PROMPT_TOKENS: u64 = 100;
 
 /// A stand-in for llama-server: streams `TOKENS` tokens, then usage and `[DONE]`.
@@ -56,6 +67,13 @@ async fn fake_model_server() -> (String, Arc<Behaviour>) {
         let first = behaviour.first_ms.load(Ordering::SeqCst);
         let gap = behaviour.gap_ms.load(Ordering::SeqCst);
         let stall = behaviour.stall.load(Ordering::SeqCst);
+        if behaviour.fail.load(Ordering::SeqCst) {
+            return Response::builder()
+                .status(500)
+                .body(Body::from("the model crashed"))
+                .unwrap();
+        }
+        let no_usage = behaviour.no_usage.load(Ordering::SeqCst);
         let event = |value: Value| Bytes::from(format!("data: {value}\n\n"));
         let mut items: Vec<(Duration, Bytes)> = Vec::new();
         for index in 0..TOKENS {
@@ -75,11 +93,13 @@ async fn fake_model_server() -> (String, Arc<Behaviour>) {
             Duration::ZERO,
             event(json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})),
         ));
-        items.push((
-            Duration::ZERO,
-            event(json!({"choices": [], "usage": {
-                "prompt_tokens": PROMPT_TOKENS, "completion_tokens": TOKENS}})),
-        ));
+        if !no_usage {
+            items.push((
+                Duration::ZERO,
+                event(json!({"choices": [], "usage": {
+                    "prompt_tokens": PROMPT_TOKENS, "completion_tokens": TOKENS}})),
+            ));
+        }
         items.push((Duration::ZERO, Bytes::from_static(b"data: [DONE]\n\n")));
         let stream = futures_util::stream::unfold(items.into_iter(), |mut items| async move {
             let (delay, chunk) = items.next()?;
@@ -101,7 +121,7 @@ async fn fake_model_server() -> (String, Arc<Behaviour>) {
 }
 
 #[derive(Debug)]
-struct FakeLauncher(String);
+struct FakeLauncher(String, Arc<AtomicU64>);
 
 struct FakeServer(String);
 
@@ -113,7 +133,10 @@ impl Server for FakeServer {
 
 impl Launcher for FakeLauncher {
     fn launch<'a>(&'a self, _spec: &'a LaunchSpec) -> LaunchFuture<'a> {
-        Box::pin(async move { Ok(Box::new(FakeServer(self.0.clone())) as Box<dyn Server>) })
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(self.1.load(Ordering::SeqCst))).await;
+            Ok(Box::new(FakeServer(self.0.clone())) as Box<dyn Server>)
+        })
     }
 }
 
@@ -145,11 +168,14 @@ struct Fixture {
     next_id: i64,
 }
 
-async fn fixture(home: &Path) -> Fixture {
+async fn fixture(home: &Path, extra: &str) -> Fixture {
     let (url, behaviour) = fake_model_server().await;
-    behaviour.first_ms.store(200, Ordering::SeqCst);
-    behaviour.gap_ms.store(50, Ordering::SeqCst);
-    let config = "[models]\ndefault = \"llamacpp:tiny\"\n[workflow]\nenabled = false\n[memory]\nenabled = false\n";
+    behaviour.first_ms.store(FIRST_MS, Ordering::SeqCst);
+    behaviour.gap_ms.store(GAP_MS, Ordering::SeqCst);
+    behaviour.launch_ms.store(LAUNCH_MS, Ordering::SeqCst);
+    let config = format!(
+        "[models]\ndefault = \"llamacpp:tiny\"\n[workflow]\nenabled = false\n[memory]\nenabled = false\n{extra}"
+    );
     let paths = imperium_config::Paths::under(home);
     std::fs::create_dir_all(paths.config_dir()).unwrap();
     std::fs::write(paths.user_config_file(), config).unwrap();
@@ -176,7 +202,7 @@ async fn fixture(home: &Path) -> Fixture {
         settings.runtime.llamacpp.clone(),
         Runtimes::default(),
         &hardware,
-        Arc::new(FakeLauncher(url)),
+        Arc::new(FakeLauncher(url, Arc::clone(&behaviour.launch_ms))),
     );
     let local = LocalRuntime::with_supervisor(Arc::clone(&supervisor), hardware);
     let data_dir = paths.data_dir().to_path_buf();
@@ -228,11 +254,11 @@ impl Fixture {
         self.call("models.bench_results", json!({})).await
     }
 
-    /// Waits for the first run to leave `running`; returns it.
+    /// Waits for the last run to leave `running`; returns it.
     async fn finished_run(&mut self) -> Value {
-        for _ in 0..200 {
+        for _ in 0..300 {
             let results = self.results().await;
-            let run = results["runs"][0].clone();
+            let run = results["runs"].as_array().unwrap().last().unwrap().clone();
             if run["state"] != "running" {
                 return run;
             }
@@ -240,12 +266,35 @@ impl Fixture {
         }
         panic!("the benchmark did not finish");
     }
+
+    /// Starts a benchmark of "tiny" and waits for it to end.
+    async fn bench(&mut self, params: Value) -> Value {
+        self.call("models.bench", params).await;
+        self.finished_run().await
+    }
+}
+
+fn saved_result(index: usize) -> Value {
+    json!({"model_id": format!("old-{index}"), "run_id": "bench-0", "date": "2026-01-01T00:00:00Z",
+           "hardware_fingerprint": "old", "hardware": "old", "runtime": "llamacpp",
+           "placement": "gpu", "machine": "quiet", "prompts": []})
+}
+
+fn range(value: &Value, low: f64, high: f64) -> f64 {
+    let number = value
+        .as_f64()
+        .unwrap_or_else(|| panic!("{value} is not a number"));
+    assert!(
+        (low..=high).contains(&number),
+        "{number} is not in {low}..={high}"
+    );
+    number
 }
 
 #[tokio::test]
 async fn nothing_runs_until_a_client_asks() {
     let home = tempfile::tempdir().unwrap();
-    let mut fixture = fixture(home.path()).await;
+    let mut fixture = fixture(home.path(), "").await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let results = fixture.results().await;
     assert_eq!(results["runs"].as_array().unwrap().len(), 0);
@@ -260,7 +309,7 @@ async fn nothing_runs_until_a_client_asks() {
 #[tokio::test]
 async fn a_benchmark_measures_the_stream_through_the_normal_launch_path_and_saves_the_result() {
     let home = tempfile::tempdir().unwrap();
-    let mut fixture = fixture(home.path()).await;
+    let mut fixture = fixture(home.path(), "").await;
     let mut announced = fixture.state.announcements();
 
     let run = fixture.call("models.bench", json!({"model": "tiny"})).await;
@@ -286,17 +335,25 @@ async fn a_benchmark_measures_the_stream_through_the_normal_launch_path_and_save
         results["hardware_fingerprint"]
     );
     assert!(
-        result["hardware"].as_str().unwrap().contains("test 24 GB"),
-        "{result}"
+        results["hardware_fingerprints"]
+            .as_array()
+            .unwrap()
+            .contains(&result["hardware_fingerprint"])
+    );
+    let hardware = result["hardware"].as_str().unwrap();
+    assert!(
+        hardware.contains("test 24 GB") && hardware.contains("llama.cpp "),
+        "{hardware}"
     );
     assert!(result["date"].as_str().unwrap().ends_with('Z'));
-    // The model was not loaded before, so its load was timed.
-    assert!(result["load_s"].as_f64().is_some(), "{result}");
+    assert_eq!(result["machine"], "quiet");
+    // The model was not loaded before, so its load was timed: at least the launcher's delay.
+    range(&result["load_s"], LAUNCH_MS as f64 / 1000.0 - 0.01, 10.0);
 
-    // The numbers follow the schedule the server streamed: 200 ms to the first token, then four
-    // more at 50 ms. Sleeps only run long, so the speeds are at most these.
+    // The numbers follow the schedule the server streamed: 400 ms to the first token, then four
+    // more at 150 ms. Sleeps only run long, so the speeds are at most these; a formula over the
+    // whole request would give 100/1.0 = 100 tok/s and 5/1.0 = 5 tok/s, outside these ranges.
     let prompts = result["prompts"].as_array().unwrap();
-    assert_eq!(prompts.len(), 3, "{result}");
     assert_eq!(
         prompts
             .iter()
@@ -305,22 +362,15 @@ async fn a_benchmark_measures_the_stream_through_the_normal_launch_path_and_save
         ["short", "medium", "long"]
     );
     for prompt in prompts {
-        let ttft = prompt["ttft_ms"].as_f64().unwrap();
-        assert!((195.0..900.0).contains(&ttft), "ttft {ttft}");
+        range(&prompt["ttft_ms"], 395.0, 700.0);
         assert_eq!(prompt["prompt_tokens"], PROMPT_TOKENS);
         assert_eq!(prompt["completion_tokens"], TOKENS);
-        let prompt_rate = prompt["prompt_tok_s"].as_f64().unwrap();
-        assert!(
-            (100.0..=520.0).contains(&prompt_rate),
-            "prompt tok/s {prompt_rate}"
-        );
-        let gen_rate = prompt["gen_tok_s"].as_f64().unwrap();
-        assert!((6.0..=22.0).contains(&gen_rate), "gen tok/s {gen_rate}");
+        range(&prompt["prompt_tok_s"], 150.0, 256.0);
+        range(&prompt["gen_tok_s"], 5.6, 6.7);
     }
-    let ttft = result["ttft_ms"].as_f64().unwrap();
-    assert!((195.0..900.0).contains(&ttft), "median ttft {ttft}");
-    assert!((100.0..=520.0).contains(&result["prompt_tok_s"].as_f64().unwrap()));
-    assert!((6.0..=22.0).contains(&result["gen_tok_s"].as_f64().unwrap()));
+    range(&result["ttft_ms"], 395.0, 700.0);
+    range(&result["prompt_tok_s"], 150.0, 256.0);
+    range(&result["gen_tok_s"], 5.6, 6.7);
     // The fake server has no process to read, so no peak memory is claimed.
     assert!(result["peak_ram_bytes"].is_null() && result["peak_vram_bytes"].is_null());
 
@@ -372,27 +422,142 @@ async fn a_benchmark_measures_the_stream_through_the_normal_launch_path_and_save
         .await;
     assert!(other["results"].as_array().unwrap().is_empty());
 
-    // A second run on the now-loaded idle model: cold (the default) unloads it first, so the
-    // load is timed again; the results list is newest first.
-    fixture.call("models.bench", json!({"model": "tiny"})).await;
-    for _ in 0..200 {
-        if fixture.results().await["runs"][1]["state"] != "running" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    // A second run at once: the model was used just now, inside the interactive hold, so it is
+    // not unloaded to time a load, and the results list is newest first.
+    let second = fixture.bench(json!({"model": "tiny"})).await;
+    assert_eq!(second["state"], "done");
     let results = fixture.results().await;
     let saved = results["results"].as_array().unwrap();
     assert_eq!(saved.len(), 2, "{results}");
     assert_eq!(saved[0]["run_id"], "bench-2");
     assert_eq!(saved[1]["run_id"], "bench-1");
-    assert!(saved[0]["load_s"].as_f64().is_some(), "{}", saved[0]);
+    assert!(
+        saved[0]["load_s"].is_null(),
+        "no load was timed: {}",
+        saved[0]
+    );
+}
+
+#[tokio::test]
+async fn a_model_idle_past_the_hold_is_unloaded_to_time_its_load_unless_asked_not_to() {
+    let home = tempfile::tempdir().unwrap();
+    // No interactive hold: a model counts as idle as soon as it is not in use.
+    let mut fixture = fixture(home.path(), "[load]\ninteractive_hold_min = 0\n").await;
+    fixture.bench(json!({"model": "tiny"})).await;
+    // Cold (the default): unloaded, then loaded again, and the load timed.
+    fixture.bench(json!({"model": "tiny"})).await;
+    // Warm: left loaded, so no load is timed.
+    fixture.bench(json!({"model": "tiny", "cold": false})).await;
+    let results = fixture.results().await;
+    let saved = results["results"].as_array().unwrap();
+    assert_eq!(saved.len(), 3, "{results}");
+    // Newest first.
+    assert!(saved[0]["load_s"].is_null(), "{}", saved[0]);
+    range(&saved[1]["load_s"], LAUNCH_MS as f64 / 1000.0 - 0.01, 10.0);
+    range(&saved[2]["load_s"], LAUNCH_MS as f64 / 1000.0 - 0.01, 10.0);
+}
+
+#[tokio::test]
+async fn a_server_without_usage_claims_no_prompt_speed() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    fixture.behaviour.no_usage.store(true, Ordering::SeqCst);
+    let run = fixture.bench(json!({"model": "tiny"})).await;
+    assert_eq!(run["state"], "done", "{run}");
+    let result = &run["results"][0];
+    assert!(result["prompt_tok_s"].is_null(), "{result}");
+    for prompt in result["prompts"].as_array().unwrap() {
+        assert!(prompt["prompt_tok_s"].is_null(), "{prompt}");
+        // The streamed chunks stand in for the reply tokens.
+        assert_eq!(prompt["completion_tokens"], TOKENS);
+        range(&prompt["gen_tok_s"], 5.6, 6.7);
+    }
+    range(&result["gen_tok_s"], 5.6, 6.7);
+}
+
+#[tokio::test]
+async fn a_failed_model_is_reported_not_saved_and_fails_the_run() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    fixture.behaviour.fail.store(true, Ordering::SeqCst);
+    let run = fixture.bench(json!({"model": "tiny"})).await;
+    assert_eq!(run["state"], "failed", "{run}");
+    assert!(
+        run["message"]
+            .as_str()
+            .unwrap()
+            .contains("No model could be measured")
+    );
+    let result = &run["results"][0];
+    assert!(
+        result["error"].as_str().unwrap().contains("500"),
+        "{result}"
+    );
+    assert!(!fixture.data_dir.join("local-benchmarks.json").exists());
+    assert!(
+        fixture.results().await["results"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // The slot was released, and a later run works.
+    assert_eq!(fixture.supervisor.loaded()[0].slots_in_use, 0);
+    fixture.behaviour.fail.store(false, Ordering::SeqCst);
+    let run = fixture.bench(json!({"model": "tiny"})).await;
+    assert_eq!(run["state"], "done", "{run}");
+}
+
+#[tokio::test]
+async fn only_the_newest_runs_are_kept_in_memory() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    fixture.behaviour.fail.store(true, Ordering::SeqCst);
+    for _ in 0..23 {
+        fixture.bench(json!({"model": "tiny"})).await;
+    }
+    let runs = fixture.results().await["runs"].as_array().unwrap().clone();
+    assert_eq!(runs.len(), 20);
+    assert_eq!(runs.last().unwrap()["run_id"], "bench-23");
+    assert_eq!(runs[0]["run_id"], "bench-4");
+}
+
+#[tokio::test]
+async fn cancelling_during_the_load_stops_the_run() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    fixture.behaviour.launch_ms.store(60_000, Ordering::SeqCst);
+    let run = fixture.call("models.bench", json!({"model": "tiny"})).await;
+    let run_id = run["run_id"].as_str().unwrap().to_string();
+    // The call waits for the model to load.
+    for _ in 0..100 {
+        let step = fixture.results().await["runs"][0]["step"].clone();
+        if step == "loading the model" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        fixture.results().await["runs"][0]["step"],
+        "loading the model"
+    );
+    let cancelled = fixture
+        .call("models.bench_cancel", json!({"run_id": run_id}))
+        .await;
+    assert_eq!(cancelled["found"], true);
+    let results = fixture.results().await;
+    assert_eq!(results["runs"][0]["state"], "cancelled");
+    assert!(results["results"].as_array().unwrap().is_empty());
+    assert!(
+        fixture.behaviour.received.lock().unwrap().is_empty(),
+        "nothing was sent"
+    );
+    assert!(!fixture.data_dir.join("local-benchmarks.json").exists());
 }
 
 #[tokio::test]
 async fn cancelling_stops_the_run_and_frees_the_slot() {
     let home = tempfile::tempdir().unwrap();
-    let mut fixture = fixture(home.path()).await;
+    let mut fixture = fixture(home.path(), "").await;
     fixture.behaviour.stall.store(true, Ordering::SeqCst);
 
     let run = fixture.call("models.bench", json!({"model": "tiny"})).await;
@@ -445,26 +610,118 @@ async fn cancelling_stops_the_run_and_frees_the_slot() {
         0,
         "the slot was released"
     );
+    // Not even a result that finishes after the cancel is saved.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(!fixture.data_dir.join("local-benchmarks.json").exists());
 
     // The daemon is not left blocked: a new run can start and finish.
     fixture.behaviour.stall.store(false, Ordering::SeqCst);
-    fixture.call("models.bench", json!({"model": "tiny"})).await;
-    for _ in 0..200 {
-        if fixture.results().await["runs"][1]["state"] != "running" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    let run = fixture.bench(json!({"model": "tiny"})).await;
+    assert_eq!(run["state"], "done", "{run}");
+    assert_eq!(
+        fixture.results().await["results"].as_array().unwrap().len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_restricted_connection_cannot_benchmark_or_hear_about_it() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    let mut phone = Connection::restricted(Arc::clone(&fixture.state), vec!["session.list"]);
+    let handshake = json!({"jsonrpc": "2.0", "id": 1, "method": "system.handshake",
+        "params": {"client": {"name": "phone", "version": "0"},
+                   "protocol": imperium_protocol::PROTOCOL_VERSION}});
+    phone.handle_text(&handshake.to_string());
+    for method in [
+        "models.bench",
+        "models.bench_results",
+        "models.bench_cancel",
+    ] {
+        let frame = json!({"jsonrpc": "2.0", "id": 2, "method": method, "params": {"run_id": "x"}});
+        let handled = phone.handle_text(&frame.to_string());
+        let RpcResponse { outcome, .. } = handled.response.expect("an immediate answer");
+        assert!(
+            matches!(outcome, Outcome::Error(_)),
+            "{method}: {outcome:?}"
+        );
     }
+    assert!(
+        fixture.results().await["runs"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Progress (model ids, error text) goes to a full connection and not to the phone.
+    let progress = imperium_protocol::jsonrpc::Notification::new(
+        "models.bench_progress",
+        json!({"run_id": "bench-1"}),
+    );
+    assert!(fixture.connection.receives(&progress));
+    assert!(!phone.receives(&progress));
+    let other = imperium_protocol::jsonrpc::Notification::new("model.residency", json!({}));
+    assert!(phone.receives(&other));
+}
+
+#[tokio::test]
+async fn results_are_capped_at_200_and_the_oldest_go_first() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    let old: Vec<Value> = (0..200).map(saved_result).collect();
+    std::fs::create_dir_all(&fixture.data_dir).unwrap();
+    std::fs::write(
+        fixture.data_dir.join("local-benchmarks.json"),
+        json!({"results": old}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.results().await["results"].as_array().unwrap().len(),
+        200
+    );
+    let run = fixture.bench(json!({"model": "tiny"})).await;
+    assert_eq!(run["state"], "done", "{run}");
     let results = fixture.results().await;
-    assert_eq!(results["runs"][1]["state"], "done", "{results}");
-    assert_eq!(results["results"].as_array().unwrap().len(), 1);
+    let saved = results["results"].as_array().unwrap();
+    assert_eq!(saved.len(), 200);
+    assert_eq!(saved[0]["model_id"], "tiny", "newest first");
+    assert_eq!(saved[199]["model_id"], "old-1", "old-0 was dropped");
+}
+
+#[tokio::test]
+async fn an_unreadable_results_file_is_set_aside_not_overwritten() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    std::fs::create_dir_all(&fixture.data_dir).unwrap();
+    let file = fixture.data_dir.join("local-benchmarks.json");
+    std::fs::write(&file, "{ \"results\": [ this is not json").unwrap();
+    // Listing works and shows nothing; the file is set aside.
+    assert!(
+        fixture.results().await["results"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let aside = fixture.data_dir.join("local-benchmarks.json.bad");
+    assert_eq!(
+        std::fs::read_to_string(&aside).unwrap(),
+        "{ \"results\": [ this is not json"
+    );
+    // Damage that appears after that is kept too when the next result is saved.
+    std::fs::write(&file, "garbage again").unwrap();
+    let run = fixture.bench(json!({"model": "tiny"})).await;
+    assert_eq!(run["state"], "done", "{run}");
+    assert_eq!(std::fs::read_to_string(&aside).unwrap(), "garbage again");
+    assert_eq!(
+        fixture.results().await["results"].as_array().unwrap().len(),
+        1
+    );
 }
 
 #[tokio::test]
 async fn an_unknown_model_is_refused() {
     let home = tempfile::tempdir().unwrap();
-    let mut fixture = fixture(home.path()).await;
+    let mut fixture = fixture(home.path(), "").await;
     let refused = fixture
         .outcome("models.bench", json!({"model": "nonesuch"}))
         .await;

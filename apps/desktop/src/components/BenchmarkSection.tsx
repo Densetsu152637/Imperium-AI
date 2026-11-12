@@ -1,6 +1,6 @@
 // Settings → Models → Local model benchmark: runs the daemon's benchmark (`models.bench`) on one
 // local model or all of them and shows the saved results. It only runs when asked, takes its
-// place in the normal model queue as a background call (so it waits for a quiet machine), and
+// place in the normal model queue as a background call (so it waits while the machine is saturated), and
 // can be cancelled while it runs. Numbers come from the daemon; nothing is measured here.
 
 import { useCallback, useEffect, useState } from "react";
@@ -64,7 +64,7 @@ export function BenchmarkSection({ client }: { client: DaemonClient }) {
   const [models, setModels] = useState<{ id: string; label: string }[]>([]);
   const [model, setModel] = useState(ALL);
   const [results, setResults] = useState<BenchResult[]>([]);
-  const [fingerprint, setFingerprint] = useState("");
+  const [fingerprints, setFingerprints] = useState<string[]>([]);
   const [runs, setRuns] = useState<BenchRun[]>([]);
   const [warm, setWarm] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -74,7 +74,7 @@ export function BenchmarkSection({ client }: { client: DaemonClient }) {
     try {
       const listing = await client.call<ModelBenchResultsResult>("models.bench_results", {});
       setResults(listing.results);
-      setFingerprint(listing.hardware_fingerprint);
+      setFingerprints(listing.hardware_fingerprints);
       setRuns(listing.runs);
     } catch (failure) {
       setError(message(failure));
@@ -129,7 +129,7 @@ export function BenchmarkSection({ client }: { client: DaemonClient }) {
     }
   };
 
-  const here = latestHere(results, fingerprint);
+  const here = latestHere(results, fingerprints);
   const earlier = history(results, here);
   const failed = runs.flatMap((run) => run.results).filter((result) => result.error);
 
@@ -140,7 +140,7 @@ export function BenchmarkSection({ client }: { client: DaemonClient }) {
       </div>
       <Row
         label="Run a benchmark"
-        description="Loads the model the way any call does, waits for a quiet machine, and sends a few fixed prompts, measuring load time, time to first token, prompt and generation speed, and peak memory. It runs only when you start it and can be cancelled."
+        description="Loads the model the way any call does, waits while the machine is saturated, and sends a few fixed prompts, measuring load time, time to first token, prompt and generation speed, and peak memory. It runs only when you start it and can be cancelled."
       >
         <select
           className="field"
@@ -195,7 +195,7 @@ export function BenchmarkSection({ client }: { client: DaemonClient }) {
         <details>
           <summary>Earlier results and other machines ({earlier.length})</summary>
           <ResultTable results={earlier} />
-          <p className="muted">Results are kept per model, machine and date; a different GPU, memory, or runtime build counts as another machine.</p>
+          <p className="muted">Results are kept per model, machine and date; a different GPU, memory, or runtime build (the llama.cpp release and pack, or vLLM) counts as another machine.</p>
         </details>
       )}
       {error && (
