@@ -94,7 +94,9 @@ impl Client {
     /// socket forwarded over SSH); otherwise, or when it cannot be reached, the loopback URL is.
     pub async fn connect(endpoint: &DaemonEndpoint, client: Peer) -> Result<Self, ClientError> {
         if let Some(address) = &endpoint.socket {
-            match Self::connect_socket(address, &endpoint.token, client.clone()).await {
+            match Self::connect_socket(address, &endpoint.token, Some(endpoint.pid), client.clone())
+                .await
+            {
                 Ok(connected) => return Ok(connected),
                 Err(error) if endpoint.url.is_empty() => return Err(error),
                 Err(_) => {}
@@ -125,12 +127,16 @@ impl Client {
 
     /// Connects over the daemon's local socket (a Unix socket's path or a Windows named pipe's
     /// name) with the same token the loopback listener takes, and performs `system.handshake`.
+    ///
+    /// On Windows, `expected_pid` (the daemon's process id) must match the process serving the
+    /// pipe, or the connection is refused before the token is sent.
     pub async fn connect_socket(
         address: &str,
         token: &str,
+        expected_pid: Option<u32>,
         client: Peer,
     ) -> Result<Self, ClientError> {
-        let stream = imperium_ipc::connect(address)
+        let stream = imperium_ipc::connect(address, expected_pid)
             .await
             .map_err(|error| ClientError::Connect(Box::new(tungstenite::Error::Io(error))))?;
         // The host and path only fill in the upgrade request; nothing resolves `localhost`.

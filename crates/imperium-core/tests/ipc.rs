@@ -44,7 +44,9 @@ async fn start(token: &str) -> Daemon {
 }
 
 async fn upgrade(address: &str, authorization: Option<&str>) -> Result<Socket, tungstenite::Error> {
-    let stream = imperium_ipc::connect(address).await.unwrap();
+    let stream = imperium_ipc::connect(address, Some(std::process::id()))
+        .await
+        .unwrap();
     let mut request = "ws://localhost/rpc".into_client_request().unwrap();
     if let Some(authorization) = authorization {
         request
@@ -105,6 +107,24 @@ async fn a_local_connection_still_needs_the_token() {
             other => panic!("expected 401 for {header:?}, got {:?}", other.map(|_| ())),
         }
     }
+}
+
+/// A pipe served by a process other than the daemon never gets a connection, so it cannot
+/// collect the token (a stale endpoint file or a squatter looks like this).
+#[cfg(windows)]
+#[tokio::test]
+async fn a_pipe_served_by_another_process_is_refused() {
+    let daemon = start("secret").await;
+    let wrong = std::process::id().wrapping_add(4);
+    let error = imperium_ipc::connect(&daemon.address, Some(wrong))
+        .await
+        .map(|_| ())
+        .unwrap_err();
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{error}"
+    );
 }
 
 #[tokio::test]

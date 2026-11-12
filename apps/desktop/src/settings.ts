@@ -6,6 +6,7 @@
 import { createContext, useContext } from "react";
 
 import { toggleMark, type ModelMark, type ModelMarks } from "./modelPrefs";
+import { rememberTheme } from "./boot";
 import { getDoc, setDoc, takeLegacy } from "./store";
 import type { PttKey } from "./voice";
 
@@ -207,6 +208,7 @@ export function applySettings(settings: AppSettings): void {
   const root = document.documentElement;
   const style = root.style;
   applyTheme(settings.theme);
+  rememberTheme(settings.theme);
   style.setProperty("--ui-scale", String(settings.uiScale));
   style.setProperty("--prose-scale", String(settings.proseScale));
   style.setProperty("--code-scale", String(settings.codeScale));

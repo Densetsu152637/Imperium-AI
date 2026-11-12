@@ -149,8 +149,14 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
    *Give back to agent*) while the agent's browser tools are refused
    ([05](05-tools-and-isolation.md#live-preview-implemented),
    [07](07-desktop-ui.md#preview-and-browser-panels-implemented)). Protocol 0.18.
-10. **Local-model extras.** Speculative decoding with draft models, a local model benchmark,
-    and an OpenAI-compatible local API server for other tools. The API server is implemented:
+10. **Local-model extras** (implemented). Speculative decoding with draft
+    models, a local model benchmark, and an OpenAI-compatible local API server for other tools.
+    Speculative decoding is implemented: a per-model `draft_model` (an installed, smaller GGUF
+    with the same tokenizer family) with `draft_max`, `draft_min` and `draft_gpu_layers`, passed
+    to llama-server's `--spec-draft-model` and `--spec-type draft-simple`; the draft counts in the
+    model's memory plan and residency accounting, and a missing, incompatible or oversized draft
+    loads the model without it and says why ([04](04-models-and-routing.md#speculative-decoding-implemented),
+    [07](07-desktop-ui.md), [10](10-configuration.md)). Protocol 0.24. The API server is implemented:
     opt-in, loopback by default, with its own token in the secret store, `/v1/models` and
     `/v1/chat/completions` (streamed or not), calls that go through the residency controller
     and count toward budgets as the `api` source, hosted models only by explicit per-model
@@ -162,8 +168,8 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     call, never unasked and cancellable, and measures load time, time to first token, prompt and
     generation speed and peak memory from the real stream, saved per model, hardware fingerprint
     and date ([04](04-models-and-routing.md#local-model-benchmark-implemented),
-    [07](07-desktop-ui.md#local-model-benchmark-implemented)). Protocol 0.21. Speculative
-    decoding is not.
+    [07](07-desktop-ui.md#local-model-benchmark-implemented)). Protocol 0.21. Both parts
+    are implemented, so item 10 is fully implemented.
 11. **Sharing and sync (design)** (designed). Design plans for session sharing and export, and
     for team sync: a portable session bundle with shared redaction, a mandatory preview and
     read-only import with explicit forking, and team sync as a git-backed config layer that
@@ -274,9 +280,12 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     ([05](05-tools-and-isolation.md#permission-modes-implemented),
     [07](07-desktop-ui.md#environments-and-sessions-implemented)). Remote runtimes do not have
     the search tools or background commands yet.
-26. **Worktrees for parallel writers.** Parallel writing subagents each work in their own git
-    worktree so concurrent edits never collide
-    ([14](14-projects-and-automation.md#worktrees)).
+26. **Worktrees for parallel writers** (implemented). A subagent started with
+    `spawn_agent` `access: "write"` works in a git worktree of its own on its own branch, so
+    concurrent edits never collide; its work comes back as a commit on that branch with a
+    merge report, and the worktrees go with the session
+    ([14](14-projects-and-automation.md#worktrees)). The planned `[worktrees]` settings and the
+    Worktrees pane are not built.
 27. **Environment configuration.** An environment's own `.imperium/config.toml` (instructions,
     policy, plugins, MCP servers, routing, budgets), sessions narrowed to a subfolder or a
     read-only mount, and schedules and project agents per environment
@@ -304,7 +313,7 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     pipe (an ACL for the current user only). The CLI uses the socket when the endpoint file
     names one, and `imperium remote connect --socket` forwards the host's socket over SSH
     ([02](02-architecture.md#protocol), [05](05-tools-and-isolation.md#ssh-hosts),
-    [10](10-configuration.md)). Protocol 0.25.
+    [10](10-configuration.md)). Protocol 0.26.
 34. **Desktop and platform gaps.** Rebindable shortcuts; attachments for models without
     vision (image descriptions), drawn PDF pages, and a supervised local whisper; an encrypted
     secret store where no keychain exists; WASM pet behaviours

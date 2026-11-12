@@ -24,6 +24,7 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
+use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 /// How many times a client retries a pipe whose instances are all busy.
@@ -84,8 +85,9 @@ pub struct Listener {
     name: String,
     /// The access list, as SDDL: the current user and nobody else.
     sddl: String,
-    /// The instance waiting for the next client.
-    next: Option<NamedPipeServer>,
+    /// The instance waiting for the next client. One is always held, so the name is never vacant
+    /// for another local user to take.
+    current: NamedPipeServer,
 }
 
 impl Listener {
@@ -108,7 +110,7 @@ impl Listener {
         Ok(Listener {
             name,
             sddl,
-            next: Some(first),
+            current: first,
         })
     }
 
@@ -118,32 +120,55 @@ impl Listener {
     }
 
     pub async fn accept(&mut self) -> io::Result<Stream> {
-        let server = match self.next.take() {
-            Some(server) => server,
-            None => create_instance(&self.name, &self.sddl, false)?,
+        // The name must never be vacant, or another local user could create the pipe and
+        // collect the token from the next client. So the held instance is only given up after
+        // its replacement exists, and a failure leaves it in place (disconnected, for reuse).
+        if let Err(error) = self.current.connect().await {
+            let _ = self.current.disconnect();
+            return Err(error);
+        }
+        let replacement = match create_instance(&self.name, &self.sddl, false) {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                let _ = self.current.disconnect();
+                return Err(error);
+            }
         };
-        server.connect().await?;
-        // Have an instance waiting before handing this one over, so a client arriving now finds
-        // the pipe. If that fails the next `accept` tries again.
-        self.next = create_instance(&self.name, &self.sddl, false).ok();
-        Ok(Stream::Server(server))
+        Ok(Stream::Server(std::mem::replace(
+            &mut self.current,
+            replacement,
+        )))
+    }
+
+    /// Whether a first instance of this pipe's name could be created: false while the listener
+    /// holds the name.
+    #[cfg(test)]
+    fn name_is_vacant(&self) -> bool {
+        create_instance(&self.name, &self.sddl, true).is_ok()
     }
 
     /// The access list of the instance that waits for a client, as SDDL.
     #[cfg(test)]
     fn waiting_acl(&self) -> io::Result<String> {
         use std::os::windows::io::AsRawHandle;
-        let pipe = self.next.as_ref().expect("an instance is waiting");
-        acl_of(pipe.as_raw_handle())
+        acl_of(self.current.as_raw_handle())
     }
 }
 
-/// Connects to a daemon's pipe, waiting briefly when every instance is busy.
-pub async fn connect(address: &str) -> io::Result<Stream> {
+/// Connects to a daemon's pipe, waiting briefly when every instance is busy. With
+/// `expected_pid` (the daemon's process id from its endpoint file) the pipe's server must be
+/// that process: otherwise the connection is refused before anything is sent, so a process that
+/// took the name, or a stale endpoint file, never receives the token.
+pub async fn connect(address: &str, expected_pid: Option<u32>) -> io::Result<Stream> {
     let mut attempt = 0;
     loop {
         match ClientOptions::new().open(address) {
-            Ok(client) => return Ok(Stream::Client(client)),
+            Ok(client) => {
+                if let Some(expected) = expected_pid {
+                    check_server(&client, expected)?;
+                }
+                return Ok(Stream::Client(client));
+            }
             Err(error)
                 if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32)
                     && attempt < BUSY_RETRIES =>
@@ -154,6 +179,28 @@ pub async fn connect(address: &str) -> io::Result<Stream> {
             Err(error) => return Err(error),
         }
     }
+}
+
+/// Refuses a pipe whose server is not process `expected`.
+fn check_server(client: &NamedPipeClient, expected: u32) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    let mut served_by = 0u32;
+    // SAFETY: the handle belongs to the live client in `client`; `served_by` is a valid
+    // out-pointer.
+    let found =
+        unsafe { GetNamedPipeServerProcessId(client.as_raw_handle() as HANDLE, &mut served_by) };
+    if found == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if served_by != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "the pipe is served by process {served_by}, not the daemon (process {expected})"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// A security descriptor made by Windows; freed when dropped.
@@ -345,7 +392,7 @@ mod tests {
             listener
         });
         for value in [41u8, 1] {
-            let mut client = connect(&address).await.unwrap();
+            let mut client = connect(&address, Some(std::process::id())).await.unwrap();
             client.write_all(&[value]).await.unwrap();
             let mut reply = [0u8; 1];
             client.read_exact(&mut reply).await.unwrap();
@@ -355,12 +402,55 @@ mod tests {
 
         // Dropping the listener removes the pipe.
         drop(listener);
-        assert!(connect(&address).await.is_err());
+        assert!(connect(&address, None).await.is_err());
     }
 
     #[tokio::test]
     async fn a_taken_name_is_not_reused() {
         let listener = Listener::bind(Path::new("unused")).unwrap();
         assert!(create_instance(&listener.name, &listener.sddl, true).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_name_is_held_before_during_and_after_every_accept() {
+        let mut listener = Listener::bind(Path::new("unused")).unwrap();
+        let address = listener.address();
+        assert!(!listener.name_is_vacant(), "held at bind");
+
+        // A client that connects and goes away at once is a failed or short connection; the
+        // listener must keep the name through it and through the next accept.
+        for _ in 0..3 {
+            drop(connect(&address, None).await.unwrap());
+            let _ = listener.accept().await;
+            assert!(!listener.name_is_vacant(), "held after an accept");
+        }
+        // A server instance whose connect fails is disconnected for reuse, not dropped.
+        let _ = listener.current.disconnect();
+        assert!(!listener.name_is_vacant(), "held after a disconnect");
+        // And the listener still serves.
+        let client = connect(&address, None).await.unwrap();
+        let served = listener.accept().await.unwrap();
+        drop((client, served));
+    }
+
+    #[tokio::test]
+    async fn a_client_refuses_a_pipe_served_by_another_process() {
+        let mut listener = Listener::bind(Path::new("unused")).unwrap();
+        let address = listener.address();
+        let this = std::process::id();
+        // Like the daemon, keep accepting: the refused attempt used up one instance.
+        let accepting = tokio::spawn(async move {
+            for _ in 0..2 {
+                let _ = listener.accept().await;
+            }
+            listener
+        });
+        let error = connect(&address, Some(this.wrapping_add(4)))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        // The right process id connects.
+        let client = connect(&address, Some(this)).await.unwrap();
+        drop((client, accepting.await.unwrap()));
     }
 }

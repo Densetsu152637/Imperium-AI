@@ -82,8 +82,9 @@ fn remove_stale(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Connects to a daemon's socket.
-pub async fn connect(address: &str) -> io::Result<Stream> {
+/// Connects to a daemon's socket. `_expected_pid` is only used on Windows, where a named pipe
+/// could be created by another user; a Unix socket sits in a folder only this user can enter.
+pub async fn connect(address: &str, _expected_pid: Option<u32>) -> io::Result<Stream> {
     UnixStream::connect(address).await
 }
 
@@ -108,7 +109,7 @@ mod tests {
             stream.write_all(&[byte[0] + 1]).await.unwrap();
             listener
         });
-        let mut client = connect(&address).await.unwrap();
+        let mut client = connect(&address, None).await.unwrap();
         client.write_all(&[41]).await.unwrap();
         let mut reply = [0u8; 1];
         client.read_exact(&mut reply).await.unwrap();

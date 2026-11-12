@@ -506,7 +506,13 @@ any folders outside git). Otherwise an environment's local sessions also get the
 folders' repositories (discovered from git's records, checked to point back at the repository,
 and looked up again when a path falls outside everything else), as writable as the folders,
 under the same path checks, with deny rules still winning; the environment's **Project
-worktrees** switch turns this off.
+worktrees** switch turns this off. A writer subagent (`spawn_agent` with `access: "write"`)
+works only in worktrees made for it, with the session's grants, permission rules (absolute
+path rules for the root's paths match the same file in its worktree) and sandbox tier
+unchanged, the project worktrees closed to it, its hooks run in its worktree, and tools tied to
+the session's folders (the preview) not offered, so its edits stay out of the root's checkout
+until the root merges its branch
+([parallel writers](14-projects-and-automation.md#worktrees)).
 
 | Tier            | Boundary                                                                     | Protects against                                    | Does not protect against                           |
 | --------------- | ---------------------------------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |

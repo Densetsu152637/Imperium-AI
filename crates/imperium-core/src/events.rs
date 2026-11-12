@@ -43,7 +43,14 @@ impl EventFilter {
         let mut next = self.clone();
         let include = next.include.get_or_insert_with(BTreeSet::new);
         include.extend(topics.iter().cloned());
-        next.exclude.retain(|topic| !topics.contains(topic));
+        // A subscription lifts every mute it covers, in either direction: a mute of `*` or of
+        // `session.*` no longer hides a later `session.event`, and `session.*` lifts the mute
+        // of `session.updated`.
+        next.exclude.retain(|muted| {
+            !topics
+                .iter()
+                .any(|topic| topic_matches(muted, topic) || topic_matches(topic, muted))
+        });
         next.commit(self)
     }
 
@@ -181,6 +188,24 @@ mod tests {
         filter.unsubscribe(&names(&["session.*"])).unwrap();
         assert!(!filter.allows("session.event"));
         assert!(filter.allows("budgets.changed"));
+    }
+
+    #[test]
+    fn subscribing_after_muting_everything_or_a_family_delivers_again() {
+        let mut filter = EventFilter::default();
+        filter.unsubscribe(&names(&["*"])).unwrap();
+        assert!(!filter.allows("session.event"));
+        filter.subscribe(&names(&["session.event"])).unwrap();
+        assert!(filter.allows("session.event"));
+        assert!(!filter.allows("model.residency"));
+        assert!(filter.selection().muted.is_empty());
+
+        let mut filter = EventFilter::default();
+        filter.unsubscribe(&names(&["session.*"])).unwrap();
+        assert!(!filter.allows("session.event"));
+        filter.subscribe(&names(&["session.event"])).unwrap();
+        assert!(filter.allows("session.event"));
+        assert!(!filter.allows("session.updated"));
     }
 
     #[test]

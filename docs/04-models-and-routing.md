@@ -969,7 +969,9 @@ unsubscribes it), so an idle daemon reads nothing. A snapshot holds:
   pinned to the CPU lane, the context one session may use, its KV pool and the tokens running
   calls reserve from it, planned VRAM and RAM, slots in use and calls queued, whether an agent
   is mid-turn on it (a claim), the live sessions on it (their model, or calls on it in the last
-  15 minutes), and while idle how long until `idle_unload_s` unloads it.
+  15 minutes), and while idle how long until `idle_unload_s` unloads it. A model running with
+  a [draft model](#speculative-decoding-implemented) names it (its memory is in the planned
+  VRAM and RAM); one whose configured draft is not used carries the notice saying why.
   `models.unload {model}` (or `imperium models unload <id>`) unloads an idle model now, saving
   its slots as a swap-out does (reason `request`); a model with a slot in use, a call queued,
   or an agent mid-turn on it is refused, as the [idle unload](#runtimes) spares it.
@@ -1004,6 +1006,67 @@ model does not fit.
 
 KV bytes per token come from GGUF metadata (layers × KV heads × head dim × 2 × cache-type
 bytes). Estimates are calibrated against measured usage after each load and stored per model.
+A [draft model](#speculative-decoding-implemented) adds its own weights, KV cache and buffers
+to `required`.
+
+### Speculative decoding (implemented)
+
+A model can name a smaller **draft model** that proposes a few tokens at a time while the model
+checks them in one pass: the output is the one the model alone would give, produced faster when
+the draft guesses well. It is a per-model setting (`runtime.llamacpp.models."<id>"` in
+[10](10-configuration.md), *Draft model* in the model settings dialog), off unless set:
+
+- `draft_model` is the id of another installed GGUF model (one found in `models.folders`, so it
+  can be downloaded like any other); `draft_max`, `draft_min` and `draft_gpu_layers` are the
+  optional parameters. llama.cpp models only; a vLLM model is refused a draft.
+- The flags come from the pinned llama.cpp release (b12180, `tools/server/README.md` and
+  `docs/speculative.md` of that tag): `--spec-draft-model <path> --spec-type draft-simple`, plus
+  `--spec-draft-n-max`, `--spec-draft-n-min` and `--spec-draft-ngl` when the matching setting is
+  set. Unset parameters leave llama.cpp's defaults (3 and 0 tokens, and `auto` for the GPU
+  layers, which Imperium plans as the whole draft on the GPU). `--spec-type` defaults to `none`,
+  so the draft model alone would not draft. The draft flags, by pattern (`--spec-draft-*`, `--draft*`, the long forms ending in `-draft`,
+  and the short ones such as `-md`, `-ngld`, `-hfd`, `-ctkd`, `-devd`, `-td`), are Imperium's:
+  they may not appear in `extra_args`, per model or global, nor `--spec-type` while a draft is
+  set. Other flags Imperium sets are refused in a model's `extra_args` only, as before. llama.cpp's own `LLAMA_ARG_*` environment variables
+  for the draft (`LLAMA_ARG_SPEC_DRAFT_*` by prefix, and the others) are removed from every llama-server's environment (`LLAMA_ARG_SPEC_TYPE` too
+  while a draft is set), so the environment cannot name a draft that is not in the memory plan.
+- **Memory.** The draft is part of the model's footprint everywhere the planner counts it: its
+  weights, a KV cache as large as the model's pool at `f16` (llama.cpp sizes its context from
+  the model's), and 128 MiB of buffers. It sits on the GPU unless
+  `draft_gpu_layers` is `0` or the model is pinned to the CPU lane (then in RAM), so it comes off
+  the room the model's own layers share; with a `draft_gpu_layers` below the draft's layer count the
+  share of its weights and KV cache for the other layers is counted in RAM. The model's placement, `required_bytes`, the memory
+  `models.local`, `models.config` and the resource monitor report, and the residency
+  controller's reservations all include it; the context and the KV pool are sized with it.
+- **Checks, each load.** The draft is used only if it is an installed GGUF model other than the
+  model itself, smaller than it, with the same tokenizer family and a vocabulary within 128
+  entries of the model's (read from the GGUF headers; a header without the fields is not held
+  against it), and if it fits on an empty machine beside the model without pushing layers of a
+  model that would fit the GPU alone off it.
+- **Fallback, never a refusal.** When a check fails the model loads without the draft and
+  `models.config` (`draft_notice`), the resource monitor (`draft_notice` on the loaded model),
+  `imperium resources`, the model settings dialog and the load's entry in the residency log say
+  why, for example *Draft model x is not used: it is not an installed model (check
+  models.folders). The model runs without it.* A configured draft that is missing at config time
+  is accepted: it may be downloaded later.
+- **When llama-server itself cannot use the draft.** Two cases differ. If the process fails to
+  start with the draft, the start is tried once more with it (the failure may be transient),
+  then once without it; only if that start works is the draft blamed (the notice names the
+  server's error) and left out of later loads until the model's settings or the installed
+  models change. A start that times out is not retried and blames nothing, and a model that
+  fails without the draft too blames nothing. But a draft whose vocabulary does not match the
+  model's does not stop llama-server (b12180, `server-context.cpp`): it logs *failed to
+  initialize speculative decoding context* and serves without speculation, as it does for a
+  model whose cache cannot be rolled back (recurrent or hybrid architectures), for which it does
+  not even try. So after every start with a draft Imperium asks the server (`GET /slots`, the
+  `speculative` field of each slot); if it is off, the notice says the server runs without
+  speculative decoding, the draft is left out of later loads like a refused one, and the memory
+  reserved for the draft is released from the model's placement.
+- Changing a loaded model's draft settings restarts it once nothing is using it, like any
+  launch setting. A saved slot (swap-out) also holds the draft's state in llama.cpp, so the slot
+  key includes the configured draft model: slots only restore into a server with the same draft
+  setting. When a draft was configured but left out by a fallback, slots saved from that server
+  still carry the configured draft's key.
 
 ## Routing
 
