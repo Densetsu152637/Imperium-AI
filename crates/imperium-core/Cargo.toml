@@ -21,6 +21,7 @@ imperium-config = { version = "0.1.0", path = "../imperium-config" }
 imperium-engine = { version = "0.1.0", path = "../imperium-engine" }
 imperium-extensions = { version = "0.1.0", path = "../imperium-extensions" }
 imperium-github = { version = "0.1.0", path = "../imperium-github" }
+imperium-ipc = { version = "0.1.0", path = "../imperium-ipc" }
 imperium-local = { version = "0.1.0", path = "../imperium-local" }
 imperium-mcp = { version = "0.1.0", path = "../imperium-mcp" }
 imperium-media = { version = "0.1.0", path = "../imperium-media" }

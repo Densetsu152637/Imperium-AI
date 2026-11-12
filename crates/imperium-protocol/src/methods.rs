@@ -4250,6 +4250,85 @@ pub struct SystemResourcesSubscribeResult {
     pub interval_ms: u32,
 }
 
+/// `events.subscribe`: choose which notification topics this connection receives. A new
+/// connection receives every notification it may; the first subscription narrows that to the
+/// topics named, and later ones add to them. A topic is a notification method such as
+/// `session.event` or `model.residency`, or a prefix ending in `.*` such as `session.*`; `*`
+/// alone means everything again. A subscription only narrows: it never delivers anything the
+/// connection could not already receive, so naming a topic a paired phone may not see changes
+/// nothing. An empty list changes nothing and returns the current choice.
+#[derive(Debug)]
+pub struct EventsSubscribe;
+
+impl Method for EventsSubscribe {
+    const NAME: &'static str = "events.subscribe";
+    type Params = EventsSubscribeParams;
+    type Result = EventsSelection;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EventsSubscribeParams {
+    #[serde(default)]
+    pub topics: Vec<String>,
+}
+
+/// `events.unsubscribe`: stop receiving notification topics. Topics that were subscribed are
+/// removed; on a connection still receiving everything they are muted. Unsubscribing every
+/// topic leaves a connection with only replies.
+#[derive(Debug)]
+pub struct EventsUnsubscribe;
+
+impl Method for EventsUnsubscribe {
+    const NAME: &'static str = "events.unsubscribe";
+    type Params = EventsUnsubscribeParams;
+    type Result = EventsSelection;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EventsUnsubscribeParams {
+    #[serde(default)]
+    pub topics: Vec<String>,
+}
+
+/// Which notification topics a connection receives now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EventsSelection {
+    /// The subscribed topics, or `None` while the connection still receives everything.
+    pub topics: Option<Vec<String>>,
+    /// Topics withheld from what `topics` (or everything) would deliver.
+    pub muted: Vec<String>,
+}
+
+/// Whether `topic` is a well-formed subscription: a dotted lowercase method name, a prefix such
+/// as `session.*`, or `*`.
+pub fn is_topic(topic: &str) -> bool {
+    if topic == "*" {
+        return true;
+    }
+    let name = topic.strip_suffix(".*").unwrap_or(topic);
+    !name.is_empty()
+        && name.len() <= 64
+        && name.split('.').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+}
+
+/// Whether a subscription `pattern` covers the notification `method`.
+pub fn topic_matches(pattern: &str, method: &str) -> bool {
+    match pattern.strip_suffix(".*") {
+        Some(prefix) => method
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('.')),
+        None => pattern == "*" || pattern == method,
+    }
+}
+
 /// Notification carrying a [`ResourceSnapshot`], sent about every two seconds to connections
 /// subscribed with `system.resources_subscribe`.
 pub const RESOURCES_CHANGED: &str = "system.resources_changed";

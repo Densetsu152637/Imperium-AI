@@ -79,6 +79,7 @@ listed; edit them in the file.
 | Key           | Default | Meaning                                                        |
 | ------------- | ------- | -------------------------------------------------------------- |
 | `daemon.port` | `0`     | Port of the local WebSocket listener; `0` picks a free port at each start |
+| `daemon.socket` | `false` | Also serve the daemon on a local socket only your user can open (a Unix domain socket under `<data>/ipc/`, or a Windows named pipe), with the same protocol and token, so an SSH forward can reach it ([02](02-architecture.md#protocol)). Needs a daemon restart |
 | `api.openai_compatible.enabled` | `false` | Serve the local models (and the hosted ones in `expose`) to other tools as an OpenAI-compatible API ([04](04-models-and-routing.md#openai-compatible-local-api-implemented)); starts and stops at once, also through `imperium api enable` and `api.set` |
 | `api.openai_compatible.port` | `0` | Port of the API server. `0` means none is chosen yet: the first enable picks a free one (from 11500 up), saves it here, and keeps it |
 | `api.openai_compatible.bind` | `127.0.0.1` | Address the API server listens on. A loopback address (`127.0.0.1`, `::1`, `localhost`) unless `allow_lan` is set; any other is refused and the server does not start |

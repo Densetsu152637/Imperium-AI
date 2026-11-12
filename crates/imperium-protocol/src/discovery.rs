@@ -19,6 +19,10 @@ pub struct DaemonEndpoint {
     pub token: String,
     pub pid: u32,
     pub protocol: ProtocolVersion,
+    /// Where the same protocol is also served over a local socket, when `daemon.socket` is on:
+    /// a Unix socket's path, or a Windows named pipe's name. The token is the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<String>,
 }
 
 impl std::fmt::Debug for DaemonEndpoint {
@@ -28,6 +32,7 @@ impl std::fmt::Debug for DaemonEndpoint {
             .field("token", &"<redacted>")
             .field("pid", &self.pid)
             .field("protocol", &self.protocol)
+            .field("socket", &self.socket)
             .finish()
     }
 }
@@ -84,6 +89,7 @@ mod tests {
             token: "s3cret-token".into(),
             pid: 1,
             protocol: crate::PROTOCOL_VERSION,
+            socket: None,
         };
         assert!(!format!("{endpoint:?}").contains("s3cret-token"));
     }
