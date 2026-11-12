@@ -37,11 +37,63 @@ pub async fn serve(
     daemon: Arc<DaemonState>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    serve_on(listener, token, daemon, shutdown).await
+}
+
+/// Serves the same protocol, with the same token check, on the local socket (a Unix domain
+/// socket or a Windows named pipe) until `shutdown` resolves. Reaching the socket needs the
+/// operating system's permission (only the current user has it), and the upgrade still needs the
+/// token: a local connection is not trusted for being local.
+pub async fn serve_ipc(
+    listener: imperium_ipc::Listener,
+    token: AccessToken,
+    daemon: Arc<DaemonState>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    serve_on(IpcListener(listener), token, daemon, shutdown).await
+}
+
+async fn serve_on<L>(
+    listener: L,
+    token: AccessToken,
+    daemon: Arc<DaemonState>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()>
+where
+    L: axum::serve::Listener,
+    L::Addr: std::fmt::Debug,
+{
     let state = Arc::new(ServerState { token, daemon });
     let app = Router::new().route("/rpc", get(upgrade)).with_state(state);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
         .await
+}
+
+/// Lets axum accept connections from the local socket.
+struct IpcListener(imperium_ipc::Listener);
+
+impl axum::serve::Listener for IpcListener {
+    type Io = imperium_ipc::Stream;
+    type Addr = ();
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.0.accept().await {
+                Ok(stream) => return (stream, ()),
+                Err(error) => {
+                    // A client that vanished mid-accept is routine; anything else may repeat,
+                    // so pause rather than spin.
+                    tracing::debug!(%error, "local socket accept failed");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        Ok(())
+    }
 }
 
 async fn upgrade(
@@ -115,7 +167,13 @@ pub(crate) async fn run_connection(
                 }
             }
             Some(response) = replies.recv() => serde_json::to_string(&response),
-            Some(notification) = notifications.recv() => serde_json::to_string(&notification),
+            Some(notification) = notifications.recv() => {
+                // The connection's topic choice covers session events too.
+                if !connection.receives(&notification) {
+                    continue;
+                }
+                serde_json::to_string(&notification)
+            }
             announcement = announcements.recv() => match announcement {
                 // Some announcements go only to connections that may have them.
                 Ok(notification) if !connection.receives(&notification) => continue,
