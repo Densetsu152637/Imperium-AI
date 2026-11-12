@@ -1,6 +1,7 @@
 mod api;
 mod approvals;
 mod autostart;
+mod bench;
 mod changes;
 mod chat;
 mod env;
@@ -218,6 +219,20 @@ enum ModelsCommand {
         /// The prompt to send instead of a short greeting.
         #[arg(long)]
         prompt: Option<String>,
+    },
+    /// Benchmark local models: load time, time to first token, prompt and generation speed,
+    /// peak memory. Loads each model like any call does, waiting while the machine is saturated; saves
+    /// the numbers per model and machine. Ctrl+C cancels.
+    Bench {
+        /// A local model id (from `imperium models local`); every model that can run when
+        /// left out.
+        model: Option<String>,
+        /// List the saved results instead of running a benchmark.
+        #[arg(long)]
+        results: bool,
+        /// Do not unload an idle loaded model first (its load time is then not measured).
+        #[arg(long, conflicts_with = "results")]
+        warm: bool,
     },
 }
 
@@ -638,6 +653,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             },
             ModelsCommand::Use { model } => local::use_model(model),
             ModelsCommand::Test { model, prompt } => local::test_model(model, prompt),
+            ModelsCommand::Bench {
+                model,
+                results,
+                warm,
+            } => {
+                if results {
+                    bench::results(model)
+                } else {
+                    bench::run(model, warm)
+                }
+            }
         },
         Command::Runtime {
             command: RuntimeCommand::Install { pack },

@@ -701,6 +701,26 @@ saved to `[api.openai_compatible]` in the user config and apply at once):
 - a note that the API's calls count toward budgets and that a budget with the scope *API calls*
   (Settings → Budgets) caps them alone.
 
+## Local model benchmark (implemented)
+
+**Settings → Models** ends with a **Local model benchmark** section
+([04](04-models-and-routing.md#local-model-benchmark-implemented); `models.bench`,
+`models.bench_results`, `models.bench_cancel`, followed live through `models.bench_progress`):
+
+- a model list (*All local models*, or one model by alias and id) with **Run benchmark**, which
+  becomes **Cancel** while a run is in progress; nothing runs until it is pressed;
+  a model is unloaded to time its load only when it has been idle past the interactive hold;
+- *Keep a loaded model loaded*, which skips the idle unload that lets the load time be measured;
+- while it runs, one status line: the model, what it is doing (*loading the model*,
+  *waiting while the machine is saturated*, *prompt 2 of 3*), and how many models are done; a model that failed is
+  listed with the reason under it;
+- a table of the **latest result of each model on this machine**: load time, first token,
+  prompt speed, generation speed, peak RAM and VRAM (a dash where the runtime did not report
+  it) and the date, headed by the machine's description; results from other machines or older
+  runs are in a collapsed *Earlier results and other machines* list.
+
+The section needs the daemon; it follows runs started from the CLI or another window.
+
 ## Budgets and usage (implemented)
 
 **Settings → Budgets** edits the daemon's [budgets](10-configuration.md#budgets)
@@ -1091,6 +1111,8 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   [model configuration dialog](#model-configuration-dialog-implemented) on that model. Models
   that cannot run here say why under the row. Items left out of the scan (image models,
   diffusers pipelines, unreadable files) are listed, with the reason, in a collapsed section.
+- **Benchmark.** [Settings → Models](#local-model-benchmark-implemented) can measure each local
+  model's load time and speed on this machine.
 - **Settings.** `models.default`, `models.folders`, and `runtime.llamacpp.custom_path` changed in
   Settings apply at once too; *Install llama.cpp automatically* (`runtime.llamacpp.auto_install`)
   and *Update a package-manager llama.cpp* (`runtime.llamacpp.update_external`) are there as
