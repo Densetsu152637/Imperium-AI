@@ -269,6 +269,12 @@ mod tests {
         let allowed = devices.allowed(&token).unwrap();
         assert!(allowed.contains(&"approvals.respond"));
         assert!(!allowed.contains(&"session.create"));
+        // A phone never manages environments or their agents.
+        assert!(
+            allowed
+                .iter()
+                .all(|method| !method.starts_with("environments."))
+        );
         assert!(devices.allowed("not-a-token").is_none());
         // The token itself is never stored.
         let stored = std::fs::read_to_string(dir.path().join("devices.json")).unwrap();

@@ -3,10 +3,11 @@
 //! sessions with `start_session`. Between events it is idle and uses no tokens. It runs only
 //! while the daemon runs.
 //!
-//! Environment agents use the same machinery keyed by environment: an environment with
-//! `persistent_agent` on keeps one session that is always available, dispatches into the same
-//! environment, resumes its conversation after restarts (its id is kept with the environment),
-//! and compacts its conversation when a turn starts over the model's budget.
+//! Environment agents use the same machinery keyed by agent: an environment holds zero or more
+//! persistent agents, each keeping one session that is always available, dispatching into the
+//! same environment, resuming its conversation after restarts (its session id is kept with the
+//! agent), and compacting its conversation when a turn starts over the model's budget. Agents
+//! of one environment run independently, each with its own name, role and session limits.
 //!
 //! The sessions an agent starts are background sessions: they rank below the user's sessions
 //! and pause while the machine is busy. With `prefer_quiet` (the default) a session is created
@@ -16,7 +17,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{Local, NaiveDate};
@@ -25,6 +26,7 @@ use imperium_config::ProjectSettings;
 use imperium_engine::{
     LaunchFuture, Load, LoadView, Session, SessionLauncher, Waited, wait_for_quiet,
 };
+use imperium_protocol::agents::EnvironmentAgent;
 use imperium_protocol::session::{AgentEvent, SessionEvent};
 use tokio::sync::broadcast;
 
@@ -42,7 +44,7 @@ then end your turn: you use no tokens while sessions run. When a report arrives,
 decide whether anything follows. Keep a short backlog in memory (project-private) so you can \
 resume after a restart. Start only the sessions that are needed.";
 
-const ENVIRONMENT_INSTRUCTIONS: &str = "You are this environment's persistent agent: the user's \
+const ENVIRONMENT_INSTRUCTIONS: &str = "You are one of this environment's persistent agents: a \
 long-lived assistant for the folders of this environment. Your conversation continues across \
 days and daemon restarts; older turns are summarised when it grows, so keep important facts, \
 decisions, and an open-task list in memory (project-private) as well. Answer and act directly \
@@ -53,37 +55,107 @@ this environment) and end your turn; its report arrives as a message.";
 const ENVIRONMENT_MAX_SESSIONS: usize = 2;
 const ENVIRONMENT_MAX_PER_DAY: u32 = 20;
 
-/// The running project agents, by canonical project folder, and environment agents, by
-/// environment id.
+/// Where an agent's reports are delivered: whichever session the agent has now, so a report
+/// from a session started before the agent restarted still reaches it.
+#[derive(Debug, Default)]
+struct AgentSlot(Mutex<Weak<Session>>);
+
+impl AgentSlot {
+    fn set(&self, session: &Arc<Session>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(session);
+    }
+
+    fn get(&self) -> Option<Arc<Session>> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .upgrade()
+    }
+}
+
+/// A running environment agent.
+#[derive(Debug, Clone)]
+struct EnvironmentAgentRun {
+    environment_id: String,
+    session: Arc<Session>,
+}
+
+/// The running project agents, by canonical project folder, and environment agents, by agent
+/// id.
 #[derive(Debug, Default)]
 pub struct ProjectAgents {
     agents: Mutex<HashMap<PathBuf, Arc<Session>>>,
-    environments: Mutex<HashMap<String, Arc<Session>>>,
+    environments: Mutex<HashMap<String, EnvironmentAgentRun>>,
+    /// One lock per environment, held while its agents are synced, so two syncs never start the
+    /// same agent twice.
+    sync_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Each environment agent's launcher, by agent id. It outlives the agent's restarts, so the
+    /// limits on the sessions it starts and the reports of sessions already running carry over.
+    launchers: Mutex<HashMap<String, Arc<Launcher>>>,
 }
 
 impl ProjectAgents {
-    fn lock_environments(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Session>>> {
+    fn lock_environments(&self) -> std::sync::MutexGuard<'_, HashMap<String, EnvironmentAgentRun>> {
         self.environments
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Stops tracking an environment's agent (the caller forgets its session).
-    pub fn forget_environment(&self, environment_id: &str) -> Option<Arc<Session>> {
-        self.lock_environments().remove(environment_id)
+    fn sync_lock(&self, environment_id: &str) -> Arc<Mutex<()>> {
+        Arc::clone(
+            self.sync_locks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(environment_id.to_string())
+                .or_default(),
+        )
     }
 
-    /// An environment's persistent agent session, if it is running.
-    pub fn environment(&self, environment_id: &str) -> Option<Arc<Session>> {
-        self.lock_environments().get(environment_id).cloned()
+    fn launchers(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Launcher>>> {
+        self.launchers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Environments with a running persistent agent and their sessions' ids, by environment id.
-    pub fn environments(&self) -> Vec<(String, String)> {
+    /// Stops tracking an environment agent (the caller forgets its session). Its launcher is
+    /// kept: the agent starts again.
+    pub fn forget_agent(&self, agent_id: &str) -> Option<Arc<Session>> {
+        self.lock_environments()
+            .remove(agent_id)
+            .map(|run| run.session)
+    }
+
+    /// A persistent agent's session, if it is running.
+    pub fn agent(&self, agent_id: &str) -> Option<Arc<Session>> {
+        self.lock_environments()
+            .get(agent_id)
+            .map(|run| Arc::clone(&run.session))
+    }
+
+    /// The running agents of one environment: agent id and session, by agent id.
+    pub fn agents_of(&self, environment_id: &str) -> Vec<(String, Arc<Session>)> {
         let mut agents: Vec<_> = self
             .lock_environments()
             .iter()
-            .map(|(env, session)| (env.clone(), session.id().to_string()))
+            .filter(|(_, run)| run.environment_id == environment_id)
+            .map(|(id, run)| (id.clone(), Arc::clone(&run.session)))
+            .collect();
+        agents.sort_by(|a, b| a.0.cmp(&b.0));
+        agents
+    }
+
+    /// Every running persistent agent: environment id, agent id and session id, sorted.
+    pub fn environment_agents(&self) -> Vec<(String, String, String)> {
+        let mut agents: Vec<_> = self
+            .lock_environments()
+            .iter()
+            .map(|(id, run)| {
+                (
+                    run.environment_id.clone(),
+                    id.clone(),
+                    run.session.id().to_string(),
+                )
+            })
             .collect();
         agents.sort();
         agents
@@ -96,7 +168,11 @@ impl ProjectAgents {
     /// Every project and environment agent session.
     pub fn sessions(&self) -> Vec<Arc<Session>> {
         let mut sessions: Vec<Arc<Session>> = self.lock().values().cloned().collect();
-        sessions.extend(self.lock_environments().values().cloned());
+        sessions.extend(
+            self.lock_environments()
+                .values()
+                .map(|run| Arc::clone(&run.session)),
+        );
         sessions
     }
 
@@ -168,7 +244,7 @@ pub fn start(daemon: &Arc<DaemonState>) {
                 .map(|launcher| launcher.prefer_quiet)
                 .unwrap_or(true),
             wait,
-            launcher.and_then(|launcher| launcher.agent.get().cloned()),
+            launcher.map(|launcher| Arc::clone(&launcher.agent)),
             launcher.map(|launcher| launcher.claim()),
         );
     }
@@ -200,7 +276,7 @@ fn start_one(
         max_defer,
         daemon: Arc::downgrade(daemon),
         target: Target::Folder(path.clone()),
-        agent: OnceLock::new(),
+        agent: Arc::new(AgentSlot::default()),
         active: Arc::new(AtomicUsize::new(0)),
         today: Mutex::new((Local::now().date_naive(), 0)),
         max_sessions: project.max_sessions,
@@ -220,7 +296,7 @@ fn start_one(
             },
         )
         .map_err(|error| error.to_string())?;
-    let _ = launcher.agent.set(Arc::downgrade(&session));
+    launcher.agent.set(&session);
     daemon
         .project_agents()
         .lock()
@@ -263,64 +339,179 @@ async fn answer_permissions(
     }
 }
 
-/// Starts the persistent agent of every environment that has one turned on.
+/// Starts the persistent agents of every environment.
 pub fn start_environment_agents(daemon: &Arc<DaemonState>) {
     for env in daemon.environments().list() {
-        if env.persistent_agent {
+        if !env.agents.is_empty() {
             sync_environment_agent(daemon, &env.id);
         }
     }
 }
 
-/// Starts an environment's persistent agent when it is on and not running, and stops it when
-/// it is off (or the environment is gone), archiving its session so its history stays listed
-/// with the other archived sessions. A start that fails (no folders yet, no model) is logged;
-/// the next change to the environment tries again.
+/// Starts an environment's persistent agents that are not running, and stops the running ones
+/// that were deleted (or whose environment is gone), archiving their sessions so their history
+/// stays listed with the other archived sessions. A start that fails (no folders yet, no model)
+/// is logged; the next change to the environment tries again.
+///
+/// One sync of an environment runs at a time, so agents added or changed from several places at
+/// once are started exactly once.
 pub fn sync_environment_agent(daemon: &Arc<DaemonState>, environment_id: &str) {
+    sync_environment_agent_report(daemon, environment_id);
+}
+
+/// Like [`sync_environment_agent`], saying which agents could not start and why, by agent id.
+pub fn sync_environment_agent_report(
+    daemon: &Arc<DaemonState>,
+    environment_id: &str,
+) -> Vec<(String, String)> {
+    let lock = daemon.project_agents().sync_lock(environment_id);
+    let _sync = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    sync_locked(daemon, environment_id)
+}
+
+/// Stops an environment's running agents (all of them, or just `only`) and starts them again
+/// with the environment as it is now, resuming their conversations. Their launchers stay, so
+/// what they started goes on reporting to them and their limits are not reset. The whole
+/// restart is one sync.
+pub fn restart_environment_agents(
+    daemon: &Arc<DaemonState>,
+    environment_id: &str,
+    only: Option<&str>,
+) {
+    let lock = daemon.project_agents().sync_lock(environment_id);
+    let _sync = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    for (agent_id, _) in daemon.project_agents().agents_of(environment_id) {
+        if only.is_some_and(|only| only != agent_id) {
+            continue;
+        }
+        if let Some(session) = daemon.project_agents().forget_agent(&agent_id) {
+            daemon.forget_session(session.id());
+        }
+    }
+    sync_locked(daemon, environment_id);
+}
+
+fn sync_locked(daemon: &Arc<DaemonState>, environment_id: &str) -> Vec<(String, String)> {
+    let mut failed = Vec::new();
     let env = daemon.environments().get(environment_id);
-    let wanted = env.as_ref().is_some_and(|env| env.persistent_agent);
-    let running = daemon.project_agents().environment(environment_id);
-    match (wanted, running) {
-        (true, None) => {
-            if let Some(env) = env
-                && let Err(error) = start_environment_agent(daemon, &env)
-            {
-                tracing::warn!(environment = %env.name, %error, "environment agent did not start");
-            }
+    let wanted: Vec<String> = env
+        .as_ref()
+        .map(|env| env.agents.iter().map(|agent| agent.id.clone()).collect())
+        .unwrap_or_default();
+    for (agent_id, session) in daemon.project_agents().agents_of(environment_id) {
+        if wanted.contains(&agent_id) {
+            continue;
         }
-        (false, Some(session)) => {
-            daemon.project_agents().forget_environment(environment_id);
-            if let Err(error) = daemon.archive_retired_agent(session.id()) {
-                tracing::warn!(environment = environment_id, %error, "could not archive the environment agent");
-                daemon.forget_session(session.id());
-            }
-            tracing::info!(environment = environment_id, "environment agent stopped");
+        daemon.project_agents().forget_agent(&agent_id);
+        daemon.project_agents().launchers().remove(&agent_id);
+        if let Err(error) = daemon.archive_retired_agent(session.id()) {
+            tracing::warn!(environment = environment_id, agent = %agent_id, %error, "could not archive the environment agent");
+            daemon.forget_session(session.id());
         }
-        _ => {}
+        tracing::info!(environment = environment_id, agent = %agent_id, "environment agent stopped");
+    }
+    let Some(env) = env else { return failed };
+    for agent in &env.agents {
+        if daemon.project_agents().agent(&agent.id).is_some() {
+            continue;
+        }
+        if let Err(error) = start_environment_agent(daemon, &env, agent) {
+            tracing::warn!(environment = %env.name, agent = %agent.name, %error, "environment agent did not start");
+            failed.push((agent.id.clone(), error));
+        }
+    }
+    failed
+}
+
+/// The title an agent's session carries: `<environment> · <agent>`.
+pub(crate) fn agent_title(environment_name: &str, agent_name: &str) -> String {
+    format!("{environment_name} · {agent_name}")
+}
+
+/// Titles the running sessions of an environment's agents after their names (after an agent or
+/// the environment was renamed).
+pub fn retitle_environment_agents(daemon: &Arc<DaemonState>, environment_id: &str) {
+    let Some(env) = daemon.environments().get(environment_id) else {
+        return;
+    };
+    for agent in &env.agents {
+        if let Some(session) = daemon.project_agents().agent(&agent.id) {
+            let _ = daemon.set_title(session.id(), &agent_title(&env.name, &agent.name), true);
+        }
     }
 }
 
-fn start_environment_agent(
-    daemon: &Arc<DaemonState>,
-    env: &imperium_protocol::methods::EnvironmentInfo,
-) -> Result<(), String> {
-    let launcher = Arc::new(Launcher {
+/// A memory entry prefix for an agent: its name in lower case with dashes, since the
+/// project-private memory is the environment's, shared by every one of its agents.
+fn memory_prefix(name: &str) -> String {
+    let mut prefix = String::new();
+    for c in name.chars() {
+        if c.is_alphanumeric() {
+            prefix.extend(c.to_lowercase());
+        } else if !prefix.ends_with('-') && !prefix.is_empty() {
+            prefix.push('-');
+        }
+    }
+    let prefix = prefix.trim_end_matches('-').to_string();
+    if prefix.is_empty() {
+        "agent".to_string()
+    } else {
+        prefix
+    }
+}
+
+/// An agent's instructions: the shared ones, then who it is, how it keeps its notes apart from
+/// the environment's other agents, and what it is for.
+fn agent_instructions(agent: &EnvironmentAgent) -> String {
+    let prefix = memory_prefix(&agent.name);
+    let mut text = format!(
+        "{ENVIRONMENT_INSTRUCTIONS}\n\nYour name is {}. The memory you save (project-private, \
+         and the environment's Memory.md) is shared by every agent of this environment: begin the \
+         name of each entry you save with \"{prefix}-\" \
+         and keep your open-task list in \"{prefix}-open-tasks\", so you do not overwrite another \
+         agent's notes.",
+        agent.name
+    );
+    if !agent.role.is_empty() {
+        text.push_str(&format!(" Your role:\n{}", agent.role));
+    }
+    text
+}
+
+fn new_environment_launcher(daemon: &Arc<DaemonState>, environment_id: &str) -> Arc<Launcher> {
+    Arc::new(Launcher {
         daemon: Arc::downgrade(daemon),
         // An environment has no settings for deferring: its agent's sessions wait for a quiet
         // machine, up to the default deferral.
         prefer_quiet: true,
         max_defer: DEFAULT_MAX_DEFER,
-        target: Target::Environment(env.id.clone()),
-        agent: OnceLock::new(),
+        target: Target::Environment(environment_id.to_string()),
+        agent: Arc::new(AgentSlot::default()),
         active: Arc::new(AtomicUsize::new(0)),
         today: Mutex::new((Local::now().date_naive(), 0)),
         max_sessions: ENVIRONMENT_MAX_SESSIONS,
         max_per_day: ENVIRONMENT_MAX_PER_DAY,
-    });
+    })
+}
+
+fn start_environment_agent(
+    daemon: &Arc<DaemonState>,
+    env: &imperium_protocol::methods::EnvironmentInfo,
+    agent: &EnvironmentAgent,
+) -> Result<(), String> {
+    // The agent's launcher from before a restart, with its counts of sessions running and
+    // started today, and the reports still to come from sessions it started.
+    let launcher = Arc::clone(
+        daemon
+            .project_agents()
+            .launchers()
+            .entry(agent.id.clone())
+            .or_insert_with(|| new_environment_launcher(daemon, &env.id)),
+    );
     // The same session as before when its journal is still there and it is not running as an
-    // ordinary session (unarchived by hand); archived when the agent was turned off, it comes
+    // ordinary session (unarchived by hand); archived when the agent was stopped, it comes
     // back out of the archive.
-    let resume_id = env.agent_session_id.clone().filter(|id| {
+    let resume_id = agent.session_id.clone().filter(|id| {
         daemon
             .data_dir()
             .join("sessions")
@@ -328,6 +519,7 @@ fn start_environment_agent(
             .is_file()
             && daemon.session(id).is_none()
     });
+    let resumed = resume_id.is_some();
     if let Some(id) = &resume_id {
         daemon.reclaim_archived(id);
     }
@@ -346,26 +538,42 @@ fn start_environment_agent(
             SessionOptions {
                 resume_id,
                 launcher: Some(Arc::clone(&launcher) as Arc<dyn SessionLauncher>),
-                instructions: Some(ENVIRONMENT_INSTRUCTIONS.into()),
+                instructions: Some(agent_instructions(agent)),
                 persistent: true,
                 auto_compact: true,
                 ..SessionOptions::default()
             },
         )
         .map_err(|error| error.to_string())?;
-    let _ = launcher.agent.set(Arc::downgrade(&session));
-    if env.agent_session_id.as_deref() != Some(session.id()) {
-        daemon
-            .environments()
-            .set_agent_session(&env.id, Some(session.id().to_string()))
-            .map_err(|error| error.to_string())?;
+    launcher.agent.set(&session);
+    if !resumed {
+        // A new agent is listed under its name until its first exchange is worth titling.
+        let _ = daemon.set_title(session.id(), &agent_title(&env.name, &agent.name), true);
+    }
+    if agent.session_id.as_deref() != Some(session.id()) {
+        if let Err(error) = daemon.environments().set_agent_session(
+            &env.id,
+            &agent.id,
+            Some(session.id().to_string()),
+        ) {
+            // The agent was deleted while it started: nothing records this session, so it must
+            // not keep running. One that had a history is archived with it; a new one is dropped.
+            daemon.project_agents().launchers().remove(&agent.id);
+            if !resumed || daemon.archive_retired_agent(session.id()).is_err() {
+                daemon.forget_session(session.id());
+            }
+            return Err(error.to_string());
+        }
         daemon.announce_environments();
     }
-    daemon
-        .project_agents()
-        .lock_environments()
-        .insert(env.id.clone(), session);
-    tracing::info!(environment = %env.name, "environment agent started");
+    daemon.project_agents().lock_environments().insert(
+        agent.id.clone(),
+        EnvironmentAgentRun {
+            environment_id: env.id.clone(),
+            session,
+        },
+    );
+    tracing::info!(environment = %env.name, agent = %agent.name, "environment agent started");
     Ok(())
 }
 
@@ -383,7 +591,7 @@ enum Target {
 struct Launcher {
     daemon: Weak<DaemonState>,
     target: Target,
-    agent: OnceLock<Weak<Session>>,
+    agent: Arc<AgentSlot>,
     active: Arc<AtomicUsize>,
     /// Sessions started today.
     today: Mutex<(NaiveDate, u32)>,
@@ -450,7 +658,7 @@ impl SessionLauncher for Launcher {
                 brief.to_string(),
                 self.prefer_quiet,
                 self.max_defer,
-                self.agent.get().cloned(),
+                Some(Arc::clone(&self.agent)),
                 Some(release),
             );
             Ok(id)
@@ -469,7 +677,7 @@ fn dispatch(
     brief: String,
     prefer_quiet: bool,
     max_defer: Duration,
-    agent: Option<Weak<Session>>,
+    agent: Option<Arc<AgentSlot>>,
     release: Option<Release>,
 ) {
     let id = session.id().to_string();
@@ -514,7 +722,7 @@ fn dispatch(
             ),
             Err(error) => format!("Session {id} did not finish: {error}"),
         };
-        if let Some(agent) = agent.and_then(|agent| agent.upgrade()) {
+        if let Some(agent) = agent.and_then(|slot| slot.get()) {
             let _ = agent.send(message);
         }
     });
