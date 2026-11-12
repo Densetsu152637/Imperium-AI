@@ -67,29 +67,45 @@ impl Environments {
     /// Reads `path`; a missing file is an empty store, an unreadable one is set aside with a
     /// warning so it is not overwritten.
     pub fn load(path: PathBuf) -> Self {
+        // Whether the file was left where it is although it could not be read: then Home is not
+        // saved over it.
+        let mut keep_file = false;
+        let mut set_aside = |path: &Path, error: &dyn std::fmt::Display| {
+            let aside = path.with_extension("json.unreadable");
+            tracing::warn!(path = %path.display(), %error, "could not read the environments; setting the file aside");
+            if let Err(error) = std::fs::rename(path, aside) {
+                tracing::warn!(%error, "could not set the environments file aside; it is left as it is");
+                keep_file = true;
+            }
+        };
         let list = match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<File>(&text) {
                 Ok(file) => file.environments,
                 Err(error) => {
-                    let aside = path.with_extension("json.unreadable");
-                    tracing::warn!(path = %path.display(), %error, "could not read the environments; setting the file aside");
-                    let _ = std::fs::rename(&path, aside);
+                    set_aside(&path, &error);
                     Vec::new()
                 }
             },
-            Err(_) => Vec::new(),
+            // No file yet: a fresh store.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            // Anything else (permissions, a folder in the way, a failing disk) says nothing about
+            // what is in the file, so it is never replaced by a store of just Home.
+            Err(error) => {
+                set_aside(&path, &error);
+                Vec::new()
+            }
         };
         let store = Environments {
             path,
             list: Mutex::new(list),
         };
-        store.ensure_home();
+        store.ensure_home(!keep_file);
         store
     }
 
     /// Makes sure Home is there, first in the list, and marked built in: on a fresh start, and
     /// for a store written before Home existed. Nothing else in the store is touched.
-    fn ensure_home(&self) {
+    fn ensure_home(&self, save_it: bool) {
         let mut list = self.lock();
         let mut next = list.clone();
         match next.iter().position(|env| env.id == HOME_ID) {
@@ -106,7 +122,7 @@ impl Environments {
             }
             None => next.insert(0, home()),
         }
-        if let Err(error) = save(&self.path, &next) {
+        if save_it && let Err(error) = save(&self.path, &next) {
             tracing::warn!(%error, "could not save the Home environment; it is kept in memory");
         }
         *list = next;
@@ -321,10 +337,13 @@ impl Environments {
     /// when there is none. This is how a bare project folder becomes an environment.
     pub fn for_folder(&self, folder: &str) -> Result<EnvironmentInfo, EnvironmentError> {
         let folder = existing_folder(folder)?;
+        // Home is not a project's environment, even once it has been given this folder.
         if let Some(env) = self.lock().iter().find(|env| {
-            env.folders
-                .first()
-                .is_some_and(|first| same(first, &folder))
+            !env.builtin
+                && env
+                    .folders
+                    .first()
+                    .is_some_and(|first| same(first, &folder))
         }) {
             return Ok(env.clone());
         }
@@ -777,6 +796,34 @@ mod tests {
         let listed = envs.list();
         assert!(listed.len() == 1 && listed[0].builtin, "only Home is left");
         assert!(data.path().join("environments.json.unreadable").exists());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_set_aside_not_replaced_by_home_alone() {
+        let data = tempfile::tempdir().unwrap();
+        // A folder where the file should be: reading it fails with something other than NotFound.
+        let in_the_way = data.path().join("environments.json");
+        std::fs::create_dir_all(&in_the_way).unwrap();
+        std::fs::write(in_the_way.join("precious.txt"), "kept").unwrap();
+        let envs = store(data.path());
+        assert_eq!(envs.list().len(), 1, "Home, in memory");
+        let aside = data.path().join("environments.json.unreadable");
+        assert_eq!(
+            std::fs::read_to_string(aside.join("precious.txt")).unwrap(),
+            "kept",
+            "what was there is kept"
+        );
+    }
+
+    #[test]
+    fn a_folder_given_to_home_still_gets_its_own_environment() {
+        let data = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        envs.add_folder(HOME_ID, &path(&project)).unwrap();
+        let made = envs.for_folder(&path(&project)).unwrap();
+        assert!(!made.builtin && made.id != HOME_ID);
+        assert_eq!(envs.list().len(), 2);
     }
 
     #[test]

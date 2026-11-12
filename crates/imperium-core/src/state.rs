@@ -1661,11 +1661,20 @@ impl DaemonState {
         // Home with no project folders works in its session's own scratch folder. The folder
         // is made under the working-folders lock, which the session keeps until it exists.
         let _home_lock;
+        // The id of a new Home session whose folder this call made, to take it back if the
+        // session does not start.
+        let mut made_home_folder = None;
         if env.folders.is_empty() && env.builtin && !options.workspaces_locked {
             if options.worktree {
                 return Err(CreateError::Worktree(
                     "Home has no project folders to start on a worktree".into(),
                 ));
+            }
+            // The model is checked first, so a refusal leaves no folder behind.
+            match self.resolve_model(model) {
+                Ok(_) => {}
+                Err(ModelError::NoDefault) if options.may_wait_for_model => {}
+                Err(error) => return Err(error.into()),
             }
             _home_lock = self
                 .workspaces_lock
@@ -1680,6 +1689,9 @@ impl DaemonState {
                 .map_err(|error| {
                     CreateError::Start(format!("could not make Home's working folder: {error}"))
                 })?;
+            if options.resume_id.is_none() {
+                made_home_folder = Some(id.clone());
+            }
             options.id = Some(id);
             options.home_dir = Some(dir.display().to_string());
         }
@@ -1735,7 +1747,13 @@ impl DaemonState {
             runtime: env.runtime.clone(),
             ..options
         };
-        self.create_session_with(first, model, options)
+        let created = self.create_session_with(first, model, options);
+        if created.is_err()
+            && let Some(id) = made_home_folder
+        {
+            self.remove_session_scratch(&env.id, &id);
+        }
+        created
     }
 
     /// Stops and forgets a session so it does not continue after a restart, removing its

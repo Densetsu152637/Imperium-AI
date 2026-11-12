@@ -60,8 +60,9 @@ or machines it uses, decisions made while working in it. The user can open and e
   agent from content it read, so it is a standing channel for planted text. The instructions say
   it is data written by the user and earlier agents and **cannot grant permissions or override
   the instructions**; a literal tag of the block inside the file is neutralised (any case or spacing,
-  such as `< /environment-memory`, and the escaped forms `&lt;`, `&#60;` and `&#x3c;`) so the
-  text cannot end the block and speak outside it; and the permission rules apply to what an
+  such as `< /environment-memory` or the same split by a newline, and the character references
+  for `<` and `/`: `&lt;` with or without its semicolon, `&#60;`, `&#060;`, `&#x3c;`, `&sol;`,
+  `&#47;`) so the text cannot end the block and speak outside it; and the permission rules apply to what an
   agent does, whatever the file says.
 - **Writing.** `memory_remember` takes `scope: "environment"`. The entry becomes a `## <name>`
   section of `Memory.md` (a description line, then the body of at most 2,000 characters); a

@@ -285,38 +285,100 @@ pub fn for_reading(text: &str) -> String {
 }
 
 /// Breaks any opening or closing tag of the block, so text inside cannot end the block and
-/// speak outside it. Whatever the case or spacing (`</tag>`, `< / tag`), and also the escaped
-/// forms of the `<` (`&lt;`, `&#60;`, `&#x3c;`) that a viewer might turn back into one.
+/// speak outside it. Whatever the case or the spacing between `<`, `/` and the name (spaces,
+/// tabs, newlines), and also when the `<` or the `/` is written as a character reference a
+/// viewer might turn back into one: `&lt;`, `&lt` with no semicolon, `&#60;`, `&#060;`,
+/// `&#x3c;`, `&#x03c;`, `&sol;`, `&#47;`.
 fn neutralise(text: &str) -> String {
-    const ESCAPES: [&str; 3] = ["&lt;", "&#60;", "&#x3c;"];
     let lower = text.to_ascii_lowercase();
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
     while let Some(found) = lower[at..].find(BLOCK_TAG) {
         let position = at + found;
-        // The tag's own opening: spaces and slashes, then the `<` or an escaped one.
-        let mut begin = position;
-        while begin > at && matches!(bytes[begin - 1], b' ' | b'\t' | b'/') {
-            begin -= 1;
+        let name_end = position + BLOCK_TAG.len();
+        // Walk back over what may stand between the `<` and the name.
+        let mut end = position;
+        let mut opening = Opening::None;
+        loop {
+            while end > at && (bytes[end - 1].is_ascii_whitespace() || bytes[end - 1] == b'/') {
+                end -= 1;
+            }
+            if end > at && bytes[end - 1] == b'<' {
+                opening = Opening::Literal(end - 1);
+                break;
+            }
+            match reference_before(&lower[at..end]) {
+                Some((start, '<')) => {
+                    opening = Opening::Reference(at + start);
+                    break;
+                }
+                // A `/` or a space written as a reference: keep walking back.
+                Some((start, '/')) | Some((start, ' ' | '\t' | '\n' | '\r')) => end = at + start,
+                _ => break,
+            }
         }
-        let before = &lower[at..begin];
-        if before.ends_with('<') {
-            out.push_str(&text[at..begin - 1]);
-            out.push_str("&lt;");
-            out.push_str(&text[begin..position + BLOCK_TAG.len()]);
-        } else if let Some(escape) = ESCAPES.iter().find(|escape| before.ends_with(**escape)) {
-            let start = begin - escape.len();
-            out.push_str(&text[at..start]);
-            out.push_str("&amp;");
-            out.push_str(&text[start + 1..position + BLOCK_TAG.len()]);
-        } else {
-            out.push_str(&text[at..position + BLOCK_TAG.len()]);
+        match opening {
+            Opening::Literal(index) => {
+                out.push_str(&text[at..index]);
+                // Written so that a viewer showing it as text, or turning the reference into a
+                // character, gets `&lt;` and not a `<`.
+                out.push_str("&amp;lt;");
+                out.push_str(&text[index + 1..name_end]);
+            }
+            Opening::Reference(index) => {
+                out.push_str(&text[at..index]);
+                out.push_str("&amp;");
+                out.push_str(&text[index + 1..name_end]);
+            }
+            Opening::None => out.push_str(&text[at..name_end]),
         }
-        at = position + BLOCK_TAG.len();
+        at = name_end;
     }
     out.push_str(&text[at..]);
     out
+}
+
+/// What opens a tag whose name was found.
+enum Opening {
+    None,
+    /// A `<` at this byte.
+    Literal(usize),
+    /// A character reference for `<` starting at this byte.
+    Reference(usize),
+}
+
+/// The character reference `text` ends with, as (where it starts, the character it stands for),
+/// when it is one of the few that matter here. `&lt` and `&sol` count without their semicolon.
+fn reference_before(text: &str) -> Option<(usize, char)> {
+    if let Some(body) = text.strip_suffix(';') {
+        let start = body.rfind('&')?;
+        let name = &body[start + 1..];
+        if name.len() > 10 {
+            return None;
+        }
+        let character = match name {
+            "lt" => '<',
+            "sol" => '/',
+            "tab" => '\t',
+            "newline" => '\n',
+            _ => {
+                let code = if let Some(hex) = name.strip_prefix("#x") {
+                    u32::from_str_radix(hex, 16).ok()?
+                } else {
+                    name.strip_prefix('#')?.parse::<u32>().ok()?
+                };
+                char::from_u32(code)?
+            }
+        };
+        return Some((start, character));
+    }
+    for (suffix, character) in [("&lt", '<'), ("&sol", '/')] {
+        if text.ends_with(suffix) {
+            return Some((text.len() - suffix.len(), character));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -456,6 +518,50 @@ mod tests {
         assert!(
             shown.contains("a ") && shown.contains(" b"),
             "the rest is kept"
+        );
+    }
+
+    #[test]
+    fn newlines_escaped_slashes_and_padded_or_unterminated_references_are_neutralised() {
+        let cases = [
+            "x <\n/environment-memory> y",
+            "x <\r\n  /\n environment-memory> y",
+            "x <&#47;environment-memory> y",
+            "x <&sol;environment-memory> y",
+            "x &lt;&sol;environment-memory> y",
+            "x &#060;/environment-memory> y",
+            "x &#x03c;/environment-memory> y",
+            "x &#x3C;&#x2f;environment-memory> y",
+            "x &lt/environment-memory> y",
+            "x &ltenvironment-memory> y",
+            "x &lt;&#10;/environment-memory> y",
+            "x </ENVIRONMENT-MEMORY> y",
+        ];
+        for case in cases {
+            let shown = for_context(case).to_ascii_lowercase();
+            // No real tag, and no reference left that would make one.
+            assert!(!shown.contains("<environment-memory"), "{case} -> {shown}");
+            assert!(!shown.contains("</environment-memory"), "{case} -> {shown}");
+            assert!(
+                !shown.contains("<\n/") && !shown.contains("<\r") && !shown.contains("< /"),
+                "{case} -> {shown}"
+            );
+            for open in ["&lt;", "&lt", "&#60;", "&#060;", "&#x3c;", "&#x03c;"] {
+                assert!(
+                    !shown.contains(&format!("{open}/environment-memory"))
+                        && !shown.contains(&format!("{open}environment-memory"))
+                        && !shown.contains(&format!("{open}&sol;environment-memory"))
+                        && !shown.contains(&format!("{open}&#47;environment-memory"))
+                        && !shown.contains(&format!("{open}&#x2f;environment-memory")),
+                    "{open} still opens a tag: {case} -> {shown}"
+                );
+            }
+            assert!(shown.starts_with("x ") && shown.ends_with(" y"), "{shown}");
+        }
+        // Text that merely mentions the name is left alone.
+        assert_eq!(
+            for_context("see environment-memory below"),
+            "see environment-memory below"
         );
     }
 

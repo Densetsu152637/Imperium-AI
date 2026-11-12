@@ -715,3 +715,119 @@ async fn the_start_up_sweep_deletes_only_scratch_folders_whose_session_is_gone()
     assert!(outside.path().join("keep.txt").is_file());
     assert_eq!(second.sweep_orphan_scratch(), 0);
 }
+
+/// Makes `link` a link to the folder `target`; false where links need a privilege that is missing.
+fn link_dir(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(target, link);
+    made.is_ok()
+}
+
+#[tokio::test]
+async fn the_sweep_spares_agents_unreadable_records_old_sessions_and_links() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("keep.txt"), "keep").unwrap();
+    let first = daemon(home.path(), "http://127.0.0.1:9/v1");
+    let env = environment(&first, "Work", project.path());
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let (session, _events) = first
+            .create_in_environment(&env, None, SessionOptions::default())
+            .unwrap();
+        ids.push(session.id().to_string());
+    }
+    let (running, corrupt, old) = (ids[0].clone(), ids[1].clone(), ids[2].clone());
+    // The persistent agent of the environment: no record of its own, but named by the environment.
+    let agent = "0123456789abcdef".to_string();
+    first
+        .environments()
+        .set_agent_session(&env, Some(agent.clone()))
+        .unwrap();
+    drop(first);
+    let data = home.path().join("data").join("sessions");
+    // One record cannot be parsed; one session has no journal, so it is not resumed after a restart
+    // (as when it is older than `agents.resume_days`) although its record is there.
+    std::fs::write(data.join(format!("{corrupt}.meta.json")), "{ not json").unwrap();
+    let _ = std::fs::remove_file(data.join(format!("{old}.jsonl")));
+    let _ = std::fs::remove_file(data.join(format!("{corrupt}.jsonl")));
+
+    let sessions = root_of(home.path()).join(&env).join("sessions");
+    for id in [&running, &corrupt, &old, &agent] {
+        seed_session_files(home.path(), &env, id);
+    }
+    // Orphans: no running session, no record, not an agent. One holds a link to a folder outside.
+    let orphan = "aaaaaaaaaaaaaaaa";
+    let linked_orphan = "bbbbbbbbbbbbbbbb";
+    seed_session_files(home.path(), &env, orphan);
+    seed_session_files(home.path(), &env, linked_orphan);
+    let link_inside = link_dir(outside.path(), &sessions.join(linked_orphan).join("out"));
+    // A `sessions` folder that is a link, and an environment folder that is a link, each
+    // leading to a folder with an orphan-looking session folder in it.
+    let hex_orphan = "cccccccccccccccc";
+    let behind_sessions = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(behind_sessions.path().join(hex_orphan)).unwrap();
+    let other_env = root_of(home.path()).join("other");
+    std::fs::create_dir_all(&other_env).unwrap();
+    let link_sessions = link_dir(behind_sessions.path(), &other_env.join("sessions"));
+    let behind_env = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(behind_env.path().join("sessions").join(hex_orphan)).unwrap();
+    let link_env = link_dir(behind_env.path(), &root_of(home.path()).join("linked"));
+
+    let second = daemon(home.path(), "http://127.0.0.1:9/v1");
+    assert_eq!(
+        second.resume_sessions(),
+        1,
+        "only the first session is resumed"
+    );
+    assert!(second.session(&running).is_some());
+    // The agent is not running, so the sweep must know it from the environment.
+    let swept = second.sweep_orphan_scratch();
+    assert_eq!(swept, 2, "the two orphans, and nothing else");
+    assert!(!sessions.join(orphan).exists());
+    assert!(!sessions.join(linked_orphan).exists());
+    for kept in [&running, &corrupt, &old, &agent] {
+        assert!(
+            sessions.join(kept).join("notes.txt").is_file(),
+            "{kept} was deleted"
+        );
+    }
+    if link_inside {
+        assert!(
+            outside.path().join("keep.txt").is_file(),
+            "a link inside a session folder is not followed"
+        );
+    }
+    if link_sessions {
+        assert!(behind_sessions.path().join(hex_orphan).is_dir());
+    }
+    if link_env {
+        assert!(behind_env.path().join("sessions").join(hex_orphan).is_dir());
+    }
+    assert_eq!(second.sweep_orphan_scratch(), 0);
+
+    // After a move the sweep works on the new place and nothing is left in the old one.
+    let moved_to = home.path().join("elsewhere");
+    second
+        .move_workspaces(&moved_to.display().to_string())
+        .unwrap();
+    assert!(!root_of(home.path()).exists());
+    let late = moved_to
+        .join(&env)
+        .join("sessions")
+        .join("dddddddddddddddd");
+    std::fs::create_dir_all(&late).unwrap();
+    assert_eq!(second.sweep_orphan_scratch(), 1);
+    assert!(!late.exists());
+    assert!(
+        moved_to
+            .join(&env)
+            .join("sessions")
+            .join(&agent)
+            .join("notes.txt")
+            .is_file()
+    );
+}

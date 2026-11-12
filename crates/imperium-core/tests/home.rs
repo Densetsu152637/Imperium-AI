@@ -25,6 +25,8 @@ fn sse(chunk: Value) -> String {
 struct Seen {
     tool_names: Vec<Vec<String>>,
     tool_results: Vec<String>,
+    /// The system prompt of the latest request.
+    system: String,
 }
 
 /// Calls `tool` with `arguments` once, then answers "Done."
@@ -56,6 +58,11 @@ async fn fake_model(seen: Arc<Mutex<Seen>>, tool: &'static str, arguments: Strin
                     let mut seen = seen.lock().unwrap();
                     seen.tool_names.push(names);
                     seen.tool_results = results.clone();
+                    seen.system = messages
+                        .first()
+                        .and_then(|m| m["content"].as_str())
+                        .unwrap_or_default()
+                        .to_string();
                 }
                 let reply = if results.is_empty() {
                     sse(
@@ -376,5 +383,133 @@ async fn web_tools_follow_the_web_setting_and_a_file_outside_the_working_folder_
             .any(|result| result.to_lowercase().contains("outside")),
         "{:?}",
         seen.tool_results
+    );
+}
+
+#[tokio::test]
+async fn home_memory_md_is_read_into_home_sessions_only() {
+    let home = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let url = fake_model(
+        Arc::clone(&seen),
+        "list_dir",
+        json!({"path": "."}).to_string(),
+    )
+    .await;
+    let state = daemon(home.path(), &url, "");
+    std::fs::create_dir_all(root_of(home.path()).join("home")).unwrap();
+    std::fs::write(
+        root_of(home.path()).join("home").join("Memory.md"),
+        "## errands\nThe weekly shop list lives in the shared spreadsheet.\n",
+    )
+    .unwrap();
+    let (session, _events) = state
+        .create_in_environment("home", None, SessionOptions::default())
+        .unwrap();
+    run_turn(&session, PermissionDecision::Deny).await;
+    {
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.system.contains("<environment-memory>"),
+            "{}",
+            seen.system
+        );
+        assert!(seen.system.contains("weekly shop list"));
+    }
+    // Another environment's sessions do not see it.
+    let env = state
+        .environments()
+        .for_folder(&other.path().display().to_string())
+        .unwrap();
+    let (elsewhere, _events) = state
+        .create_in_environment(&env.id, None, SessionOptions::default())
+        .unwrap();
+    run_turn(&elsewhere, PermissionDecision::Deny).await;
+    assert!(!seen.lock().unwrap().system.contains("weekly shop list"));
+}
+
+/// An MCP server over HTTP with `lookup` (allowed in the test) and `delete` (not).
+async fn mcp_server() -> String {
+    let app = Router::new().route(
+        "/mcp",
+        post(move |axum::Json(request): axum::Json<Value>| async move {
+            let Some(id) = request.get("id").cloned() else {
+                return axum::Json(json!({}));
+            };
+            let result = match request["method"].as_str() {
+                Some("initialize") => json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
+                Some("tools/list") => json!({"tools": [
+                    {"name": "lookup", "description": "Look up a word", "inputSchema": {"type": "object"}},
+                    {"name": "delete", "description": "Delete a word", "inputSchema": {"type": "object"}}]}),
+                _ => json!({"content": [{"type": "text", "text": "ok"}]}),
+            };
+            axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    url
+}
+
+#[tokio::test]
+async fn connector_tools_are_offered_to_home_and_follow_the_permission_mode() {
+    let home = tempfile::tempdir().unwrap();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let url = fake_model(
+        Arc::clone(&seen),
+        "mcp__words__delete",
+        json!({"word": "x"}).to_string(),
+    )
+    .await;
+    let mcp = mcp_server().await;
+    let extra = format!("[mcp.servers.words]\nurl = \"{mcp}\"\nallow = [\"lookup\"]\n");
+    let state = daemon(home.path(), &url, &extra);
+
+    // In the default mode a tool that is not allowed asks first; the user says no.
+    let (asking, _events) = state
+        .create_in_environment("home", None, SessionOptions::default())
+        .unwrap();
+    asking.set_permission_mode(PermissionMode::Default);
+    let (asked, _) = run_turn(&asking, PermissionDecision::Deny).await;
+    assert_eq!(asked, vec!["mcp__words__delete".to_string()]);
+    {
+        let names = seen.lock().unwrap().tool_names[0].clone();
+        assert!(
+            names.contains(&"mcp__words__lookup".to_string()),
+            "{names:?}"
+        );
+    }
+
+    // In plan mode the same call is refused without asking.
+    *seen.lock().unwrap() = Seen::default();
+    let (planning, _events) = state
+        .create_in_environment("home", None, SessionOptions::default())
+        .unwrap();
+    planning.set_permission_mode(PermissionMode::Plan);
+    let (asked, _) = run_turn(&planning, PermissionDecision::Deny).await;
+    assert!(asked.is_empty(), "plan mode does not ask: {asked:?}");
+    let results = seen.lock().unwrap().tool_results.clone();
+    assert!(
+        results
+            .iter()
+            .any(|result| result.to_lowercase().contains("plan")),
+        "{results:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_home_session_that_cannot_start_leaves_no_folder_behind() {
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), "http://127.0.0.1:9/v1", "");
+    let refused =
+        state.create_in_environment("home", Some("nowhere:model"), SessionOptions::default());
+    assert!(refused.is_err());
+    let sessions = root_of(home.path()).join("home").join("sessions");
+    let left = std::fs::read_dir(&sessions).map_or(0, |entries| entries.count());
+    assert_eq!(
+        left, 0,
+        "no scratch folder for a session that never started"
     );
 }

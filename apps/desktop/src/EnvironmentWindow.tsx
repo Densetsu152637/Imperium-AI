@@ -437,6 +437,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             projectWorktrees={projectWorktrees}
             onProjectWorktrees={setProjectWorktrees}
             disabled={busy || !client}
+            fixedLocal={environment?.builtin === true}
             testBlocked={
               creating ? "Create the environment first" : runtimeChanged ? "Save the runtime first" : null
             }

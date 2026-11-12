@@ -74,7 +74,6 @@ async fn run() -> anyhow::Result<()> {
     daemon.start_pets();
     daemon.reconcile_workspaces();
     let resumed = daemon.resume_sessions();
-    daemon.sweep_orphan_scratch();
     if resumed > 0 {
         tracing::info!(
             sessions = resumed,
@@ -96,6 +95,8 @@ async fn run() -> anyhow::Result<()> {
     }
     daemon.start_load_monitor();
     daemon.start_project_agents();
+    // After the agents started, so their sessions are known.
+    daemon.sweep_orphan_scratch();
     daemon.start_scheduler();
     daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));
     daemon.start_auto_archive();

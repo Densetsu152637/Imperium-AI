@@ -94,12 +94,17 @@ touched.
 
 - **Default target.** A session started with neither `environment_id` nor `project_dir`
   (`session.create {}`, `imperium chat` with neither `--env` nor `--project`, and the desktop's
-  new-session panel until another environment is chosen) works in Home. `imperium chat --project .`
-  still works in the current directory.
+  new-session panel until another environment is chosen) works in Home. This changes `imperium
+  chat`, which used to start in the current directory: `imperium chat --project .` does that.
+  The chat's first lines say when the session is in Home and how to choose a project, and
+  `--worktree` without `--project` or `--env` is an error pointing at `--project`, since Home has
+  no project to put on a worktree.
 - **No project folders.** Its `folders` are empty. Each session works in its own
   [scratch folder](#environment-working-folders-implemented) (`<root>/home/sessions/<id>/`),
-  which is the session's working directory and only folder, so it can read and write nothing
-  else on disk: the file tools refuse paths outside it, and `run_command` runs there. Home's
+  which is the session's working directory and only folder. The file tools refuse any path
+  outside it (and outside the paths the user granted). `run_command` starts there, but a command
+  is not confined to a folder: how far it reaches follows the permission mode and the
+  [isolation tier](05-tools-and-isolation.md#isolation-tiers) like any session's. Home's
   `Memory.md` is `<root>/home/Memory.md`, read into every Home session like any environment's.
   A user who wants Home's agents to see a project adds its folder (`imperium env add-folder home
   <folder>`, or the environment window), or grants a path in Home's permissions; Home then
@@ -147,11 +152,17 @@ on the drive where their other data is kept):
   Deleting a session deletes it too. Nothing is moved to a trash: the folder is scratch space, and
   what should last belongs in the environment's folders or in memory. Deleting an environment
   leaves its working folder alone (its sessions' folders go with those sessions, and `Memory.md`
-  stays until the user deletes it). At start, after sessions were resumed, the daemon deletes
-  scratch folders whose session no longer exists (the daemon was killed before it could clean up,
-  or the session was deleted while it was off): a folder stays when its session is running or
-  recorded and not archived. Only folders directly under `<root>/<environment-id>/sessions/`
-  with names that are safe as folder names are touched, never through a link.
+  stays until the user deletes it). At start, after sessions were resumed and the agents
+  started, the daemon deletes scratch folders whose session no longer exists (the daemon was
+  killed before it could clean up, or the session was deleted while it was off). A folder stays
+  when its session is running, is an environment's or project's agent, or has a record that is
+  not known to be archived: only a missing record, or one that says archived, makes a session
+  gone, so a record that cannot be read or parsed, or a session older than `agents.resume_days`
+  that is no longer resumed, keeps its folder. Only folders directly under
+  `<root>/<environment-id>/sessions/` are touched, with a safe environment name and a generated
+  session id (16 hex digits), and never through a link: a symlink or junction as the environment
+  folder, as `sessions`, or as the session folder is skipped, and links inside a session folder
+  are removed, not followed.
 - **`Memory.md`** is the environment's own memory, read into the context of every session in that
   environment and written by agents with the `environment` scope of `memory_remember`
   ([17](17-memory.md#environment-memory-implemented)). It is created on its first write.
