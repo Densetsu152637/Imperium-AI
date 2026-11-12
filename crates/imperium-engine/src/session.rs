@@ -925,7 +925,9 @@ async fn run(
                 _ = stop.changed() => continue,
                 command = commands.recv() => command,
             } {
-                Some(Command::Message(message)) if stopped => {
+                // `stopped` was read before the wait: a stop that came in during it (and
+                // raced this message in the select) counts too.
+                Some(Command::Message(message)) if stopped || *stop.borrow() => {
                     shared.inboxes.queue_for_root(message);
                     continue;
                 }
