@@ -3842,6 +3842,26 @@ button.colour-choice[aria-checked="true"]::after {
   height: 1.7rem;
 }
 
+.environment-head-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.working-folder-path {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+}
+
+.field-with-action {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 .environment-footer {
   display: flex;
   flex-wrap: wrap;

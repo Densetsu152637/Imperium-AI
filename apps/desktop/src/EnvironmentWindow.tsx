@@ -9,7 +9,7 @@
 // The Permissions section edits the environment's path grants and allow / ask / deny rules, on top
 // of the global ones; they apply with Save.
 
-import { FolderPlus, Search, Trash, X } from "lucide-react";
+import { FileText, FolderOpen, FolderPlus, Search, Trash, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -20,6 +20,7 @@ import type {
   PermissionsResult,
   PetListResult,
   RuntimeTestResult,
+  WorkspacesWhereResult,
 } from "@imperium/protocol";
 
 import { PermissionsEditor, samePermissions } from "./components/PermissionsEditor";
@@ -69,6 +70,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
   const savedPermissions: PermissionSet = environment?.permissions ?? { grants: [], rules: [] };
   const [permissions, setPermissions] = useState<PermissionSet>(savedPermissions);
   const [presets, setPresets] = useState<PathPreset[]>([]);
+  const [working, setWorking] = useState<WorkspacesWhereResult["environments"][number] | null>(null);
   const permissionsChanged = !samePermissions(permissions, savedPermissions);
   const runtimeChanged = !creating && !sameRuntime(environment.runtime, runtime);
   const [deleting, setDeleting] = useState(confirmDelete);
@@ -96,10 +98,16 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
       ?.call<PermissionsResult>("permissions.get", {})
       .then((result) => live && setPresets(result.presets))
       .catch(() => {});
+    if (environment) {
+      client
+        ?.call<WorkspacesWhereResult>("workspaces.where", {})
+        .then((result) => live && setWorking(result.environments.find((env) => env.environment_id === environment.id) ?? null))
+        .catch(() => {});
+    }
     return () => {
       live = false;
     };
-  }, [client]);
+  }, [client, environment]);
 
   useEffect(() => {
     if (!confirmDelete) nameInput.current?.focus();
@@ -144,6 +152,13 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
       c.call<EnvironmentInfo>("environments.remove_folder", { id: environment.id, folder }),
     );
     if (env) onSaved(env);
+  };
+
+  /** Opens the working folder or Memory.md with the computer's own programs. */
+  const openWorking = async (target: "folder" | "memory") => {
+    if (creating) return;
+    const done = await attempt((c) => c.call("workspaces.open", { environment_id: environment.id, target }));
+    if (done !== null && target === "memory") setWorking((current) => current && { ...current, memory_exists: true });
   };
 
   const save = async () => {
@@ -365,6 +380,35 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
               )}
             </ul>
           </section>
+
+          {!creating && (
+            <section className="environment-section" aria-label="Working folder">
+              <div className="environment-section-head">
+                <span className="environment-label">Working folder</span>
+                <span className="environment-head-actions">
+                  <button type="button" onClick={() => void openWorking("memory")} disabled={busy || !client}>
+                    <FileText aria-hidden="true" /> Open Memory.md
+                  </button>
+                  <button type="button" onClick={() => void openWorking("folder")} disabled={busy || !client}>
+                    <FolderOpen aria-hidden="true" /> Open folder
+                  </button>
+                </span>
+              </div>
+              <p className="muted permissions-hint">
+                Memory.md holds notes for this environment only (agents read it at the start of every session here and can add to
+                it); each session also gets its own scratch folder below, deleted when the session is archived.
+              </p>
+              <code className="path working-folder-path" title={working?.dir}>
+                {working?.dir ?? "…"}
+              </code>
+              {working && (
+                <span className="muted">
+                  {working.memory_exists ? "Memory.md exists" : "No Memory.md yet"}; {working.session_folders} session{" "}
+                  {working.session_folders === 1 ? "folder" : "folders"}. Move all working folders in Settings → Working folders.
+                </span>
+              )}
+            </section>
+          )}
 
           <section className="environment-section" aria-label="Permissions">
             <span className="environment-label">Permissions</span>
