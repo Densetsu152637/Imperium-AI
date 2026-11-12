@@ -5,7 +5,24 @@ import { test } from "node:test";
 
 import type { EnvironmentAgent, EnvironmentInfo } from "@imperium/protocol";
 
-import { agentOfSession, agentTitle, nameTaken } from "../src/agents.ts";
+import { agentOfSession, agentTitle, nameLength, nameProblem, nameTaken } from "../src/agents.ts";
+
+test("names are measured in characters and checked like the daemon does", () => {
+  // 60 emoji are 120 UTF-16 units but 60 characters: allowed, as the daemon counts them.
+  assert.equal(nameLength("😀".repeat(60)), 60);
+  assert.equal(nameProblem("😀".repeat(60)), null);
+  assert.match(nameProblem("😀".repeat(61)) ?? "", /at most 60/);
+  assert.match(nameProblem("   ") ?? "", /needs a name/);
+  assert.match(nameProblem("Plan\nner") ?? "", /control characters/);
+  assert.match(nameProblem("Plan\u001b[2Jner") ?? "", /control characters/);
+  assert.equal(nameProblem(" Planner "), null);
+});
+
+test("uniqueness folds Unicode case like the daemon", () => {
+  const agents = [{ id: "a", name: "Éditeur", role: "", session_id: null }];
+  assert.equal(nameTaken(agents, " éDITEUR "), true);
+  assert.equal(nameTaken(agents, "Editeur"), false);
+});
 
 const agent = (id: string, name: string, session_id: string | null = null): EnvironmentAgent => ({
   id,

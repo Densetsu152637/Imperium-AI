@@ -189,7 +189,7 @@ impl Environments {
             // Deprecated alias for the agents list.
             match params.persistent_agent {
                 Some(true) if env.agents.is_empty() => add_default_agent(env)?,
-                Some(false) => env.agents.clear(),
+                Some(false) => remove_default_agent(env)?,
                 _ => {}
             }
             if let Some(pet) = params.pet {
@@ -233,7 +233,7 @@ impl Environments {
             if env
                 .agents
                 .iter()
-                .any(|agent| agent.name.eq_ignore_ascii_case(&name))
+                .any(|agent| folded(&agent.name) == folded(&name))
             {
                 return Err(EnvironmentError::Invalid(format!(
                     "{} already has an agent named {name:?}",
@@ -270,7 +270,7 @@ impl Environments {
                 && env
                     .agents
                     .iter()
-                    .any(|a| a.id != agent_id && a.name.eq_ignore_ascii_case(name))
+                    .any(|a| a.id != agent_id && folded(&a.name) == folded(name))
             {
                 return Err(EnvironmentError::Invalid(format!(
                     "{} already has an agent named {name:?}",
@@ -499,12 +499,15 @@ fn same_in(runtime: &EnvironmentRuntime, a: &str, b: &str) -> bool {
 }
 
 /// Keeps the deprecated fields in step with the agents.
+///
+/// With agents, `agent_session_id` is the first agent's session. Without, it is left as it is:
+/// an environment saved with its persistent agent turned off keeps the (archived) session's id,
+/// and turning the deprecated switch on again continues that session.
 fn normalize(env: &mut EnvironmentInfo) {
     env.persistent_agent = !env.agents.is_empty();
-    env.agent_session_id = env
-        .agents
-        .first()
-        .and_then(|agent| agent.session_id.clone());
+    if let Some(first) = env.agents.first() {
+        env.agent_session_id = first.session_id.clone();
+    }
 }
 
 /// An environment saved with the old single persistent agent gets it as an agent.
@@ -530,9 +533,39 @@ fn default_agent(session_id: Option<String>) -> Result<EnvironmentAgent, getrand
     })
 }
 
+/// Adds the default agent for the deprecated switch, continuing the session a turned-off
+/// persistent agent left behind, if any.
 fn add_default_agent(env: &mut EnvironmentInfo) -> Result<(), EnvironmentError> {
-    env.agents
-        .push(default_agent(None).map_err(|error| EnvironmentError::Invalid(error.to_string()))?);
+    let agent = default_agent(env.agent_session_id.take())
+        .map_err(|error| EnvironmentError::Invalid(error.to_string()))?;
+    env.agents.push(agent);
+    Ok(())
+}
+
+/// The deprecated switch off: removes the default agent, and only that. More than one agent, or
+/// an agent with a role, is somebody's setup that a switch must not delete: the caller is told to
+/// use `environments.agent_delete`.
+fn remove_default_agent(env: &mut EnvironmentInfo) -> Result<(), EnvironmentError> {
+    if env.agents.is_empty() {
+        return Ok(());
+    }
+    if env.agents.len() > 1 || env.agents.iter().any(|agent| !agent.role.is_empty()) {
+        return Err(EnvironmentError::Invalid(format!(
+            "{} has {} agent(s) set up by name or role; persistent_agent is deprecated and cannot \
+             remove them. Delete them with environments.agent_delete",
+            env.name,
+            env.agents.len()
+        )));
+    }
+    if env.agents[0].name != DEFAULT_AGENT_NAME {
+        return Err(EnvironmentError::Invalid(format!(
+            "{} has an agent named {:?}, not the default {DEFAULT_AGENT_NAME:?}; delete it with \
+             environments.agent_delete",
+            env.name, env.agents[0].name
+        )));
+    }
+    // Its session stays linked, so turning the switch on again continues it.
+    env.agent_session_id = env.agents.remove(0).session_id;
     Ok(())
 }
 
@@ -553,7 +586,19 @@ fn valid_agent_name(name: &str) -> Result<String, EnvironmentError> {
             "an agent needs a name of 1 to 60 characters".into(),
         ));
     }
+    // The name goes into the agent's instructions and titles: one line of ordinary characters.
+    if name.chars().any(char::is_control) {
+        return Err(EnvironmentError::Invalid(
+            "an agent's name cannot contain line breaks or other control characters".into(),
+        ));
+    }
     Ok(name.to_string())
+}
+
+/// A name as compared for uniqueness: trimmed and lower-cased with Unicode rules, as the
+/// desktop does.
+fn folded(name: &str) -> String {
+    name.trim().to_lowercase()
 }
 
 fn valid_role(role: &str) -> Result<String, EnvironmentError> {
@@ -561,6 +606,14 @@ fn valid_role(role: &str) -> Result<String, EnvironmentError> {
     if role.chars().count() > 4000 {
         return Err(EnvironmentError::Invalid(
             "an agent's role is at most 4000 characters".into(),
+        ));
+    }
+    if role
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err(EnvironmentError::Invalid(
+            "an agent's role cannot contain control characters".into(),
         ));
     }
     Ok(role.to_string())
@@ -895,5 +948,212 @@ mod tests {
         let envs = store(data.path());
         assert!(envs.list().is_empty());
         assert!(data.path().join("environments.json.unreadable").exists());
+    }
+
+    fn agent_env(envs: &Environments, folder: &tempfile::TempDir) -> EnvironmentInfo {
+        new(envs, "Work", None, &[path(folder)]).unwrap()
+    }
+
+    #[test]
+    fn agent_names_and_roles_are_checked() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        let env = agent_env(&envs, &folder);
+        // Length: 60 characters is the limit, counted as characters, not bytes.
+        assert!(envs.add_agent(&env.id, &"é".repeat(60), None).is_ok());
+        assert!(envs.add_agent(&env.id, &"é".repeat(61), None).is_err());
+        assert!(envs.add_agent(&env.id, "  ", None).is_err());
+        // One line of ordinary characters: no line breaks or other control characters.
+        for name in ["Plan\nner", "Plan\rner", "Plan\u{7}ner", "Plan\u{1b}[2J"] {
+            let error = envs.add_agent(&env.id, name, None).unwrap_err().to_string();
+            assert!(error.contains("control characters"), "{name:?}: {error}");
+        }
+        // A role may have lines, but not other control characters, and is at most 4000.
+        assert!(
+            envs.add_agent(&env.id, "A", Some("line one\nline two"))
+                .is_ok()
+        );
+        assert!(
+            envs.add_agent(&env.id, "B", Some(&"x".repeat(4000)))
+                .is_ok()
+        );
+        assert!(
+            envs.add_agent(&env.id, "C", Some(&"x".repeat(4001)))
+                .is_err()
+        );
+        assert!(envs.add_agent(&env.id, "D", Some("bad\u{0}role")).is_err());
+    }
+
+    #[test]
+    fn agent_names_are_unique_with_unicode_case_folding_and_across_updates() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        let env = agent_env(&envs, &folder);
+        let planner = envs.add_agent(&env.id, "Éditeur", None).unwrap();
+        let other = envs.add_agent(&env.id, "Reviewer", None).unwrap();
+        // É and é are one name; so are padded spellings.
+        let error = envs.add_agent(&env.id, " éditeur ", None).unwrap_err();
+        assert!(error.to_string().contains("already has an agent"));
+        // A rename onto another agent's name is refused; onto its own name (any case) is not.
+        let error = envs
+            .update_agent(&env.id, &other.id, Some("ÉDITEUR"), None)
+            .unwrap_err();
+        assert!(error.to_string().contains("already has an agent"));
+        assert!(
+            envs.update_agent(&env.id, &planner.id, Some("éDITEUR"), None)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_agent_of_another_environment_is_not_found() {
+        let data = tempfile::tempdir().unwrap();
+        let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let envs = store(data.path());
+        let first = agent_env(&envs, &one);
+        let second = new(&envs, "Play", None, &[path(&two)]).unwrap();
+        let agent = envs.add_agent(&first.id, "Planner", None).unwrap();
+        assert!(matches!(
+            envs.update_agent(&second.id, &agent.id, Some("X"), None),
+            Err(EnvironmentError::NotFound(_))
+        ));
+        assert!(matches!(
+            envs.remove_agent(&second.id, &agent.id),
+            Err(EnvironmentError::NotFound(_))
+        ));
+        assert!(matches!(
+            envs.set_agent_session(&second.id, &agent.id, Some("s".into())),
+            Err(EnvironmentError::NotFound(_))
+        ));
+        assert_eq!(envs.get(&first.id).unwrap().agents.len(), 1);
+    }
+
+    fn switch(
+        envs: &Environments,
+        id: &str,
+        on: bool,
+    ) -> Result<EnvironmentInfo, EnvironmentError> {
+        envs.update(EnvironmentUpdateParams {
+            id: id.into(),
+            persistent_agent: Some(on),
+            ..EnvironmentUpdateParams::default()
+        })
+    }
+
+    #[test]
+    fn the_deprecated_switch_adds_one_agent_and_removes_only_the_default() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        // Created through the alias: one default agent, and "on" again changes nothing.
+        let env = envs
+            .create(EnvironmentCreateParams {
+                name: "Work".into(),
+                folders: vec![path(&folder)],
+                persistent_agent: Some(true),
+                ..EnvironmentCreateParams::default()
+            })
+            .unwrap();
+        assert_eq!(env.agents.len(), 1);
+        assert_eq!(env.agents[0].name, DEFAULT_AGENT_NAME);
+        let id = env.agents[0].id.clone();
+        assert_eq!(switch(&envs, &env.id, true).unwrap().agents[0].id, id);
+        envs.add_agent(&env.id, "Planner", None).unwrap();
+        assert_eq!(switch(&envs, &env.id, true).unwrap().agents.len(), 2);
+        // Off with two agents is refused and removes nothing.
+        let error = switch(&envs, &env.id, false).unwrap_err().to_string();
+        assert!(error.contains("agent_delete"), "{error}");
+        assert_eq!(envs.get(&env.id).unwrap().agents.len(), 2);
+        // Off with one agent that has a role, or a name of its own, is refused too.
+        envs.remove_agent(&env.id, &id).unwrap();
+        envs.update_agent(
+            &env.id,
+            &envs.get(&env.id).unwrap().agents[0].id,
+            None,
+            Some("Plans"),
+        )
+        .unwrap();
+        assert!(switch(&envs, &env.id, false).is_err());
+        let keep = envs.get(&env.id).unwrap().agents[0].id.clone();
+        envs.update_agent(&env.id, &keep, None, Some("")).unwrap();
+        assert!(
+            switch(&envs, &env.id, false)
+                .unwrap_err()
+                .to_string()
+                .contains("not the default")
+        );
+        // The plain default agent goes, and its session stays linked for the next "on".
+        envs.remove_agent(&env.id, &keep).unwrap();
+        switch(&envs, &env.id, true).unwrap();
+        let default = envs.get(&env.id).unwrap().agents[0].id.clone();
+        envs.set_agent_session(&env.id, &default, Some("old-session".into()))
+            .unwrap();
+        let off = switch(&envs, &env.id, false).unwrap();
+        assert!(off.agents.is_empty() && !off.persistent_agent);
+        assert_eq!(off.agent_session_id.as_deref(), Some("old-session"));
+        let on = switch(&envs, &env.id, true).unwrap();
+        assert_eq!(on.agents[0].session_id.as_deref(), Some("old-session"));
+    }
+
+    fn legacy_file(dir: &Path, persistent: bool, session: Option<&str>) {
+        let folder = dir.join("folder");
+        std::fs::create_dir_all(&folder).unwrap();
+        let env = serde_json::json!({
+            "id": "e1", "name": "Old", "folders": [folder], "persistent_agent": persistent,
+            "agent_session_id": session,
+        });
+        std::fs::write(
+            dir.join("environments.json"),
+            serde_json::json!({ "environments": [env] }).to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_legacy_persistent_session_migrates_once_and_a_second_load_changes_nothing() {
+        let data = tempfile::tempdir().unwrap();
+        legacy_file(data.path(), true, Some("sess-1"));
+        let first = store(data.path()).list();
+        assert_eq!(first[0].agents.len(), 1);
+        assert_eq!(first[0].agents[0].session_id.as_deref(), Some("sess-1"));
+        let saved = std::fs::read_to_string(data.path().join("environments.json")).unwrap();
+        // Loading again finds the agent already there: same id, file untouched.
+        let second = store(data.path()).list();
+        assert_eq!(second[0].agents, first[0].agents);
+        assert_eq!(
+            std::fs::read_to_string(data.path().join("environments.json")).unwrap(),
+            saved
+        );
+    }
+
+    #[test]
+    fn a_failed_save_during_migration_keeps_the_session_link() {
+        let data = tempfile::tempdir().unwrap();
+        legacy_file(data.path(), true, Some("sess-1"));
+        // The temporary file cannot be written (a folder is in its place): the save fails.
+        std::fs::create_dir(data.path().join("environments.json.tmp")).unwrap();
+        let envs = store(data.path());
+        let agents = envs.list()[0].agents.clone();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].session_id.as_deref(), Some("sess-1"));
+        // The file still has the old form, so the next load migrates the same session.
+        std::fs::remove_dir(data.path().join("environments.json.tmp")).unwrap();
+        let again = store(data.path()).list();
+        assert_eq!(again[0].agents[0].session_id.as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn a_legacy_turned_off_agent_keeps_its_session_link_without_an_agent() {
+        let data = tempfile::tempdir().unwrap();
+        legacy_file(data.path(), false, Some("sess-old"));
+        let env = store(data.path()).list().remove(0);
+        assert!(env.agents.is_empty() && !env.persistent_agent);
+        assert_eq!(env.agent_session_id.as_deref(), Some("sess-old"));
+        // Turning the deprecated switch on continues that session.
+        let envs = store(data.path());
+        let on = switch(&envs, "e1", true).unwrap();
+        assert_eq!(on.agents[0].session_id.as_deref(), Some("sess-old"));
     }
 }

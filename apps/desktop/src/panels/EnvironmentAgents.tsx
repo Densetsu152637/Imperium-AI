@@ -7,7 +7,7 @@ import { useState } from "react";
 
 import type { EnvironmentAgent, EnvironmentInfo } from "@imperium/protocol";
 
-import { nameTaken } from "../agents";
+import { nameProblem, nameTaken } from "../agents";
 import type { DaemonClient } from "../daemon/client";
 
 type Props = {
@@ -46,8 +46,9 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
   const save = async () => {
     if (!draft) return;
     const name = draft.name.trim();
-    if (!name) {
-      setError("An agent needs a name.");
+    const problem = nameProblem(name);
+    if (problem) {
+      setError(problem);
       return;
     }
     if (nameTaken(agents, name, draft.id ?? undefined)) {
@@ -147,7 +148,6 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
             <input
               value={draft.name}
               placeholder="Planner"
-              maxLength={60}
               autoFocus
               onChange={(event) => setDraft({ ...draft, name: event.target.value })}
             />

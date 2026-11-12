@@ -73,7 +73,7 @@ pub struct SessionOptions {
     pub may_wait_for_model: bool,
     /// Where the session's tools run (its environment's runtime).
     pub runtime: EnvironmentRuntime,
-    /// The environment's persistent agent session.
+    /// A persistent agent's session of an environment.
     pub persistent: bool,
     /// Compact the conversation when a turn starts over the model's budget.
     pub auto_compact: bool,
@@ -649,13 +649,14 @@ impl DaemonState {
     }
 
     /// Starts the agents of projects with `agent = true`, and the persistent agents of
-    /// environments that have one turned on.
+    /// environments that have been given any.
     pub fn start_project_agents(self: &Arc<Self>) {
         crate::project_agent::start(self);
         crate::project_agent::start_environment_agents(self);
     }
 
-    /// Starts or stops an environment's persistent agent to match its setting.
+    /// Starts an environment's persistent agents that are not running and stops the ones that
+    /// were deleted.
     pub fn sync_environment_agent(self: &Arc<Self>, environment_id: &str) {
         crate::project_agent::sync_environment_agent(self, environment_id);
     }
@@ -1653,8 +1654,8 @@ impl DaemonState {
     }
 
     /// Stops and forgets a session so it does not continue after a restart, removing its
-    /// worktrees when asked (their branches stay). An environment's persistent agent is refused:
-    /// it is turned off in its environment instead.
+    /// worktrees when asked (their branches stay). A persistent agent's session is refused:
+    /// the agent is deleted in its environment instead.
     pub fn delete_session(
         &self,
         id: &str,
@@ -1678,7 +1679,7 @@ impl DaemonState {
         };
         if placement.persistent {
             return Err(
-                "this is its environment's persistent agent; turn it off in the environment".into(),
+                "this is a persistent agent of its environment; delete the agent in the environment".into(),
             );
         }
         self.forget_session(id);

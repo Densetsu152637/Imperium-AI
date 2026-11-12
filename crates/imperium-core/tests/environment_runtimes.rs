@@ -228,7 +228,7 @@ async fn a_persistent_agent_is_listed_first_class_and_continues_after_a_restart(
     assert_eq!(row["session_id"], session_id.as_str());
     assert_eq!(row["persistent"], true);
     assert_eq!(row["environment_id"], id.as_str());
-    assert_eq!(row["title"], "Planner");
+    assert_eq!(row["title"], "Work · Planner");
 
     // A conversation that should survive the restart.
     let session = state.session(&session_id).unwrap();

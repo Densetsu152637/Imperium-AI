@@ -20,24 +20,41 @@ fn sse(chunk: Value) -> String {
     format!("data: {chunk}\n\ndata: [DONE]\n\n")
 }
 
-/// Answers "Echo: <last user message>" and records every request.
+/// Answers "Echo: <last user message>" and records every request. An agent asked to "please
+/// start a session" does (a session that takes eight seconds), and a session told "slow job"
+/// takes those eight seconds to answer.
 async fn fake_model(log: Log) -> String {
     let app = Router::new().route(
         "/v1/chat/completions",
         post(move |axum::Json(body): axum::Json<Value>| {
             let log = Arc::clone(&log);
             async move {
-                let said = body["messages"]
-                    .as_array()
-                    .and_then(|messages| messages.iter().rev().find(|m| m["role"] == "user"))
-                    .and_then(|m| m["content"].as_str())
+                let messages = body["messages"].as_array().cloned().unwrap_or_default();
+                let last_user = messages.iter().rposition(|m| m["role"] == "user");
+                let said = last_user
+                    .and_then(|at| messages[at]["content"].as_str())
                     .unwrap_or_default()
                     .to_string();
+                let tools_since = last_user.map_or(0, |at| {
+                    messages[at..].iter().filter(|m| m["role"] == "tool").count()
+                });
+                let system = messages[0]["content"].as_str().unwrap_or_default().to_string();
                 log.lock().unwrap().push(body);
-                (
-                    [("content-type", "text/event-stream")],
-                    sse(json!({"choices":[{"delta":{"content":format!("Echo: {said}")}}]})),
-                )
+                if said.starts_with("slow job") {
+                    tokio::time::sleep(Duration::from_secs(8)).await;
+                }
+                let reply = if system.contains("persistent agents") && said.starts_with("please start a session") {
+                    if tools_since == 0 {
+                        let arguments = json!({"brief": said.replace("please start a session", "slow job")});
+                        sse(json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1",
+                            "function":{"name":"start_session","arguments":arguments.to_string()}}]}}]}))
+                    } else {
+                        sse(json!({"choices":[{"delta":{"content":"Started."}}]}))
+                    }
+                } else {
+                    sse(json!({"choices":[{"delta":{"content":format!("Echo: {said}")}}]}))
+                };
+                ([("content-type", "text/event-stream")], reply)
             }
         }),
     );
@@ -259,7 +276,7 @@ async fn two_agents_in_one_environment_run_independently() {
     assert_eq!(renamed["name"], "Critic");
     assert_eq!(renamed["session_id"], reviewer_session.as_str());
     let session = state.session(&reviewer_session).unwrap();
-    assert_eq!(state.summary(&session).title, "Critic");
+    assert_eq!(state.summary(&session).title, "Work · Critic");
 }
 
 #[tokio::test]
@@ -343,4 +360,350 @@ fn find_file(root: &std::path::Path, name: &str) -> std::path::PathBuf {
         }
     }
     panic!("no {name} under {}", root.display());
+}
+
+// --- review follow-ups ---------------------------------------------------------------------
+
+fn system_prompts_of(log: &Log, needle: &str) -> Vec<String> {
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter_map(|body| {
+            let messages = body["messages"].as_array()?;
+            let system = messages[0]["content"].as_str()?.to_string();
+            system.contains(needle).then_some(system)
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_syncs_start_each_agent_exactly_once() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &fake_model(Arc::default()).await);
+    let mut connection = connect(&state);
+    let id = new_environment(&mut connection, folder.path());
+    for round in 0..8 {
+        state
+            .environments()
+            .add_agent(&id, &format!("Agent {round}"), None)
+            .unwrap();
+        // Several places sync at once (an RPC, a restart, the daemon start).
+        let handles: Vec<_> = (0..3)
+            .map(|_| {
+                let state = Arc::clone(&state);
+                let id = id.clone();
+                tokio::task::spawn_blocking(move || state.sync_environment_agent(&id))
+            })
+            .collect();
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        assert_eq!(state.project_agents().agents_of(&id).len(), round + 1);
+        assert_eq!(state.sessions().len(), round + 1, "no duplicate sessions");
+    }
+    // Every agent's recorded session is the one running, and nothing else is.
+    let env = state.environments().get(&id).unwrap();
+    let mut recorded: Vec<_> = env
+        .agents
+        .iter()
+        .filter_map(|a| a.session_id.clone())
+        .collect();
+    let mut running: Vec<_> = state
+        .sessions()
+        .iter()
+        .map(|s| s.id().to_string())
+        .collect();
+    recorded.sort();
+    running.sort();
+    assert_eq!(recorded, running);
+}
+
+#[tokio::test]
+async fn an_unchanged_agent_is_not_restarted_and_a_restart_keeps_its_limits_and_reports() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let log: Log = Arc::default();
+    let state = daemon(home.path(), &fake_model(Arc::clone(&log)).await);
+    let mut connection = connect(&state);
+    let id = new_environment(&mut connection, folder.path());
+    let agent = call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": id, "name": "Planner", "role": "Plans."}),
+    );
+    let agent_id = agent["id"].as_str().unwrap().to_string();
+    let session_id = agent["session_id"].as_str().unwrap().to_string();
+    let first = state.session(&session_id).unwrap();
+
+    // Saving the same name and role (padded) restarts nothing.
+    call(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": id, "agent_id": agent_id, "name": " Planner ", "role": "Plans."}),
+    );
+    call(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": id, "agent_id": agent_id}),
+    );
+    assert!(Arc::ptr_eq(&first, &state.session(&session_id).unwrap()));
+
+    // One session started (it runs for eight seconds), then the agent is renamed: a restart.
+    say(&state, &session_id, "please start a session one").await;
+    call(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": id, "agent_id": agent_id, "name": "Planner 2"}),
+    );
+    let second = state.session(&session_id).unwrap();
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "a changed name restarts the agent"
+    );
+    assert_eq!(state.summary(&second).title, "Work · Planner 2");
+
+    // The count of sessions running carried over: the second start makes two (the limit), so the
+    // third is refused. Without it the restart would have reset the count.
+    say(&state, &session_id, "please start a session two").await;
+    say(&state, &session_id, "please start a session three").await;
+    let refused = log.lock().unwrap().iter().any(|body| {
+        body["messages"].as_array().is_some_and(|messages| {
+            messages.iter().any(|m| {
+                m["role"] == "tool"
+                    && m["content"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("sessions are already running"))
+            })
+        })
+    });
+    assert!(refused, "the third session is refused: two are running");
+
+    // The first session finishes after the restart; its report reaches the restarted agent.
+    let delivered = async {
+        loop {
+            let seen = log.lock().unwrap().iter().any(|body| {
+                let messages = body["messages"].as_array().cloned().unwrap_or_default();
+                let system = messages[0]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                system.contains("Your name is Planner 2.")
+                    && messages.iter().any(|m| {
+                        m["role"] == "user"
+                            && m["content"].as_str().is_some_and(|text| {
+                                text.starts_with("Session ") && text.contains("finished")
+                            })
+                    })
+            });
+            if seen {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), delivered)
+        .await
+        .expect("the report of a session started before the restart reaches the agent");
+}
+
+#[tokio::test]
+async fn agent_requests_are_validated_and_stay_inside_their_environment() {
+    let home = tempfile::tempdir().unwrap();
+    let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let log: Log = Arc::default();
+    let state = daemon(home.path(), &fake_model(Arc::clone(&log)).await);
+    let mut connection = connect(&state);
+    let work = new_environment(&mut connection, one.path());
+    let play = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Play", "folders": [two.path()]}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Name and role limits, as the daemon enforces them whatever a client checks.
+    for (name, role, expected) in [
+        ("x".repeat(61), "", "1 to 60"),
+        ("   ".to_string(), "", "1 to 60"),
+        ("Plan\nner".to_string(), "", "control characters"),
+        (
+            "Planner".to_string(),
+            "r".repeat(4001).leak() as &str,
+            "4000",
+        ),
+    ] {
+        let error = try_call(
+            &mut connection,
+            "environments.agent_create",
+            json!({"environment_id": work, "name": name, "role": role}),
+        )
+        .unwrap_err();
+        assert!(error.contains(expected), "{error}");
+    }
+    assert!(state.project_agents().environment_agents().is_empty());
+
+    // A name already used in the environment, in any case, is refused on create and on rename.
+    let planner = call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": work, "name": "Planner"}),
+    );
+    let reviewer = call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": work, "name": "Reviewer"}),
+    );
+    let error = try_call(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": work, "agent_id": reviewer["id"], "name": "PLANNER"}),
+    )
+    .unwrap_err();
+    assert!(error.contains("already has an agent"), "{error}");
+    // The same name in another environment is fine.
+    call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": play, "name": "Planner"}),
+    );
+
+    // An agent of one environment cannot be changed or deleted through another.
+    let update = try_call(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": play, "agent_id": reviewer["id"], "name": "Hijacked"}),
+    );
+    assert!(update.is_err());
+    let delete = try_call(
+        &mut connection,
+        "environments.agent_delete",
+        json!({"environment_id": play, "agent_id": reviewer["id"]}),
+    );
+    assert!(delete.is_err());
+    let agents = call(
+        &mut connection,
+        "environments.agent_list",
+        json!({"environment_id": work}),
+    );
+    let names: Vec<&str> = agents["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Planner", "Reviewer"]);
+    assert!(
+        state
+            .session(reviewer["session_id"].as_str().unwrap())
+            .is_some()
+    );
+
+    // The agents keep notes apart: each is told its own entry prefix in the shared memory.
+    say(&state, planner["session_id"].as_str().unwrap(), "hello").await;
+    let prompts = system_prompts_of(&log, "Your name is Planner.");
+    assert!(
+        prompts[0].contains("\"planner-\"") && prompts[0].contains("planner-open-tasks"),
+        "{}",
+        prompts[0]
+    );
+}
+
+#[tokio::test]
+async fn a_phone_cannot_manage_agents_and_the_alias_creates_and_never_duplicates() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &fake_model(Arc::default()).await);
+    let mut connection = connect(&state);
+    let id = new_environment(&mut connection, folder.path());
+
+    // A phone connection (here limited to what a paired phone may read) is refused every agent
+    // method.
+    let mut phone =
+        Connection::restricted(Arc::clone(&state), vec!["system.handshake", "session.list"]);
+    call(
+        &mut phone,
+        "system.handshake",
+        json!({"client": {"name": "phone", "version": "0"}, "protocol": {"major": 0, "minor": 2}}),
+    );
+    for method in [
+        "environments.agent_list",
+        "environments.agent_create",
+        "environments.agent_update",
+        "environments.agent_delete",
+    ] {
+        let error = try_call(
+            &mut phone,
+            method,
+            json!({"environment_id": id, "agent_id": "x", "name": "Spy"}),
+        )
+        .unwrap_err();
+        assert!(error.contains("not allowed"), "{method}: {error}");
+    }
+    assert!(state.environments().get(&id).unwrap().agents.is_empty());
+
+    // The deprecated field on create makes one default agent; "on" again adds no second.
+    let created = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Aliased", "folders": [folder.path()], "persistent_agent": true}),
+    );
+    assert_eq!(created["agents"].as_array().unwrap().len(), 1);
+    assert_eq!(created["agents"][0]["name"], "Persistent agent");
+    let again = call(
+        &mut connection,
+        "environments.update",
+        json!({"id": created["id"], "persistent_agent": true}),
+    );
+    assert_eq!(again["agents"].as_array().unwrap().len(), 1);
+    assert_eq!(again["agents"][0]["id"], created["agents"][0]["id"]);
+
+    // Off is refused when the environment has agents set up by name or role.
+    call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": created["id"], "name": "Planner"}),
+    );
+    let error = try_call(
+        &mut connection,
+        "environments.update",
+        json!({"id": created["id"], "persistent_agent": false}),
+    )
+    .unwrap_err();
+    assert!(error.contains("agent_delete"), "{error}");
+    assert_eq!(
+        state
+            .environments()
+            .get(created["id"].as_str().unwrap())
+            .unwrap()
+            .agents
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn renaming_the_environment_retitles_its_agents() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &fake_model(Arc::default()).await);
+    let mut connection = connect(&state);
+    let id = new_environment(&mut connection, folder.path());
+    let agent = call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": id, "name": "Planner"}),
+    );
+    let session = state
+        .session(agent["session_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(state.summary(&session).title, "Work · Planner");
+    call(
+        &mut connection,
+        "environments.update",
+        json!({"id": id, "name": "Studio"}),
+    );
+    assert_eq!(state.summary(&session).title, "Studio · Planner");
 }

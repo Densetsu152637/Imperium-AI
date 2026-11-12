@@ -957,6 +957,7 @@ impl Connection {
             EnvironmentUpdate::NAME => {
                 call::<EnvironmentUpdate>(params, |p: EnvironmentUpdateParams| {
                     let id = p.id.clone();
+                    let renamed = p.name.is_some();
                     let runtime_changed = p.runtime.is_some();
                     let permissions_changed = p.permissions.is_some();
                     let env = envs.update(p).map_err(failed)?;
@@ -967,10 +968,14 @@ impl Connection {
                             .set_environment(&id, &env.permissions.rules);
                     }
                     if runtime_changed {
-                        // The agent's tools follow the new runtime from its next start.
-                        self.restart_environment_agent(&id);
+                        // The agents' tools follow the new runtime from their next start.
+                        crate::project_agent::restart_environment_agents(&self.state, &id, None);
+                    } else {
+                        self.state.sync_environment_agent(&id);
                     }
-                    self.state.sync_environment_agent(&id);
+                    if renamed {
+                        crate::project_agent::retitle_environment_agents(&self.state, &id);
+                    }
                     Ok(envs.get(&id).unwrap_or(env))
                 })
             }
@@ -994,6 +999,7 @@ impl Connection {
             }
             EnvironmentAgentUpdate::NAME => {
                 call::<EnvironmentAgentUpdate>(params, |p: EnvironmentAgentUpdateParams| {
+                    let before = self.agent_of(&p.environment_id, &p.agent_id);
                     let agent = envs
                         .update_agent(
                             &p.environment_id,
@@ -1002,14 +1008,23 @@ impl Connection {
                             p.role.as_deref(),
                         )
                         .map_err(failed)?;
-                    // The agent starts afresh (resuming its conversation) with its new role.
-                    self.restart_agent(&agent.id);
-                    self.state.sync_environment_agent(&p.environment_id);
-                    let agent = self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent);
-                    if let Some(session) = &agent.session_id {
-                        let _ = self.state.set_title(session, &agent.name, true);
+                    // Only a changed name or role restarts the agent (resuming its
+                    // conversation); saving the same values leaves it running untouched.
+                    let changed = before.is_none_or(|before| {
+                        before.name != agent.name || before.role != agent.role
+                    });
+                    if changed {
+                        crate::project_agent::restart_environment_agents(
+                            &self.state,
+                            &p.environment_id,
+                            Some(&agent.id),
+                        );
+                        crate::project_agent::retitle_environment_agents(
+                            &self.state,
+                            &p.environment_id,
+                        );
                     }
-                    Ok(agent)
+                    Ok(self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent))
                 })
             }
             EnvironmentAgentDelete::NAME => {
@@ -1047,21 +1062,6 @@ impl Connection {
             self.state.announce_environments();
         }
         result
-    }
-
-    /// Stops an environment's persistent agents so the next sync starts them afresh (resuming
-    /// their conversations) with the environment as it is now.
-    fn restart_environment_agent(&self, environment_id: &str) {
-        for (agent_id, _) in self.state.project_agents().agents_of(environment_id) {
-            self.restart_agent(&agent_id);
-        }
-    }
-
-    /// Stops one persistent agent so the next sync starts it afresh.
-    fn restart_agent(&self, agent_id: &str) {
-        if let Some(session) = self.state.project_agents().forget_agent(agent_id) {
-            self.state.forget_session(session.id());
-        }
     }
 
     fn agent_of(
