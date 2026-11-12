@@ -77,7 +77,7 @@ draft_max: number | null,
  */
 draft_min: number | null, 
 /**
- * Layers of the draft placed on the GPU; 0 keeps it in RAM, null places every layer. Needs
+ * Layers of the draft placed on the GPU; 0 keeps it in RAM, null leaves llama.cpp's `auto`. Needs
  * `draft_model`.
  */
 draft_gpu_layers: number | null, };
