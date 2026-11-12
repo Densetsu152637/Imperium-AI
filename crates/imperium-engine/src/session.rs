@@ -925,9 +925,7 @@ async fn run(
                 _ = stop.changed() => continue,
                 command = commands.recv() => command,
             } {
-                // Read again: a stop and a message that arrive in the same poll must not start a
-                // turn on the stale reading taken before waiting.
-                Some(Command::Message(message)) if stopped || *stop.borrow() => {
+                Some(Command::Message(message)) if stopped => {
                     shared.inboxes.queue_for_root(message);
                     continue;
                 }
