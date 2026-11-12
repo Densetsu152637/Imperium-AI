@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
+import { armSplash, bootTheme, THEME_KEY } from "./boot";
 import { applySettings, loadSettings, resolvedTheme } from "./settings";
 import { loadStore } from "./store";
 import "./styles.css";

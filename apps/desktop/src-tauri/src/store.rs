@@ -48,6 +48,15 @@ pub fn store_write(name: String, contents: String) -> Result<(), String> {
     std::fs::rename(&partial, &path).map_err(|error| error.to_string())
 }
 
+/// The theme saved in the settings (`"light"`, `"dark"`, or `"system"`), if there is one. Read
+/// before the window is shown, so its native background matches the interface and never paints
+/// white first.
+pub fn saved_theme() -> Option<String> {
+    let text = std::fs::read_to_string(file("settings").ok()?).ok()?;
+    let settings: serde_json::Value = serde_json::from_str(&text).ok()?;
+    settings.get("theme")?.as_str().map(str::to_owned)
+}
+
 /// The largest transcript the shell will save.
 const EXPORT_MAX_BYTES: usize = 64 * 1024 * 1024;
 
