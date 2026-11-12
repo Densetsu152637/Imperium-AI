@@ -63,6 +63,14 @@ Next: shrinking a loaded pool after sustained low fill (today it shrinks on unlo
 squeezed pool once other models leave, fill read from llama-server's own metrics, and showing
 the wait reason in the desktop.
 
+Implemented: **multiple persistent agents per environment.** An environment holds zero or more
+persistent agents, each with its own name, role, session and limits, created explicitly (a new
+environment has none) with `environments.agent_create`, `imperium env agent add`, or *Add agent* in
+the environment window; the earlier single persistent session migrates to one agent with its
+history, and the old `persistent_agent` fields stay as aliases for protocol 0.19
+([14](14-projects-and-automation.md#persistent-agents-implemented)). Per-agent permission
+profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent initiative follow.
+
 ## Next (in order)
 
 1. **OS notifications** (implemented). System notifications for approvals, finished and failed

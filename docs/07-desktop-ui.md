@@ -726,18 +726,22 @@ environment in the daemon. The first time the app connects after environments ar
 project folder it knew (opened folders, the selected project, folders of running sessions)
 becomes an environment of its own, keeping the icon it had.
 
-**Runtime and persistent agent (implemented):** the environment window (create and edit) has a
+**Runtime and agents (implemented):** the environment window (create and edit) has a
 *Runtime* section (`EnvironmentRuntimeFields`): a select for *This machine*, *Docker*, *WSL*,
 or *SSH* with that runtime's fields (the image and an optional running container, the
 distribution, or the host), *Test*, which calls `environments.test_runtime` for the saved
 runtime and shows its answer in green or red (for example *Docker is running but image rust:1
-is not present; get it with: docker pull rust:1*), and the *Persistent agent* switch for the
-environment's [persistent agent](14-projects-and-automation.md#persistent-agent-implemented),
-and the *Project worktrees* switch (on by default, disabled for a remote runtime), which opens the
+is not present; get it with: docker pull rust:1*), and the *Project worktrees* switch (on by default, disabled for a remote runtime), which opens the
 folders' [git worktrees](14-projects-and-automation.md#worktrees) to its sessions. They apply
 with *Create* or *Save*. For a remote runtime the folders are paths inside it
 ([runtimes](14-projects-and-automation.md#runtimes-implemented)), typed in with *Add path*
 instead of the folder picker.
+
+The window's *Agents* section (`EnvironmentAgents`) lists the environment's
+[persistent agents](14-projects-and-automation.md#persistent-agents-implemented): a new
+environment has none, *Add agent* asks for a name and an optional role, and each row has edit
+(rename, change the role) and delete (with a confirmation: the agent's history is archived). Each
+action applies at once; the list follows `environments.changed`.
 
 **New session (implemented):** *New session* (the *+* in the Sessions panel's header; disabled while
 disconnected) opens the new-session composer in the middle panel, which is also what the middle
@@ -788,8 +792,8 @@ choice is kept in the local layout. Pins on sessions and environments are kept b
 they survive restarts; the daemon announces a changed session as `session.updated`. Clicking an
 environment (or *Show* in a session's menu) opens that environment's view, which lists only its
 sessions, with *All sessions* to return; clicking the row opens the session and selects its
-environment. An environment's persistent agent is listed above everything else in its group,
-titled *<environment> agent* (not renamed) and marked persistent in its tooltip; a session on
+environment. An environment's persistent agents are listed above everything else in its group,
+titled *<environment> · <agent name>* (not renamed) and marked persistent in their tooltip; a session on
 worktrees has a tooltip line for each worktree and branch. Deleting a session is `session.delete` (`imperium session delete`), and a session
 deleted elsewhere (`session.deleted`) leaves the list. The session's top bar shows only its
 icon, title, and status badge (with *Resume now* while paused); everything else about the

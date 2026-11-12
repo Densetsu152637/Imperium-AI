@@ -16,15 +16,15 @@ RPC:
 | Method | Params | Result |
 | --- | --- | --- |
 | `environments.list` | `{}` | `{ environments: EnvironmentInfo[], git: string[] }` (`git`: ids of local environments with a folder inside a git repository, which can start sessions on worktrees; also sent with `environments.changed`) |
-| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent?, pet?, project_worktrees? }` | `EnvironmentInfo` |
+| `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent?, pet?, project_worktrees? }` (`persistent_agent` is [deprecated](#persistent-agents-implemented)) | `EnvironmentInfo` |
 | `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent?, pet?, project_worktrees? }` (empty icon/colour/pet clears it) | `EnvironmentInfo` |
 | `environments.test_runtime` | `{ id }` | `{ ok, message }` |
 | `environments.delete` | `{ id }` | `{}` (folders and running sessions are left alone) |
 | `environments.add_folder` | `{ id, folder }` (an existing absolute folder) | `EnvironmentInfo` |
 | `environments.remove_folder` | `{ id, folder }` | `EnvironmentInfo` |
 
-`EnvironmentInfo` is `{ id, name, icon, color, folders, pinned, runtime, persistent_agent,
-agent_session_id, pet, project_worktrees }`, where `project_worktrees` (on unless turned off)
+`EnvironmentInfo` is `{ id, name, icon, color, folders, pinned, runtime, agents, persistent_agent
+(deprecated), agent_session_id (deprecated), pet, project_worktrees }`, where `project_worktrees` (on unless turned off)
 opens the folders' [git worktrees](#worktrees) to its sessions, and `pet` is the environment's default pet (an installed pet's id) for the
 [nursery](16-pets.md#imperium-nursery), or none to let the nursery decide; folders first-to-last with the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
 (the full list). `session.create` takes `environment_id`; `project_dir` still works and maps to
@@ -36,7 +36,8 @@ From the command line: `imperium env list`, `imperium env create <name> [folder.
 `imperium env add-folder <env> <folder>`, `imperium env remove-folder <env> <folder>`,
 `imperium env rename <env> <name>`, `imperium env delete <env>` (an environment by name or id),
 `imperium env set-runtime <env> local|docker|wsl|ssh [--image I] [--container C] [--distro D]
-[--host H]`, `imperium env test <env>`, `imperium env agent <env> on|off`, and
+[--host H]`, `imperium env test <env>`, `imperium env agent list|add|set|rm`
+([persistent agents](#persistent-agents-implemented)), and
 `imperium chat --env <name|id> [--worktree [BRANCH]]`.
 
 ### Runtimes (implemented)
@@ -62,23 +63,52 @@ unchanged. Changing an environment's runtime keeps its folders (translating Wind
 WSL) and applies to sessions started afterwards. Project files on a remote runtime
 (instructions, skills, project memory) are not read yet.
 
-### Persistent agent (implemented)
+### Persistent agents (implemented)
 
-An environment can keep a **persistent agent**: one session that is always available, listed
-first among that environment's sessions with a **Persistent** badge (`persistent: true` in
-`session.list`). It is off by default; turn it on with the switch in the environment's detail,
-`imperium env agent <env> on`, or `environments.update { persistent_agent: true }`. It starts
-at once (or as soon as the environment has a folder) and with every daemon start, and it resumes
-the same conversation each time, however long ago it was used: its session id is kept as the
-environment's `agent_session_id`, outside the `agents.resume_days` window that applies to
-ordinary sessions. Like a project agent (below) it has `start_session`, which starts sessions in
-the same environment (at most 2 at once and 20 a day) and reports back to it. When a turn starts
-with the conversation over the model's context budget, older turns are summarised first (the
-same compaction as `/compact`), so it can run for days. Turning it off stops the session and
-archives it, so its history is listed with the other archived sessions; the environment keeps its
-id, so turning it on again takes it out of the archive and continues the conversation (unless it
-was unarchived by hand in the meantime, when a new one starts). Deleting the environment stops it
-too. It has no pet in the nursery.
+An environment can keep any number of **persistent agents**, each one session that is always
+available, listed first among that environment's sessions with a **Persistent** badge
+(`persistent: true` in `session.list`) and titled with the agent's name. A new environment has
+none: nothing is created until you add one, and turning the deprecated switch off or deleting an
+agent never brings one back by itself.
+
+Each agent has its own **name** (1 to 60 characters, unique in the environment ignoring case), an
+optional **role** (what it is for, up to 4000 characters, added to its instructions after "Your
+name is …"), its own session, and its own session limits (at most 2 sessions it started at once and
+20 a day). Agents of one environment run independently: separate conversations, separate
+compaction, separate reports. An agent starts at once when it is added (or as soon as the
+environment has a folder) and with every daemon start, and resumes the same conversation each
+time, however long ago it was used: its session id is kept with the agent, outside the
+`agents.resume_days` window that applies to ordinary sessions. Like a project agent (below) it has
+`start_session`, which starts sessions in the same environment and reports back to it. When a turn
+starts with the conversation over the model's context budget, older turns are summarised first (the
+same compaction as `/compact`), so it can run for days. Deleting an agent stops its session and
+archives it, so its history is listed with the other archived sessions. Changing an agent's name or
+role restarts it with the same conversation; changing the environment's runtime restarts all of
+them. Deleting the environment stops them too. Agents have no pet in the nursery.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `environments.agent_list` | `{ environment_id }` | `{ agents: EnvironmentAgent[] }` |
+| `environments.agent_create` | `{ environment_id, name, role? }` | `EnvironmentAgent` |
+| `environments.agent_update` | `{ environment_id, agent_id, name?, role? }` | `EnvironmentAgent` |
+| `environments.agent_delete` | `{ environment_id, agent_id }` | `{}` |
+
+`EnvironmentAgent` is `{ id, name, role, session_id }` (`session_id` is none until the agent has
+started); `EnvironmentInfo.agents` carries them, and every change is announced as
+`environments.changed`. From the command line: `imperium env agent list <env>`, `imperium env
+agent add <env> <name> [--role TEXT]`, `imperium env agent set <env> <agent> [--name N] [--role
+TEXT]`, and `imperium env agent rm <env> <agent>` (an agent by name or id). In the desktop, the
+environment window's *Agents* section lists them with *Add agent*, edit and delete.
+
+**Migration and deprecated fields.** An environment saved with the earlier single persistent
+session (`persistent_agent: true` with an `agent_session_id`) becomes one agent named "Persistent
+agent" the first time the daemon loads it; the session id is kept, so its history and conversation
+carry on, and the file is rewritten with the agent. For one protocol minor (0.19) the old fields
+remain as aliases and are removed in 0.20: `EnvironmentInfo.persistent_agent` is true while there
+is any agent and `agent_session_id` is the first agent's session; `environments.create` or
+`environments.update` with `persistent_agent: true` adds an agent named "Persistent agent" when
+there is none, and `persistent_agent: false` deletes all the environment's agents (archiving
+their sessions). Clients should use the `environments.agent_*` methods.
 
 Sessions that a schedule, a project agent, or auto-fix start still work in a single folder and
 carry no environment.
@@ -362,7 +392,7 @@ The checkpoints are also what a session's changes are reviewed against
 ## Project agent
 
 A long-lived agent per project that watches for work and **dispatches it into new sessions**.
-An environment's [persistent agent](#persistent-agent-implemented) uses the same machinery,
+An environment's [persistent agents](#persistent-agents-implemented) uses the same machinery,
 keyed by environment instead of folder.
 
 **Implemented (phase 6):** `[[projects]]` entries with `agent = true` get an agent when the
@@ -564,7 +594,7 @@ Sessions are also archived on their own:
 
 Neither rule archives a session that is working, waiting on the user (an approval, a usage
 limit, a failed turn, a model), has queued messages, is pinned, or is an environment's
-[persistent agent](#persistent-agent-implemented) or a [project agent](#project-agent); those
+[persistent agent](#persistent-agents-implemented) or a [project agent](#project-agent); those
 two cannot be archived by hand either.
 
 ## GitHub auto-fix

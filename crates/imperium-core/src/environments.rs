@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use imperium_protocol::agents::EnvironmentAgent;
 use imperium_protocol::methods::{
     EnvironmentCreateParams, EnvironmentInfo, EnvironmentRuntime, EnvironmentUpdateParams,
 };
@@ -54,6 +55,17 @@ impl Environments {
             },
             Err(_) => Vec::new(),
         };
+        let mut list = list;
+        // Environments saved before multiple agents had one persistent session: it becomes
+        // the environment's agent, with the session it had (history and all).
+        let mut migrated = false;
+        for env in &mut list {
+            migrated |= migrate_legacy_agent(env);
+            normalize(env);
+        }
+        if migrated && let Err(error) = save(&path, &list) {
+            tracing::warn!(path = %path.display(), %error, "could not save the migrated environments");
+        }
         Environments {
             path,
             list: Mutex::new(list),
@@ -112,20 +124,26 @@ impl Environments {
                 checked.push(folder);
             }
         }
-        let env = EnvironmentInfo {
+        let mut env = EnvironmentInfo {
             id: new_id().map_err(|error| EnvironmentError::Invalid(error.to_string()))?,
             name,
             icon: params.icon.filter(|icon| !icon.is_empty()),
             color: params.color.filter(|color| !color.is_empty()),
             folders: checked,
             runtime,
-            persistent_agent: params.persistent_agent.unwrap_or(false),
+            // Deprecated alias: `persistent_agent: true` adds the default agent below.
+            persistent_agent: false,
             agent_session_id: None,
+            agents: Vec::new(),
             pet: params.pet.filter(|pet| !pet.is_empty()),
             pinned: false,
             permissions,
             project_worktrees: params.project_worktrees.unwrap_or(true),
         };
+        if params.persistent_agent == Some(true) {
+            add_default_agent(&mut env)?;
+        }
+        normalize(&mut env);
         self.change(|list| {
             list.push(env.clone());
             Ok(())
@@ -168,8 +186,11 @@ impl Environments {
                 }
                 env.runtime = runtime;
             }
-            if let Some(on) = params.persistent_agent {
-                env.persistent_agent = on;
+            // Deprecated alias for the agents list.
+            match params.persistent_agent {
+                Some(true) if env.agents.is_empty() => add_default_agent(env)?,
+                Some(false) => env.agents.clear(),
+                _ => {}
             }
             if let Some(pet) = params.pet {
                 env.pet = (!pet.is_empty()).then_some(pet);
@@ -184,16 +205,111 @@ impl Environments {
         })
     }
 
-    /// Records the persistent agent's session id.
+    /// Records an agent's session id.
     pub fn set_agent_session(
         &self,
         id: &str,
+        agent_id: &str,
         session_id: Option<String>,
     ) -> Result<EnvironmentInfo, EnvironmentError> {
         self.change_one(id, |env| {
-            env.agent_session_id = session_id;
+            let agent = find_agent(env, agent_id)?;
+            agent.session_id = session_id;
             Ok(())
         })
+    }
+
+    /// Adds a persistent agent. Its name is unique in the environment (ignoring case).
+    pub fn add_agent(
+        &self,
+        id: &str,
+        name: &str,
+        role: Option<&str>,
+    ) -> Result<EnvironmentAgent, EnvironmentError> {
+        let name = valid_agent_name(name)?;
+        let role = valid_role(role.unwrap_or_default())?;
+        let agent_id = new_id().map_err(|error| EnvironmentError::Invalid(error.to_string()))?;
+        let env = self.change_one(id, |env| {
+            if env
+                .agents
+                .iter()
+                .any(|agent| agent.name.eq_ignore_ascii_case(&name))
+            {
+                return Err(EnvironmentError::Invalid(format!(
+                    "{} already has an agent named {name:?}",
+                    env.name
+                )));
+            }
+            env.agents.push(EnvironmentAgent {
+                id: agent_id.clone(),
+                name: name.clone(),
+                role: role.clone(),
+                session_id: None,
+            });
+            Ok(())
+        })?;
+        Ok(env
+            .agents
+            .into_iter()
+            .find(|agent| agent.id == agent_id)
+            .expect("just added"))
+    }
+
+    /// Renames an agent or changes its role.
+    pub fn update_agent(
+        &self,
+        id: &str,
+        agent_id: &str,
+        name: Option<&str>,
+        role: Option<&str>,
+    ) -> Result<EnvironmentAgent, EnvironmentError> {
+        let name = name.map(valid_agent_name).transpose()?;
+        let role = role.map(valid_role).transpose()?;
+        let env = self.change_one(id, |env| {
+            if let Some(name) = &name
+                && env
+                    .agents
+                    .iter()
+                    .any(|a| a.id != agent_id && a.name.eq_ignore_ascii_case(name))
+            {
+                return Err(EnvironmentError::Invalid(format!(
+                    "{} already has an agent named {name:?}",
+                    env.name
+                )));
+            }
+            let agent = find_agent(env, agent_id)?;
+            if let Some(name) = name {
+                agent.name = name;
+            }
+            if let Some(role) = role {
+                agent.role = role;
+            }
+            Ok(())
+        })?;
+        Ok(env
+            .agents
+            .into_iter()
+            .find(|agent| agent.id == agent_id)
+            .expect("checked above"))
+    }
+
+    /// Removes an agent and returns it (its session id says what to archive).
+    pub fn remove_agent(
+        &self,
+        id: &str,
+        agent_id: &str,
+    ) -> Result<EnvironmentAgent, EnvironmentError> {
+        let mut removed = None;
+        self.change_one(id, |env| {
+            let at = env
+                .agents
+                .iter()
+                .position(|agent| agent.id == agent_id)
+                .ok_or_else(|| EnvironmentError::NotFound(agent_id.to_string()))?;
+            removed = Some(env.agents.remove(at));
+            Ok(())
+        })?;
+        Ok(removed.expect("removed above"))
     }
 
     pub fn delete(&self, id: &str) -> Result<(), EnvironmentError> {
@@ -289,6 +405,7 @@ impl Environments {
         let mut list = self.lock();
         let mut next = list.clone();
         edit(&mut next)?;
+        next.iter_mut().for_each(normalize);
         save(&self.path, &next).map_err(EnvironmentError::Save)?;
         *list = next;
         Ok(())
@@ -378,6 +495,73 @@ fn same_in(runtime: &EnvironmentRuntime, a: &str, b: &str) -> bool {
         return normal(a) == normal(b);
     }
     same(a, b)
+}
+
+/// Keeps the deprecated fields in step with the agents.
+fn normalize(env: &mut EnvironmentInfo) {
+    env.persistent_agent = !env.agents.is_empty();
+    env.agent_session_id = env
+        .agents
+        .first()
+        .and_then(|agent| agent.session_id.clone());
+}
+
+/// An environment saved with the old single persistent agent gets it as an agent.
+fn migrate_legacy_agent(env: &mut EnvironmentInfo) -> bool {
+    if env.persistent_agent && env.agents.is_empty() {
+        if let Ok(agent) = default_agent(env.agent_session_id.take()) {
+            env.agents.push(agent);
+            return true;
+        }
+    }
+    false
+}
+
+const DEFAULT_AGENT_NAME: &str = "Persistent agent";
+
+fn default_agent(session_id: Option<String>) -> Result<EnvironmentAgent, getrandom::Error> {
+    Ok(EnvironmentAgent {
+        id: new_id()?,
+        name: DEFAULT_AGENT_NAME.into(),
+        role: String::new(),
+        session_id,
+    })
+}
+
+fn add_default_agent(env: &mut EnvironmentInfo) -> Result<(), EnvironmentError> {
+    env.agents
+        .push(default_agent(None).map_err(|error| EnvironmentError::Invalid(error.to_string()))?);
+    Ok(())
+}
+
+fn find_agent<'a>(
+    env: &'a mut EnvironmentInfo,
+    agent_id: &str,
+) -> Result<&'a mut EnvironmentAgent, EnvironmentError> {
+    env.agents
+        .iter_mut()
+        .find(|agent| agent.id == agent_id)
+        .ok_or_else(|| EnvironmentError::NotFound(agent_id.to_string()))
+}
+
+fn valid_agent_name(name: &str) -> Result<String, EnvironmentError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 60 {
+        return Err(EnvironmentError::Invalid(
+            "an agent needs a name of 1 to 60 characters".into(),
+        ));
+    }
+    Ok(name.to_string())
+}
+
+fn valid_role(role: &str) -> Result<String, EnvironmentError> {
+    let role = role.trim();
+    if role.chars().count() > 4000 {
+        return Err(EnvironmentError::Invalid(
+            "an agent's role is at most 4000 characters".into(),
+        ));
+    }
+    Ok(role.to_string())
 }
 
 fn valid_name(name: &str) -> Result<String, EnvironmentError> {

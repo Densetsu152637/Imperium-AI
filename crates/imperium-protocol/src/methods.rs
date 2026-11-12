@@ -1078,17 +1078,20 @@ pub struct EnvironmentInfo {
     /// Where the environment's file and command tools run.
     #[serde(default)]
     pub runtime: EnvironmentRuntime,
-    /// Whether the environment keeps a persistent agent session (off unless turned on).
+    /// Deprecated (since protocol 0.19, removed in 0.20): whether the environment has any
+    /// persistent agent. Read-only in effect: derived from `agents`.
     #[serde(default)]
     pub persistent_agent: bool,
     /// The environment's default pet (an installed pet's id) for the nursery; none lets the
     /// nursery decide.
     #[serde(default)]
     pub pet: Option<String>,
-    /// The persistent agent's session id, once it has started; kept when the agent is turned
-    /// off so turning it on again continues the same conversation.
+    /// Deprecated (since protocol 0.19, removed in 0.20): the first agent's session id.
     #[serde(default)]
     pub agent_session_id: Option<String>,
+    /// The environment's persistent agents, none unless created (`environments.agent_create`).
+    #[serde(default)]
+    pub agents: Vec<crate::agents::EnvironmentAgent>,
     /// Paths outside the folders the tools may use, and allow / ask / deny rules, for this
     /// environment's sessions (on top of the global ones).
     #[serde(default)]
@@ -1190,7 +1193,8 @@ pub struct EnvironmentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub runtime: Option<EnvironmentRuntime>,
-    /// Start a persistent agent session for the environment (off when left out).
+    /// Deprecated (since protocol 0.19, removed in 0.20): `true` adds one agent named
+    /// "Persistent agent". Use `environments.agent_create`. Nothing is created when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub persistent_agent: Option<bool>,
@@ -1240,7 +1244,9 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub runtime: Option<EnvironmentRuntime>,
-    /// Turns the persistent agent session on (started at once) or off (stopped).
+    /// Deprecated (since protocol 0.19, removed in 0.20): `true` adds an agent named
+    /// "Persistent agent" when the environment has none; `false` deletes all its agents. Use
+    /// `environments.agent_create` and `environments.agent_delete`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub persistent_agent: Option<bool>,

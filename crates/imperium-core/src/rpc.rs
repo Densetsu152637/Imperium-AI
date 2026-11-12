@@ -6,6 +6,11 @@ use std::sync::Arc;
 
 use base64::Engine;
 use imperium_engine::{QueueError, Session, SwitchError};
+use imperium_protocol::agents::{
+    EnvironmentAgentCreate, EnvironmentAgentCreateParams, EnvironmentAgentDelete,
+    EnvironmentAgentList, EnvironmentAgentListParams, EnvironmentAgentListResult,
+    EnvironmentAgentRef, EnvironmentAgentUpdate, EnvironmentAgentUpdateParams,
+};
 use imperium_protocol::budgets::{BudgetsGet, BudgetsGetParams, BudgetsSet, BudgetsUsage};
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
@@ -959,6 +964,52 @@ impl Connection {
                     Ok(envs.get(&id).unwrap_or(env))
                 })
             }
+            EnvironmentAgentList::NAME => {
+                return call::<EnvironmentAgentList>(params, |p: EnvironmentAgentListParams| {
+                    let env = envs.get(&p.environment_id).ok_or_else(|| {
+                        failed(EnvironmentError::NotFound(p.environment_id.clone()))
+                    })?;
+                    Ok(EnvironmentAgentListResult { agents: env.agents })
+                });
+            }
+            EnvironmentAgentCreate::NAME => {
+                call::<EnvironmentAgentCreate>(params, |p: EnvironmentAgentCreateParams| {
+                    let agent = envs
+                        .add_agent(&p.environment_id, &p.name, p.role.as_deref())
+                        .map_err(failed)?;
+                    // Started at once; an environment without folders starts it when one is added.
+                    self.state.sync_environment_agent(&p.environment_id);
+                    Ok(self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent))
+                })
+            }
+            EnvironmentAgentUpdate::NAME => {
+                call::<EnvironmentAgentUpdate>(params, |p: EnvironmentAgentUpdateParams| {
+                    let agent = envs
+                        .update_agent(
+                            &p.environment_id,
+                            &p.agent_id,
+                            p.name.as_deref(),
+                            p.role.as_deref(),
+                        )
+                        .map_err(failed)?;
+                    // The agent starts afresh (resuming its conversation) with its new role.
+                    self.restart_agent(&agent.id);
+                    self.state.sync_environment_agent(&p.environment_id);
+                    let agent = self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent);
+                    if let Some(session) = &agent.session_id {
+                        let _ = self.state.set_title(session, &agent.name, true);
+                    }
+                    Ok(agent)
+                })
+            }
+            EnvironmentAgentDelete::NAME => {
+                call::<EnvironmentAgentDelete>(params, |p: EnvironmentAgentRef| {
+                    envs.remove_agent(&p.environment_id, &p.agent_id)
+                        .map_err(failed)?;
+                    self.state.sync_environment_agent(&p.environment_id);
+                    Ok(Accepted {})
+                })
+            }
             EnvironmentDelete::NAME => call::<EnvironmentDelete>(params, |p: EnvironmentRef| {
                 envs.delete(&p.id).map_err(failed)?;
                 self.state.sync_environment_agent(&p.id);
@@ -988,15 +1039,32 @@ impl Connection {
         result
     }
 
-    /// Stops an environment's persistent agent so the next sync starts it afresh (resuming its
-    /// conversation) with the environment as it is now.
+    /// Stops an environment's persistent agents so the next sync starts them afresh (resuming
+    /// their conversations) with the environment as it is now.
     fn restart_environment_agent(&self, environment_id: &str) {
-        if let Some(session) = self.state.project_agents().environment(environment_id) {
-            self.state
-                .project_agents()
-                .forget_environment(environment_id);
+        for (agent_id, _) in self.state.project_agents().agents_of(environment_id) {
+            self.restart_agent(&agent_id);
+        }
+    }
+
+    /// Stops one persistent agent so the next sync starts it afresh.
+    fn restart_agent(&self, agent_id: &str) {
+        if let Some(session) = self.state.project_agents().forget_agent(agent_id) {
             self.state.forget_session(session.id());
         }
+    }
+
+    fn agent_of(
+        &self,
+        environment_id: &str,
+        agent_id: &str,
+    ) -> Option<imperium_protocol::agents::EnvironmentAgent> {
+        self.state
+            .environments()
+            .get(environment_id)?
+            .agents
+            .into_iter()
+            .find(|agent| agent.id == agent_id)
     }
 
     /// `session.control`. Most actions apply at once; switching models and compacting wait for

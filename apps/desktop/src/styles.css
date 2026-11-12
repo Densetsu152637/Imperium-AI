@@ -3837,6 +3837,59 @@ button.colour-choice[aria-checked="true"]::after {
   color: var(--muted);
 }
 
+.environment-agents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85rem;
+}
+
+.environment-agents li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.2rem 0.2rem 0.2rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.environment-agents li.muted {
+  padding: 0.5rem 0.6rem;
+  background: transparent;
+}
+
+.environment-agents .agent-name {
+  flex: none;
+  font-weight: 600;
+}
+
+.environment-agents .agent-role {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.environment-agents button.icon-only {
+  width: 1.7rem;
+  height: 1.7rem;
+}
+
+.environment-agent-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.environment-agent-form textarea {
+  resize: vertical;
+}
+
 .environment-folders button.icon-only {
   width: 1.7rem;
   height: 1.7rem;
