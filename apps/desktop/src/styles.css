@@ -3689,46 +3689,9 @@ button.select.sessions-sort {
   color: var(--muted);
 }
 
-/* The environment window: a narrower sheet like Settings. */
-.environment-window {
-  display: flex;
-  flex-direction: column;
-  width: min(36rem, 100%);
-  max-height: min(44rem, 100%);
-  overflow: hidden;
-  background: var(--metal-card, var(--surface));
-  border: 1px solid var(--border-strong, var(--border));
-  border-radius: calc(var(--radius) * 1.5);
-  box-shadow: var(--highlight), var(--shadow);
-  animation: rise-in var(--slow) var(--ease);
-}
-
-.environment-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1.1rem;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 1rem 1.4rem 1.2rem;
-}
-
-.environment-identity {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.9rem;
-}
-
 .environment-preview .project-icon {
   --tile: 3rem;
   border-radius: calc(var(--radius) * 1.1);
-}
-
-.environment-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  flex: 1;
-  min-width: 0;
 }
 
 .environment-label {
@@ -3989,16 +3952,6 @@ button.colour-choice[aria-checked="true"]::after {
   height: 1.7rem;
 }
 
-.environment-agent-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.environment-agent-form textarea {
-  resize: vertical;
-}
-
 .environment-agents .agent-limits {
   flex: none;
   font-size: 0.7rem;
@@ -4008,44 +3961,10 @@ button.colour-choice[aria-checked="true"]::after {
   padding: 0 0.35rem;
 }
 
-.agent-access {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin: 0;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  min-width: 0;
-}
-
-.agent-access p {
-  margin: 0;
-  font-size: 0.8rem;
-}
-
-.agent-access-lock {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  font-size: 0.85rem;
-}
-
-.agent-access-row {
-  display: flex;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
 
 .environment-folders button.icon-only {
   width: 1.7rem;
   height: 1.7rem;
-}
-
-.environment-head-actions {
-  display: flex;
-  gap: 0.4rem;
-  flex-wrap: wrap;
 }
 
 .working-folder-path {
@@ -4062,25 +3981,59 @@ button.colour-choice[aria-checked="true"]::after {
   gap: 0.4rem;
 }
 
-.environment-footer {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  padding-top: 0.9rem;
-  border-top: 1px solid var(--border);
-}
-
-.environment-footer .spacer {
-  flex: 1;
-}
-
 .environment-delete-confirm {
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   font-size: 0.85rem;
+}
+
+/* The environment window is the shared modal (SettingsModal); these fit its rows. */
+.settings-row-note > .environment-folders,
+.settings-row-note > .environment-agents,
+.settings-row-note > .environment-icon-picker,
+.settings-row-note > .environment-config,
+.settings-row-note > .tile-grid {
+  align-self: stretch;
+}
+
+.environment-icon-picker,
+.environment-config {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.environment-icon-picker .environment-icon-search {
+  flex: none;
+  max-width: 16rem;
+}
+
+.settings-row-control .environment-preview {
+  display: inline-flex;
+}
+
+.runtime-test {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.settings-row-control .row-actions {
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.environment-agents .agent-row {
+  flex-wrap: wrap;
+}
+
+.agent-access-hint {
+  margin: 0;
 }
 
 .session-error {
@@ -5788,16 +5741,7 @@ button.select.open .select-chevron {
   }
 }
 
-/* An environment's runtime and persistent agent, inside its detail. */
-.environment-runtime {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space);
-  margin-top: var(--space);
-  padding-top: var(--space);
-  border-top: 1px solid var(--border);
-}
-
+/* Runtime rows of the environment window. */
 .runtime-row {
   display: flex;
   align-items: center;
@@ -5807,13 +5751,6 @@ button.select.open .select-chevron {
 
 .runtime-label {
   font-size: 0.85rem;
-}
-
-.runtime-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  font-size: 0.8rem;
 }
 
 .runtime-hint,

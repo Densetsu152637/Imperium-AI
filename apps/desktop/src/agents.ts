@@ -173,6 +173,23 @@ export function permissionsOfDraft(draft: PermissionDraft): AgentPermissions {
 export const permissionsChanged = (initial: PermissionDraft, current: PermissionDraft): boolean =>
   JSON.stringify(permissionsOfDraft(initial)) !== JSON.stringify(permissionsOfDraft(current));
 
+/**
+ * Whether the agent form holds changes not yet saved: for a new agent (`saved` null) anything
+ * typed or any permission changed; for an existing one, a name, role or permission that differs.
+ */
+export function agentDraftDirty(
+  draft: { name: string; role: string; access: PermissionDraft; initial: PermissionDraft },
+  saved: { name: string; role: string } | null,
+): boolean {
+  const permissions = permissionsChanged(draft.initial, draft.access);
+  if (saved === null) return permissions || draft.name.trim() !== "" || draft.role.trim() !== "";
+  return permissions || draft.name !== saved.name || draft.role !== saved.role;
+}
+
+/** The badge on an agent's row for suggestions waiting for the user; null when none. */
+export const suggestionsLabel = (count: number): string | null =>
+  count <= 0 ? null : `${count} suggestion${count === 1 ? "" : "s"}`;
+
 /** What a profile restricts, in a few words for the agent's row; null when it restricts nothing. */
 export function describePermissions(permissions: AgentPermissions | undefined): string | null {
   const p = permissions ?? DEFAULT_PERMISSIONS;

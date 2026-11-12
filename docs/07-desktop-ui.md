@@ -518,7 +518,7 @@ click away, never removed.
   connection*, *Configure*, and *Remove* in a ⋯ menu.
 - **Decisions:** a permission request shows *Allow* and *Deny*; *Always this session* and
   *Always allow <rule>* are in its ⋯ menu. A paused subagent's view shows *Resume* with *Cancel*
-  in a ⋯ menu. The environment window's delete is an icon button beside Cancel and Save, and
+  in a ⋯ menu. The environment window's delete is in its Danger zone section, and
   Settings → Notifications plays its three sounds from one *Play* menu.
 - **Tokens:** control heights (`--control-h`, `--control-h-sm`), paddings, icon sizes (`--icon`,
   `--icon-sm`) and type steps (`--fs-xs`, `--fs-sm`, `--fs-md`) are shared custom properties in
@@ -794,24 +794,48 @@ environment (new sessions start there) and shows its sessions; double-clicking o
 editing. The new-session composer starts on Home when no other environment is selected, and
 allows it without a folder: its sessions work in their own scratch folders.
 
-*New environment* (the *+* in the Environments header) and *Edit* open the **environment window**, a sheet over the workspace like
-Settings (Escape or a click outside closes it): the name; the icon, picked from a searchable grid
-of every icon the app uses (`icons.ts`, the shared registry — Settings sections, Connectors, the
-titlebar, and project glyphs; older saved names still resolve); the tile colour, picked from a
-row of rounded-square swatches; and the folders, the first marked as the working directory, with
-*Add folder* (the native folder picker) and *×* to remove one. Its *Permissions* section holds the
-environment's path grants and rules ([permissions](#permissions-implemented)). A new environment is created with
-all of it at once; for an existing one, folder changes apply at once and the name, icon and
-colour with *Save*. *Delete environment* asks once more (folders on disk are untouched); *Delete*
-in a row's menu opens the window at that question. Icons and colours are stored with the
+*New environment* (the *+* in the Environments header) and *Edit* open the **environment window**,
+built on the same shared modal as Settings, Connectors and the model editor (`SettingsModal`: a
+navigation column on the left, a header with the selected section's title and a close button, the
+scrolling rows, and a footer; Escape or a click outside closes it, Ctrl+S saves). Its sections are
+laid out as the shared `Row`s (title and help text on the left, the control on the right), so
+fields, spacing and light/dark theming match the other modals, and below the narrow breakpoint the
+navigation stacks above the content like theirs:
+
+- **General:** the name; the icon, picked from a searchable grid of every icon the app uses
+  (`icons.ts`, the shared registry — Settings sections, Connectors, the titlebar, and project
+  glyphs; older saved names still resolve); the tile colour, from a row of rounded-square swatches;
+  and the default *Pet* for the nursery.
+- **Folders & runtime:** the folders, the first marked as the working directory, with *Add folder*
+  (the native folder picker) and *×* to remove one; then the runtime, its *Test* and the *Project
+  worktrees* switch ([Runtime and agents](#environments-and-sessions-implemented)).
+- **Agents:** a compact list, one row per agent (name, role, limits, initiative, *not running*) with
+  *Edit* and *Delete*; *Add agent* and *Edit* open an edit view that replaces the list (name, role,
+  permissions, and for an existing agent its initiative, which applies at once) with *Back to
+  agents*; a row shows an *N suggestions* badge while its initiative has suggestions waiting. The
+  Agents pane stays mounted when another section is selected, so an open form is kept. While the
+  form has unsaved changes the footer *Save* is disabled and Ctrl+S saves the agent.
+- **Memory & working folder** and **Configuration file** (existing environments only): see
+  below.
+- **Permissions:** the environment's path grants and rules ([permissions](#permissions-implemented)).
+- **Danger zone** (existing environments other than Home): *Delete environment*.
+
+A new environment is created with all of it at once (it has no working folder, configuration file,
+agents to edit or delete yet); for an existing one, folder changes and agents apply at once and the
+rest with *Save*. Closing with unsaved edits (Esc, outside click, ×, Cancel) shows a *Discard changes?* notice;
+*Discard* (or clicking × or outside again) drops them, while Esc then only dismisses the notice
+(a held Esc is ignored), so a double Esc never loses work. A runtime that cannot be saved (a missing image or host)
+jumps to *Folders & runtime* with the error. Home has a fixed runtime and no Danger zone. *Delete environment* asks once more
+(folders on disk are untouched); *Delete* in a row's menu opens the window at that question, in the
+Danger zone. Icons and colours are stored with the
 environment in the daemon. The first time the app connects after environments arrived, every
 project folder it knew (opened folders, the selected project, folders of running sessions)
 becomes an environment of its own, keeping the icon it had.
 
-**Working folder (implemented):** an existing environment's window has a *Working folder* section showing where its [working folder](14-projects-and-automation.md#environment-working-folders-implemented) is (from `workspaces.where`) with *Open Memory.md* and *Open folder* (`workspaces.open`, which hands the file or folder to the computer's own editor or file manager and creates an empty `Memory.md` first if needed). Settings → *Working folders* holds `workspaces.root` as a path with *Choose folder…*; saving it moves the folders, shows the move's progress (`workspaces.progress`), and keeps the old value with the daemon's reason when the move is refused or fails.
+**Working folder (implemented):** an existing environment's window has a *Memory & working folder* section showing where its [working folder](14-projects-and-automation.md#environment-working-folders-implemented) is (from `workspaces.where`) with *Open Memory.md* and *Open folder* (`workspaces.open`, which hands the file or folder to the computer's own editor or file manager and creates an empty `Memory.md` first if needed). Settings → *Working folders* holds `workspaces.root` as a path with *Choose folder…*; saving it moves the folders, shows the move's progress (`workspaces.progress`), and keeps the old value with the daemon's reason when the move is refused or fails.
 
 **Runtime and agents (implemented):** the environment window (create and edit) has a
-*Runtime* section (`EnvironmentRuntimeFields`): a select for *This machine*, *Docker*, *WSL*,
+*Runtime* group of rows in its *Folders & runtime* section (`EnvironmentRuntimeFields`): a select for *This machine*, *Docker*, *WSL*,
 or *SSH* with that runtime's fields (the image and an optional running container, the
 distribution, or the host), *Test*, which calls `environments.test_runtime` for the saved
 runtime and shows its answer in green or red (for example *Docker is running but image rust:1
@@ -821,7 +845,7 @@ with *Create* or *Save*. For a remote runtime the folders are paths inside it
 ([runtimes](14-projects-and-automation.md#runtimes-implemented)), typed in with *Add path*
 instead of the folder picker.
 
-Each agent in that section has an *Initiative* select (*Off*, *Suggest*, *Act*; off for a new agent) and a
+Each existing agent's edit view (Agents section) has an *Initiative* select (*Off*, *Suggest*, *Act*; off for a new agent) and a
 *Review now* button (`AgentInitiative`). With initiative on, its row shows where it stands (reviewing,
 waiting and why, the last review, the `act` allowance), the **suggestions** it made with their
 reason, source and prompt and **Start** (opens the new session) and **Dismiss**, the handled ones,
