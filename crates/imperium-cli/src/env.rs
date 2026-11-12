@@ -4,6 +4,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use imperium_cli::client::Client;
+use imperium_protocol::agents::{
+    EnvironmentAgentCreate, EnvironmentAgentCreateParams, EnvironmentAgentDelete,
+    EnvironmentAgentList, EnvironmentAgentListParams, EnvironmentAgentRef, EnvironmentAgentUpdate,
+    EnvironmentAgentUpdateParams,
+};
 use imperium_protocol::methods::{
     EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
     EnvironmentFolderParams, EnvironmentInfo, EnvironmentList, EnvironmentListParams,
@@ -134,20 +139,113 @@ pub fn set_runtime(env: String, runtime: EnvironmentRuntime) -> anyhow::Result<(
     })
 }
 
-pub fn set_agent(env: String, on: bool) -> anyhow::Result<()> {
+/// Lists an environment's persistent agents.
+pub fn agent_list(env: String) -> anyhow::Result<()> {
     block_on(async {
         let (mut client, _) = connect().await?;
-        let id = resolve(&mut client, &env).await?.id;
-        let env = client
-            .call::<EnvironmentUpdate>(EnvironmentUpdateParams {
-                id,
-                persistent_agent: Some(on),
-                ..EnvironmentUpdateParams::default()
-            })
+        let environment_id = resolve(&mut client, &env).await?.id;
+        let result = client
+            .call::<EnvironmentAgentList>(EnvironmentAgentListParams { environment_id })
             .await?;
-        print!("{}", describe(&env));
+        if result.agents.is_empty() {
+            println!("No persistent agents. Add one with: imperium env agent add <env> <name>");
+        }
+        for agent in &result.agents {
+            print!("{}", describe_agent(agent));
+        }
         Ok(())
     })
+}
+
+/// Adds a persistent agent to an environment.
+pub fn agent_add(env: String, name: String, role: Option<String>) -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let environment_id = resolve(&mut client, &env).await?.id;
+        let agent = client
+            .call::<EnvironmentAgentCreate>(EnvironmentAgentCreateParams {
+                environment_id,
+                name,
+                role,
+            })
+            .await?;
+        print!("{}", describe_agent(&agent.agent));
+        if !agent.started {
+            println!(
+                "Added, but not running yet: {}",
+                agent.reason.as_deref().unwrap_or("it has not started")
+            );
+        }
+        Ok(())
+    })
+}
+
+/// Renames an agent or changes its role. The agent is a name or an id.
+pub fn agent_set(
+    env: String,
+    agent: String,
+    name: Option<String>,
+    role: Option<String>,
+) -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let environment_id = resolve(&mut client, &env).await?.id;
+        let agent_id = resolve_agent(&mut client, &environment_id, &agent).await?;
+        let agent = client
+            .call::<EnvironmentAgentUpdate>(EnvironmentAgentUpdateParams {
+                environment_id,
+                agent_id,
+                name,
+                role,
+            })
+            .await?;
+        print!("{}", describe_agent(&agent));
+        Ok(())
+    })
+}
+
+/// Deletes an agent; its session is archived.
+pub fn agent_remove(env: String, agent: String) -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let environment_id = resolve(&mut client, &env).await?.id;
+        let agent_id = resolve_agent(&mut client, &environment_id, &agent).await?;
+        client
+            .call::<EnvironmentAgentDelete>(EnvironmentAgentRef {
+                environment_id,
+                agent_id,
+            })
+            .await?;
+        println!("Deleted. Its session is archived.");
+        Ok(())
+    })
+}
+
+async fn resolve_agent(
+    client: &mut Client,
+    environment_id: &str,
+    name_or_id: &str,
+) -> anyhow::Result<String> {
+    let result = client
+        .call::<EnvironmentAgentList>(EnvironmentAgentListParams {
+            environment_id: environment_id.to_string(),
+        })
+        .await?;
+    result
+        .agents
+        .iter()
+        .find(|agent| agent.id == name_or_id || agent.name.eq_ignore_ascii_case(name_or_id))
+        .map(|agent| agent.id.clone())
+        .ok_or_else(|| anyhow::anyhow!("no agent {name_or_id:?}; see imperium env agent list"))
+}
+
+fn describe_agent(agent: &imperium_protocol::agents::EnvironmentAgent) -> String {
+    let session = agent.session_id.as_deref().unwrap_or("not started");
+    let mut text = format!("{}  {}  (session: {session})\n", agent.id, agent.name);
+    if !agent.role.is_empty() {
+        text.push_str(&format!("    role: {}\n", agent.role));
+    }
+    text
 }
 
 pub fn test(env: String) -> anyhow::Result<()> {
@@ -245,9 +343,9 @@ fn describe(env: &EnvironmentInfo) -> String {
     if env.runtime != EnvironmentRuntime::Local {
         text.push_str(&format!("    runtime: {}\n", runtime_label(&env.runtime)));
     }
-    if env.persistent_agent {
-        let session = env.agent_session_id.as_deref().unwrap_or("not started");
-        text.push_str(&format!("    persistent agent: {session}\n"));
+    for agent in &env.agents {
+        let session = agent.session_id.as_deref().unwrap_or("not started");
+        text.push_str(&format!("    agent {}: {session}\n", agent.name));
     }
     if env.folders.is_empty() {
         text.push_str("    (no folders yet: imperium env add-folder <env> <folder>)\n");
@@ -290,6 +388,7 @@ mod tests {
             runtime: EnvironmentRuntime::Local,
             persistent_agent: false,
             agent_session_id: None,
+            agents: Vec::new(),
             pet: None,
             pinned: false,
             permissions: Default::default(),
@@ -323,9 +422,16 @@ mod tests {
         remote.runtime = EnvironmentRuntime::Wsl {
             distro: "Ubuntu".into(),
         };
-        remote.persistent_agent = true;
+        remote
+            .agents
+            .push(imperium_protocol::agents::EnvironmentAgent {
+                id: "g1".into(),
+                name: "Planner".into(),
+                role: String::new(),
+                session_id: None,
+            });
         let shown = describe(&remote);
-        assert!(shown.contains("runtime: wsl Ubuntu") && shown.contains("persistent agent"));
+        assert!(shown.contains("runtime: wsl Ubuntu") && shown.contains("agent Planner"));
         assert_eq!(absolute(Path::new("/srv/app")).unwrap(), "/srv/app");
     }
 

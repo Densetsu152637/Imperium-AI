@@ -4,6 +4,7 @@
 //! exported to `packages/protocol/src/generated/` when the crate's tests run, so TypeScript
 //! clients share the same definitions.
 
+pub mod agents;
 pub mod budgets;
 pub mod discovery;
 pub mod jsonrpc;

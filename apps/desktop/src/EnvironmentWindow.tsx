@@ -3,8 +3,9 @@
 // the backdrop closes it. Folder changes to an existing environment apply at once (each is its
 // own daemon call); name, icon and colour apply with Save. A new environment is created with
 // everything at once, its folders included. The Runtime section says where the environment's
-// tools run (for a remote runtime, folders are paths typed in, inside it) and turns its
-// persistent agent on or off; both apply with Save. The Pet field picks the environment's
+// tools run (for a remote runtime, folders are paths typed in, inside it); it applies with Save. The
+// Agents section lists the environment's persistent agents (none until added) and adds, edits and
+// deletes them at once. The Pet field picks the environment's
 // default pet for the nursery (its sessions' pets are this kind unless the nursery says otherwise).
 // The Permissions section edits the environment's path grants and allow / ask / deny rules, on top
 // of the global ones; they apply with Save.
@@ -28,6 +29,7 @@ import { Select } from "./components/Select";
 import type { DaemonClient } from "./daemon/client";
 import { pickFolder } from "./daemon/connection";
 import { searchIcons } from "./icons";
+import { EnvironmentAgents } from "./panels/EnvironmentAgents";
 import { EnvironmentRuntimeFields, draftOf, isRemote, runtimeOf, sameRuntime } from "./panels/EnvironmentRuntimeFields";
 import { GlyphSvg, ICON_COLORS, ProjectIcon, environmentIcon, sameFolder, type ProjectIconChoice } from "./projectIcons";
 
@@ -62,7 +64,6 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
   const [query, setQuery] = useState("");
   const [newFolders, setNewFolders] = useState<string[]>([]);
   const [runtime, setRuntime] = useState(() => draftOf(environment?.runtime));
-  const [persistentAgent, setPersistentAgent] = useState(environment?.persistent_agent ?? false);
   const [projectWorktrees, setProjectWorktrees] = useState(environment?.project_worktrees ?? true);
   const [typedFolder, setTypedFolder] = useState("");
   const [pet, setPet] = useState(environment?.pet ?? "");
@@ -181,7 +182,6 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             color: choice.color,
             folders: newFolders,
             runtime: chosen,
-            persistent_agent: persistentAgent,
             project_worktrees: projectWorktrees,
             ...(pet ? { pet } : {}),
             permissions: cleaned(permissions),
@@ -192,7 +192,6 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             icon: choice.icon,
             color: choice.color,
             ...(runtimeChanged ? { runtime: chosen } : {}),
-            ...(persistentAgent !== (environment.persistent_agent ?? false) ? { persistent_agent: persistentAgent } : {}),
             ...(projectWorktrees !== (environment.project_worktrees ?? true)
               ? { project_worktrees: projectWorktrees }
               : {}),
@@ -425,11 +424,11 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             />
           </section>
 
+          <EnvironmentAgents environment={environment} client={client} disabled={busy} />
+
           <EnvironmentRuntimeFields
             draft={runtime}
             onChange={setRuntime}
-            persistentAgent={persistentAgent}
-            onPersistentAgent={setPersistentAgent}
             projectWorktrees={projectWorktrees}
             onProjectWorktrees={setProjectWorktrees}
             disabled={busy || !client}

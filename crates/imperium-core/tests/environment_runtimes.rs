@@ -211,25 +211,29 @@ async fn a_persistent_agent_is_listed_first_class_and_continues_after_a_restart(
         json!({"name": "Work", "folders": [project.path()]}),
     );
     let id = env["id"].as_str().unwrap().to_string();
+    // A new environment has no agents.
     assert_eq!(env["persistent_agent"], false);
-    assert!(state.project_agents().environments().is_empty());
+    assert_eq!(env["agents"], json!([]));
+    assert!(state.project_agents().environment_agents().is_empty());
 
-    let env = call(
+    let agent = call(
         &mut connection,
-        "environments.update",
-        json!({"id": id, "persistent_agent": true}),
+        "environments.agent_create",
+        json!({"environment_id": id, "name": "Planner", "role": "Keep the roadmap current."}),
     );
-    let agent_id = env["agent_session_id"].as_str().unwrap().to_string();
+    let agent_key = agent["id"].as_str().unwrap().to_string();
+    let session_id = agent["session_id"].as_str().unwrap().to_string();
     let listed = call(&mut connection, "session.list", json!({}));
     let row = &listed["sessions"][0];
-    assert_eq!(row["session_id"], agent_id.as_str());
+    assert_eq!(row["session_id"], session_id.as_str());
     assert_eq!(row["persistent"], true);
     assert_eq!(row["environment_id"], id.as_str());
+    assert_eq!(row["title"], "Work · Planner");
 
     // A conversation that should survive the restart.
-    let agent = state.session(&agent_id).unwrap();
-    let mut events = agent.subscribe();
-    agent.send("remember this".into()).unwrap();
+    let session = state.session(&session_id).unwrap();
+    let mut events = session.subscribe();
+    session.send("remember this".into()).unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
         while !matches!(
             events.recv().await.unwrap().event,
@@ -238,7 +242,7 @@ async fn a_persistent_agent_is_listed_first_class_and_continues_after_a_restart(
     })
     .await
     .unwrap();
-    drop((events, agent, connection, state));
+    drop((events, session, connection, state));
 
     let state = daemon(home.path(), &url);
     assert_eq!(
@@ -247,35 +251,25 @@ async fn a_persistent_agent_is_listed_first_class_and_continues_after_a_restart(
         "the agent is not an ordinary session"
     );
     state.start_project_agents();
-    let agents = state.project_agents().environments();
-    assert_eq!(agents, vec![(id.clone(), agent_id.clone())]);
-    let agent = state.session(&agent_id).unwrap();
-    assert_eq!(agent.title(), "remember this", "its history came back");
-    assert!(state.summary(&agent).persistent);
-
-    // Turned off, it stops and is archived; the environment keeps its id for next time.
-    let mut connection = connect(&state);
-    let env = call(
-        &mut connection,
-        "environments.update",
-        json!({"id": id, "persistent_agent": false}),
+    assert_eq!(
+        state.project_agents().environment_agents(),
+        vec![(id.clone(), agent_key.clone(), session_id.clone())]
     );
-    assert_eq!(env["agent_session_id"], agent_id.as_str());
-    assert!(state.session(&agent_id).is_none());
-    assert!(state.project_agents().environments().is_empty());
-    let archived = state.archived_sessions();
-    assert_eq!(archived.len(), 1);
-    assert_eq!(archived[0].session_id, agent_id);
-    assert!(archived[0].archived);
+    let session = state.session(&session_id).unwrap();
+    assert_eq!(session.title(), "remember this", "its history came back");
+    assert!(state.summary(&session).persistent);
 
-    // Turned back on, the same session leaves the archive and continues.
+    // Deleted, it stops and is archived with its history.
+    let mut connection = connect(&state);
     call(
         &mut connection,
-        "environments.update",
-        json!({"id": id, "persistent_agent": true}),
+        "environments.agent_delete",
+        json!({"environment_id": id, "agent_id": agent_key}),
     );
-    assert!(state.archived_sessions().is_empty());
-    let agent = state.session(&agent_id).unwrap();
-    assert_eq!(agent.title(), "remember this");
-    assert!(state.summary(&agent).persistent);
+    assert!(state.session(&session_id).is_none());
+    assert!(state.project_agents().environment_agents().is_empty());
+    let archived = state.archived_sessions();
+    assert_eq!(archived.len(), 1);
+    assert_eq!(archived[0].session_id, session_id);
+    assert!(archived[0].archived);
 }
