@@ -367,7 +367,7 @@ desktop's environment window shows the environment's working folder with *Open M
 An environment can carry its own configuration in the **first folder's** `.imperium/config.toml`
 (shared with the repository) and `.imperium/config.local.toml` (git-ignored, read after it).
 Why there and not in the environment's working folder under `workspaces.root`: the file belongs to
-the project, travels with the repository, and is read where `.mcp.json`, skills and project memory
+the project, travels with the repository, and is read where `.mcp.json` and skills
 already are; the working folder holds only what is private to this machine (`Memory.md`, scratch
 folders), may not exist yet, and Home has no project folder at all. An environment on a remote
 runtime or with no folder has no such file read (project files on a remote runtime are not read
@@ -430,8 +430,8 @@ settings are the user's layers, then this narrowing step, then the session's own
   grant inside or around a read-only folder does not reopen it (the file tools, bubblewrap,
   Seatbelt and the container mounts all keep the folder read-only; only grants elsewhere, such as
   the scratch folder, stay writable). A read-only session has no live preview, no writer
-  subagents, and no project memory store (`memory_remember` with the project scope would write
-  into the folder). MCP servers and the user's own hooks still run unconfined in a read-only
+  subagents, and no project memory store at all (there is none any more: environment memory is the
+  environment's `Memory.md`, which lives outside the folder, so a read-only session may still write it under `memory.write.environment`). MCP servers and the user's own hooks still run unconfined in a read-only
   session: they are the user's, and the read-only mount covers the agent's file tools and
   commands, not them. `imperium chat --env <env> --read-only`.
 

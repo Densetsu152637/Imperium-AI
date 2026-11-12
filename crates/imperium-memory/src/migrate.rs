@@ -271,7 +271,10 @@ enum Placed {
 
 /// Puts `entry` into `text` (the text of `Memory.md`) by the rules in the module documentation.
 fn place(text: &mut String, entry: &Entry) -> Placed {
-    let body = entry.body.trim();
+    // Windows checkouts may hold the files with CRLF line ends; the checks and the dedupe compare
+    // the text with LF (the archive keeps the original).
+    let normalised = entry.body.replace("\r\n", "\n");
+    let body = normalised.trim();
     let description = match entry.description.trim() {
         "" => entry.name.as_str(),
         description => description,
@@ -726,6 +729,46 @@ mod tests {
         assert!(
             archive.contains("would change Memory.md's structure"),
             "{archive}"
+        );
+    }
+
+    #[test]
+    fn files_with_crlf_line_ends_are_compared_and_checked_as_lf() {
+        let setup = setup();
+        setup
+            .memory
+            .remember("build", "How it builds", "project", "line one\nline two")
+            .unwrap();
+        let source = private(&setup);
+        std::fs::create_dir_all(&source.dir).unwrap();
+        let crlf = |name: &str, body: &str| {
+            let text = format!(
+                "---\r\nname: {name}\r\ndescription: About {name}\r\ntype: project\r\n---\r\n\r\n{body}\r\n"
+            );
+            std::fs::write(source.dir.join(format!("{name}.md")), text).unwrap();
+        };
+        crlf("build", "line one\r\nline two");
+        crlf("split", "a\r\n## injected\r\nb");
+        crlf("code", "```\r\n## fine in a fence\r\n```\r\nok");
+
+        let done = run(&setup, &source).unwrap();
+        assert_eq!(
+            (done.duplicates, done.added, done.archived, done.kept_both),
+            (1, 1, 1, 0),
+            "the CRLF copy of a section is its duplicate, the heading line is archived"
+        );
+        let text = setup.memory.read();
+        assert!(
+            !text.contains('\r') && !text.contains("injected"),
+            "{text:?}"
+        );
+        assert!(
+            text.contains("## code") && text.contains("fine in a fence"),
+            "{text}"
+        );
+        let archive = std::fs::read_to_string(setup.memory.archive_file()).unwrap();
+        assert!(
+            archive.contains("injected") && archive.contains("would change Memory.md's structure")
         );
     }
 
