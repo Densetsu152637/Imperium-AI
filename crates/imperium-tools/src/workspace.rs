@@ -657,12 +657,15 @@ impl Workspace {
                 .map(|part| {
                     let name = part.as_os_str().to_string_lossy();
                     let name = name.split(':').next().unwrap_or_default();
-                    name.trim_end_matches(['.', ' ']).to_lowercase()
+                    name.trim_end_matches(['.', ' ']).to_string()
                 })
                 .collect();
-            CONFIGURATION_FILES
-                .iter()
-                .any(|file| parts.join("/") == *file)
+            let name = parts.join("/");
+            // Folded both ways: some file systems fold `ſ` to `S` and `ı` to `I`, which
+            // lowercasing alone does not undo.
+            CONFIGURATION_FILES.iter().any(|file| {
+                name.to_lowercase() == *file || name.to_uppercase() == file.to_uppercase()
+            })
         });
         by_name
             || self.roots().into_iter().any(|root| {
@@ -1517,6 +1520,8 @@ mod tests {
             ".IMPERIUM/config.toml",
             ".Imperium/CONFIG.toml",
             ".imperium/Config.Local.toml",
+            ".mcp.jſon",
+            ".ımperium/config.toml",
         ];
         if cfg!(windows) {
             spellings.extend([
