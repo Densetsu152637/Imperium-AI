@@ -89,6 +89,10 @@ pub struct SessionOptions {
     pub worktrees: Vec<SessionWorktree>,
     /// The reasoning effort to start with; `models.effort` when unset.
     pub effort: Option<imperium_api::Effort>,
+    /// The permission mode to start in; when unset, `permissions.mode` for sessions people
+    /// start, and `default` for unattended ones (background or with pre-approved tools), which
+    /// nobody is there to answer for.
+    pub permission_mode: Option<imperium_api::PermissionMode>,
 }
 
 /// Where a session works: its environment and every folder, the working directory first.
@@ -900,6 +904,9 @@ impl DaemonState {
                 effort: meta["effort"]
                     .as_str()
                     .and_then(|effort| effort.parse().ok()),
+                permission_mode: meta["permission_mode"]
+                    .as_str()
+                    .and_then(|mode| mode.parse().ok()),
                 ..SessionOptions::default()
             };
             let created = match meta["environment_id"].as_str() {
@@ -1315,6 +1322,13 @@ impl DaemonState {
         {
             workspace = workspace.with_project_worktrees();
         }
+        let unattended = options.background || !options.pre_approved.is_empty();
+        let permission_mode = options.permission_mode.unwrap_or(if unattended {
+            imperium_api::PermissionMode::Default
+        } else {
+            self.settings().permissions.mode
+        });
+        workspace.permissions().set_mode(permission_mode);
         let mut placement = Placement {
             environment_id: options.environment_id.clone(),
             folders: workspace.folders_display(),
@@ -1527,6 +1541,7 @@ impl DaemonState {
                 "branched_from": placement.branched_from,
                 "comparison_id": placement.comparison_id,
                 "effort": effort.as_str(),
+                "permission_mode": permission_mode.as_str(),
             });
             let path = self.meta_path(&id);
             if let Err(error) = std::fs::write(&path, meta.to_string()) {
@@ -1802,6 +1817,20 @@ impl DaemonState {
         );
     }
 
+    /// Sets a session's permission mode from its agents' next calls on, records it with the
+    /// session so it survives a restart, and tells every client.
+    pub fn set_permission_mode(&self, session: &Session, mode: imperium_api::PermissionMode) {
+        session.set_permission_mode(mode);
+        self.update_meta(session.id(), |meta| {
+            meta.insert("permission_mode".into(), mode.as_str().into());
+        });
+        tracing::info!(session = %session.id(), mode = %mode, "the session's permission mode changed");
+        self.announce(
+            imperium_protocol::methods::SESSION_UPDATED,
+            self.summary(session),
+        );
+    }
+
     /// Whether the model `spec` names (a model table id or `<endpoint>:<model>`) can reason:
     /// the table row's `reasoning` setting or tags, else a local model's chat template (or
     /// its `reasoning` setting), else whether its name is a known reasoning model.
@@ -2065,6 +2094,19 @@ impl DaemonState {
         }
     }
 
+    /// Kills every session's background commands and waits up to `timeout` for the kills, so
+    /// none outlives the daemon (called on shutdown).
+    pub async fn stop_background_processes(&self, timeout: Duration) {
+        let mut sessions = self.sessions();
+        sessions.extend(self.project_agents.sessions());
+        let mut stops = tokio::task::JoinSet::new();
+        for session in &sessions {
+            let processes = session.workspace().processes().clone();
+            stops.spawn(async move { processes.stop_all_and_wait(timeout).await });
+        }
+        let _ = tokio::time::timeout(timeout, stops.join_all()).await;
+    }
+
     /// Every running session, ordered by id.
     pub fn sessions(&self) -> Vec<Arc<Session>> {
         let mut sessions: Vec<_> = self
@@ -2081,10 +2123,15 @@ impl DaemonState {
     /// Stops tracking a session; once its other handles are gone it ends after its current
     /// turn. Its journal stays, so it can be resumed later.
     pub fn forget_session(&self, id: &str) {
-        self.sessions
+        let removed = self
+            .sessions
             .lock()
             .expect("session map lock is never poisoned by a panic while held")
             .remove(id);
+        // Its background commands end with it, even while something still holds the session.
+        if let Some(session) = removed {
+            session.stop_processes();
+        }
         self.placements
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2232,6 +2279,7 @@ fn summary(session: &Session) -> SessionSummary {
         folders: vec![session.project_dir().to_string()],
         model: session.model(),
         effort: Some(session.effort().as_str().to_string()),
+        permission_mode: Some(session.permission_mode().as_str().to_string()),
         reasoning: false,
         isolation: session.isolation().to_string(),
         title: session.title(),

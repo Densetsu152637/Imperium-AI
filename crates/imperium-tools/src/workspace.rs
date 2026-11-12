@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use crate::permissions::{PathGrant, PathMode, Permissions, Target, expand_home};
+use crate::processes::Processes;
 use crate::project_worktrees::ProjectWorktrees;
 use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
 use crate::{Sandbox, ToolError};
@@ -38,6 +39,8 @@ pub struct Workspace {
     worktrees: Option<Arc<ProjectWorktrees>>,
     /// The session's own scratch folder (canonical), which is also one of the writable grants.
     scratch: Option<PathBuf>,
+    /// Commands started in the background; clones share them.
+    processes: Processes,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -93,6 +96,7 @@ impl Workspace {
             permissions: Permissions::default(),
             worktrees: None,
             scratch: None,
+            processes: Processes::default(),
         })
     }
 
@@ -135,6 +139,7 @@ impl Workspace {
             permissions: Permissions::default(),
             worktrees: None,
             scratch: None,
+            processes: Processes::default(),
         })
     }
 
@@ -395,6 +400,24 @@ impl Workspace {
             absolute: plain(&full).replace('\\', "/"),
             relative,
         }
+    }
+
+    /// [`Workspace::rule_target`] for a path already resolved on this machine (as the search
+    /// tools find them), without resolving it again.
+    pub(crate) fn rule_target_resolved(&self, full: &Path) -> Target {
+        let relative = full.strip_prefix(&self.root).ok().map(|rest| {
+            let shown = rest.to_string_lossy().replace('\\', "/");
+            if shown.is_empty() { ".".into() } else { shown }
+        });
+        Target::Path {
+            absolute: plain(full).replace('\\', "/"),
+            relative,
+        }
+    }
+
+    /// The session's background processes (`run_command` with `background`).
+    pub fn processes(&self) -> &Processes {
+        &self.processes
     }
 
     /// The working directory: the first folder.

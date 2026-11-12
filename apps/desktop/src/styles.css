@@ -856,6 +856,18 @@ button.icon-only.panel-tool .lucide {
   color: var(--muted);
 }
 
+/* How actions are approved: as quiet as the effort beside it. */
+.mode-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.session-footer .mode-select-button .select-value {
+  color: var(--muted);
+}
+
 .session-footer .model-select-button .select-value {
   color: var(--text);
   font-weight: 500;

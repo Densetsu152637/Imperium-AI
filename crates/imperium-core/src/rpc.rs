@@ -1129,6 +1129,26 @@ impl Connection {
                         ..SessionControlResult::default()
                     });
                 }
+                "set_permission_mode" => {
+                    let mode = params
+                        .permission_mode
+                        .as_deref()
+                        .ok_or_else(|| {
+                            ErrorObject::new(
+                                codes::INVALID_PARAMS,
+                                "set_permission_mode needs permission_mode",
+                            )
+                        })?
+                        .parse::<imperium_api::PermissionMode>()
+                        .map_err(|error| {
+                            ErrorObject::new(codes::INVALID_PARAMS, error.to_string())
+                        })?;
+                    state.set_permission_mode(&session, mode);
+                    return Ok(SessionControlResult {
+                        permission_mode: Some(session.permission_mode().as_str().to_string()),
+                        ..SessionControlResult::default()
+                    });
+                }
                 "set_pinned" => {
                     let pinned = params.pinned.ok_or_else(|| {
                         ErrorObject::new(codes::INVALID_PARAMS, "set_pinned needs pinned")
@@ -1153,7 +1173,7 @@ impl Connection {
                     reasoning: session.model().map(|model| state.model_reasons(&model)),
                     model: session.model(),
                     context: Some(context),
-                    effort: None,
+                    ..SessionControlResult::default()
                 },
                 None => SessionControlResult::default(),
             })

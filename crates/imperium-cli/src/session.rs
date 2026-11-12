@@ -71,6 +71,7 @@ pub fn set_archived(session_id: String, archived: bool) -> anyhow::Result<()> {
                 pull_request: None,
                 model: None,
                 effort: None,
+                permission_mode: None,
                 pinned: None,
                 title: None,
             })
