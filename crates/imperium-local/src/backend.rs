@@ -32,6 +32,53 @@ pub fn missing_runtime(program: &Path) -> String {
     )
 }
 
+/// Environment variables llama-server reads for its draft model (b12180 README), removed from
+/// the environment of every llama.cpp server: the draft is Imperium's to choose and count.
+const DRAFT_ENV: [&str; 12] = [
+    "LLAMA_ARG_SPEC_DRAFT_MODEL",
+    "LLAMA_ARG_SPEC_DRAFT_HF_REPO",
+    "LLAMA_ARG_N_GPU_LAYERS_DRAFT",
+    "LLAMA_ARG_SPEC_DRAFT_N_MAX",
+    "LLAMA_ARG_SPEC_DRAFT_N_MIN",
+    "LLAMA_ARG_DRAFT_MAX",
+    "LLAMA_ARG_DRAFT_MIN",
+    "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K",
+    "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V",
+    "LLAMA_ARG_SPEC_DRAFT_P_MIN",
+    "LLAMA_ARG_SPEC_DRAFT_P_SPLIT",
+    "LLAMA_ARG_SPEC_DRAFT_N_UBATCH",
+];
+
+/// The prefix of llama.cpp's draft environment variables (`LLAMA_ARG_SPEC_DRAFT_*`), all of
+/// which are removed, those a later release adds too.
+const DRAFT_ENV_PREFIX: &str = "LLAMA_ARG_SPEC_DRAFT_";
+
+/// The environment variables to remove from the server started for `spec`: llama.cpp's draft
+/// settings, and `LLAMA_ARG_SPEC_TYPE` while Imperium passes `--spec-type draft-simple` itself
+/// (without a draft it is left to the user, such as for n-gram speculation).
+pub fn scrubbed_env(spec: &LaunchSpec) -> Vec<String> {
+    if spec.backend.id() != LLAMA_CPP {
+        return Vec::new();
+    }
+    let present = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok());
+    scrub_names(present, spec.draft.is_some())
+}
+
+/// [`scrubbed_env`] for the variables named in `present`: the known draft ones, and any
+/// `LLAMA_ARG_SPEC_DRAFT_*` among `present`.
+pub fn scrub_names(present: impl IntoIterator<Item = String>, drafting: bool) -> Vec<String> {
+    let mut names: Vec<String> = DRAFT_ENV.iter().map(ToString::to_string).collect();
+    names.extend(
+        present.into_iter().filter(|name| {
+            name.starts_with(DRAFT_ENV_PREFIX) && !DRAFT_ENV.contains(&name.as_str())
+        }),
+    );
+    if drafting {
+        names.push("LLAMA_ARG_SPEC_TYPE".into());
+    }
+    names
+}
+
 /// A local inference runtime serving an OpenAI-compatible API.
 pub trait RuntimeBackend: Send + Sync + fmt::Debug {
     /// Short, stable name; [`ProcessLauncher`](crate::process::ProcessLauncher) finds the
@@ -187,6 +234,27 @@ impl RuntimeBackend for LlamaCpp {
                 // (`common_params_parse_ex` defaults its device to the first of `--device`);
                 // the flag says so explicitly, so the lane never depends on that default.
                 args.push("--no-mmproj-offload".into());
+            }
+        }
+        if let Some(draft) = &spec.draft {
+            // Speculative decoding: the draft proposes tokens, the model checks them
+            // (llama.cpp b12180, tools/server README: `--spec-draft-model`, `--spec-type`,
+            // `--spec-draft-n-max`, `--spec-draft-n-min`, `--spec-draft-ngl`). A draft model
+            // does nothing without `--spec-type draft-simple`, whose default is `none`.
+            args.extend([
+                "--spec-draft-model".into(),
+                draft.path.display().to_string(),
+                "--spec-type".into(),
+                "draft-simple".into(),
+            ]);
+            for (flag, value) in [
+                ("--spec-draft-n-max", draft.max),
+                ("--spec-draft-n-min", draft.min),
+                ("--spec-draft-ngl", draft.gpu_layers),
+            ] {
+                if let Some(value) = value {
+                    args.extend([flag.into(), value.to_string()]);
+                }
             }
         }
         args.extend(spec.extra_args.iter().cloned());

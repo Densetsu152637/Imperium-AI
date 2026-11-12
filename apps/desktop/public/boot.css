@@ -1,0 +1,23 @@
+/* The loading screen (index.html): a linked file, not an inline <style>, because Tauri adds a
+   nonce for inline styles to the release CSP, which turns off 'unsafe-inline' for every other
+   inline style. The colours repeat --bg and --accent of styles.css; test/boot.test.ts checks
+   they agree with it, boot.ts, main.rs, and tauri.conf.json. The operating system's theme
+   applies until boot.js sets the remembered one. */
+:root { --boot-bg: #0b0c0e; --boot-accent: #1fb2c8; color-scheme: dark; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) { --boot-bg: #f4f5f7; --boot-accent: #005a72; color-scheme: light; }
+}
+:root[data-theme="light"] { --boot-bg: #f4f5f7; --boot-accent: #005a72; color-scheme: light; }
+:root[data-theme="dark"] { --boot-bg: #0b0c0e; --boot-accent: #1fb2c8; color-scheme: dark; }
+html { background: var(--boot-bg); }
+body { margin: 0; }
+#boot { position: fixed; inset: 0; z-index: 2147483647; display: grid; place-items: center; background: var(--boot-bg); transition: opacity 180ms ease-out; }
+#boot[data-state="leaving"] { opacity: 0; pointer-events: none; }
+#boot svg { width: 44px; height: 44px; }
+#boot .ring { fill: none; stroke: var(--boot-accent); stroke-width: 3; stroke-linecap: round; stroke-dasharray: 40 100; transform-origin: 22px 22px; animation: boot-spin 1s linear infinite; }
+#boot .mark { fill: var(--boot-accent); }
+@keyframes boot-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  #boot { transition: none; }
+  #boot .ring { animation: none; stroke-dasharray: none; opacity: 0.45; }
+}

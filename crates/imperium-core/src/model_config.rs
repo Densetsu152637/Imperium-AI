@@ -68,6 +68,20 @@ pub fn set_config(
                 update.id
             ));
         }
+        if model.format == imperium_local::scan::Format::Safetensors
+            && settings.draft_model.is_some()
+        {
+            return Err(format!(
+                "local model {}: a draft model does not apply to a vLLM model",
+                update.id
+            ));
+        }
+        if settings.draft_model.as_deref() == Some(update.id.as_str()) {
+            return Err(format!(
+                "local model {}: draft_model may not be the model itself",
+                update.id
+            ));
+        }
         check_local_model(&to_local(settings))
             .map_err(|reason| format!("local model {}: {reason}", update.id))?;
         set_entry(
@@ -400,6 +414,13 @@ fn local_table(settings: &LocalLaunchSettings) -> Table {
     );
     put("max_output_tokens", settings.max_output_tokens.map(integer));
     put("extra_args", settings.extra_args.as_deref().map(strings));
+    put(
+        "draft_model",
+        settings.draft_model.clone().map(Value::String),
+    );
+    put("draft_max", settings.draft_max.map(integer));
+    put("draft_min", settings.draft_min.map(integer));
+    put("draft_gpu_layers", settings.draft_gpu_layers.map(integer));
     table
 }
 
@@ -447,6 +468,10 @@ fn to_local(settings: &LocalLaunchSettings) -> LocalModelSettings {
         extra_args: settings.extra_args.clone(),
         // Set in the config file only; the app's dialog leaves it alone.
         reasoning: None,
+        draft_model: settings.draft_model.clone(),
+        draft_max: settings.draft_max,
+        draft_min: settings.draft_min,
+        draft_gpu_layers: settings.draft_gpu_layers,
     }
 }
 
@@ -465,6 +490,10 @@ fn from_local(settings: LocalModelSettings) -> LocalLaunchSettings {
         max_wait_s: settings.max_wait_s,
         max_output_tokens: settings.max_output_tokens,
         extra_args: settings.extra_args,
+        draft_model: settings.draft_model,
+        draft_max: settings.draft_max,
+        draft_min: settings.draft_min,
+        draft_gpu_layers: settings.draft_gpu_layers,
     }
 }
 
@@ -488,6 +517,10 @@ fn effective(launch: &ModelLaunch) -> LocalLaunchEffective {
         max_wait_s: launch.max_wait_s,
         max_output_tokens: launch.max_output_tokens,
         extra_args: launch.extra_args.clone(),
+        draft_model: launch.draft.as_ref().map(|draft| draft.model.clone()),
+        draft_max: launch.draft.as_ref().and_then(|draft| draft.max),
+        draft_min: launch.draft.as_ref().and_then(|draft| draft.min),
+        draft_gpu_layers: launch.draft.as_ref().and_then(|draft| draft.gpu_layers),
     }
 }
 
@@ -520,6 +553,7 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                 let launch = supervisor.sized(model, &settings.launch_of(&model.id));
                 let (footprint, placement) = supervisor.plan_with(model, &launch);
                 let cpu_lane = settings.cpu_row(&model.id).is_some();
+                let (draft_in_use, draft_notice) = supervisor.draft_state(model, &launch);
                 let vllm = model.format == imperium_local::scan::Format::Safetensors;
                 LocalModelConfig {
                     id: model.id.clone(),
@@ -539,6 +573,8 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                     cpu_lane,
                     context_length: model.info.context_length,
                     metadata_card: imperium_local::card::metadata_card(model),
+                    draft_in_use,
+                    draft_notice,
                 }
             })
             .collect()
