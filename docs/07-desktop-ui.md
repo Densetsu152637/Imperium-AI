@@ -600,6 +600,8 @@ every setting:
   the daemon restarts; the window offers the restart.
 - **Permissions** (under Agent and daemon): the global path grants and permission rules; see
   [permissions](#permissions-implemented).
+- **API** (under Agent and daemon): the OpenAI-compatible local API; see
+  [API settings](#api-settings-implemented).
 - **Changes by agents** (under Agent and daemon): what agents changed in the app config
   (`config.changes`), newest first: model cards with the card before and after, and mods,
   plugins, and skills installed or removed with their folder and source. Each has **Undo**
@@ -675,13 +677,37 @@ settings)` in `apps/desktop/src/notify.ts`, which applies these settings; budget
 ([budgets](#budgets-and-usage-implemented)). Which events notify is decided in `apps/desktop/src/attention.ts` and covered by
 `apps/desktop/test/attention.test.ts`.
 
+## API settings (implemented)
+
+**Settings → API** manages the [OpenAI-compatible local API](04-models-and-routing.md#openai-compatible-local-api-implemented)
+that lets other tools use the local models (`api.get`, `api.set`, `api.token`; the settings are
+saved to `[api.openai_compatible]` in the user config and apply at once):
+
+- an **enable switch** (off by default); a failure to start, such as a port in use, is shown
+  under it;
+- while it runs, the **base URL** to give tools, with *Copy*, and the **API key**: *Show token*
+  fetches the token from the daemon (it is not kept anywhere in the app), with *Copy* and
+  *Hide*, and *Rotate* (after a confirmation) replaces it, which ends every tool's access until
+  it is given the new one;
+- the **port** (chosen for the user the first time the API is enabled, then kept; changing it
+  restarts the API);
+- **Allow other computers**, off, with a warning that it serves plain HTTP to the network and
+  that anyone with the token could then use the models and the hosted ones turned on below;
+  while on, an address field sets `bind`. Turning it off puts `bind` back on `127.0.0.1`;
+- **Models served**: the local models, by alias and spec;
+- **Hosted models**: one switch per hosted row of the model table, all off, since each call
+  spends the user's key and money; the list is `api.openai_compatible.expose`;
+- a note that the API's calls count toward budgets and that a budget with the scope *API calls*
+  (Settings → Budgets) caps them alone.
+
 ## Budgets and usage (implemented)
 
 **Settings → Budgets** edits the daemon's [budgets](10-configuration.md#budgets)
 (`budgets.get` / `budgets.set`, saved to `[budgets]` in the user config): when weekly budgets
 start, the day monthly ones reset, the default alert thresholds, and one card per budget with an
 optional name, its scope (*All usage*, an environment picked from the list, an endpoint, or a
-model, the last two with suggestions from the model table), its window (daily, weekly, monthly),
+model, the last two with suggestions from the model table, or *API calls*, the calls other tools
+make through the [local API](#api-settings-implemented)), its window (daily, weekly, monthly),
 a token limit, a cost limit in US dollars (either may be empty), what happens when it is used up
 (*Warn only*, *Ask first*, *Block*), and its own alert thresholds (empty: the defaults). Each
 saved budget shows where it stands in its current window. *Save* applies the budgets at once.

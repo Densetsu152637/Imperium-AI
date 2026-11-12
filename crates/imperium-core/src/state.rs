@@ -157,6 +157,8 @@ pub struct DaemonState {
     pets: OnceLock<Option<Arc<PetEngine>>>,
     devices: Devices,
     phone_address: OnceLock<std::net::SocketAddr>,
+    /// The OpenAI-compatible API server for other tools.
+    openai: crate::openai::OpenAiApi,
     /// Pull requests sessions watch: session id to (repo, number).
     watches: Mutex<HashMap<String, (String, u64)>>,
     /// Turns what the daemon sees into quiet, busy, or saturated ([`start_sampling`]).
@@ -265,6 +267,7 @@ impl DaemonState {
             pets: OnceLock::new(),
             devices,
             phone_address: OnceLock::new(),
+            openai: crate::openai::OpenAiApi::default(),
             watches: Mutex::new(HashMap::new()),
             monitor,
             load_override: OnceLock::new(),
@@ -605,6 +608,10 @@ impl DaemonState {
 
     pub fn devices(&self) -> &Devices {
         &self.devices
+    }
+
+    pub(crate) fn openai(&self) -> &crate::openai::OpenAiApi {
+        &self.openai
     }
 
     /// Starts the phone listener when `phone.bind` is set. Call once.

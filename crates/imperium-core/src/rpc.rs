@@ -25,6 +25,7 @@ use imperium_protocol::methods::{
     SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
     SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
 };
+use imperium_protocol::methods::{ApiGet, ApiGetParams, ApiSet, ApiToken};
 use imperium_protocol::permissions::{
     PermissionsAddRule, PermissionsGet, PermissionsGetParams, PermissionsSet,
 };
@@ -371,6 +372,15 @@ impl Connection {
             }),
             McpRemove::NAME => call::<McpRemove>(request.params, |params| {
                 crate::connectors::remove(&self.state, params)
+            }),
+            ApiGet::NAME => call::<ApiGet>(request.params, |_: ApiGetParams| {
+                Ok(crate::openai::status(&self.state))
+            }),
+            ApiSet::NAME => call_later::<ApiSet, _>(request.params, &mut later, |params| {
+                crate::openai::set(Arc::clone(&self.state), params)
+            }),
+            ApiToken::NAME => call::<ApiToken>(request.params, |params| {
+                crate::openai::token(&self.state, params)
             }),
             BudgetsGet::NAME => call::<BudgetsGet>(request.params, |_: BudgetsGetParams| {
                 crate::budgets::get(&self.state)

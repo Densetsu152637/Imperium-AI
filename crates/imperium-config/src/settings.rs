@@ -13,6 +13,25 @@ pub(crate) const DEFAULTS: &str = r#"
 # Port for the local WebSocket listener; 0 picks a free port at each start.
 port = 0
 
+[api.openai_compatible]
+# Serve the local models (and the hosted ones listed in `expose`) to other tools as an
+# OpenAI-compatible API on `bind`:`port`. Off by default.
+enabled = false
+# Port to listen on; 0 means none is chosen yet: a free one is picked and saved when the API is
+# first enabled.
+port = 0
+# Address to listen on. Only loopback addresses are accepted unless `allow_lan` is true.
+bind = "127.0.0.1"
+# Most calls the API serves at once (running or queued behind a model); one more is refused
+# with a 429 so a runaway client cannot pile up work.
+max_concurrent = 4
+# Allows a `bind` that is not loopback, which lets other machines on the network use the API
+# with its token over plain HTTP. Risky: leave it off unless you know the network is trusted.
+allow_lan = false
+# Specs (`<endpoint>:<model>`) of hosted models that other tools may use with your keys and money.
+# Local models need no entry; nothing hosted is served unless listed here.
+expose = []
+
 [policy]
 # The root agent's personality: the id of a file in <config>/personalities/ or a workflow pack's
 # personalities/ folder, such as luxion. "none" (or empty) turns personalities off. An id that
@@ -123,6 +142,9 @@ pub struct Settings {
     pub media: MediaSettings,
     #[serde(default)]
     pub phone: PhoneSettings,
+    /// `[api.openai_compatible]`: the local API server for other tools (see docs/04).
+    #[serde(default)]
+    pub api: ApiSettings,
     #[serde(default)]
     pub resume: ResumeSettings,
     /// How busy the machine must be before autonomous work yields (see docs/14).
@@ -485,6 +507,45 @@ pub struct PhoneSettings {
     /// no encryption of its own, so use a private overlay network or a trusted LAN.
     #[serde(default)]
     pub bind: Option<String>,
+}
+
+/// Servers the daemon offers to other programs, beside its JSON-RPC socket.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ApiSettings {
+    pub openai_compatible: OpenAiApiSettings,
+}
+
+/// The OpenAI-compatible local API server (see docs/04-models-and-routing.md). Off unless
+/// `enabled`. Requests need the API token kept in the secret store, never in this file.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OpenAiApiSettings {
+    pub enabled: bool,
+    /// 0 until a free port is chosen the first time the server is enabled.
+    pub port: u16,
+    /// The address to listen on; refused unless it is a loopback address or `allow_lan` is set.
+    pub bind: String,
+    /// Allows a `bind` that is not loopback.
+    pub allow_lan: bool,
+    /// Most calls in flight at once; the next is refused with `429`. At least 1.
+    pub max_concurrent: u32,
+    /// Specs of hosted models the server also offers; a model is never offered unless it is
+    /// local or listed here.
+    pub expose: Vec<String>,
+}
+
+impl Default for OpenAiApiSettings {
+    fn default() -> Self {
+        OpenAiApiSettings {
+            enabled: false,
+            port: 0,
+            bind: "127.0.0.1".into(),
+            allow_lan: false,
+            max_concurrent: 4,
+            expose: Vec::new(),
+        }
+    }
 }
 
 /// Media tools (see docs/09-media-generation.md).

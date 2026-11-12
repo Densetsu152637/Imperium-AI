@@ -142,7 +142,14 @@ the wait reason in the desktop.
    ([05](05-tools-and-isolation.md#live-preview-implemented),
    [07](07-desktop-ui.md#preview-and-browser-panels-implemented)). Protocol 0.18.
 10. **Local-model extras.** Speculative decoding with draft models, a local model benchmark,
-    and an OpenAI-compatible local API server for other tools.
+    and an OpenAI-compatible local API server for other tools. The API server is implemented:
+    opt-in, loopback by default, with its own token in the secret store, `/v1/models` and
+    `/v1/chat/completions` (streamed or not), calls that go through the residency controller
+    and count toward budgets as the `api` source, hosted models only by explicit per-model
+    opt-in, Settings → API and `imperium api`
+    ([04](04-models-and-routing.md#openai-compatible-local-api-implemented),
+    [07](07-desktop-ui.md#api-settings-implemented), [10](10-configuration.md)). Speculative
+    decoding and the benchmark are not.
 11. **Sharing and sync (design)** (designed). Design plans for session sharing and export, and
     for team sync: a portable session bundle with shared redaction, a mandatory preview and
     read-only import with explicit forking, and team sync as a git-backed config layer that
