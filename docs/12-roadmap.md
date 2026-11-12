@@ -67,7 +67,8 @@ Implemented: **multiple persistent agents per environment.** An environment hold
 persistent agents, each with its own name, role, session and limits, created explicitly (a new
 environment has none) with `environments.agent_create`, `imperium env agent add`, or *Add agent* in
 the environment window; the earlier single persistent session migrates to one agent with its
-history, and the old `persistent_agent` fields stay as aliases for protocol 0.22
+history, and the old `persistent_agent` fields stay as deprecated aliases until a later
+protocol version removes them
 ([14](14-projects-and-automation.md#persistent-agents-implemented)). Per-agent permission
 profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent initiative follow.
 

@@ -113,8 +113,8 @@ environment window's *Agents* section lists them with *Add agent*, edit and dele
 **Migration and deprecated fields.** An environment saved with the earlier single persistent
 session (`persistent_agent: true` with an `agent_session_id`) becomes one agent named "Persistent
 agent" the first time the daemon loads it; the session id is kept, so its history and conversation
-carry on, and the file is rewritten with the agent. For one protocol minor (0.22) the old fields
-remain as aliases and are removed in 0.23: `EnvironmentInfo.persistent_agent` is true while there
+carry on, and the file is rewritten with the agent. Since protocol 0.22 the old fields remain
+as deprecated aliases, which a later version removes: `EnvironmentInfo.persistent_agent` is true while there
 is any agent and `agent_session_id` is the first agent's session (with no agent it keeps the
 archived session of an agent turned off, which `persistent_agent: true` continues);
 `environments.create` or `environments.update` with `persistent_agent: true` adds an agent named
@@ -160,7 +160,7 @@ touched.
   safety floor: in the default mode a site not in `web.allow_domains` asks first, and plan mode
   refuses what would ask.
 - **No persistent agent.** `persistent_agent` is off, as for any new environment. Nothing runs
-  in Home until the user starts a session or explicitly turns the agent on.
+  in Home until the user starts a session or adds an agent.
 - **What can change.** Home can be renamed, given another icon, colour or pet, pinned (it is
   listed first either way), and given folders and permissions. Its runtime stays this machine.
   `environments.delete` on it fails with an error, the CLI and the desktop (no *Delete* in its
