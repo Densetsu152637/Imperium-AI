@@ -31,6 +31,7 @@ use imperium_workflow::{ContextIndex, Pack, personality};
 use tokio::sync::broadcast;
 
 use crate::approvals::Approvals;
+use crate::bench::Bench;
 use crate::downloads::Downloads;
 use crate::environments::{EnvironmentError, Environments};
 use crate::load::{self, LoadMonitor};
@@ -148,6 +149,7 @@ pub struct DaemonState {
     /// Set at start when there are model folders, or after the first download.
     local: OnceLock<LocalRuntime>,
     downloads: Downloads,
+    bench: Bench,
     /// The latest llama.cpp runtime pack installation (`runtime.install`).
     pub(crate) runtime_install: Mutex<Option<imperium_protocol::methods::RuntimeInstallJob>>,
     /// The latest package-manager update of an external `llama-server`.
@@ -268,6 +270,7 @@ impl DaemonState {
             environments,
             local: local.map(OnceLock::from).unwrap_or_default(),
             downloads: Downloads::default(),
+            bench: Bench::default(),
             runtime_install: Mutex::new(None),
             runtime_update: Mutex::new(None),
             hub: OnceLock::new(),
@@ -1168,6 +1171,11 @@ impl DaemonState {
 
     pub fn downloads(&self) -> &Downloads {
         &self.downloads
+    }
+
+    /// Local model benchmark runs ([`crate::bench`]).
+    pub fn bench(&self) -> &Bench {
+        &self.bench
     }
 
     /// The Hugging Face Hub: `HF_ENDPOINT` and a token from `HF_TOKEN` or the secret store,
