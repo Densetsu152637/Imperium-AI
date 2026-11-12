@@ -11,26 +11,26 @@ export type EnvironmentAgentCreated = { started: boolean,
 /**
  * Why it is not running, when `started` is false.
  */
-reason?: string, id: string,
+reason?: string, id: string, 
 /**
  * Shown as the agent's session title and in the environment window; unique within the
  * environment (ignoring case).
  */
-name: string,
+name: string, 
 /**
  * What the agent is for, added to its instructions ("Keep the roadmap current"); may be
  * empty.
  */
-role: string,
+role: string, 
 /**
  * The agent's session id once it has started; kept when its session is archived.
  */
-session_id: string | null,
+session_id: string | null, 
 /**
  * How much initiative the agent takes: `off` (the default, for new agents too), `suggest`
  * or `act` (docs/14, Initiative). Nothing proactive happens unless it is turned on.
  */
-initiative: Initiative,
+initiative: Initiative, 
 /**
  * What the agent may use beyond the environment's own permissions; also binds the
  * sessions and subagents it starts.

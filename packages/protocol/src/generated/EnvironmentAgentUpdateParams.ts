@@ -2,11 +2,11 @@
 import type { AgentPermissions } from "./AgentPermissions";
 import type { Initiative } from "./Initiative";
 
-export type EnvironmentAgentUpdateParams = { environment_id: string, agent_id: string, name?: string, role?: string,
+export type EnvironmentAgentUpdateParams = { environment_id: string, agent_id: string, name?: string, role?: string, 
 /**
  * A new initiative; it applies from the agent's next look and restarts nothing.
  */
-initiative?: Initiative,
+initiative?: Initiative, 
 /**
  * Replaces the agent's permission profile; it applies at once, to the agent's running
  * session and to the sessions it started.

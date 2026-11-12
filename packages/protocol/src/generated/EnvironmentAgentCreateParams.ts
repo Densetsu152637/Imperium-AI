@@ -2,11 +2,11 @@
 import type { AgentPermissions } from "./AgentPermissions";
 import type { Initiative } from "./Initiative";
 
-export type EnvironmentAgentCreateParams = { environment_id: string, name: string, role?: string,
+export type EnvironmentAgentCreateParams = { environment_id: string, name: string, role?: string, 
 /**
  * Initiative to start with (`off` when left out).
  */
-initiative?: Initiative,
+initiative?: Initiative, 
 /**
  * The agent's permission profile; unrestricted when absent.
  */
