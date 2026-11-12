@@ -85,9 +85,9 @@ pub fn cpu_pins(settings: &Settings) -> HashMap<String, CpuLane> {
 }
 
 impl LocalRuntime {
-    /// A runtime around a supervisor a test started, planned against `hardware`.
-    #[cfg(test)]
-    pub(crate) fn for_tests(supervisor: Arc<Supervisor>, hardware: Hardware) -> Self {
+    /// A runtime around a supervisor the caller started, planned against `hardware`: how tests
+    /// give the daemon models served by a fake launcher.
+    pub fn with_supervisor(supervisor: Arc<Supervisor>, hardware: Hardware) -> Self {
         // The budget stays the one the test planned against: no probe.
         let residency = ResidencyController::new(&supervisor, None);
         residency.start();

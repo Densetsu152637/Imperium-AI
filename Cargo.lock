@@ -2386,6 +2386,7 @@ dependencies = [
  "imperium-mcp",
  "imperium-media",
  "imperium-memory",
+ "imperium-models",
  "imperium-pets",
  "imperium-protocol",
  "imperium-tools",

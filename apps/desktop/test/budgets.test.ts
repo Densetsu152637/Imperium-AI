@@ -44,6 +44,8 @@ test("budgets cover sessions by environment, endpoint, and model", () => {
   assert.ok(!covers(budget({ scope: "endpoint", target: "router" }), null, null));
   assert.ok(covers(budget({ scope: "model", target: "router:big" }), "e1", "router:big"));
   assert.ok(!covers(budget({ scope: "model", target: "router:big" }), "e1", "router:small"));
+  // Calls through the local API are not a session's, so no session indicator shows them.
+  assert.ok(!covers(budget({ scope: "source", target: "api" }), "e1", "router:big"));
 });
 
 test("catalog ids resolve to specs", () => {

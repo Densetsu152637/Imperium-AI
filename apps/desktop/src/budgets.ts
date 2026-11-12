@@ -28,6 +28,9 @@ export function covers(budget: Budget, environmentId: string | null, spec: strin
       return spec !== null && spec.split(":")[0] === target;
     case "model":
       return spec === target;
+    case "source":
+      // Calls that come through an entry point (the local API) are not a session's.
+      return false;
   }
 }
 

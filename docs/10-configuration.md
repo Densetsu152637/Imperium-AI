@@ -75,6 +75,12 @@ listed; edit them in the file.
 | Key           | Default | Meaning                                                        |
 | ------------- | ------- | -------------------------------------------------------------- |
 | `daemon.port` | `0`     | Port of the local WebSocket listener; `0` picks a free port at each start |
+| `api.openai_compatible.enabled` | `false` | Serve the local models (and the hosted ones in `expose`) to other tools as an OpenAI-compatible API ([04](04-models-and-routing.md#openai-compatible-local-api-implemented)); starts and stops at once, also through `imperium api enable` and `api.set` |
+| `api.openai_compatible.port` | `0` | Port of the API server. `0` means none is chosen yet: the first enable picks a free one (from 11500 up), saves it here, and keeps it |
+| `api.openai_compatible.bind` | `127.0.0.1` | Address the API server listens on. A loopback address (`127.0.0.1`, `::1`, `localhost`) unless `allow_lan` is set; any other is refused and the server does not start |
+| `api.openai_compatible.allow_lan` | `false` | Lets `bind` be an address other computers can reach. Risky: the API is plain HTTP, so anyone on the network who learns the API token can use your models and the hosted ones exposed |
+| `api.openai_compatible.max_concurrent` | `4` | Most [API](04-models-and-routing.md#openai-compatible-local-api-implemented) calls in flight at once (running, or waiting for a model); one more is refused with a `429` `rate_limit_exceeded` error. Applies at once |
+| `api.openai_compatible.expose` | none | Specs (`<endpoint>:<model>`) of hosted model-table rows the API also serves, spending your keys and money; nothing hosted is served unless listed. Local models need no entry |
 | `agents.max_steps` | `50` | Model calls an agent may make in one turn before it stops |
 | `resume.mode` | `wait_for_reset` | When a provider's usage runs out: `wait_for_reset`, `at_time`, `retry_every`, or `stop` (each session can override it) |
 | `resume.at_time`, `retry_every_minutes`, `max_wait_hours` | none, `5`, `12` | Local `HH:MM` for `at_time`; retry interval; longest wait in one turn |
@@ -197,7 +203,10 @@ limits = [
 - **Scope:** `global` counts every call; `environment` the calls of sessions in one environment
   (`target` is its id); `endpoint` the calls to one endpoint (`target` is its name, such as
   `openrouter` or `llamacpp`); `model` the calls to one model (`target` is its spec,
-  `<endpoint>:<model>`).
+  `<endpoint>:<model>`); `source` the calls that come through an entry point rather than from
+  a session (`target` is `api`, the [OpenAI-compatible API](04-models-and-routing.md#openai-compatible-local-api-implemented),
+  whose calls also count toward `global`, `endpoint`, and `model` budgets). A used-up `source`
+  budget that asks or blocks refuses API calls with a `429` error.
 - **Window:** `daily`, `weekly`, or `monthly`, in the daemon machine's local time.
 - **Limits:** `tokens` counts prompt plus completion tokens; `cost_usd` counts calls to models
   with prices ([pricing](04-models-and-routing.md)). Local models have no price, so they count
@@ -229,7 +238,10 @@ api_key = { secret = "openrouter" }   # resolved from the keychain
 ```
 
 A Hugging Face token for gated or private models is read from `HF_TOKEN`, or else from the
-secret named `huggingface`.
+secret named `huggingface`. The [OpenAI-compatible API](04-models-and-routing.md#openai-compatible-local-api-implemented)'s
+bearer token is the secret `api.openai-token`, made on first use by `api.token`; it is shown
+and rotated only there (Settings → API, `imperium api token`) and is never written to the config
+file, the data folder, or the logs.
 
 Secret names are 1–64 characters of lowercase letters, digits, `.`, `_`, and `-`, starting
 with a letter or digit. Today `imperium secret set <name>` (value from standard input, or a

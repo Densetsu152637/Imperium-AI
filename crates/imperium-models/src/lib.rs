@@ -14,3 +14,4 @@ pub use client::{
     OpenAiCompatible, TokenFuture, Tokenizer,
 };
 pub use imperium_api::{ChatMessage, Effort, FunctionCall, Pricing, ToolCall, ToolSpec, Usage};
+pub use sse::DataLines;

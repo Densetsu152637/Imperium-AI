@@ -3,4 +3,4 @@
 /**
  * What a budget counts.
  */
-export type BudgetScope = "global" | "environment" | "endpoint" | "model";
+export type BudgetScope = "global" | "environment" | "endpoint" | "model" | "source";
