@@ -58,4 +58,10 @@ permissions: PermissionSet,
  * writable as the folders. On unless turned off. Sessions started on their own worktree
  * (`session.create` `worktree`) and remote runtimes do not get them.
  */
-project_worktrees: boolean, };
+project_worktrees: boolean, 
+/**
+ * The built-in Home environment: always present, listed first, never deleted, and the
+ * default for a session started with no environment or project chosen. It has no project
+ * folders unless the user adds some; its sessions work in their scratch folders.
+ */
+builtin: boolean, };

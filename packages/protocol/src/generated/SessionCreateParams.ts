@@ -3,7 +3,8 @@
 export type SessionCreateParams = { 
 /**
  * The environment the session works in: its folders are the sandbox, the first is the
- * working directory. Give this or `project_dir`.
+ * working directory. Give this or `project_dir`; with neither, the session starts in the
+ * built-in Home environment.
  */
 environment_id?: string, 
 /**
