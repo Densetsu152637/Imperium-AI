@@ -1103,38 +1103,52 @@ async fn sessions_an_agent_started_stay_restricted_after_the_agent_is_deleted_an
     let id = new_environment(&mut connection, folder.path());
     // A mild profile (no plugins): commands stay available, so a session is "looser" than the
     // strictest profile, which is what a session with no record falls back to.
-    let agent = call(
-        &mut connection,
-        "environments.agent_create",
-        json!({"environment_id": id, "name": "Mild", "permissions": {"plugins": "none"}}),
-    );
-    let agent_session = agent["session_id"].as_str().unwrap().to_string();
-    say(&state, &agent_session, "please start a session recorded").await;
+    let mut agents = Vec::new();
+    for name in ["Mild", "Other"] {
+        agents.push(call(
+            &mut connection,
+            "environments.agent_create",
+            json!({"environment_id": id, "name": name, "permissions": {"plugins": "none"}}),
+        ));
+    }
+    let agent_sessions: Vec<String> = agents
+        .iter()
+        .map(|agent| agent["session_id"].as_str().unwrap().to_string())
+        .collect();
+    say(
+        &state,
+        &agent_sessions[0],
+        "please start a session recorded",
+    )
+    .await;
+    say(
+        &state,
+        &agent_sessions[1],
+        "please start a session unrecorded",
+    )
+    .await;
     tools_offered_after(&log, "slow job recorded").await;
-    // Let the first session finish, so the agent's limit on running sessions is not in the way.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    say(&state, &agent_session, "please start a session unrecorded").await;
     tools_offered_after(&log, "slow job unrecorded").await;
     let started: Vec<String> = state
         .sessions()
         .iter()
         .map(|session| session.id().to_string())
-        .filter(|session| *session != agent_session)
+        .filter(|session| !agent_sessions.contains(session))
         .collect();
     assert_eq!(started.len(), 2);
     let meta_path = |session: &str| find_file(home.path(), &format!("{session}.meta.json"));
     let mut recorded = None;
     let mut stripped = None;
     for session in &started {
-        let meta: Value =
+        let mut meta: Value =
             serde_json::from_str(&std::fs::read_to_string(meta_path(session)).unwrap()).unwrap();
-        assert_eq!(meta["agent_id"], agent["id"]);
         assert_eq!(meta["agent_permissions"]["plugins"], "none");
-        if recorded.is_none() {
+        if meta["agent_id"] == agents[0]["id"] {
             recorded = Some(session.clone());
         } else {
-            // A session whose record is missing (an older one) has nothing but the agent to go by.
-            let mut meta = meta;
+            // A session whose record is missing (an older one) has nothing but its agent's id
+            // to go by, and the agent is gone.
+            assert_eq!(meta["agent_id"], agents[1]["id"]);
             meta.as_object_mut().unwrap().remove("agent_permissions");
             std::fs::write(meta_path(session), meta.to_string()).unwrap();
             stripped = Some(session.clone());
@@ -1144,11 +1158,13 @@ async fn sessions_an_agent_started_stay_restricted_after_the_agent_is_deleted_an
 
     // The agent is deleted and the daemon restarts: nothing is left of the agent but the
     // sessions' own records.
-    call(
-        &mut connection,
-        "environments.agent_delete",
-        json!({"environment_id": id, "agent_id": agent["id"]}),
-    );
+    for agent in &agents {
+        call(
+            &mut connection,
+            "environments.agent_delete",
+            json!({"environment_id": id, "agent_id": agent["id"]}),
+        );
+    }
     drop(connection);
     drop(state);
     tokio::time::sleep(Duration::from_millis(200)).await;
