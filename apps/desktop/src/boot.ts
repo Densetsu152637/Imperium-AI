@@ -73,10 +73,15 @@ export function armSplash(): void {
   );
 }
 
+/** Runs `dismiss` after two frames, so the panels have painted first. */
+export function afterPaint(dismiss: () => void, frame: (run: () => void) => void): void {
+  frame(() => frame(dismiss));
+}
+
 /** The panels have rendered: fade the loading screen out (after the next paint). */
 export function splashDone(): void {
   const dismiss = dismissSplash;
   if (!dismiss) return;
-  if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => requestAnimationFrame(dismiss));
+  if (typeof requestAnimationFrame === "function") afterPaint(dismiss, (run) => requestAnimationFrame(run));
   else dismiss();
 }

@@ -51,10 +51,20 @@ pub fn store_write(name: String, contents: String) -> Result<(), String> {
 /// The theme saved in the settings (`"light"`, `"dark"`, or `"system"`), if there is one. Read
 /// before the window is shown, so its native background matches the interface and never paints
 /// white first.
-pub fn saved_theme() -> Option<String> {
-    let text = std::fs::read_to_string(file("settings").ok()?).ok()?;
+pub fn saved_theme() -> Option<&'static str> {
+    theme_in(&folder().ok()?)
+}
+
+/// The theme in `settings.json` under `dir`; only the three known values count.
+fn theme_in(dir: &std::path::Path) -> Option<&'static str> {
+    let text = std::fs::read_to_string(dir.join("settings.json")).ok()?;
     let settings: serde_json::Value = serde_json::from_str(&text).ok()?;
-    settings.get("theme")?.as_str().map(str::to_owned)
+    match settings.get("theme")?.as_str()? {
+        "light" => Some("light"),
+        "dark" => Some("dark"),
+        "system" => Some("system"),
+        _ => None,
+    }
 }
 
 /// The largest transcript the shell will save.
@@ -167,6 +177,26 @@ mod tests {
         for bad in ["", "../config", "a/b", "Settings", "x.json", "a\\b"] {
             assert!(file(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_saved_theme_is_one_of_the_three_known_values() {
+        let dir = std::env::temp_dir().join(format!("imperium-theme-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(theme_in(&dir), None, "no file");
+        for (text, want) in [
+            (r#"{"theme":"light","version":1}"#, Some("light")),
+            (r#"{"theme":"dark"}"#, Some("dark")),
+            (r#"{"theme":"system"}"#, Some("system")),
+            (r#"{"theme":"</script>"}"#, None),
+            (r#"{"theme":3}"#, None),
+            (r#"{"uiScale":1}"#, None),
+            ("not json", None),
+        ] {
+            std::fs::write(dir.join("settings.json"), text).unwrap();
+            assert_eq!(theme_in(&dir), want, "{text}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

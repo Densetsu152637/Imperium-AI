@@ -4,35 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Imperium</title>
-    <style>
-      /* The loading screen: inline so it paints before any script or stylesheet loads. Colours
-         match --bg and --accent in src/styles.css; the operating system's theme applies until
-         the remembered one is set below. */
-      html { background: #0b0c0e; color-scheme: dark; }
-      @media (prefers-color-scheme: light) { html:not([data-theme]) { background: #f4f5f7; color-scheme: light; } }
-      html[data-theme="light"] { background: #f4f5f7; color-scheme: light; }
-      html[data-theme="dark"] { background: #0b0c0e; color-scheme: dark; }
-      body { margin: 0; }
-      #boot { position: fixed; inset: 0; z-index: 2147483647; display: grid; place-items: center; background: #0b0c0e; transition: opacity 180ms ease-out; }
-      @media (prefers-color-scheme: light) { html:not([data-theme]) #boot { background: #f4f5f7; } }
-      html[data-theme="light"] #boot { background: #f4f5f7; }
-      html[data-theme="dark"] #boot { background: #0b0c0e; }
-      #boot[data-state="leaving"] { opacity: 0; pointer-events: none; }
-      #boot svg { width: 44px; height: 44px; }
-      #boot .ring { fill: none; stroke: #1fb2c8; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 40 100; transform-origin: 22px 22px; animation: boot-spin 1s linear infinite; }
-      #boot .mark { fill: #1fb2c8; }
-      @keyframes boot-spin { to { transform: rotate(360deg); } }
-      @media (prefers-reduced-motion: reduce) {
-        #boot { transition: none; }
-        #boot .ring { animation: none; stroke-dasharray: none; opacity: 0.45; }
-      }
-    </style>
-    <script>
-      try {
-        var theme = localStorage.getItem("imperium.theme");
-        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
-      } catch (error) {}
-    </script>
+    <link rel="stylesheet" href="/boot.css" />
+    <script src="/boot.js"></script>
   </head>
   <body aria-busy="true">
     <div id="boot" role="status" aria-label="Loading Imperium">
