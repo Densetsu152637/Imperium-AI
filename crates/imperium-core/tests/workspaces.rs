@@ -631,7 +631,12 @@ async fn two_moves_at_once_never_strand_the_data() {
         .map(|target| {
             let state = Arc::clone(&state);
             let target = target.display().to_string();
-            std::thread::spawn(move || state.move_workspaces(&target))
+            let runtime = tokio::runtime::Handle::current();
+            std::thread::spawn(move || {
+                // Restarting a session spawns its task.
+                let _entered = runtime.enter();
+                state.move_workspaces(&target)
+            })
         })
         .collect();
     let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
