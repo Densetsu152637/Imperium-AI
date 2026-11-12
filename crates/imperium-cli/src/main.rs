@@ -49,11 +49,12 @@ enum Command {
     Ping,
     /// Chat with an agent in an environment or a project folder.
     Chat {
-        /// Environment (name or id) the agent works in: all its folders are open to it.
+        /// Environment (name or id) the agent works in: all its folders are open to it. With
+        /// neither this nor --project, the session starts in the built-in Home environment.
         #[arg(long, conflicts_with = "project")]
         env: Option<String>,
-        /// Project folder the agent works in (its environment, made if needed); defaults to the
-        /// current directory.
+        /// Project folder the agent works in (its environment, made if needed); `--project .`
+        /// is the current directory.
         #[arg(long)]
         project: Option<PathBuf>,
         /// Model as `<endpoint>:<model>` or a model table id; defaults to `models.default`.

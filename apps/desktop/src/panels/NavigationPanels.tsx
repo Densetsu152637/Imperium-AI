@@ -30,11 +30,16 @@ export function environmentOf(session: SessionState, environments: EnvironmentIn
   return environments.find((env) => env.folders[0] && sameFolder(env.folders[0], session.summary.project_dir)) ?? null;
 }
 
-/** Pinned environments first, otherwise in the daemon's order (creation). */
+/** Home first, then pinned environments, otherwise in the daemon's order (creation). */
 export function sortEnvironments(environments: EnvironmentInfo[]): EnvironmentInfo[] {
   return environments
     .map((env, index) => ({ env, index }))
-    .sort((a, b) => Number(!!b.env.pinned) - Number(!!a.env.pinned) || a.index - b.index)
+    .sort(
+      (a, b) =>
+        Number(!!b.env.builtin) - Number(!!a.env.builtin) ||
+        Number(!!b.env.pinned) - Number(!!a.env.pinned) ||
+        a.index - b.index,
+    )
     .map(({ env }) => env);
 }
 
@@ -77,7 +82,13 @@ export function EnvironmentsPanel({
                 <button
                   className={`row-main nav-row-main${isSelected ? " selected" : ""}`}
                   aria-current={isSelected ? "true" : undefined}
-                  title={env.folders.length ? env.folders.join("\n") : "No folders yet"}
+                  title={
+                    env.folders.length
+                      ? env.folders.join("\n")
+                      : env.builtin
+                        ? "Home: no project folders; sessions work in their own scratch folders"
+                        : "No folders yet"
+                  }
                   onClick={() => onSelect(env.id)}
                   onDoubleClick={() => connected && actions.onEdit(env.id)}
                 >
@@ -92,7 +103,9 @@ export function EnvironmentsPanel({
                     env.pinned
                       ? { label: "Unpin", icon: PinOff, onSelect: () => actions.onSetPinned(env, false), disabled: !connected }
                       : { label: "Pin", icon: Pin, onSelect: () => actions.onSetPinned(env, true), disabled: !connected },
-                    { label: "Delete", icon: Trash, danger: true, onSelect: () => actions.onDelete(env.id), disabled: !connected },
+                    ...(env.builtin
+                      ? []
+                      : [{ label: "Delete", icon: Trash, danger: true, onSelect: () => actions.onDelete(env.id), disabled: !connected }]),
                   ]}
                 />
               </div>

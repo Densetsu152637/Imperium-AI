@@ -33,12 +33,10 @@ pub fn run(
     context_summary: bool,
     worktree: Option<Option<String>>,
 ) -> anyhow::Result<()> {
+    // With neither --env nor --project the session starts in the built-in Home environment.
     let project = match (&env, project) {
         (Some(_), _) => None,
-        (None, Some(project)) => Some(project),
-        (None, None) => {
-            Some(std::env::current_dir().context("could not read the current directory")?)
-        }
+        (None, project) => project,
     };
     let project = project
         .map(|project| {

@@ -299,10 +299,16 @@ the wait reason in the desktop.
     again, empty, when it is unarchived. Changing the root moves the whole tree (rename, or copy
     and verify, with rollback), from Settings, `imperium workspaces move`, or `config set`
     ([14](14-projects-and-automation.md#environment-working-folders-implemented),
-    [17](17-memory.md#environment-memory-implemented)). Follow-ups not built: a sweep for
-    scratch folders of sessions that were never archived or deleted, and the handles of
-    background processes that a session started in its scratch folder, which can keep a folder
-    from being deleted or moved.
+    [17](17-memory.md#environment-memory-implemented)). Orphan scratch folders are swept at
+    start. Not built: tracking the background processes a session started in its scratch folder,
+    which can keep a folder from being deleted or moved.
+
+37. **Home environment** (implemented). A built-in *Home* environment exists without being
+    created, is the default for a session started with no environment or project, has no
+    project folders (each session works in its own scratch folder, with Home's `Memory.md`),
+    reaches web-hosted files and the user's connectors under the normal permission modes, runs
+    no persistent agent, and cannot be deleted
+    ([14](14-projects-and-automation.md#home-implemented)).
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
