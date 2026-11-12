@@ -7,6 +7,9 @@ use std::sync::Arc;
 use base64::Engine;
 use imperium_engine::{QueueError, Session, SwitchError};
 use imperium_protocol::budgets::{BudgetsGet, BudgetsGetParams, BudgetsSet, BudgetsUsage};
+use imperium_protocol::initiative::{
+    InitiativeDismiss, InitiativeGet, InitiativeReview, InitiativeStart,
+};
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
@@ -350,6 +353,18 @@ impl Connection {
             method if method.starts_with("environments.") => {
                 self.environment_call(method, request.params)
             }
+            InitiativeGet::NAME => call::<InitiativeGet>(request.params, |params| {
+                crate::initiative::get(&self.state, params)
+            }),
+            InitiativeStart::NAME => call::<InitiativeStart>(request.params, |params| {
+                crate::initiative::start_suggestion(&self.state, params)
+            }),
+            InitiativeDismiss::NAME => call::<InitiativeDismiss>(request.params, |params| {
+                crate::initiative::dismiss(&self.state, params).map(|()| Accepted {})
+            }),
+            InitiativeReview::NAME => call::<InitiativeReview>(request.params, |params| {
+                crate::initiative::review_now(&self.state, params).map(|()| Accepted {})
+            }),
             ModelList::NAME => call::<ModelList>(request.params, |_: ModelListParams| {
                 Ok(self.state.model_table())
             }),
@@ -942,6 +957,7 @@ impl Connection {
             EnvironmentUpdate::NAME => {
                 call::<EnvironmentUpdate>(params, |p: EnvironmentUpdateParams| {
                     let id = p.id.clone();
+                    let initiative_changed = p.initiative.is_some();
                     let runtime_changed = p.runtime.is_some();
                     let permissions_changed = p.permissions.is_some();
                     let env = envs.update(p).map_err(failed)?;
@@ -956,12 +972,16 @@ impl Connection {
                         self.restart_environment_agent(&id);
                     }
                     self.state.sync_environment_agent(&id);
+                    if initiative_changed {
+                        crate::initiative::announce(&self.state, &id);
+                    }
                     Ok(envs.get(&id).unwrap_or(env))
                 })
             }
             EnvironmentDelete::NAME => call::<EnvironmentDelete>(params, |p: EnvironmentRef| {
                 envs.delete(&p.id).map_err(failed)?;
                 self.state.sync_environment_agent(&p.id);
+                self.state.initiative().forget_environment(&p.id);
                 Ok(Accepted {})
             }),
             EnvironmentAddFolder::NAME => {

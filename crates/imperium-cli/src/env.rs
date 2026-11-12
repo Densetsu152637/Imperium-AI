@@ -294,6 +294,7 @@ mod tests {
             pinned: false,
             permissions: Default::default(),
             project_worktrees: true,
+            initiative: Default::default(),
         }
     }
 

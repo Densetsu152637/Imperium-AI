@@ -333,6 +333,11 @@ pub struct SessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub comparison_id: Option<String>,
+    /// Set when an environment's persistent agent started the session (or the user started
+    /// one of its suggestions): shown as "started by <environment> agent" with the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub started_by: Option<crate::initiative::StartedBy>,
 }
 
 /// Where a branched session came from.
@@ -1099,6 +1104,11 @@ pub struct EnvironmentInfo {
     /// (`session.create` `worktree`) and remote runtimes do not get them.
     #[serde(default = "yes")]
     pub project_worktrees: bool,
+    /// How much initiative its persistent agent takes: `off`, `suggest` (the default: it
+    /// reviews the environment when idle and suggests work), or `act` (it may also start
+    /// sessions itself, within limits). Only matters while `persistent_agent` is on.
+    #[serde(default)]
+    pub initiative: crate::initiative::Initiative,
 }
 
 /// Where an environment's tools run. `local` is this machine (under the configured isolation
@@ -1206,6 +1216,10 @@ pub struct EnvironmentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub project_worktrees: Option<bool>,
+    /// How much initiative the persistent agent takes (`suggest` when left out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub initiative: Option<crate::initiative::Initiative>,
 }
 
 /// `environments.update`: rename an environment, change its icon, its runtime, or turn its
@@ -1257,6 +1271,10 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub project_worktrees: Option<bool>,
+    /// How much initiative the persistent agent takes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub initiative: Option<crate::initiative::Initiative>,
 }
 
 /// `environments.test_runtime`: checks that an environment's runtime can be reached: Docker is

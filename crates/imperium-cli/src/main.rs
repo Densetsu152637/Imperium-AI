@@ -3,6 +3,7 @@ mod autostart;
 mod changes;
 mod chat;
 mod env;
+mod initiative;
 mod local;
 mod memory;
 mod phone;
@@ -373,6 +374,36 @@ enum EnvCommand {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
+    /// Show, or set, how much initiative the environment's persistent agent takes: `off`,
+    /// `suggest` (reviews when idle and suggests work), or `act` (may also start sessions).
+    Initiative {
+        /// Environment name or id.
+        env: String,
+        #[arg(value_parser = ["off", "suggest", "act"])]
+        mode: Option<String>,
+    },
+    /// List the agent's suggested work and its latest reminder of what is left.
+    Suggestions {
+        /// Environment name or id.
+        env: String,
+    },
+    /// Start one of the agent's suggestions as a session.
+    StartSuggestion {
+        /// Environment name or id.
+        env: String,
+        suggestion: String,
+    },
+    /// Dismiss one of the agent's suggestions.
+    DismissSuggestion {
+        /// Environment name or id.
+        env: String,
+        suggestion: String,
+    },
+    /// Ask the agent to review the environment now.
+    Review {
+        /// Environment name or id.
+        env: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -545,6 +576,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             } => env::set_runtime(id, env::runtime(&kind, image, container, distro, host)?),
             EnvCommand::Test { env: id } => env::test(id),
             EnvCommand::Agent { env: id, state } => env::set_agent(id, state == "on"),
+            EnvCommand::Initiative { env: id, mode } => initiative::initiative(id, mode),
+            EnvCommand::Suggestions { env: id } => initiative::suggestions(id),
+            EnvCommand::StartSuggestion {
+                env: id,
+                suggestion,
+            } => initiative::start(id, suggestion),
+            EnvCommand::DismissSuggestion {
+                env: id,
+                suggestion,
+            } => initiative::dismiss(id, suggestion),
+            EnvCommand::Review { env: id } => initiative::review(id),
         },
         Command::Config {
             command: ConfigCommand::Explain { key, project },

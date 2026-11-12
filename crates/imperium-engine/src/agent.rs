@@ -1118,6 +1118,10 @@ impl Agent {
             brief: String,
             #[serde(default)]
             model: Option<String>,
+            #[serde(default)]
+            reason: Option<String>,
+            #[serde(default)]
+            source: Option<String>,
         }
         let args: Args = parse(arguments)?;
         if args.brief.trim().is_empty() {
@@ -1128,7 +1132,20 @@ impl Agent {
             .launcher
             .as_ref()
             .ok_or("this session cannot start sessions")?;
-        let id = launcher.launch(&args.brief, args.model.as_deref()).await?;
+        let id = launcher
+            .launch_request(crate::LaunchRequest {
+                brief: &args.brief,
+                model: args.model.as_deref(),
+                reason: args
+                    .reason
+                    .as_deref()
+                    .filter(|text| !text.trim().is_empty()),
+                source: args
+                    .source
+                    .as_deref()
+                    .filter(|text| !text.trim().is_empty()),
+            })
+            .await?;
         Ok(format!(
             "started session {id}; its report will arrive as a message when it finishes"
         ))
@@ -2969,7 +2986,9 @@ fn start_session_spec() -> ToolSpec {
         description: "Start a new session in this project with a self-contained brief; it runs on its own and its report arrives later as a message. You use no tokens while it runs.".into(),
         parameters: json!({"type": "object", "properties": {
             "brief": {"type": "string"},
-            "model": {"type": "string", "description": "Optional model table id or <endpoint>:<model>"}
+            "model": {"type": "string", "description": "Optional model table id or <endpoint>:<model>"},
+            "reason": {"type": "string", "description": "Why you start it, in a sentence (shown to the user with the session)"},
+            "source": {"type": "string", "description": "What you read that led to it: a file and section, an issue, a session"}
         }, "required": ["brief"]}),
     }
 }

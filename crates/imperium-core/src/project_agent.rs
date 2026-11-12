@@ -23,8 +23,9 @@ use chrono::{Local, NaiveDate};
 use imperium_automation::parse_duration;
 use imperium_config::ProjectSettings;
 use imperium_engine::{
-    LaunchFuture, Load, LoadView, Session, SessionLauncher, Waited, wait_for_quiet,
+    LaunchFuture, LaunchRequest, Load, LoadView, Session, SessionLauncher, Waited, wait_for_quiet,
 };
+use imperium_protocol::initiative::StartedBy;
 use imperium_protocol::session::{AgentEvent, SessionEvent};
 use tokio::sync::broadcast;
 
@@ -47,7 +48,10 @@ long-lived assistant for the folders of this environment. Your conversation cont
 days and daemon restarts; older turns are summarised when it grows, so keep important facts, \
 decisions, and an open-task list in memory (project-private) as well. Answer and act directly \
 for small things; for larger work call start_session with a self-contained brief (it runs in \
-this environment) and end your turn; its report arrives as a message.";
+this environment) and end your turn; its report arrives as a message. When the daemon sends an \
+Initiative review message, it is not from the user: follow it exactly. Report only work you \
+found in something you read, cite where, and never start sessions during it unless it says you \
+may. Otherwise start sessions only when the user asks or the work needs it.";
 
 /// Limits on the sessions an environment agent may start.
 const ENVIRONMENT_MAX_SESSIONS: usize = 2;
@@ -339,7 +343,7 @@ fn start_environment_agent(
                 .join(format!("{id}.jsonl")),
         )
     });
-    let (session, _events) = daemon
+    let (session, events) = daemon
         .create_in_environment(
             &env.id,
             model.as_deref(),
@@ -349,10 +353,12 @@ fn start_environment_agent(
                 instructions: Some(ENVIRONMENT_INSTRUCTIONS.into()),
                 persistent: true,
                 auto_compact: true,
+                initiative_environment: Some(env.id.clone()),
                 ..SessionOptions::default()
             },
         )
         .map_err(|error| error.to_string())?;
+    crate::initiative::watch_agent(daemon, env.id.clone(), events);
     let _ = launcher.agent.set(Arc::downgrade(&session));
     if env.agent_session_id.as_deref() != Some(session.id()) {
         daemon
@@ -422,32 +428,108 @@ impl Launcher {
     /// already allowed to start.
     fn claim(&self) -> Release {
         self.active.fetch_add(1, Ordering::SeqCst);
-        Release(Arc::clone(&self.active))
+        Release {
+            active: Arc::clone(&self.active),
+            initiative: None,
+        }
     }
 }
 
 impl SessionLauncher for Launcher {
     fn launch<'a>(&'a self, brief: &'a str, model: Option<&'a str>) -> LaunchFuture<'a> {
+        self.start(LaunchRequest {
+            brief,
+            model,
+            reason: None,
+            source: None,
+        })
+    }
+
+    fn launch_request<'a>(&'a self, request: LaunchRequest<'a>) -> LaunchFuture<'a> {
+        self.start(request)
+    }
+}
+
+impl Launcher {
+    /// Starts the session. An environment agent's sessions are tagged with who started them and
+    /// why; during an initiative turn (a review, or the follow-up to a session it started on its
+    /// own) they must also be allowed by the environment's initiative and its limits.
+    fn start<'a>(&'a self, request: LaunchRequest<'a>) -> LaunchFuture<'a> {
         Box::pin(async move {
             let daemon = self.daemon.upgrade().ok_or("the daemon is stopping")?;
+            let mut brief = request.brief.to_string();
+            let mut ticket = None;
+            let mut started_by = None;
+            let mut environment = None;
+            if let Target::Environment(env_id) = &self.target {
+                let env = daemon
+                    .environments()
+                    .get(env_id)
+                    .ok_or("the environment is gone")?;
+                let initiative = daemon.initiative().initiative_turn(env_id);
+                let reason = request
+                    .reason
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty());
+                if initiative {
+                    ticket = Some(crate::initiative::permit_start(
+                        &daemon,
+                        &env,
+                        request.reason,
+                        request.source,
+                    )?);
+                    brief = crate::initiative::with_source(&brief, request.source);
+                }
+                started_by = Some(StartedBy {
+                    environment_id: env.id.clone(),
+                    environment_name: env.name.clone(),
+                    kind: if initiative { "initiative" } else { "agent" }.into(),
+                    reason: reason.map_or_else(
+                        || "started while working for you".to_string(),
+                        str::to_string,
+                    ),
+                    source: request.source.map(str::to_string),
+                });
+                environment = Some((env, initiative));
+            }
             self.reserve()?;
-            let release = Release(Arc::clone(&self.active));
-            // What it starts is background work: it ranks below the user's sessions.
+            let mut release = Release {
+                active: Arc::clone(&self.active),
+                initiative: None,
+            };
+            // What it starts is background work: it ranks below the user's sessions, and runs in
+            // the default permission mode (the safety floor applies; nobody is there to answer
+            // more, so what asks goes to the approval queue).
             let options = SessionOptions {
                 background: true,
+                permission_mode: Some(imperium_api::PermissionMode::Default),
+                started_by,
                 ..SessionOptions::default()
             };
             let created = match &self.target {
-                Target::Folder(project) => daemon.create_session_with(project, model, options),
-                Target::Environment(env) => daemon.create_in_environment(env, model, options),
+                Target::Folder(project) => {
+                    daemon.create_session_with(project, request.model, options)
+                }
+                Target::Environment(env) => {
+                    daemon.create_in_environment(env, request.model, options)
+                }
             };
             let (session, events) = created.map_err(|error| error.to_string())?;
             let id = session.id().to_string();
+            release.initiative = ticket.map(|ticket| ticket.commit(&id));
+            if let Some((env, true)) = &environment {
+                crate::initiative::announce_started(
+                    &daemon,
+                    env,
+                    &id,
+                    request.reason.unwrap_or_default().trim(),
+                );
+            }
             dispatch(
                 daemon,
                 session,
                 events,
-                brief.to_string(),
+                brief,
                 self.prefer_quiet,
                 self.max_defer,
                 self.agent.get().cloned(),
@@ -520,11 +602,15 @@ fn dispatch(
     });
 }
 
-/// Frees a running-session slot when dropped, however the session ends.
-struct Release(Arc<AtomicUsize>);
+/// Frees a running-session slot when dropped, however the session ends (and the initiative
+/// slot too, for a session started on the agent's own initiative).
+struct Release {
+    active: Arc<AtomicUsize>,
+    initiative: Option<crate::initiative::RunningGuard>,
+}
 
 impl Drop for Release {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.active.fetch_sub(1, Ordering::SeqCst);
     }
 }

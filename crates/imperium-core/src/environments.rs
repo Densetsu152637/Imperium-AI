@@ -125,6 +125,7 @@ impl Environments {
             pinned: false,
             permissions,
             project_worktrees: params.project_worktrees.unwrap_or(true),
+            initiative: params.initiative.unwrap_or_default(),
         };
         self.change(|list| {
             list.push(env.clone());
@@ -179,6 +180,9 @@ impl Environments {
             }
             if let Some(on) = params.project_worktrees {
                 env.project_worktrees = on;
+            }
+            if let Some(initiative) = params.initiative {
+                env.initiative = initiative;
             }
             Ok(())
         })

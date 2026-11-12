@@ -88,6 +88,7 @@ async fn run() -> anyhow::Result<()> {
     }
     daemon.start_load_monitor();
     daemon.start_project_agents();
+    daemon.start_initiative();
     daemon.start_scheduler();
     daemon.start_autofix(std::sync::Arc::new(imperium_github::GhCli));
     daemon.start_auto_archive();
