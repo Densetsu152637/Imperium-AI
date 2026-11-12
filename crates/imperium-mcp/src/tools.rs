@@ -85,6 +85,7 @@ impl ToolProvider for McpTools {
             ),
             ask: !tool.allowed,
             needs_context: true,
+            command: None,
         })
     }
 

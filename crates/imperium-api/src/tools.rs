@@ -39,6 +39,11 @@ pub struct ToolCheck {
     /// Refuse the call while required workflow context is unloaded (under
     /// `required-before-action`).
     pub needs_context: bool,
+    /// For a call that runs a shell command (a preview's dev server): the command line. The
+    /// session then treats the call exactly like `run_command` with that command: its
+    /// permission rules and "always allow" suggestions, the safety floor, and permission
+    /// modes (plan mode refuses it).
+    pub command: Option<String>,
 }
 
 /// Something a call produced that the session reports to its clients.
@@ -56,6 +61,12 @@ pub enum ToolEvent {
         url: String,
         title: String,
         screenshot: String,
+    },
+    /// The live preview changed: `url` is the loopback page now shown, or `None` once it is
+    /// closed. `command` is the process serving it, when the session started one.
+    PreviewChanged {
+        url: Option<String>,
+        command: Option<String>,
     },
 }
 

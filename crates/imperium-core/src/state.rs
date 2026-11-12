@@ -26,7 +26,7 @@ use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
 };
 use imperium_tools::{ProcessRunner, Remote, Runner, Sandbox, Workspace};
-use imperium_web::{BrowserSetup, SearchConfig, SearchProviders, Web, WebTools};
+use imperium_web::{BrowserSetup, PreviewTools, SearchConfig, SearchProviders, Web, WebTools};
 use imperium_workflow::{ContextIndex, Pack, personality};
 use tokio::sync::broadcast;
 
@@ -191,6 +191,8 @@ pub struct DaemonState {
     model_cards: imperium_memory::models::CardIndex,
     /// Each running session's checkpoints, when it records them.
     checkpoints: Mutex<HashMap<String, Arc<crate::checkpoints::SessionCheckpoints>>>,
+    /// Each running session's browser, for the user to take over and drive.
+    browsers: Mutex<HashMap<String, BrowserSetup>>,
     /// Test hook: make `session.compare` fail after creating this many branches (0: never).
     compare_fault: std::sync::atomic::AtomicUsize,
     /// Serialises moves of the environments' working folders.
@@ -279,6 +281,7 @@ impl DaemonState {
             measurements: model_awareness::Measurements::default(),
             model_cards: imperium_memory::models::CardIndex::new(),
             checkpoints: Mutex::new(HashMap::new()),
+            browsers: Mutex::new(HashMap::new()),
             compare_fault: std::sync::atomic::AtomicUsize::new(0),
             workspaces_lock: Mutex::new(()),
             workspaces_warning: Mutex::new(None),
@@ -805,6 +808,7 @@ impl DaemonState {
                 profile_dir: self.paths.data_dir().join("browser"),
                 headless: web.headless,
                 instance: Arc::default(),
+                takeover: Arc::default(),
             });
         Some(WebTools {
             web: Web::new(provider),
@@ -1428,7 +1432,18 @@ impl DaemonState {
             tools.push(Arc::new(MediaTools::new(media)));
         }
         if let Some(web) = self.web_tools() {
+            if let Some(browser) = &web.browser {
+                self.browsers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(id.clone(), browser.clone());
+            }
             tools.push(Arc::new(web));
+        }
+        // A preview's dev server runs where the session's commands do, so only a session on
+        // this machine offers one; it stops when the session's tools are dropped.
+        if !remote {
+            tools.push(Arc::new(PreviewTools::new(workspace.clone())));
         }
         if self.suggestions.enabled() {
             tools.push(Arc::new(SuggestTool {
@@ -2128,6 +2143,7 @@ impl DaemonState {
             .lock()
             .expect("session map lock is never poisoned by a panic while held")
             .remove(id);
+        self.forget_browser(id);
         // Its background commands end with it, even while something still holds the session.
         if let Some(session) = removed {
             session.stop_processes();
@@ -2205,6 +2221,23 @@ impl DaemonState {
             return Err(error.to_string());
         }
         Ok(new_id)
+    }
+
+    /// A running session's browser, which the user may take over.
+    pub fn browser_of(&self, id: &str) -> Option<BrowserSetup> {
+        self.browsers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+
+    /// Lets go of a session's browser handle, so the browser ends with the session.
+    pub(crate) fn forget_browser(&self, id: &str) {
+        self.browsers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
     }
 
     pub fn session(&self, id: &str) -> Option<Arc<Session>> {

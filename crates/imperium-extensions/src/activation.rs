@@ -201,6 +201,7 @@ impl ToolProvider for PluginTools {
             ),
             ask: !tool.allowed,
             needs_context: true,
+            command: None,
         })
     }
 
