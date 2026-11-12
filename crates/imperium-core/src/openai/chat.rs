@@ -53,9 +53,10 @@ const INLINE_DATA_CHARS: f64 = 3000.0;
 /// Chunks of a streamed answer held for a slow client before the model server is made to wait.
 const STREAM_BACKLOG: usize = 32;
 
-/// Longest the model's server may take to begin its answer (for a call that is not streamed,
-/// to finish it), after the call holds its slot.
-const UPSTREAM_START_TIMEOUT: Duration = Duration::from_secs(600);
+/// Longest a hosted model's endpoint may take to begin its answer (for a call that is not
+/// streamed, to finish it) when `runtime.llamacpp.max_wait_s` is not set to something else.
+/// A local model gets its own `max_wait_s`: see [`start_limit`].
+const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(600);
 /// Longest a streamed answer may go without a chunk before the call is given up.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Longest the client may leave a streamed chunk unread before the call is given up, so a
@@ -222,24 +223,8 @@ async fn handle(api: &ApiState, body: &[u8]) -> Result<Response, ApiError> {
         _permit: permit,
     };
     let started = call.started;
-    let sent = tokio::time::timeout(UPSTREAM_START_TIMEOUT, sending.send()).await;
-    let response = match sent {
-        Ok(Ok(response)) => response,
-        Ok(Err(error)) => {
-            call.abandon();
-            return Err(ApiError::unreachable(format!(
-                "The model's server did not answer: {}",
-                error.without_url()
-            )));
-        }
-        Err(_) => {
-            call.abandon();
-            return Err(ApiError::unreachable(format!(
-                "The model's server did not begin its answer within {} s.",
-                UPSTREAM_START_TIMEOUT.as_secs()
-            )));
-        }
-    };
+    let limit = start_limit(&call.daemon, &resolved);
+    let response = begin(&call, limit, sending.send()).await?;
     let status = response.status();
     if !status.is_success() {
         call.abandon();
@@ -274,6 +259,46 @@ async fn handle(api: &ApiState, body: &[u8]) -> Result<Response, ApiError> {
         object.remove("timings");
     }
     Ok(axum::Json(answer).into_response())
+}
+
+/// How long the model's server may take to begin its answer (to finish it, for a call that is
+/// not streamed): a local model's own `max_wait_s`, from the launch settings that already cap how
+/// long a call waits for its slot (a CPU-lane row sets it for slow models); a hosted endpoint
+/// gets the global `runtime.llamacpp.max_wait_s`.
+fn start_limit(daemon: &DaemonState, model: &ResolvedModel) -> Duration {
+    let seconds = match daemon.local_runtime().filter(|_| model.local) {
+        Some(local) => local.supervisor.launch(&model.model).max_wait_s,
+        None => daemon.settings().runtime.llamacpp.max_wait_s,
+    };
+    if seconds == 0 {
+        DEFAULT_START_TIMEOUT
+    } else {
+        Duration::from_secs(seconds)
+    }
+}
+
+/// Waits for the model's server to answer the request, for at most `limit`. A refusal to connect
+/// used nothing, so the call is given up; a server that held the request and never answered did
+/// use the model, so the call is left to be recorded by its estimate when it is dropped.
+async fn begin<T>(
+    call: &Call,
+    limit: Duration,
+    sending: impl std::future::Future<Output = Result<T, reqwest::Error>>,
+) -> Result<T, ApiError> {
+    match tokio::time::timeout(limit, sending).await {
+        Ok(Ok(began)) => Ok(began),
+        Ok(Err(error)) => {
+            call.abandon();
+            Err(ApiError::unreachable(format!(
+                "The model's server did not answer: {}",
+                error.without_url()
+            )))
+        }
+        Err(_) => Err(ApiError::unreachable(format!(
+            "The model's server did not begin its answer within {} s.",
+            limit.as_secs()
+        ))),
+    }
 }
 
 /// Takes a slot on a local model like any caller: the model is loaded if needed, and the call
@@ -408,7 +433,13 @@ fn stream(
     wants_usage: bool,
 ) -> Response {
     let (send, receive) = mpsc::channel::<Bytes>(STREAM_BACKLOG);
-    tokio::spawn(pump(call, response, lease, send, wants_usage));
+    tokio::spawn(pump(
+        call,
+        response.bytes_stream(),
+        lease,
+        send,
+        wants_usage,
+    ));
     let body = Body::from_stream(futures_util::stream::unfold(
         receive,
         |mut receive| async move {
@@ -432,13 +463,13 @@ fn stream(
 
 async fn pump(
     call: Call,
-    response: reqwest::Response,
+    chunks: impl futures_util::Stream<Item = Result<Bytes, reqwest::Error>> + Send,
     lease: Option<LocalLease>,
     send: mpsc::Sender<Bytes>,
     wants_usage: bool,
 ) {
     let mut lines = DataLines::default();
-    let mut chunks = response.bytes_stream();
+    let mut chunks = Box::pin(chunks);
     let mut usage = None;
     let mut reply_chars = 0usize;
     let mut first_token: Option<Instant> = None;
@@ -651,6 +682,101 @@ mod tests {
         let estimate = estimate_tokens(&messages, &Value::Null);
         assert!((1000..3000).contains(&estimate), "{estimate}");
         assert!(estimate_tokens(&json!([]), &Value::Null) >= 64);
+    }
+
+    fn daemon() -> (tempfile::TempDir, Arc<DaemonState>) {
+        let home = tempfile::tempdir().unwrap();
+        let settings = imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
+            .settings()
+            .unwrap();
+        let daemon = DaemonState::with_secrets(
+            imperium_config::Paths::under(home.path()),
+            settings,
+            None,
+            Arc::new(imperium_config::MemorySecrets::new()),
+        );
+        (home, daemon)
+    }
+
+    /// A call admitted to the budgets and the places in flight, whose prompt is estimated at 42
+    /// tokens.
+    fn call(daemon: &Arc<DaemonState>) -> Call {
+        Call {
+            local: None,
+            daemon: Arc::clone(daemon),
+            id: "llamacpp:m".into(),
+            model: "m".into(),
+            pricing: None,
+            prompt_estimate: 42,
+            started: Instant::now(),
+            finished: AtomicBool::new(false),
+            _reservation: budgets::reserve_api_call(daemon, "llamacpp:m", 100, 0.0).unwrap(),
+            _permit: daemon.openai().try_permit(4).unwrap(),
+        }
+    }
+
+    fn recorded_tokens(daemon: &DaemonState) -> u64 {
+        let today = chrono::Local::now().date_naive();
+        daemon.budgets().usage(today, 1, None).0[0].tokens
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_server_that_never_begins_its_answer_is_given_up_on_and_the_call_still_counts() {
+        let (_home, daemon) = daemon();
+        let call = call(&daemon);
+        let never = std::future::pending::<Result<(), reqwest::Error>>();
+        let begun = tokio::time::Instant::now();
+        let error = begin(&call, Duration::from_secs(600), never)
+            .await
+            .unwrap_err();
+        assert!(begun.elapsed() >= Duration::from_secs(600));
+        let message = error.to_json()["error"]["message"].to_string();
+        assert!(message.contains("within 600 s"), "{message}");
+        // The server held the request, so the model was used: dropping the call records it.
+        assert_eq!(recorded_tokens(&daemon), 0);
+        drop(call);
+        assert_eq!(recorded_tokens(&daemon), 42);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stream_that_goes_quiet_is_given_up_on_after_the_idle_timeout() {
+        let (_home, daemon) = daemon();
+        let call = call(&daemon);
+        let hello =
+            Bytes::from_static(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n");
+        let chunks = futures_util::stream::iter([Ok::<Bytes, reqwest::Error>(hello)])
+            .chain(futures_util::stream::pending());
+        let (send, mut receive) = mpsc::channel(8);
+        let begun = tokio::time::Instant::now();
+        pump(call, chunks, None, send, false).await;
+        assert!(begun.elapsed() >= STREAM_IDLE_TIMEOUT);
+        assert_eq!(STREAM_IDLE_TIMEOUT, Duration::from_secs(300));
+        let first = String::from_utf8(receive.recv().await.unwrap().to_vec()).unwrap();
+        assert!(first.contains("\"Hi\""), "{first}");
+        let second = String::from_utf8(receive.recv().await.unwrap().to_vec()).unwrap();
+        assert!(second.contains("sent nothing for 300 s"), "{second}");
+        assert!(receive.recv().await.is_none(), "the stream ends");
+        // What came before the silence is counted: the prompt, and a reply of two characters.
+        assert_eq!(recorded_tokens(&daemon), 43);
+    }
+
+    #[test]
+    fn a_hosted_endpoint_waits_as_long_as_runtime_max_wait_s_says() {
+        let (_home, daemon) = daemon();
+        let hosted = ResolvedModel {
+            spec: "x:m".into(),
+            endpoint: imperium_engine::Endpoint {
+                base_url: "http://127.0.0.1:9/v1".into(),
+                api_key: None,
+            },
+            model: "m".into(),
+            pricing: None,
+            local: false,
+            context_window: None,
+            kind: "openai".into(),
+            reasoning: None,
+        };
+        assert_eq!(start_limit(&daemon, &hosted), Duration::from_secs(600));
     }
 
     #[tokio::test(start_paused = true)]

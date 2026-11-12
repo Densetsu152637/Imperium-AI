@@ -1254,7 +1254,9 @@ Settings → API, `imperium api enable|disable|status|token [rotate]`, and `api.
   `allow_lan = true` is also set. That serves plain HTTP to the network: anyone who learns the
   token can use the models (and the hosted ones exposed), so the setting is documented as
   risky and logged at start. The port is chosen once and kept, so tools need configuring once;
-  if it is taken later the server reports the error instead of moving.
+  if it is taken later the server reports the error instead of moving. Turning `allow_lan`
+  off through `api.set` or Settings → API puts `bind` back on `127.0.0.1` when it was an
+  address beyond this computer, and leaves a loopback address you chose (such as `::1`).
 - **Authentication.** Every request, unknown routes included, needs
   `Authorization: Bearer <token>`; otherwise the answer is `401` with `invalid_api_key`. The
   token is separate from the daemon's: 32 random bytes made on first use, kept in the secret
@@ -1278,11 +1280,15 @@ Settings → API, `imperium api enable|disable|status|token [rotate]`, and `api.
   At most `max_concurrent` calls are in flight (running, or queued behind a model); one more
   is refused at once with `429` `rate_limit_exceeded`, and a call keeps its place until its
   answer, a streamed one included, has ended. Timeouts keep a stuck call from holding a slot:
-  a model server gets 10 minutes to begin its answer (to finish it, for a call that is not
-  streamed), a streamed answer may pause 5 minutes between chunks, and a client that leaves a
-  chunk unread for a minute is given up on, which ends the generation. A client that hangs up
-  does not escape the meter: the call is recorded by its estimate (the prompt, and nothing of
-  the reply) when it is dropped.
+  a local model's server gets that model's `max_wait_s` (its model-table row's or settings',
+  else `runtime.llamacpp.max_wait_s`, so a slow CPU-lane row is given longer) to begin its
+  answer, or to finish it for a call that is not streamed, and a hosted endpoint gets
+  `runtime.llamacpp.max_wait_s`; a streamed answer may pause 5 minutes between chunks; and a
+  client that leaves a chunk unread for a minute is given up on, which ends the generation.
+  A client that hangs up, or a server that holds the request and never answers, does not
+  escape the meter: the call is recorded by its estimate (the prompt, and what reply there
+  was) when it is dropped. Only a call the server refused or could not be reached for counts
+  nothing.
   The reply of a local model is capped by the slot's token reservation (`max_tokens` is
   clamped to it, which `runtime.llamacpp.max_output_tokens` sets; raise it, or set 0 for no
   cap, to allow longer replies).

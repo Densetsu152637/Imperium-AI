@@ -553,6 +553,52 @@ async fn a_failed_commit_leaves_the_index_as_it_was() {
     assert!(dir.join("new.txt").exists(), "the files are untouched");
 }
 
+/// The same on an unborn branch, where the repository has no commit and, with nothing staged, no
+/// index file: the index that `git add` made is removed again.
+#[tokio::test]
+async fn a_failed_commit_on_an_unborn_branch_leaves_no_index() {
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path().to_path_buf();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["config", "user.email", "t@example.com"]);
+    git(&dir, &["config", "user.name", "t"]);
+    git(&dir, &["config", "commit.gpgsign", "false"]);
+    git(&dir, &["config", "core.autocrlf", "false"]);
+    std::fs::write(dir.join("a.txt"), BEFORE).unwrap();
+    let index = dir.join(".git").join("index");
+    assert!(!index.exists(), "a fresh repository has no index file");
+    let url = serve(dir.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url, Some("allow"));
+    let mut connection = connect(&state).await;
+    let id = edited(&state, &dir).await;
+    let root =
+        ok::<SessionReviewResult>(&mut connection, "session.review", json!({"session_id": id}))
+            .await
+            .repos[0]
+            .clone();
+    git(&dir, &["config", "commit.cleanup", "bogus"]);
+    let failed = call(
+        &mut connection,
+        "session.review_commit",
+        json!({"session_id": id, "repo": root, "message": "x"}),
+    )
+    .await;
+    let message = failed.unwrap_err();
+    assert!(message.contains("cleanup"), "{message}");
+    assert!(
+        !message.contains("could not be put back"),
+        "the restore worked: {message}"
+    );
+    assert!(!index.exists(), "the index git made for the commit is gone");
+    let status = git(&dir, &["status", "--porcelain"]);
+    assert!(
+        status.contains("?? "),
+        "everything is untracked again: {status}"
+    );
+    assert!(dir.join("new.txt").exists(), "the files are untouched");
+}
+
 /// A stand-in for `gh` that records that it ran.
 fn fake_gh(dir: &Path) -> (PathBuf, PathBuf) {
     let log = dir.join("gh-ran");
