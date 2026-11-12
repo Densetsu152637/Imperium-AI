@@ -103,6 +103,10 @@ export function permissionsOfDraft(draft: PermissionDraft): AgentPermissions {
   return { mcp, mcp_servers, plugins, plugin_names, local_files_only: draft.localOnly };
 }
 
+/** Whether the user changed the permissions in the form (what they would send differs from what it opened with). */
+export const permissionsChanged = (initial: PermissionDraft, current: PermissionDraft): boolean =>
+  JSON.stringify(permissionsOfDraft(initial)) !== JSON.stringify(permissionsOfDraft(current));
+
 /** What a profile restricts, in a few words for the agent's row; null when it restricts nothing. */
 export function describePermissions(permissions: AgentPermissions | undefined): string | null {
   const p = permissions ?? DEFAULT_PERMISSIONS;

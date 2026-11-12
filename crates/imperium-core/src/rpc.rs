@@ -1177,6 +1177,8 @@ impl Connection {
                             self.state
                                 .permissions()
                                 .set_agent(&agent.id, &agent.permissions);
+                            self.state
+                                .agent_permissions_changed(&agent.id, &agent.permissions);
                             agent
                         }
                         None => agent,

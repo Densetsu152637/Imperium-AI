@@ -678,6 +678,7 @@ impl Agent {
     /// The tools offered to the model, and their definitions by breakdown category. Activated
     /// plugins' tools join from the call after their activation.
     fn offered_tools(&self) -> (Vec<ToolSpec>, Vec<(Category, String)>) {
+        self.enforce_lock();
         let (specs, groups) = self.tool_specs();
         let texts = tool_texts(&specs, &groups);
         (specs, texts)
@@ -1861,6 +1862,15 @@ impl Agent {
         }
     }
 
+    /// A session limited to local files runs no commands: the background commands it started
+    /// before the lock are stopped (`command_stop` is refused with the other shell tools).
+    fn enforce_lock(&self) {
+        let workspace = &self.shared.workspace;
+        if workspace.profile().local_files_only() && workspace.processes().running() > 0 {
+            workspace.processes().stop_all();
+        }
+    }
+
     /// Why the agent's permission profile refuses a call to the tool `name`, if it does. The
     /// tool list hides these tools, but a conversation can hold a stale list (the profile
     /// changed, or the model remembers a tool), so every call is checked again here.
@@ -1894,6 +1904,7 @@ impl Agent {
     async fn run_tool(&mut self, call: &ToolCall) -> String {
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
+        self.enforce_lock();
         if let Some(why) = self.profile_refusal(name) {
             return self.tool_finished(
                 call,

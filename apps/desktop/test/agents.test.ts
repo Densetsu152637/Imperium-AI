@@ -16,6 +16,7 @@ import {
   nameTaken,
   notStartedNotice,
   parseNames,
+  permissionsChanged,
   permissionsOfDraft,
 } from "../src/agents.ts";
 
@@ -104,4 +105,13 @@ test("local files only is shown as the whole limit, whatever the lists say", () 
   const locked = { ...DEFAULT_PERMISSIONS, local_files_only: true, mcp: "none" as const };
   assert.equal(describePermissions(locked), "Local files only");
   assert.equal(permissionsOfDraft(draftOfPermissions(locked)).local_files_only, true);
+});
+
+test("permissions are sent only when the form changed them", () => {
+  const opened = draftOfPermissions(undefined);
+  assert.equal(permissionsChanged(opened, { ...opened }), false);
+  // Typing names for a list that is not "named" changes nothing that would be sent.
+  assert.equal(permissionsChanged(opened, { ...opened, mcpNames: "slack" }), false);
+  assert.equal(permissionsChanged(opened, { ...opened, localOnly: true }), true);
+  assert.equal(permissionsChanged(opened, { ...opened, plugins: "none" }), true);
 });

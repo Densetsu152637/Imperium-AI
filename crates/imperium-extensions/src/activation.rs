@@ -43,7 +43,12 @@ pub struct PluginTools {
     active: Mutex<Vec<Active>>,
     /// One activation at a time, so two agents asking for one plugin start it once.
     starting: tokio::sync::Mutex<()>,
+    /// Which plugins may start at all (an agent's permission profile); none set allows every one.
+    allowed: Mutex<Option<PluginFilter>>,
 }
+
+/// Says whether a plugin may be activated.
+pub type PluginFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 impl std::fmt::Debug for PluginTools {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -63,6 +68,21 @@ impl PluginTools {
             plugins,
             ..Default::default()
         }
+    }
+
+    /// Limits which plugins may start: eager and restored plugins that the filter refuses do not
+    /// start with the session, and `activate` refuses them. Read at each activation, so it follows
+    /// a changing profile.
+    pub fn set_filter(&self, filter: PluginFilter) {
+        *self.allowed.lock().unwrap_or_else(PoisonError::into_inner) = Some(filter);
+    }
+
+    fn permitted(&self, name: &str) -> bool {
+        self.allowed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(|allowed| allowed(name))
     }
 
     /// Every plugin with servers, active or not.
@@ -98,6 +118,11 @@ impl PluginTools {
             .iter()
             .find(|plugin| plugin.name == name)
             .ok_or_else(|| format!("no plugin named {name:?} has tools to activate"))?;
+        if !self.permitted(name) {
+            return Err(format!(
+                "plugin {name:?} is not allowed by this agent's permission profile"
+            ));
+        }
         let _starting = self.starting.lock().await;
         if let Some(tools) = self.tools_of(name) {
             return Ok(Activation::AlreadyActive { tools });
@@ -129,6 +154,7 @@ impl PluginTools {
             .plugins
             .iter()
             .filter(|plugin| plugin.eager || restore.contains(&plugin.name))
+            .filter(|plugin| self.permitted(&plugin.name))
             .map(|plugin| plugin.name.clone())
             .collect();
         for name in names {
@@ -294,5 +320,18 @@ mod tests {
         assert_eq!(notices.len(), 2, "{notices:?}");
         assert!(notices[0].contains("eager"), "{notices:?}");
         assert!(notices[1].contains("restored"), "{notices:?}");
+    }
+
+    #[tokio::test]
+    async fn a_filter_keeps_refused_plugins_from_starting() {
+        let tools = PluginTools::new(vec![
+            plugin("eager", "imperium-no-such-command-for-tests", true),
+            plugin("restored", "imperium-no-such-command-for-tests", false),
+        ]);
+        tools.set_filter(Arc::new(|_| false));
+        // Nothing is attempted, so there is no failure to report either.
+        assert!(tools.start(&["restored".into()]).await.is_empty());
+        let error = tools.activate("eager").await.unwrap_err();
+        assert!(error.contains("permission profile"), "{error}");
     }
 }

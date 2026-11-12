@@ -105,12 +105,17 @@ pub struct SessionOptions {
     /// agent's own session, and the sessions it starts (which keep the binding after a restart).
     /// The profile only narrows the session.
     pub agent_id: Option<String>,
+    /// The profile recorded with a resumed session of an agent, used when the agent is gone.
+    #[doc(hidden)]
+    pub agent_recorded: Option<imperium_protocol::agents::AgentPermissions>,
 }
 
 /// Where a session works: its environment and every folder, the working directory first.
 #[derive(Debug, Clone, Default)]
 struct Placement {
     environment_id: Option<String>,
+    /// The persistent agent whose profile binds the session.
+    agent_id: Option<String>,
     folders: Vec<String>,
     persistent: bool,
     worktrees: Vec<SessionWorktree>,
@@ -547,20 +552,59 @@ impl DaemonState {
     }
 
     /// The profile of the persistent agent `agent_id` of `environment_id`, as the agent has it
-    /// now. An agent deleted since keeps the profile its running sessions hold; after a restart
-    /// nothing remembers it.
+    /// now, and the profile as the protocol carries it. An agent that is gone keeps the profile
+    /// its running sessions hold; after a restart the one recorded with the session, and with
+    /// no record the strictest profile there is: a session never gets looser than its agent.
     fn agent_profile(
         &self,
         environment_id: Option<&str>,
         agent_id: &str,
-    ) -> Option<imperium_tools::AgentProfile> {
-        let permissions = environment_id
+        recorded: Option<&imperium_protocol::agents::AgentPermissions>,
+    ) -> (
+        imperium_tools::AgentProfile,
+        imperium_protocol::agents::AgentPermissions,
+    ) {
+        let live = environment_id
             .and_then(|id| self.environments.get(id))
             .and_then(|env| env.agents.into_iter().find(|agent| agent.id == agent_id))
             .map(|agent| agent.permissions);
-        match permissions {
-            Some(permissions) => Some(self.permissions.agent_profile(agent_id, &permissions)),
-            None => self.permissions.known_agent(agent_id),
+        let permissions = match live {
+            Some(permissions) => permissions,
+            None => match self.permissions.known_agent(agent_id) {
+                Some(known) => return known,
+                None => recorded
+                    .cloned()
+                    .unwrap_or_else(crate::permissions::strictest_agent_permissions),
+            },
+        };
+        (
+            self.permissions.agent_profile(agent_id, &permissions),
+            permissions,
+        )
+    }
+
+    /// Records an agent's changed profile with the sessions it binds, so a session of an agent
+    /// deleted later is not looser than the agent was.
+    pub(crate) fn agent_permissions_changed(
+        &self,
+        agent_id: &str,
+        permissions: &imperium_protocol::agents::AgentPermissions,
+    ) {
+        let bound: Vec<String> = self
+            .placements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(_, placement)| placement.agent_id.as_deref() == Some(agent_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in bound {
+            self.update_meta(&id, |meta| {
+                meta.insert(
+                    "agent_permissions".into(),
+                    serde_json::to_value(permissions).unwrap_or_default(),
+                );
+            });
         }
     }
 
@@ -961,6 +1005,7 @@ impl DaemonState {
                     .and_then(|mode| mode.parse().ok()),
                 // A session an agent started stays under that agent's profile.
                 agent_id: meta["agent_id"].as_str().map(str::to_string),
+                agent_recorded: serde_json::from_value(meta["agent_permissions"].clone()).ok(),
                 ..SessionOptions::default()
             };
             let created = match meta["environment_id"].as_str() {
@@ -1369,12 +1414,16 @@ impl DaemonState {
             &options.runtime,
             options.environment_id.as_deref(),
         )?;
-        if let Some(profile) = options
-            .agent_id
-            .as_deref()
-            .and_then(|agent_id| self.agent_profile(options.environment_id.as_deref(), agent_id))
-        {
-            workspace = workspace.with_profile(profile);
+        // A session bound to an agent is limited by the agent's profile, and fails closed.
+        let bound = options.agent_id.as_deref().map(|agent_id| {
+            self.agent_profile(
+                options.environment_id.as_deref(),
+                agent_id,
+                options.agent_recorded.as_ref(),
+            )
+        });
+        if let Some((profile, _)) = &bound {
+            workspace = workspace.with_profile(profile.clone());
         }
         // An environment's sessions also get its repositories' worktrees, unless it turned them
         // off. A session started on its own worktrees keeps to them, so its edits stay apart
@@ -1397,6 +1446,7 @@ impl DaemonState {
         workspace.permissions().set_mode(permission_mode);
         let mut placement = Placement {
             environment_id: options.environment_id.clone(),
+            agent_id: options.agent_id.clone(),
             folders: workspace.folders_display(),
             persistent: options.persistent,
             worktrees: options.worktrees.clone(),
@@ -1425,13 +1475,22 @@ impl DaemonState {
         let catalog = self.session_catalog();
         // Connectors added or changed in the app since the daemon started apply to new sessions.
         let fresh = crate::connectors::saved_settings(&self.paths);
-        let (mcp, mut notices) = crate::mcp::session_servers(
+        let (mut mcp, mut notices) = crate::mcp::session_servers(
             fresh.as_ref().unwrap_or(&*self.settings()),
             project_dir_path,
             |name| self.secrets.load(name),
         );
         // Plugins' servers are not among `mcp`: they start when an agent activates the plugin.
         let mut extensions = self.extensions(project_dir_path);
+        // A profile also keeps servers from starting at all: a project's own `.mcp.json` names
+        // commands, and an agent that may write files must not get one run by starting a session.
+        if let Some((profile, _)) = &bound {
+            mcp.retain(|server| profile.allows_mcp(Some(&server.name)));
+            let profile = profile.clone();
+            extensions
+                .plugins
+                .set_filter(Arc::new(move |name| profile.allows_plugin(name)));
+        }
         let context = self.context(project_dir_path, &mut notices);
         let personality = self.personality(&mut notices);
         notices.append(&mut extensions.notices);
@@ -1652,6 +1711,7 @@ impl DaemonState {
                 "effort": effort.as_str(),
                 "permission_mode": permission_mode.as_str(),
                 "agent_id": options.agent_id,
+                "agent_permissions": bound.as_ref().map(|(_, permissions)| permissions),
             });
             let path = self.meta_path(&id);
             if let Err(error) = std::fs::write(&path, meta.to_string()) {

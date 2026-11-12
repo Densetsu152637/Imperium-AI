@@ -28,7 +28,7 @@ pub struct PermissionStore {
     environments: Mutex<HashMap<String, SharedRules>>,
     /// Each persistent agent's profile, by agent id: the handle its sessions (and the sessions
     /// and subagents they start) hold, so a change applies to them at once.
-    agents: Mutex<HashMap<String, AgentProfile>>,
+    agents: Mutex<HashMap<String, (AgentProfile, AgentPermissions)>>,
 }
 
 impl PermissionStore {
@@ -44,19 +44,18 @@ impl PermissionStore {
     /// The agent's profile handle, set to `permissions` (made on first use). Every session of
     /// the agent holds the same handle.
     pub fn agent_profile(&self, agent_id: &str, permissions: &AgentPermissions) -> AgentProfile {
-        let profile = self
-            .agents
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        let mut agents = self.agents.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = agents
             .entry(agent_id.to_string())
-            .or_default()
-            .clone();
-        profile.set(profile_rules(permissions));
-        profile
+            .or_insert_with(|| (AgentProfile::default(), permissions.clone()));
+        entry.1 = permissions.clone();
+        entry.0.set(profile_rules(permissions));
+        entry.0.clone()
     }
 
-    /// The profile handle of an agent that was started in this run, if there is one.
-    pub fn known_agent(&self, agent_id: &str) -> Option<AgentProfile> {
+    /// The profile handle of an agent that was started in this run, with the profile as the
+    /// protocol carries it, if there is one.
+    pub fn known_agent(&self, agent_id: &str) -> Option<(AgentProfile, AgentPermissions)> {
         self.agents
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -193,6 +192,16 @@ pub fn profile_rules(permissions: &AgentPermissions) -> ProfileRules {
         mcp: list(permissions.mcp, &permissions.mcp_servers),
         plugins: list(permissions.plugins, &permissions.plugin_names),
         local_files_only: permissions.local_files_only,
+    }
+}
+
+/// The strictest profile there is: local files only, no servers, no plugins.
+pub fn strictest_agent_permissions() -> AgentPermissions {
+    AgentPermissions {
+        mcp: ToolAccess::None,
+        plugins: ToolAccess::None,
+        local_files_only: true,
+        ..AgentPermissions::default()
     }
 }
 
@@ -652,7 +661,10 @@ mod tests {
         );
         // The same agent started again gets the same handle.
         assert_eq!(held, store.agent_profile("a1", &locked));
-        assert_eq!(store.known_agent("a1"), Some(held));
+        assert_eq!(
+            store.known_agent("a1").map(|(profile, _)| profile),
+            Some(held)
+        );
         assert_eq!(store.known_agent("nobody"), None);
     }
 

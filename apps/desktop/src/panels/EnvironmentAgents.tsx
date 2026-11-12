@@ -15,6 +15,7 @@ import {
   nameProblem,
   nameTaken,
   notStartedNotice,
+  permissionsChanged,
   permissionsOfDraft,
 } from "../agents";
 import type { DaemonClient } from "../daemon/client";
@@ -28,7 +29,14 @@ type Props = {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-type Draft = { id: string | null; name: string; role: string; access: PermissionDraft };
+type Draft = {
+  id: string | null;
+  name: string;
+  role: string;
+  access: PermissionDraft;
+  /** The permissions the form opened with: they are sent only when the user changed them. */
+  initial: PermissionDraft;
+};
 
 export function EnvironmentAgents({ environment, client, disabled }: Props) {
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -67,7 +75,7 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
       return;
     }
     setNotice(null);
-    const permissions = permissionsOfDraft(draft.access);
+    const permissions = permissionsChanged(draft.initial, draft.access) ? permissionsOfDraft(draft.access) : undefined;
     const outcome: { created: EnvironmentAgentCreated | null } = { created: null };
     const done = await run(async (c, environment_id) => {
       if (draft.id === null) {
@@ -113,7 +121,13 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
           type="button"
           onClick={() => {
             setError(null);
-            setDraft({ id: null, name: "", role: "", access: draftOfPermissions(undefined) });
+            setDraft({
+              id: null,
+              name: "",
+              role: "",
+              access: draftOfPermissions(undefined),
+              initial: draftOfPermissions(undefined),
+            });
           }}
           disabled={disabled || busy || !environment || draft !== null}
           title={environment ? "Add a persistent agent" : "Create the environment first"}
@@ -166,6 +180,7 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
                       name: agent.name,
                       role: agent.role,
                       access: draftOfPermissions(agent.permissions),
+                      initial: draftOfPermissions(agent.permissions),
                     });
                   }}
                 >
