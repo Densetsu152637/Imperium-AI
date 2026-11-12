@@ -72,7 +72,9 @@ is later work; until then, put Markdown files in `<config>/personalities/` by ha
   default compiled into the daemon, so the default works offline and with no pack. Personalities
   load even when `workflow.default_pack = false` or `workflow.enabled = false`: those switches
   govern packs and project instruction files, not the personality lookup. A local file that
-  exists but is unreadable or not UTF-8 is skipped with a warning (not silently).
+  exists but is unreadable or not UTF-8 is skipped with a warning (not silently): a notice in
+  the session that selected it and a line in the daemon log; the Settings list shows the
+  personality under its id and has no field for the warning.
   `marcus_aurelius.md` in the bundled snapshot comes from a newer upstream commit than the rest
   (recorded in its `PINNED` file).
 - **Where it goes:** only the root agent's system prompt, after the reply rules
