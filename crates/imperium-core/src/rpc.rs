@@ -35,6 +35,9 @@ use imperium_protocol::methods::{
     SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::methods::{ApiGet, ApiGetParams, ApiSet, ApiToken};
+use imperium_protocol::methods::{
+    EventsSubscribe, EventsSubscribeParams, EventsUnsubscribe, EventsUnsubscribeParams,
+};
 use imperium_protocol::permissions::{
     PermissionsAddRule, PermissionsGet, PermissionsGetParams, PermissionsSet,
 };
@@ -171,6 +174,8 @@ pub struct Connection {
     allowed: Option<Vec<&'static str>>,
     /// Set while this connection watches resources (`system.resources_subscribe`).
     resources: Option<crate::resources::Watch>,
+    /// The topics chosen with `events.subscribe`; narrows what `receives` lets through.
+    events: crate::events::EventFilter,
 }
 
 impl Connection {
@@ -185,6 +190,7 @@ impl Connection {
             handshake_done: false,
             allowed: None,
             resources: None,
+            events: crate::events::EventFilter::default(),
         }
     }
 
@@ -195,6 +201,7 @@ impl Connection {
             handshake_done: false,
             allowed: Some(allowed),
             resources: None,
+            events: crate::events::EventFilter::default(),
         }
     }
 
@@ -203,18 +210,20 @@ impl Connection {
         self.resources.is_some()
     }
 
-    /// Whether a daemon-wide announcement goes to this connection: resource snapshots only to
-    /// connections that asked for them, and benchmark progress (model ids, error text) never to a
-    /// restricted connection such as a paired phone.
+    /// Whether a notification goes to this connection: resource snapshots only to connections
+    /// that asked for them, and benchmark progress (model ids, error text) never to a restricted
+    /// connection such as a paired phone. The connection's own topic choice
+    /// (`events.subscribe`) is applied on top of that, so it can only narrow the result.
     pub fn receives(&self, notification: &imperium_protocol::jsonrpc::Notification) -> bool {
-        match notification.method.as_str() {
+        let permitted = match notification.method.as_str() {
             imperium_protocol::methods::RESOURCES_CHANGED => self.watches_resources(),
             imperium_protocol::methods::MODEL_BENCH_PROGRESS => self.allowed.is_none(),
             // Suggestions, reasons and sources are the user's own business, not a phone's.
             imperium_protocol::initiative::INITIATIVE_CHANGED
             | imperium_protocol::initiative::INITIATIVE_NOTICE => self.allowed.is_none(),
             _ => true,
-        }
+        };
+        permitted && self.events.allows(&notification.method)
     }
 
     /// Handles one text frame.
@@ -280,6 +289,18 @@ impl Connection {
                         .revoke(&params.id)
                         .map_err(|message| ErrorObject::new(codes::INTERNAL_ERROR, message))?;
                     Ok(PhoneRevokeResult { found })
+                })
+            }
+            EventsSubscribe::NAME => {
+                call::<EventsSubscribe>(request.params, |params: EventsSubscribeParams| {
+                    self.events.subscribe(&params.topics)?;
+                    Ok(self.events.selection())
+                })
+            }
+            EventsUnsubscribe::NAME => {
+                call::<EventsUnsubscribe>(request.params, |params: EventsUnsubscribeParams| {
+                    self.events.unsubscribe(&params.topics)?;
+                    Ok(self.events.selection())
                 })
             }
             SystemResources::NAME => call_later::<SystemResources, _>(
