@@ -75,7 +75,7 @@ the wait reason in the desktop.
    writable path grants outside environments (global package caches, toolchains) with per-OS
    presets, carried into the OS sandbox and container mounts
    ([05](05-tools-and-isolation.md#permissions), [07](07-desktop-ui.md#permissions-implemented)).
-   Permission modes (ask every time, accept edits, plan only, full access) remain to do.
+   Permission modes (ask every time, accept edits, plan only, full access) came with item 25.
 3. **Budgets and alerts** (implemented). Daily, weekly, and monthly token and cost budgets
    globally, per environment, per endpoint, and per model (configurable week start and monthly
    reset day, local time), with usage persisted across restarts; alerts at configurable
@@ -144,8 +144,11 @@ the wait reason in the desktop.
     ([04](04-models-and-routing.md#openai-compatible-local-api-implemented),
     [07](07-desktop-ui.md#api-settings-implemented), [10](10-configuration.md)). Speculative
     decoding and the benchmark are not.
-11. **Sharing and sync (design).** Design plans for session sharing and export, and for team
-    sync.
+11. **Sharing and sync (design)** (designed). Design plans for session sharing and export, and
+    for team sync: a portable session bundle with shared redaction, a mandatory preview and
+    read-only import with explicit forking, and team sync as a git-backed config layer that
+    narrows automatically and widens only on review, in phases from shared redaction and
+    settings export onward ([19](19-sharing-and-sync.md)). No code yet.
 12. **Environment file access** (implemented; bug, from use of the app so far, like the items
     after it). Agents failed to read paths an environment grants them: an agent could not open
     the Imperium-AI checkout given as the environment's first project path. The folder checks
@@ -238,11 +241,19 @@ the wait reason in the desktop.
     files agents attached or made export as Markdown or JSON (`session.export`, `imperium
     session export`, and *Export* in a session's menu), for archived sessions too
     ([07](07-desktop-ui.md#exporting-transcripts-implemented)).
-    Items 25–35 are described in the design docs but not built yet (their *planned* and
-    *later work* notes; each links to where it is described).
-25. **More tools and permission modes.** Glob and grep file tools, background processes for
-    `run_command`, and permission modes: ask every time, accept edits, plan only, full access
-    ([05](05-tools-and-isolation.md)).
+    Items 25–35 are described in the design docs and, unless marked implemented, not built yet
+    (their *planned* and *later work* notes; each links to where it is described).
+25. **More tools and permission modes** (implemented). `glob` and `grep` file tools that
+    honour `.gitignore`, folder checks, and deny rules, with paged output
+    ([05](05-tools-and-isolation.md#glob-and-grep-implemented)); background processes for
+    `run_command` with `command_output` and `command_stop`, capped and buffered per session and
+    killed with it ([05](05-tools-and-isolation.md#background-commands-implemented)); and
+    per-session permission modes (`ask`, `default`, `accept_edits`, `plan`, `full`) under deny
+    rules and a built-in safety floor, set by `permissions.mode`, `session.control`
+    `set_permission_mode`, `/mode` in the CLI, and the session footer
+    ([05](05-tools-and-isolation.md#permission-modes-implemented),
+    [07](07-desktop-ui.md#environments-and-sessions-implemented)). Remote runtimes do not have
+    the search tools or background commands yet.
 26. **Worktrees for parallel writers.** Parallel writing subagents each work in their own git
     worktree so concurrent edits never collide
     ([14](14-projects-and-automation.md#worktrees)).

@@ -45,7 +45,8 @@ problem: string | null,
 summary: string, llama_cpp_ref: string, 
 /**
  * Other `llama-server` executables found on this machine (on `PATH`, common build
- * folders), offered when none is set up.
+ * folders, and unpacked downloads in the home and Downloads folders), offered to the
+ * user. None is run or chosen automatically; `runtime.set_server` adopts one.
  */
 candidates: Array<string>, 
 /**

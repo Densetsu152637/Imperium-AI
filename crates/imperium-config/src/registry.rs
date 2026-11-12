@@ -175,6 +175,7 @@ pub static SETTINGS: &[SettingDef] = &[
     def("github.autofix.max_attempts_per_pr", "Auto-fix attempts", Integer, "Failing commits per pull request before auto-fix stops."),
     def("github.autofix.poll_s", "Auto-fix polling (seconds)", Integer, "How often pull requests are checked."),
     def("github.autofix.model", "Auto-fix model", STRING, "Model for fix sessions; empty uses the default model."),
+    live(choice("permissions.mode", "Permission mode", &["ask", "default", "accept_edits", "plan", "full"], "How new sessions approve their agents' actions: ask (before anything that is not read-only, whatever the allow rules say), default (writes and commands ask unless a rule allows them), accept_edits (file edits run without asking), plan (read and plan only: no writes or commands), or full (everything runs except what deny rules or the safety floor stop). Each session can change its own.")),
     choice("isolation.tier", "Isolation tier", &["policy", "os", "container"], "Where agents' commands run."),
     def("isolation.container_runtime", "Container runtime", STRING, "Container runtime for the container tier, such as docker."),
     def("isolation.container_image", "Container image", STRING, "Image commands run in for the container tier."),

@@ -5,7 +5,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::exec::DEFAULT_TIMEOUT_S;
-use crate::{Workspace, exec, files};
+use crate::search::{GrepQuery, Scope};
+use crate::{Workspace, exec, files, search};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ToolError {
@@ -51,10 +52,75 @@ pub enum Invocation {
     ListDir {
         path: String,
     },
+    Glob {
+        pattern: String,
+        scope: Scope,
+    },
+    Grep {
+        query: GrepQuery,
+        scope: Scope,
+    },
     RunCommand {
         command: String,
         timeout_s: u64,
+        /// Start it and return its id at once (see `command_output`, `command_stop`).
+        background: bool,
     },
+    /// New output of a background command.
+    CommandOutput {
+        id: String,
+        since: Option<u64>,
+    },
+    /// Stops a background command.
+    CommandStop {
+        id: String,
+    },
+}
+
+#[derive(Deserialize)]
+struct SearchArgs {
+    pattern: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    glob: Option<String>,
+    #[serde(default)]
+    case_insensitive: bool,
+    #[serde(default)]
+    context: Option<usize>,
+    #[serde(default)]
+    max_results: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    include_ignored: bool,
+}
+
+impl SearchArgs {
+    fn scope(&self) -> Scope {
+        Scope {
+            path: self
+                .path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .unwrap_or(".")
+                .to_string(),
+            include_ignored: self.include_ignored,
+            offset: self.offset.unwrap_or(0),
+            max_results: self
+                .max_results
+                .unwrap_or(search::DEFAULT_RESULTS)
+                .clamp(1, search::MAX_RESULTS),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ProcessArgs {
+    id: String,
+    #[serde(default)]
+    since: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -84,6 +150,8 @@ struct CommandArgs {
     command: String,
     #[serde(default)]
     timeout_s: Option<u64>,
+    #[serde(default)]
+    background: bool,
 }
 
 fn parse<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T, ToolError> {
@@ -179,22 +247,74 @@ impl Invocation {
                 let args = parse_path_args(arguments)?;
                 Invocation::ListDir { path: args.path }
             }
+            "glob" => {
+                let args: SearchArgs = parse(arguments)?;
+                Invocation::Glob {
+                    scope: args.scope(),
+                    pattern: args.pattern,
+                }
+            }
+            "grep" => {
+                let args: SearchArgs = parse(arguments)?;
+                Invocation::Grep {
+                    scope: args.scope(),
+                    query: GrepQuery {
+                        pattern: args.pattern,
+                        glob: args.glob.filter(|glob| !glob.trim().is_empty()),
+                        case_insensitive: args.case_insensitive,
+                        context: args.context.unwrap_or(0).min(search::MAX_CONTEXT),
+                    },
+                }
+            }
             "run_command" => {
                 let args: CommandArgs = parse(arguments)?;
                 Invocation::RunCommand {
                     command: args.command,
                     timeout_s: args.timeout_s.unwrap_or(DEFAULT_TIMEOUT_S).clamp(1, 3600),
+                    background: args.background,
                 }
+            }
+            "command_output" => {
+                let args: ProcessArgs = parse(arguments)?;
+                Invocation::CommandOutput {
+                    id: args.id,
+                    since: args.since,
+                }
+            }
+            "command_stop" => {
+                let args: ProcessArgs = parse(arguments)?;
+                Invocation::CommandStop { id: args.id }
             }
             other => return Err(ToolError::UnknownTool(other.to_string())),
         })
     }
 
+    /// What the call does. Reading a background command's output and stopping it count as
+    /// reads: they touch only what the session itself started.
     pub fn access(&self) -> Access {
         match self {
-            Invocation::ReadFile { .. } | Invocation::ListDir { .. } => Access::Read,
+            Invocation::ReadFile { .. }
+            | Invocation::ListDir { .. }
+            | Invocation::Glob { .. }
+            | Invocation::Grep { .. }
+            | Invocation::CommandOutput { .. }
+            | Invocation::CommandStop { .. } => Access::Read,
             Invocation::WriteFile { .. } | Invocation::EditFile { .. } => Access::Write,
             Invocation::RunCommand { .. } => Access::Execute,
+        }
+    }
+
+    /// The path a file tool names, for rule patterns; `None` for commands and processes.
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Invocation::ReadFile { path, .. }
+            | Invocation::WriteFile { path, .. }
+            | Invocation::EditFile { path, .. }
+            | Invocation::ListDir { path } => Some(path),
+            Invocation::Glob { scope, .. } | Invocation::Grep { scope, .. } => Some(&scope.path),
+            Invocation::RunCommand { .. }
+            | Invocation::CommandOutput { .. }
+            | Invocation::CommandStop { .. } => None,
         }
     }
 
@@ -204,7 +324,11 @@ impl Invocation {
             Invocation::WriteFile { .. } => "write_file",
             Invocation::EditFile { .. } => "edit_file",
             Invocation::ListDir { .. } => "list_dir",
+            Invocation::Glob { .. } => "glob",
+            Invocation::Grep { .. } => "grep",
             Invocation::RunCommand { .. } => "run_command",
+            Invocation::CommandOutput { .. } => "command_output",
+            Invocation::CommandStop { .. } => "command_stop",
         }
     }
 
@@ -217,7 +341,18 @@ impl Invocation {
             }
             Invocation::EditFile { path, .. } => format!("edit {path}"),
             Invocation::ListDir { path } => format!("list {path}"),
+            Invocation::Glob { pattern, scope } => format!("find {pattern} in {}", scope.path),
+            Invocation::Grep { query, scope } => {
+                format!("search {} for {}", scope.path, query.pattern)
+            }
+            Invocation::RunCommand {
+                command,
+                background: true,
+                ..
+            } => format!("run `{command}` in the background"),
             Invocation::RunCommand { command, .. } => format!("run `{command}`"),
+            Invocation::CommandOutput { id, .. } => format!("read the output of {id}"),
+            Invocation::CommandStop { id } => format!("stop {id}"),
         }
     }
 
@@ -237,11 +372,43 @@ impl Invocation {
                 new_string,
             } => files::edit_file(workspace, path, old_string, new_string).await,
             Invocation::ListDir { path } => files::list_dir(workspace, path).await,
-            Invocation::RunCommand { command, timeout_s } => {
-                exec::run_command(workspace, command, Duration::from_secs(*timeout_s)).await
+            Invocation::Glob { pattern, scope } => {
+                let (workspace, pattern, scope) =
+                    (workspace.clone(), pattern.clone(), scope.clone());
+                blocking(move || search::glob_files(&workspace, &pattern, &scope)).await
             }
+            Invocation::Grep { query, scope } => {
+                let (workspace, query, scope) = (workspace.clone(), query.clone(), scope.clone());
+                blocking(move || search::grep_files(&workspace, &query, &scope)).await
+            }
+            Invocation::RunCommand {
+                command,
+                background: true,
+                ..
+            } => {
+                let id = workspace.processes().start(workspace, command)?;
+                Ok(format!(
+                    "started {id} in the background. Read its output with command_output \
+                     {{\"id\": \"{id}\"}} and stop it with command_stop; it is stopped with the \
+                     session."
+                ))
+            }
+            Invocation::RunCommand {
+                command, timeout_s, ..
+            } => exec::run_command(workspace, command, Duration::from_secs(*timeout_s)).await,
+            Invocation::CommandOutput { id, since } => workspace.processes().output(id, *since),
+            Invocation::CommandStop { id } => workspace.processes().stop(id).await,
         }
     }
+}
+
+/// Runs a filesystem walk off the async runtime's threads.
+async fn blocking(
+    work: impl FnOnce() -> Result<String, ToolError> + Send + 'static,
+) -> Result<String, ToolError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| ToolError::Io(format!("the search failed: {error}")))?
 }
 
 /// Definitions of every built-in tool, as offered to the model.
@@ -275,12 +442,51 @@ pub fn specs() -> Vec<ToolSpec> {
             parameters: json!({"type": "object", "properties": {"path": path}, "required": ["path"]}),
         },
         ToolSpec {
+            name: "glob".into(),
+            description: "Find files by name under a folder (default the project root), sorted by path. A pattern without / matches the file name at any depth (*.rs); one with / matches the path relative to the folder (src/**/*.ts); {a,b} gives alternatives. Skips .git and files .gitignore ignores unless include_ignored. Page with offset.".into(),
+            parameters: json!({"type": "object", "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string", "description": "Folder to search; default the project root"},
+                "max_results": {"type": "integer", "description": "Default 100, at most 1000"},
+                "offset": {"type": "integer", "description": "Results to skip, for paging"},
+                "include_ignored": {"type": "boolean", "description": "Also search files .gitignore ignores"}
+            }, "required": ["pattern"]}),
+        },
+        ToolSpec {
+            name: "grep".into(),
+            description: "Search file contents for a regular expression (Rust regex syntax) under a folder or in one file. Prints path:line:text per matching line, context lines as path-line-text. Skips .git, binary files, and files .gitignore ignores unless include_ignored. Page with offset.".into(),
+            parameters: json!({"type": "object", "properties": {
+                "pattern": {"type": "string", "description": "Regular expression"},
+                "path": {"type": "string", "description": "Folder or file to search; default the project root"},
+                "glob": {"type": "string", "description": "Only files whose names match, such as *.rs or *.{ts,tsx}"},
+                "case_insensitive": {"type": "boolean"},
+                "context": {"type": "integer", "description": "Lines shown before and after each match, at most 10"},
+                "max_results": {"type": "integer", "description": "Matching lines to show; default 100, at most 1000"},
+                "offset": {"type": "integer", "description": "Matching lines to skip, for paging"},
+                "include_ignored": {"type": "boolean"}
+            }, "required": ["pattern"]}),
+        },
+        ToolSpec {
             name: "run_command".into(),
-            description: "Run a shell command in the project root and return its exit code, stdout, and stderr.".into(),
+            description: "Run a shell command in the project root and return its exit code, stdout, and stderr. With background: true (for servers and watchers) it returns a process id at once; read its output with command_output and end it with command_stop.".into(),
             parameters: json!({"type": "object", "properties": {
                 "command": {"type": "string"},
-                "timeout_s": {"type": "integer", "description": "Default 120"}
+                "timeout_s": {"type": "integer", "description": "Default 120; not used in the background"},
+                "background": {"type": "boolean", "description": "Start it and return its id without waiting"}
             }, "required": ["command"]}),
+        },
+        ToolSpec {
+            name: "command_output".into(),
+            description: "Read a background command's status and the output it wrote since the last read (or from byte since).".into(),
+            parameters: json!({"type": "object", "properties": {
+                "id": {"type": "string"},
+                "since": {"type": "integer", "description": "Byte offset to read from; default where the last read stopped"}
+            }, "required": ["id"]}),
+        },
+        ToolSpec {
+            name: "command_stop".into(),
+            description: "Stop a background command and every process it started.".into(),
+            parameters: json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
         },
     ]
 }
@@ -299,7 +505,11 @@ mod tests {
                 r#"{"path":"a","old_string":"x","new_string":"y"}"#,
             ),
             ("list_dir", r#"{"path":"."}"#),
+            ("glob", r#"{"pattern":"*.rs"}"#),
+            ("grep", r#"{"pattern":"fn main","context":2}"#),
             ("run_command", r#"{"command":"ls"}"#),
+            ("command_output", r#"{"id":"p1"}"#),
+            ("command_stop", r#"{"id":"p1"}"#),
         ];
         let names: Vec<String> = specs().into_iter().map(|spec| spec.name).collect();
         assert_eq!(names, samples.map(|(name, _)| name.to_string()));
@@ -325,9 +535,15 @@ mod tests {
             Invocation::parse("run_command", r#"{"command":"x","timeout_s":99999}"#).unwrap(),
             Invocation::RunCommand {
                 command: "x".into(),
-                timeout_s: 3600
+                timeout_s: 3600,
+                background: false
             }
         );
+        assert!(matches!(
+            Invocation::parse("grep", r#"{"pattern":"x","max_results":99999,"context":50}"#).unwrap(),
+            Invocation::Grep { query, scope }
+                if query.context == 10 && scope.max_results == 1000 && scope.path == "."
+        ));
     }
 
     fn path_of(name: &str, arguments: &str) -> String {

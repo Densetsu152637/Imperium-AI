@@ -322,6 +322,62 @@ export function needsRuntime(spec: string, runtime: RuntimeInfo | null | undefin
   return spec.startsWith("llamacpp:") && runtime != null && !runtime.installed && !runtime.auto_install;
 }
 
+/** A permission mode, as `session.control` `set_permission_mode` takes it. */
+export type PermissionMode = "ask" | "default" | "accept_edits" | "plan" | "full";
+
+const MODE_OPTIONS: SelectOption[] = [
+  { value: "plan", label: "Plan only", description: "Agents read and plan; no writes or commands" },
+  { value: "ask", label: "Ask every time", description: "Every write, edit, and command asks, whatever the rules allow" },
+  { value: "default", label: "Ask by rules", description: "Writes and commands ask unless a rule allows them" },
+  { value: "accept_edits", label: "Accept edits", description: "File edits run without asking; commands follow the rules" },
+  { value: "full", label: "Full access", description: "Everything runs except what deny rules or the safety floor stop" },
+];
+
+/**
+ * The open session's permission mode, beside its model and effort. A change applies from the
+ * agents' next call, during a turn too; deny rules and the safety floor hold in every mode.
+ */
+export function PermissionModeSelect({
+  current,
+  disabled,
+  onChange,
+}: {
+  /** The session's mode; daemons before protocol 0.17 send none, shown as default. */
+  current: PermissionMode | undefined;
+  disabled?: boolean;
+  /** Sets the mode; rejects with the daemon's reason. */
+  onChange: (mode: PermissionMode) => Promise<unknown>;
+}) {
+  const [pending, setPending] = useState<PermissionMode | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const choose = (value: string) => {
+    const mode = value as PermissionMode;
+    if (mode === current) return;
+    setPending(mode);
+    setError(null);
+    onChange(mode)
+      .catch((reason: unknown) => setError(message(reason)))
+      .finally(() => setPending(null));
+  };
+  return (
+    <span className="mode-select">
+      <Select
+        aria-label="Permission mode"
+        className="mode-select-button"
+        value={pending ?? current ?? "default"}
+        options={MODE_OPTIONS}
+        disabled={disabled || pending !== null}
+        onChange={choose}
+      />
+      {error && (
+        <span className="model-status error" role="alert" title={error}>
+          {error}
+        </span>
+      )}
+    </span>
+  );
+}
+
 /** A reasoning effort level, as `session.control` `set_effort` takes it. */
 export type Effort = "low" | "medium" | "high" | "max";
 

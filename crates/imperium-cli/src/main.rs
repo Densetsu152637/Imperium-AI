@@ -464,6 +464,10 @@ enum RuntimeCommand {
     },
     /// Show whether llama-server runs and sees the GPU, and what to do when it does not.
     Status,
+    /// List the llama-server executables found on this machine, including unpacked downloads
+    /// in the home and Downloads folders. None is run until you adopt one with
+    /// `imperium runtime use <path>` or `imperium config set runtime.llamacpp.custom_path <path>`.
+    Candidates,
     /// Use an existing llama-server (runtime.llamacpp.custom_path); without a path, go back
     /// to the installed runtime.
     Use { path: Option<PathBuf> },
@@ -622,6 +626,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Runtime {
             command: RuntimeCommand::Status,
         } => local::runtime_status(),
+        Command::Runtime {
+            command: RuntimeCommand::Candidates,
+        } => local::runtime_candidates(),
         Command::Runtime {
             command: RuntimeCommand::Use { path },
         } => local::use_server(path),

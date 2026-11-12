@@ -59,6 +59,18 @@ impl Sandbox {
         grants: &[GrantedPath],
         command: &str,
     ) -> Result<Command, ToolError> {
+        self.named_command(roots, grants, command, None)
+    }
+
+    /// Like [`Sandbox::command`]; a container is given `name`, so a background command's
+    /// container can be removed by name when it is stopped.
+    pub(crate) fn named_command(
+        &self,
+        roots: &[&Path],
+        grants: &[GrantedPath],
+        command: &str,
+        name: Option<&str>,
+    ) -> Result<Command, ToolError> {
         let Some(root) = roots.first() else {
             return Err(ToolError::Io("the workspace has no folder".into()));
         };
@@ -84,7 +96,12 @@ impl Sandbox {
                 network,
             } => {
                 let mut process = Command::new(runtime);
-                process.args(container_args(roots, grants, image, *network, command));
+                let mut args = container_args(roots, grants, image, *network, command);
+                if let Some(name) = name {
+                    // After `run --rm -i`.
+                    args.splice(3..3, ["--name".to_string(), name.to_string()]);
+                }
+                process.args(args);
                 Ok(process)
             }
         }

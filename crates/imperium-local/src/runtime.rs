@@ -1213,6 +1213,56 @@ mod tests {
         assert_eq!(pinned_build(), ref_build(llama_cpp_ref()));
     }
 
+    /// A fake `llama-server` that records that it ran.
+    #[cfg(unix)]
+    fn marker_server(dir: &Path, marker: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        let server = dir.join("llama-server");
+        std::fs::write(
+            &server,
+            format!(
+                "#!/bin/sh
+echo ran >> '{}'
+echo 'version: 6000 (abc)'
+",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        server
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unverified_download_is_listed_never_run_until_adopted() {
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let marker = home.path().join("ran.marker");
+        let server = marker_server(&home.path().join("Downloads/llama-b99999"), &marker);
+        let hardware = Hardware {
+            gpus: Vec::new(),
+            ram_total_bytes: 8 << 30,
+            ram_available_bytes: 4 << 30,
+            cpu_cores: 4,
+            unified_memory: false,
+            overridden: false,
+        };
+        let listed = runtime_check::find_unverified(Some(home.path()));
+        assert_eq!(listed, std::slice::from_ref(&server));
+        let mut settings = llama_settings();
+        let resolved = resolve(&settings, data.path(), &hardware, Some(home.path())).await;
+        assert_ne!(resolved.server, server);
+        assert!(!marker.exists(), "an unverified download was run");
+        settings.custom_path = Some(server.clone());
+        let adopted = resolve(&settings, data.path(), &hardware, Some(home.path())).await;
+        assert_eq!(adopted.source, SOURCE_CUSTOM);
+        assert_eq!(adopted.server, server);
+        assert!(runtime_check::check(&adopted.server, &hardware).await.runs);
+        assert!(marker.exists());
+    }
+
     fn llama_settings() -> LlamaCppSettings {
         imperium_config::Config::from_layers([imperium_config::Layer::defaults()])
             .settings()

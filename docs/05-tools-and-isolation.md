@@ -4,8 +4,8 @@
 
 | Tool group  | Tools                                                     | Notes                                            |
 | ----------- | --------------------------------------------------------- | ------------------------------------------------ |
-| Files       | `read_file`, `write_file`, `edit_file`, `list_dir` (implemented); glob and grep planned | Exact-match unique edits; reads numbered and paged with `offset`/`limit` |
-| Execution   | `run_command` (implemented); background processes planned | Runs in the project root via `cmd /C` (the line passed verbatim) or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr |
+| Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match unique edits; reads numbered and paged with `offset`/`limit`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
+| Execution   | `run_command`, `command_output`, `command_stop` (implemented) | Runs in the project root via `cmd /C` (the line passed verbatim) or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr; `background: true` [returns a process id at once](#background-commands-implemented) |
 | Web         | `web.search`, `web.fetch`                                 | Search providers: SearXNG (self-hosted), Brave, Tavily, Kagi; pluggable |
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
 | Agents      | `spawn_agent`, `await_tasks`, `send_to_task`, `cancel_task` | See [agent engine](03-agent-engine.md)        |
@@ -38,11 +38,69 @@ Implemented in phase 1 (`imperium-tools`): paths resolve inside the project fold
 escape it through `..`, absolute paths, or symbolic links (tier 0). Reads and listings run
 without asking; writes, edits, and commands ask the user, who can allow once, allow that tool
 for the rest of the session, or deny. [Path grants and rules](#permissions) open paths outside
-the folders and change what asks. On timeout the shell is killed, but processes it started
-may keep running until the OS sandbox tier adds process-tree cleanup.
+the folders and change what asks; [permission modes](#permission-modes-implemented) change it
+for a whole session. On timeout the shell is killed, but processes it started may keep running
+until the OS sandbox tier adds process-tree cleanup (background commands are stopped with their
+whole tree).
 
 All tools are described by JSON Schema and are also exposed over an MCP server endpoint, so
 external agents can use Imperium's tools.
+
+### Glob and grep (implemented)
+
+`glob(pattern, path?, max_results?, offset?, include_ignored?)` lists files by name and
+`grep(pattern, path?, glob?, case_insensitive?, context?, max_results?, offset?,
+include_ignored?)` searches their contents with a regular expression (Rust `regex` syntax).
+Both are read-only, so they never ask (an ask rule still asks, a deny rule still refuses), and:
+
+- `path` (default the working directory) is checked like `list_dir`'s: inside a folder, a
+  project worktree, or a grant, after resolving `..` and links; `grep` also takes one file.
+- The walk (the `ignore` crate, as ripgrep walks) skips `.git` and what `.gitignore`, `.ignore`,
+  and git's exclude files leave out, also outside a git repository; `include_ignored` lists
+  those too. Hidden files are included. Symbolic links are not followed into folders, and a link
+  to a file counts only when its target is inside the workspace.
+- Files an ask or deny rule covers, for the tool itself or for `read_file`, are left out (a
+  search cannot ask per file), and the output says how many; so `deny * **/.env` or
+  `ask read_file .env` keeps secrets out of searches too, and `read_file` still asks for one.
+- A pattern without `/` matches the file name at any depth (`*.rs`); one with `/` matches the
+  path relative to the searched folder (`src/**/*.ts`); `{a,b}` gives alternatives. `grep`'s
+  `glob` filters the files searched the same way.
+- `grep` prints `path:line:text` per matching line and `path-line-text` for up to 10 `context`
+  lines around each, with `--` between groups; it skips binary files (a NUL byte in the first
+  8 KiB) and files over 10 MiB, and cuts lines at 300 characters.
+- Results are sorted by path, `max_results` (default 100, at most 1000) per call, and the
+  output ends with the `offset` to page on; a walk stops after 200,000 entries and says so,
+  and one call returns at most 100,000 characters.
+
+Remote runtimes do not have them yet (the model is told to use `run_command` with `find` or
+`grep` there).
+
+### Background commands (implemented)
+
+`run_command` with `background: true` starts the command under the session's isolation tier
+(the same sandbox, folders, grants, and permission rules as a foreground command, and the same
+approval: a background command is a command) and returns its id (`p1`, `p2`, …) at once, for
+servers and watchers. `command_output(id, since?)` returns the process's status (`running for
+N s`, `exited with code N`, or `stopped`) and what it wrote to standard output and error since
+the last read, or from byte `since`, at most 30,000 bytes per call with the offset to continue
+from; `command_stop(id)` kills it with every process it started and waits up to 10 s for it to
+end. Everything a command starts stays reachable after the command itself exits (`sh -c 'x &'`,
+`start /b x`): on Unix the command leads its own process group, which is killed as a whole; on
+Windows it runs in a Job Object that kills every process in it when closed (and its process
+tree is killed first, for a child started before it joined the job); a container-tier
+command's container (named uniquely per daemon, session, and command) is removed with
+`docker rm -f`. A command that exited but left processes running says so in its status, still
+counts as running, and is never dropped from the table while they run. On Unix, a descendant
+that leaves the process group on purpose (`setsid`, `setpgid`, daemonising tools) escapes
+`command_stop` on the policy tier and on macOS; the Linux OS tier's process namespace and the
+container tier still end it with the command. Reading and stopping touch only what the session started, so they
+count as reads and never ask.
+
+A session runs at most 8 background commands at once and keeps the last 32 (finished ones are
+dropped oldest first); each keeps the last 1 MiB of output and says how much was dropped before
+it. Its processes are killed when the session is stopped, archived, or deleted, when its handle
+is dropped, and when the daemon shuts down (which waits up to 5 s for the kills). Remote
+runtimes do not run background commands yet.
 
 ### `ask_user`
 
@@ -250,8 +308,9 @@ turn a global `deny run_command cargo publish` into an allow with the same rule.
 matching rule the tool's default applies. A rule is checked before `tool.before` hooks run; an
 allow rule skips the approval but not the required-context check of
 [workflow enforcement](18-workflow-contract.md).
-*Always this session* still allows a tool for the session, including calls an ask rule would
-ask about. Rules apply to running sessions from their next call.
+*Always this session* allows a tool for the session where its default would ask, but an ask
+rule asks every time, whatever the session allowed (an allow rule is how to stop the asking).
+Rules apply to running sessions from their next call.
 
 Approval requests carry a `suggested_rule` (`permission_requested`): the command and its
 subcommand for a simple command line (none for a line of several commands, substitution, or
@@ -260,9 +319,76 @@ adds it to the session's environment with `permissions.add_rule` and allows the 
 
 Rules are a convenience on top of the folder sandbox and the isolation tiers, not a sandbox of
 their own: a shell can reach a denied program in ways a prefix cannot see (`sh -c`, scripts,
-aliases). Not yet: permission modes (ask every time, accept edits, plan only, full access),
-domain rules for `web_fetch`, an `auto` mode where a classifier approves routine actions, and
-logging decisions in the session journal beyond the events it already records.
+aliases). Not yet: domain rules for `web_fetch`, an `auto` mode where a classifier approves
+routine actions, and logging decisions in the session journal beyond the events it already
+records.
+
+### Permission modes (implemented)
+
+Each session has a permission mode, which decides calls together with the rules. New sessions
+people start begin in `permissions.mode` (default `default`); unattended ones (schedules,
+project agents, auto-fix) begin in `default`, since nobody is there to answer. A session
+changes its own with `session.control` `set_permission_mode` (`/mode <mode>` in `imperium chat`,
+the [selector in the session footer](07-desktop-ui.md#environments-and-sessions-implemented) in the app); the change
+applies from every agent's next call, also during a turn, is kept across restarts, and shows in
+the session summary's `permission_mode`.
+
+| Mode | Reads | File writes and edits | Commands | Other tools that ask (MCP, `web_fetch`, browser, media) |
+| --- | --- | --- | --- | --- |
+| `ask` (ask every time) | run | ask, every call | ask, every call | ask, every call |
+| `default` | run | allow rule, else ask | allow rule, else ask | allow rule, else ask |
+| `accept_edits` | run | run | allow rule, else ask | allow rule, else ask |
+| `plan` (plan only) | run | refused | refused | refused |
+| `full` (full access) | run | run | run | run |
+
+In every mode, deny rules refuse first and ask rules ask, every time. "Ask, every call" means
+allow rules and *Always this session* approvals are ignored (tools an unattended session was
+started with pre-approved still run). Plan mode refuses without asking, whatever the rules
+allow, and tells the model to present its plan; it also refuses `start_session` (the session
+started would not be in plan mode) and `memory_remember`. Tools that never ask (searching the
+web or earlier sessions, `ask_user`, delegation) still run, and the app-config tools
+(`set_model_card`, `install_extension`, `uninstall_extension`) count as tools that ask in `ask`
+and `plan`.
+
+**The safety floor** is a built-in check that applies everywhere: no mode, allow rule, session
+approval, or unattended session's pre-approved tools lift it (plan mode refuses the call
+anyway). Each call it covers asks every time; in an unattended session (auto-fix, schedules,
+project agents) the request waits in the approval queue, with a notification, until the user
+answers:
+
+- Commands that delete recursively or by force (`rm` with `-r`, `-R`, `-f`, `--recursive`,
+  `--force` anywhere in its arguments; `rmdir` / `rd` / `del` / `erase` with `/s` or `/q`;
+  PowerShell `Remove-Item` / `ri` / `rm` with `-Recurse` or `-Force`, also abbreviated;
+  `find -delete`), format or partition disks (`format`, `mkfs*`, `dd`, `diskpart`,
+  `Format-Volume`, `Clear-Disk`, `shred`), shut down (`shutdown`, `reboot`, `halt`,
+  `poweroff`), raise privileges (`sudo`, `su`, `doas`, `runas`), or rewrite git history or
+  discard work (`git push` with `--force`, `-f`, `--force-with-lease`, `--delete`, `--mirror`,
+  `--prune`, or a `+ref` / `:ref` refspec; `git reset --hard` / `--merge` / `--keep`;
+  `git clean` other than a dry run; `git branch -D`; `git checkout -- …`, `git checkout .`,
+  `git checkout -f`; `git restore`; `git stash drop` / `clear`; `filter-branch`), with git's
+  global options (`-C dir`, `-c k=v`, `--git-dir`) skipped. Each command of a line is checked,
+  including inside `$( )`, backticks, and parentheses; shells running a command string
+  (`sh`/`bash`/`zsh -c`, `cmd /c`, `powershell`/`pwsh` with `-Command` or with the command
+  as its arguments; an encoded PowerShell command always asks) and wrappers (`env`, including
+  `-u`/`-C` values and `-S` strings; `nice`; `nohup`; `time`; `timeout`, including `-s`/`-k`
+  values; `command`; `exec`; `eval`; `xargs`; `find -exec`; cmd's `call` and `start`) are
+  unwrapped; program names are compared without folder, extension, or case, and with quotes,
+  backslashes, and `^` removed (`r"m"`, `'r'm`, `r\m`, `r^m`); long options may be abbreviated
+  (`--recur`, `--for`); shell keywords (`if`, `then`, `do`, `while`, `until`, `!`, …) and
+  redirections (`>out`, `2> err`) before a command are skipped. These always ask: `$IFS` in a
+  line; a program word the floor cannot read (starting with `$` or a backtick, a brace
+  expansion such as `{r,}m`, or one with `<` or `>` glued to it); a shell fed commands by a
+  pipe, a here-string, or standard input (`… | sh`, `bash <<< …`, `bash<<<…`,
+  `powershell -Command -`); PowerShell running a string or another process (`iex`,
+  `Invoke-Expression`, `Start-Process`, `saps`, `Invoke-Command`); and `git -c alias.<name>=…`
+  with a `!` (shell) alias, quoted or not.
+- Writing files that hold secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
+  `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`) or anything with a `.git` folder
+  in its absolute path, such as a linked worktree's main repository's hooks.
+
+The floor is a **best-effort guard against an agent's mistakes, not a security boundary**: it
+reads the command line, so a script, an alias, or a program that deletes files itself passes
+it. The folder sandbox and the isolation tiers are what confine commands.
 
 ## Isolation tiers
 

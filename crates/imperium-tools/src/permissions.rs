@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, PoisonError, RwLock};
 
-pub use imperium_api::{PathGrant, PathMode, PermissionRule, RuleAction};
+pub use imperium_api::{PathGrant, PathMode, PermissionMode, PermissionRule, RuleAction};
 
 /// The tool whose rule patterns are command prefixes.
 pub const COMMAND_TOOL: &str = "run_command";
@@ -62,17 +62,37 @@ impl SharedRules {
     }
 }
 
-/// A session's rules: the global ones and its environment's.
+/// A session's permission mode, shared by its agents so a change applies from their next call.
+#[derive(Debug, Clone, Default)]
+pub struct SharedMode(Arc<RwLock<PermissionMode>>);
+
+impl SharedMode {
+    pub fn new(mode: PermissionMode) -> Self {
+        SharedMode(Arc::new(RwLock::new(mode)))
+    }
+
+    pub fn get(&self) -> PermissionMode {
+        *self.0.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn set(&self, mode: PermissionMode) {
+        *self.0.write().unwrap_or_else(PoisonError::into_inner) = mode;
+    }
+}
+
+/// A session's rules: the global ones and its environment's, and its permission mode.
 #[derive(Debug, Clone, Default)]
 pub struct Permissions {
     pub global: SharedRules,
     pub environment: SharedRules,
+    pub mode: SharedMode,
 }
 
 impl PartialEq for Permissions {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.global.0, &other.global.0)
             && Arc::ptr_eq(&self.environment.0, &other.environment.0)
+            && Arc::ptr_eq(&self.mode.0, &other.mode.0)
     }
 }
 
@@ -83,12 +103,182 @@ impl Permissions {
         Permissions {
             global,
             environment,
+            mode: SharedMode::default(),
+        }
+    }
+
+    /// The same rules, starting in `mode` (a handle of its own, not shared with `self`).
+    pub fn with_mode(self, mode: PermissionMode) -> Self {
+        Permissions {
+            mode: SharedMode::new(mode),
+            ..self
         }
     }
 
     /// What the rules say about a call to `tool` on `target`; `None` when no rule matches.
     pub fn evaluate(&self, tool: &str, target: &Target) -> Option<RuleAction> {
         evaluate(&self.global.get(), &self.environment.get(), tool, target)
+    }
+
+    /// Whether any rule could ask about or deny something, so callers can skip per-file checks
+    /// without.
+    pub fn has_ask_or_deny_rules(&self) -> bool {
+        self.global
+            .get()
+            .iter()
+            .chain(self.environment.get().iter())
+            .any(|rule| rule.action != RuleAction::Allow)
+    }
+
+    /// The session's permission mode now.
+    pub fn mode(&self) -> PermissionMode {
+        self.mode.get()
+    }
+
+    /// Changes the session's permission mode from its agents' next calls on.
+    pub fn set_mode(&self, mode: PermissionMode) {
+        self.mode.set(mode);
+    }
+}
+
+/// What a call does, for the permission mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallKind {
+    /// Reads, listings, searches: never changes anything.
+    Read,
+    /// Creates or changes files (`write_file`, `edit_file`).
+    Edit,
+    /// Runs a command.
+    Execute,
+    /// Another tool (MCP, web, browser, media, app config): `asks` is whether it asks by default.
+    Other { asks: bool },
+}
+
+/// What happens to a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// Runs without asking.
+    Run,
+    /// Asks the user. With `sticky`, a tool the user allowed for the session runs without
+    /// asking again; without it (ask-every-time mode, the safety floor) it asks every time.
+    Ask { sticky: bool },
+    /// Refused without asking.
+    Refuse(Refusal),
+}
+
+/// Why a call was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// A deny rule matched.
+    Rule,
+    /// The session is in plan mode, which only reads.
+    Plan,
+}
+
+/// How a call is decided from the session's mode, the matching rules' action (`rule`), and
+/// whether the built-in safety floor covers it (`floor`, see [`safety_floor`]).
+///
+/// Deny rules win in every mode. Plan mode refuses edits, commands, and tools that would ask.
+/// The safety floor asks (every time) in every other mode, whatever the allow rules say. Ask
+/// rules ask every time in every mode, even for a tool allowed for the session; otherwise:
+///
+/// | Mode | Read | Edit | Execute | Other tools |
+/// |---|---|---|---|---|
+/// | `ask` | runs | asks every time | asks every time | ask every time if they ask by default |
+/// | `default` | runs | allow rule or ask | allow rule or ask | allow rule, else their default |
+/// | `accept_edits` | runs | runs | allow rule or ask | allow rule, else their default |
+/// | `plan` | runs | refused | refused | refused if they would ask |
+/// | `full` | runs | runs | runs | run |
+pub fn decide_call(
+    mode: PermissionMode,
+    kind: CallKind,
+    rule: Option<RuleAction>,
+    floor: bool,
+) -> Decision {
+    if rule == Some(RuleAction::Deny) {
+        return Decision::Refuse(Refusal::Rule);
+    }
+    let asks_by_default = match kind {
+        CallKind::Read => false,
+        CallKind::Edit | CallKind::Execute => true,
+        CallKind::Other { asks } => asks,
+    };
+    // An ask rule asks every time: an "always this session" approval does not lift it.
+    let ask_rule = rule == Some(RuleAction::Ask);
+    if mode == PermissionMode::Plan {
+        return if kind == CallKind::Read || !(asks_by_default || ask_rule) {
+            if ask_rule {
+                Decision::Ask { sticky: false }
+            } else {
+                Decision::Run
+            }
+        } else {
+            Decision::Refuse(Refusal::Plan)
+        };
+    }
+    if (floor && kind != CallKind::Read) || ask_rule {
+        return Decision::Ask { sticky: false };
+    }
+    let allowed = rule == Some(RuleAction::Allow);
+    let ask = match mode {
+        PermissionMode::Ask => {
+            return if asks_by_default {
+                Decision::Ask { sticky: false }
+            } else {
+                Decision::Run
+            };
+        }
+        PermissionMode::Full => false,
+        PermissionMode::AcceptEdits if kind == CallKind::Edit => false,
+        _ => asks_by_default && !allowed,
+    };
+    if ask {
+        Decision::Ask { sticky: true }
+    } else {
+        Decision::Run
+    }
+}
+
+/// Built-in ask rules for writing files that hold secrets.
+const FLOOR_PATHS: &[&str] = &[
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+    "id_ed25519*",
+    "id_ecdsa*",
+    ".npmrc",
+    ".pypirc",
+    ".netrc",
+];
+
+/// Whether the built-in safety floor covers a call: a destructive command (see
+/// [`crate::floor`]), or writing a file that holds secrets or lies under any `.git` folder
+/// (a repository's own, or a linked worktree's main repository's). Reads are never covered.
+///
+/// The floor is a best-effort guard against an agent's mistakes, not a security boundary: it
+/// reads the command line, unwrapping common shells and wrappers, but cannot see what a script
+/// or program does.
+pub fn safety_floor(kind: CallKind, target: &Target) -> bool {
+    match (kind, target) {
+        (CallKind::Execute, Target::Command(line)) => crate::floor::dangerous_command(line),
+        (CallKind::Edit, Target::Path { absolute, .. }) => {
+            let fold = cfg!(any(windows, target_os = "macos"));
+            let in_git = absolute.split('/').any(|part| {
+                if fold {
+                    part.eq_ignore_ascii_case(".git")
+                } else {
+                    part == ".git"
+                }
+            });
+            in_git
+                || FLOOR_PATHS.iter().any(|pattern| {
+                    path_matches(pattern, absolute, None)
+                        || (fold && path_matches(pattern, &absolute.to_lowercase(), None))
+                })
+        }
+        _ => false,
     }
 }
 
@@ -258,7 +448,7 @@ fn risky(line: &str) -> bool {
 
 /// The line's commands, split at `;`, `&&`, `||`, `|`, `&`, and newlines. Quotes are not
 /// parsed: a separator inside quotes still splits, which only makes rules stricter.
-fn split_command(line: &str) -> Vec<String> {
+pub(crate) fn split_command(line: &str) -> Vec<String> {
     without_harmless_redirects(line)
         .split([';', '&', '|', '\n', '\r'])
         .map(str::trim)
@@ -373,7 +563,7 @@ fn path_matches(pattern: &str, absolute: &str, relative: Option<&str>) -> bool {
 }
 
 /// Glob matching: `**` matches anything, `*` anything but `/`, `?` one character but `/`.
-fn glob(pattern: &str, text: &str, fold: bool) -> bool {
+pub(crate) fn glob(pattern: &str, text: &str, fold: bool) -> bool {
     let normalize = |s: &str| -> Vec<char> {
         if fold {
             s.chars().flat_map(char::to_lowercase).collect()
@@ -501,6 +691,193 @@ pub fn validate_grant(grant: &PathGrant) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ASK: Decision = Decision::Ask { sticky: true };
+    const ASK_EVERY_TIME: Decision = Decision::Ask { sticky: false };
+    const RUN: Decision = Decision::Run;
+
+    #[test]
+    fn each_mode_decides_reads_edits_and_commands() {
+        use CallKind::{Edit, Execute, Read};
+        use PermissionMode::*;
+        let table = [
+            // mode, read, edit, execute, other that asks, other that does not
+            (
+                Ask,
+                RUN,
+                ASK_EVERY_TIME,
+                ASK_EVERY_TIME,
+                ASK_EVERY_TIME,
+                RUN,
+            ),
+            (Default, RUN, ASK, ASK, ASK, RUN),
+            (AcceptEdits, RUN, RUN, ASK, ASK, RUN),
+            (
+                Plan,
+                RUN,
+                Decision::Refuse(Refusal::Plan),
+                Decision::Refuse(Refusal::Plan),
+                Decision::Refuse(Refusal::Plan),
+                RUN,
+            ),
+            (Full, RUN, RUN, RUN, RUN, RUN),
+        ];
+        for (mode, read, edit, execute, asks, quiet) in table {
+            assert_eq!(decide_call(mode, Read, None, false), read, "{mode} read");
+            assert_eq!(decide_call(mode, Edit, None, false), edit, "{mode} edit");
+            assert_eq!(
+                decide_call(mode, Execute, None, false),
+                execute,
+                "{mode} execute"
+            );
+            assert_eq!(
+                decide_call(mode, CallKind::Other { asks: true }, None, false),
+                asks,
+                "{mode} other"
+            );
+            assert_eq!(
+                decide_call(mode, CallKind::Other { asks: false }, None, false),
+                quiet,
+                "{mode} quiet other"
+            );
+        }
+    }
+
+    #[test]
+    fn allow_rules_count_except_in_ask_and_plan_modes() {
+        use PermissionMode::*;
+        let allow = Some(RuleAction::Allow);
+        assert_eq!(decide_call(Default, CallKind::Execute, allow, false), RUN);
+        assert_eq!(
+            decide_call(AcceptEdits, CallKind::Execute, allow, false),
+            RUN
+        );
+        assert_eq!(
+            decide_call(Ask, CallKind::Execute, allow, false),
+            ASK_EVERY_TIME
+        );
+        assert_eq!(
+            decide_call(Ask, CallKind::Edit, allow, false),
+            ASK_EVERY_TIME
+        );
+        assert_eq!(
+            decide_call(Plan, CallKind::Execute, allow, false),
+            Decision::Refuse(Refusal::Plan)
+        );
+        assert_eq!(
+            decide_call(Plan, CallKind::Edit, allow, false),
+            Decision::Refuse(Refusal::Plan)
+        );
+        // Ask rules ask every time in every mode, full access included: a session's "always"
+        // approval does not lift them.
+        let ask = Some(RuleAction::Ask);
+        for mode in PermissionMode::ALL {
+            assert_eq!(
+                decide_call(mode, CallKind::Read, ask, false),
+                ASK_EVERY_TIME,
+                "{mode}"
+            );
+            if mode != Plan {
+                assert_eq!(
+                    decide_call(mode, CallKind::Execute, ask, false),
+                    ASK_EVERY_TIME,
+                    "{mode}"
+                );
+            }
+        }
+        assert_eq!(
+            decide_call(Ask, CallKind::Execute, ask, false),
+            ASK_EVERY_TIME
+        );
+    }
+
+    #[test]
+    fn deny_rules_and_the_safety_floor_win_in_every_mode() {
+        for mode in PermissionMode::ALL {
+            for kind in [
+                CallKind::Read,
+                CallKind::Edit,
+                CallKind::Execute,
+                CallKind::Other { asks: false },
+            ] {
+                assert_eq!(
+                    decide_call(mode, kind, Some(RuleAction::Deny), false),
+                    Decision::Refuse(Refusal::Rule),
+                    "{mode} {kind:?}"
+                );
+            }
+            let floored = decide_call(mode, CallKind::Execute, Some(RuleAction::Allow), true);
+            if mode == PermissionMode::Plan {
+                assert_eq!(floored, Decision::Refuse(Refusal::Plan));
+            } else {
+                assert_eq!(floored, ASK_EVERY_TIME, "{mode}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_safety_floor_covers_destructive_commands_and_secret_files() {
+        let floor = |line: &str| safety_floor(CallKind::Execute, &command(line));
+        assert!(floor("rm -rf build"));
+        assert!(floor("cargo test && rm -fr /"));
+        assert!(floor("git push --force origin main"));
+        assert!(floor("git reset --hard HEAD~1"));
+        assert!(floor("sudo apt install x"));
+        assert!(!floor("cargo test"));
+        assert!(!floor("git push origin main"));
+        assert!(!floor("rm notes.txt"));
+        let path = |relative: &str| Target::Path {
+            absolute: format!("/p/{relative}"),
+            relative: Some(relative.into()),
+        };
+        assert!(safety_floor(CallKind::Edit, &path(".env")));
+        assert!(safety_floor(CallKind::Edit, &path("config/.env.local")));
+        assert!(safety_floor(CallKind::Edit, &path(".git/config")));
+        assert!(safety_floor(CallKind::Edit, &path("certs/server.pem")));
+        assert!(!safety_floor(CallKind::Edit, &path("src/main.rs")));
+        assert!(!safety_floor(CallKind::Read, &path(".env")));
+        assert!(!safety_floor(
+            CallKind::Edit,
+            &path(".github/workflows/ci.yml")
+        ));
+    }
+
+    #[test]
+    fn writes_under_any_git_folder_are_floored_wherever_they_are() {
+        // A linked worktree's main repository lies outside the working directory: its hooks
+        // are reached by absolute path, with no relative path at all.
+        let outside = |absolute: &str| Target::Path {
+            absolute: absolute.into(),
+            relative: None,
+        };
+        assert!(safety_floor(
+            CallKind::Edit,
+            &outside("/home/me/repo/.git/hooks/pre-commit")
+        ));
+        assert!(safety_floor(
+            CallKind::Edit,
+            &outside("D:/Git Repositories/repo/.git/worktrees/feature/HEAD")
+        ));
+        assert!(safety_floor(CallKind::Edit, &outside("/srv/repo/.git")));
+        assert!(safety_floor(
+            CallKind::Edit,
+            &outside("/srv/keys/deploy.pem")
+        ));
+        assert!(!safety_floor(
+            CallKind::Edit,
+            &outside("/srv/repo/.gitignore")
+        ));
+        assert!(!safety_floor(CallKind::Edit, &outside("/srv/repo.git/x")));
+    }
+
+    #[test]
+    fn the_mode_is_shared_by_clones() {
+        let permissions = Permissions::default().with_mode(PermissionMode::Plan);
+        let copy = permissions.clone();
+        copy.set_mode(PermissionMode::Full);
+        assert_eq!(permissions.mode(), PermissionMode::Full);
+        assert_eq!(Permissions::default().mode(), PermissionMode::Default);
+    }
 
     fn rule(tool: &str, pattern: &str, action: RuleAction) -> PermissionRule {
         PermissionRule {

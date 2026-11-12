@@ -4,16 +4,21 @@
 
 mod exec;
 mod files;
+mod floor;
 mod invocation;
 pub mod permissions;
+mod processes;
 mod project_worktrees;
 mod remote_files;
 pub mod runtime;
 mod sandbox;
+mod search;
 mod workspace;
 
 pub use exec::shell;
 pub use invocation::{Access, Invocation, ToolError, specs};
+pub use processes::Processes;
 pub use runtime::{ProcessRunner, ProcessSpec, Remote, RunOutput, Runner};
 pub use sandbox::Sandbox;
+pub use search::{GrepQuery, Scope};
 pub use workspace::{GrantedPath, Workspace, plain as plain_path};
