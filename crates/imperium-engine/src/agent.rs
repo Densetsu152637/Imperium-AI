@@ -1329,14 +1329,11 @@ impl Agent {
             .environment
             .as_ref()
             .ok_or("this session is not in an environment, so it has no Memory.md")?;
-        // Entries that would be refused are refused before the user is asked about them.
-        imperium_memory::environment::EnvironmentMemory::check(
-            &args.name,
-            &args.description,
-            &args.kind,
-            &args.body,
-        )
-        .map_err(|error| error.to_string())?;
+        // Entries that would be refused (including one that would take the file past its size
+        // limit) are refused before the user is asked about them.
+        environment
+            .check_fits(&args.name, &args.description, &args.kind, &args.body)
+            .map_err(|error| error.to_string())?;
         match memory.environment_policy() {
             WritePolicy::Off => {
                 return Err("saving environment memories is turned off".into());

@@ -375,7 +375,11 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
                 </li>
               ))}
               {folders.length === 0 && (
-                <li className="muted">No folders yet. Add one to start sessions here; the first is the working directory.</li>
+                <li className="muted">
+                  {environment?.builtin
+                    ? "Home has no project folders: its sessions work in their own scratch folders. Add a folder only to open a project to them."
+                    : "No folders yet. Add one to start sessions here; the first is the working directory."}
+                </li>
               )}
             </ul>
           </section>
@@ -432,6 +436,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             projectWorktrees={projectWorktrees}
             onProjectWorktrees={setProjectWorktrees}
             disabled={busy || !client}
+            fixedLocal={environment?.builtin === true}
             testBlocked={
               creating ? "Create the environment first" : runtimeChanged ? "Save the runtime first" : null
             }
@@ -449,6 +454,7 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
 
           <footer className="environment-footer">
             {!creating &&
+              !environment.builtin &&
               (deleting ? (
                 <span className="environment-delete-confirm" role="group" aria-label="Confirm delete">
                   <span>Delete {environment.name}? Folders on disk are untouched.</span>

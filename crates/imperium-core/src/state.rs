@@ -94,6 +94,13 @@ pub struct SessionOptions {
     /// start, and `default` for unattended ones (background or with pre-approved tools), which
     /// nobody is there to answer for.
     pub permission_mode: Option<imperium_api::PermissionMode>,
+    /// The caller already holds the working-folders lock (a Home session made its folder under
+    /// it), so the session must not take it again.
+    #[doc(hidden)]
+    pub workspaces_locked: bool,
+    /// Home's session folder, made by [`DaemonState::create_in_environment`].
+    #[doc(hidden)]
+    pub home_dir: Option<String>,
 }
 
 /// Where a session works: its environment and every folder, the working directory first.
@@ -1425,10 +1432,11 @@ impl DaemonState {
         // session gets a new, empty one), deleted when the session is archived or deleted.
         let local = workspace.runtime().is_none();
         // Held until the session is in the maps, so a move of the working folders sees it.
-        let _workspaces = self
-            .workspaces_lock
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _workspaces = (!options.workspaces_locked).then(|| {
+            self.workspaces_lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        });
         let workspace = match (&placement.environment_id, remember && local) {
             (Some(environment), true) => match self.session_scratch(environment, &id) {
                 Some(dir) => workspace.with_scratch(&dir),
@@ -1669,15 +1677,55 @@ impl DaemonState {
             .environments
             .get(environment_id)
             .ok_or_else(|| EnvironmentError::NotFound(environment_id.to_string()))?;
-        if env.folders.is_empty() {
+        let mut options = options;
+        // Home with no project folders works in its session's own scratch folder. The folder
+        // is made under the working-folders lock, which the session keeps until it exists.
+        let _home_lock;
+        // The id of a new Home session whose folder this call made, to take it back if the
+        // session does not start.
+        let mut made_home_folder = None;
+        if env.folders.is_empty() && env.builtin && !options.workspaces_locked {
+            if options.worktree {
+                return Err(CreateError::Worktree(
+                    "Home has no project folders to start on a worktree".into(),
+                ));
+            }
+            // The model is checked first, so a refusal leaves no folder behind.
+            match self.resolve_model(model) {
+                Ok(_) => {}
+                Err(ModelError::NoDefault) if options.may_wait_for_model => {}
+                Err(error) => return Err(error.into()),
+            }
+            _home_lock = self
+                .workspaces_lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            options.workspaces_locked = true;
+            let id = match options.resume_id.clone().or_else(|| options.id.clone()) {
+                Some(id) => id,
+                None => new_session_id().map_err(|error| CreateError::Start(error.to_string()))?,
+            };
+            let dir = crate::workspaces::ensure_session_dir(&self.workspaces_root(), &env.id, &id)
+                .map_err(|error| {
+                    CreateError::Start(format!("could not make Home's working folder: {error}"))
+                })?;
+            if options.resume_id.is_none() {
+                made_home_folder = Some(id.clone());
+            }
+            options.id = Some(id);
+            options.home_dir = Some(dir.display().to_string());
+        }
+        if env.folders.is_empty() && options.home_dir.is_none() {
             return Err(EnvironmentError::Invalid(format!(
                 "the environment {} has no folders yet; add one first",
                 env.name
             ))
             .into());
         }
-        let mut options = options;
-        let mut folders = env.folders.clone();
+        let mut folders = match options.home_dir.take() {
+            Some(dir) => vec![dir],
+            None => env.folders.clone(),
+        };
         if !options.worktrees.is_empty() {
             // A resumed session goes back to its worktrees.
             folders = crate::worktrees::apply(&folders, &options.worktrees);
@@ -1710,7 +1758,13 @@ impl DaemonState {
             runtime: env.runtime.clone(),
             ..options
         };
-        self.create_session_with(first, model, options)
+        let created = self.create_session_with(first, model, options);
+        if created.is_err()
+            && let Some(id) = made_home_folder
+        {
+            self.remove_session_scratch(&env.id, &id);
+        }
+        created
     }
 
     /// Stops and forgets a session so it does not continue after a restart, removing its

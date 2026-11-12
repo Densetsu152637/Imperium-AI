@@ -197,7 +197,11 @@ async fn a_bare_project_folder_becomes_an_environment() {
     assert!(first["environment_id"].is_string());
     assert_eq!(first["environment_id"], second["environment_id"]);
     let envs = call(&mut connection, 4, "environments.list", json!({}));
-    assert_eq!(envs["environments"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        envs["environments"].as_array().unwrap().len(),
+        2,
+        "Home and the project's environment"
+    );
 }
 
 #[tokio::test]
@@ -287,7 +291,7 @@ async fn pins_on_environments_and_sessions_survive_a_restart() {
     let mut connection = Connection::new(Arc::clone(&state));
     call(&mut connection, 1, "system.handshake", handshake);
     let envs = call(&mut connection, 2, "environments.list", json!({}));
-    assert_eq!(envs["environments"][0]["pinned"], true);
+    assert_eq!(envs["environments"][1]["pinned"], true);
     let listed = call(&mut connection, 3, "session.list", json!({}));
     assert_eq!(listed["sessions"][0]["session_id"], session_id.as_str());
     assert_eq!(listed["sessions"][0]["pinned"], true);
@@ -383,7 +387,7 @@ async fn environment_grants_open_paths_and_rules_deny_calls() {
     assert_eq!(added["environment_id"], env_id.as_str());
     let listed = call(&mut connection, 6, "environments.list", json!({}));
     assert_eq!(
-        listed["environments"][0]["permissions"]["rules"]
+        listed["environments"][1]["permissions"]["rules"]
             .as_array()
             .unwrap()
             .len(),
