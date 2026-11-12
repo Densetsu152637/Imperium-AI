@@ -28,7 +28,9 @@ Browser tools (`browser_open`, `browser_read`, `browser_click`, `browser_type`) 
 Chromium, or Edge over the DevTools Protocol, found in the usual install locations or set with
 `web.browser_path`. The browser runs with its own profile in `<data>/browser` (never the user's
 profile, so no saved logins), headless by default (`web.headless`), started on first use and
-shared by a session's agents. Opening a page follows the `web_fetch` domain rule; clicking and
+shared by a session's agents. Starting it waits for the browser's own start-up to finish (a
+fresh profile can take it 10 to 45 s on a slow machine; the wait is up to 90 s) so that the first
+page opens at normal speed. Opening a page follows the `web_fetch` domain rule; clicking and
 typing always ask unless allowed for the session. After every action the session emits a
 `browser_view` event with the page's URL, title, and a JPEG screenshot, which the desktop's
 Browser panel shows, so the user sees what the agent sees. The user can take the browser over
