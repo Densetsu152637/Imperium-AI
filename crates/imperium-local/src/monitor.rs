@@ -4,7 +4,8 @@
 //! `nvidia-smi` (which reports NVML's counters); without an NVIDIA driver the GPU list is
 //! empty. Callers depend on the [`Probe`] trait so tests can use fakes.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
@@ -183,12 +184,38 @@ fn nvidia_smi(args: &[&str]) -> Option<String> {
         // CREATE_NO_WINDOW: the daemon has no console, so a child would otherwise open one.
         command.creation_flags(0x0800_0000);
     }
-    let output = command.output().ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    // Read on a thread so a full pipe cannot stop the child, and give up on a hung driver.
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+        text
+    });
+    let deadline = Instant::now() + NVIDIA_SMI_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let text = reader.join().ok()?;
+    status.success().then_some(text)
 }
+
+/// Longest `nvidia-smi` may take before it is given up on and killed.
+const NVIDIA_SMI_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A number field, or `None` for `[N/A]` and the like.
 fn number(field: &str) -> Option<f32> {

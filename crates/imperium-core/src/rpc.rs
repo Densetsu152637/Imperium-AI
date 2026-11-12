@@ -62,6 +62,10 @@ use imperium_protocol::methods::{
     RuntimeUpdateExternal,
 };
 use imperium_protocol::methods::{
+    ModelBench, ModelBenchCancel, ModelBenchCancelParams, ModelBenchCancelResult,
+    ModelBenchResults, ModelBenchResultsParams,
+};
+use imperium_protocol::methods::{
     ModelConfig, ModelConfigParams, ModelSetConfig, ModelSetConfigParams,
 };
 use imperium_protocol::methods::{
@@ -188,6 +192,17 @@ impl Connection {
     /// Whether this connection wants `system.resources_changed` notifications.
     pub fn watches_resources(&self) -> bool {
         self.resources.is_some()
+    }
+
+    /// Whether a daemon-wide announcement goes to this connection: resource snapshots only to
+    /// connections that asked for them, and benchmark progress (model ids, error text) never to a
+    /// restricted connection such as a paired phone.
+    pub fn receives(&self, notification: &imperium_protocol::jsonrpc::Notification) -> bool {
+        match notification.method.as_str() {
+            imperium_protocol::methods::RESOURCES_CHANGED => self.watches_resources(),
+            imperium_protocol::methods::MODEL_BENCH_PROGRESS => self.allowed.is_none(),
+            _ => true,
+        }
     }
 
     /// Handles one text frame.
@@ -648,6 +663,21 @@ impl Connection {
                 call::<ModelDownloadCancel>(request.params, |params: ModelDownloadCancelParams| {
                     Ok(ModelDownloadCancelResult {
                         found: self.state.downloads().cancel(&self.state, &params.job_id),
+                    })
+                })
+            }
+            ModelBench::NAME => call::<ModelBench>(request.params, |params| {
+                crate::bench::start(Arc::clone(&self.state), params)
+            }),
+            ModelBenchResults::NAME => {
+                call::<ModelBenchResults>(request.params, |params: ModelBenchResultsParams| {
+                    Ok(crate::bench::results(&self.state, params))
+                })
+            }
+            ModelBenchCancel::NAME => {
+                call::<ModelBenchCancel>(request.params, |params: ModelBenchCancelParams| {
+                    Ok(ModelBenchCancelResult {
+                        found: self.state.bench().cancel(&self.state, &params.run_id),
                     })
                 })
             }

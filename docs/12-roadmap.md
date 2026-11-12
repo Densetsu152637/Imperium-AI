@@ -148,8 +148,14 @@ the wait reason in the desktop.
     and count toward budgets as the `api` source, hosted models only by explicit per-model
     opt-in, Settings → API and `imperium api`
     ([04](04-models-and-routing.md#openai-compatible-local-api-implemented),
-    [07](07-desktop-ui.md#api-settings-implemented), [10](10-configuration.md)). Speculative
-    decoding and the benchmark are not.
+    [07](07-desktop-ui.md#api-settings-implemented), [10](10-configuration.md)). The local
+    model benchmark is implemented too: `models.bench` (Settings → Models, `imperium models
+    bench [<id>]`) loads each chosen model through the normal residency path as a background
+    call, never unasked and cancellable, and measures load time, time to first token, prompt and
+    generation speed and peak memory from the real stream, saved per model, hardware fingerprint
+    and date ([04](04-models-and-routing.md#local-model-benchmark-implemented),
+    [07](07-desktop-ui.md#local-model-benchmark-implemented)). Protocol 0.21. Speculative
+    decoding is not.
 11. **Sharing and sync (design)** (designed). Design plans for session sharing and export, and
     for team sync: a portable session bundle with shared redaction, a mandatory preview and
     read-only import with explicit forking, and team sync as a git-backed config layer that
