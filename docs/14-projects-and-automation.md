@@ -119,24 +119,32 @@ on the drive where their other data is kept):
   ([17](17-memory.md#environment-memory-implemented)). It is created on its first write.
 - **Moving the folders.** Changing `workspaces.root` (Settings → *Working folders*, `imperium
   config set workspaces.root <path>`, `imperium workspaces move <path>`, or `workspaces.move`)
-  moves everything to the new place before the setting is saved:
-  - the new folder must be an absolute path, empty or not yet existing, and not inside the current
-    one; otherwise the move is refused and nothing changes;
-  - on the same volume the folder is renamed; otherwise the files are copied, each compared with
-    its original, and only then are the originals deleted. Any failure before that removes the
-    copy and leaves the originals untouched; if saving the setting fails, the folders are moved
-    back;
-  - the move is refused while a session that has a scratch folder is working or waiting on the
-    user, because it holds the folder open; idle sessions are restarted from their journals
-    afterwards (as after a daemon restart) so their scratch folder is the new one;
-  - progress is announced to every client as `workspaces.progress { phase, files_done,
-    files_total }` and the result lists the files and bytes moved and any warnings (such as an old
-    folder that could not be deleted completely after a verified copy);
+  moves everything to the new place, in three steps so the originals outlive the setting:
+  - *stage*: the data is put at the new place. On the same volume the folder is renamed;
+    otherwise the files are copied and every file compared with its original. The new folder
+    must be an absolute path, empty or not yet existing, and not inside the current one;
+    otherwise the move is refused and nothing changes. A failure removes the copy and leaves the
+    originals untouched. A link (symlink or junction) that cannot be recreated at the new place,
+    for lack of the privilege, fails the move with an error naming the link;
+  - *commit*: `workspaces.root` is saved and the new place recorded. If saving fails, the stage
+    is undone (the copy removed, or the folder renamed back);
+  - *finalise*: only now are the originals of a copy deleted. A crash before this leaves the data
+    in both places, never in neither;
+  - `workspaces.move` and `config.set` of `workspaces.root` both run off the connection, so
+    `workspaces.progress { phase, files_done, files_total }` reaches every client while the move
+    works, before the reply, which lists the files and bytes moved and any warnings (such as an
+    old folder that could not be deleted completely after a verified copy);
+  - the move is refused while a session that has a scratch folder is working, waiting on the
+    user, paused, or watching a pull request, because it holds the folder open. Idle sessions are
+    restarted from their journals afterwards (as after a daemon restart) so their scratch folder
+    is the new one: the new session is started first and replaces the old only on success, and a
+    client subscribed to the session keeps receiving, because the connection follows the session
+    of the same id. Starting, archiving, and deleting sessions wait while a move runs;
   - `workspaces.root` set in the config file by hand, or by `IMPERIUM_WORKSPACES__ROOT`, is
     noticed when the daemon starts (the place the folders were last put is recorded in
-    `<data>/workspaces-root.txt`) and moved the same way; if that fails, the daemon keeps using the
-    old place and `workspaces.where` carries a `warning`. A move through the commands above is
-    refused while the environment variable is set, since it would win over the file.
+    `<data>/workspaces-root.txt`) and moved the same way; if that fails, the daemon keeps using
+    the old place and `workspaces.where` carries a `warning`. A move through the commands above
+    is refused while the environment variable is set, since it would win over the file.
 
 | Method | Params | Result |
 | --- | --- | --- |

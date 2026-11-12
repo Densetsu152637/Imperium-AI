@@ -292,7 +292,10 @@ the wait reason in the desktop.
     again, empty, when it is unarchived. Changing the root moves the whole tree (rename, or copy
     and verify, with rollback), from Settings, `imperium workspaces move`, or `config set`
     ([14](14-projects-and-automation.md#environment-working-folders-implemented),
-    [17](17-memory.md#environment-memory-implemented)).
+    [17](17-memory.md#environment-memory-implemented)). Follow-ups not built: a sweep for
+    scratch folders of sessions that were never archived or deleted, and the handles of
+    background processes that a session started in its scratch folder, which can keep a folder
+    from being deleted or moved.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.

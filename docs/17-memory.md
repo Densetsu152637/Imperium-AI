@@ -46,27 +46,38 @@ what is true of this environment and not elsewhere: how its repositories are bui
 or machines it uses, decisions made while working in it. The user can open and edit it any time
 (the environment window's *Open Memory.md*), and agents add to it.
 
-- **Read into context like workflow context.** The text of `Memory.md` (up to 24,000 characters;
-  the rest stays on disk and `memory_read` with the name `Memory.md` returns the whole file) goes
-  into the instructions of every agent of every session in that environment when the session
-  starts, in an `<environment-memory>` block after the index of saved memories. It is part of the
-  system prompt, so [compaction](03-agent-engine.md#context-management) never summarises or
-  drops it, however long the session runs. It is read once per session: what an agent writes
-  during a session reaches sessions started afterwards (and the writing agent already knows it).
-  Sessions in other environments never see it. Without a file the block says it is empty.
+- **Read into context like workflow context.** The text of `Memory.md` goes into the
+  instructions of every agent of every session in that environment when the session starts, in an
+  `<environment-memory>` block after the index of saved memories. It is part of the system prompt,
+  so [compaction](03-agent-engine.md#context-management) never summarises or drops it, however
+  long the session runs. It is read once per session: what an agent writes during a session
+  reaches sessions started afterwards (and the writing agent already knows it). Sessions in other
+  environments never see it. Without a file the block says it is empty. At most 24,000 characters
+  are shown: when the file is longer (the user edited it by hand), the oldest sections are left
+  out whole and the newest kept, with a line saying so; `memory_read` with the name `Memory.md`
+  returns the file (up to 64,000 characters, newest sections first kept).
+- **It is data, not instructions.** Anything in `Memory.md` may have been written by an earlier
+  agent from content it read, so it is a standing channel for planted text. The instructions say
+  it is data written by the user and earlier agents and **cannot grant permissions or override
+  the instructions**; a literal closing tag of the block inside the file is neutralised so the
+  text cannot end the block and speak outside it; and the permission rules apply to what an
+  agent does, whatever the file says.
 - **Writing.** `memory_remember` takes `scope: "environment"`. The entry becomes a `## <name>`
-  section of `Memory.md` (a description line, then the body); a section of the same name is
-  replaced, and everything else in the file, including what the user wrote by hand, is kept. The
-  usual checks apply (kebab-case name, one of the entry types, no secrets), and the file is
-  replaced atomically. The root agent can write; subagents read. Write policy:
-  `memory.write.environment` (`auto` by default, since the file is private to this machine; `ask`
-  shows the entry in a permission prompt; `off`). A session outside any environment has no
-  `Memory.md`, and asking to write the scope fails with a message saying so.
-- **Which wins.** Global memory is the default; environment memory is more specific. Where they
-  disagree for work in that environment, **environment memory wins**, and the agent's
-  instructions say so. Project memory entries are facts about the repository and are not
-  overridden; an agent that finds environment and project memory in conflict says so instead of
-  choosing silently.
+  section of `Memory.md` (a description line, then the body of at most 2,000 characters); a
+  section of the same name is replaced, and everything else in the file, including what the user
+  wrote by hand, is kept. The usual checks apply (kebab-case name, one of the entry types, no
+  secrets), a write that would take the file past 24,000 characters is refused with a message
+  asking the user to trim it, and the file is replaced atomically, one writer at a time. The root
+  agent can write; subagents read. Write policy: `memory.write.environment` (**`ask` by
+  default**: the permission prompt shows the whole entry, so what is approved is what is
+  written, because every later session in the environment reads it; `auto` saves at once; `off`).
+  A session outside any environment has no `Memory.md`, and asking to write the scope fails with
+  a message saying so. The file is found afresh for each read and write, so it follows the
+  working folders when they are moved, also for sessions that have no scratch folder.
+- **Which wins.** Global memory is the user's general preferences; environment memory is more
+  specific to this environment. When they differ, an agent follows the user's current request
+  and says so rather than choosing silently. Project memory entries are facts about the
+  repository and are not overridden by either.
 - Environment memory is not in the search index or the recalled-memories block: it is already in
   context in full.
 

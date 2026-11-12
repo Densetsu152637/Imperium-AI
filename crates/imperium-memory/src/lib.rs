@@ -102,6 +102,8 @@ pub enum MemoryError {
     NoScope(&'static str),
     #[error("refused: the entry looks like it contains a secret ({0})")]
     LooksSecret(&'static str),
+    #[error("{0}")]
+    TooLong(String),
     #[error("{0}: {1}")]
     Io(String, std::io::Error),
 }

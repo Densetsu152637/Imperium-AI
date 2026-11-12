@@ -1400,6 +1400,11 @@ impl DaemonState {
         // Its own scratch folder, in its environment's working folder: made now (an unarchived
         // session gets a new, empty one), deleted when the session is archived or deleted.
         let local = workspace.runtime().is_none();
+        // Held until the session is in the maps, so a move of the working folders sees it.
+        let _workspaces = self
+            .workspaces_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let workspace = match (&placement.environment_id, remember && local) {
             (Some(environment), true) => match self.session_scratch(environment, &id) {
                 Some(dir) => workspace.with_scratch(&dir),
@@ -1528,10 +1533,21 @@ impl DaemonState {
             memory: self.settings().memory.enabled.then(|| SessionMemory {
                 store: Store::new(self.paths.data_dir(), (!remote).then_some(project_dir_path)),
                 settings: self.settings().memory.clone(),
-                environment: placement.environment_id.as_deref().and_then(|environment| {
-                    crate::workspaces::memory_file(&self.workspaces_root(), environment)
-                        .map(imperium_memory::environment::EnvironmentMemory::new)
-                }),
+                // Looked up on each use, so it follows the working folders when they move.
+                environment: placement
+                    .environment_id
+                    .clone()
+                    .filter(|environment| crate::workspaces::safe_id(environment))
+                    .map(|environment| {
+                        let me = self.me.clone();
+                        let fallback = self.workspaces_root();
+                        imperium_memory::environment::EnvironmentMemory::live(move || {
+                            let root = me
+                                .upgrade()
+                                .map_or_else(|| fallback.clone(), |state| state.workspaces_root());
+                            crate::workspaces::memory_file(&root, &environment).unwrap_or_default()
+                        })
+                    }),
             }),
             max_steps: self.settings().agents.max_steps,
             auto_compact: options.auto_compact,
@@ -1675,6 +1691,10 @@ impl DaemonState {
         id: &str,
         remove_worktrees: bool,
     ) -> Result<SessionDeleteResult, String> {
+        let _workspaces = self
+            .workspaces_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let placement = self
             .placements
             .lock()

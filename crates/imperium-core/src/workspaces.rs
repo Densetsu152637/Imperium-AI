@@ -98,6 +98,7 @@ pub enum MoveMethod {
 }
 
 /// The outcome of a successful [`move_root`].
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MoveReport {
     pub method: MoveMethod,
@@ -146,40 +147,82 @@ pub(crate) struct MoveHooks {
     pub corrupt_verify: bool,
 }
 
-/// Moves the working folders from `old` to `new`.
-///
-/// Refuses a relative `new`, a `new` inside `old`, and a `new` that exists and is not empty.
-/// A folder on the same volume is renamed; otherwise the tree is copied, every file compared
-/// with its original, and only then are the originals deleted. If anything fails before that,
-/// what was written at `new` is removed and `old` is exactly as it was. Once the copy is
-/// verified the data is safe at `new`; originals that cannot be deleted are reported as
-/// warnings, not as failure.
+/// A move in three steps, so the setting that names the new place is saved while the originals
+/// still exist: [`stage`] puts the data at the new place (a rename, or a copy compared with its
+/// original), the caller saves the setting, and [`Staged::finish`] deletes what is left behind.
+/// If saving fails, [`Staged::undo`] puts everything back.
+#[derive(Debug)]
+#[must_use = "a staged move must be finished or undone"]
+pub struct Staged {
+    old: PathBuf,
+    new: PathBuf,
+    new_existed: bool,
+    /// A new folder was made although nothing was moved.
+    created_new: bool,
+    pub method: MoveMethod,
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// Moves the working folders from `old` to `new`: [`stage`] then [`Staged::finish`].
+#[cfg(test)]
 pub fn move_root(
     old: &Path,
     new: &Path,
     progress: &mut dyn FnMut(MoveProgress),
 ) -> Result<MoveReport, MoveError> {
-    move_root_with(old, new, progress, &MoveHooks::default())
+    let staged = stage(old, new, progress)?;
+    Ok(finish_report(staged, progress))
 }
 
-pub(crate) fn move_root_with(
+#[cfg(test)]
+fn finish_report(staged: Staged, progress: &mut dyn FnMut(MoveProgress)) -> MoveReport {
+    let (method, files, bytes) = (staged.method, staged.files, staged.bytes);
+    let warnings = staged.finish(progress);
+    MoveReport {
+        method,
+        files,
+        bytes,
+        warnings,
+    }
+}
+
+/// Puts the data of `old` at `new`, leaving `old` in place when it had to be copied.
+///
+/// Refuses a relative `new`, a `new` inside `old`, and a `new` that exists and is not empty.
+/// A folder on the same volume is renamed; otherwise the tree is copied and every file compared
+/// with its original. If anything fails, what was written at `new` is removed and `old` is
+/// exactly as it was.
+pub fn stage(
+    old: &Path,
+    new: &Path,
+    progress: &mut dyn FnMut(MoveProgress),
+) -> Result<Staged, MoveError> {
+    stage_with(old, new, progress, &MoveHooks::default())
+}
+
+pub(crate) fn stage_with(
     old: &Path,
     new: &Path,
     progress: &mut dyn FnMut(MoveProgress),
     hooks: &MoveHooks,
-) -> Result<MoveReport, MoveError> {
+) -> Result<Staged, MoveError> {
     if !new.is_absolute() {
         return Err(MoveError::NotAbsolute(new.display().to_string()));
     }
+    let nothing = |new_existed: bool, created_new: bool| Staged {
+        old: old.to_path_buf(),
+        new: new.to_path_buf(),
+        new_existed,
+        created_new,
+        method: MoveMethod::Nothing,
+        files: 0,
+        bytes: 0,
+    };
     let resolved_old = resolve(old);
     let resolved_new = resolve(new);
     if resolved_old == resolved_new {
-        return Ok(MoveReport {
-            method: MoveMethod::Nothing,
-            files: 0,
-            bytes: 0,
-            warnings: Vec::new(),
-        });
+        return Ok(nothing(true, false));
     }
     if resolved_new.starts_with(&resolved_old) {
         return Err(MoveError::InsideOld(
@@ -204,12 +247,7 @@ pub(crate) fn move_root_with(
     if !old.is_dir() {
         // Nothing has been kept yet: the new folder is just made.
         fs::create_dir_all(new).map_err(|error| failed(new, error))?;
-        return Ok(MoveReport {
-            method: MoveMethod::Nothing,
-            files: 0,
-            bytes: 0,
-            warnings: Vec::new(),
-        });
+        return Ok(nothing(new_existed, !new_existed));
     }
     progress(MoveProgress {
         phase: "scanning",
@@ -217,17 +255,21 @@ pub(crate) fn move_root_with(
         files_total: 0,
     });
     let (files, bytes) = count(old).map_err(|error| failed(old, error))?;
+    let staged = |method| Staged {
+        old: old.to_path_buf(),
+        new: new.to_path_buf(),
+        new_existed,
+        created_new: false,
+        method,
+        files,
+        bytes,
+    };
 
     if !hooks.force_copy && try_rename(old, new, new_existed) {
-        return Ok(MoveReport {
-            method: MoveMethod::Rename,
-            files,
-            bytes,
-            warnings: Vec::new(),
-        });
+        return Ok(staged(MoveMethod::Rename));
     }
 
-    // Copy, verify, then delete the originals.
+    // Copy and verify; the originals stay until the caller has saved the new place.
     if let Some(parent) = new.parent() {
         fs::create_dir_all(parent).map_err(|error| failed(parent, error))?;
     }
@@ -241,25 +283,66 @@ pub(crate) fn move_root_with(
         }
         return Err(failed(new, error));
     }
-    progress(MoveProgress {
-        phase: "cleaning",
-        files_done: files,
-        files_total: files,
-    });
-    let mut warnings = Vec::new();
-    if let Err(error) = fs::remove_dir_all(old) {
-        warnings.push(format!(
-            "the files are at {} but the old folder {} could not be deleted completely: {error}",
-            new.display(),
-            old.display()
-        ));
+    Ok(staged(MoveMethod::Copy))
+}
+
+impl Staged {
+    /// Deletes the originals of a copy. Once the data is verified at the new place, originals
+    /// that cannot be deleted are warnings, not failure.
+    pub fn finish(self, progress: &mut dyn FnMut(MoveProgress)) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.method == MoveMethod::Copy {
+            progress(MoveProgress {
+                phase: "cleaning",
+                files_done: self.files,
+                files_total: self.files,
+            });
+            if let Err(error) = fs::remove_dir_all(&self.old) {
+                warnings.push(format!(
+                    "the files are at {} but the old folder {} could not be deleted completely: \
+                     {error}",
+                    self.new.display(),
+                    self.old.display()
+                ));
+            }
+        }
+        warnings
     }
-    Ok(MoveReport {
-        method: MoveMethod::Copy,
-        files,
-        bytes,
-        warnings,
-    })
+
+    /// Puts everything back as it was before [`stage`].
+    pub fn undo(self) -> Result<(), String> {
+        match self.method {
+            MoveMethod::Nothing => {
+                if self.created_new {
+                    let _ = fs::remove_dir(&self.new);
+                }
+                Ok(())
+            }
+            MoveMethod::Rename => {
+                // Windows will not rename onto an existing folder: `new` is the one in the way
+                // only if it was made empty again, so it is not.
+                fs::rename(&self.new, &self.old).map_err(|error| {
+                    format!(
+                        "could not move {} back to {}: {error}",
+                        self.new.display(),
+                        self.old.display()
+                    )
+                })?;
+                if self.new_existed {
+                    let _ = fs::create_dir_all(&self.new);
+                }
+                Ok(())
+            }
+            MoveMethod::Copy => {
+                fs::remove_dir_all(&self.new)
+                    .map_err(|error| format!("could not remove {}: {error}", self.new.display()))?;
+                if self.new_existed {
+                    let _ = fs::create_dir_all(&self.new);
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Renames `old` to `new`, first removing an empty `new` (Windows will not rename onto an
@@ -383,7 +466,14 @@ fn copy_dir(
             fs::create_dir_all(&target)?;
             copy_dir(&source, &target, total, progress, hooks, ticker)?;
         } else if kind.is_symlink() {
-            copy_link(&source, &target)?;
+            copy_link(&source, &target).map_err(|error| {
+                io::Error::other(format!(
+                    "cannot recreate the link {} at the new place ({error}); creating links may \
+                     need a privilege on this system, so remove the link or move the folders \
+                     within one volume",
+                    source.display()
+                ))
+            })?;
             ticker.file("copying", total, progress);
         } else {
             if hooks
@@ -592,16 +682,22 @@ mod tests {
         let (old, new) = (temp.path().join("old"), temp.path().join("deeper/new"));
         seed(&old);
         let mut phases = Vec::new();
-        let report = move_root_with(
+        let mut note = |step: MoveProgress| phases.push(step.phase);
+        let staged = stage_with(
             &old,
             &new,
-            &mut |step| phases.push(step.phase),
+            &mut note,
             &MoveHooks {
                 force_copy: true,
                 ..MoveHooks::default()
             },
         )
         .unwrap();
+        assert!(
+            old.exists(),
+            "the originals stay until the move is finished"
+        );
+        let report = finish_report(staged, &mut note);
         assert_eq!(report.method, MoveMethod::Copy);
         assert_eq!((report.files, report.bytes), (3, 200_000 + 7 + 9));
         assert!(report.warnings.is_empty());
@@ -651,7 +747,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let (old, new) = (temp.path().join("old"), temp.path().join("new"));
         seed(&old);
-        let error = move_root_with(
+        let error = stage_with(
             &old,
             &new,
             &mut quiet(),
@@ -673,7 +769,7 @@ mod tests {
         let (old, new) = (temp.path().join("old"), temp.path().join("new"));
         seed(&old);
         fs::create_dir_all(&new).unwrap();
-        let error = move_root_with(
+        let error = stage_with(
             &old,
             &new,
             &mut quiet(),
@@ -696,6 +792,49 @@ mod tests {
         let report = move_root(&temp.path().join("missing"), &new, &mut quiet()).unwrap();
         assert_eq!(report.method, MoveMethod::Nothing);
         assert!(new.is_dir());
+    }
+
+    #[test]
+    fn a_staged_copy_keeps_the_originals_until_finished_and_undo_takes_the_copy_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let (old, new) = (temp.path().join("old"), temp.path().join("new"));
+        seed(&old);
+        let copy_only = MoveHooks {
+            force_copy: true,
+            ..MoveHooks::default()
+        };
+        // The setting could not be saved: undo leaves only the originals.
+        let staged = stage_with(&old, &new, &mut quiet(), &copy_only).unwrap();
+        assert_seeded(&old);
+        assert_seeded(&new);
+        staged.undo().unwrap();
+        assert_seeded(&old);
+        assert!(!new.exists());
+        // A crash after staging leaves both; a restart still finds the data in either.
+        let staged = stage_with(&old, &new, &mut quiet(), &copy_only).unwrap();
+        drop(staged);
+        assert_seeded(&old);
+        assert_seeded(&new);
+        fs::remove_dir_all(&new).unwrap();
+        // Finishing deletes the originals only now.
+        let staged = stage_with(&old, &new, &mut quiet(), &copy_only).unwrap();
+        assert!(staged.finish(&mut |_| {}).is_empty());
+        assert!(!old.exists());
+        assert_seeded(&new);
+    }
+
+    #[test]
+    fn a_staged_rename_is_undone_by_renaming_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let (old, new) = (temp.path().join("old"), temp.path().join("new"));
+        seed(&old);
+        fs::create_dir_all(&new).unwrap();
+        let staged = stage(&old, &new, &mut quiet()).unwrap();
+        assert_eq!(staged.method, MoveMethod::Rename);
+        assert!(!old.exists());
+        staged.undo().unwrap();
+        assert_seeded(&old);
+        assert!(new.is_dir() && fs::read_dir(&new).unwrap().next().is_none());
     }
 
     #[test]

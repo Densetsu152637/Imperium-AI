@@ -97,6 +97,32 @@ pub struct Subscription {
     pub events: broadcast::Receiver<AgentEvent>,
 }
 
+/// The next event of a subscribed session. When the session was restarted (its working folders
+/// moved) the old one ends; this follows the session of the same id that took its place, so
+/// the client keeps receiving. `None` when the session is gone.
+pub async fn next_event(
+    state: &DaemonState,
+    subscription: &mut Subscription,
+) -> Option<AgentEvent> {
+    // One look at the replacement per end, so a session that really ended cannot loop.
+    let mut followed = false;
+    loop {
+        match subscription.events.recv().await {
+            Ok(event) => return Some(event),
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                tracing::warn!(session = %subscription.session_id, missed, "client fell behind; events dropped");
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                if followed {
+                    return None;
+                }
+                followed = true;
+                subscription.events = state.session(&subscription.session_id)?.subscribe();
+            }
+        }
+    }
+}
+
 /// A reply that waits on something slow, such as the network.
 pub type Deferred = Pin<Box<dyn Future<Output = Response> + Send>>;
 
@@ -134,6 +160,11 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// The daemon this connection talks to.
+    pub(crate) fn state(&self) -> Arc<DaemonState> {
+        Arc::clone(&self.state)
+    }
+
     pub fn new(state: Arc<DaemonState>) -> Self {
         Connection {
             state,
@@ -295,6 +326,26 @@ impl Connection {
                     .map_err(refused)?;
                 Ok(Accepted {})
             }),
+            // Changing the working folders' place can move a lot of files: it runs off the
+            // connection, so progress notifications go out while it works and other calls are
+            // answered meanwhile.
+            ConfigSet::NAME
+                if request
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("key"))
+                    .and_then(Value::as_str)
+                    == Some(crate::state::WORKSPACES_ROOT_SETTING) =>
+            {
+                call_later::<ConfigSet, _>(request.params, &mut later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        tokio::task::spawn_blocking(move || crate::config::set(&state, params))
+                            .await
+                            .map_err(|error| refused(error.to_string()))?
+                    }
+                })
+            }
             ConfigSet::NAME => call::<ConfigSet>(request.params, |params: ConfigSetParams| {
                 crate::config::set(&self.state, params)
             }),

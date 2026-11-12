@@ -207,6 +207,10 @@ impl DaemonState {
         now: SystemTime,
         retired_agent: bool,
     ) -> Result<SessionSummary, ArchiveError> {
+        let _workspaces = self
+            .workspaces_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(summary) = self.archived_map().get(id) {
             return Ok(summary.clone());
         }

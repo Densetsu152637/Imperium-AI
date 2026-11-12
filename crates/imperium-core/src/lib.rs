@@ -51,7 +51,7 @@ pub use pets::PetEngine;
 pub use phone::Devices;
 pub use project_agent::ProjectAgents;
 pub use resources::{ResourceMonitor, Watch as ResourceWatch};
-pub use rpc::{Connection, Deferred, Handled, Subscription};
+pub use rpc::{Connection, Deferred, Handled, Subscription, next_event};
 pub use scheduler::Scheduler;
 pub use server::serve;
 pub use state::{CreateError, DaemonState, SessionOptions};

@@ -868,7 +868,7 @@ impl Default for MemoryWrite {
             global: WritePolicy::Ask,
             project: WritePolicy::Ask,
             project_private: WritePolicy::Auto,
-            environment: WritePolicy::Auto,
+            environment: WritePolicy::Ask,
         }
     }
 }

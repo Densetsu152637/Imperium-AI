@@ -135,7 +135,7 @@ listed; edit them in the file.
 | `extensions.eager` | none | Skills and plugins, by name, loaded up front even when `extensions.lazy` is on |
 | `memory.enabled` | `true` | Global and project memory ([17](17-memory.md)) |
 | `memory.write.global`, `.project`, `.project_private` | `ask`, `ask`, `auto` | Whether agents may save memories in each scope: `auto`, `ask`, or `off` |
-| `memory.write.environment` | `auto` | Whether agents may write to an environment's `Memory.md` ([17](17-memory.md#environment-memory-implemented)) |
+| `memory.write.environment` | `ask` | Whether agents may write to an environment's `Memory.md`, which every later session there reads as part of its instructions, so a write shows the whole entry for approval by default ([17](17-memory.md#environment-memory-implemented)) |
 | `memory.recall` | `true` | Put the best-matching memories before each message |
 | `memory.max_index_tokens`, `memory.max_recall_tokens` | `1500`, `1500` | Budgets for the index in agent instructions and for recalled memories |
 | `memory.session_search` | `true` | Index sessions in the background for `session.search`, and offer agents `search_sessions` ([17](17-memory.md#session-search-implemented)) |

@@ -108,17 +108,6 @@ impl DaemonState {
     /// the move is refused while any is; idle ones are restarted afterwards so their scratch
     /// folder is the new one. A failure at any step puts everything back.
     pub fn move_workspaces(&self, target: &str) -> Result<WorkspacesMoveResult, String> {
-        let _moving = self
-            .workspaces_lock
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if std::env::var_os("IMPERIUM_WORKSPACES__ROOT").is_some() {
-            return Err(
-                "IMPERIUM_WORKSPACES__ROOT sets the working folders' place and wins over \
-                        the config file; unset it to move them"
-                    .into(),
-            );
-        }
         let default = imperium_config::default_workspaces_root(&self.paths);
         let target = target.trim();
         let new = if target.is_empty() {
@@ -127,89 +116,122 @@ impl DaemonState {
             PathBuf::from(target)
         };
         let old = self.workspaces_root();
-        if !new.is_absolute() {
-            return Err(format!(
-                "{} is not an absolute path; give the full path of the folder",
-                new.display()
-            ));
-        }
-        let affected = self.sessions_with_scratch(&old);
-        let busy: Vec<&str> = affected
-            .iter()
-            .filter(|(_, status)| {
-                matches!(
-                    status,
-                    SessionStatus::Working
-                        | SessionStatus::NeedsAttention
-                        | SessionStatus::Paused
-                        | SessionStatus::NeedsModel
-                )
-            })
-            .map(|(id, _)| id.as_str())
-            .collect();
-        if !busy.is_empty() && new != old {
-            return Err(format!(
-                "these sessions are working in their scratch folders: {}. Wait for them to \
-                 finish or stop them, then move the folders",
-                busy.join(", ")
-            ));
-        }
-        let report = workspaces::move_root(&old, &new, &mut |step: MoveProgress| {
-            self.announce(
-                WORKSPACES_PROGRESS,
-                WorkspacesProgress {
-                    phase: step.phase.into(),
-                    files_done: step.files_done,
-                    files_total: step.files_total,
-                },
-            );
-        })
-        .map_err(|error| error.to_string())?;
-        if report.method == MoveMethod::Nothing && new == old {
-            return Ok(WorkspacesMoveResult {
-                from: display(&old),
-                to: display(&new),
-                method: "nothing".into(),
-                files: 0,
-                bytes: 0,
-                warnings: Vec::new(),
-                restarted_sessions: Vec::new(),
-            });
-        }
-        // The data is at the new place. Record it as the setting; if that fails, put it back.
-        let value = if new == default {
-            serde_json::Value::Null
-        } else {
-            serde_json::Value::String(new.display().to_string())
-        };
-        if let Err(error) =
-            imperium_config::set_user_setting(&self.paths, ROOT_SETTING, &value, std::env::vars())
-        {
-            let undone = workspaces::move_root(&new, &old, &mut |_| {});
-            return Err(match undone {
-                Ok(_) => {
-                    format!("could not save {ROOT_SETTING}: {error}. The folders were put back")
-                }
-                Err(back) => format!(
-                    "could not save {ROOT_SETTING}: {error}; and the folders could not be put \
-                     back ({back}). They are at {}",
+        // Held while the data and the setting change, so no session starts, ends or is archived
+        // on the old place meanwhile; released before the idle sessions are restarted.
+        let (staged_report, affected) = {
+            let _moving = self
+                .workspaces_lock
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if std::env::var_os("IMPERIUM_WORKSPACES__ROOT").is_some() {
+                return Err(
+                    "IMPERIUM_WORKSPACES__ROOT sets the working folders' place and wins over \
+                     the config file; unset it to move them"
+                        .into(),
+                );
+            }
+            if !new.is_absolute() {
+                return Err(format!(
+                    "{} is not an absolute path; give the full path of the folder",
                     new.display()
-                ),
+                ));
+            }
+            let affected = self.sessions_with_scratch(&old);
+            let busy: Vec<&str> = affected
+                .iter()
+                .filter(|(_, status)| {
+                    matches!(
+                        status,
+                        SessionStatus::Working
+                            | SessionStatus::NeedsAttention
+                            | SessionStatus::Paused
+                            | SessionStatus::NeedsModel
+                            | SessionStatus::Watching
+                    )
+                })
+                .map(|(id, _)| id.as_str())
+                .collect();
+            if !busy.is_empty() && new != old {
+                return Err(format!(
+                    "these sessions are working or watching with their scratch folders: {}. Wait \
+                     for them to finish or stop them, then move the folders",
+                    busy.join(", ")
+                ));
+            }
+            // Stage: the data is at the new place; any originals are still there.
+            let staged = workspaces::stage(&old, &new, &mut |step: MoveProgress| {
+                self.announce(
+                    WORKSPACES_PROGRESS,
+                    WorkspacesProgress {
+                        phase: step.phase.into(),
+                        files_done: step.files_done,
+                        files_total: step.files_total,
+                    },
+                );
+            })
+            .map_err(|error| error.to_string())?;
+            if staged.method == MoveMethod::Nothing && new == old {
+                return Ok(WorkspacesMoveResult {
+                    from: display(&old),
+                    to: display(&new),
+                    method: "nothing".into(),
+                    files: 0,
+                    bytes: 0,
+                    warnings: Vec::new(),
+                    restarted_sessions: Vec::new(),
+                });
+            }
+            // Commit: name the new place in the setting. If that fails, put everything back.
+            let value = if new == default {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(new.display().to_string())
+            };
+            if let Err(error) = imperium_config::set_user_setting(
+                &self.paths,
+                ROOT_SETTING,
+                &value,
+                std::env::vars(),
+            ) {
+                return Err(match staged.undo() {
+                    Ok(()) => format!(
+                        "could not save {ROOT_SETTING}: {error}. The folders were left where \
+                         they were"
+                    ),
+                    Err(back) => format!(
+                        "could not save {ROOT_SETTING}: {error}; and the move could not be \
+                         undone ({back}). The data is at {}",
+                        new.display()
+                    ),
+                });
+            }
+            let mut next = (*self.settings()).clone();
+            next.workspaces.root = (new != default).then(|| new.clone());
+            self.replace_settings(next);
+            if let Err(error) = workspaces::record_root(self.paths.data_dir(), &new) {
+                tracing::warn!(%error, "could not record where the working folders are");
+            }
+            *self
+                .workspaces_warning
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = None;
+            // Finalise: delete the originals of a copy. The data is safe at the new place.
+            let (method, files, bytes) = (staged.method, staged.files, staged.bytes);
+            let warnings = staged.finish(&mut |step: MoveProgress| {
+                self.announce(
+                    WORKSPACES_PROGRESS,
+                    WorkspacesProgress {
+                        phase: step.phase.into(),
+                        files_done: step.files_done,
+                        files_total: step.files_total,
+                    },
+                );
             });
-        }
-        let mut next = (*self.settings()).clone();
-        next.workspaces.root = (new != default).then(|| new.clone());
-        self.replace_settings(next);
-        if let Err(error) = workspaces::record_root(self.paths.data_dir(), &new) {
-            tracing::warn!(%error, "could not record where the working folders are");
-        }
-        *self
-            .workspaces_warning
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
+            ((method, files, bytes, warnings), affected)
+        };
+        let (method, files, bytes, mut warnings) = staged_report;
         // Restart the idle sessions whose scratch folder moved so they point at the new one.
         let mut restarted = Vec::new();
-        let mut warnings = report.warnings.clone();
         for (id, _) in &affected {
             match self.restart_session(id) {
                 Ok(()) => restarted.push(id.clone()),
@@ -219,31 +241,32 @@ impl DaemonState {
             }
         }
         self.announce_environments();
-        tracing::info!(from = %old.display(), to = %new.display(), files = report.files, "moved the working folders");
+        tracing::info!(from = %old.display(), to = %new.display(), files, "moved the working folders");
         Ok(WorkspacesMoveResult {
             from: display(&old),
             to: display(&new),
-            method: match report.method {
+            method: match method {
                 MoveMethod::Nothing => "nothing",
                 MoveMethod::Rename => "rename",
                 MoveMethod::Copy => "copy",
             }
             .into(),
-            files: report.files,
-            bytes: report.bytes,
+            files,
+            bytes,
             warnings,
             restarted_sessions: restarted,
         })
     }
 
-    /// Stops a running session and continues it from its journal, as after a daemon restart.
+    /// Continues a running session from its journal as after a daemon restart. The new session
+    /// takes the old one's place only once it started, so a failure leaves the old one running;
+    /// clients subscribed to it follow the replacement ([`crate::next_event`]).
     fn restart_session(&self, id: &str) -> Result<(), String> {
         let meta_path = self.meta_path(id);
         let meta: serde_json::Value = std::fs::read_to_string(&meta_path)
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .ok_or("its record is missing")?;
-        self.forget_session(id);
         match self.resume_from_meta(id, &meta, &self.journal_path(id), false) {
             Ok((session, _)) => {
                 self.announce(SESSION_UPDATED, self.summary(&session));
@@ -265,13 +288,30 @@ impl DaemonState {
         let configured = self.workspaces_root();
         let default = imperium_config::default_workspaces_root(&self.paths);
         let recorded = workspaces::recorded_root(self.paths.data_dir()).unwrap_or(default);
-        if recorded != configured {
-            match workspaces::move_root(&recorded, &configured, &mut |_| {}) {
-                Ok(report) => {
-                    tracing::info!(from = %recorded.display(), to = %configured.display(), files = report.files, "moved the working folders to the configured place");
-                    for warning in &report.warnings {
+        // Nothing at the recorded place: a move that already finished (and only failed to
+        // record itself), or a root chosen before anything was kept.
+        if recorded != configured && recorded.is_dir() {
+            match workspaces::stage(&recorded, &configured, &mut |_| {}) {
+                Ok(staged) => {
+                    let files = staged.files;
+                    // The setting is already saved; recording the place is the commit.
+                    if let Err(error) = workspaces::record_root(self.paths.data_dir(), &configured)
+                    {
+                        let message = format!(
+                            "could not record the working folders' new place ({error}); they \
+                             stay at {}",
+                            recorded.display()
+                        );
+                        tracing::warn!("{message}");
+                        let _ = staged.undo();
+                        self.keep_old_root(&recorded, message);
+                        return;
+                    }
+                    tracing::info!(from = %recorded.display(), to = %configured.display(), files, "moved the working folders to the configured place");
+                    for warning in staged.finish(&mut |_| {}) {
                         tracing::warn!("{warning}");
                     }
+                    return;
                 }
                 Err(error) => {
                     let message = format!(
@@ -281,13 +321,7 @@ impl DaemonState {
                         recorded.display()
                     );
                     tracing::warn!("{message}");
-                    let mut next = (*self.settings()).clone();
-                    next.workspaces.root = Some(recorded.clone());
-                    self.replace_settings(next);
-                    *self
-                        .workspaces_warning
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner) = Some(message);
+                    self.keep_old_root(&recorded, message);
                     return;
                 }
             }
@@ -295,6 +329,17 @@ impl DaemonState {
         if let Err(error) = workspaces::record_root(self.paths.data_dir(), &configured) {
             tracing::warn!(%error, "could not record where the working folders are");
         }
+    }
+
+    /// Keeps using `place` for this run, and says why in `workspaces.where`.
+    fn keep_old_root(&self, place: &Path, message: String) {
+        let mut next = (*self.settings()).clone();
+        next.workspaces.root = Some(place.to_path_buf());
+        self.replace_settings(next);
+        *self
+            .workspaces_warning
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(message);
     }
 
     /// `workspaces.open`: shows an environment's folder or `Memory.md` with the computer's own

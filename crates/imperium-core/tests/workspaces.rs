@@ -130,6 +130,22 @@ fn call(
     }
 }
 
+/// `config.set` of `workspaces.root`: answered later, off the connection.
+async fn set_root(
+    connection: &mut Connection,
+    id: i64,
+    value: Value,
+) -> Result<Value, ErrorObject> {
+    let frame = json!({"jsonrpc": "2.0", "id": id, "method": "config.set",
+        "params": {"key": "workspaces.root", "value": value}});
+    let handled = connection.handle_text(&frame.to_string());
+    assert!(handled.response.is_none(), "the reply is deferred");
+    match handled.deferred.expect("a deferred reply").await.outcome {
+        Outcome::Result(value) => Ok(value),
+        Outcome::Error(error) => Err(error),
+    }
+}
+
 fn seed_session_files(home: &Path, environment: &str, session: &str) {
     let dir = scratch(home, environment, session);
     std::fs::create_dir_all(dir.join("deep")).unwrap();
@@ -259,13 +275,9 @@ async fn changing_the_root_moves_the_folders_and_a_target_that_is_not_empty_is_r
     let occupied = elsewhere.path().join("occupied");
     std::fs::create_dir_all(&occupied).unwrap();
     std::fs::write(occupied.join("mine.txt"), "mine").unwrap();
-    let refused = call(
-        &mut connection,
-        2,
-        "config.set",
-        json!({"key": "workspaces.root", "value": occupied.display().to_string()}),
-    )
-    .unwrap_err();
+    let refused = set_root(&mut connection, 2, json!(occupied.display().to_string()))
+        .await
+        .unwrap_err();
     assert!(refused.message.contains("not empty"), "{}", refused.message);
     assert!(scratch(home.path(), &env, &id).join("notes.txt").is_file());
     assert!(occupied.join("mine.txt").is_file());
@@ -278,25 +290,26 @@ async fn changing_the_root_moves_the_folders_and_a_target_that_is_not_empty_is_r
     // A folder inside the current one is refused too.
     let inside = root_of(home.path()).join("nested");
     assert!(
-        call(
-            &mut connection,
-            3,
-            "config.set",
-            json!({"key": "workspaces.root", "value": inside.display().to_string()}),
-        )
-        .is_err()
+        set_root(&mut connection, 3, json!(inside.display().to_string()))
+            .await
+            .is_err()
     );
 
     // A new folder takes everything, and sessions are told the new place.
     let target = elsewhere.path().join("moved");
-    let set = call(
-        &mut connection,
-        4,
-        "config.set",
-        json!({"key": "workspaces.root", "value": target.display().to_string()}),
-    )
-    .unwrap();
+    let mut notes = state.announcements();
+    let set = set_root(&mut connection, 4, json!(target.display().to_string()))
+        .await
+        .unwrap();
     assert_eq!(set["entry"]["source"], "user");
+    // Progress went out while the move ran, before the reply.
+    let mut progress = 0;
+    while let Ok(note) = notes.try_recv() {
+        if note.method == "workspaces.progress" {
+            progress += 1;
+        }
+    }
+    assert!(progress > 0, "no progress notification before the reply");
     assert!(!root_of(home.path()).exists(), "the old folder is gone");
     let moved = target.join(&env).join("sessions").join(&id);
     assert_eq!(
@@ -412,4 +425,188 @@ async fn a_root_edited_in_the_config_file_is_moved_when_the_daemon_starts() {
             .join("notes.txt")
             .is_file()
     );
+}
+
+#[tokio::test]
+async fn a_setting_that_cannot_be_saved_leaves_the_folders_where_they_were() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let first = daemon(home.path(), "http://127.0.0.1:9/v1");
+    let env = environment(&first, "Work", project.path());
+    let (session, _events) = first
+        .create_in_environment(&env, None, SessionOptions::default())
+        .unwrap();
+    let id = session.id().to_string();
+    drop(session);
+    seed_session_files(home.path(), &env, &id);
+    // A config.toml that is a folder cannot be written.
+    std::fs::create_dir_all(home.path().join("config").join("config.toml")).unwrap();
+
+    let target = elsewhere.path().join("moved");
+    let error = first
+        .move_workspaces(&target.display().to_string())
+        .unwrap_err();
+    assert!(error.contains("could not save"), "{error}");
+    assert!(scratch(home.path(), &env, &id).join("notes.txt").is_file());
+    assert!(
+        !target.join(&env).exists(),
+        "the staged data was taken back from the new place"
+    );
+    assert!(first.workspaces_where().root.ends_with("workspaces"));
+    drop(first);
+
+    // A restart finds the data where the configuration says.
+    let second = daemon(home.path(), "http://127.0.0.1:9/v1");
+    second.reconcile_workspaces();
+    assert!(second.workspaces_where().warning.is_none());
+    assert!(scratch(home.path(), &env, &id).join("notes.txt").is_file());
+}
+
+/// Saves an environment memory on its first call, then finishes.
+async fn saving_model() -> String {
+    let calls = Arc::new(Mutex::new(0usize));
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |axum::Json(_body): axum::Json<Value>| {
+            let calls = Arc::clone(&calls);
+            async move {
+                let mut calls = calls.lock().unwrap();
+                *calls += 1;
+                let body = if *calls == 1 {
+                    let arguments = json!({"name": "after-move", "description": "d",
+                        "type": "project", "scope": "environment", "body": "written after the move"});
+                    sse(json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"m",
+                        "function":{"name":"memory_remember","arguments":arguments.to_string()}}]}}]}))
+                } else {
+                    sse(json!({"choices":[{"delta":{"content":"ok"}}]}))
+                };
+                ([("content-type", "text/event-stream")], body)
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    url
+}
+
+#[derive(Debug, Default)]
+struct NoRemote;
+
+impl imperium_tools::Runner for NoRemote {
+    fn run<'a>(
+        &'a self,
+        _spec: &'a imperium_tools::ProcessSpec,
+        _stdin: Option<&'a [u8]>,
+        _timeout: Duration,
+    ) -> imperium_tools::runtime::RunFuture<'a> {
+        Box::pin(async {
+            Ok(imperium_tools::RunOutput {
+                code: Some(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_session_without_a_scratch_folder_writes_memory_under_the_new_root_after_a_move() {
+    let home = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let url = saving_model().await;
+    let config = format!(
+        "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"{url}\"\n\
+         [workflow]\nenabled = false\n[memory]\nwrite = {{ environment = \"auto\" }}\n"
+    );
+    let settings = imperium_config::Config::from_layers([
+        imperium_config::Layer::defaults(),
+        imperium_config::Layer::new(
+            imperium_config::Source::User("test".into()),
+            config.parse().unwrap(),
+        ),
+    ])
+    .settings()
+    .unwrap();
+    let state = DaemonState::new(imperium_config::Paths::under(home.path()), settings, None);
+    state.use_runner(Arc::new(NoRemote));
+    let env = state
+        .environments()
+        .create(EnvironmentCreateParams {
+            name: "Box".into(),
+            folders: vec!["/srv/app".into()],
+            runtime: Some(imperium_protocol::methods::EnvironmentRuntime::Ssh {
+                host: "me@box".into(),
+            }),
+            ..EnvironmentCreateParams::default()
+        })
+        .unwrap()
+        .id;
+    let (session, events) = state
+        .create_in_environment(&env, None, SessionOptions::default())
+        .unwrap();
+    assert!(
+        !root_of(home.path()).join(&env).join("sessions").exists(),
+        "a remote runtime has no scratch folder"
+    );
+
+    let target = elsewhere.path().join("moved");
+    state
+        .move_workspaces(&target.display().to_string())
+        .unwrap();
+    session.send("remember".into()).unwrap();
+    state
+        .wait_for_turn(&session, events, Duration::from_secs(20))
+        .await
+        .unwrap();
+    let written = std::fs::read_to_string(target.join(&env).join("Memory.md")).unwrap();
+    assert!(written.contains("written after the move"), "{written}");
+    assert!(!root_of(home.path()).join(&env).join("Memory.md").exists());
+}
+
+#[tokio::test]
+async fn a_client_subscribed_before_a_move_keeps_receiving_from_the_restarted_session() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let url = fake_model(Arc::clone(&prompts)).await;
+    let state = daemon(home.path(), &url);
+    let env = environment(&state, "Work", project.path());
+    let (session, _events) = state
+        .create_in_environment(&env, None, SessionOptions::default())
+        .unwrap();
+    let id = session.id().to_string();
+    let mut subscription = imperium_core::Subscription {
+        session_id: id.clone(),
+        events: session.subscribe(),
+    };
+    drop(session);
+
+    let target = elsewhere.path().join("moved");
+    let moved = state
+        .move_workspaces(&target.display().to_string())
+        .unwrap();
+    assert_eq!(moved.restarted_sessions, vec![id.clone()]);
+
+    state.session(&id).unwrap().send("hello".into()).unwrap();
+    let mut saw_reply = false;
+    for _ in 0..50 {
+        let event = tokio::time::timeout(
+            Duration::from_secs(20),
+            imperium_core::next_event(&state, &mut subscription),
+        )
+        .await
+        .expect("an event within 20 s")
+        .expect("the subscription follows the restarted session");
+        if matches!(
+            event.event,
+            imperium_protocol::session::SessionEvent::TurnCompleted { .. }
+        ) {
+            saw_reply = true;
+            break;
+        }
+    }
+    assert!(saw_reply, "the turn's events reached the old subscription");
 }
