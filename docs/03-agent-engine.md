@@ -132,7 +132,8 @@ Not yet: `send_to_task`, budgets per task, deeper trees, and cancellation.
 there, and when it stops working its changes are committed on the branch and its report leads
 with the branch, files, and whether it merges cleanly; the root merges it with git, and
 conflicts are reported, never resolved for it. Outside git the writer shares the folders with a
-notice. Details, placement and cleanup:
+notice; plan mode refuses a writer, and a rule denying `git_commit` keeps its changes
+uncommitted in its worktree. Details, placement and cleanup:
 [worktrees](14-projects-and-automation.md#worktrees).
 
 ### Choosing a model

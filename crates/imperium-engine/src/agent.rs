@@ -316,7 +316,9 @@ impl Agent {
         }
         // Tool providers' rules for their tools (the web tools' citation rules).
         for provider in &shared.tools {
-            if !can_delegate && !provider.for_subagents() {
+            if !can_delegate
+                && (!provider.for_subagents() || (writer_note.is_some() && !provider.for_writers()))
+            {
                 continue;
             }
             if let Some(instructions) = provider.instructions() {
@@ -648,7 +650,9 @@ impl Agent {
     /// subagents leave out the ones kept to the root agent.
     fn providers(&self, group: ToolGroup) -> impl Iterator<Item = &Arc<dyn ToolProvider>> {
         self.shared.tools.iter().filter(move |provider| {
-            provider.group() == group && (self.can_delegate || provider.for_subagents())
+            provider.group() == group
+                && (self.can_delegate || provider.for_subagents())
+                && (!self.writer || provider.for_writers())
         })
     }
 
@@ -1104,7 +1108,7 @@ impl Agent {
         let payload = json!({"agent_id": self.id, "tool_input": tool_input(arguments)});
         match self
             .shared
-            .hook(HookEvent::ToolBefore, Some(tool), payload)
+            .hook_in(&self.workspace, HookEvent::ToolBefore, Some(tool), payload)
             .await
         {
             Verdict::Allow => None,
@@ -1120,7 +1124,7 @@ impl Agent {
             "tool_output": truncate(output, REPORT_CHARS),
         });
         self.shared
-            .hook(HookEvent::ToolAfter, Some(tool), payload)
+            .hook_in(&self.workspace, HookEvent::ToolAfter, Some(tool), payload)
             .await;
     }
 
@@ -1890,7 +1894,7 @@ impl Agent {
         let started = self.tool_started(call, name, summary.to_string());
         let result = match tool {
             AgentTool::UpdatePlan => self.update_plan(arguments),
-            AgentTool::SpawnAgent => self.spawn_agent(arguments),
+            AgentTool::SpawnAgent => self.spawn_agent(arguments).await,
             AgentTool::AwaitTasks => self.await_tasks(arguments).await,
             AgentTool::SteerAgent => self.message_agent(arguments, true),
             AgentTool::QueueAgent => self.message_agent(arguments, false),
@@ -1993,7 +1997,7 @@ impl Agent {
         Ok(summary)
     }
 
-    fn spawn_agent(&mut self, arguments: &str) -> Result<String, String> {
+    async fn spawn_agent(&mut self, arguments: &str) -> Result<String, String> {
         #[derive(Deserialize)]
         struct Args {
             brief: String,
@@ -2029,6 +2033,14 @@ impl Agent {
                 ));
             }
         };
+        if writes && self.workspace.permissions().mode() == PermissionMode::Plan {
+            return Err(
+                "the session is in plan mode, which only reads: a writer subagent edits files, \
+                 so none was started. Start a read-only subagent, or ask the user to leave plan \
+                 mode"
+                    .into(),
+            );
+        }
         let effort = args
             .effort
             .as_deref()
@@ -2081,11 +2093,18 @@ impl Agent {
                         .into_iter()
                         .map(Path::to_path_buf)
                         .collect();
-                    match trees.start(&task_id, &folders) {
+                    // Making the worktrees runs git: off the async threads.
+                    let task = task_id.clone();
+                    let started = tokio::task::spawn_blocking(move || trees.start(&task, &folders))
+                        .await
+                        .map_err(|error| {
+                            format!("could not make the writer's worktree: {error}")
+                        })?;
+                    match started {
                         Ok(Some(start)) => {
                             workspace = self
                                 .workspace
-                                .with_roots(&start.folders)
+                                .with_writer_folders(&start)
                                 .map_err(|error| format!("the writer's worktree: {error}"))?;
                             writer_note = Some(writer_prompt(&start));
                             if !start.notice.is_empty() {
@@ -2094,9 +2113,9 @@ impl Agent {
                         }
                         Ok(None) => {
                             notice = Some(
-                                "none of the project's folders is in a repository, so the \
-                                 writer shares them; writers running together can overwrite \
-                                 each other"
+                                "none of the project's folders can have a worktree (not in a \
+                                 repository, or no commit yet), so the writer shares them; \
+                                 writers running together can overwrite each other"
                                     .into(),
                             );
                         }
@@ -2139,12 +2158,7 @@ impl Agent {
         if args.single_call {
             agent = agent.single_call();
         }
-        let agent = agent.pausable();
-        let spawned = json!({"task_id": task_id, "brief": args.brief, "model": agent.model.spec});
-        // Each subagent is its own task, so subagents run in parallel across the runtime's threads.
-        let handle = tokio::spawn(run_subagent(agent, args.brief, Some(spawned), false));
-        self.tasks.insert(task_id.clone(), handle);
-        self.pausable_tasks.insert(task_id.clone());
+        self.launch_subagent(agent.pausable(), args.brief, &task_id);
         let mut started = format!("started {task_id}; call await_tasks to collect its report");
         if let Some(notice) = notice {
             self.emit(SessionEvent::Notice {
@@ -2153,6 +2167,16 @@ impl Agent {
             started.push_str(&format!("\nNote: {notice}."));
         }
         Ok(started)
+    }
+
+    /// Starts `agent` on `brief` as its own task. (A plain function, so the async tool functions
+    /// that call it do not contain the subagent's own future.)
+    fn launch_subagent(&mut self, agent: Agent, brief: String, task_id: &str) {
+        let spawned = json!({"task_id": task_id, "brief": brief, "model": agent.model.spec});
+        // Each subagent is its own task, so subagents run in parallel across the runtime's threads.
+        let handle = tokio::spawn(run_subagent(agent, brief, Some(spawned), false));
+        self.tasks.insert(task_id.to_string(), handle);
+        self.pausable_tasks.insert(task_id.to_string());
     }
 
     /// Starts a chunk or reduce subagent as its own task. `brief` resolves to the text it
@@ -3431,7 +3455,9 @@ async fn run_subagent(
     let id = agent.id.clone();
     let spec = agent.model.spec.clone();
     if let Some(payload) = spawned {
-        shared.hook(HookEvent::AgentSpawn, None, payload).await;
+        shared
+            .hook_in(&agent.workspace, HookEvent::AgentSpawn, None, payload)
+            .await;
     }
     if resumed {
         match agent.fit_current().await {
@@ -3498,8 +3524,12 @@ async fn run_subagent(
     {
         // Whatever the writer changed is committed on its branch, and the report says how it
         // integrates; this runs git, so off the async threads.
+        // A rule denying `git_commit`, or plan mode, keeps the changes in the worktree.
+        let permissions = agent.workspace.permissions();
+        let commit = permissions.mode() != PermissionMode::Plan
+            && permissions.evaluate("git_commit", &Target::Other) != Some(RuleAction::Deny);
         let task = id.clone();
-        let note = tokio::task::spawn_blocking(move || trees.finish(&task))
+        let note = tokio::task::spawn_blocking(move || trees.finish(&task, commit))
             .await
             .unwrap_or_default();
         if !note.is_empty() {
@@ -3508,7 +3538,8 @@ async fn run_subagent(
         }
     }
     shared
-        .hook(
+        .hook_in(
+            &agent.workspace,
             HookEvent::AgentComplete,
             None,
             json!({"task_id": id, "ok": outcome.ok, "report": truncate(&outcome.text, REPORT_CHARS)}),
@@ -3590,6 +3621,33 @@ pub(crate) fn resume_subagent(
         return Err("the follow-up must not be empty".into());
     }
     let before = shared.agents.claim(agent_id)?;
+    // A writer goes back to its worktrees (kept for the session, and recorded for a restart);
+    // one whose worktrees are gone is not resumed in the delegator's folders instead.
+    let mut tree = None;
+    if let Some(trees) = shared.workspace.writer_trees()
+        && trees.is_writer(agent_id)
+    {
+        let found = trees.resume(agent_id).ok_or_else(|| {
+            format!(
+                "{agent_id} is a writer whose worktrees are gone, so it cannot be resumed (its \
+                 branch keeps its committed work); start a new writer instead"
+            )
+        });
+        let made = found.and_then(|start| {
+            shared
+                .workspace
+                .with_writer_folders(&start)
+                .map(|workspace| (workspace, start))
+                .map_err(|error| format!("{agent_id}'s worktree: {error}"))
+        });
+        match made {
+            Ok(made) => tree = Some(made),
+            Err(error) => {
+                shared.agents.release(agent_id, before.status);
+                return Err(error);
+            }
+        }
+    }
     let model = shared
         .agents
         .model(agent_id)
@@ -3606,19 +3664,18 @@ pub(crate) fn resume_subagent(
         return Err("the session has no model to run the subagent on".into());
     };
     let spec = model.spec.clone();
-    // A writer goes back to its worktrees (kept for the session, and recorded for a restart).
-    let tree = shared.workspace.writer_trees().and_then(|trees| {
-        let folders = trees.folders(agent_id)?;
-        shared.workspace.with_roots(&folders).ok()
-    });
+    let note = tree.as_ref().map(|(_, start)| writer_prompt(start));
     let mut agent = Agent::new_in(
         agent_id.to_string(),
         Arc::clone(shared),
         model,
         false,
         before.role.clone(),
-        tree.clone().unwrap_or_else(|| shared.workspace.clone()),
-        None,
+        tree.as_ref().map_or_else(
+            || shared.workspace.clone(),
+            |(workspace, _)| workspace.clone(),
+        ),
+        note.as_deref(),
     );
     if tree.is_some() {
         agent = agent.writing();

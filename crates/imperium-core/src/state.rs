@@ -1766,6 +1766,15 @@ impl DaemonState {
             tracing::warn!(path = %agents.display(), %error, "could not delete the session's agent state");
         }
         let mut result = SessionDeleteResult::default();
+        // The worktrees of its writer subagents go first (they were made from the session's
+        // folders, which may be its own worktrees), on the same terms; branches stay.
+        let journal = sessions.join(format!("{id}.jsonl"));
+        if remove_worktrees {
+            let (removed, failed) = crate::writers::GitWriterTrees::remove_recorded(&journal);
+            result.removed_worktrees.extend(removed);
+            result.failed.extend(failed);
+        }
+        crate::writers::GitWriterTrees::forget(&journal);
         if remove_worktrees && !placement.worktrees.is_empty() {
             // A worktree another session also works in (a branch shares its source's) is
             // theirs too, and may hold uncommitted work: it stays.
@@ -1777,20 +1786,11 @@ impl DaemonState {
                 .cloned()
                 .collect();
             if !own.is_empty() {
-                (result.removed_worktrees, result.failed) = crate::worktrees::remove(&own);
-            }
-        }
-        // So do the worktrees of its writer subagents, on the same terms (branches stay).
-        let journal = sessions.join(format!("{id}.jsonl"));
-        if remove_worktrees {
-            let writers = crate::writers::GitWriterTrees::recorded(&journal);
-            if !writers.is_empty() {
-                let (removed, failed) = crate::worktrees::remove(&writers);
+                let (removed, failed) = crate::worktrees::remove(&own);
                 result.removed_worktrees.extend(removed);
                 result.failed.extend(failed);
             }
         }
-        crate::writers::GitWriterTrees::forget(&journal);
         self.announce(
             imperium_protocol::methods::SESSION_DELETED,
             SessionDeleteParams {
