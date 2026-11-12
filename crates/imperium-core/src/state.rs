@@ -1423,7 +1423,9 @@ impl DaemonState {
             )
         });
         if let Some((profile, _)) = &bound {
-            workspace = workspace.with_profile(profile.clone());
+            workspace = workspace
+                .with_profile(profile.clone())
+                .with_protected_folders([self.paths.config_dir(), self.paths.data_dir()]);
         }
         // An environment's sessions also get its repositories' worktrees, unless it turned them
         // off. A session started on its own worktrees keeps to them, so its edits stay apart

@@ -51,6 +51,9 @@ pub struct Workspace {
     /// The persistent agent's profile, when the session belongs to one: it can only narrow what
     /// the workspace allows (see [`AgentProfile`]).
     profile: AgentProfile,
+    /// Folders an agent limited to local files may not touch even when a folder of the
+    /// environment contains them (the daemon's configuration and data folders), canonical.
+    protected: Vec<PathBuf>,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -110,6 +113,7 @@ impl Workspace {
             writers: None,
             path_map: Vec::new(),
             profile: AgentProfile::default(),
+            protected: Vec::new(),
         })
     }
 
@@ -156,6 +160,7 @@ impl Workspace {
             path_map: Vec::new(),
             processes: Processes::default(),
             profile: AgentProfile::default(),
+            protected: Vec::new(),
         })
     }
 
@@ -453,6 +458,23 @@ impl Workspace {
         Workspace { profile, ..self }
     }
 
+    /// The same workspace with folders an agent limited to local files may not use, such as the
+    /// daemon's configuration and data folders: they hold settings, secrets and other sessions,
+    /// and an environment's folder may contain them. The session's scratch folder is exempt.
+    pub fn with_protected_folders<P: AsRef<Path>>(
+        mut self,
+        folders: impl IntoIterator<Item = P>,
+    ) -> Self {
+        for folder in folders {
+            if let Ok(folder) = folder.as_ref().canonicalize()
+                && !self.protected.contains(&folder)
+            {
+                self.protected.push(folder);
+            }
+        }
+        self
+    }
+
     /// The agent profile the session's calls are limited by (unrestricted unless set).
     pub fn profile(&self) -> &AgentProfile {
         &self.profile
@@ -570,7 +592,9 @@ impl Workspace {
         let resolved = resolved.ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
         // Local files only keeps to the folders and the scratch folder, however the path is
         // spelled and whatever grants or project worktrees would also open it.
-        if self.profile.local_files_only() && !self.in_local_scope(&resolved) {
+        if self.profile.local_files_only()
+            && (!self.in_local_scope(&resolved) || self.in_protected_folder(&resolved))
+        {
             return Err(ToolError::OutsideWorkspace(path.to_string()));
         }
         match self.writable(&resolved) {
@@ -578,6 +602,19 @@ impl Workspace {
             Some(false) if write => Err(ToolError::ReadOnly(path.to_string())),
             Some(_) => Ok(resolved),
         }
+    }
+
+    /// Whether a canonical path is inside a protected folder (and not in the scratch folder).
+    fn in_protected_folder(&self, resolved: &Path) -> bool {
+        let in_scratch = self
+            .scratch
+            .as_deref()
+            .is_some_and(|scratch| resolved.starts_with(scratch));
+        !in_scratch
+            && self
+                .protected
+                .iter()
+                .any(|folder| resolved.starts_with(folder))
     }
 
     /// Whether a canonical path is inside one of the folders or the scratch folder, the only
@@ -1173,6 +1210,43 @@ mod tests {
             locked.resolve_remote("../other", false),
             Err(ToolError::OutsideWorkspace(_))
         ));
+    }
+
+    #[test]
+    fn local_files_only_refuses_the_daemons_folders_even_inside_an_environment_folder() {
+        let project = tempfile::tempdir().unwrap();
+        let config = project.path().join("fake-config");
+        let data = project.path().join("fake-data");
+        std::fs::create_dir_all(data.join("scratch")).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("config.toml"), "secret").unwrap();
+        let workspace = Workspace::new(project.path())
+            .unwrap()
+            .with_scratch(&data.join("scratch"))
+            .with_protected_folders([&config, &data]);
+        let settings = config.join("config.toml").to_string_lossy().to_string();
+        // Without the lock the folder is the agent's like any other.
+        assert!(workspace.resolve(&settings).is_ok());
+        let locked = workspace.with_profile(AgentProfile::new(crate::profile::ProfileRules {
+            local_files_only: true,
+            ..Default::default()
+        }));
+        for path in [
+            settings,
+            "fake-config/config.toml".to_string(),
+            "fake-config/new.toml".to_string(),
+            "fake-data/sessions/x.jsonl".to_string(),
+            "src/../fake-config/config.toml".to_string(),
+        ] {
+            assert!(
+                matches!(locked.resolve(&path), Err(ToolError::OutsideWorkspace(_))),
+                "{path} should be refused"
+            );
+            assert!(locked.resolve_writable(&path).is_err(), "{path}");
+        }
+        // The rest of the folder and the session's scratch folder (inside the data folder) stay.
+        assert!(locked.resolve("src/main.rs").is_ok());
+        assert!(locked.resolve("fake-data/scratch/notes.txt").is_ok());
     }
 
     #[test]

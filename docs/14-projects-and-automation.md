@@ -134,7 +134,8 @@ the other integrations (model listing, app-config and session-search tools, sugg
 (`read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`), planning, skills, memory,
 `ask_user` and delegation. The file tools are confined to the environment's folders and the
 agent's own scratch folder: no path grant, project worktree or attachments folder opens
-anything more, and `..`, absolute paths and symbolic links are checked after resolution, like
+anything more, the daemon's own configuration and data folders are refused even when an
+environment folder contains them (the scratch folder is exempt), and `..`, absolute paths and symbolic links are checked after resolution, like
 the folder sandbox itself. Where a read-only grant covers part of a folder it stays read-only.
 
 **Enforcement.** The profile is applied when the tool list is assembled for each model call
@@ -158,8 +159,8 @@ session. A session whose agent no longer exists keeps the profile recorded with 
 (`agent_permissions` in its meta file, kept current while the agent exists); with no record it
 gets the strictest profile (local files only, no servers, no plugins), so a session is never
 looser than the agent that started it. Switching an agent to local files only also stops the
-background commands its sessions had started (servers that were already running are left
-running but unreachable).
+background commands its sessions had started, at the session's next step (servers that were
+already running are left running but unreachable).
 
 **A hard boundary needs local files only.** An agent that may run commands can reach the daemon
 like any client (`imperium env agent set …`, or the protocol directly) and loosen its own
@@ -169,7 +170,8 @@ command that runs `imperium env agent add|set|rm` always asks a person (the safe
 **local files only**, which gives the agent no commands, holds against the agent itself. Even
 then a locked agent can influence other sessions through what it may edit: files in the
 environment's folders that other sessions read (instructions, skills, commands, hooks'
-scripts) and the shared memory. Allowlist names are compared ignoring case, so two servers whose
+scripts, a project's `.mcp.json`, which sessions of a trusted project start) and the shared
+memory. Allowlist names are compared ignoring case, so two servers whose
 names differ only by case cannot be told apart.
 
 **Remote runtimes.** For an environment on a Docker, WSL or SSH runtime the folder confinement
@@ -177,7 +179,9 @@ is lexical (`..` and absolute paths are resolved, symbolic links inside the runt
 followed from here), as it is for every session there.
 
 Not covered: the hooks the user configured run as configured (they are the user's, not the
-agent's), and a mod's panel is not an agent tool, so profiles do not apply to mods.
+agent's), the hooks a plugin brings still run for a session whose profile says `plugins: none`
+(only the plugin's servers and tools are held back), and a mod's panel is not an agent tool, so
+profiles do not apply to mods.
 
 From the command line, `imperium env agent add|set` take `--mcp all|none|NAME,NAME`,
 `--plugins all|none|NAME,NAME`, and `--local-only` / `--no-local-only`; a flag not given keeps
