@@ -141,14 +141,15 @@ pub struct EnvironmentAgentCreateParams {
 
 /// `environments.agent_update`: renames an agent, changes its role or its permission profile. A
 /// changed role applies from the agent's next start, which happens at once; its conversation
-/// continues. A changed profile applies from the agent's next tool call, without a restart.
+/// continues. A changed profile applies from the agent's next tool call, without a restart. The
+/// result is the agent and whether it is running, like `environments.agent_create`'s.
 #[derive(Debug)]
 pub struct EnvironmentAgentUpdate;
 
 impl Method for EnvironmentAgentUpdate {
     const NAME: &'static str = "environments.agent_update";
     type Params = EnvironmentAgentUpdateParams;
-    type Result = EnvironmentAgent;
+    type Result = EnvironmentAgentCreated;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

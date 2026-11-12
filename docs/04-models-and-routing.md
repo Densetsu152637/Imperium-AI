@@ -1406,9 +1406,8 @@ is a separate, later item ([12](12-roadmap.md)); the benchmark is how its gain w
   `load.interactive_hold_min` hold), and it is bounded by the model's `max_wait_s`. It does not
   wait for a fully quiet machine: a busy one is allowed, so the machine's load is stored with
   the result. There is no second launcher. The stored `machine` is the worse of the load
-  levels (`quiet`, `busy`, `saturated`) read when the model's turn began, once it held its
-  slot, and after its last prompt, so a number taken while the machine was busy can be told
-  apart. While it waits, the run's step says why (loading, a busy slot, another model in the
+  levels (`quiet`, `busy`, `saturated`) read at two moments: once the model held its slot, and
+  after its last prompt. A number taken while the machine was busy can be told apart. While it waits, the run's step says why (loading, a busy slot, another model in the
   way, memory being freed, or a saturated machine).
 - **Cold start.** By default a model that is loaded and has sat idle for longer than
   `load.interactive_hold_min` is unloaded first (through the residency controller, which also
@@ -1429,15 +1428,18 @@ is a separate, later item ([12](12-roadmap.md)); the benchmark is how its gain w
 | ------ | --- |
 | Load time (`load_s`) | the seconds of the runtime's own `load` move made for the call; absent when the model was already loaded when the call began |
 | Time to first token (`ttft_ms`) | request sent to the first text (a thinking model's reasoning counts); the result is the median of the prompts, each prompt has its own |
-| Prompt speed (`prompt_tok_s`) | the server's reported prompt tokens over the time to the first token, summed over the prompts (a lower bound on the true prefill rate, since the time includes the first token); absent for a prompt whose server sent no usage report, which is also left out of the sum, since its size would only be an estimate |
+| Prompt speed (`prompt_tok_s`) | the server's reported prompt tokens over the time to the first token, summed over the prompts (a lower bound on the true prefill rate, since the time includes the first token); absent for a prompt whose server sent no usage report, which is also left out of the sum, since its size would only be an estimate (such a prompt has `prompt_tokens_estimated: true`, and the CLI shows its size with a `~`) |
 | Generation speed (`gen_tok_s`) | reply tokens after the first over the time from the first text to the last, summed over the prompts; without a usage report the number of streamed chunks stands in for the tokens |
 | Peak memory (`peak_ram_bytes`, `peak_vram_bytes`) | the highest resident memory, and GPU memory when `nvidia-smi` reports it for the process, of the model's server process, read every second from before the model loads until the prompts end (each reading of `nvidia-smi` is bounded by a timeout); absent when the server is not a process Imperium can read (a stand-in in tests, an unsupported GPU), never estimated |
 
 - **Results are saved** to `<data>/local-benchmarks.json` (the newest 200), one entry per model
   and run: the model, run id, date (UTC), the **hardware fingerprint** (a short hash of the
   GPUs and their memory, system memory, cores and the runtime build: for llama.cpp the
-  release Imperium pins and the pack in use, for vLLM vLLM alone, so a different GPU, memory
-  or build counts as another machine, while free memory does not), the same in words, the
+  `llama-server` actually in use, told by the release folder it is in and its pack (an earlier
+  release used until the pinned one installs counts as itself, and a release not installed yet
+  is the pinned one to come), or for a `custom` or `detected` server its file name, size and
+  modification time; for vLLM vLLM alone, so a different GPU, memory or build counts as
+  another machine, while free memory does not), the same in words, the
   runtime, how it was placed (`gpu`, `partial`, `cpu`), the machine's load level, every metric
   above and each prompt's own numbers. A model that fails to load or answer, or whose prompts
   all fail or do not fit its context, is reported in the run with its reason and not saved;
@@ -1458,7 +1460,9 @@ is a separate, later item ([12](12-roadmap.md)); the benchmark is how its gain w
   `imperium models bench` exits non-zero unless the run is `done`. Only one run may run at a
   time, and the last 20 runs are kept in memory. `models.bench_results` returns the saved
   results newest first (optionally for one model), this machine's fingerprints (for llama.cpp
-  and for vLLM models), and the runs since the daemon started. A paired phone's connection may
+  and for vLLM models), and the runs since the daemon started; `imperium models bench --results` prints those
+  fingerprints (one for llama.cpp, one for vLLM) and marks each result measured here with the
+  runtime now in use `(this machine)`. A paired phone's connection may
   not call the benchmark methods and is not sent `models.bench_progress` (it names models and
   carries error text).
 

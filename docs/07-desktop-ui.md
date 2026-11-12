@@ -734,7 +734,6 @@ saved to `[api.openai_compatible]` in the user config and apply at once):
 
 - a model list (*All local models*, or one model by alias and id) with **Run benchmark**, which
   becomes **Cancel** while a run is in progress; nothing runs until it is pressed;
-  a model is unloaded to time its load only when it has been idle past the interactive hold;
 - *Keep a loaded model loaded*, which skips the idle unload that lets the load time be measured;
 - while it runs, one status line: the model, what it is doing (*loading the model*,
   *waiting while the machine is saturated*, *prompt 2 of 3*), and how many models are done; a model that failed is

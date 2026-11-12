@@ -282,6 +282,11 @@ async fn two_agents_in_one_environment_run_independently() {
     );
     assert_eq!(renamed["name"], "Critic");
     assert_eq!(renamed["session_id"], reviewer_session.as_str());
+    assert_eq!(
+        renamed["started"], true,
+        "an update says whether the agent is running"
+    );
+    assert!(renamed.get("reason").is_none());
     let session = state.session(&reviewer_session).unwrap();
     assert_eq!(state.summary(&session).title, "Work · Critic");
 }
@@ -337,7 +342,16 @@ async fn an_old_persistent_session_becomes_an_agent_with_its_history() {
     assert_eq!(env["agents"][0]["session_id"], session_id.as_str());
     state.start_project_agents();
     let session = state.session(&session_id).unwrap();
-    assert_eq!(session.title(), "remember this", "its history came back");
+    // Its history came back, and it is titled after the agent now, not its first message.
+    assert!(
+        session
+            .subscribe_with_history()
+            .0
+            .iter()
+            .any(|event| matches!(&event.event, SessionEvent::TurnStarted { text, .. } if text == "remember this")),
+        "its history came back"
+    );
+    assert_eq!(state.summary(&session).title, "Work · Persistent agent");
     assert!(state.summary(&session).persistent);
     // The migration was saved: another start finds the agent without migrating again.
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
@@ -798,6 +812,18 @@ async fn an_agent_that_cannot_start_is_added_and_says_why() {
     );
     assert!(created["session_id"].is_null());
     assert_eq!(created["name"], "Planner");
+    // Changing it restarts it, which cannot work either: the update says so too.
+    let updated = call(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": empty, "agent_id": created["id"], "role": "Plans."}),
+    );
+    assert_eq!(updated["started"], false, "{updated}");
+    assert!(
+        updated["reason"].as_str().unwrap().contains("no folders"),
+        "{updated}"
+    );
+    assert_eq!(updated["role"], "Plans.");
     // Adding a folder starts it.
     call(
         &mut connection,
