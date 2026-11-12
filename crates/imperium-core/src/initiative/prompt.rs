@@ -1,13 +1,13 @@
 //! The message an environment's persistent agent gets for an initiative review: a template
-//! (`review.md`, with the mode's rules and the digest task from the neighbouring files) filled
+//! (`review.txt`, with the mode's rules and the digest task from the neighbouring files) filled
 //! with facts the daemon knows. The agent reads the environment's documents itself.
 
 use imperium_protocol::initiative::Initiative;
 
-const REVIEW: &str = include_str!("review.md");
-const SUGGEST: &str = include_str!("suggest.md");
-const ACT: &str = include_str!("act.md");
-const DIGEST: &str = include_str!("digest.md");
+const REVIEW: &str = include_str!("review.txt");
+const SUGGEST: &str = include_str!("suggest.txt");
+const ACT: &str = include_str!("act.txt");
+const DIGEST: &str = include_str!("digest.txt");
 
 /// The start of every review message; the agent's instructions name it.
 #[cfg(test)]

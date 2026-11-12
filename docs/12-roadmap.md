@@ -324,7 +324,7 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     no persistent agent, and cannot be deleted
     ([14](14-projects-and-automation.md#home-implemented)).
 
-37. **Agent initiative** (implemented). Persistent agents can look for work on their own, when the
+38. **Agent initiative** (implemented). Persistent agents can look for work on their own, when the
     machine is quiet and the user is idle in the environment: per agent `off` (the default),
     `suggest` (a read-only review of the roadmap, plans, notes and sessions that yields a short
     list of suggested work with a source each, shown with one-click *Start*, plus a daily

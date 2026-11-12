@@ -145,8 +145,8 @@ What an agent with initiative does, and when:
   budget that is used up (turn-start check, and the per-call gate while it works) stops it like any
   turn. A person's **Review now** (`initiative.review`) skips the interval, quiet and idle checks,
   but not the budget, and not the need for initiative to be on.
-- **What it reads.** The review message is built from a template (`crates/imperium-core/src/initiative/review.md`, with
-  `suggest.md`, `act.md` and `digest.md`) and facts only the daemon knows: the environment's
+- **What it reads.** The review message is built from a template (`crates/imperium-core/src/initiative/review.txt`, with
+  `suggest.txt`, `act.txt` and `digest.txt`) and facts only the daemon knows: the environment's
   folders, its recent sessions (status, last activity, who started them), the agent's open and
   recently handled suggestions, its last reminder, and in `act` its allowance. The agent reads the
   roadmap, plan and status documents and its notes itself, with the file tools. The template tells it to

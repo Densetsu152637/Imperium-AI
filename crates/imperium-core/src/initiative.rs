@@ -897,7 +897,7 @@ fn facts(
             ),
         ));
     }
-    sessions.sort_by(|a, b| b.0.cmp(&a.0));
+    sessions.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     sessions.truncate(12);
     let titles = |status: &dyn Fn(SuggestionStatus) -> bool| -> Vec<String> {
         data.suggestions
