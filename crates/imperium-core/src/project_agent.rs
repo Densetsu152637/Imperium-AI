@@ -35,6 +35,10 @@ use tokio::sync::broadcast;
 use crate::scheduler::DEFAULT_MAX_DEFER;
 use crate::{DaemonState, SessionOptions};
 
+/// How long a report waits for its agent to be idle (so the agent's next turn is the report's)
+/// before it is delivered anyway.
+const REPORT_WAIT: Duration = Duration::from_secs(3600);
+
 /// Longest a dispatched session may run before its report is given up on.
 const SESSION_TIMEOUT: Duration = Duration::from_secs(3600);
 
@@ -847,8 +851,9 @@ fn dispatch(
         } else {
             Err("the session closed before it started".to_string())
         };
-        // A session that gave up waiting for is stopped, so it does not run on unaccounted for.
-        if result.is_err() && session.status().0 == SessionStatus::Working {
+        // A session that was given up on is stopped whatever it is doing (working, waiting on an
+        // approval, held), so it does not run on, or wait, unaccounted for.
+        if result.is_err() && session.status().0 != SessionStatus::Idle {
             session.stop();
         }
         drop(release);
@@ -861,12 +866,29 @@ fn dispatch(
             Err(error) => format!("Session {id} did not finish: {error}"),
         };
         if let Some(slot) = agent
-            && let Some(agent) = slot.get()
+            && let Some(mut agent) = slot.get()
         {
             // The agent's turn on this report follows the initiative limits when the session
-            // was started on its own initiative.
-            if slot.agent_id.is_some() && daemon.initiative().is_initiative_session(&id) {
-                daemon.initiative().expect_report(&message);
+            // was started on its own initiative. The report goes to an idle agent, so that its
+            // next turn is this one, and the flag is set before it is sent (the turn's text is
+            // not trusted to tell: the engine may replace a long one with a stub).
+            if let Some(agent_id) = &slot.agent_id
+                && daemon.initiative().is_initiative_session(&id)
+            {
+                for _ in 0..(REPORT_WAIT.as_millis() / 200) {
+                    if agent.status().0 == SessionStatus::Idle {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    // The agent may have restarted meanwhile.
+                    match slot.get() {
+                        Some(current) => agent = current,
+                        None => return,
+                    }
+                }
+                if agent.status().0 == SessionStatus::Idle {
+                    daemon.initiative().expect_follow_up(agent_id);
+                }
             }
             let _ = agent.send(message);
         }

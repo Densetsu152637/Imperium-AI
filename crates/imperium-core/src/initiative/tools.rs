@@ -113,7 +113,7 @@ impl ToolProvider for InitiativeTools {
                     "title": {"type": "string", "description": "A short name for the work"},
                     "prompt": {"type": "string", "description": "What the session is told, as the user would word it"},
                     "reason": {"type": "string", "description": "Why now, in a sentence"},
-                    "source": {"type": "string", "description": "File and heading, issue number or session id you read"}
+                    "source": {"type": "string", "description": "A file or folder of this environment (with an optional #heading), or a session id from the list"}
                 }, "required": ["title", "prompt", "reason", "source"]}),
             },
             ToolSpec {
