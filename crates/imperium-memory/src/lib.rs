@@ -4,6 +4,7 @@
 //! ([`sessions`]) that makes past sessions searchable, and the model cards agents search when
 //! they choose a model ([`models`]), on the same retrieval primitives ([`retrieval`]).
 
+pub mod environment;
 pub mod models;
 pub mod retrieval;
 mod search;
@@ -101,6 +102,8 @@ pub enum MemoryError {
     NoScope(&'static str),
     #[error("refused: the entry looks like it contains a secret ({0})")]
     LooksSecret(&'static str),
+    #[error("{0}")]
+    TooLong(String),
     #[error("{0}: {1}")]
     Io(String, std::io::Error),
 }

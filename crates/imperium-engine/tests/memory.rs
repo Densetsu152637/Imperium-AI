@@ -89,6 +89,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
                 },
                 ..MemorySettings::default()
             },
+            environment: None,
         }),
         context: None,
         enforce: imperium_config::Enforce::Warn,
@@ -101,6 +102,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         max_steps: 5,
         background: None,
         checkpoints: None,
+        budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
         keep_agent_state: true,

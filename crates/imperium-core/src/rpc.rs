@@ -92,12 +92,41 @@ use imperium_protocol::methods::{SessionControl, SessionControlParams, SessionCo
 use imperium_protocol::methods::{
     SessionQueue, SessionQueueParams, SessionQueueResult, SessionSendResult,
 };
+use imperium_protocol::workspaces::{
+    WorkspacesMove, WorkspacesOpen, WorkspacesWhere, WorkspacesWhereParams,
+};
 
 /// A session's events, to be forwarded to this connection as notifications.
 #[derive(Debug)]
 pub struct Subscription {
     pub session_id: String,
     pub events: broadcast::Receiver<AgentEvent>,
+}
+
+/// The next event of a subscribed session. When the session was restarted (its working folders
+/// moved) the old one ends; this follows the session of the same id that took its place, so
+/// the client keeps receiving. `None` when the session is gone.
+pub async fn next_event(
+    state: &DaemonState,
+    subscription: &mut Subscription,
+) -> Option<AgentEvent> {
+    // One look at the replacement per end, so a session that really ended cannot loop.
+    let mut followed = false;
+    loop {
+        match subscription.events.recv().await {
+            Ok(event) => return Some(event),
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                tracing::warn!(session = %subscription.session_id, missed, "client fell behind; events dropped");
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                if followed {
+                    return None;
+                }
+                followed = true;
+                subscription.events = state.session(&subscription.session_id)?.subscribe();
+            }
+        }
+    }
 }
 
 /// A reply that waits on something slow, such as the network.
@@ -137,6 +166,11 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// The daemon this connection talks to.
+    pub(crate) fn state(&self) -> Arc<DaemonState> {
+        Arc::clone(&self.state)
+    }
+
     pub fn new(state: Arc<DaemonState>) -> Self {
         Connection {
             state,
@@ -274,6 +308,48 @@ impl Connection {
             ConfigDescribe::NAME => {
                 call::<ConfigDescribe>(request.params, |_: ConfigDescribeParams| {
                     crate::config::describe(&self.state)
+                })
+            }
+            WorkspacesWhere::NAME => {
+                call::<WorkspacesWhere>(request.params, |_: WorkspacesWhereParams| {
+                    Ok(self.state.workspaces_where())
+                })
+            }
+            WorkspacesMove::NAME => {
+                call_later::<WorkspacesMove, _>(request.params, &mut later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        tokio::task::spawn_blocking(move || state.move_workspaces(&params.path))
+                            .await
+                            .map_err(|error| refused(error.to_string()))?
+                            .map_err(refused)
+                    }
+                })
+            }
+            WorkspacesOpen::NAME => call::<WorkspacesOpen>(request.params, |p| {
+                self.state
+                    .open_workspace(&p.environment_id, &p.target)
+                    .map_err(refused)?;
+                Ok(Accepted {})
+            }),
+            // Changing the working folders' place can move a lot of files: it runs off the
+            // connection, so progress notifications go out while it works and other calls are
+            // answered meanwhile.
+            ConfigSet::NAME
+                if request
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("key"))
+                    .and_then(Value::as_str)
+                    == Some(crate::state::WORKSPACES_ROOT_SETTING) =>
+            {
+                call_later::<ConfigSet, _>(request.params, &mut later, |params| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        tokio::task::spawn_blocking(move || crate::config::set(&state, params))
+                            .await
+                            .map_err(|error| refused(error.to_string()))?
+                    }
                 })
             }
             ConfigSet::NAME => call::<ConfigSet>(request.params, |params: ConfigSetParams| {
@@ -1375,6 +1451,11 @@ where
         work.await.map(|result| to_value(&result))
     }));
     Ok(Value::Null)
+}
+
+/// A working-folder request the daemon refused, with the reason.
+fn refused(message: String) -> ErrorObject {
+    ErrorObject::new(codes::INVALID_PARAMS, message)
 }
 
 fn decode<M: Method>(params: Option<Value>) -> Result<M::Params, ErrorObject> {

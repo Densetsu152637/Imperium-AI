@@ -16,6 +16,7 @@ use tokio::task::JoinHandle;
 
 use imperium_config::{Enforce, MemorySettings, WritePolicy};
 use imperium_extensions::{Extensions, HookEvent, Verdict};
+use imperium_memory::environment::EnvironmentMemory;
 use imperium_memory::{Scope, Store};
 use imperium_models::ChatClients;
 use imperium_workflow::ContextIndex;
@@ -101,6 +102,9 @@ pub struct SessionConfig {
     /// Told when each root turn starts and ends, so the daemon can checkpoint the session's
     /// files (`None`: no checkpoints).
     pub checkpoints: Option<Arc<dyn crate::TurnCheckpoints>>,
+    /// Asked before every model call and subagent spawn, so a used-up budget stops a turn
+    /// that is already running (`None`: no budgets).
+    pub budget_gate: Option<Arc<dyn crate::BudgetGate>>,
 }
 
 /// The answer to a model switch or a compaction.
@@ -672,6 +676,9 @@ pub(crate) struct Shared {
     pub context: Option<Arc<ContextIndex>>,
     pub enforce: Enforce,
     pub launcher: Option<Arc<dyn SessionLauncher>>,
+    pub budget_gate: Option<Arc<dyn crate::BudgetGate>>,
+    /// Held while a budget approval is asked, so agents running in parallel raise one prompt.
+    pub budget_ask: tokio::sync::Mutex<()>,
     pub instructions: Option<String>,
     /// The root agent's personality block; see [`SessionConfig::personality`].
     pub personality: Option<String>,
@@ -796,6 +803,8 @@ async fn run(
         context: config.context,
         enforce: config.enforce,
         launcher: config.launcher,
+        budget_gate: config.budget_gate,
+        budget_ask: tokio::sync::Mutex::new(()),
         instructions: config.instructions,
         personality: config.personality,
         background: config.background,
@@ -1300,9 +1309,15 @@ impl Shared {
 pub struct SessionMemory {
     pub store: Store,
     pub settings: MemorySettings,
+    /// The `Memory.md` of the session's environment, when it is in one on this machine.
+    pub environment: Option<EnvironmentMemory>,
 }
 
 impl SessionMemory {
+    pub(crate) fn environment_policy(&self) -> WritePolicy {
+        self.settings.write.environment
+    }
+
     pub(crate) fn policy(&self, scope: Scope) -> WritePolicy {
         let write = &self.settings.write;
         match scope {

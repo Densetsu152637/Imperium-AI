@@ -300,6 +300,18 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
 35. **Layouts.** Dragging panels out into windows and modules between panels, project layout
     overrides, and exportable layout presets ([07](07-desktop-ui.md)).
 
+36. **Environment working folders** (implemented). Every environment gets a working folder under
+    `workspaces.root` (default `<data>/workspaces`): a `Memory.md` of notes for that environment
+    alone, read into its sessions' context like workflow context and never compacted, and a scratch
+    folder per session, added as a writable grant, deleted when the session is archived and made
+    again, empty, when it is unarchived. Changing the root moves the whole tree (rename, or copy
+    and verify, with rollback), from Settings, `imperium workspaces move`, or `config set`
+    ([14](14-projects-and-automation.md#environment-working-folders-implemented),
+    [17](17-memory.md#environment-memory-implemented)). Follow-ups not built: a sweep for
+    scratch folders of sessions that were never archived or deleted, and the handles of
+    background processes that a session started in its scratch folder, which can keep a folder
+    from being deleted or moved.
+
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
 

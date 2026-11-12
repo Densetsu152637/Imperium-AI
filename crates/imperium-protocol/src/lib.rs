@@ -12,6 +12,7 @@ pub mod methods;
 pub mod permissions;
 pub mod session;
 pub mod tools;
+pub mod workspaces;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

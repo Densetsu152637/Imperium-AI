@@ -454,8 +454,9 @@ fn memory_prefix(name: &str) -> String {
 fn agent_instructions(agent: &EnvironmentAgent) -> String {
     let prefix = memory_prefix(&agent.name);
     let mut text = format!(
-        "{ENVIRONMENT_INSTRUCTIONS}\n\nYour name is {}. The project-private memory is shared by \
-         every agent of this environment: begin the name of each entry you save with \"{prefix}-\" \
+        "{ENVIRONMENT_INSTRUCTIONS}\n\nYour name is {}. The memory you save (project-private, \
+         and the environment's Memory.md) is shared by every agent of this environment: begin the \
+         name of each entry you save with \"{prefix}-\" \
          and keep your open-task list in \"{prefix}-open-tasks\", so you do not overwrite another \
          agent's notes.",
         agent.name

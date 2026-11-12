@@ -291,6 +291,14 @@ presets resolved for the daemon's machine: Cargo (`CARGO_HOME` or `~/.cargo`, wr
 `GOPATH/pkg/mod`), Maven, Gradle, and NuGet, using `%LOCALAPPDATA%` on Windows, `~/Library` on
 macOS, and the XDG folders elsewhere.
 
+Every session in an environment on this machine also gets one grant of its own, not listed in
+the settings: its **scratch folder**, `<workspaces.root>/<environment-id>/sessions/<session-id>/`
+([14](14-projects-and-automation.md#environment-working-folders-implemented)). It is a
+`read_write` grant added through the same workspace, so the permission rules, deny rules, and the
+safety floor apply to it exactly as to any other path, `run_command` can write to it under the
+sandbox tiers below, and the system prompt calls it the agent's scratch folder instead of listing
+it with the other grants. It is deleted when the session is archived or deleted.
+
 How far grants reach depends on where commands run:
 
 | Where | File tools | Commands |

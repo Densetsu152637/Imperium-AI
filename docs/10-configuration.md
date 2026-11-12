@@ -61,7 +61,7 @@ The desktop app's Settings page reads and changes settings through the daemon:
 - The daemon reads its configuration once at start, so `restart: true` (nearly every setting)
   means the change applies after a daemon restart, which the app offers. Settings with
   `restart: false` (`models.suggest_downloads`, `models.default`, `models.effort`, `models.folders`,
-  `runtime.llamacpp.custom_path`, and `policy.personality`) apply at once; a changed `models.folders` is scanned again
+  `runtime.llamacpp.custom_path`, `policy.personality`, and `workspaces.root`, which moves the working folders first) apply at once; a changed `models.folders` is scanned again
   at once. The desktop app's model setup and `models.add_folder`, `models.use`,
   `models.add_endpoint`, and `runtime.set_server` write these keys the same way
   ([setting up models](04-models-and-routing.md#setting-up-models-from-the-app)).
@@ -91,6 +91,7 @@ listed; edit them in the file.
 | `sessions.auto_archive_after_days` | `0` | Archive an idle session after this many days without activity; `0` never does. Working, waiting, pinned, and agent sessions are never archived |
 | `sessions.checkpoints` | `true` | Before each root turn that changes files in a git repository, record the session's files as a commit on a private ref (`refs/imperium/checkpoints/<session>/<n>`), without touching the index, HEAD, or branches, so `session.rewind` can put the files and the conversation back ([checkpoints](14-projects-and-automation.md#checkpoints-and-rewinding)) |
 | `sessions.attachment_max_mib` | `10` | The largest file that can be attached to a message, in MiB, checked when it is attached and again when the message is sent. Uploads from the app (pasted files, browser drops) travel over the daemon connection, which carries about 12 MiB of file at most ([attachments](07-desktop-ui.md#attachments-and-voice-input-implemented)) |
+| `workspaces.root` | `<data>/workspaces` | The folder that holds a working folder for every environment: its `Memory.md` and one scratch folder per session, deleted when the session is archived ([environment working folders](14-projects-and-automation.md#environment-working-folders-implemented)). Must be absolute. Changing it (Settings → *Working folders*, `imperium config set workspaces.root`, `imperium workspaces move`) moves the existing folders there first and refuses a folder that is not empty or is inside the current one; applies at once |
 | `models.catalog` | none | The model table: `[[models.catalog]]` rows with `id`, `spec`, `location` (`local` or `cloud`), `tier` (`basic`, `standard`, `strong`, `frontier`), optional `alias` (a [display name](#model-aliases)), optional `tags` (`reasoning` or `thinking` mark a model that can reason, `no-reasoning` or `no-thinking` one that cannot), optional `reasoning` (`true` or `false`: whether the model can reason, so sessions send it their [reasoning effort](04-models-and-routing.md#reasoning-effort); over the tags, a local model's chat template and the model's name), and optional `context_window` (tokens per request, for [context breakdowns](03-agent-engine.md#context-management); llama.cpp models report their own), optional `placement` (`auto` by default, or `cpu` to pin a `location = "local"`, `llamacpp:<id>` row to the [CPU lane](04-models-and-routing.md#runtimes): served with no GPU layers, in system RAM only, never swapped out for the GPU; a cloud row or another spec is refused at startup), and, only valid with `placement = "cpu"`, optional `parallel` (slots, default `1`), `context` (tokens per slot, default `runtime.llamacpp.context`) and `max_wait_s` (longest a call waits for a slot or for room on that row, default `3600` or `runtime.llamacpp.max_wait_s` if longer); a CPU-pinned model is started with `--n-gpu-layers 0 --device none` (plus `--no-mmproj-offload` with a projector), and rows naming the same model must agree on these; see [routing](04-models-and-routing.md#routing) |
 | `routing.prefer` | `cheapest` | Tie-breaker among suitable models: `cheapest`, `local`, or `cloud` |
 | `routing.rules` | none | `[[routing.rules]]` delegation rules with optional `when_tier`, `when_tag`, `location`, `tier` (raises the task's minimum tier), and `use` (model table ids in order) |
@@ -140,6 +141,7 @@ listed; edit them in the file.
 | `extensions.eager` | none | Skills and plugins, by name, loaded up front even when `extensions.lazy` is on |
 | `memory.enabled` | `true` | Global and project memory ([17](17-memory.md)) |
 | `memory.write.global`, `.project`, `.project_private` | `ask`, `ask`, `auto` | Whether agents may save memories in each scope: `auto`, `ask`, or `off` |
+| `memory.write.environment` | `ask` | Whether agents may write to an environment's `Memory.md`, which every later session there reads as part of its instructions, so a write shows the whole entry for approval by default ([17](17-memory.md#environment-memory-implemented)) |
 | `memory.recall` | `true` | Put the best-matching memories before each message |
 | `memory.max_index_tokens`, `memory.max_recall_tokens` | `1500`, `1500` | Budgets for the index in agent instructions and for recalled memories |
 | `memory.session_search` | `true` | Index sessions in the background for `session.search`, and offer agents `search_sessions` ([17](17-memory.md#session-search-implemented)) |
@@ -217,8 +219,19 @@ limits = [
   `budgets.alert`; the desktop shows them as notifications (Settings → Notifications).
 - **Action** when a budget is used up: `warn` (the default) only alerts; `ask` makes each new
   turn in the scope ask first (`session.send` fails with `-32008` until it is repeated with
-  `confirm_budget`); `block` refuses new turns in the scope until the window resets. Turns already
-  running, messages already queued, and steering a running turn are not stopped. Scheduled runs
+  `confirm_budget`); `block` refuses new turns in the scope until the window resets. The check
+  also runs before every model call, every compaction (automatic, manual, and on a model switch)
+  and every subagent spawn, against the model that call uses, so a budget used up in the middle
+  of a turn stops the next call there (the turn fails with the budget message), a subagent on a
+  blocked endpoint or model is refused, and steering a running turn is gated at its next call.
+  Compaction summaries are counted in the usage (they are paid calls); the short title calls are
+  neither gated nor counted. A budget that asks pauses the agent with a permission request
+  (an unattended session's waits in the approvals queue like any other), once per budget, per
+  session, and window: parallel subagents raise one prompt, and with several used-up budgets that
+  ask, each one is asked. The approval (or `confirm_budget`) is held in the daemon's memory, so a
+  restart asks again, and it ends when the window rolls over. It is not skipped by allow rules,
+  the `full` permission mode, or pre-approved tools, and declining fails the turn. A call already
+  running finishes. Scheduled runs
   and project-agent briefs in a scope that asks or blocks do not start.
 
 `budgets.get` returns the budgets and where each stands, `budgets.set` replaces them (applied at

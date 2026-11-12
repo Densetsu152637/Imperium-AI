@@ -38,7 +38,9 @@ pub enum BudgetWindow {
     Monthly,
 }
 
-/// What happens to new turns in the scope once a budget is used up; running turns finish.
+/// What happens in the scope once a budget is used up: new turns, and the next model call
+/// or subagent spawn of a turn already running, are asked about or stopped. A call already in
+/// flight finishes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -46,9 +48,11 @@ pub enum BudgetAction {
     /// Alert only.
     #[default]
     Warn,
-    /// `session.send` fails with `-32008` until it is repeated with `confirm_budget`.
+    /// `session.send` fails with `-32008` until it is repeated with `confirm_budget`; a running
+    /// turn pauses for approval before its next model call.
     Ask,
-    /// `session.send` fails with `-32008` until the window resets.
+    /// `session.send` fails with `-32008` until the window resets; a running turn fails at its
+    /// next model call.
     Block,
 }
 

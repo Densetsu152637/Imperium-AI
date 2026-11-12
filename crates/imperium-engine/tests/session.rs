@@ -125,6 +125,7 @@ fn config(endpoint: Endpoint, dir: &std::path::Path, workspace: Workspace) -> Se
         max_steps: 5,
         background: None,
         checkpoints: None,
+        budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
         keep_agent_state: true,

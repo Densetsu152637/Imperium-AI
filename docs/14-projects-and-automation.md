@@ -88,9 +88,10 @@ archives it, so its history is listed with the other archived sessions. Changing
 role restarts it with the same conversation; changing the environment's runtime restarts all of
 them; saving an agent with the same name and role restarts nothing, and a restart keeps the
 agent's limits and the reports of the sessions it already started. Deleting the environment stops
-them too. Agents have no pet in the nursery. The project-private memory is the environment's, shared
-by all its agents, so each agent is told to begin the names of the entries it saves with its own
-name (lower case, with dashes) and to keep its open-task list in `<name>-open-tasks`. Adding,
+them too. Agents have no pet in the nursery. The project-private memory and the environment's `Memory.md` ([17](17-memory.md#environment-memory-implemented)) are
+shared by all its agents, so each agent is told to begin the names of the entries it saves with its own
+name (lower case, with dashes; an environment-scope entry is a section of `Memory.md` named
+the same way) and to keep its open-task list in `<name>-open-tasks`. Adding,
 renaming, changing the role of, or deleting agents of one environment is serialised: it never starts
 an agent twice.
 
@@ -125,6 +126,79 @@ agent or an agent with a role, so a switch cannot delete a set-up. An environmen
 
 Sessions that a schedule, a project agent, or auto-fix start still work in a single folder and
 carry no environment.
+
+### Environment working folders (implemented)
+
+Every environment has a **working folder** of its own, apart from its project folders: a place for
+the environment's own memory and for each session's scratch files. All of them live under one
+folder, `workspaces.root` (`<data>/workspaces` unless the user picks another place, for example
+on the drive where their other data is kept):
+
+```text
+<workspaces.root>/
+  <environment-id>/
+    Memory.md                    notes for this environment only (see below)
+    sessions/
+      <session-id>/              that session's scratch folder
+```
+
+- **Session scratch folders.** A session in an environment on this machine gets
+  `<root>/<environment-id>/sessions/<session-id>/` when it starts (so only sessions that exist
+  have one; nothing is made when an environment is created), and it is added to the session as a
+  **writable path grant** through the same workspace as every other path: the permission rules,
+  deny rules, and the safety floor apply to it like to any other path, sandboxed commands can
+  write to it, and the agent's system prompt names it as its **scratch folder**, to be used for
+  temporary files and intermediates instead of the project's folders. Sessions in an environment
+  whose tools run in a container, WSL, or over SSH get no scratch folder, since the folder is on
+  this machine (they still read the environment's `Memory.md`). Project agents and schedule runs,
+  which carry no environment or are not remembered, get none either.
+- **Archiving deletes it.** Archiving a session (by hand, when its pull request closes, or after
+  inactivity) deletes its scratch folder with everything in it; unarchiving makes a new, empty one.
+  Deleting a session deletes it too. Nothing is moved to a trash: the folder is scratch space, and
+  what should last belongs in the environment's folders or in memory. Deleting an environment
+  leaves its working folder alone (its sessions' folders go with those sessions, and `Memory.md`
+  stays until the user deletes it).
+- **`Memory.md`** is the environment's own memory, read into the context of every session in that
+  environment and written by agents with the `environment` scope of `memory_remember`
+  ([17](17-memory.md#environment-memory-implemented)). It is created on its first write.
+- **Moving the folders.** Changing `workspaces.root` (Settings → *Working folders*, `imperium
+  config set workspaces.root <path>`, `imperium workspaces move <path>`, or `workspaces.move`)
+  moves everything to the new place, in three steps so the originals outlive the setting:
+  - *stage*: the data is put at the new place. On the same volume the folder is renamed;
+    otherwise the files are copied and every file compared with its original. The new folder
+    must be an absolute path, empty or not yet existing, and not inside the current one;
+    otherwise the move is refused and nothing changes. A failure removes the copy and leaves the
+    originals untouched. A link (symlink or junction) that cannot be recreated at the new place,
+    for lack of the privilege, fails the move with an error naming the link;
+  - *commit*: `workspaces.root` is saved and the new place recorded. If saving fails, the stage
+    is undone (the copy removed, or the folder renamed back);
+  - *finalise*: only now are the originals of a copy deleted. A crash before this leaves the data
+    in both places, never in neither;
+  - `workspaces.move` and `config.set` of `workspaces.root` both run off the connection, so
+    `workspaces.progress { phase, files_done, files_total }` reaches every client while the move
+    works, before the reply, which lists the files and bytes moved and any warnings (such as an
+    old folder that could not be deleted completely after a verified copy);
+  - the move is refused while a session that has a scratch folder is working, waiting on the
+    user, paused, or watching a pull request, because it holds the folder open. Idle sessions are
+    restarted from their journals afterwards (as after a daemon restart) so their scratch folder
+    is the new one: the new session is started first and replaces the old only on success, and a
+    client subscribed to the session keeps receiving, because the connection follows the session
+    of the same id. Starting, archiving, and deleting sessions wait while a move runs;
+  - `workspaces.root` set in the config file by hand, or by `IMPERIUM_WORKSPACES__ROOT`, is
+    noticed when the daemon starts (the place the folders were last put is recorded in
+    `<data>/workspaces-root.txt`) and moved the same way; if that fails, the daemon keeps using
+    the old place and `workspaces.where` carries a `warning`. A move through the commands above
+    is refused while the environment variable is set, since it would win over the file.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `workspaces.where` | `{}` | `{ root, default_root, environments: [{ environment_id, dir, memory_file, memory_exists, session_folders }], warning? }` |
+| `workspaces.move` | `{ path }` (absolute; empty is the default) | `{ from, to, method: "nothing" \| "rename" \| "copy", files, bytes, warnings, restarted_sessions }` |
+| `workspaces.open` | `{ environment_id, target: "folder" \| "memory" }` | `{}` (opens it with the machine's file manager or editor; `Memory.md` is created empty when missing) |
+
+From the command line: `imperium workspaces where` and `imperium workspaces move <path>`. The
+desktop's environment window shows the environment's working folder with *Open Memory.md* and
+*Open folder*, and Settings → *Working folders* has the root with a folder picker.
 
 ### Planned
 
@@ -607,6 +681,9 @@ Sessions are also archived on their own:
 - **After inactivity** (`sessions.auto_archive_after_days`, `0` = off, the default): the daemon
   looks every hour (first a minute after it starts) for sessions whose last journalled event is
   that many days old.
+
+Archiving deletes the session's [scratch folder](#environment-working-folders-implemented);
+unarchiving makes a new, empty one.
 
 Neither rule archives a session that is working, waiting on the user (an approval, a usage
 limit, a failed turn, a model), has queued messages, is pinned, or is an environment's
