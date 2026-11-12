@@ -585,6 +585,11 @@ fn now() -> String {
 // ---- measuring one model ----
 
 fn wait_text(wait: Option<LocalWait>, level: Load) -> &'static str {
+    // A background call gives way to the user while the machine is saturated, which the runtime
+    // reports as waiting for a slot: the machine is the reason worth giving.
+    if level == Load::Saturated && matches!(wait, None | Some(LocalWait::Slot)) {
+        return "waiting while the machine is saturated";
+    }
     match wait {
         Some(LocalWait::Loading) => "loading the model",
         Some(LocalWait::GrowingPool) => "waiting for the model to restart with more memory",
@@ -593,7 +598,6 @@ fn wait_text(wait: Option<LocalWait>, level: Load) -> &'static str {
         Some(LocalWait::OtherModel) => "waiting for another model",
         Some(LocalWait::MakingRoom) => "waiting for memory to be freed",
         Some(LocalWait::SavingContext | LocalWait::RestoringContext) => "moving an agent's context",
-        None if level == Load::Saturated => "waiting while the machine is saturated",
         None => "starting the model",
     }
 }
