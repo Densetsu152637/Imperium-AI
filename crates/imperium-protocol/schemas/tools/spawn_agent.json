@@ -3,6 +3,14 @@
   "name": "spawn_agent",
   "parameters": {
     "properties": {
+      "access": {
+        "description": "Set \"write\" for a subagent that will edit files while other writers run at the same time: it gets a git worktree of its own on its own branch (made from the project's last commit), its file tools and commands work there, and when it finishes its changes are committed on that branch and its report says whether the branch merges cleanly; merge it yourself. Outside a repository it shares your folders. Leave it out for a lone writer that should edit your folders directly, and for subagents that only read (they always share your folders). Default read.",
+        "enum": [
+          "read",
+          "write"
+        ],
+        "type": "string"
+      },
       "brief": {
         "type": "string"
       },

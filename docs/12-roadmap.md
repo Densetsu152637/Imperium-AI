@@ -290,9 +290,12 @@ and `environments.agent_update` (protocol 0.28)
     ([05](05-tools-and-isolation.md#permission-modes-implemented),
     [07](07-desktop-ui.md#environments-and-sessions-implemented)). Remote runtimes do not have
     the search tools or background commands yet.
-26. **Worktrees for parallel writers.** Parallel writing subagents each work in their own git
-    worktree so concurrent edits never collide
-    ([14](14-projects-and-automation.md#worktrees)).
+26. **Worktrees for parallel writers** (implemented). A subagent started with
+    `spawn_agent` `access: "write"` works in a git worktree of its own on its own branch, so
+    concurrent edits never collide; its work comes back as a commit on that branch with a
+    merge report, and the worktrees go with the session
+    ([14](14-projects-and-automation.md#worktrees)). The planned `[worktrees]` settings and the
+    Worktrees pane are not built.
 27. **Environment configuration.** An environment's own `.imperium/config.toml` (instructions,
     policy, plugins, MCP servers, routing, budgets), sessions narrowed to a subfolder or a
     read-only mount, and schedules and project agents per environment

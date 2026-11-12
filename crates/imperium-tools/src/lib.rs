@@ -15,6 +15,7 @@ pub mod runtime;
 mod sandbox;
 mod search;
 mod workspace;
+mod writer_trees;
 
 pub use exec::shell;
 pub use invocation::{Access, Invocation, ToolError, specs};
@@ -24,3 +25,4 @@ pub use runtime::{ProcessRunner, ProcessSpec, Remote, RunOutput, Runner};
 pub use sandbox::Sandbox;
 pub use search::{GrepQuery, Scope};
 pub use workspace::{GrantedPath, Workspace, plain as plain_path};
+pub use writer_trees::{WriterStart, WriterTrees};
