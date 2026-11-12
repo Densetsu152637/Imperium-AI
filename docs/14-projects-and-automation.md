@@ -149,7 +149,9 @@ What an agent with initiative does, and when:
   longer than `initiative.review_timeout_s`, or whose agent is turned off meanwhile, **stops the
   agent**; the agent stays paused until you resume it, in plan mode with its restricted tools until
   its turn ends, and `initiative.get` shows it as *paused: the review was stopped*, not as
-  reviewing. A review does not start while that turn is open. A failed review waits out its
+  reviewing. A review does not start while that turn is open. A review in flight is written to
+  `initiative.json` (the session it runs on), so a daemon restart while the agent is stopped
+  brings the agent back in plan mode with the review's tools, until its next turn ends. A failed review waits out its
   interval. A budget that is used up (turn-start check, and the per-call gate while it works)
   stops it like any turn; one that asks first is not asked on the schedule, and a person's
   **Review now** (`initiative.review`) reports it to them. **Review now** skips the interval,
@@ -200,9 +202,12 @@ What an agent with initiative does, and when:
   session it started on its own initiative is held to the review's tools, minus recording: it
   may read and search and call `start_session` within the same limits, but it cannot write, run
   commands, use the web, MCP or plugins, or call `suggest_work` or `work_digest`, whatever the
-  user's rules say, and its permission requests reach the user like a review's. The daemon tells
-  that turn by a mark it sets itself when it delivers the report to an idle agent, not by reading
-  the report's text, so a report cannot be used to start more or to get past the restriction. A session that runs past
+  user's rules say, and its permission requests reach the user like a review's. The restriction
+  is tied to the report message itself: the daemon notes the message's id before it sends it
+  (kept in `initiative.json` until the message is answered) and holds the turn that answers
+  that id, however long the agent is busy, stopped or paused first and whatever the user queued
+  before it. It never reads the report's text, so a report cannot be used to start more or to get
+  past the restriction. A session that runs past
   the hour the agent waits for it is stopped, not left running unaccounted for. Every session
   it starts is tagged (`started_by` in `session.list`: the agent, the environment, `kind`
   `initiative`, the reason and the source), shown in the desktop as a note on the session and in

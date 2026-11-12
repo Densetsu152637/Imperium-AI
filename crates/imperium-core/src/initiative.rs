@@ -105,7 +105,26 @@ struct AgentBook {
     /// Sessions the agent started on its own initiative, for the daily limit.
     #[serde(default)]
     started: Vec<Started>,
+    /// Reports the daemon delivered to the agent about sessions it started on its own
+    /// initiative, by the id of the message that carries each. The agent's turn on such a message
+    /// is held to the review's restrictions, however long it waits.
+    #[serde(default)]
+    reports: Vec<Report>,
+    /// The session a review is in flight on, from its start until its turn ends. It survives a
+    /// restart, so a review that was stopped stays restricted.
+    #[serde(default)]
+    review_session: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Report {
+    message_id: String,
+    at: u64,
+}
+
+/// How long a report that is neither queued nor being answered is remembered, for the moments a
+/// message is on its way from the sender to the agent's queue.
+const REPORT_GRACE_MS: u64 = 10 * 60 * 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Started {
@@ -151,18 +170,11 @@ pub(crate) struct Review {
 #[derive(Debug, Default)]
 struct Live {
     reviews: HashMap<String, Review>,
-    /// Agents that are working on the report of a session they started on their own initiative:
-    /// they follow the same limits as a review.
-    follow_ups: HashSet<String>,
     running: HashMap<String, Arc<AtomicUsize>>,
     /// Starts allowed but not yet recorded with a session, by agent.
     pending: HashMap<String, u32>,
     /// Sessions started on an agent's own initiative, until the daemon stops.
     sessions: HashSet<String>,
-    /// Agents whose next turn is the report of a session they started on their own initiative,
-    /// with the time the flag lapses. Set by the daemon right before it delivers the report to
-    /// an idle agent; the agent's next turn takes it.
-    follow_up_due: HashMap<String, u64>,
     /// When the user last talked to an agent (a message that was not the daemon's).
     chats: HashMap<String, u64>,
     /// Agents that were deleted: nothing is written for them again.
@@ -330,8 +342,6 @@ impl InitiativeBook {
             let mut live = lock(&self.inner.live);
             live.forgotten.insert(agent_id.to_string());
             live.reviews.remove(agent_id);
-            live.follow_ups.remove(agent_id);
-            live.follow_up_due.remove(agent_id);
             live.chats.remove(agent_id);
             book.agents.remove(agent_id).is_some()
         };
@@ -391,48 +401,68 @@ impl InitiativeBook {
         }
     }
 
-    fn set_follow_up(&self, agent_id: &str, on: bool) {
-        let mut live = lock(&self.inner.live);
-        if on {
-            live.follow_ups.insert(agent_id.to_string());
-        } else {
-            live.follow_ups.remove(agent_id);
-        }
-    }
-
-    /// Whether the agent's current turn is a review, or the follow-up to a session it started
-    /// on its own initiative: what it starts then follows the initiative limits.
-    pub(crate) fn initiative_turn(&self, agent_id: &str) -> bool {
-        let live = lock(&self.inner.live);
-        live.reviews.contains_key(agent_id) || live.follow_ups.contains(agent_id)
-    }
-
     /// Whether `id` is a session started on an agent's own initiative.
     pub(crate) fn is_initiative_session(&self, id: &str) -> bool {
         lock(&self.inner.live).sessions.contains(id)
     }
 
-    /// Notes that the daemon is about to deliver a report to an idle agent, whose next turn is
-    /// then a follow-up. (The turn is told by this flag, not by its text: the engine may replace
-    /// a long message with a stub before the turn starts.)
-    pub(crate) fn expect_follow_up(&self, agent_id: &str) {
-        lock(&self.inner.live)
-            .follow_up_due
-            .insert(agent_id.to_string(), now_ms().saturating_add(30_000));
+    /// Notes the id of a report the daemon is about to send the agent. The agent's turn on the
+    /// message with that id is a follow-up: it follows the initiative limits. The note is made
+    /// before the message is sent and kept (on disk too) until the message is answered.
+    pub(crate) fn register_report(&self, agent_id: &str, message_id: &str) {
+        if self.gone(agent_id) {
+            return;
+        }
+        self.change(agent_id, |agent| {
+            agent.reports.push(Report {
+                message_id: message_id.to_string(),
+                at: now_ms(),
+            });
+        });
     }
 
-    /// Whether the agent's turn that just started is the report the daemon announced (and
-    /// forgets the announcement).
-    fn take_follow_up(&self, agent_id: &str) -> bool {
-        lock(&self.inner.live)
-            .follow_up_due
-            .remove(agent_id)
-            .is_some_and(|until| now_ms() <= until)
+    /// Whether the message with this id is a report the daemon sent the agent.
+    fn is_report(&self, agent_id: &str, message_id: &str) -> bool {
+        self.read(agent_id, |agent| {
+            agent
+                .reports
+                .iter()
+                .any(|report| report.message_id == message_id)
+        })
     }
 
-    /// Forgets an announcement that did not lead to a turn.
-    fn forget_follow_up(&self, agent_id: &str) {
-        lock(&self.inner.live).follow_up_due.remove(agent_id);
+    /// Forgets the reports that were answered: those neither in `keep` (the agent's queue and
+    /// the message it is handling) nor registered within the grace period.
+    fn keep_reports(&self, agent_id: &str, keep: &[String]) {
+        let now = now_ms();
+        let changed = {
+            let mut book = lock(&self.inner.book);
+            book.agents.get_mut(agent_id).is_some_and(|agent| {
+                let before = agent.reports.len();
+                agent.reports.retain(|report| {
+                    keep.contains(&report.message_id)
+                        || now.saturating_sub(report.at) < REPORT_GRACE_MS
+                });
+                agent.reports.len() != before
+            })
+        };
+        if changed {
+            Self::save(&self.inner);
+        }
+    }
+
+    /// Notes (or clears) the session a review is in flight on.
+    fn set_review_marker(&self, agent_id: &str, session_id: Option<&str>) {
+        if self.gone(agent_id) {
+            return;
+        }
+        self.change(agent_id, |agent| {
+            agent.review_session = session_id.map(str::to_string);
+        });
+    }
+
+    fn review_marker(&self, agent_id: &str) -> Option<String> {
+        self.read(agent_id, |agent| agent.review_session.clone())
     }
 
     /// Notes that the user talked to the agent.
@@ -982,6 +1012,8 @@ pub(crate) async fn run_review(
     if !begun {
         return Err("a review is running".into());
     }
+    // Written down, so a restart in the middle of the review cannot lift its restrictions.
+    book.set_review_marker(&agent.id, Some(session.id()));
     announce(daemon, &agent.id);
 
     let message = prompt::render(&facts(daemon, &env, &agent, &settings), mode, tasks);
@@ -1063,10 +1095,24 @@ async fn wait_for_review(
 /// Ends the review whose turn ended: puts the agent's permission mode back (on the session the
 /// review set it on), records how it went, tells the user, and tells whoever waits.
 fn conclude(daemon: &Arc<DaemonState>, agent_id: &str, result: Result<(), String>) {
+    conclude_review(daemon, agent_id, result, true);
+}
+
+/// [`conclude`]; `clear_marker` is false when the session went away rather than the turn ended
+/// (the review may have to be picked up again where the session comes back).
+fn conclude_review(
+    daemon: &Arc<DaemonState>,
+    agent_id: &str,
+    result: Result<(), String>,
+    clear_marker: bool,
+) {
     let book = daemon.initiative();
     let Some(mut review) = book.take_review(agent_id) else {
         return;
     };
+    if clear_marker {
+        book.set_review_marker(agent_id, None);
+    }
     if let Some(session) = daemon.project_agents().agent(agent_id)
         && session.id() == review.session_id
         && session.permission_mode() == imperium_api::PermissionMode::Plan
@@ -1195,6 +1241,80 @@ fn ago(now: u64, then: u64) -> String {
     }
 }
 
+/// Whether the agent's running turn answers a report the daemon sent about a session it started
+/// on its own initiative. Told by the id of the message the turn answers, so it cannot be
+/// confused with another message's turn, whatever the message says or when it arrives.
+fn follow_up_turn(daemon: &DaemonState, agent_id: &str) -> bool {
+    daemon
+        .project_agents()
+        .agent(agent_id)
+        .and_then(|session| session.turn_message())
+        .is_some_and(|message_id| daemon.initiative().is_report(agent_id, &message_id))
+}
+
+/// Whether the agent's current turn is a review, or the follow-up to a session it started on its
+/// own initiative: what it does then is held to the review's tools and limits.
+pub(crate) fn initiative_turn(daemon: &DaemonState, agent_id: &str) -> bool {
+    daemon.initiative().is_reviewing(agent_id) || follow_up_turn(daemon, agent_id)
+}
+
+/// Forgets the reports the agent has answered.
+fn prune_reports(daemon: &DaemonState, agent_id: &str, session: &imperium_engine::Session) {
+    let mut keep: Vec<String> = session
+        .queue(None)
+        .map(|queued| queued.into_iter().map(|message| message.id).collect())
+        .unwrap_or_default();
+    keep.extend(session.turn_message());
+    daemon.initiative().keep_reports(agent_id, &keep);
+}
+
+/// [`prune_reports`] for the agent's running session.
+fn prune_agent_reports(daemon: &DaemonState, agent_id: &str) {
+    if let Some(session) = daemon.project_agents().agent(agent_id) {
+        prune_reports(daemon, agent_id, &session);
+    }
+}
+
+/// Called when an agent's session starts (after a restart too): a review that was stopped before
+/// the daemon went down is restored, so the agent stays in plan mode with the review's tools
+/// until its next turn ends. A review that was not stopped was cut off with its turn (the engine
+/// fails that turn), and leaves nothing to restore.
+pub(crate) fn restore_review(
+    daemon: &Arc<DaemonState>,
+    agent_id: &str,
+    session: &Arc<imperium_engine::Session>,
+) {
+    let book = daemon.initiative();
+    // Reports answered before the restart are not waited for.
+    prune_reports(daemon, agent_id, session);
+    let Some(marked) = book.review_marker(agent_id) else {
+        return;
+    };
+    if marked != session.id() || !session.is_stopped() {
+        book.set_review_marker(agent_id, None);
+        return;
+    }
+    let restored = book.begin_review(
+        agent_id,
+        Review {
+            mode: Initiative::Suggest,
+            max_suggestions: 0,
+            added: 0,
+            digest_given: false,
+            digest_attempted: false,
+            before: session.permission_mode(),
+            session_id: session.id().to_string(),
+            started: true,
+            reply: String::new(),
+            done: None,
+        },
+    );
+    if restored {
+        set_review_mode(daemon, session, imperium_api::PermissionMode::Plan);
+        tracing::info!(agent = agent_id, "a stopped review is restricted again");
+    }
+}
+
 /// Watches an agent for as long as its session lives: it ends reviews when their turn ends,
 /// answers (through the approval queue) what a review's agents ask, tells the daemon which turns
 /// are follow-ups to reports of sessions it started on its own initiative (they follow the same
@@ -1214,11 +1334,12 @@ pub(crate) fn watch_agent(
                     // The session is gone (the agent restarted, or was deleted): a review that
                     // was running on it cannot end any other way.
                     if let Some(daemon) = weak.upgrade() {
-                        daemon.initiative().set_follow_up(&agent_id, false);
-                        conclude(
+                        // The review is not over if the session comes back stopped (a restart).
+                        conclude_review(
                             &daemon,
                             &agent_id,
                             Err("the agent's session ended during the review".into()),
+                            false,
                         );
                     }
                     return;
@@ -1236,7 +1357,7 @@ pub(crate) fn watch_agent(
                     tool,
                     summary,
                     ..
-                } if book.initiative_turn(&agent_id) => {
+                } if initiative_turn(&daemon, &agent_id) => {
                     if let Some(session) = daemon.project_agents().agent(&agent_id) {
                         daemon.bridge_permission(&session, request_id, &tool, summary);
                     }
@@ -1244,34 +1365,35 @@ pub(crate) fn watch_agent(
                 SessionEvent::QuestionsAsked {
                     request_id,
                     questions,
-                } if book.initiative_turn(&agent_id) => {
+                } if initiative_turn(&daemon, &agent_id) => {
                     if let Some(session) = daemon.project_agents().agent(&agent_id) {
                         crate::state::answer_with_recommendations(&session, request_id, &questions);
                     }
                 }
                 SessionEvent::TurnStarted { text, .. } if root => {
                     if text.starts_with(prompt::MARKER) {
-                        book.forget_follow_up(&agent_id);
                         book.mark_review_started(&agent_id);
-                    } else if book.take_follow_up(&agent_id) {
-                        book.set_follow_up(&agent_id, true);
-                    } else {
-                        book.set_follow_up(&agent_id, false);
+                    } else if !follow_up_turn(&daemon, &agent_id) {
+                        // Not the daemon's: the user is talking to the agent.
                         book.note_user_chat(&agent_id, now_ms());
                     }
                 }
                 SessionEvent::TextDelta { text } if root => book.push_review_text(&agent_id, &text),
                 SessionEvent::TurnCompleted { .. } if root => {
-                    book.set_follow_up(&agent_id, false);
                     if book.review_started(&agent_id) {
                         conclude(&daemon, &agent_id, Ok(()));
                     }
+                    prune_agent_reports(&daemon, &agent_id);
                 }
+                // The turn a restart cut off is failed when the session comes back; that does not
+                // end a review restored as still stopped.
+                SessionEvent::TurnFailed { message }
+                    if root && message.starts_with("the daemon stopped") => {}
                 SessionEvent::TurnFailed { message } if root => {
-                    book.set_follow_up(&agent_id, false);
                     if book.review_started(&agent_id) {
                         conclude(&daemon, &agent_id, Err(message));
                     }
+                    prune_agent_reports(&daemon, &agent_id);
                 }
                 _ => {}
             }
@@ -1414,9 +1536,8 @@ pub(crate) fn review_restriction(
     agent_id: &str,
     tool: &str,
 ) -> Option<String> {
-    let book = daemon.initiative();
-    let review = book.is_reviewing(agent_id);
-    if !review && !book.initiative_turn(agent_id) {
+    let review = daemon.initiative().is_reviewing(agent_id);
+    if !review && !follow_up_turn(daemon, agent_id) {
         return None;
     }
     // The follow-up to a report is held to the same tools, except that it records nothing:
@@ -1664,20 +1785,45 @@ mod tests {
     }
 
     #[test]
-    fn the_daemons_report_flag_is_taken_once_and_lapses() {
+    fn a_report_is_known_by_its_message_id_until_it_is_answered() {
         let book = book();
-        assert!(!book.take_follow_up("e"), "nothing announced");
-        book.expect_follow_up("e");
-        assert!(book.take_follow_up("e"));
-        assert!(!book.take_follow_up("e"), "taken once");
-        book.expect_follow_up("e");
-        book.forget_follow_up("e");
-        assert!(!book.take_follow_up("e"));
-        // A flag that was never taken lapses.
-        lock(&book.inner.live)
-            .follow_up_due
-            .insert("e".into(), now_ms().saturating_sub(1));
-        assert!(!book.take_follow_up("e"));
+        assert!(!book.is_report("e", "q1"), "nothing registered");
+        book.register_report("e", "q1");
+        book.register_report("e", "q2");
+        assert!(book.is_report("e", "q1") && book.is_report("e", "q2"));
+        assert!(
+            !book.is_report("e", "q3"),
+            "another message is not a report"
+        );
+        assert!(!book.is_report("other", "q1"), "reports are per agent");
+        // Recently registered ones are kept even when neither queued nor running (the message
+        // may be on its way); old ones that nothing waits for are forgotten.
+        book.keep_reports("e", &[]);
+        assert!(book.is_report("e", "q1"));
+        lock(&book.inner.book)
+            .agents
+            .get_mut("e")
+            .unwrap()
+            .reports
+            .iter_mut()
+            .for_each(|report| report.at = now_ms().saturating_sub(REPORT_GRACE_MS + 1));
+        book.keep_reports("e", &["q2".to_string()]);
+        assert!(!book.is_report("e", "q1"));
+        assert!(book.is_report("e", "q2"), "still queued");
+    }
+
+    #[test]
+    fn reports_and_the_review_marker_survive_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("initiative.json");
+        let first = InitiativeBook::load(path.clone());
+        first.register_report("e", "q7");
+        first.set_review_marker("e", Some("session-1"));
+        let second = InitiativeBook::load(path);
+        assert!(second.is_report("e", "q7"));
+        assert_eq!(second.review_marker("e").as_deref(), Some("session-1"));
+        second.set_review_marker("e", None);
+        assert_eq!(second.review_marker("e"), None);
     }
 
     #[test]

@@ -35,10 +35,6 @@ use tokio::sync::broadcast;
 use crate::scheduler::DEFAULT_MAX_DEFER;
 use crate::{DaemonState, SessionOptions};
 
-/// How long a report waits for its agent to be idle (so the agent's next turn is the report's)
-/// before it is delivered anyway.
-const REPORT_WAIT: Duration = Duration::from_secs(3600);
-
 /// Longest a dispatched session may run before its report is given up on.
 const SESSION_TIMEOUT: Duration = Duration::from_secs(3600);
 
@@ -576,6 +572,8 @@ fn start_environment_agent(
         )
         .map_err(|error| error.to_string())?;
     crate::initiative::watch_agent(daemon, agent.id.clone(), events);
+    // A review that was stopped when the daemon went down is still a review.
+    crate::initiative::restore_review(daemon, &agent.id, &session);
     launcher.agent.set(&session);
     if !resumed {
         // A new agent is listed under its name until its first exchange is worth titling.
@@ -724,7 +722,7 @@ impl Launcher {
                     .find(|candidate| candidate.id == *agent)
                     .cloned()
                     .ok_or("the agent is gone")?;
-                let initiative = daemon.initiative().initiative_turn(agent);
+                let initiative = crate::initiative::initiative_turn(&daemon, agent);
                 let reason = request
                     .reason
                     .map(str::trim)
@@ -866,31 +864,23 @@ fn dispatch(
             Err(error) => format!("Session {id} did not finish: {error}"),
         };
         if let Some(slot) = agent
-            && let Some(mut agent) = slot.get()
+            && let Some(agent) = slot.get()
         {
             // The agent's turn on this report follows the initiative limits when the session
-            // was started on its own initiative. The report goes to an idle agent, so that its
-            // next turn is this one, and the flag is set before it is sent (the turn's text is
-            // not trusted to tell: the engine may replace a long one with a stub).
-            if let Some(agent_id) = &slot.agent_id
-                && daemon.initiative().is_initiative_session(&id)
-            {
-                for _ in 0..(REPORT_WAIT.as_millis() / 200) {
-                    if agent.status().0 == SessionStatus::Idle {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    // The agent may have restarted meanwhile.
-                    match slot.get() {
-                        Some(current) => agent = current,
-                        None => return,
-                    }
+            // was started on its own initiative. The restriction is tied to the report itself:
+            // its message id is noted before it is sent, and the turn that answers that id is
+            // the restricted one, however long the report waits behind the agent's other work
+            // and whatever else is queued before it.
+            match &slot.agent_id {
+                Some(agent_id) if daemon.initiative().is_initiative_session(&id) => {
+                    let message_id = agent.reserve_message_id();
+                    daemon.initiative().register_report(agent_id, &message_id);
+                    let _ = agent.send_as(message_id, message);
                 }
-                if agent.status().0 == SessionStatus::Idle {
-                    daemon.initiative().expect_follow_up(agent_id);
+                _ => {
+                    let _ = agent.send(message);
                 }
             }
-            let _ = agent.send(message);
         }
     });
 }

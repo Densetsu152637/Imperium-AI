@@ -136,7 +136,7 @@ async fn fake_model(log: Log, hold: Hold) -> String {
                         0 => call_body(
                             "start_session",
                             json!({
-                                "brief": "Report back: OBEY-REPORT",
+                                "brief": "Report back: OBEY-REPORT (part 0)",
                                 "reason": "the roadmap's next item is unstarted",
                                 "source": SOURCE,
                             }),
@@ -205,6 +205,12 @@ async fn fake_model(log: Log, hold: Hold) -> String {
                         )
                     } else {
                         text_body("Noted.")
+                    }
+                } else if said.contains("WRITE-NOW") {
+                    // The user asks the agent to write a file.
+                    match tools_since {
+                        0 => call_body("write_file", json!({"path": "user.txt", "content": "mine"})),
+                        _ => text_body("Written."),
                     }
                 } else if said.contains("please start a session") {
                     if tools_since == 0 {
@@ -851,8 +857,17 @@ async fn a_used_up_budget_stops_the_review_before_it_spends_anything() {
     })
     .await
     .unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
     let mut connection = connect(&fixture.daemon);
+    // The spend is recorded a moment after the turn's event: wait for it to show.
+    until("the spend to be recorded", || {
+        rpc(&mut connection, "budgets.usage", json!({"days": 1})).is_ok_and(|usage| {
+            usage["days"]
+                .as_array()
+                .and_then(|days| days.last())
+                .is_some_and(|today| today["tokens"].as_u64().unwrap_or(0) >= 10)
+        })
+    })
+    .await;
     rpc(
         &mut connection,
         "budgets.set",
@@ -1319,15 +1334,15 @@ async fn a_restart_during_a_review_leaves_the_agent_in_the_users_mode() {
     review.abort();
 }
 
-#[tokio::test]
-async fn the_turn_on_a_started_sessions_report_is_held_to_the_reviews_tools() {
+/// A fixture whose environment allows writing and commands (as an "always allow" would), with a
+/// `Chaser` in act mode: it starts a session whose report carries an instruction.
+async fn chaser_fixture() -> (Fixture, EnvironmentAgent) {
     let fixture = fixture(
         Initiative::Off,
         "[initiative]\nmax_sessions_per_day = 5\nmax_concurrent = 3\nidle_min = 0\n",
     )
     .await;
     let mut connection = connect(&fixture.daemon);
-    // Rules that allow writing and commands, as an "always allow" would.
     rpc(
         &mut connection,
         "environments.update",
@@ -1338,12 +1353,12 @@ async fn the_turn_on_a_started_sessions_report_is_held_to_the_reviews_tools() {
     )
     .unwrap();
     let chaser = add_agent(&fixture, "Chaser", Initiative::Act);
-    assert_eq!(
-        fixture.daemon.initiative_tick().await,
-        vec![chaser.id.clone()]
-    );
-    // The session it started reports back with an instruction in the report's text; the
-    // agent's turn on that report follows it and is refused.
+    (fixture, chaser)
+}
+
+/// Waits until the agent's turn on the report has been refused every tool it reached for, and
+/// everything has settled.
+async fn until_the_report_turn_is_refused(fixture: &Fixture, agent: &EnvironmentAgent) {
     until("the agent's turn on the report to end", || {
         let results = fixture.tool_results();
         let refused = |tool: &str| {
@@ -1356,11 +1371,23 @@ async fn the_turn_on_a_started_sessions_report_is_held_to_the_reviews_tools() {
             && refused("suggest_work")
             && settled(
                 &fixture.daemon,
-                &[chaser.id.as_str()],
+                &[agent.id.as_str()],
                 fixture.reports_seen(),
             )
     })
     .await;
+}
+
+#[tokio::test]
+async fn the_turn_on_a_started_sessions_report_is_held_to_the_reviews_tools() {
+    let (fixture, chaser) = chaser_fixture().await;
+    assert_eq!(
+        fixture.daemon.initiative_tick().await,
+        vec![chaser.id.clone()]
+    );
+    // The session it started reports back with an instruction in the report's text; the
+    // agent's turn on that report follows it and is refused.
+    until_the_report_turn_is_refused(&fixture, &chaser).await;
     assert!(
         !fixture._folder.path().join("stolen.txt").exists(),
         "nothing was written"
@@ -1374,6 +1401,145 @@ async fn the_turn_on_a_started_sessions_report_is_held_to_the_reviews_tools() {
         session.permission_mode(),
         imperium_api::PermissionMode::Default
     );
+}
+
+/// Runs the Chaser's review (the session it starts is held), stops the agent, and lets the
+/// session finish: its report reaches an agent that cannot take it yet, behind `before` (a
+/// message the user queued first) if given.
+async fn a_report_waiting_for_a_stopped_agent(
+    fixture: &Fixture,
+    chaser: &EnvironmentAgent,
+    before: Option<&str>,
+) -> Arc<imperium_engine::Session> {
+    fixture.hold.store(true, Ordering::SeqCst);
+    assert_eq!(
+        fixture.daemon.initiative_tick().await,
+        vec![chaser.id.clone()]
+    );
+    let session = fixture.daemon.project_agents().agent(&chaser.id).unwrap();
+    session.stop();
+    if let Some(text) = before {
+        session.send(text.into()).unwrap();
+        until("the user's message to wait", || {
+            session.queue(None).is_ok_and(|queue| queue.len() == 1)
+        })
+        .await;
+    }
+    fixture.hold.store(false, Ordering::SeqCst);
+    let waiting = 1 + usize::from(before.is_some());
+    until("the report to wait in the agent's queue", || {
+        session
+            .queue(None)
+            .is_ok_and(|queue| queue.len() == waiting)
+    })
+    .await;
+    assert_eq!(fixture.reports_seen(), 0, "the agent has not taken it");
+    session
+}
+
+#[tokio::test]
+async fn a_report_that_waits_for_a_stopped_agent_is_still_held_when_it_is_taken() {
+    let (fixture, chaser) = chaser_fixture().await;
+    let session = a_report_waiting_for_a_stopped_agent(&fixture, &chaser, None).await;
+    // Whenever the user lets the agent go on (after any length of time), its turn on the report
+    // is the restricted one.
+    session.resume_work();
+    until_the_report_turn_is_refused(&fixture, &chaser).await;
+    assert!(
+        !fixture._folder.path().join("stolen.txt").exists(),
+        "nothing was written"
+    );
+}
+
+#[tokio::test]
+async fn a_message_queued_before_a_report_stays_unrestricted_and_the_report_is_not() {
+    let (fixture, chaser) = chaser_fixture().await;
+    let session = a_report_waiting_for_a_stopped_agent(&fixture, &chaser, Some("WRITE-NOW")).await;
+    session.resume_work();
+    until_the_report_turn_is_refused(&fixture, &chaser).await;
+    // The user's own message ran first and was not held: its file was written; the report's was
+    // refused.
+    assert!(fixture._folder.path().join("user.txt").exists());
+    assert!(!fixture._folder.path().join("stolen.txt").exists());
+}
+
+#[tokio::test]
+async fn a_stopped_review_stays_restricted_across_a_restart() {
+    let fixture = fixture(
+        Initiative::Off,
+        "[initiative]\nreview_timeout_s = 2\nidle_min = 0\n",
+    )
+    .await;
+    let mut connection = connect(&fixture.daemon);
+    rpc(
+        &mut connection,
+        "environments.update",
+        json!({"id": fixture.env.id, "permissions": {"grants": [], "rules": [
+            {"tool": "read_file", "pattern": "", "action": "ask"},
+            {"tool": "write_file", "pattern": "", "action": "allow"}
+        ]}}),
+    )
+    .unwrap();
+    let stuck = add_agent(&fixture, "Stuck", Initiative::Suggest);
+    let session = fixture.daemon.project_agents().agent(&stuck.id).unwrap();
+    // The review waits on an approval nobody gives, times out, and the agent is stopped.
+    let result = fixture.daemon.initiative_review_now(&stuck.id).await;
+    assert!(result.unwrap_err().contains("timed out"));
+    until("the agent to stop", || session.is_stopped()).await;
+
+    // The daemon restarts: a new daemon over the same files.
+    let restarted = DaemonState::new(
+        imperium_config::Paths::under(fixture._home.path()),
+        fixture.settings.clone(),
+        None,
+    );
+    restarted.sync_environment_agent(&fixture.env.id);
+    let again = restarted
+        .project_agents()
+        .agent(&stuck.id)
+        .expect("the agent starts again");
+    assert!(again.is_stopped(), "still stopped");
+    assert_eq!(
+        again.permission_mode(),
+        imperium_api::PermissionMode::Plan,
+        "the review is still in force"
+    );
+    let mut connection = connect(&restarted);
+    let state = rpc(
+        &mut connection,
+        "initiative.get",
+        json!({"environment_id": fixture.env.id, "agent_id": stuck.id}),
+    )
+    .unwrap();
+    assert_eq!(state["reviewing"], false, "{state}");
+    assert!(
+        state["waiting"].as_str().unwrap().starts_with("paused"),
+        "{state}"
+    );
+
+    // The user resumes the agent and asks it to write: the restriction holds for that turn.
+    again.resume_work();
+    again.send("WRITE-NOW".into()).unwrap();
+    until("the turn to end", || {
+        again.permission_mode() == imperium_api::PermissionMode::Default
+    })
+    .await;
+    assert!(
+        fixture
+            .tool_results()
+            .iter()
+            .any(|r| r.contains("write_file is not available during an initiative review")),
+        "{:?}",
+        fixture.tool_results()
+    );
+    assert!(!fixture._folder.path().join("user.txt").exists());
+
+    // Then the agent is the user's again.
+    again.send("WRITE-NOW".into()).unwrap();
+    until("the file to be written", || {
+        fixture._folder.path().join("user.txt").exists()
+    })
+    .await;
 }
 
 #[tokio::test]
