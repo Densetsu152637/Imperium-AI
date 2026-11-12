@@ -1,25 +1,21 @@
-//! `imperium memory`: browse and edit saved memories directly in their folders.
-
-use std::path::PathBuf;
+//! `imperium memory`: browse and edit the user's global memories directly in their folder.
+//!
+//! An environment's memory is its `Memory.md` (open it from the environment's window, or find
+//! the folders with `imperium workspaces`); it is a file to edit, not entries to list here.
 
 use anyhow::{Context, bail};
 use imperium_config::Paths;
 use imperium_memory::{Scope, Store};
 
-fn store(project: Option<PathBuf>) -> anyhow::Result<Store> {
+fn store() -> anyhow::Result<Store> {
     let paths = Paths::from_env()?;
-    let project = match project {
-        Some(project) => project,
-        None => std::env::current_dir().context("could not read the current directory")?,
-    };
-    Ok(Store::new(paths.data_dir(), Some(&project)))
+    Ok(Store::new(paths.data_dir()))
 }
 
-pub fn list(project: Option<PathBuf>) -> anyhow::Result<()> {
-    let store = store(project)?;
-    let entries = store.list();
+pub fn list() -> anyhow::Result<()> {
+    let entries = store()?.list();
     if entries.is_empty() {
-        println!("No memories saved for this project or globally.");
+        println!("No global memories saved. An environment's notes are in its Memory.md.");
     }
     for entry in entries {
         println!(
@@ -33,8 +29,8 @@ pub fn list(project: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn search(query: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
-    for entry in store(project)?.search(query, 10) {
+pub fn search(query: &str) -> anyhow::Result<()> {
+    for entry in store()?.search(query, 10) {
         println!(
             "{:<32} {:<16} {}",
             entry.name,
@@ -45,9 +41,9 @@ pub fn search(query: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn show(name: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
-    let Some(entry) = store(project)?.get(name) else {
-        bail!("no memory named {name}");
+pub fn show(name: &str) -> anyhow::Result<()> {
+    let Some(entry) = store()?.get(name) else {
+        bail!("no global memory named {name}");
     };
     println!(
         "{} ({}, {}, saved {} from {})\n{}\nfile: {}\n\n{}",
@@ -63,17 +59,20 @@ pub fn show(name: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn forget(name: &str, scope: Option<String>, project: Option<PathBuf>) -> anyhow::Result<()> {
-    let store = store(project)?;
+pub fn forget(name: &str, scope: Option<String>) -> anyhow::Result<()> {
+    let store = store()?;
     let scope = match scope {
         Some(scope) => Scope::parse(&scope).with_context(|| {
-            format!("unknown scope {scope}; use global, project, or project-private")
+            format!("unknown scope {scope}; only global memories are listed here")
         })?,
-        None => store
-            .get(name)
-            .map(|entry| entry.scope)
-            .with_context(|| format!("no memory named {name}"))?,
+        None => Scope::Global,
     };
+    if scope != Scope::Global {
+        bail!(
+            "environment memory is the Memory.md file of the environment: edit it there \
+             (`imperium workspaces` shows where)"
+        );
+    }
     if store.forget(name, scope)? {
         println!("forgot {name} ({})", scope.as_str());
     } else {

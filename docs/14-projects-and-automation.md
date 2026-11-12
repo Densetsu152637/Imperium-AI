@@ -90,10 +90,10 @@ archives it, so its history is listed with the other archived sessions. Changing
 role restarts it with the same conversation; changing the environment's runtime restarts all of
 them; saving an agent with the same name and role restarts nothing, and a restart keeps the
 agent's limits and the reports of the sessions it already started. Deleting the environment stops
-them too. Agents have no pet in the nursery. The project-private memory and the environment's `Memory.md` ([17](17-memory.md#environment-memory-implemented)) are
+them too. Agents have no pet in the nursery. The environment's `Memory.md` ([17](17-memory.md#environment-memory-implemented)), where project memory lives too, is
 shared by all its agents, so each agent is told to begin the names of the entries it saves with its own
 name (lower case, with dashes; an environment-scope entry is a section of `Memory.md` named
-the same way) and to keep its open-task list in `<name>-open-tasks`. Adding,
+the same way) and to keep its open-task list in `<name>-open-tasks`. These saves go through `memory.write.environment` (`ask` by default, so each waits for the user's approval until it is set to `auto`; before the unification they went to project-private memory with `auto`). Adding,
 renaming, changing the role of, or deleting agents of one environment is serialised: it never starts
 an agent twice.
 
@@ -454,7 +454,7 @@ desktop's environment window shows the environment's working folder with *Open M
 An environment can carry its own configuration in the **first folder's** `.imperium/config.toml`
 (shared with the repository) and `.imperium/config.local.toml` (git-ignored, read after it).
 Why there and not in the environment's working folder under `workspaces.root`: the file belongs to
-the project, travels with the repository, and is read where `.mcp.json`, skills and project memory
+the project, travels with the repository, and is read where `.mcp.json` and skills
 already are; the working folder holds only what is private to this machine (`Memory.md`, scratch
 folders), may not exist yet, and Home has no project folder at all. An environment on a remote
 runtime or with no folder has no such file read (project files on a remote runtime are not read
@@ -517,8 +517,8 @@ settings are the user's layers, then this narrowing step, then the session's own
   grant inside or around a read-only folder does not reopen it (the file tools, bubblewrap,
   Seatbelt and the container mounts all keep the folder read-only; only grants elsewhere, such as
   the scratch folder, stay writable). A read-only session has no live preview, no writer
-  subagents, and no project memory store (`memory_remember` with the project scope would write
-  into the folder). MCP servers and the user's own hooks still run unconfined in a read-only
+  subagents, and no project memory store at all (there is none any more: environment memory is the
+  environment's `Memory.md`, which lives outside the folder, so a read-only session may still write it under `memory.write.environment`). MCP servers and the user's own hooks still run unconfined in a read-only
   session: they are the user's, and the read-only mount covers the agent's file tools and
   commands, not them. `imperium chat --env <env> --read-only`.
 
@@ -917,7 +917,7 @@ icon, and notes beyond the agent's memory tools.
 - On each wake it decides what to do with the event and either acts directly (small things) or
   **creates a new session** with a brief, which runs under normal routing, budgets, and
   permissions. It receives the session's completion report, not its transcript.
-- It keeps a short project memory (notes file and task backlog) so it can resume after restarts.
+- It keeps a short backlog and notes in the environment's memory (`Memory.md`) so it can resume after restarts.
 - Budgets: a daily token/cost cap and a max number of concurrent sessions it may start.
 - Permissions are the project's, with one extra rule: actions that would normally prompt the
   user are queued as **approval requests** (shown in the desktop app and phone app) instead of
