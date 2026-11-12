@@ -422,6 +422,7 @@ fn an_unmergeable_writer_is_reported_and_nothing_is_merged() {
     let merge = Command::new("git")
         .arg("-C")
         .arg(repo.path())
+        .args(["-c", "user.email=t@example.com", "-c", "user.name=t"])
         .args(["merge", "imperium/s1-t1"])
         .output()
         .unwrap();
