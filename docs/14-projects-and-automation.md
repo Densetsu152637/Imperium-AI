@@ -10,7 +10,9 @@ session's isolation tier, which can write to every folder
 and records it (`environment_id` and `folders` in `session.list`); folders added later apply to
 sessions started from then on.
 
-The daemon keeps environments in `environments.json` in its data folder and serves them over
+The daemon keeps environments in `environments.json` in its data folder (a file that cannot be read
+is set aside as `environments.json.unreadable`, and until the next restart the store is read-only:
+every change fails with an error saying so, instead of saving a new store over it) and serves them over
 RPC:
 
 | Method | Params | Result |
@@ -72,7 +74,7 @@ either). A new environment has
 none: nothing is created until you add one, and turning the deprecated switch off or deleting an
 agent never brings one back by itself.
 
-Each agent has its own **name** (1 to 60 characters on one line, no control characters, unique in
+Each agent has its own **name** (1 to 60 characters on one line, no control characters, line or paragraph separators (U+2028, U+2029) or bidirectional controls and marks (U+200E, U+200F, U+061C, U+202A to U+202E, U+2066 to U+2069), anywhere including the edges where only spaces are trimmed; an environment's name is checked the same way, unique in
 the environment ignoring case with Unicode case folding), an
 optional **role** (what it is for, up to 4000 characters, added to its instructions after "Your
 name is …"), its own session, and its own session limits (at most 2 sessions it started at once and
@@ -99,7 +101,7 @@ an agent twice.
 | --- | --- | --- |
 | `environments.agent_list` | `{ environment_id }` | `{ agents: EnvironmentAgent[] }` |
 | `environments.agent_create` | `{ environment_id, name, role?, initiative? }` | `EnvironmentAgent` plus `started` and, when it could not start (no folder yet, no model), `reason`; the agent is added anyway and starts when the cause is fixed |
-| `environments.agent_update` | `{ environment_id, agent_id, name?, role?, initiative? }` | `EnvironmentAgent` |
+| `environments.agent_update` | `{ environment_id, agent_id, name?, role?, initiative? }` | `EnvironmentAgent` plus `started` and, when a changed agent could not restart, `reason`, like `agent_create` |
 | `environments.agent_delete` | `{ environment_id, agent_id }` | `{}` |
 
 `EnvironmentAgent` is `{ id, name, role, session_id, initiative }` (`session_id` is none until the agent has
@@ -113,8 +115,11 @@ environment window's *Agents* section lists them with *Add agent*, edit and dele
 **Migration and deprecated fields.** An environment saved with the earlier single persistent
 session (`persistent_agent: true` with an `agent_session_id`) becomes one agent named "Persistent
 agent" the first time the daemon loads it; the session id is kept, so its history and conversation
-carry on, and the file is rewritten with the agent. For one protocol minor (0.22) the old fields
-remain as aliases and are removed in 0.23: `EnvironmentInfo.persistent_agent` is true while there
+carry on, the file is rewritten with the agent, and on its first start the session is retitled
+`<environment> · Persistent agent` (it was titled after its first message); the wait for that
+first start is kept in `agents-to-retitle.json` beside `environments.json`, so a start that failed
+or a restart before it loses nothing. Since protocol 0.22 the old fields remain
+as deprecated aliases, which a later version removes: `EnvironmentInfo.persistent_agent` is true while there
 is any agent and `agent_session_id` is the first agent's session (with no agent it keeps the
 archived session of an agent turned off, which `persistent_agent: true` continues);
 `environments.create` or `environments.update` with `persistent_agent: true` adds an agent named
@@ -268,7 +273,7 @@ touched.
   safety floor: in the default mode a site not in `web.allow_domains` asks first, and plan mode
   refuses what would ask.
 - **No persistent agent.** `persistent_agent` is off, as for any new environment. Nothing runs
-  in Home until the user starts a session or explicitly turns the agent on.
+  in Home until the user starts a session or adds an agent.
 - **What can change.** Home can be renamed, given another icon, colour or pet, pinned (it is
   listed first either way), and given folders and permissions. Its runtime stays this machine.
   `environments.delete` on it fails with an error, the CLI and the desktop (no *Delete* in its
@@ -527,7 +532,10 @@ mode, and an `access` other than `read` or `write` is an error.
   worktrees plus the session's path grants: the [project worktrees](#worktrees) do not open
   for it, `..`, absolute paths and links that lead to the delegator's checkout are refused like
   any path outside the folders, it cannot start worktrees itself, and tools tied to the
-  session's own folders (the live preview) are not offered to it. The session's scratch folder
+  session's own folders (the live preview) are not offered to it. This confinement is of the
+  **file tools**: `run_command` starts in the writer's worktree but a command is not confined to
+  it, and MCP and plugin tools act wherever they act for any agent; both follow the permission
+  mode, the rules and the safety floor, not the worktree. The session's scratch folder
   is shared, so a writer is not told it is its own. Permission rules written for the delegator's
   paths (absolute path patterns) also match the same file in a writer's worktree, which is
   checked as that path; relative patterns are relative to its working directory as usual.
@@ -569,7 +577,14 @@ mode, and an `access` other than `read` or `write` is an error.
   own `git worktree list`, then `git worktree prune`), keeping every branch; what a writer
   stopped part-way had not committed yet is committed on its branch first, as well as that can
   be done (this does not ask the `git_commit` rule). Without `remove_worktrees` they stay, and
-  their branches are in `git branch` and `git worktree list`.
+  their branches are in `git branch` and `git worktree list`. The record is deleted with the
+  session, except when `remove_worktrees` was asked and some worktree could not be removed (it is
+  in the result's `failed`): then the record is cut down to those writers and stays beside the
+  journal, for cleaning them up by hand (`git worktree remove`, then delete the record); the
+  writers whose worktrees were removed are not kept. The
+  files a writer's commit leaves out as secrets (the safety floor's paths, such as `.env`) are
+  found from git's NUL-separated listing of the staged files, so a name git would quote (a
+  folder such as `café/`) is checked as it is written.
 
 **Planned:** worktree behaviour as explicit configuration, set globally and overridable
 per project:

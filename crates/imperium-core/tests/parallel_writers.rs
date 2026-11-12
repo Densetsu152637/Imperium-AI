@@ -647,6 +647,71 @@ fn files_that_look_like_secrets_are_left_out_of_the_commit_and_a_switched_branch
 }
 
 #[test]
+fn a_secret_file_in_a_folder_with_an_unusual_name_is_still_held_back() {
+    let repo = repository();
+    let journals = tempfile::tempdir().unwrap();
+    let writers = GitWriterTrees::new("s5b", &journals.path().join("s5b.jsonl"), None);
+    let folders = canonical(&repo);
+    let one = writers.start("t1", &folders).unwrap().unwrap();
+    let tree = one.folders[0].clone();
+    // Git quotes names like these in its default listing, so the floor must see them as written.
+    std::fs::create_dir_all(tree.join("café")).unwrap();
+    std::fs::write(tree.join("café").join(".env"), "KEY=1\n").unwrap();
+    std::fs::write(tree.join("café").join("notes naïve.txt"), "fine\n").unwrap();
+    let report = writers.finish("t1", true);
+    assert!(report.contains("Not committed"), "{report}");
+    assert!(report.contains("café/.env"), "{report}");
+    assert!(git_fails(&tree, &["show", "imperium/s5b-t1:café/.env"]));
+    assert_eq!(
+        git(&tree, &["show", "imperium/s5b-t1:café/notes naïve.txt"]),
+        "fine"
+    );
+}
+
+#[test]
+fn the_record_of_a_deleted_session_keeps_only_the_writers_that_could_not_be_removed() {
+    let repo = repository();
+    let journals = tempfile::tempdir().unwrap();
+    let journal = journals.path().join("s7.jsonl");
+    let writers = GitWriterTrees::new("s7", &journal, None);
+    let folders = canonical(&repo);
+    writers.start("t1", &folders).unwrap().unwrap();
+    writers.start("t2", &folders).unwrap().unwrap();
+    let record = journals.path().join("s7.writers.json");
+    let read = || -> Vec<serde_json::Value> {
+        serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap()
+    };
+    let entries = read();
+    assert_eq!(entries.len(), 2);
+    let root_of = |task: &str| {
+        let entry = entries.iter().find(|entry| entry["task"] == task).unwrap();
+        entry["trees"][0]["root"].as_str().unwrap().to_string()
+    };
+
+    // Asked to remove the worktrees, and t2's could not be: only t2 stays on record.
+    GitWriterTrees::settle(&journal, true, &[format!("{}: in use", root_of("t2"))]);
+    let kept = read();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0]["task"], "t2");
+    // Everything removed: it goes.
+    GitWriterTrees::settle(&journal, true, &[]);
+    assert!(!record.exists());
+}
+
+#[test]
+fn the_record_goes_when_worktrees_were_not_asked_to_be_removed() {
+    let repo = repository();
+    let journals = tempfile::tempdir().unwrap();
+    let journal = journals.path().join("s8.jsonl");
+    let writers = GitWriterTrees::new("s8", &journal, None);
+    writers.start("t1", &canonical(&repo)).unwrap().unwrap();
+    let record = journals.path().join("s8.writers.json");
+    assert!(record.is_file());
+    GitWriterTrees::settle(&journal, false, &["x: failed".into()]);
+    assert!(!record.exists());
+}
+
+#[test]
 fn a_writer_is_not_committed_when_committing_is_forbidden() {
     let repo = repository();
     let journals = tempfile::tempdir().unwrap();

@@ -68,6 +68,17 @@ pub struct GitWriterTrees {
     entries: Mutex<Vec<Entry>>,
 }
 
+/// Writes `entries` whole to a temporary file beside `registry` and moves it into place.
+fn save_entries(registry: &Path, entries: &[Entry]) -> Result<(), String> {
+    let text = serde_json::to_string(entries).map_err(|error| error.to_string())?;
+    let temp = registry.with_extension("json.tmp");
+    std::fs::write(&temp, text).map_err(|error| error.to_string())?;
+    std::fs::rename(&temp, registry).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        error.to_string()
+    })
+}
+
 fn registry_path(journal: &Path) -> PathBuf {
     journal.with_extension("writers.json")
 }
@@ -150,13 +161,7 @@ impl GitWriterTrees {
     /// Writes the record whole to a temporary file and moves it into place, so a crash leaves
     /// the old record or the new one, never half of one.
     fn save(&self, entries: &[Entry]) -> Result<(), String> {
-        let text = serde_json::to_string(entries).map_err(|error| error.to_string())?;
-        let temp = self.registry.with_extension("json.tmp");
-        std::fs::write(&temp, text).map_err(|error| error.to_string())?;
-        std::fs::rename(&temp, &self.registry).map_err(|error| {
-            let _ = std::fs::remove_file(&temp);
-            error.to_string()
-        })
+        save_entries(&self.registry, entries)
     }
 
     /// The worktrees of the writers recorded beside `journal`, as session worktrees to remove.
@@ -188,6 +193,31 @@ impl GitWriterTrees {
             let _ = git(Path::new(repo), &["worktree", "prune"]);
         }
         outcome
+    }
+
+    /// Settles the record beside a deleted session's journal. Unless worktrees were asked to be
+    /// removed and some could not be, it goes. Otherwise it is cut down to the writers whose
+    /// worktrees are still there (those `failed` names, as `<folder>: <why>`), so it still names
+    /// what has to be cleaned up by hand; writers whose worktrees were removed are not kept.
+    pub fn settle(journal: &Path, remove_worktrees: bool, failed: &[String]) {
+        if !remove_worktrees || failed.is_empty() {
+            Self::forget(journal);
+            return;
+        }
+        let registry = registry_path(journal);
+        let mut entries = load(&registry);
+        entries.retain(|entry| {
+            entry.trees.iter().any(|tree| {
+                failed
+                    .iter()
+                    .any(|failure| failure.starts_with(&format!("{}: ", tree.root)))
+            })
+        });
+        if entries.is_empty() {
+            Self::forget(journal);
+        } else if let Err(error) = save_entries(&registry, &entries) {
+            tracing::warn!(path = %registry.display(), %error, "could not cut down the writers' worktree record");
+        }
     }
 
     /// Forgets the record beside `journal` (the session was deleted).
@@ -288,10 +318,16 @@ fn commit_all(root: &Path, task: &str, branch: &str) -> Result<(String, Vec<Stri
     }
     check_repository_config(root, Step::Commit, "commit it")?;
     git(root, &["add", "-A"])?;
-    // Files that hold secrets are not committed for the writer.
-    let staged_names = git(root, &["diff", "--cached", "--name-only", "--no-ext-diff"])?;
+    // Files that hold secrets are not committed for the writer. The names are read separated by
+    // NULs, so a name with unusual characters (which git would otherwise quote) is checked as it
+    // is written.
+    let staged_names = git(
+        root,
+        &["diff", "--cached", "-z", "--name-only", "--no-ext-diff"],
+    )?;
     let held: Vec<String> = staged_names
-        .lines()
+        .split('\0')
+        .filter(|name| !name.is_empty())
         .filter(|name| {
             safety_floor(
                 CallKind::Edit,

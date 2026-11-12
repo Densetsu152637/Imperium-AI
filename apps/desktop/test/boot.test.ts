@@ -3,8 +3,20 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { runInNewContext } from "node:vm";
 
-import { afterPaint, BOOT_BACKGROUND, bootTheme, FADE_MS, FALLBACK_MS, startSplash, type SplashParts, type SplashTimers } from "../src/boot.ts";
+import {
+  afterPaint,
+  BOOT_BACKGROUND,
+  bootTheme,
+  FADE_MS,
+  FALLBACK_MS,
+  rememberTheme,
+  startSplash,
+  THEME_KEY,
+  type SplashParts,
+  type SplashTimers,
+} from "../src/boot.ts";
 
 function fixture() {
   const timers: { id: number; ms: number; run: () => void; live: boolean }[] = [];
@@ -126,4 +138,60 @@ test("the boot theme is the remembered one, else the system's", () => {
   assert.equal(bootTheme("dark", true), "dark");
   assert.equal(bootTheme("system", true), "light");
   assert.equal(bootTheme(null, false), "dark");
+});
+
+// The remembered theme: public/boot.js (a plain script linked from index.html, which sets the theme
+// before the first paint) and src/boot.ts (which remembers it) must use the same storage key, or
+// the first paint would ignore what the app saved.
+
+const bootScript = readFileSync(new URL("../public/boot.js", import.meta.url), "utf8");
+
+/** Runs boot.js as the page would, with a storage holding `stored`; returns the theme it set. */
+function paintWith(stored: Record<string, string>): string | undefined {
+  const dataset: Record<string, string> = {};
+  runInNewContext(bootScript, {
+    localStorage: { getItem: (key: string) => stored[key] ?? null },
+    document: { documentElement: { dataset } },
+  });
+  return dataset.theme;
+}
+
+test("boot.js reads the key that boot.ts writes", () => {
+  const keys = [...bootScript.matchAll(/getItem\(\s*"([^"]+)"\s*\)/g)].map((match) => match[1]);
+  assert.deepEqual(keys, [THEME_KEY]);
+  assert.equal(THEME_KEY, "imperium.theme");
+});
+
+test("the first paint follows what rememberTheme stored", () => {
+  const stored: Record<string, string> = {};
+  const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { setItem: (key: string, value: string) => void (stored[key] = value) },
+  });
+  try {
+    rememberTheme("dark");
+    assert.equal(paintWith(stored), "dark");
+    rememberTheme("light");
+    assert.equal(paintWith(stored), "light");
+    // "system" is remembered too, and leaves the choice to the operating system.
+    rememberTheme("system");
+    assert.equal(paintWith(stored), undefined);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "localStorage", original);
+    else delete (globalThis as { localStorage?: unknown }).localStorage;
+  }
+});
+
+test("a storage that throws leaves the first paint alone", () => {
+  const dataset: Record<string, string> = {};
+  runInNewContext(bootScript, {
+    localStorage: {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+    },
+    document: { documentElement: { dataset } },
+  });
+  assert.equal(dataset.theme, undefined);
 });

@@ -1101,7 +1101,7 @@ pub struct EnvironmentInfo {
     /// Where the environment's file and command tools run.
     #[serde(default)]
     pub runtime: EnvironmentRuntime,
-    /// Deprecated (since protocol 0.22, removed in 0.23): whether the environment has any
+    /// Deprecated (since protocol 0.22, removed in a later version): whether the environment has any
     /// persistent agent. Read-only in effect: derived from `agents`.
     #[serde(default)]
     pub persistent_agent: bool,
@@ -1109,7 +1109,7 @@ pub struct EnvironmentInfo {
     /// nursery decide.
     #[serde(default)]
     pub pet: Option<String>,
-    /// Deprecated (since protocol 0.22, removed in 0.23): the first agent's session id.
+    /// Deprecated (since protocol 0.22, removed in a later version): the first agent's session id.
     #[serde(default)]
     pub agent_session_id: Option<String>,
     /// The environment's persistent agents, none unless created (`environments.agent_create`).
@@ -1221,7 +1221,7 @@ pub struct EnvironmentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub runtime: Option<EnvironmentRuntime>,
-    /// Deprecated (since protocol 0.22, removed in 0.23): `true` adds one agent named
+    /// Deprecated (since protocol 0.22, removed in a later version): `true` adds one agent named
     /// "Persistent agent". Use `environments.agent_create`. Nothing is created when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1272,7 +1272,7 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub runtime: Option<EnvironmentRuntime>,
-    /// Deprecated (since protocol 0.22, removed in 0.23): `true` adds an agent named
+    /// Deprecated (since protocol 0.22, removed in a later version): `true` adds an agent named
     /// "Persistent agent" when the environment has none; `false` deletes all its agents. Use
     /// `environments.agent_create` and `environments.agent_delete`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2425,6 +2425,10 @@ pub struct BenchPrompt {
     pub prompt_tok_s: Option<f64>,
     #[serde(default)]
     pub gen_tok_s: Option<f64>,
+    /// `prompt_tokens` is an estimate (the server reported no usage), so no prompt speed is
+    /// claimed for this prompt.
+    #[serde(default)]
+    pub prompt_tokens_estimated: bool,
 }
 
 /// `models.config`: every local model's llama.cpp settings and every model-table row's

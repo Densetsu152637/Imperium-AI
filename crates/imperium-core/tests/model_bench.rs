@@ -280,6 +280,27 @@ fn saved_result(index: usize) -> Value {
            "placement": "gpu", "machine": "quiet", "prompts": []})
 }
 
+/// Whether a result's numbers are within what the fake server's schedule allows, tightly: a
+/// formula over the whole request would give about 100 tok/s for the prompt and 5 tok/s for the
+/// reply, outside these ranges.
+fn timing_in_range(result: &Value) -> bool {
+    let within = |value: &Value, low: f64, high: f64| {
+        value
+            .as_f64()
+            .is_some_and(|number| (low..=high).contains(&number))
+    };
+    within(&result["ttft_ms"], 395.0, 700.0)
+        && within(&result["prompt_tok_s"], 150.0, 256.0)
+        && within(&result["gen_tok_s"], 5.6, 6.7)
+        && result["prompts"].as_array().is_some_and(|prompts| {
+            prompts.iter().all(|prompt| {
+                within(&prompt["ttft_ms"], 395.0, 700.0)
+                    && within(&prompt["prompt_tok_s"], 150.0, 256.0)
+                    && within(&prompt["gen_tok_s"], 5.6, 6.7)
+            })
+        })
+}
+
 fn range(value: &Value, low: f64, high: f64) -> f64 {
     let number = value
         .as_f64()
@@ -362,15 +383,17 @@ async fn a_benchmark_measures_the_stream_through_the_normal_launch_path_and_save
         ["short", "medium", "long"]
     );
     for prompt in prompts {
-        range(&prompt["ttft_ms"], 395.0, 700.0);
         assert_eq!(prompt["prompt_tokens"], PROMPT_TOKENS);
+        assert_eq!(prompt["prompt_tokens_estimated"], false);
         assert_eq!(prompt["completion_tokens"], TOKENS);
-        range(&prompt["prompt_tok_s"], 150.0, 256.0);
-        range(&prompt["gen_tok_s"], 5.6, 6.7);
+        // Sleeps only run long: nothing is quicker than the schedule.
+        assert!(prompt["ttft_ms"].as_f64().unwrap() >= 395.0, "{prompt}");
+        assert!(prompt["gen_tok_s"].as_f64().unwrap() <= 6.7, "{prompt}");
+        assert!(
+            prompt["prompt_tok_s"].as_f64().unwrap() <= 256.0,
+            "{prompt}"
+        );
     }
-    range(&result["ttft_ms"], 395.0, 700.0);
-    range(&result["prompt_tok_s"], 150.0, 256.0);
-    range(&result["gen_tok_s"], 5.6, 6.7);
     // The fake server has no process to read, so no peak memory is claimed.
     assert!(result["peak_ram_bytes"].is_null() && result["peak_vram_bytes"].is_null());
 
@@ -439,6 +462,101 @@ async fn a_benchmark_measures_the_stream_through_the_normal_launch_path_and_save
 }
 
 #[tokio::test]
+async fn the_numbers_follow_the_stream_not_the_whole_request() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    // A slow or busy machine can only make the sleeps run long, which the tight ranges mind; so
+    // they must hold for one of three runs. A formula over the whole request fails every run.
+    let mut latest = Value::Null;
+    for _ in 0..3 {
+        let run = fixture.bench(json!({"model": "tiny"})).await;
+        assert_eq!(run["state"], "done", "{run}");
+        latest = run["results"][0].clone();
+        if timing_in_range(&latest) {
+            return;
+        }
+    }
+    panic!("none of three runs matched the stream's schedule: {latest}");
+}
+
+#[tokio::test]
+async fn a_saturated_machine_makes_the_benchmark_wait_and_does_not_unload_the_model() {
+    use imperium_engine::Load;
+    let home = tempfile::tempdir().unwrap();
+    // No interactive hold: the model would be unloaded to time its load, were the machine quiet.
+    let mut fixture = fixture(home.path(), "[load]\ninteractive_hold_min = 0\n").await;
+    fixture.bench(json!({"model": "tiny"})).await;
+    assert_eq!(fixture.supervisor.loaded().len(), 1);
+
+    let load = imperium_core::ManualLoad::new(Load::Saturated);
+    fixture.state.use_load_view(load.clone());
+    let mut announced = fixture.state.announcements();
+    fixture.call("models.bench", json!({"model": "tiny"})).await;
+    // It waits, and says why.
+    let mut waiting = false;
+    for _ in 0..60 {
+        let results = fixture.results().await;
+        let run = results["runs"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(run["state"], "running", "{run}");
+        if run["step"] == "waiting while the machine is saturated" {
+            waiting = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(waiting, "the run never said it was waiting for the machine");
+    assert_eq!(
+        fixture.supervisor.loaded().len(),
+        1,
+        "the model was not unloaded while the machine was saturated"
+    );
+    // Once the machine is quiet again it goes on; the load was not timed.
+    load.set(Load::Quiet);
+    let run = fixture.finished_run().await;
+    assert_eq!(run["state"], "done", "{run}");
+    assert!(
+        run["results"][0]["load_s"].is_null(),
+        "{}",
+        run["results"][0]
+    );
+    loop {
+        let note = match announced.try_recv() {
+            Ok(note) => note,
+            // Missed some: look at the rest.
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(_) => break,
+        };
+        if note.method == "models.bench_progress" {
+            assert_ne!(
+                note.params["step"], "unloading the idle model to time its load",
+                "{:?}",
+                note.params
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_benchmark_whose_task_panics_is_failed_not_left_running() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    fixture.state.bench().inject_panic();
+    let run = fixture.bench(json!({"model": "tiny"})).await;
+    assert_eq!(run["state"], "failed", "{run}");
+    assert_eq!(run["message"], "The benchmark stopped unexpectedly.");
+    assert!(run["current"].is_null() && run["step"].is_null(), "{run}");
+    // Nothing was saved, and the next run works.
+    assert!(
+        fixture.results().await["results"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let run = fixture.bench(json!({"model": "tiny"})).await;
+    assert_eq!(run["state"], "done", "{run}");
+}
+
+#[tokio::test]
 async fn a_model_idle_past_the_hold_is_unloaded_to_time_its_load_unless_asked_not_to() {
     let home = tempfile::tempdir().unwrap();
     // No interactive hold: a model counts as idle as soon as it is not in use.
@@ -468,6 +586,8 @@ async fn a_server_without_usage_claims_no_prompt_speed() {
     assert!(result["prompt_tok_s"].is_null(), "{result}");
     for prompt in result["prompts"].as_array().unwrap() {
         assert!(prompt["prompt_tok_s"].is_null(), "{prompt}");
+        // The size is an estimate, and says so.
+        assert_eq!(prompt["prompt_tokens_estimated"], true, "{prompt}");
         // The streamed chunks stand in for the reply tokens.
         assert_eq!(prompt["completion_tokens"], TOKENS);
         range(&prompt["gen_tok_s"], 5.6, 6.7);

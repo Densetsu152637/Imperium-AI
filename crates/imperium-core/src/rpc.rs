@@ -1084,7 +1084,7 @@ impl Connection {
         let envs = self.state.environments();
         let failed = |error: EnvironmentError| {
             let code = match error {
-                EnvironmentError::Save(_) => codes::INTERNAL_ERROR,
+                EnvironmentError::Save(_) | EnvironmentError::ReadOnly(_) => codes::INTERNAL_ERROR,
                 _ => codes::INVALID_PARAMS,
             };
             ErrorObject::new(code, error.to_string())
@@ -1192,8 +1192,8 @@ impl Connection {
                     let changed = before.is_none_or(|before| {
                         before.name != agent.name || before.role != agent.role
                     });
-                    if changed {
-                        crate::project_agent::restart_environment_agents(
+                    let could_not_start = if changed {
+                        let could_not_start = crate::project_agent::restart_environment_agents(
                             &self.state,
                             &p.environment_id,
                             Some(&agent.id),
@@ -1202,7 +1202,10 @@ impl Connection {
                             &self.state,
                             &p.environment_id,
                         );
-                    }
+                        could_not_start
+                    } else {
+                        Vec::new()
+                    };
                     if let Some(initiative) = p.initiative {
                         // Applies from the agent's next look; nothing restarts.
                         envs.set_agent_initiative(&p.environment_id, &agent.id, initiative)
@@ -1217,7 +1220,16 @@ impl Connection {
                         }
                         crate::initiative::announce(&self.state, &agent.id);
                     }
-                    Ok(self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent))
+                    let agent = self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent);
+                    let reason = could_not_start
+                        .into_iter()
+                        .find(|(id, _)| *id == agent.id)
+                        .map(|(_, reason)| reason);
+                    Ok(EnvironmentAgentCreated {
+                        started: self.state.project_agents().agent(&agent.id).is_some(),
+                        reason,
+                        agent,
+                    })
                 })
             }
             EnvironmentAgentDelete::NAME => {
