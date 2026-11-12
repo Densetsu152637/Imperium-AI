@@ -626,6 +626,7 @@ impl Workspace {
         // spelled and whatever grants or project worktrees would also open it.
         if self.profile.local_files_only()
             && (!self.in_local_scope(&resolved)
+                || (cfg!(windows) && has_stream_name(&resolved))
                 || self.in_protected_folder(&resolved)
                 || (write && self.is_configuration_file(&resolved)))
         {
@@ -643,22 +644,43 @@ impl Workspace {
     /// project's `.mcp.json`. An agent limited to local files may not write them (it could
     /// start servers or load plugin hooks in the next session), also when they do not exist yet.
     fn is_configuration_file(&self, resolved: &Path) -> bool {
-        self.roots().into_iter().any(|root| {
-            CONFIGURATION_FILES.iter().any(|name| {
-                let file = root.join(name);
-                // Where the file really is, also through a linked `.imperium` folder.
-                let real = file.canonicalize().unwrap_or_else(|_| {
-                    match (
-                        file.parent().and_then(|dir| dir.canonicalize().ok()),
-                        file.file_name(),
-                    ) {
-                        (Some(dir), Some(name)) => dir.join(name),
-                        _ => file.clone(),
-                    }
-                });
-                resolved == real
+        // By name first: file systems on Windows and macOS ignore case, Windows drops trailing
+        // dots and spaces and takes `name:stream` for a stream of `name`, so none of these
+        // spellings may get past a comparison of the exact bytes. Over-matching on a file system
+        // that tells them apart is harmless.
+        let by_name = self.roots().into_iter().any(|root| {
+            let Ok(relative) = resolved.strip_prefix(root) else {
+                return false;
+            };
+            let parts: Vec<String> = relative
+                .components()
+                .map(|part| {
+                    let name = part.as_os_str().to_string_lossy();
+                    let name = name.split(':').next().unwrap_or_default();
+                    name.trim_end_matches(['.', ' ']).to_lowercase()
+                })
+                .collect();
+            CONFIGURATION_FILES
+                .iter()
+                .any(|file| parts.join("/") == *file)
+        });
+        by_name
+            || self.roots().into_iter().any(|root| {
+                CONFIGURATION_FILES.iter().any(|name| {
+                    let file = root.join(name);
+                    // Where the file really is, also through a linked `.imperium` folder.
+                    let real = file.canonicalize().unwrap_or_else(|_| {
+                        match (
+                            file.parent().and_then(|dir| dir.canonicalize().ok()),
+                            file.file_name(),
+                        ) {
+                            (Some(dir), Some(name)) => dir.join(name),
+                            _ => file.clone(),
+                        }
+                    });
+                    resolved == real
+                })
             })
-        })
     }
 
     /// Whether a canonical path is inside a protected folder (and not in the scratch folder).
@@ -786,6 +808,12 @@ impl Workspace {
             Err(_) => plain(path).replace('\\', "/"),
         }
     }
+}
+
+/// Whether a component of a path has a `:` (on Windows the start of an alternate data stream).
+fn has_stream_name(path: &Path) -> bool {
+    path.components()
+        .any(|part| matches!(part, Component::Normal(name) if name.to_string_lossy().contains(':')))
 }
 
 /// Files, relative to a folder of an environment, that configure what the daemon starts there.
@@ -1470,6 +1498,58 @@ mod tests {
                 .is_ok()
         );
         assert!(locked.resolve_writable("src/main.rs").is_ok());
+    }
+
+    #[test]
+    fn the_configuration_files_are_matched_by_name_not_by_bytes() {
+        let project = tempfile::tempdir().unwrap();
+        let locked = Workspace::new(project.path())
+            .unwrap()
+            .with_profile(AgentProfile::new(crate::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
+        // Spellings a case-insensitive or Windows file system maps onto the files, whether or not
+        // the folder or the file exists. Case is checked everywhere; the rest where it applies.
+        let mut spellings = vec![
+            ".MCP.json",
+            ".Mcp.JSON",
+            ".IMPERIUM/config.toml",
+            ".Imperium/CONFIG.toml",
+            ".imperium/Config.Local.toml",
+        ];
+        if cfg!(windows) {
+            spellings.extend([
+                ".mcp.json.",
+                ".mcp.json ",
+                ".mcp.json::$DATA",
+                ".imperium/config.toml.",
+                ".imperium\\config.toml::$DATA",
+            ]);
+        }
+        for file in &spellings {
+            assert!(
+                locked.resolve_writable(file).is_err(),
+                "{file} should be refused (folder absent)"
+            );
+        }
+        // The same with the folder present and the file absent.
+        std::fs::create_dir_all(project.path().join(".imperium")).unwrap();
+        for file in &spellings {
+            assert!(
+                locked.resolve_writable(file).is_err(),
+                "{file} should be refused (folder present)"
+            );
+        }
+        // Other names stay open, also ones that only look alike.
+        for file in [
+            ".mcp.json.bak",
+            ".imperium/config.toml.bak",
+            ".imperium/notes.toml",
+            "mcp.json",
+        ] {
+            assert!(locked.resolve_writable(file).is_ok(), "{file}");
+        }
     }
 
     #[test]

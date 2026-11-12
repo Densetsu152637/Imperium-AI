@@ -189,7 +189,8 @@ followed from here), as it is for every session there.
 
 Not covered: the hooks the user configured run as configured (they are the user's, not the
 agent's), and a mod's panel is not an agent tool, so profiles do not apply to mods. A session
-bound to an agent runs no hook of a plugin its profile refuses (a plugin's skills and commands
+bound to an agent runs no hook of a plugin its profile refuses (tightening a profile on a running
+session leaves the plugin hooks already loaded active until the session restarts; a plugin's skills and commands
 are only text and stay listed).
 
 From the command line, `imperium env agent add|set` take `--mcp all|none|NAME,NAME`,
