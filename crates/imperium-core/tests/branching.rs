@@ -544,6 +544,45 @@ async fn deleting_a_branch_that_shares_the_sources_worktree_leaves_it() {
     );
 }
 
+/// A session known only by a `.meta.json` on disk (not running, not archived: not resumed yet or
+/// past `agents.resume_days`) still owns its worktree, so deleting the session that made it
+/// leaves it.
+#[tokio::test]
+async fn deleting_a_session_leaves_a_worktree_only_a_meta_file_records() {
+    let url = serve().await;
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url);
+    let mut connection = connect(&state).await;
+    let (id, tree) = session_on_a_worktree(&state, &mut connection, repo.path()).await;
+    let sessions = imperium_config::Paths::under(home.path())
+        .data_dir()
+        .join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let meta = json!({
+        "project_dir": repo.path(),
+        "worktrees": [{
+            "folder": repo.path(),
+            "path": tree,
+            "branch": "imperium/ghost",
+            "repo": repo.path(),
+        }],
+    });
+    std::fs::write(sessions.join("ghost.meta.json"), meta.to_string()).unwrap();
+
+    call(
+        &mut connection,
+        "session.delete",
+        json!({"session_id": id, "remove_worktrees": true}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        tree.join("dirty.txt").exists(),
+        "the worktree the other recorded session works in stays"
+    );
+}
+
 #[tokio::test]
 async fn only_known_sessions_can_be_branched() {
     let url = serve().await;

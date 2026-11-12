@@ -507,6 +507,45 @@ async fn a_repositorys_own_config_that_would_run_programs_is_refused() {
     assert!(!dir.join("marker").exists());
 }
 
+/// A commit that git itself rejects leaves the index as it was: the files `git add` staged for
+/// the commit are unstaged again, new files included.
+#[tokio::test]
+async fn a_failed_commit_leaves_the_index_as_it_was() {
+    let repo = repository();
+    let dir = repo.path().to_path_buf();
+    let url = serve(dir.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url, Some("allow"));
+    let mut connection = connect(&state).await;
+    let id = edited(&state, &dir).await;
+    let root =
+        ok::<SessionReviewResult>(&mut connection, "session.review", json!({"session_id": id}))
+            .await
+            .repos[0]
+            .clone();
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    let index = git(&dir, &["ls-files", "--stage"]);
+    let status = git(&dir, &["status", "--porcelain"]);
+    // An empty author name is something git refuses at commit time, whatever the user's
+    // global identity is.
+    git(&dir, &["config", "user.name", ""]);
+    let failed = call(
+        &mut connection,
+        "session.review_commit",
+        json!({"session_id": id, "repo": root, "message": "x"}),
+    )
+    .await;
+    assert!(failed.is_err(), "the commit was rejected");
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        git(&dir, &["ls-files", "--stage"]),
+        index,
+        "nothing stays staged"
+    );
+    assert_eq!(git(&dir, &["status", "--porcelain"]), status);
+    assert!(dir.join("new.txt").exists(), "the files are untouched");
+}
+
 /// A stand-in for `gh` that records that it ran.
 fn fake_gh(dir: &Path) -> (PathBuf, PathBuf) {
     let log = dir.join("gh-ran");
