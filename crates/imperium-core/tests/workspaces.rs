@@ -741,12 +741,17 @@ async fn the_sweep_spares_agents_unreadable_records_old_sessions_and_links() {
         ids.push(session.id().to_string());
     }
     let (running, corrupt, old) = (ids[0].clone(), ids[1].clone(), ids[2].clone());
-    // The persistent agent of the environment: no record of its own, but named by the environment.
+    // The environment's persistent agents (there can be several): no record of their own, but
+    // named by the environment.
     let agent = "0123456789abcdef".to_string();
-    first
-        .environments()
-        .set_agent_session(&env, Some(agent.clone()))
-        .unwrap();
+    let second_agent = "fedcba9876543210".to_string();
+    for (name, session) in [("Planner", &agent), ("Reviewer", &second_agent)] {
+        let made = first.environments().add_agent(&env, name, None).unwrap();
+        first
+            .environments()
+            .set_agent_session(&env, &made.id, Some(session.clone()))
+            .unwrap();
+    }
     drop(first);
     let data = home.path().join("data").join("sessions");
     // One record cannot be parsed; one session has no journal, so it is not resumed after a restart
@@ -756,7 +761,7 @@ async fn the_sweep_spares_agents_unreadable_records_old_sessions_and_links() {
     let _ = std::fs::remove_file(data.join(format!("{corrupt}.jsonl")));
 
     let sessions = root_of(home.path()).join(&env).join("sessions");
-    for id in [&running, &corrupt, &old, &agent] {
+    for id in [&running, &corrupt, &old, &agent, &second_agent] {
         seed_session_files(home.path(), &env, id);
     }
     // Orphans: no running session, no record, not an agent. One holds a link to a folder outside.
@@ -789,7 +794,7 @@ async fn the_sweep_spares_agents_unreadable_records_old_sessions_and_links() {
     assert_eq!(swept, 2, "the two orphans, and nothing else");
     assert!(!sessions.join(orphan).exists());
     assert!(!sessions.join(linked_orphan).exists());
-    for kept in [&running, &corrupt, &old, &agent] {
+    for kept in [&running, &corrupt, &old, &agent, &second_agent] {
         assert!(
             sessions.join(kept).join("notes.txt").is_file(),
             "{kept} was deleted"

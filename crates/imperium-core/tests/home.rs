@@ -243,7 +243,7 @@ async fn home_sessions_have_no_project_paths_and_start_no_persistent_agent() {
     let home = tempfile::tempdir().unwrap();
     let state = daemon(home.path(), "http://127.0.0.1:9/v1", "");
     state.start_project_agents();
-    assert!(state.project_agents().environments().is_empty());
+    assert!(state.project_agents().environment_agents().is_empty());
     let (session, _events) = state
         .create_in_environment("home", None, SessionOptions::default())
         .unwrap();

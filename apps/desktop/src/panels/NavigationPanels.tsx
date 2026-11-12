@@ -16,6 +16,7 @@ import { RowMenu } from "../components/RowMenu";
 import { Select } from "../components/Select";
 import { ProjectIcon, environmentIcon, projectName, sameFolder } from "../projectIcons";
 import type { SearchClient } from "../sessionSearch";
+import { agentOfSession, agentTitle } from "../agents";
 import { formatAgo } from "../ago";
 import { branchNote, nestBranches } from "../branches";
 import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
@@ -244,7 +245,7 @@ export function SessionsPanel({
     const place = env?.name ?? projectName(session.summary.project_dir);
     const pinned = !!session.summary.pinned;
     const persistent = !!session.summary.persistent;
-    const title = persistent ? `${place} agent` : sessionTitle(session);
+    const title = persistent ? agentTitle(place, agentOfSession(env, id)) : sessionTitle(session);
     const status = statusText(session);
     // `updatedAt` is a time once the session has had an event here, else only an ordering key.
     const at = session.summary.archived

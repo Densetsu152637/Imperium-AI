@@ -405,11 +405,13 @@ impl DaemonState {
     /// archived, makes a session gone; a record that cannot be read or parsed keeps it.
     fn session_is_kept(&self, id: &str) -> bool {
         if self.session(id).is_some()
-            || self
-                .environments
-                .list()
-                .iter()
-                .any(|env| env.agent_session_id.as_deref() == Some(id))
+            || self.environments.list().iter().any(|env| {
+                env.agent_session_id.as_deref() == Some(id)
+                    || env
+                        .agents
+                        .iter()
+                        .any(|agent| agent.session_id.as_deref() == Some(id))
+            })
             || self
                 .project_agents()
                 .list()
