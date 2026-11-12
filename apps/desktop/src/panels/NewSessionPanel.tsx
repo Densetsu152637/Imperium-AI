@@ -88,9 +88,11 @@ export function NewSessionPanel({
 
   useEffect(() => field.current?.focus(), []);
 
-  // The selected environment, else the first (pinned ones lead) so there is always a choice made.
+  // The selected environment, else Home (built in, so there is always a choice made), else a
+  // pinned one, else the first.
   const environment =
     environments.find((env) => env.id === environmentId) ??
+    environments.find((env) => env.builtin) ??
     environments.find((env) => env.pinned) ??
     environments[0] ??
     null;
@@ -111,7 +113,7 @@ export function NewSessionPanel({
       ? environments.length === 0
         ? "Create an environment first (Environments → + New environment)"
         : "Choose an environment"
-      : environment.folders.length === 0
+      : environment.folders.length === 0 && !environment.builtin
         ? `Add a folder to ${environment.name} first`
         : null;
 
@@ -196,7 +198,7 @@ export function NewSessionPanel({
           options={environments.map((env) => ({
             value: env.id,
             label: env.name,
-            description: env.folders.length === 0 ? "No folders yet" : env.folders[0],
+            description: env.folders.length === 0 ? (env.builtin ? "Built in: web files and connectors" : "No folders yet") : env.folders[0],
           }))}
         />
         <span className="model-select">

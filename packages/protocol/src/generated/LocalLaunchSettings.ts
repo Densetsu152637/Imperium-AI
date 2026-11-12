@@ -59,4 +59,25 @@ max_output_tokens: number | null,
 /**
  * Arguments added after `runtime.llamacpp.extra_args` (or `runtime.vllm.extra_args`).
  */
-extra_args: Array<string> | null, };
+extra_args: Array<string> | null, 
+/**
+ * The id of an installed local model that drafts tokens for this one (speculative
+ * decoding); null uses no draft. A smaller model with the same tokenizer family; llama.cpp
+ * models only.
+ */
+draft_model: string | null, 
+/**
+ * Most tokens the draft proposes per step; null keeps llama.cpp's default. Needs
+ * `draft_model`.
+ */
+draft_max: number | null, 
+/**
+ * Fewest tokens the draft proposes per step; null keeps llama.cpp's default. Needs
+ * `draft_model`.
+ */
+draft_min: number | null, 
+/**
+ * Layers of the draft placed on the GPU; 0 keeps it in RAM, null leaves llama.cpp's `auto`. Needs
+ * `draft_model`.
+ */
+draft_gpu_layers: number | null, };

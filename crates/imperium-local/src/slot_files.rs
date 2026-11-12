@@ -174,6 +174,12 @@ pub(crate) fn model_key(model: &LocalModel, launch: &ModelLaunch) -> u64 {
         launch.cache_type_k,
         launch.cache_type_v
     );
+    // llama-server saves a slot's draft context with it: a slot only fits a server with the
+    // same draft. The configured draft is used, so a fallback to none does not change the key.
+    let identity = match &launch.draft {
+        Some(draft) => format!("{identity}\0draft:{}", draft.model),
+        None => identity,
+    };
     fnv1a(identity.as_bytes())
 }
 

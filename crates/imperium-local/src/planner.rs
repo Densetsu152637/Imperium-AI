@@ -13,7 +13,7 @@ use crate::scan::LocalModel;
 /// Compute buffers and runtime state llama.cpp needs beyond weights and KV cache.
 pub const RUNTIME_OVERHEAD_BYTES: u64 = 512 * 1024 * 1024;
 /// Assumed when a header lacks what the KV estimate needs: a fifth of the weights.
-const UNKNOWN_KV_FRACTION: f64 = 0.2;
+pub(crate) const UNKNOWN_KV_FRACTION: f64 = 0.2;
 /// Layers assumed for a model whose header has not been read (one not downloaded yet), so a
 /// GPU and RAM split can still be estimated.
 const ASSUMED_LAYERS: u32 = 32;
@@ -51,6 +51,17 @@ pub struct Placement {
     pub required_bytes: u64,
 }
 
+/// The memory of a draft model loaded beside a model for speculative decoding. The planner does
+/// not choose its split between GPU and RAM: `draft_gpu_layers` and the CPU lane do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DraftMemory {
+    /// Weights, KV cache and compute buffers of the draft; 0 when there is no draft.
+    pub bytes: u64,
+    /// The part of `bytes` kept in RAM: all of it on the CPU lane or with `draft_gpu_layers = 0`,
+    /// the share of layers left off the GPU with a partial `draft_gpu_layers`, else 0.
+    pub ram_bytes: u64,
+}
+
 /// What loading a model needs at a given context and slot count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Footprint {
@@ -59,6 +70,8 @@ pub struct Footprint {
     pub layers: Option<u32>,
     /// Most layers the settings let the GPU take.
     pub max_gpu_layers: Option<u32>,
+    /// The draft model that runs beside it, if one is used.
+    pub draft: DraftMemory,
 }
 
 impl Footprint {
@@ -83,7 +96,13 @@ impl Footprint {
                 .block_count
                 .and_then(|layers| u32::try_from(layers).ok()),
             max_gpu_layers: launch.max_gpu_layers,
+            draft: DraftMemory::default(),
         }
+    }
+
+    /// The same footprint with a draft model's memory added.
+    pub fn with_draft(self, draft: DraftMemory) -> Self {
+        Footprint { draft, ..self }
     }
 
     /// An estimate from the weights' size alone, for a model not on disk yet: the KV cache as
@@ -94,11 +113,12 @@ impl Footprint {
             kv_bytes: (weights_bytes as f64 * UNKNOWN_KV_FRACTION) as u64,
             layers: Some(ASSUMED_LAYERS),
             max_gpu_layers: None,
+            draft: DraftMemory::default(),
         }
     }
 
     pub fn required_bytes(&self) -> u64 {
-        self.weights_bytes + self.kv_bytes + RUNTIME_OVERHEAD_BYTES
+        self.weights_bytes + self.kv_bytes + RUNTIME_OVERHEAD_BYTES + self.draft.bytes
     }
 }
 
@@ -169,35 +189,43 @@ pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
         (Some(cap), Some(layers)) => cap < layers,
         _ => false,
     };
-    if required <= budget.vram_bytes && !capped {
+    // A draft kept in RAM leaves the GPU's share of the requirement and takes RAM instead.
+    let draft_in_ram = footprint.draft.ram_bytes.min(footprint.draft.bytes);
+    let gpu_required = required - draft_in_ram;
+    if gpu_required <= budget.vram_bytes && draft_in_ram <= budget.ram_bytes && !capped {
         return Some(Placement {
             gpu_layers: u32::MAX,
             all_layers_on_gpu: true,
-            vram_bytes: required,
-            ram_bytes: 0,
+            vram_bytes: gpu_required,
+            ram_bytes: draft_in_ram,
             required_bytes: required,
         });
     }
     // Partial offload needs a layer count to split by.
     let layers = footprint.layers?.max(1);
     let per_layer = (footprint.weights_bytes + footprint.kv_bytes).div_ceil(u64::from(layers));
-    let gpu_room = budget.vram_bytes.saturating_sub(RUNTIME_OVERHEAD_BYTES);
+    // A draft on the GPU is not split: it comes off the room the main model's layers share.
+    let draft_on_gpu = footprint.draft.bytes - draft_in_ram;
+    let gpu_room = budget
+        .vram_bytes
+        .saturating_sub(RUNTIME_OVERHEAD_BYTES + draft_on_gpu);
     let gpu_layers = u32::try_from(gpu_room / per_layer.max(1))
         .unwrap_or(u32::MAX)
         .min(layers - 1)
         .min(footprint.max_gpu_layers.unwrap_or(u32::MAX));
     let vram = if gpu_layers == 0 {
-        0
+        draft_on_gpu
     } else {
-        u64::from(gpu_layers) * per_layer + RUNTIME_OVERHEAD_BYTES
+        u64::from(gpu_layers) * per_layer + RUNTIME_OVERHEAD_BYTES + draft_on_gpu
     };
     let ram = u64::from(layers - gpu_layers) * per_layer
         + if gpu_layers == 0 {
             RUNTIME_OVERHEAD_BYTES
         } else {
             0
-        };
-    (ram <= budget.ram_bytes).then_some(Placement {
+        }
+        + draft_in_ram;
+    (ram <= budget.ram_bytes && vram <= budget.vram_bytes).then_some(Placement {
         gpu_layers,
         all_layers_on_gpu: false,
         vram_bytes: vram,
@@ -331,6 +359,7 @@ mod tests {
             kv_bytes: GIB,
             layers: Some(32),
             max_gpu_layers: None,
+            draft: DraftMemory::default(),
         }
     }
 
@@ -496,6 +525,7 @@ mod tests {
             max_wait_s: 600,
             max_output_tokens: 8192,
             extra_args: Vec::new(),
+            draft: None,
         }
     }
 
@@ -528,6 +558,95 @@ mod tests {
         assert!(!placement.all_layers_on_gpu);
         // 5 GiB over 32 layers = 160 MiB a layer; the 24 layers left stay in RAM.
         assert_eq!(placement.ram_bytes, 24 * 160 * 1024 * 1024);
+    }
+
+    #[test]
+    fn a_draft_model_counts_in_the_memory_a_model_needs() {
+        let draft = DraftMemory {
+            bytes: GIB,
+            ram_bytes: 0,
+        };
+        let with = footprint().with_draft(draft);
+        assert_eq!(with.required_bytes(), footprint().required_bytes() + GIB);
+        // On the GPU it takes VRAM beside the model.
+        let roomy = Budget {
+            vram_bytes: 8 * GIB,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        let placement = place(with, roomy).unwrap();
+        assert!(placement.all_layers_on_gpu);
+        assert_eq!(placement.vram_bytes, 6 * GIB + RUNTIME_OVERHEAD_BYTES);
+        // Kept in RAM it takes RAM and leaves the VRAM the model alone needs.
+        let in_ram = place(
+            footprint().with_draft(DraftMemory {
+                ram_bytes: GIB,
+                ..draft
+            }),
+            roomy,
+        )
+        .unwrap();
+        assert_eq!(in_ram.vram_bytes, 5 * GIB + RUNTIME_OVERHEAD_BYTES);
+        assert_eq!(in_ram.ram_bytes, GIB);
+        // A model that fits alone on this GPU no longer does with the draft beside it: its
+        // layers are pushed to RAM instead.
+        let tight = Budget {
+            vram_bytes: 5 * GIB + RUNTIME_OVERHEAD_BYTES,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        assert!(place(footprint(), tight).unwrap().all_layers_on_gpu);
+        let pushed = place(with, tight).unwrap();
+        assert!(!pushed.all_layers_on_gpu);
+        assert!(pushed.vram_bytes <= tight.vram_bytes);
+        // Nothing is placed when not even RAM holds the draft too.
+        let short = Budget {
+            vram_bytes: 0,
+            ram_bytes: 6 * GIB + RUNTIME_OVERHEAD_BYTES - 1,
+            unified: false,
+        };
+        assert_eq!(place(with, short), None);
+        assert!(place(footprint(), short).is_some());
+    }
+
+    #[test]
+    fn a_draft_larger_than_the_vram_left_is_not_placed_on_it() {
+        // 2 GiB of VRAM cannot hold a 3 GiB draft, whatever the model's layers do.
+        let budget = Budget {
+            vram_bytes: 2 * GIB,
+            ram_bytes: 64 * GIB,
+            unified: false,
+        };
+        let big_draft = DraftMemory {
+            bytes: 3 * GIB,
+            ram_bytes: 0,
+        };
+        assert_eq!(place(footprint().with_draft(big_draft), budget), None);
+        // The same draft held in RAM is fine, and the model's layers use the VRAM.
+        let in_ram = DraftMemory {
+            ram_bytes: 3 * GIB,
+            ..big_draft
+        };
+        let placement = place(footprint().with_draft(in_ram), budget).unwrap();
+        assert!(placement.vram_bytes <= budget.vram_bytes);
+        assert!(placement.ram_bytes >= 3 * GIB);
+    }
+
+    #[test]
+    fn a_draft_split_between_gpu_and_ram_takes_both() {
+        let budget = Budget {
+            vram_bytes: 24 * GIB,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        let split = DraftMemory {
+            bytes: 2 * GIB,
+            ram_bytes: GIB,
+        };
+        let placement = place(footprint().with_draft(split), budget).unwrap();
+        assert!(placement.all_layers_on_gpu);
+        assert_eq!(placement.vram_bytes, 5 * GIB + RUNTIME_OVERHEAD_BYTES + GIB);
+        assert_eq!(placement.ram_bytes, GIB);
     }
 
     #[test]

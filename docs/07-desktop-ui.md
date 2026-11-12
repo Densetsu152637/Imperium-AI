@@ -755,9 +755,12 @@ it and when it resets.
 The Environments panel lists the daemon's
 [environments](14-projects-and-automation.md#environments-implemented), one row each: the
 environment's icon and name, a pin mark when pinned, and a *⋯* menu on the right with *Edit*,
-*Pin*/*Unpin*, and *Delete*. Pinned environments are listed first. Clicking a row selects the
+*Pin*/*Unpin*, and *Delete*. The built-in [Home](14-projects-and-automation.md#home-implemented)
+environment (a house icon) is always listed first, then pinned environments, and has no *Delete*
+(its environment window has no delete button either). Clicking a row selects the
 environment (new sessions start there) and shows its sessions; double-clicking opens it for
-editing.
+editing. The new-session composer starts on Home when no other environment is selected, and
+allows it without a folder: its sessions work in their own scratch folders.
 
 *New environment* (the *+* in the Environments header) and *Edit* open the **environment window**, a sheet over the workspace like
 Settings (Escape or a click outside closes it): the name; the icon, picked from a searchable grid
@@ -1188,14 +1191,18 @@ into the card* while the card is empty. Each local form field is optional, shows
 has a *reset* that clears the saved value. Fields: max context per agent (a number of tokens or
 *auto*, offered in the field's list; the placeholder shows the sized ceiling, such as *auto
 (131072)*), KV pool tokens (empty: starts small and grows on demand; a number fixes it), slots, K
-and V cache types (`q8_0` about halves the KV memory), flash attention, max GPU layers, max wait,
-max output tokens (0 is uncapped) and extra arguments (one per line). The summary says how much
+and V cache types (`q8_0` about halves the KV memory), flash attention, max GPU layers, *Draft model* (speculative decoding: the field lists the other installed
+llama.cpp models; with a draft set, *Draft max tokens*, *Draft min tokens* (0 or more, at most the maximum in effect) and *Draft GPU layers* (empty is llama.cpp's `auto`)
+become editable), max wait, max output tokens (0 is uncapped) and extra arguments (one per
+line). The summary says how much
 context one agent gets, and warns when a fixed KV pool was cut to keep the layers on the GPU or
-when the weights do not fit on the GPU. *Apply* (or Ctrl+S) saves without closing: the dialog
+when the weights do not fit on the GPU, says which draft model the model drafts with (its memory
+is in the figures), and shows the notice when a configured draft is missing, incompatible or does
+not fit and the model runs without it. *Apply* (or Ctrl+S) saves without closing: the dialog
 shows "Saved" for a moment and the values now in effect (such as a cut pool or the layers on the
 GPU), and closing it afterwards keeps what was applied; *Save* saves and closes. Both are
-disabled while nothing has changed. For a vLLM model the cache types, flash attention and GPU
-layers are disabled. A debounced (500 ms) `models.set_config` dry run shows the memory the model
+disabled while nothing has changed. For a vLLM model the cache types, flash attention, GPU
+layers and draft fields are disabled. A debounced (500 ms) `models.set_config` dry run shows the memory the model
 would need, its KV pool and its placement, or the server's error. A model-table row's form edits
 existing rows only (display name, enabled, tier, tags, context window, prices; both prices or neither); it
 does not add or remove rows. The footer shows the file the settings are saved to, *Cancel* (or
