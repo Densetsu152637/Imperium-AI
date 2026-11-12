@@ -165,17 +165,11 @@ impl EnvironmentMemory {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let file = self.file();
-        let existing = std::fs::read_to_string(&file).unwrap_or_default();
+        let existing = read_existing(&file)?;
         let Some(updated) = edit(&existing)? else {
             return Ok(());
         };
-        if let Some(parent) = file.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| io(parent, error))?;
-        }
-        let temporary = file.with_extension("md.tmp");
-        std::fs::write(&temporary, updated).map_err(|error| io(&temporary, error))?;
-        std::fs::rename(&temporary, &file).map_err(|error| io(&file, error))?;
-        Ok(())
+        write_atomic(&file, &updated)
     }
 
     /// Appends `text` to the archive file under the writers' lock, creating it (with a short
@@ -188,7 +182,7 @@ impl EnvironmentMemory {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let file = self.archive_file();
-        let mut existing = std::fs::read_to_string(&file).unwrap_or_default();
+        let mut existing = read_existing(&file)?;
         if existing.trim().is_empty() {
             existing = ARCHIVE_HEADER.to_string();
         }
@@ -198,14 +192,35 @@ impl EnvironmentMemory {
         existing.push('\n');
         existing.push_str(text.trim_end());
         existing.push('\n');
-        if let Some(parent) = file.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| io(parent, error))?;
-        }
-        let temporary = file.with_extension("md.tmp");
-        std::fs::write(&temporary, existing).map_err(|error| io(&temporary, error))?;
-        std::fs::rename(&temporary, &file).map_err(|error| io(&file, error))?;
-        Ok(())
+        write_atomic(&file, &existing)
     }
+}
+
+/// The text of `file`: empty when it does not exist, an error for any other failure to read it
+/// (such as invalid UTF-8), so a file that cannot be read is never replaced by a rewrite of
+/// nothing.
+pub(crate) fn read_existing(file: &std::path::Path) -> Result<String, MemoryError> {
+    match std::fs::read_to_string(file) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(io(file, error)),
+    }
+}
+
+/// Replaces `file` with `text` through a temporary file that is flushed to disk before the
+/// rename, creating the folder when missing.
+pub(crate) fn write_atomic(file: &std::path::Path, text: &str) -> Result<(), MemoryError> {
+    use std::io::Write;
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| io(parent, error))?;
+    }
+    let temporary = file.with_extension("md.tmp");
+    let mut out = std::fs::File::create(&temporary).map_err(|error| io(&temporary, error))?;
+    out.write_all(text.as_bytes())
+        .and_then(|()| out.sync_all())
+        .map_err(|error| io(&temporary, error))?;
+    drop(out);
+    std::fs::rename(&temporary, file).map_err(|error| io(file, error))
 }
 
 /// The archive's name, beside `Memory.md`.
@@ -738,6 +753,21 @@ mod tests {
                 .unwrap()
                 .contains("second")
         );
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_never_overwritten() {
+        let (_dir, memory) = memory();
+        std::fs::create_dir_all(memory.file().parent().unwrap()).unwrap();
+        std::fs::write(memory.file(), [0xff, 0xfe, 0x00]).unwrap();
+        assert!(matches!(
+            memory.remember("a", "d", "project", "b"),
+            Err(MemoryError::Io(..))
+        ));
+        assert_eq!(std::fs::read(memory.file()).unwrap(), [0xff, 0xfe, 0x00]);
+        std::fs::write(memory.archive_file(), [0xff]).unwrap();
+        assert!(memory.append_archive("## x\ny\n").is_err());
+        assert_eq!(std::fs::read(memory.archive_file()).unwrap(), [0xff]);
     }
 
     #[test]

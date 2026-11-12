@@ -91,7 +91,7 @@ agent's limits and the reports of the sessions it already started. Deleting the 
 them too. Agents have no pet in the nursery. The environment's `Memory.md` ([17](17-memory.md#environment-memory-implemented)), where project memory lives too, is
 shared by all its agents, so each agent is told to begin the names of the entries it saves with its own
 name (lower case, with dashes; an environment-scope entry is a section of `Memory.md` named
-the same way) and to keep its open-task list in `<name>-open-tasks`. Adding,
+the same way) and to keep its open-task list in `<name>-open-tasks`. These saves go through `memory.write.environment` (`ask` by default, so each waits for the user's approval until it is set to `auto`; before the unification they went to project-private memory with `auto`). Adding,
 renaming, changing the role of, or deleting agents of one environment is serialised: it never starts
 an agent twice.
 

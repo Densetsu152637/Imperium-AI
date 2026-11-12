@@ -132,6 +132,27 @@ keyed on this machine. For each of the two source folders (the private one,
    and is left as it is. If the record is lost, running it again still changes nothing: the
    duplicates are recognised and the archive is not appended twice.
 
+What the migration does not do:
+
+- **Shared notes are merged once.** The files of `<project>/.imperium/memory/` are merged the
+  first time and recorded; entries added to that folder afterwards (a collaborator's commit, say)
+  are not read by anything. Put such a note in `Memory.md` or ask an agent to.
+- **Only the first folder.** An environment with several folders has its first folder (the
+  working directory) migrated. Older notes kept for its other folders are not, and stay where
+  they are.
+- **A body that would break the file's structure** (a `## ` heading line outside a code block, an
+  unclosed code fence) is archived like one that is too long, with the reason
+  "would change Memory.md's structure".
+- **Safety order.** The backup, `Memory.md`, the archive and the record are each flushed to disk
+  before any private original is removed. If `Memory.md` or the archive exists but cannot be
+  read (for example it is not valid UTF-8), the migration stops with an error and removes
+  nothing, and no write ever replaces such a file.
+- **Persistent agents now ask.** An environment's persistent agents used to save their backlog
+  and notes to project-private memory automatically; they now write `Memory.md`, whose default
+  write policy stays `ask`, so each such save waits for approval until the user sets
+  `memory.write.environment = "auto"` (which also lets any agent write to every later session's
+  instructions without asking).
+
 **Folders that belong to no environment.** The private folder's name is a hash of the project
 path, so it cannot be traced back to a path, and only an environment tells which folder a
 `Memory.md` is for. Such folders are therefore **left exactly where they are** (the daemon logs

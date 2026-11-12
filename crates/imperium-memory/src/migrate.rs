@@ -27,7 +27,10 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::environment::{EnvironmentMemory, section_text, sections, upsert_section, within_cap};
+use crate::environment::{
+    EnvironmentMemory, Section, read_existing, section_text, sections, upsert_section, within_cap,
+    write_atomic,
+};
 use crate::{Entry, KINDS, MemoryError, Scope, io, project_id, read_entry, today};
 
 /// The migration's record, in `<data>/memory/`.
@@ -123,14 +126,9 @@ fn read_record(data_dir: &Path) -> Record {
 }
 
 fn write_record(data_dir: &Path, record: &Record) -> Result<(), MemoryError> {
-    let path = record_path(data_dir);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| io(parent, error))?;
-    }
     let text = serde_json::to_string_pretty(record).unwrap_or_default();
-    let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, text).map_err(|error| io(&temporary, error))?;
-    std::fs::rename(&temporary, &path).map_err(|error| io(&path, error))
+    // Flushed to disk before the rename, as Memory.md and the archive are.
+    write_atomic(&record_path(data_dir), &text)
 }
 
 /// Every merge recorded so far.
@@ -305,6 +303,25 @@ fn place(text: &mut String, entry: &Entry) -> Placed {
     if let Err(error) = within_cap(&updated) {
         return Placed::Overflow(error.to_string());
     }
+    // The body must not change how the file divides into sections: it adds exactly the one
+    // section, whole, and leaves every other as it was; and its code fences must balance, or
+    // everything written after it would read as code.
+    let before = sections(text);
+    let after = sections(&updated);
+    let others_before: Vec<&Section> = before.iter().filter(|s| s.name != name).collect();
+    let others_after: Vec<&Section> = after.iter().filter(|s| s.name != name).collect();
+    let mine: Vec<&Section> = after.iter().filter(|s| s.name == name).collect();
+    let fences = body
+        .lines()
+        .filter(|line| line.trim_start().starts_with("```"))
+        .count();
+    if fences % 2 != 0
+        || mine.len() != 1
+        || mine[0].body.trim() != body
+        || others_before != others_after
+    {
+        return Placed::Overflow("would change Memory.md's structure".into());
+    }
     *text = updated;
     Placed::Added { renamed }
 }
@@ -329,7 +346,7 @@ fn append_overflow(
     if overflow.is_empty() {
         return Ok(());
     }
-    let archived = std::fs::read_to_string(memory.archive_file()).unwrap_or_default();
+    let archived = read_existing(&memory.archive_file())?;
     let mut text = String::new();
     for (entry, reason) in overflow {
         let section = section_text(
@@ -358,7 +375,15 @@ fn copy_folder(from: &Path, to: &Path) -> Result<(), MemoryError> {
         if path.is_file() {
             let target = to.join(file.file_name());
             std::fs::copy(&path, &target).map_err(|error| io(&target, error))?;
+            // On disk, not only in the cache, before the originals can be removed.
+            std::fs::File::open(&target)
+                .and_then(|copy| copy.sync_all())
+                .map_err(|error| io(&target, error))?;
         }
+    }
+    // The folder itself, where the platform lets a folder be opened.
+    if let Ok(folder) = std::fs::File::open(to) {
+        let _ = folder.sync_all();
     }
     Ok(())
 }
@@ -647,5 +672,85 @@ mod tests {
         assert!(other.join("orphan.md").is_file());
         assert_eq!(unclaimed(setup.data.path(), &folders), vec![other]);
         assert!(!setup.memory.read().contains("Orphan."));
+    }
+
+    #[test]
+    fn a_body_that_would_change_the_files_structure_is_archived() {
+        let setup = setup();
+        setup
+            .memory
+            .remember("kept", "Already here", "project", "Stays.")
+            .unwrap();
+        let before = setup.memory.read();
+        let source = private(&setup);
+        write_entry(
+            &source.dir,
+            "heading",
+            "Has a heading line",
+            "project",
+            "a\n## injected\nb",
+        );
+        write_entry(
+            &source.dir,
+            "fence",
+            "An open fence",
+            "project",
+            "```\nnever closed",
+        );
+        write_entry(
+            &source.dir,
+            "fine",
+            "Balanced",
+            "project",
+            "```\ncode\n```\nok",
+        );
+
+        let done = run(&setup, &source).unwrap();
+        assert_eq!((done.added, done.archived), (1, 2));
+        let text = setup.memory.read();
+        assert!(text.starts_with(&before), "{text}");
+        assert!(
+            !text.contains("injected") && !text.contains("never closed"),
+            "{text}"
+        );
+        let names: Vec<_> = sections(&text).into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["kept", "fine"]);
+        let archive = std::fs::read_to_string(setup.memory.archive_file()).unwrap();
+        assert!(
+            archive.contains("injected") && archive.contains("never closed"),
+            "{archive}"
+        );
+        assert!(
+            archive.contains("would change Memory.md's structure"),
+            "{archive}"
+        );
+    }
+
+    #[test]
+    fn a_memory_md_that_cannot_be_read_stops_the_migration_before_anything_is_removed() {
+        let setup = setup();
+        let source = private(&setup);
+        write_entry(
+            &source.dir,
+            "build",
+            "How it builds",
+            "project",
+            "Run make.",
+        );
+        std::fs::create_dir_all(setup.memory.file().parent().unwrap()).unwrap();
+        std::fs::write(setup.memory.file(), [0xff, 0xfe, 0x00, 0x41]).unwrap();
+
+        let error = migrate(setup.data.path(), "env", &setup.memory, &source);
+        assert!(error.is_err());
+        assert_eq!(
+            std::fs::read(setup.memory.file()).unwrap(),
+            [0xff, 0xfe, 0x00, 0x41],
+            "the file is not replaced"
+        );
+        assert!(
+            source.dir.join("build.md").is_file(),
+            "the original is still there"
+        );
+        assert!(recorded(setup.data.path()).is_empty());
     }
 }
