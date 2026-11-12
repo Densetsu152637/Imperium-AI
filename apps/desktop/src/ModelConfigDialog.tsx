@@ -4,6 +4,7 @@
 // (SettingsModal): the models are its navigation, local ones and model-table rows in two groups.
 
 import { Boxes, Cpu, Search } from "lucide-react";
+import { checkDraft } from "./draftSettings";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
   LocalLaunchSettings,
@@ -41,6 +42,10 @@ type LocalDraft = {
   max_wait_s: string;
   max_output_tokens: string;
   extra_args: string;
+  draft_model: string;
+  draft_max: string;
+  draft_min: string;
+  draft_gpu_layers: string;
 };
 
 type TableDraft = {
@@ -70,6 +75,10 @@ function localDraft(saved: LocalLaunchSettings): LocalDraft {
     max_wait_s: num(saved.max_wait_s),
     max_output_tokens: num(saved.max_output_tokens),
     extra_args: (saved.extra_args ?? []).join("\n"),
+    draft_model: saved.draft_model ?? "",
+    draft_max: num(saved.draft_max),
+    draft_min: num(saved.draft_min),
+    draft_gpu_layers: num(saved.draft_gpu_layers),
   };
 }
 
@@ -100,6 +109,10 @@ const EMPTY_LOCAL: LocalDraft = localDraft({
   max_wait_s: null,
   max_output_tokens: null,
   extra_args: null,
+  draft_model: null,
+  draft_max: null,
+  draft_min: null,
+  draft_gpu_layers: null,
 });
 
 const EMPTY_TABLE: TableDraft = tableDraft({
@@ -179,7 +192,17 @@ function localSettings(draft: LocalDraft, config: LocalModelConfig): LocalLaunch
     max_wait_s: integer(draft.max_wait_s, "Max wait", 1),
     max_output_tokens: integer(draft.max_output_tokens, "Max output tokens", 0),
     extra_args: args.length > 0 ? args : null,
+    draft_model: vllm ? null : draft.draft_model.trim() || null,
+    draft_max: vllm ? null : integer(draft.draft_max, "Draft max tokens", 1),
+    draft_min: vllm ? null : integer(draft.draft_min, "Draft min tokens", 0),
+    draft_gpu_layers: vllm ? null : integer(draft.draft_gpu_layers, "Draft GPU layers", 0),
   };
+  checkDraft(config.id, {
+    model: settings.draft_model,
+    max: settings.draft_max,
+    min: settings.draft_min,
+    gpuLayers: settings.draft_gpu_layers,
+  }, config.effective.draft_max);
   // A fixed pool must hold a fixed context; an `auto` context is capped to the pool instead.
   const fixedContext = contextAuto ? null : (context ?? (config.effective.context_auto ? null : config.effective.context));
   if (pool !== null && fixedContext !== null && pool < fixedContext) {
@@ -558,6 +581,7 @@ export function ModelConfigDialog({
       {selectedLocal && config && (
         <LocalForm
           model={selectedLocal}
+          draftChoices={config.local.filter((m) => m.runtime === "llamacpp" && m.id !== selectedLocal.id).map((m) => m.id)}
           draft={localDrafts[selectedLocal.id] ?? localDraft(selectedLocal.saved)}
           defaults={config.defaults}
           cacheTypes={config.cache_types}
@@ -655,6 +679,7 @@ function CardField({
 
 function LocalForm({
   model,
+  draftChoices,
   draft,
   defaults,
   cacheTypes,
@@ -664,6 +689,8 @@ function LocalForm({
   onResetAll,
 }: {
   model: LocalModelConfig;
+  /** Ids of the other installed llama.cpp models, the candidates for the draft. */
+  draftChoices: string[];
   draft: LocalDraft;
   defaults: ModelConfigResult["defaults"];
   cacheTypes: string[];
@@ -731,6 +758,12 @@ function LocalForm({
             every layer stays on the GPU.
           </span>
         )}
+        {estimate.draft_in_use && (
+          <span className="muted">
+            Drafting with {estimate.draft_in_use} (speculative decoding); its memory is in the figures above.
+          </span>
+        )}
+        {estimate.draft_notice && <span className="warning">{estimate.draft_notice}</span>}
         {estimate.placement === "partial" && !vllm && (
           <span className="warning">The weights do not fit on the GPU: some layers run on the CPU, which is much slower.</span>
         )}
@@ -764,6 +797,38 @@ function LocalForm({
       {select("cache_type_v", "V cache type", cacheTypes, defaults.cache_type_v)}
       {select("flash_attn", "Flash attention", FLASH, defaults.flash_attn)}
       {text("max_gpu_layers", "Max GPU layers", eff.max_gpu_layers, { disabled: vllm })}
+      <Field
+        label="Draft model"
+        hint="Speculative decoding: a smaller installed model with the same tokenizer drafts tokens that this one checks, which speeds up generation. Empty: no draft. If it is missing, incompatible, or does not fit, the model runs without it."
+        filled={draft.draft_model !== ""}
+        onReset={() => onChange({ draft_model: "" })}
+      >
+        <input
+          type="text"
+          list="model-draft-choices"
+          value={draft.draft_model}
+          placeholder="none"
+          disabled={vllm}
+          onChange={(e) => onChange({ draft_model: e.target.value })}
+        />
+        <datalist id="model-draft-choices">
+          {draftChoices.map((id) => (
+            <option key={id} value={id} />
+          ))}
+        </datalist>
+      </Field>
+      {text("draft_max", "Draft max tokens", null, {
+        disabled: vllm || draft.draft_model.trim() === "",
+        hint: "Most tokens the draft proposes per step. Empty: llama.cpp's default.",
+      })}
+      {text("draft_min", "Draft min tokens", null, {
+        disabled: vllm || draft.draft_model.trim() === "",
+        hint: "Fewest tokens the draft proposes per step (0 is allowed). Empty: llama.cpp's default (0).",
+      })}
+      {text("draft_gpu_layers", "Draft GPU layers", null, {
+        disabled: vllm || draft.draft_model.trim() === "",
+        hint: "Layers of the draft on the GPU; 0 keeps it in RAM. Empty: llama.cpp places them (auto), normally all.",
+      })}
       {text("max_wait_s", "Max wait (s)", eff.max_wait_s)}
       {text("max_output_tokens", "Max output tokens", eff.max_output_tokens, {
         hint: "0 means uncapped (reserves the whole context).",

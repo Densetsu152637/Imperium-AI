@@ -18,5 +18,6 @@ pub mod runtime_locations;
 pub mod runtime_update;
 pub mod scan;
 pub(crate) mod slot_files;
+pub mod speculative;
 pub mod suggest;
 pub mod supervisor;

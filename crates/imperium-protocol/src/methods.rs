@@ -2459,6 +2459,14 @@ pub struct LocalModelConfig {
     /// model card beside it); agents read it after the user's card.
     #[serde(default)]
     pub metadata_card: String,
+    /// The draft model in use (loaded) or that would be used when the model loads; null when
+    /// none is configured or it cannot be used.
+    #[serde(default)]
+    pub draft_in_use: Option<String>,
+    /// Why a configured draft model is not used: the model loads without it. `required_bytes`
+    /// counts the draft only while it is used.
+    #[serde(default)]
+    pub draft_notice: Option<String>,
 }
 
 /// Per-model llama.cpp settings; a null field takes the default.
@@ -2510,6 +2518,23 @@ pub struct LocalLaunchSettings {
     /// Arguments added after `runtime.llamacpp.extra_args` (or `runtime.vllm.extra_args`).
     #[serde(default)]
     pub extra_args: Option<Vec<String>>,
+    /// The id of an installed local model that drafts tokens for this one (speculative
+    /// decoding); null uses no draft. A smaller model with the same tokenizer family; llama.cpp
+    /// models only.
+    #[serde(default)]
+    pub draft_model: Option<String>,
+    /// Most tokens the draft proposes per step; null keeps llama.cpp's default. Needs
+    /// `draft_model`.
+    #[serde(default)]
+    pub draft_max: Option<u32>,
+    /// Fewest tokens the draft proposes per step; null keeps llama.cpp's default. Needs
+    /// `draft_model`.
+    #[serde(default)]
+    pub draft_min: Option<u32>,
+    /// Layers of the draft placed on the GPU; 0 keeps it in RAM, null leaves llama.cpp's `auto`. Needs
+    /// `draft_model`.
+    #[serde(default)]
+    pub draft_gpu_layers: Option<u32>,
 }
 
 /// The llama.cpp settings a local model is started with.
@@ -2543,6 +2568,15 @@ pub struct LocalLaunchEffective {
     pub max_output_tokens: u32,
     /// Every extra argument, the global ones first.
     pub extra_args: Vec<String>,
+    /// The draft model configured for speculative decoding, if any.
+    #[serde(default)]
+    pub draft_model: Option<String>,
+    #[serde(default)]
+    pub draft_max: Option<u32>,
+    #[serde(default)]
+    pub draft_min: Option<u32>,
+    #[serde(default)]
+    pub draft_gpu_layers: Option<u32>,
 }
 
 /// A model-table row's settings.
@@ -4276,6 +4310,13 @@ pub struct ActiveLocalModel {
     pub queued: u32,
     /// Pinned to the CPU lane.
     pub cpu_pinned: bool,
+    /// The draft model it runs with for speculative decoding; its memory is in `vram_bytes` and
+    /// `ram_bytes`.
+    #[serde(default)]
+    pub draft_model: Option<String>,
+    /// Why a configured draft model is not in use: the model runs without it.
+    #[serde(default)]
+    pub draft_notice: Option<String>,
     /// An agent is mid-turn on it (between its calls), so it stays loaded.
     pub claimed: bool,
     /// Live sessions on this model: as their model, or with calls on it in the last 15 minutes.

@@ -25,7 +25,7 @@ pub use layers::{
     Config, ConfigError, Explained, Layer, Source, load, load_layers, replace_app_layer,
 };
 pub use local_models::{
-    CACHE_TYPES, CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS, ContextLimit, DEFAULT_SLOTS,
+    CACHE_TYPES, CPU_LANE_MAX_WAIT_S, CPU_LANE_SLOTS, ContextLimit, DEFAULT_SLOTS, DraftLaunch,
     INITIAL_POOL_TOKENS, LaneRow, LocalModelSettings, MAX_ALIAS_CHARS, MAX_CARD_CHARS, MAX_SLOTS,
     ModelLaunch, NO_CONTEXT_LIMIT, TableOverride, check_alias, check_card, check_launch,
     check_local_model,
