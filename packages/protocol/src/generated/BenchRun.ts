@@ -22,7 +22,7 @@ models: Array<string>,
  */
 current: string | null, 
 /**
- * What the run is doing now, such as "waiting for a quiet machine" or "prompt 2 of 3".
+ * What the run is doing now, such as "waiting while the machine is saturated" or "prompt 2 of 3".
  */
 step: string | null, 
 /**

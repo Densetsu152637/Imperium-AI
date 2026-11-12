@@ -14,7 +14,8 @@ run_id: string,
  */
 date: string, 
 /**
- * A short hash of the hardware and runtime the numbers belong to.
+ * A short hash of the hardware and the runtime build (the llama.cpp release and pack, or
+ * vLLM) the numbers belong to.
  */
 hardware_fingerprint: string, 
 /**
@@ -30,7 +31,8 @@ runtime: string,
  */
 placement: string, 
 /**
- * The load level of the machine when the model's turn began (`quiet`, `busy`).
+ * The worse of the machine's load levels (`quiet`, `busy`, `saturated`) when the model's
+ * turn began and when its last prompt ended; a busy machine spoils the numbers.
  */
 machine: string, 
 /**
