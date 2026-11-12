@@ -47,6 +47,10 @@ pub struct Workspace {
     /// For a writer subagent's workspace: each worktree folder (canonical) and the delegator's
     /// folder it stands in for, so permission rules written for the delegator's paths match.
     path_map: Vec<(PathBuf, PathBuf)>,
+    /// The folders are a read-only mount: nothing in them can be written, edited or deleted,
+    /// and commands run only where the isolation tier can keep them from writing there.
+    /// Writable grants (the scratch folder, attachments) stay writable.
+    read_only: bool,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -105,6 +109,7 @@ impl Workspace {
             processes: Processes::default(),
             writers: None,
             path_map: Vec::new(),
+            read_only: false,
         })
     }
 
@@ -150,6 +155,7 @@ impl Workspace {
             writers: None,
             path_map: Vec::new(),
             processes: Processes::default(),
+            read_only: false,
         })
     }
 
@@ -198,11 +204,12 @@ impl Workspace {
                     .is_some_and(|rest| rest.starts_with('/'))
         };
         // The deepest folder or grant containing the path decides whether it is writable.
+        let folders_writable = !self.read_only;
         let covering =
             remote
                 .folders
                 .iter()
-                .map(|folder| (folder.as_str(), true, false))
+                .map(|folder| (folder.as_str(), folders_writable, false))
                 .chain(self.grants.iter().filter_map(|grant| {
                     grant.path.to_str().map(|path| (path, grant.writable, true))
                 }))
@@ -423,6 +430,24 @@ impl Workspace {
         Workspace { sandbox, ..self }
     }
 
+    /// The same workspace with its folders (and the project worktrees) mounted read-only: the
+    /// file tools refuse to write, edit or delete anything in them, and commands run only under
+    /// a tier that can keep them from writing there (the OS sandbox and the container tier
+    /// mount the folders read-only; tier 0 cannot, so its commands are refused). Grants keep
+    /// their own mode, so the scratch folder stays writable. Copies made with
+    /// [`Workspace::with_roots`] stay read-only.
+    pub fn with_read_only(self) -> Self {
+        Workspace {
+            read_only: true,
+            ..self
+        }
+    }
+
+    /// Whether the folders are a read-only mount ([`Workspace::with_read_only`]).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     /// The same workspace with calls checked against `permissions`.
     pub fn with_permissions(self, permissions: Permissions) -> Self {
         Workspace {
@@ -561,7 +586,7 @@ impl Workspace {
         self.roots()
             .into_iter()
             .chain(worktrees.iter().map(PathBuf::as_path))
-            .map(|root| (root, true, false))
+            .map(|root| (root, !self.read_only, false))
             .chain(
                 self.grants
                     .iter()
@@ -922,6 +947,77 @@ mod tests {
                 relative: Some("src/main.rs".into()),
             }
         );
+    }
+
+    #[test]
+    fn a_read_only_mount_can_be_read_but_not_written_except_in_writable_grants() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        std::fs::write(first.path().join("notes.txt"), "one").unwrap();
+        let workspace = Workspace::new(first.path())
+            .unwrap()
+            .with_folders([second.path()])
+            .unwrap()
+            .with_grants(&[PathGrant {
+                path: scratch.path().display().to_string(),
+                mode: PathMode::ReadWrite,
+            }])
+            .with_read_only();
+        assert!(workspace.is_read_only());
+        // Reading and listing work everywhere.
+        assert!(workspace.resolve("notes.txt").is_ok());
+        assert!(
+            workspace
+                .resolve(&second.path().join("x.txt").to_string_lossy())
+                .is_ok()
+        );
+        // Writing, editing, and deleting are refused in every folder, new files included.
+        for path in [
+            "notes.txt".to_string(),
+            "new.txt".to_string(),
+            second.path().join("x.txt").display().to_string(),
+        ] {
+            assert!(
+                matches!(
+                    workspace.resolve_writable(&path),
+                    Err(ToolError::ReadOnly(_))
+                ),
+                "{path}"
+            );
+        }
+        // The scratch grant is still writable, and what is outside stays outside.
+        let in_scratch = scratch.path().join("tmp.txt");
+        assert!(
+            workspace
+                .resolve_writable(&in_scratch.to_string_lossy())
+                .is_ok()
+        );
+        let outside = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            workspace.resolve(&outside.path().join("x").to_string_lossy()),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        // Narrowing to another set of folders keeps the mount read-only.
+        let narrowed = workspace.with_roots(&[second.path()]).unwrap();
+        assert!(narrowed.is_read_only());
+        assert!(narrowed.resolve_writable("x.txt").is_err());
+    }
+
+    #[test]
+    fn a_read_only_remote_workspace_refuses_writes_in_its_folders() {
+        let workspace = Workspace::remote(
+            Remote::Ssh { host: "box".into() },
+            &["/home/me/project".to_string()],
+            Arc::new(crate::ProcessRunner),
+        )
+        .unwrap()
+        .with_read_only();
+        assert!(workspace.resolve_remote("src/main.rs", false).is_ok());
+        assert!(matches!(
+            workspace.resolve_remote("src/main.rs", true),
+            Err(ToolError::ReadOnly(_))
+        ));
     }
 
     #[test]

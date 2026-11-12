@@ -8,7 +8,8 @@
 // deletes them at once. The Pet field picks the environment's
 // default pet for the nursery (its sessions' pets are this kind unless the nursery says otherwise).
 // The Permissions section edits the environment's path grants and allow / ask / deny rules, on top
-// of the global ones; they apply with Save.
+// of the global ones; they apply with Save. The Configuration file section reports what the
+// environment's own `.imperium/config.toml` changes and what it asked for that was refused.
 
 import { FileText, FolderOpen, FolderPlus, Search, Trash, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -30,6 +31,7 @@ import type { DaemonClient } from "./daemon/client";
 import { pickFolder } from "./daemon/connection";
 import { searchIcons } from "./icons";
 import { EnvironmentAgents } from "./panels/EnvironmentAgents";
+import { EnvironmentConfigSection } from "./panels/EnvironmentConfigSection";
 import { EnvironmentRuntimeFields, draftOf, isRemote, runtimeOf, sameRuntime } from "./panels/EnvironmentRuntimeFields";
 import { GlyphSvg, ICON_COLORS, ProjectIcon, environmentIcon, sameFolder, type ProjectIconChoice } from "./projectIcons";
 
@@ -427,6 +429,8 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
               disabled={busy || !client}
             />
           </section>
+
+          {environment && <EnvironmentConfigSection environment={environment} client={client} />}
 
           <EnvironmentAgents environment={environment} client={client} disabled={busy} />
 

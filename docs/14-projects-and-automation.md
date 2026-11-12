@@ -249,15 +249,92 @@ From the command line: `imperium workspaces where` and `imperium workspaces move
 desktop's environment window shows the environment's working folder with *Open Memory.md* and
 *Open folder*, and Settings → *Working folders* has the root with a folder picker.
 
-### Planned
+### Environment configuration (implemented)
 
-An environment will also define:
+An environment can carry its own configuration in the **first folder's** `.imperium/config.toml`
+(shared with the repository) and `.imperium/config.local.toml` (git-ignored, read after it).
+Why there and not in the environment's working folder under `workspaces.root`: the file belongs to
+the project, travels with the repository, and is read where `.mcp.json`, skills and project memory
+already are; the working folder holds only what is private to this machine (`Memory.md`, scratch
+folders), may not exist yet, and Home has no project folder at all. An environment on a remote
+runtime or with no folder has no such file read (project files on a remote runtime are not read
+yet), and the file is read from the environment's first folder even when a session works on a
+worktree of it. It is read each time a session starts, so a change applies to sessions started
+afterwards.
 
-- **Its configuration layer** (`.imperium/config.toml`), instructions, policy overrides,
-  plugins, MCP servers, routing rules, and budgets. Today these come from the working directory
-  (the first folder).
-- **Narrowed sessions:** a session limited to a subfolder or a read-only mount.
-- **Schedules** (below), which are still configured per folder.
+The file is **repository-owned, so it can only narrow** the user's settings (the same property as
+refusing a repository's git config that would run a program, [above](#review-pane-implemented)).
+It is read through an allow-list and every value is checked against the user's own settings:
+
+| Section | The file may | Refused |
+| --- | --- | --- |
+| `instructions` | add text to every session's instructions (up to 20 000 characters) | |
+| `[policy]` | pick the personality | |
+| `[permissions]` | a stricter `mode`; `ask` and `deny` rules | a looser mode, `allow` rules, `grants` |
+| `[isolation]` | a stricter `tier` (policy, then os, then container); `network = false` | a looser tier, `network = true` over the user's `false`, the container image or runtime |
+| `[extensions]` | `disabled_plugins`; `plugin_dirs` (relative to the folder) once the folder is trusted | `eager`, `lazy`; plugin folders without trust |
+| `[mcp.servers.<name>]` | add servers once the folder is trusted; the user's server of the same name wins | servers without trust; `allow`, `secret_env` and `bearer_token` (a repository's server gets no keychain secret and no tool that runs unasked); `trusted_projects` (a repository cannot trust itself) |
+| `[routing]` | `prefer = "local"`; rules whose `use` models are all `location = "local"` in the user's table, checked before the user's rules | `cloud` or `cheapest`, rules by tier or tag alone, rules naming a cloud model |
+| `[budgets]` | `limits`: each is forced to scope `environment` on this environment and its id is prefixed with the environment's, so it counts beside the user's budgets and never replaces one | other scopes, other `[budgets]` keys |
+
+Everything else (`[[hooks]]`, `[[schedules]]`, `[[projects]]`, endpoints, models, runtimes,
+workflow packs, ...) is ignored and reported: a repository's hooks would run commands on open, and
+schedules and project agents are attached to an environment from the user's own config (below).
+"Trusted" is the user's `mcp.trusted_projects`, the same list that decides whether a project's
+`.mcp.json` servers start. A file that is larger than 256 KiB, cannot be read, or is not valid
+TOML is reported and skipped; the other file still applies. What was refused is listed by
+`environments.config`, `imperium env config <env>`, the environment window's *Configuration
+file* section, and in a notice at the start of every session in the environment. The effective
+settings are the user's layers, then this narrowing step, then the session's own choices
+(`session.control`); a session's explicit permission mode is never overridden.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `environments.config` | `{ id }` (an environment id or name) | `{ folder, files, trusted, applied, refused }` |
+
+### Narrowed sessions (implemented)
+
+`session.create` takes two options that narrow what a session's tools reach:
+
+- **`subfolder`**: a folder inside one of the environment's folders, absolute or relative to the
+  first folder. It becomes the session's only folder and working directory, so the environment's
+  other folders and the rest of that folder are closed to the file tools and the commands'
+  workspace. It must be an existing folder inside the environment (links and `..` are resolved
+  first); in a remote runtime it is a path inside it. `imperium chat --env <env> --subfolder
+  src/app`.
+- **`read_only`**: the folders (and the project worktrees) are a read-only mount. The file tools
+  read, list, search and glob but `write_file` and `edit_file` are refused outright without
+  asking; the session's scratch folder and attachments stay writable. Commands are enforced per
+  [isolation tier](05-tools-and-isolation.md#isolation-tiers): the OS tier does not bind the
+  folders writable, the container tier mounts them `:ro`, and tier 0 (`policy`) cannot keep a
+  command from writing, so `run_command` is refused there (set `isolation.tier` to `container`,
+  or `os` on Linux and macOS); commands in a remote runtime are refused too. A read-only session
+  has no live preview and no writer subagents. `imperium chat --env <env> --read-only`.
+
+The two combine, and neither combines with `worktree`. Both are kept with the session, so it
+resumes narrowed after a restart, and `session.list` reports `read_only` (the narrowed folder is
+in `folders`). The desktop's new-session panel has an *Only this subfolder* field and a
+*Read-only* switch.
+
+### Schedules and project agents per environment (implemented)
+
+A schedule or project agent can be attached to an environment instead of a folder:
+
+- `[[schedules]]` `action.environment = "<id or name>"` in place of `action.project`. A `prompt`
+  starts a background session in the environment (all its folders, its permissions, its own
+  configuration file); a `command` runs in its first folder; an `agent` message wakes the
+  environment's persistent agents, or only the one `action.to_agent` names (name or id). The
+  environment is looked up when the run starts, so a deleted one fails the run with a message.
+  `schedules.list` rows carry `environment`, and `imperium schedule list` shows it.
+- `[[projects]]` `environment = "<id or name>"` in place of `path` gives the environment a
+  [project agent](#project-agent) with the usual `max_sessions` and quiet settings; the sessions
+  it starts work in the environment. It is listed by `imperium project list` as
+  `environment:<id>`, and `imperium project tell --project environment:<id> "..."` wakes it.
+
+Exactly one of the folder and the environment is set; the configuration is refused otherwise.
+These stay in the user's config (or `schedules`), never in the environment's own file, since a
+schedule can run a command. An environment's [persistent agents](#persistent-agents-implemented)
+remain the agents that live in the environment itself.
 
 ## Worktrees
 

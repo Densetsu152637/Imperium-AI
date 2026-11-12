@@ -1032,6 +1032,23 @@ button.icon-only.panel-tool .lucide {
   white-space: nowrap;
 }
 
+.environment-config-lines {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.environment-config-lines.refused {
+  color: var(--muted, inherit);
+}
+
+.new-session-subfolder {
+  min-width: 9rem;
+  max-width: 14rem;
+  font-size: 0.8rem;
+}
+
 
 .conversation {
   flex: 1;

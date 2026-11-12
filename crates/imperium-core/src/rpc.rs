@@ -50,9 +50,10 @@ use imperium_protocol::methods::{
     PersonalitiesListParams,
 };
 use imperium_protocol::methods::{
-    EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
-    EnvironmentFolderParams, EnvironmentList, EnvironmentListParams, EnvironmentRef,
-    EnvironmentRemoveFolder, EnvironmentTestRuntime, EnvironmentUpdate, EnvironmentUpdateParams,
+    EnvironmentAddFolder, EnvironmentConfigGet, EnvironmentCreate, EnvironmentCreateParams,
+    EnvironmentDelete, EnvironmentFolderParams, EnvironmentList, EnvironmentListParams,
+    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentTestRuntime, EnvironmentUpdate,
+    EnvironmentUpdateParams,
 };
 use imperium_protocol::methods::{
     HfFiles, ModelDownload, ModelDownloadCancel, ModelDownloadCancelParams,
@@ -986,6 +987,8 @@ impl Connection {
             may_wait_for_model: true,
             worktree: params.worktree.unwrap_or(false),
             worktree_branch: params.worktree_branch.clone(),
+            subfolder: params.subfolder.clone(),
+            read_only: params.read_only.unwrap_or(false),
             ..SessionOptions::default()
         };
         let created = match (&params.environment_id, &params.project_dir) {
@@ -1051,6 +1054,12 @@ impl Connection {
             EnvironmentList::NAME => {
                 return call::<EnvironmentList>(params, |_: EnvironmentListParams| {
                     Ok(self.state.environment_list())
+                });
+            }
+            EnvironmentConfigGet::NAME => {
+                return call::<EnvironmentConfigGet>(params, |p: EnvironmentRef| {
+                    let env = envs.find(&p.id).map_err(failed)?;
+                    Ok(self.state.environment_config(&env.id))
                 });
             }
             EnvironmentCreate::NAME => {

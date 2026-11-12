@@ -853,6 +853,61 @@ download_dir = \"models\"";
     }
 
     #[test]
+    fn schedules_and_projects_attach_to_a_folder_or_an_environment() {
+        let settings = |text: &str| {
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), text)])
+                .settings()
+        };
+        let schedule = |action: &str| {
+            format!(
+                "[[schedules]]\nid = \"s\"\ntrigger = {{ every = \"1h\" }}\naction = {{ {action} }}"
+            )
+        };
+        let ok = settings(&schedule("environment = \"Work\", prompt = \"Look.\"")).unwrap();
+        let action = &ok.schedules[0].action;
+        assert_eq!(action.environment.as_deref(), Some("Work"));
+        assert!(action.project.as_os_str().is_empty());
+        let told = settings(&schedule(
+            "environment = \"Work\", agent = \"hi\", to_agent = \"Helper\"",
+        ))
+        .unwrap();
+        assert_eq!(told.schedules[0].action.to_agent.as_deref(), Some("Helper"));
+        // A folder still works as before.
+        assert!(settings(&schedule("project = \"/p\", command = \"x\"")).is_ok());
+
+        for (action, needle) in [
+            ("prompt = \"Look.\"", "action.project or action.environment"),
+            (
+                "project = \"/p\", environment = \"Work\", prompt = \"Look.\"",
+                "action.project or action.environment",
+            ),
+            (
+                "project = \"/p\", agent = \"hi\", to_agent = \"Helper\"",
+                "to_agent needs",
+            ),
+            (
+                "environment = \"Work\", prompt = \"Look.\", to_agent = \"Helper\"",
+                "to_agent needs",
+            ),
+        ] {
+            let error = settings(&schedule(action)).unwrap_err().to_string();
+            assert!(error.contains(needle), "{action}: {error}");
+        }
+
+        let project = |entry: &str| settings(&format!("[[projects]]\n{entry}"));
+        let by_environment = project("environment = \"Work\"\nagent = true").unwrap();
+        assert_eq!(
+            by_environment.projects[0].environment.as_deref(),
+            Some("Work")
+        );
+        assert!(project("path = \"/p\"\nagent = true").is_ok());
+        for entry in ["agent = true", "path = \"/p\"\nenvironment = \"Work\""] {
+            let error = project(entry).unwrap_err().to_string();
+            assert!(error.contains("path or environment"), "{entry}: {error}");
+        }
+    }
+
+    #[test]
     fn settings_report_values_of_the_wrong_type() {
         let config = Config::from_layers([
             Layer::defaults(),

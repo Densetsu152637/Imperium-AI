@@ -86,6 +86,9 @@ pub struct Permissions {
     pub global: SharedRules,
     pub environment: SharedRules,
     pub mode: SharedMode,
+    /// Rules fixed for the session when it started, counted with its environment's: the ask
+    /// and deny rules of the environment's own configuration file.
+    fixed: Vec<PermissionRule>,
 }
 
 impl PartialEq for Permissions {
@@ -93,6 +96,7 @@ impl PartialEq for Permissions {
         Arc::ptr_eq(&self.global.0, &other.global.0)
             && Arc::ptr_eq(&self.environment.0, &other.environment.0)
             && Arc::ptr_eq(&self.mode.0, &other.mode.0)
+            && self.fixed == other.fixed
     }
 }
 
@@ -104,7 +108,23 @@ impl Permissions {
             global,
             environment,
             mode: SharedMode::default(),
+            fixed: Vec::new(),
         }
+    }
+
+    /// The same rules with `rules` added for this session, counted with its environment's.
+    pub fn with_fixed_rules(self, rules: Vec<PermissionRule>) -> Self {
+        Permissions {
+            fixed: rules,
+            ..self
+        }
+    }
+
+    /// The environment's rules and the session's fixed ones.
+    fn environment_rules(&self) -> Vec<PermissionRule> {
+        let mut rules = self.environment.get();
+        rules.extend(self.fixed.iter().cloned());
+        rules
     }
 
     /// The same rules, starting in `mode` (a handle of its own, not shared with `self`).
@@ -117,7 +137,7 @@ impl Permissions {
 
     /// What the rules say about a call to `tool` on `target`; `None` when no rule matches.
     pub fn evaluate(&self, tool: &str, target: &Target) -> Option<RuleAction> {
-        evaluate(&self.global.get(), &self.environment.get(), tool, target)
+        evaluate(&self.global.get(), &self.environment_rules(), tool, target)
     }
 
     /// Whether any rule could ask about or deny something, so callers can skip per-file checks
@@ -127,6 +147,7 @@ impl Permissions {
             .get()
             .iter()
             .chain(self.environment.get().iter())
+            .chain(self.fixed.iter())
             .any(|rule| rule.action != RuleAction::Allow)
     }
 

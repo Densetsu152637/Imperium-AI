@@ -23,4 +23,18 @@ model?: string,
  * replaced by a new worktree on a new branch (`imperium/<session id>` unless
  * `worktree_branch` names one). Other folders are used as they are. Local folders only.
  */
-worktree?: boolean, worktree_branch?: string, };
+worktree?: boolean, worktree_branch?: string, 
+/**
+ * Narrow the session to one folder inside the environment's folders: an absolute path, or
+ * a path relative to the first folder. The folder is then the session's only folder and
+ * working directory; the environment's other folders are closed to it. Not with
+ * `worktree`.
+ */
+subfolder?: string, 
+/**
+ * Mount the session's folders read-only: its file tools read and list but never write,
+ * edit or delete there (its scratch folder stays writable), and commands run only under a
+ * tier that can keep them from writing there (`os` and `container`; tier 0 refuses them).
+ * Not with `worktree`.
+ */
+read_only?: boolean, };

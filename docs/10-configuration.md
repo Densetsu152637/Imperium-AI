@@ -14,7 +14,11 @@ Later layers override earlier ones, key by key:
 6. Environment variables (`IMPERIUM_*`) and CLI flags
 
 Implemented so far (phase 0): defaults, user config, project config, app settings, and
-environment variables. Host config, session overrides, and CLI flags arrive with the features that need
+environment variables. A session's settings add an **environment layer** after these: the
+environment's own `.imperium/config.toml` (first folder) checked against the user's settings so it
+can only narrow them, never run a program, and start servers or plugins only for a folder in
+`mcp.trusted_projects` ([14](14-projects-and-automation.md#environment-configuration-implemented)).
+`imperium env config <env>` shows what it changes. Host config, session overrides, and CLI flags arrive with the features that need
 them.
 
 - **Environment variables** use `IMPERIUM_<SECTION>__<KEY>` with a double underscore between

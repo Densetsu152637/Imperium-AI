@@ -10,6 +10,11 @@ trigger: string,
  */
 action: string, project: string, 
 /**
+ * The environment the schedule runs in (`action.environment`); none for a schedule that
+ * works in a bare `project` folder.
+ */
+environment: string | null, 
+/**
  * RFC 3339 local times.
  */
 next_run: string | null, last_run: string | null, last_ok: boolean | null, running: boolean, 

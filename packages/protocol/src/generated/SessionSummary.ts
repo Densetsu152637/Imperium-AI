@@ -94,4 +94,8 @@ branched_from?: BranchOrigin,
 /**
  * Set on the branches of one `session.compare`: the same id on each.
  */
-comparison_id?: string, };
+comparison_id?: string, 
+/**
+ * The session's folders are a read-only mount (`session.create` `read_only`).
+ */
+read_only: boolean, };

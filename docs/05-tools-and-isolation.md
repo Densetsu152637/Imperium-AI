@@ -473,6 +473,13 @@ The file tools stay tier 0 (they run in the daemon, confined to the workspace). 
 forcing tiers per model or agent, GPU flags for containers, Windows AppContainer, and a default
 dev image.
 
+**Read-only mounts (implemented):** a session started with `read_only`
+([14](14-projects-and-automation.md#narrowed-sessions-implemented)) mounts its folders read-only
+under each tier: the OS tier binds nothing in the folders writable (the whole filesystem is
+read-only there already), the container tier adds `:ro` to the folder mounts (writable grants keep
+their own mode), and tier 0 cannot confine a command, so it refuses `run_command` and background
+commands instead of running them. The file tools refuse writes and edits without asking.
+
 ### Environment runtimes (implemented)
 
 An [environment's runtime](14-projects-and-automation.md#runtimes-implemented) can move a

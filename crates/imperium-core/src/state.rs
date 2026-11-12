@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use imperium_config::{
-    Config, KeychainSecrets, Layer, ModelPlacement, Paths, SecretStore, Settings,
+    Config, EnvironmentConfig, EnvironmentSettings, IsolationSettings, KeychainSecrets, Layer,
+    ModelPlacement, Paths, SecretStore, Settings,
 };
 use imperium_engine::{
     Background, CatalogModel, ChatClients, LoadView, LocalModels, ModelError, ResolvedModel,
@@ -18,9 +19,9 @@ use imperium_media::{ImageConfig, ImageGenerators, Media, MediaTools, Service};
 use imperium_memory::Store;
 use imperium_protocol::jsonrpc::Notification;
 use imperium_protocol::methods::{
-    EnvironmentRuntime, LocalModelListResult, MODEL_RESIDENCY, MODEL_SWAPPED_IN, MODEL_SWAPPED_OUT,
-    ModelListResult, ModelResidency, ModelRow, ModelSwap, SESSION_CREATED, SessionDeleteParams,
-    SessionDeleteResult, SessionSummary, SessionWorktree,
+    EnvironmentConfigResult, EnvironmentRuntime, LocalModelListResult, MODEL_RESIDENCY,
+    MODEL_SWAPPED_IN, MODEL_SWAPPED_OUT, ModelListResult, ModelResidency, ModelRow, ModelSwap,
+    SESSION_CREATED, SessionDeleteParams, SessionDeleteResult, SessionSummary, SessionWorktree,
 };
 use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
@@ -101,6 +102,13 @@ pub struct SessionOptions {
     /// Home's session folder, made by [`DaemonState::create_in_environment`].
     #[doc(hidden)]
     pub home_dir: Option<String>,
+    /// Narrow the session to this folder inside its environment's folders (absolute, or
+    /// relative to the first folder): its only folder and working directory. Environment
+    /// sessions only; not with a worktree.
+    pub subfolder: Option<String>,
+    /// Mount the session's folders read-only: its file tools never write there, and commands
+    /// run only under a tier that can keep them from writing there. Not with a worktree.
+    pub read_only: bool,
 }
 
 /// Where a session works: its environment and every folder, the working directory first.
@@ -123,6 +131,8 @@ struct Placement {
     branched_from: Option<imperium_protocol::methods::BranchOrigin>,
     /// The comparison a branch belongs to (`session.compare`).
     comparison_id: Option<String>,
+    /// The folders are a read-only mount.
+    read_only: bool,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -476,19 +486,24 @@ impl DaemonState {
         folders: &[String],
         runtime: &EnvironmentRuntime,
         environment_id: Option<&str>,
+        isolation: &IsolationSettings,
+        fixed_rules: Vec<imperium_api::PermissionRule>,
     ) -> Result<Workspace, CreateError> {
         let env = environment_id.and_then(|id| self.environments.get(id));
-        let permissions = self.permissions.for_session(
-            env.as_ref()
-                .map(|env| (env.id.as_str(), env.permissions.rules.as_slice())),
-        );
+        let permissions = self
+            .permissions
+            .for_session(
+                env.as_ref()
+                    .map(|env| (env.id.as_str(), env.permissions.rules.as_slice())),
+            )
+            .with_fixed_rules(fixed_rules);
         let mut grants: Vec<imperium_tools::permissions::PathGrant> = env
             .iter()
             .flat_map(|env| &env.permissions.grants)
             .map(crate::permissions::grant_from_wire)
             .collect();
         Ok(self
-            .bare_workspace(project_dir, folders, runtime, &mut grants)?
+            .bare_workspace(project_dir, folders, runtime, isolation, &mut grants)?
             .with_grants(&grants)
             .with_permissions(permissions))
     }
@@ -499,6 +514,7 @@ impl DaemonState {
         project_dir: &str,
         folders: &[String],
         runtime: &EnvironmentRuntime,
+        isolation: &IsolationSettings,
         grants: &mut Vec<imperium_tools::permissions::PathGrant>,
     ) -> Result<Workspace, CreateError> {
         let remote = match runtime {
@@ -532,7 +548,7 @@ impl DaemonState {
                 image: image.clone(),
                 network: true,
             },
-            _ => self.sandbox(),
+            _ => sandbox_for(isolation),
         };
         grants.extend(self.permissions.global_grants());
         Ok(Workspace::new(Path::new(project_dir))
@@ -694,6 +710,46 @@ impl DaemonState {
             .is_some_and(|agent| agent.send(text).is_ok())
     }
 
+    /// Wakes the agents of environment `environment_id` with a message: the one persistent agent
+    /// `to_agent` names (by name or id, ignoring case), else all of them and the project agent
+    /// attached to the environment (`[[projects]]` `environment`). Returns how many got it.
+    pub fn tell_environment_agents(
+        &self,
+        environment_id: &str,
+        to_agent: Option<&str>,
+        text: &str,
+    ) -> usize {
+        let Some(env) = self.environments.get(environment_id) else {
+            return 0;
+        };
+        let wanted: Vec<String> = env
+            .agents
+            .iter()
+            .filter(|agent| {
+                to_agent.is_none_or(|name| {
+                    agent.id == name
+                        || agent.name.trim().to_lowercase() == name.trim().to_lowercase()
+                })
+            })
+            .map(|agent| agent.id.clone())
+            .collect();
+        let mut delivered = 0;
+        for (agent_id, session) in self.project_agents.agents_of(environment_id) {
+            if wanted.contains(&agent_id) && session.send(text.to_string()).is_ok() {
+                delivered += 1;
+            }
+        }
+        if to_agent.is_none()
+            && self
+                .project_agents
+                .get(&crate::project_agent::environment_key(environment_id))
+                .is_some_and(|agent| agent.send(text.to_string()).is_ok())
+        {
+            delivered += 1;
+        }
+        delivered
+    }
+
     pub fn approvals(&self) -> &Approvals {
         &self.approvals
     }
@@ -843,19 +899,44 @@ impl DaemonState {
         })
     }
 
-    /// The isolation tier commands run under, from `[isolation]`.
-    fn sandbox(&self) -> Sandbox {
-        let isolation = &self.settings().isolation;
-        match isolation.tier.as_str() {
-            "os" => Sandbox::Os {
-                network: isolation.network,
-            },
-            "container" => Sandbox::Container {
-                runtime: isolation.container_runtime.clone(),
-                image: isolation.container_image.clone(),
-                network: isolation.network,
-            },
-            _ => Sandbox::Policy,
+    /// What environment `environment_id`'s own configuration files change, for
+    /// `environments.config`.
+    pub fn environment_config(&self, environment_id: &str) -> EnvironmentConfigResult {
+        let folder = self
+            .environments
+            .get(environment_id)
+            .filter(|env| !env.runtime.is_remote())
+            .and_then(|env| env.folders.first().cloned());
+        let trusted = folder
+            .as_deref()
+            .is_some_and(|folder| self.settings().mcp.trusts(Path::new(folder)));
+        let settings = self.environment_settings(Some(environment_id));
+        EnvironmentConfigResult {
+            folder,
+            files: settings
+                .files
+                .iter()
+                .map(|file| file.display().to_string())
+                .collect(),
+            trusted,
+            applied: settings.applied,
+            refused: settings.refused,
+        }
+    }
+
+    /// The settings a new session in `environment_id` starts with: the user's, narrowed by the
+    /// environment's own `.imperium/config.toml` in its first folder, which can only narrow
+    /// them ([`EnvironmentConfig`]). Sessions outside an environment, on a remote runtime, or
+    /// in an environment without a folder have no such files.
+    pub fn environment_settings(&self, environment_id: Option<&str>) -> EnvironmentSettings {
+        let base = self.settings();
+        let folder = environment_id
+            .and_then(|id| self.environments.get(id))
+            .filter(|env| !env.runtime.is_remote())
+            .and_then(|env| env.folders.first().cloned().map(|folder| (env.id, folder)));
+        match folder {
+            Some((id, folder)) => EnvironmentConfig::load(Path::new(&folder), &id).apply(&base),
+            None => EnvironmentSettings::unchanged((*base).clone()),
         }
     }
 
@@ -937,6 +1018,8 @@ impl DaemonState {
                 permission_mode: meta["permission_mode"]
                     .as_str()
                     .and_then(|mode| mode.parse().ok()),
+                subfolder: meta["subfolder"].as_str().map(str::to_string),
+                read_only: meta["read_only"].as_bool().unwrap_or(false),
                 ..SessionOptions::default()
             };
             let created = match meta["environment_id"].as_str() {
@@ -1237,7 +1320,31 @@ impl DaemonState {
         options: SessionOptions,
         timeout: std::time::Duration,
     ) -> (bool, String, Option<String>) {
-        let (session, events) = match self.create_session_with(project_dir, model, options) {
+        let created = self.create_session_with(project_dir, model, options);
+        self.run_created(created, prompt, timeout).await
+    }
+
+    /// Like [`DaemonState::run_prompt`], in an environment: all its folders, its permissions
+    /// and its own configuration file apply, as to a session started there by hand.
+    pub async fn run_prompt_in_environment(
+        self: &Arc<Self>,
+        environment_id: &str,
+        model: Option<&str>,
+        prompt: String,
+        options: SessionOptions,
+        timeout: std::time::Duration,
+    ) -> (bool, String, Option<String>) {
+        let created = self.create_in_environment(environment_id, model, options);
+        self.run_created(created, prompt, timeout).await
+    }
+
+    async fn run_created(
+        self: &Arc<Self>,
+        created: Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError>,
+        prompt: String,
+        timeout: std::time::Duration,
+    ) -> (bool, String, Option<String>) {
+        let (session, events) = match created {
             Ok(created) => created,
             Err(error) => return (false, error.to_string(), None),
         };
@@ -1339,12 +1446,42 @@ impl DaemonState {
         model: Option<&str>,
         options: SessionOptions,
     ) -> Result<(Arc<Session>, broadcast::Receiver<AgentEvent>), CreateError> {
+        // The user's settings, narrowed by the environment's own configuration files.
+        let env_config = self.environment_settings(options.environment_id.as_deref());
+        let settings = &env_config.settings;
+        let mut notices: Vec<String> = Vec::new();
+        let mut fixed_rules = Vec::new();
+        for rule in &env_config.permission_rules {
+            match imperium_tools::permissions::validate_rule(rule) {
+                Ok(()) => fixed_rules.push(rule.clone()),
+                Err(error) => notices.push(format!(
+                    "The environment's configuration has a permission rule that was ignored: \
+                     {error}"
+                )),
+            }
+        }
+        if !env_config.refused.is_empty() {
+            notices.push(format!(
+                "The environment's own configuration was only partly applied (it can only \
+                 narrow your settings): {}",
+                env_config.refused.join("; ")
+            ));
+        }
+        if let Some(id) = &options.environment_id {
+            self.budgets
+                .set_environment_limits(id, env_config.budgets.clone());
+        }
         let mut workspace = self.workspace(
             project_dir,
             &options.folders,
             &options.runtime,
             options.environment_id.as_deref(),
+            &settings.isolation,
+            fixed_rules,
         )?;
+        if options.read_only {
+            workspace = workspace.with_read_only();
+        }
         // An environment's sessions also get its repositories' worktrees, unless it turned them
         // off. A session started on its own worktrees keeps to them, so its edits stay apart
         // from the user's checkout.
@@ -1358,10 +1495,22 @@ impl DaemonState {
             workspace = workspace.with_project_worktrees();
         }
         let unattended = options.background || !options.pre_approved.is_empty();
+        // The environment's own file may have asked for a stricter mode than the user's.
+        let narrowed = settings.permissions.mode != self.settings().permissions.mode;
         let permission_mode = options.permission_mode.unwrap_or(if unattended {
-            imperium_api::PermissionMode::Default
+            let strictness = |mode: imperium_api::PermissionMode| {
+                imperium_api::PermissionMode::ALL
+                    .iter()
+                    .position(|known| *known == mode)
+            };
+            let default = imperium_api::PermissionMode::Default;
+            if narrowed && strictness(settings.permissions.mode) < strictness(default) {
+                settings.permissions.mode
+            } else {
+                default
+            }
         } else {
-            self.settings().permissions.mode
+            settings.permissions.mode
         });
         workspace.permissions().set_mode(permission_mode);
         let mut placement = Placement {
@@ -1375,6 +1524,7 @@ impl DaemonState {
             project_agent: options.launcher.is_some(),
             branched_from: None,
             comparison_id: None,
+            read_only: options.read_only,
         };
         // A remote runtime's folders are not on this machine: project files (instructions,
         // skills, project memory) are not read from them.
@@ -1394,15 +1544,30 @@ impl DaemonState {
         let catalog = self.session_catalog();
         // Connectors added or changed in the app since the daemon started apply to new sessions.
         let fresh = crate::connectors::saved_settings(&self.paths);
-        let (mcp, mut notices) = crate::mcp::session_servers(
-            fresh.as_ref().unwrap_or(&*self.settings()),
-            project_dir_path,
-            |name| self.secrets.load(name),
-        );
+        // The servers the environment's own file adds (it needs the user's trust for that) start
+        // beside the connectors, the user's of the same name winning.
+        let running = self.settings();
+        let mut mcp_settings = fresh.unwrap_or_else(|| (*running).clone());
+        for (name, server) in &settings.mcp.servers {
+            // Only what the environment's file added: a connector the user removed since the
+            // daemon started stays removed.
+            if !running.mcp.servers.contains_key(name) {
+                mcp_settings
+                    .mcp
+                    .servers
+                    .entry(name.clone())
+                    .or_insert_with(|| server.clone());
+            }
+        }
+        let (mcp, mcp_notices) =
+            crate::mcp::session_servers(&mcp_settings, project_dir_path, |name| {
+                self.secrets.load(name)
+            });
+        notices.extend(mcp_notices);
         // Plugins' servers are not among `mcp`: they start when an agent activates the plugin.
-        let mut extensions = self.extensions(project_dir_path);
+        let mut extensions = self.extensions(project_dir_path, settings);
         let context = self.context(project_dir_path, &mut notices);
-        let personality = self.personality(&mut notices);
+        let personality = self.personality(&settings.policy.personality, &mut notices);
         notices.append(&mut extensions.notices);
         let resume = options.resume_id.is_some();
         let id = match options.resume_id.clone().or_else(|| options.id.clone()) {
@@ -1478,8 +1643,9 @@ impl DaemonState {
             tools.push(Arc::new(web));
         }
         // A preview's dev server runs where the session's commands do, so only a session on
-        // this machine offers one; it stops when the session's tools are dropped.
-        if !remote {
+        // this machine offers one; it stops when the session's tools are dropped. A read-only
+        // mount gets none, since a dev server writes to its folders.
+        if !remote && !options.read_only {
             tools.push(Arc::new(PreviewTools::new(workspace.clone())));
         }
         if self.suggestions.enabled() {
@@ -1516,8 +1682,8 @@ impl DaemonState {
             .join("sessions")
             .join(format!("{id}.jsonl"));
         // Writer subagents started with `access: "write"` get worktrees of their own (local
-        // folders only).
-        let workspace = if remote {
+        // folders only, and not for a read-only mount).
+        let workspace = if remote || options.read_only {
             workspace
         } else {
             workspace.with_writer_trees(Arc::new(crate::writers::GitWriterTrees::new(
@@ -1558,7 +1724,7 @@ impl DaemonState {
             model,
             catalog,
             clients: ChatClients::default(),
-            routing: self.settings().routing.clone(),
+            routing: settings.routing.clone(),
             local: self.local.get().map(|local| {
                 let supervisor: Arc<dyn LocalModels> = local.supervisor.clone();
                 supervisor
@@ -1572,7 +1738,12 @@ impl DaemonState {
             resume,
             resume_policy: self.resume_policy(),
             launcher: options.launcher,
-            instructions: options.instructions,
+            instructions: match (options.instructions, env_config.instructions.as_deref()) {
+                (Some(own), Some(added)) => Some(format!("{own}\n\n{}", environment_text(added))),
+                (Some(own), None) => Some(own),
+                (None, Some(added)) => Some(environment_text(added)),
+                (None, None) => None,
+            },
             personality,
             background: options.background.then(|| Background {
                 load: self.load_view(),
@@ -1618,6 +1789,8 @@ impl DaemonState {
                 "title_by_user": placement.title_by_user,
                 "branched_from": placement.branched_from,
                 "comparison_id": placement.comparison_id,
+                "subfolder": options.subfolder,
+                "read_only": placement.read_only,
                 "effort": effort.as_str(),
                 "permission_mode": permission_mode.as_str(),
             });
@@ -1678,6 +1851,22 @@ impl DaemonState {
             .get(environment_id)
             .ok_or_else(|| EnvironmentError::NotFound(environment_id.to_string()))?;
         let mut options = options;
+        if options.subfolder.is_some() && env.folders.is_empty() {
+            return Err(EnvironmentError::Invalid(format!(
+                "the environment {} has no folders to narrow a session to",
+                env.name
+            ))
+            .into());
+        }
+        if (options.subfolder.is_some() || options.read_only)
+            && (options.worktree || !options.worktrees.is_empty())
+        {
+            return Err(CreateError::Worktree(
+                "a session narrowed to a subfolder or mounted read-only cannot start on a \
+                 worktree"
+                    .into(),
+            ));
+        }
         // Home with no project folders works in its session's own scratch folder. The folder
         // is made under the working-folders lock, which the session keeps until it exists.
         let _home_lock;
@@ -1726,6 +1915,13 @@ impl DaemonState {
             Some(dir) => vec![dir],
             None => env.folders.clone(),
         };
+        // Narrowed to a subfolder: it is the session's only folder, so the environment's other
+        // folders (and the rest of this one) are closed to its tools.
+        if let Some(sub) = options.subfolder.take() {
+            let narrowed = crate::environments::narrowed_folder(&env.runtime, &env.folders, &sub)?;
+            options.subfolder = Some(narrowed.clone());
+            folders = vec![narrowed];
+        }
         if !options.worktrees.is_empty() {
             // A resumed session goes back to its worktrees.
             folders = crate::worktrees::apply(&folders, &options.worktrees);
@@ -2109,6 +2305,7 @@ impl DaemonState {
             pinned: placement.pinned,
             branched_from: placement.branched_from,
             comparison_id: placement.comparison_id,
+            read_only: placement.read_only,
             created_at: created_at(&self.journal_path(session.id())),
             title: placement
                 .title
@@ -2157,12 +2354,10 @@ impl DaemonState {
         }
     }
 
-    /// The root agent's personality block for a new session, from `policy.personality`. An id
-    /// that is not found falls back to the default, with a notice in `notices`.
-    fn personality(&self, notices: &mut Vec<String>) -> Option<String> {
-        let selection = self
-            .personality_sources()
-            .select(&self.settings().policy.personality);
+    /// The root agent's personality block for a new session, from `policy.personality` (`id`).
+    /// An id that is not found falls back to the default, with a notice in `notices`.
+    fn personality(&self, id: &str, notices: &mut Vec<String>) -> Option<String> {
+        let selection = self.personality_sources().select(id);
         if let Some(warning) = selection.warning {
             tracing::warn!("{warning}");
             notices.push(warning);
@@ -2172,13 +2367,14 @@ impl DaemonState {
             .map(|personality| personality.instructions())
     }
 
-    /// Skills, hooks, slash commands, and plugins for a session in `project_dir`.
-    fn extensions(&self, project_dir: &Path) -> Extensions {
+    /// Skills, hooks, slash commands, and plugins for a session in `project_dir`, with the
+    /// plugin folders and disabled plugins of `settings` (the environment's narrowed ones).
+    fn extensions(&self, project_dir: &Path, settings: &Settings) -> Extensions {
         imperium_extensions::load(&Sources {
             config_dir: self.paths.config_dir().to_path_buf(),
             project_dir: project_dir.to_path_buf(),
-            plugin_dirs: self.settings().extensions.plugin_dirs.clone(),
-            disabled_plugins: self.settings().extensions.disabled_plugins.clone(),
+            plugin_dirs: settings.extensions.plugin_dirs.clone(),
+            disabled_plugins: settings.extensions.disabled_plugins.clone(),
             hooks: self
                 .settings()
                 .hooks
@@ -2447,6 +2643,26 @@ impl DaemonState {
     }
 }
 
+/// The isolation tier commands run under, from `[isolation]`.
+fn sandbox_for(isolation: &IsolationSettings) -> Sandbox {
+    match isolation.tier.as_str() {
+        "os" => Sandbox::Os {
+            network: isolation.network,
+        },
+        "container" => Sandbox::Container {
+            runtime: isolation.container_runtime.clone(),
+            image: isolation.container_image.clone(),
+            network: isolation.network,
+        },
+        _ => Sandbox::Policy,
+    }
+}
+
+/// Instructions an environment's own configuration adds, labelled as such.
+fn environment_text(added: &str) -> String {
+    format!("This environment's own configuration adds these instructions:\n{added}")
+}
+
 /// The bundled default workflow pack: `policy/agent-custom-workflow` in the app's resource
 /// folder, beside the daemon (or one level up, as archives lay it out), or in the source tree for
 /// development builds.
@@ -2527,6 +2743,7 @@ fn summary(session: &Session) -> SessionSummary {
         created_at: None,
         branched_from: None,
         comparison_id: None,
+        read_only: false,
     }
 }
 
@@ -2571,7 +2788,9 @@ mod tests {
     /// The root agent's personality block for a new session, and its notices.
     fn personality(home: &Path, extra: &str) -> (Option<String>, Vec<String>) {
         let mut notices = Vec::new();
-        let block = state_with(home, extra).personality(&mut notices);
+        let state = state_with(home, extra);
+        let id = state.settings().policy.personality.clone();
+        let block = state.personality(&id, &mut notices);
         (block, notices)
     }
 
