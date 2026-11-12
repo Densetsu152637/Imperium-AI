@@ -474,6 +474,31 @@ operating system and its changes), Light, or Dark. `settings.ts` sets `data-them
 element and `styles.css` keys the light tokens on `:root[data-theme="light"]`; the command
 palette's *Switch to light/dark theme* flips it. Mod panels pick up the tokens when they open.
 
+### Loading screen and no white flash (implemented)
+
+Between launching the app and the first panel render (reading the saved settings and layout
+takes a moment) nothing shows white:
+
+- **Loading screen:** `index.html` carries a themed screen with the Imperium mark and a
+  spinner, styled by the linked `public/boot.css` (never an inline `<style>`: Tauri would add a
+  style nonce to the release CSP and turn off `'unsafe-inline'` for every other inline style). `aria-busy` is set on `<body>` and the
+  screen is `role="status"`. `src/boot.ts` fades it out (180 ms) once `App` has mounted and the
+  panels have rendered, not merely when the script loads; an 8 s fallback removes it regardless,
+  so it can never stick. With reduced motion the spinner is static and the fade is instant.
+- **Theme before the daemon (or settings) is read:** `settings.ts` remembers the chosen theme in
+  `localStorage` (`imperium.theme`); the linked `public/boot.js` sets `data-theme` from it
+  before first paint. When the webview has nothing remembered (first launch after an upgrade,
+  cleared data), `main.rs` seeds that key from the saved `settings.json` with an initialization
+  script. With "System", `prefers-color-scheme` decides. The loading screen uses the theme's
+  accent (`#1fb2c8` dark, `#005a72` light).
+- **Native window:** the configuration gives the main window the dark `--bg` as its
+  `backgroundColor`. `main.rs` creates it hidden, reads the saved theme from `settings.json`
+  (the window's system theme under "System"), sets the matching native and webview background,
+  then shows it, so the operating system's white never appears. Detached panel windows pass the
+  current theme's background when created and show the same loading screen, since they load the
+  same page. Settings, Connectors, and environments are dialogs inside the main window; mod
+  panels are frames that inherit the theme tokens.
+
 ### Quiet interface (implemented)
 
 Panels and windows show their content and at most one primary action; everything else is one

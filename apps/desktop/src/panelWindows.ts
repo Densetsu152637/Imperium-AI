@@ -7,8 +7,10 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { availableMonitors } from "@tauri-apps/api/window";
 
+import { BOOT_BACKGROUND } from "./boot";
 import { insideTauri } from "./daemon/connection";
 import type { DetachedPanel } from "./layout/state";
+import { loadSettings, resolvedTheme } from "./settings";
 
 export type PanelWindowEvent =
   | { kind: "pinned"; id: string; pinned: boolean }
@@ -128,6 +130,8 @@ export async function openPanelWindow(
     width: bounds?.width ?? DEFAULT_SIZE.width,
     height: bounds?.height ?? DEFAULT_SIZE.height,
     alwaysOnTop: saved?.pinned ?? false,
+    // Never white while the panel loads: the webview paints the current theme's background.
+    backgroundColor: BOOT_BACKGROUND[resolvedTheme(loadSettings().theme)],
   });
   void created.once("tauri://error", onFail);
 }
