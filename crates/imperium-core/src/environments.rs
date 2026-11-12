@@ -508,11 +508,12 @@ fn normalize(env: &mut EnvironmentInfo) {
 
 /// An environment saved with the old single persistent agent gets it as an agent.
 fn migrate_legacy_agent(env: &mut EnvironmentInfo) -> bool {
-    if env.persistent_agent && env.agents.is_empty() {
-        if let Ok(agent) = default_agent(env.agent_session_id.take()) {
-            env.agents.push(agent);
-            return true;
-        }
+    if env.persistent_agent
+        && env.agents.is_empty()
+        && let Ok(agent) = default_agent(env.agent_session_id.take())
+    {
+        env.agents.push(agent);
+        return true;
     }
     false
 }
