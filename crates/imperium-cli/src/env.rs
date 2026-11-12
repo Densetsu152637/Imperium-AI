@@ -209,7 +209,13 @@ pub fn agent_set(
                 initiative,
             })
             .await?;
-        print!("{}", describe_agent(&agent));
+        print!("{}", describe_agent(&agent.agent));
+        if !agent.started {
+            println!(
+                "Saved, but not running: {}",
+                agent.reason.as_deref().unwrap_or("it has not started")
+            );
+        }
         Ok(())
     })
 }
