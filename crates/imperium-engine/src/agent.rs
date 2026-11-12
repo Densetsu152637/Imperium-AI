@@ -193,6 +193,8 @@ pub struct Agent {
     compact_mark: Option<usize>,
     /// Mid-turn compaction made no progress this turn; it is not tried again until the next.
     compact_stalled: bool,
+    /// The notice that mid-turn compaction was skipped as not worth it has been given.
+    compact_skip_noticed: bool,
     /// The instruction files the conversation holds; read from it on first use.
     instructions: Option<instructions::Tracker>,
     /// Whether the latest tool call succeeded (only successful file calls load instruction
@@ -315,6 +317,7 @@ impl Agent {
             effort: None,
             compact_mark: None,
             compact_stalled: false,
+            compact_skip_noticed: false,
             instructions: None,
             last_tool_ok: std::sync::atomic::AtomicBool::new(false),
         }
@@ -2489,6 +2492,15 @@ impl Agent {
         if !compact::worth_compacting(fixed, trigger) {
             // Summarising would not get the conversation under its trigger; ask again later.
             self.compact_mark = Some(self.messages.len() + 4);
+            if !self.compact_skip_noticed {
+                self.compact_skip_noticed = true;
+                self.emit(SessionEvent::Notice {
+                    message: "the conversation is near its context limit, but compacting it would \
+                              not help: the system prompt, tools, and carried context alone take \
+                              most of the window"
+                        .into(),
+                });
+            }
             return;
         }
         self.compact_mark = Some(self.messages.len());
