@@ -681,9 +681,9 @@ impl SessionLauncher for Launcher {
     fn restricted(&self, tool: &str) -> Option<String> {
         let Target::Environment { agent, .. } = &self.target else {
             return None;
+        };
         let daemon = self.daemon.upgrade()?;
         crate::initiative::review_restriction(&daemon, agent, tool)
-        crate::initiative::review_restriction(&self.daemon.upgrade()?, agent, tool)
     }
 
     fn allows_start_in_plan_mode(&self) -> bool {
