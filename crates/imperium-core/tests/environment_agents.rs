@@ -351,7 +351,7 @@ async fn an_old_persistent_session_becomes_an_agent_with_its_history() {
             .any(|event| matches!(&event.event, SessionEvent::TurnStarted { text, .. } if text == "remember this")),
         "its history came back"
     );
-    assert_eq!(session.title(), "Work · Persistent agent");
+    assert_eq!(state.summary(&session).title, "Work · Persistent agent");
     assert!(state.summary(&session).persistent);
     // The migration was saved: another start finds the agent without migrating again.
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
