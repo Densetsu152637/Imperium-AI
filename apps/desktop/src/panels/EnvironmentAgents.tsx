@@ -58,7 +58,7 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
       return;
     }
     setNotice(null);
-    const outcome: { created: EnvironmentAgentCreated | null } = { created: null };
+    const outcome: { created: EnvironmentAgentCreated | null; saved: boolean } = { created: null, saved: false };
     const done = await run(async (c, environment_id) => {
       if (draft.id === null) {
         outcome.created = await c.call<EnvironmentAgentCreated>("environments.agent_create", {
@@ -67,12 +67,18 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
           role: draft.role.trim(),
         });
       } else {
-        await c.call("environments.agent_update", { environment_id, agent_id: draft.id, name, role: draft.role.trim() });
+        outcome.created = await c.call<EnvironmentAgentCreated>("environments.agent_update", {
+          environment_id,
+          agent_id: draft.id,
+          name,
+          role: draft.role.trim(),
+        });
+        outcome.saved = true;
       }
     });
     if (done) {
       setDraft(null);
-      setNotice(notStartedNotice(outcome.created));
+      setNotice(notStartedNotice(outcome.created, outcome.saved ? "was saved" : "was added"));
     }
   };
 

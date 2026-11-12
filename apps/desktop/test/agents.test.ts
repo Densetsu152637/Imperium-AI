@@ -24,6 +24,16 @@ test("names are measured in characters and checked like the daemon does", () => 
   assert.match(nameProblem("Plan\nner") ?? "", /control characters/);
   assert.match(nameProblem("Plan\u001b[2Jner") ?? "", /control characters/);
   assert.equal(nameProblem(" Planner "), null);
+  // Separators and bidirectional controls make a name read differently from what it is.
+  for (const bad of ["Plan ner", "Plan ner", "Plan‮ner", "‪Planner", "Plan⁦ner⁩"]) {
+    assert.match(nameProblem(bad) ?? "", /control characters/, JSON.stringify(bad));
+  }
+  assert.equal(nameProblem("Planner ‍👩"), null, "joiners in emoji are fine");
+});
+
+test("a saved update that did not restart the agent says so in its own words", () => {
+  const agent = { id: "a", name: "Planner", role: "", session_id: null, started: false, reason: "no model" };
+  assert.match(notStartedNotice(agent, "was saved") ?? "", /Planner” was saved but is not running yet: no model/);
 });
 
 test("uniqueness folds Unicode case like the daemon", () => {

@@ -84,14 +84,15 @@ pub struct EnvironmentAgentCreateParams {
 }
 
 /// `environments.agent_update`: renames an agent or changes its role. A changed role applies
-/// from the agent's next start, which happens at once; its conversation continues.
+/// from the agent's next start, which happens at once; its conversation continues. The result is
+/// the agent and whether it is running, like `environments.agent_create`'s.
 #[derive(Debug)]
 pub struct EnvironmentAgentUpdate;
 
 impl Method for EnvironmentAgentUpdate {
     const NAME: &'static str = "environments.agent_update";
     type Params = EnvironmentAgentUpdateParams;
-    type Result = EnvironmentAgent;
+    type Result = EnvironmentAgentCreated;
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

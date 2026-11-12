@@ -73,6 +73,9 @@ pub struct Environments {
     list: Mutex<Vec<EnvironmentInfo>>,
     /// Why the saved file could not be read, when it could not: every change is then refused.
     read_only: Option<String>,
+    /// Agents made from a legacy persistent session when the file was loaded, until each starts
+    /// for the first time (its session is then titled after the agent).
+    migrated: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Environments {
@@ -110,8 +113,12 @@ impl Environments {
         // Environments saved before multiple agents had one persistent session: it becomes
         // the environment's agent, with the session it had (history and all).
         let mut migrated = false;
+        let mut migrated_agents = std::collections::HashSet::new();
         for env in &mut list {
-            migrated |= migrate_legacy_agent(env);
+            if migrate_legacy_agent(env) {
+                migrated = true;
+                migrated_agents.extend(env.agents.iter().map(|agent| agent.id.clone()));
+            }
             normalize(env);
         }
         if migrated && let Err(error) = save(&path, &list) {
@@ -122,6 +129,7 @@ impl Environments {
             path,
             list: Mutex::new(list),
             read_only,
+            migrated: Mutex::new(migrated_agents),
         };
         store.ensure_home(save_home);
         store
@@ -150,6 +158,15 @@ impl Environments {
             tracing::warn!(%error, "could not save the Home environment; it is kept in memory");
         }
         *list = next;
+    }
+
+    /// Whether `agent_id` was made from a legacy persistent session at load and has not started
+    /// since; true once, so its session is retitled on its first start only.
+    pub fn take_migrated(&self, agent_id: &str) -> bool {
+        self.migrated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(agent_id)
     }
 
     pub fn list(&self) -> Vec<EnvironmentInfo> {
@@ -692,9 +709,15 @@ fn valid_agent_name(name: &str) -> Result<String, EnvironmentError> {
         ));
     }
     // The name goes into the agent's instructions and titles: one line of ordinary characters.
-    if name.chars().any(char::is_control) {
+    // Besides the control characters, the Unicode line and paragraph separators and the
+    // bidirectional controls, which can make a name read differently from what it is.
+    if name
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'))
+    {
         return Err(EnvironmentError::Invalid(
-            "an agent's name cannot contain line breaks or other control characters".into(),
+            "an agent's name cannot contain line breaks, bidirectional controls or other control characters"
+                .into(),
         ));
     }
     Ok(name.to_string())
@@ -1192,7 +1215,17 @@ mod tests {
         assert!(envs.add_agent(&env.id, &"é".repeat(61), None).is_err());
         assert!(envs.add_agent(&env.id, "  ", None).is_err());
         // One line of ordinary characters: no line breaks or other control characters.
-        for name in ["Plan\nner", "Plan\rner", "Plan\u{7}ner", "Plan\u{1b}[2J"] {
+        for name in [
+            "Plan\nner",
+            "Plan\rner",
+            "Plan\u{7}ner",
+            "Plan\u{1b}[2J",
+            "Plan\u{2028}ner",
+            "Plan\u{2029}ner",
+            "Plan\u{202e}ner",
+            "\u{202a}Planner",
+            "Plan\u{2066}ner\u{2069}",
+        ] {
             let error = envs.add_agent(&env.id, name, None).unwrap_err().to_string();
             assert!(error.contains("control characters"), "{name:?}: {error}");
         }
@@ -1369,6 +1402,18 @@ mod tests {
         std::fs::remove_dir(data.path().join("environments.json.tmp")).unwrap();
         let again = store(data.path()).list();
         assert_eq!(again[1].agents[0].session_id.as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn a_migrated_agent_is_reported_once_for_its_first_start() {
+        let data = tempfile::tempdir().unwrap();
+        legacy_file(data.path(), true, Some("sess-1"));
+        let envs = store(data.path());
+        let agent = envs.list().remove(1).agents.remove(0);
+        assert!(envs.take_migrated(&agent.id));
+        assert!(!envs.take_migrated(&agent.id), "only the first start");
+        // A later load finds the agent already there: nothing to retitle.
+        assert!(!store(data.path()).take_migrated(&agent.id));
     }
 
     #[test]
