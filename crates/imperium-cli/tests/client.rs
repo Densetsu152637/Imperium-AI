@@ -27,6 +27,7 @@ async fn start_daemon(daemon: Arc<DaemonState>) -> DaemonEndpoint {
         url: format!("ws://{}/rpc", listener.local_addr().unwrap()),
         token: token.as_str().to_string(),
         pid: std::process::id(),
+        socket: None,
         protocol: PROTOCOL_VERSION,
     };
     tokio::spawn(imperium_core::serve(

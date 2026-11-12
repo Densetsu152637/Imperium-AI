@@ -2,6 +2,8 @@
 //! typed calls. Used by the `imperium` CLI and the desktop app's native side.
 
 use std::collections::VecDeque;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use futures_util::{SinkExt, StreamExt};
 use imperium_protocol::PROTOCOL_VERSION;
@@ -11,6 +13,7 @@ use imperium_protocol::jsonrpc::{
     ErrorObject, JsonRpcVersion, Notification, Outcome, Request, RequestId, Response,
 };
 use imperium_protocol::methods::{Handshake, HandshakeParams, HandshakeResult, Method, Peer};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{self, Message};
@@ -28,10 +31,57 @@ pub enum ClientError {
     Protocol(String),
 }
 
+/// The byte stream under the WebSocket: loopback TCP, or the daemon's local socket.
+#[derive(Debug)]
+enum Transport {
+    Tcp(MaybeTlsStream<TcpStream>),
+    Local(imperium_ipc::Stream),
+}
+
+impl AsyncRead for Transport {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match &mut *self {
+            Transport::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
+            Transport::Local(stream) => Pin::new(stream).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for Transport {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match &mut *self {
+            Transport::Tcp(stream) => Pin::new(stream).poll_write(cx, data),
+            Transport::Local(stream) => Pin::new(stream).poll_write(cx, data),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match &mut *self {
+            Transport::Tcp(stream) => Pin::new(stream).poll_flush(cx),
+            Transport::Local(stream) => Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match &mut *self {
+            Transport::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
+            Transport::Local(stream) => Pin::new(stream).poll_shutdown(cx),
+        }
+    }
+}
+
 /// A handshaken connection to the daemon. Calls are sequential: one request, one reply.
 #[derive(Debug)]
 pub struct Client {
-    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    socket: WebSocketStream<Transport>,
     next_id: i64,
     daemon: HandshakeResult,
     /// Notifications that arrived while waiting for a response.
@@ -39,21 +89,67 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connects with the endpoint's token and performs `system.handshake`.
+    /// Connects with the endpoint's token and performs `system.handshake`. When the endpoint
+    /// names a local socket, that is tried first (and used alone when there is no URL, as for a
+    /// socket forwarded over SSH); otherwise, or when it cannot be reached, the loopback URL is.
     pub async fn connect(endpoint: &DaemonEndpoint, client: Peer) -> Result<Self, ClientError> {
+        if let Some(address) = &endpoint.socket {
+            match Self::connect_socket(address, &endpoint.token, client.clone()).await {
+                Ok(connected) => return Ok(connected),
+                Err(error) if endpoint.url.is_empty() => return Err(error),
+                Err(_) => {}
+            }
+        }
         let mut request = endpoint
             .url
             .as_str()
             .into_client_request()
             .map_err(|error| ClientError::Connect(Box::new(error)))?;
-        let authorization = format!("Bearer {}", endpoint.token)
-            .parse()
-            .map_err(|_| ClientError::Protocol("endpoint token is not a valid header".into()))?;
-        request.headers_mut().insert("Authorization", authorization);
-        let (socket, _) = tokio_tungstenite::connect_async(request)
+        request
+            .headers_mut()
+            .insert("Authorization", authorization(&endpoint.token)?);
+        let uri = request.uri();
+        let host = uri
+            .host()
+            .ok_or_else(|| ClientError::Protocol(format!("endpoint URL {uri} has no host")))?;
+        let port = uri.port_u16().unwrap_or(80);
+        let tcp = TcpStream::connect((host, port))
+            .await
+            .map_err(|error| ClientError::Connect(Box::new(tungstenite::Error::Io(error))))?;
+        let (socket, _) =
+            tokio_tungstenite::client_async(request, Transport::Tcp(MaybeTlsStream::Plain(tcp)))
+                .await
+                .map_err(|error| ClientError::Connect(Box::new(error)))?;
+        Self::handshake(socket, client).await
+    }
+
+    /// Connects over the daemon's local socket (a Unix socket's path or a Windows named pipe's
+    /// name) with the same token the loopback listener takes, and performs `system.handshake`.
+    pub async fn connect_socket(
+        address: &str,
+        token: &str,
+        client: Peer,
+    ) -> Result<Self, ClientError> {
+        let stream = imperium_ipc::connect(address)
+            .await
+            .map_err(|error| ClientError::Connect(Box::new(tungstenite::Error::Io(error))))?;
+        // The host and path only fill in the upgrade request; nothing resolves `localhost`.
+        let mut request = "ws://localhost/rpc"
+            .into_client_request()
+            .map_err(|error| ClientError::Connect(Box::new(error)))?;
+        request
+            .headers_mut()
+            .insert("Authorization", authorization(token)?);
+        let (socket, _) = tokio_tungstenite::client_async(request, Transport::Local(stream))
             .await
             .map_err(|error| ClientError::Connect(Box::new(error)))?;
+        Self::handshake(socket, client).await
+    }
 
+    async fn handshake(
+        socket: WebSocketStream<Transport>,
+        client: Peer,
+    ) -> Result<Self, ClientError> {
         let mut connection = Client {
             socket,
             next_id: 1,
@@ -169,6 +265,12 @@ impl Client {
 enum Incoming {
     Response(Response),
     Notification(Notification),
+}
+
+fn authorization(token: &str) -> Result<tungstenite::http::HeaderValue, ClientError> {
+    format!("Bearer {token}")
+        .parse()
+        .map_err(|_| ClientError::Protocol("endpoint token is not a valid header".into()))
 }
 
 fn protocol_error(error: serde_json::Error) -> ClientError {
