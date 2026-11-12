@@ -38,6 +38,13 @@ pub async fn run_command(
     timeout: Duration,
 ) -> Result<String, ToolError> {
     if workspace.runtime().is_some() {
+        if workspace.is_read_only() {
+            return Err(ToolError::Io(
+                "this session's folders are a read-only mount, and a command in a remote runtime \
+                 cannot be kept from writing there, so commands are refused"
+                    .into(),
+            ));
+        }
         let output = crate::remote_files::command(workspace, command, timeout).await?;
         let status = match output.code {
             Some(code) => format!("exit code {code}"),
@@ -53,7 +60,13 @@ pub async fn run_command(
     let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
     let child = workspace
         .sandbox()
-        .command(&roots, workspace.grants(), command)?
+        .named_command(
+            &roots,
+            workspace.grants(),
+            command,
+            None,
+            workspace.is_read_only(),
+        )?
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

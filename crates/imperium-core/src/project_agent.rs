@@ -220,6 +220,12 @@ fn canonical(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// The key a project agent attached to an environment is registered under (and the "project"
+/// `imperium project tell` names it by): `environment:<id>`.
+pub(crate) fn environment_key(environment_id: &str) -> PathBuf {
+    PathBuf::from(format!("environment:{environment_id}"))
+}
+
 /// A dispatched session's brief that was waiting for a quiet machine when the daemon stopped
 /// (restored by [`DaemonState::resume_sessions`]).
 #[derive(Debug)]
@@ -240,12 +246,38 @@ pub fn start(daemon: &Arc<DaemonState>) {
         if !project.agent {
             continue;
         }
-        match start_one(daemon, &project) {
+        let (key, folder_key, started) = match &project.environment {
+            Some(environment) => match daemon.environments().find(environment) {
+                Ok(env) => (
+                    environment_key(&env.id),
+                    // Briefs that waited across a restart name the session's folder.
+                    env.folders
+                        .first()
+                        .map(|folder| canonical(Path::new(folder))),
+                    start_one(daemon, &project, Some(env.id.as_str())),
+                ),
+                Err(error) => {
+                    tracing::warn!(environment = %environment, %error, "project agent did not start");
+                    continue;
+                }
+            },
+            None => (
+                canonical(&project.path),
+                None,
+                start_one(daemon, &project, None),
+            ),
+        };
+        match started {
             Ok(launcher) => {
-                launchers.insert(canonical(&project.path), launcher);
+                if let Some(folder) = folder_key {
+                    launchers
+                        .entry(folder)
+                        .or_insert_with(|| Arc::clone(&launcher));
+                }
+                launchers.insert(key, launcher);
             }
             Err(error) => {
-                tracing::warn!(project = %project.path.display(), %error, "project agent did not start");
+                tracing::warn!(project = %key.display(), %error, "project agent did not start");
             }
         }
     }
@@ -281,11 +313,17 @@ fn unix_ms() -> u64 {
         })
 }
 
+/// Starts the agent of one `[[projects]]` entry: for its folder, or for the environment
+/// (`environment_id`) it is attached to.
 fn start_one(
     daemon: &Arc<DaemonState>,
     project: &ProjectSettings,
+    environment_id: Option<&str>,
 ) -> Result<Arc<Launcher>, String> {
-    let path = project.path.display().to_string();
+    let path = match environment_id {
+        Some(id) => environment_key(id).display().to_string(),
+        None => project.path.display().to_string(),
+    };
     let max_defer = match project.max_defer.as_deref().map(parse_duration) {
         Some(Ok(length)) => length,
         Some(Err(error)) => {
@@ -298,7 +336,10 @@ fn start_one(
         prefer_quiet: project.prefer_quiet,
         max_defer,
         daemon: Arc::downgrade(daemon),
-        target: Target::Folder(path.clone()),
+        target: match environment_id {
+            Some(id) => Target::EnvironmentProject(id.to_string()),
+            None => Target::Folder(path.clone()),
+        },
         agent: Arc::new(AgentSlot::default()),
         active: Arc::new(AtomicUsize::new(0)),
         today: Mutex::new((Local::now().date_naive(), 0)),
@@ -306,25 +347,33 @@ fn start_one(
         max_per_day: project.max_sessions_per_day,
         agent_id: None,
     });
-    let (session, events) = daemon
-        .create_session_with(
-            &path,
-            project.agent_model.as_deref(),
-            SessionOptions {
-                launcher: Some(Arc::clone(&launcher) as Arc<dyn SessionLauncher>),
-                instructions: Some(INSTRUCTIONS.into()),
-                // Unattended: its approvals go to a queue, so it never starts in the user's
-                // `permissions.mode` (plan would stall it, ask would flood the queue).
-                permission_mode: Some(imperium_api::PermissionMode::Default),
-                ..SessionOptions::default()
-            },
-        )
-        .map_err(|error| error.to_string())?;
+    let options = SessionOptions {
+        launcher: Some(Arc::clone(&launcher) as Arc<dyn SessionLauncher>),
+        instructions: Some(INSTRUCTIONS.into()),
+        // Unattended: its approvals go to a queue, so it never starts in the user's
+        // `permissions.mode` (plan would stall it, ask would flood the queue); an
+        // environment's own file may still make it stricter.
+        permission_mode: Some(match environment_id {
+            Some(id) => daemon.unattended_mode(&daemon.environment_settings(Some(id)).settings),
+            None => imperium_api::PermissionMode::Default,
+        }),
+        ..SessionOptions::default()
+    };
+    let model = project.agent_model.as_deref();
+    let (session, events) = match environment_id {
+        Some(id) => daemon.create_in_environment(id, model, options),
+        None => daemon.create_session_with(&path, model, options),
+    }
+    .map_err(|error| error.to_string())?;
     launcher.agent.set(&session);
+    let key = match environment_id {
+        Some(id) => environment_key(id),
+        None => canonical(&project.path),
+    };
     daemon
         .project_agents()
         .lock()
-        .insert(canonical(&project.path), Arc::clone(&session));
+        .insert(key, Arc::clone(&session));
     tokio::spawn(answer_permissions(Arc::downgrade(daemon), session, events));
     tracing::info!(project = %path, "project agent started");
     Ok(launcher)
@@ -623,6 +672,8 @@ enum Target {
     Folder(String),
     /// A persistent agent of an environment.
     Environment { environment: String, agent: String },
+    /// A project agent attached to an environment (`[[projects]]` `environment`).
+    EnvironmentProject(String),
 }
 
 /// Starts sessions for one project's (or environment's) agent and reports back to it.
@@ -775,16 +826,28 @@ impl Launcher {
             // What it starts is background work: it ranks below the user's sessions, and runs in
             // the default permission mode (the safety floor applies; nobody is there to answer
             // more, so what asks goes to the approval queue).
+            // An environment's own file may still make it stricter.
+            let environment_id = match &self.target {
+                Target::Folder(_) => None,
+                Target::Environment { environment, .. }
+                | Target::EnvironmentProject(environment) => Some(environment.as_str()),
+            };
             let options = SessionOptions {
                 background: true,
-                permission_mode: Some(imperium_api::PermissionMode::Default),
+                permission_mode: Some(match environment_id {
+                    Some(id) => {
+                        daemon.unattended_mode(&daemon.environment_settings(Some(id)).settings)
+                    }
+                    None => imperium_api::PermissionMode::Default,
+                }),
                 started_by,
                 agent_id: self.agent_id.clone(),
                 ..SessionOptions::default()
             };
             let created = match &self.target {
                 Target::Folder(project) => daemon.create_session_with(project, model, options),
-                Target::Environment { environment, .. } => {
+                Target::Environment { environment, .. }
+                | Target::EnvironmentProject(environment) => {
                     daemon.create_in_environment(environment, model, options)
                 }
             };

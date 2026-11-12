@@ -300,6 +300,7 @@ impl Processes {
             workspace.grants(),
             command,
             Some(&container),
+            workspace.is_read_only(),
         )?;
         process
             .stdin(Stdio::null())

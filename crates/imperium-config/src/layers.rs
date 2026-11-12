@@ -286,8 +286,9 @@ fn record_leaves(
 /// The sections of the app layer that hold one entry per model.
 const APP_SECTIONS: [&[&str]; 2] = [&["runtime", "llamacpp", "models"], &["models", "overrides"]];
 
-/// Reads every layer for a user and, optionally, a project directory, in order. An app settings
-/// file that is not valid TOML is skipped with a warning.
+/// Reads every layer for a user in order. A project directory's `.imperium` files are not
+/// layers: they are reported in `warnings` and applied only through [`crate::EnvironmentConfig`].
+/// An app settings file that is not valid TOML is skipped with a warning.
 fn read_layers(
     paths: &Paths,
     project: Option<&Path>,
@@ -297,10 +298,19 @@ fn read_layers(
     let mut layers = vec![Layer::defaults()];
     let user = paths.user_config_file();
     layers.extend(Layer::from_file(&user, Source::User(user.clone()))?);
+    // A project's files belong to its repository, so they are never merged as settings: they
+    // could name workflow packs or servers to trust, or loosen anything. They can only narrow
+    // ([`crate::EnvironmentConfig`]), which is checked against the settings built here.
     if let Some(project) = project {
-        for name in ["config.toml", "config.local.toml"] {
+        for name in crate::ENVIRONMENT_CONFIG_FILES {
             let file = project.join(".imperium").join(name);
-            layers.extend(Layer::from_file(&file, Source::Project(file.clone()))?);
+            if file.exists() {
+                warnings.push(format!(
+                    "{} is not merged into the settings: a project's file can only narrow your \
+                     settings (see imperium env config)",
+                    file.display()
+                ));
+            }
         }
     }
     let app = paths.app_models_file();
@@ -853,6 +863,61 @@ download_dir = \"models\"";
     }
 
     #[test]
+    fn schedules_and_projects_attach_to_a_folder_or_an_environment() {
+        let settings = |text: &str| {
+            Config::from_layers([Layer::defaults(), layer(Source::User("u".into()), text)])
+                .settings()
+        };
+        let schedule = |action: &str| {
+            format!(
+                "[[schedules]]\nid = \"s\"\ntrigger = {{ every = \"1h\" }}\naction = {{ {action} }}"
+            )
+        };
+        let ok = settings(&schedule("environment = \"Work\", prompt = \"Look.\"")).unwrap();
+        let action = &ok.schedules[0].action;
+        assert_eq!(action.environment.as_deref(), Some("Work"));
+        assert!(action.project.as_os_str().is_empty());
+        let told = settings(&schedule(
+            "environment = \"Work\", agent = \"hi\", to_agent = \"Helper\"",
+        ))
+        .unwrap();
+        assert_eq!(told.schedules[0].action.to_agent.as_deref(), Some("Helper"));
+        // A folder still works as before.
+        assert!(settings(&schedule("project = \"/p\", command = \"x\"")).is_ok());
+
+        for (action, needle) in [
+            ("prompt = \"Look.\"", "action.project or action.environment"),
+            (
+                "project = \"/p\", environment = \"Work\", prompt = \"Look.\"",
+                "action.project or action.environment",
+            ),
+            (
+                "project = \"/p\", agent = \"hi\", to_agent = \"Helper\"",
+                "to_agent needs",
+            ),
+            (
+                "environment = \"Work\", prompt = \"Look.\", to_agent = \"Helper\"",
+                "to_agent needs",
+            ),
+        ] {
+            let error = settings(&schedule(action)).unwrap_err().to_string();
+            assert!(error.contains(needle), "{action}: {error}");
+        }
+
+        let project = |entry: &str| settings(&format!("[[projects]]\n{entry}"));
+        let by_environment = project("environment = \"Work\"\nagent = true").unwrap();
+        assert_eq!(
+            by_environment.projects[0].environment.as_deref(),
+            Some("Work")
+        );
+        assert!(project("path = \"/p\"\nagent = true").is_ok());
+        for entry in ["agent = true", "path = \"/p\"\nenvironment = \"Work\""] {
+            let error = project(entry).unwrap_err().to_string();
+            assert!(error.contains("path or environment"), "{entry}: {error}");
+        }
+    }
+
+    #[test]
     fn settings_report_values_of_the_wrong_type() {
         let config = Config::from_layers([
             Layer::defaults(),
@@ -877,10 +942,18 @@ download_dir = \"models\"";
         let user_only = load(&paths, None, []).unwrap();
         assert_eq!(user_only.settings().unwrap().daemon.port, 7000);
 
+        // The project's file is not a layer: it cannot set anything, and is reported.
         let with_project = load(&paths, Some(project.path()), []).unwrap();
         let port = with_project.explain("daemon.port").unwrap();
-        assert_eq!(port.value, &Value::Integer(7100));
-        assert_eq!(port.source, Some(&Source::Project(local)));
+        assert_eq!(port.value, &Value::Integer(7000));
+        assert_eq!(port.source, Some(&Source::User(paths.user_config_file())));
+        assert_eq!(with_project.warnings().len(), 1);
+        assert!(
+            with_project.warnings()[0].contains("config.local.toml"),
+            "{:?}",
+            with_project.warnings()
+        );
+        assert!(local.exists());
     }
 
     #[test]

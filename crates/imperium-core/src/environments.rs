@@ -673,6 +673,60 @@ fn valid_runtime(runtime: EnvironmentRuntime) -> Result<EnvironmentRuntime, Envi
     })
 }
 
+/// The folder a session is narrowed to: `sub` (absolute, or relative to the first of `folders`)
+/// must lie inside one of the environment's `folders`. On this machine it must be an existing
+/// folder and links are resolved, so `..` and a link cannot lead out; in a remote runtime it is
+/// a path as written, with `.` and `..` resolved.
+pub(crate) fn narrowed_folder(
+    runtime: &EnvironmentRuntime,
+    folders: &[String],
+    sub: &str,
+) -> Result<String, EnvironmentError> {
+    let sub = sub.trim();
+    let Some(first) = folders.first() else {
+        return Err(EnvironmentError::Invalid(
+            "the environment has no folders to narrow a session to".into(),
+        ));
+    };
+    if sub.is_empty() {
+        return Err(EnvironmentError::Invalid("the subfolder is empty".into()));
+    }
+    let outside =
+        || EnvironmentError::Invalid(format!("{sub} is not inside any folder of the environment"));
+    if runtime.is_remote() {
+        let written = match runtime {
+            EnvironmentRuntime::Wsl { .. } => wsl_path(sub),
+            _ => sub.to_string(),
+        };
+        let joined = if written.starts_with('/') {
+            written
+        } else {
+            format!("{}/{written}", first.trim_end_matches('/'))
+        };
+        let resolved = normalize_posix(&joined).ok_or_else(outside)?;
+        let inside = folders.iter().any(|folder| {
+            let folder = folder.trim_end_matches('/');
+            resolved == folder || resolved.starts_with(&format!("{folder}/"))
+        });
+        return if inside { Ok(resolved) } else { Err(outside()) };
+    }
+    let candidate = if Path::new(sub).is_absolute() {
+        PathBuf::from(sub)
+    } else {
+        Path::new(first).join(sub)
+    };
+    let resolved = existing_folder(&candidate.to_string_lossy())?;
+    let canonical = Path::new(&resolved)
+        .canonicalize()
+        .map_err(|error| EnvironmentError::Folder(sub.to_string(), error))?;
+    let inside = folders.iter().any(|folder| {
+        Path::new(folder)
+            .canonicalize()
+            .is_ok_and(|folder| canonical.starts_with(folder))
+    });
+    if inside { Ok(resolved) } else { Err(outside()) }
+}
+
 /// A folder as the environment keeps it: an existing local folder, or for a remote runtime an
 /// absolute path inside it.
 fn folder_for(runtime: &EnvironmentRuntime, folder: &str) -> Result<String, EnvironmentError> {
