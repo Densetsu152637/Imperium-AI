@@ -748,46 +748,42 @@ pub(crate) fn commit(
     if paths.is_empty() {
         return Err("the session changed nothing to commit in this repository".into());
     }
-    let mut add = command(&repo.top);
-    add.args(["add", "-A", "--"]).args(&paths);
-    run(&mut add)?;
-    let mut staged = command(&repo.top);
-    staged
-        .args([
-            "diff",
-            "--cached",
-            "--quiet",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--",
-        ])
-        .args(&paths);
-    if run(&mut staged).is_ok() {
-        return Err("nothing to commit: these changes are already committed".into());
-    }
-    let mut commit = command(&repo.top);
-    commit
-        .args([
-            "commit",
-            "--no-verify",
-            "--quiet",
-            "-m",
-            &params.message,
-            "--",
-        ])
-        .args(&paths);
-    if let Err(error) = run(&mut commit) {
-        // The failed commit leaves the session's files staged by the `add` above; put the
-        // index back as it was for them (an unborn branch has no HEAD to reset to).
-        let mut reset = command(&repo.top);
-        reset.args(["reset", "--quiet", "--"]).args(&paths);
-        if run(&mut reset).is_err() {
-            let mut unstage = command(&repo.top);
-            unstage
-                .args(["rm", "--cached", "--quiet", "-r", "--ignore-unmatch", "--"])
-                .args(&paths);
-            let _ = run(&mut unstage);
+    // `add` stages the session's files; if anything after it fails, the index goes back to
+    // exactly what it was, so changes the user had staged in those files are not lost.
+    let snapshot = IndexSnapshot::take(&repo.top);
+    let committed = (|| -> Result<(), String> {
+        let mut add = command(&repo.top);
+        add.args(["add", "-A", "--"]).args(&paths);
+        run(&mut add)?;
+        let mut staged = command(&repo.top);
+        staged
+            .args([
+                "diff",
+                "--cached",
+                "--quiet",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--",
+            ])
+            .args(&paths);
+        if run(&mut staged).is_ok() {
+            return Err("nothing to commit: these changes are already committed".into());
         }
+        let mut commit = command(&repo.top);
+        commit
+            .args([
+                "commit",
+                "--no-verify",
+                "--quiet",
+                "-m",
+                &params.message,
+                "--",
+            ])
+            .args(&paths);
+        run(&mut commit).map(|_| ())
+    })();
+    if let Err(error) = committed {
+        snapshot.restore();
         return Err(error);
     }
     let head = safe_git::head(&repo.top).unwrap_or_default();
@@ -806,6 +802,38 @@ pub(crate) fn commit(
         commit: Some(head),
         files: paths,
     })
+}
+
+/// A copy of a repository's index file, to put back when a step that stages files fails.
+struct IndexSnapshot {
+    path: Option<PathBuf>,
+    /// The index file's bytes; `None` when there was no index file.
+    bytes: Option<Vec<u8>>,
+}
+
+impl IndexSnapshot {
+    fn take(top: &Path) -> Self {
+        let mut locate = command(top);
+        locate.args(["rev-parse", "--git-path", "index"]);
+        let path = run(&mut locate)
+            .ok()
+            .and_then(|out| String::from_utf8(out).ok())
+            .map(|path| top.join(path.trim()));
+        let bytes = path.as_ref().and_then(|path| std::fs::read(path).ok());
+        Self { path, bytes }
+    }
+
+    fn restore(self) {
+        let Some(path) = self.path else { return };
+        match self.bytes {
+            Some(bytes) => {
+                let _ = std::fs::write(&path, bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
 }
 
 /// `gh`: the one set for tests, else the one on the PATH, if there is one.

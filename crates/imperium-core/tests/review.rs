@@ -523,19 +523,26 @@ async fn a_failed_commit_leaves_the_index_as_it_was() {
             .await
             .repos[0]
             .clone();
+    // The user had staged part of a session file (staged, then changed again: `MM`).
+    git(&dir, &["add", "a.txt"]);
+    let mut text = read(dir.join("a.txt"));
+    text.push_str("added after staging\n");
+    std::fs::write(dir.join("a.txt"), text).unwrap();
     let head = git(&dir, &["rev-parse", "HEAD"]);
     let index = git(&dir, &["ls-files", "--stage"]);
     let status = git(&dir, &["status", "--porcelain"]);
-    // An empty author name is something git refuses at commit time, whatever the user's
-    // global identity is.
-    git(&dir, &["config", "user.name", ""]);
+    assert!(status.contains("MM a.txt"), "{status}");
+    // An invalid cleanup mode is refused by `git commit` itself, after the files are staged,
+    // whatever the identity or environment (so this does not depend on the machine's config).
+    git(&dir, &["config", "commit.cleanup", "bogus"]);
     let failed = call(
         &mut connection,
         "session.review_commit",
         json!({"session_id": id, "repo": root, "message": "x"}),
     )
     .await;
-    assert!(failed.is_err(), "the commit was rejected");
+    let message = failed.unwrap_err();
+    assert!(message.contains("cleanup"), "{message}");
     assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
     assert_eq!(
         git(&dir, &["ls-files", "--stage"]),
