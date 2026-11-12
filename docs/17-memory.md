@@ -140,7 +140,7 @@ What the migration does not do:
 - **Only the first folder.** An environment with several folders has its first folder (the
   working directory) migrated. Older notes kept for its other folders are not, and stay where
   they are.
-- **A body that would break the file's structure** (a `## ` heading line outside a code block, an
+- **A body that would break the file's structure** (a second-level heading line outside a code block, an
   unclosed code fence) is archived like one that is too long, with the reason
   "would change Memory.md's structure".
 - **Safety order.** The backup, `Memory.md`, the archive and the record are each flushed to disk
