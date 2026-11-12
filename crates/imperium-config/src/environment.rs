@@ -342,7 +342,12 @@ impl EnvironmentConfig {
                         .any(|entry| entry.id == *id && entry.location == Location::Local)
                 });
             if local_only {
-                rules.push(rule.clone());
+                // Pinned to local, so a fall-through (no usable `use` model) can never pick a
+                // cloud model.
+                rules.push(RoutingRule {
+                    location: Some(Location::Local),
+                    ..rule.clone()
+                });
                 out.applied
                     .push(format!("routing.rules: use {}", rule.use_models.join(", ")));
             } else {
@@ -1110,6 +1115,11 @@ use = ["cloud-big"]
             rules[0].use_models,
             ["small-local"],
             "the file's rule is first"
+        );
+        assert_eq!(
+            rules[0].location,
+            Some(Location::Local),
+            "an accepted rule is pinned to local models, so a fall-through stays local"
         );
         assert_eq!(rules[1].when_tag.as_deref(), Some("x"));
         assert_eq!(
