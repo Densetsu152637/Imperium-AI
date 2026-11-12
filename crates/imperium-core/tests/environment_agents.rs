@@ -967,7 +967,7 @@ async fn an_agent_profile_is_stored_applied_live_and_inherited_by_the_sessions_i
         &state.session(&locked_session).unwrap()
     ));
     say(&state, &locked_session, "hello again").await;
-    let widened = tools_offered_for(&log, "hello again").unwrap();
+    let widened = tools_offered_after(&log, "hello again").await;
     assert!(widened.iter().any(|tool| tool == "run_command"));
     call(
         &mut connection,
@@ -976,7 +976,7 @@ async fn an_agent_profile_is_stored_applied_live_and_inherited_by_the_sessions_i
                "permissions": {"plugins": "none", "local_files_only": true}}),
     );
     say(&state, &open_session, "hello narrowed").await;
-    let narrowed = tools_offered_for(&log, "hello narrowed").unwrap();
+    let narrowed = tools_offered_after(&log, "hello narrowed").await;
     assert!(!narrowed.iter().any(|tool| tool == "run_command"));
     assert!(narrowed.iter().any(|tool| tool == "read_file"));
     // Leaving `permissions` out of an update keeps the profile.
