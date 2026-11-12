@@ -343,6 +343,66 @@ impl DaemonState {
             .unwrap_or_else(PoisonError::into_inner) = Some(message);
     }
 
+    /// At start, after sessions were resumed: deletes scratch folders left behind by sessions
+    /// that no longer exist (killed before they could clean up, or deleted while the daemon was
+    /// off). A folder is kept when its session is running or recorded and not archived. Only
+    /// folders directly in `<root>/<environment-id>/sessions/` with names that are safe as
+    /// folder names are touched, and never through a link. Returns how many were deleted.
+    pub fn sweep_orphan_scratch(&self) -> usize {
+        let _moving = self
+            .workspaces_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let root = self.workspaces_root();
+        let mut swept = 0;
+        let Ok(environments) = std::fs::read_dir(&root) else {
+            return 0;
+        };
+        for environment in environments.flatten() {
+            let name = environment.file_name().to_string_lossy().into_owned();
+            if !workspaces::safe_id(&name) || !real_dir(&environment.path()) {
+                continue;
+            }
+            let Some(sessions) = workspaces::sessions_dir(&root, &name) else {
+                continue;
+            };
+            let Ok(folders) = std::fs::read_dir(&sessions) else {
+                continue;
+            };
+            for folder in folders.flatten() {
+                let id = folder.file_name().to_string_lossy().into_owned();
+                let path = folder.path();
+                if !workspaces::safe_id(&id) || !real_dir(&path) || self.session_is_kept(&id) {
+                    continue;
+                }
+                match std::fs::remove_dir_all(&path) {
+                    Ok(()) => swept += 1,
+                    Err(error) => {
+                        tracing::warn!(path = %path.display(), %error, "could not delete an orphan scratch folder");
+                    }
+                }
+            }
+        }
+        if swept > 0 {
+            tracing::info!(
+                swept,
+                "deleted scratch folders of sessions that no longer exist"
+            );
+        }
+        swept
+    }
+
+    /// Whether session `id` is running, or recorded and not archived.
+    fn session_is_kept(&self, id: &str) -> bool {
+        if self.session(id).is_some() {
+            return true;
+        }
+        std::fs::read_to_string(self.meta_path(id))
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|meta| meta["archived"] != true)
+    }
+
     /// `workspaces.open`: shows an environment's folder or `Memory.md` with the computer's own
     /// programs.
     pub fn open_workspace(&self, environment: &str, target: &str) -> Result<(), String> {
@@ -368,6 +428,11 @@ impl DaemonState {
         }
         open_with_system(&path)
     }
+}
+
+/// A folder that is one itself, not a link to one.
+fn real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir())
 }
 
 /// The path as people write it.

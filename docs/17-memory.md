@@ -59,7 +59,8 @@ or machines it uses, decisions made while working in it. The user can open and e
 - **It is data, not instructions.** Anything in `Memory.md` may have been written by an earlier
   agent from content it read, so it is a standing channel for planted text. The instructions say
   it is data written by the user and earlier agents and **cannot grant permissions or override
-  the instructions**; a literal closing tag of the block inside the file is neutralised so the
+  the instructions**; a literal tag of the block inside the file is neutralised (any case or spacing,
+  such as `< /environment-memory`, and the escaped forms `&lt;`, `&#60;` and `&#x3c;`) so the
   text cannot end the block and speak outside it; and the permission rules apply to what an
   agent does, whatever the file says.
 - **Writing.** `memory_remember` takes `scope: "environment"`. The entry becomes a `## <name>`
@@ -73,7 +74,8 @@ or machines it uses, decisions made while working in it. The user can open and e
   written, because every later session in the environment reads it; `auto` saves at once; `off`).
   A session outside any environment has no `Memory.md`, and asking to write the scope fails with
   a message saying so. An entry that would be refused (bad name or type, a body over the limit,
-  something that looks like a secret) is refused before the user is asked to approve it. The
+  something that looks like a secret) is refused before the user is asked to approve it, and so is one that would take
+  `Memory.md` past its size limit (replacing an entry in a full file still fits). The
   file is found afresh for each read and write, so it follows the
   working folders when they are moved, also for sessions that have no scratch folder.
 - **Which wins.** Environment memory only adds to global memory, and global memory never

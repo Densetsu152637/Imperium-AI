@@ -663,3 +663,51 @@ async fn two_moves_at_once_never_strand_the_data() {
     }
     assert!(!root_of(home.path()).join(&env).exists());
 }
+
+#[tokio::test]
+async fn the_start_up_sweep_deletes_only_scratch_folders_whose_session_is_gone() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let first = daemon(home.path(), "http://127.0.0.1:9/v1");
+    let env = environment(&first, "Work", project.path());
+    let (live, _events) = first
+        .create_in_environment(&env, None, SessionOptions::default())
+        .unwrap();
+    let (archived, _events) = first
+        .create_in_environment(&env, None, SessionOptions::default())
+        .unwrap();
+    let (archived_id, live_id) = (archived.id().to_string(), live.id().to_string());
+    drop((live, archived));
+    first.archive(&archived_id).unwrap();
+    drop(first);
+
+    // Left behind: a folder for an archived session, one for a session that never existed,
+    // and things the sweep must not touch.
+    let sessions = root_of(home.path()).join(&env).join("sessions");
+    seed_session_files(home.path(), &env, &archived_id);
+    seed_session_files(home.path(), &env, "deadbeefdeadbeef");
+    std::fs::create_dir_all(sessions.join("not a safe name")).unwrap();
+    std::fs::write(sessions.join("a-file"), "x").unwrap();
+    let other = root_of(home.path())
+        .join("not a safe env")
+        .join("sessions")
+        .join("s1");
+    std::fs::create_dir_all(&other).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("keep.txt"), "x").unwrap();
+
+    let second = daemon(home.path(), "http://127.0.0.1:9/v1");
+    assert_eq!(second.resume_sessions(), 1);
+    assert_eq!(second.sweep_orphan_scratch(), 2);
+    assert!(!sessions.join(&archived_id).exists());
+    assert!(!sessions.join("deadbeefdeadbeef").exists());
+    assert!(
+        sessions.join(&live_id).is_dir(),
+        "a running session keeps its folder"
+    );
+    assert!(sessions.join("not a safe name").is_dir());
+    assert!(sessions.join("a-file").is_file());
+    assert!(other.is_dir(), "folders under unsafe names are left alone");
+    assert!(outside.path().join("keep.txt").is_file());
+    assert_eq!(second.sweep_orphan_scratch(), 0);
+}

@@ -119,6 +119,7 @@ fn start(
         background: None,
         checkpoints: None,
         keep_agent_state: true,
+        budget_gate: None,
         effort: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),
     })

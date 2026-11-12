@@ -74,6 +74,7 @@ async fn run() -> anyhow::Result<()> {
     daemon.start_pets();
     daemon.reconcile_workspaces();
     let resumed = daemon.resume_sessions();
+    daemon.sweep_orphan_scratch();
     if resumed > 0 {
         tracing::info!(
             sessions = resumed,
