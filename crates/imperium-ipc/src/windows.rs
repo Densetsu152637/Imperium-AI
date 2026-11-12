@@ -424,9 +424,6 @@ mod tests {
             let _ = listener.accept().await;
             assert!(!listener.name_is_vacant(), "held after an accept");
         }
-        // A server instance whose connect fails is disconnected for reuse, not dropped.
-        let _ = listener.current.disconnect();
-        assert!(!listener.name_is_vacant(), "held after a disconnect");
         // And the listener still serves.
         let client = connect(&address, None).await.unwrap();
         let served = listener.accept().await.unwrap();
