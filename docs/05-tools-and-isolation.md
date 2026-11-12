@@ -67,7 +67,12 @@ loopback `url` or a `command` and the `port` it listens on (`preview_close` clos
   page runs scripts inside the app window next to the daemon's controls, so remote pages are
   never shown there; the agent's own browser is the way to read remote pages. A URL asks first,
   because another loopback port may be something private on this machine, unless its port is
-  the one this session's own preview command started. Closing the preview never asks.
+  the one this session's own preview command started (and that is still running; a page on
+  that port keeps the server, any other page stops it). Closing the preview never asks. If the
+  server ends (`command_stop`, a crash), the next preview call closes the dead page.
+- **Hooks** match the tool actually called: `tool.before` and `tool.after` hooks see
+  `preview_open`, not `run_command`, for a preview command. Permission rules, suggestions, the
+  floor, and modes are the `run_command` ones; hooks are not rerouted.
 - The dev server's own hot reload keeps the page current; Imperium only shows it.
 
 Implemented in phase 1 (`imperium-tools`): paths resolve inside the project folder and may not

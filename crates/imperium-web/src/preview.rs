@@ -62,6 +62,8 @@ struct Running {
     url: String,
     /// The background process serving it and its port, when the session started one.
     server: Option<(String, u16)>,
+    /// The command that started it, shown with the page.
+    command: Option<String>,
 }
 
 /// The session's preview tools.
@@ -131,20 +133,52 @@ impl PreviewTools {
         }
     }
 
-    /// Whether `url` is the page of the server this session's own preview command started.
+    /// Whether the preview's own server (started by this session's preview command) is still
+    /// running.
+    fn server_alive(&self, id: &str) -> bool {
+        matches!(self.workspace.processes().ended(id), Ok(None))
+    }
+
+    /// The server of the current preview, if its process is still running.
+    fn live_server(&self) -> Option<(String, u16)> {
+        let (id, port) = self.lock().as_ref()?.server.clone()?;
+        self.server_alive(&id).then_some((id, port))
+    }
+
+    /// Whether `url` is the page of the server this session's own preview command started,
+    /// which is still running.
     fn is_own_server(&self, url: &str) -> bool {
         let port = reqwest::Url::parse(url)
             .ok()
             .and_then(|url| url.port_or_known_default());
-        let guard = self.lock();
-        matches!(
-            (&*guard, port),
-            (Some(Running { server: Some((_, own)), .. }), Some(port)) if *own == port
-        )
+        matches!((self.live_server(), port), (Some((_, own)), Some(port)) if own == port)
+    }
+
+    /// Closes a preview whose server has ended (stopped with `command_stop`, or crashed), so
+    /// the panel does not keep showing a dead page.
+    fn clear_if_ended(&self, context: &ToolContext<'_>) {
+        let ended = {
+            let guard = self.lock();
+            match &*guard {
+                Some(Running {
+                    server: Some((id, _)),
+                    ..
+                }) => !self.server_alive(id),
+                _ => false,
+            }
+        };
+        if ended {
+            *self.lock() = None;
+            (context.emit)(ToolEvent::PreviewChanged {
+                url: None,
+                command: None,
+            });
+        }
     }
 
     async fn open(&self, context: &ToolContext<'_>, arguments: &str) -> Result<String, String> {
         let args: Args = parse_arguments(arguments)?;
+        self.clear_if_ended(context);
         let mut shown_command = None;
         let (url, server) = match (args.url, args.command) {
             (Some(_), Some(_)) => return Err("give either url or command, not both".into()),
@@ -170,17 +204,29 @@ impl PreviewTools {
             }
             (None, None) => return Err("give a url to show, or a command and its port".into()),
         };
-        // A URL replaces a server preview only now; its server stays up if it is the same one.
-        let command_shown = server.is_some();
+        // The page of the session's own running server keeps that server (and its command);
+        // any other page replaces it, and the server stops unless the new page uses it.
+        let (server, shown_command) = match server {
+            Some(server) => (Some(server), shown_command),
+            None => match (self.live_server(), reqwest::Url::parse(&url)) {
+                (Some((id, own)), Ok(parsed)) if parsed.port_or_known_default() == Some(own) => {
+                    let command = self.lock().as_ref().and_then(|r| r.command.clone());
+                    (Some((id, own)), command)
+                }
+                _ => (None, None),
+            },
+        };
+        let new_id = server.as_ref().map(|(id, _)| id.clone());
         let previous = self.lock().replace(Running {
             url: url.clone(),
             server,
+            command: shown_command.clone(),
         });
-        if !command_shown
-            && let Some(Running {
-                server: Some((id, _)),
-                ..
-            }) = previous
+        if let Some(Running {
+            server: Some((id, _)),
+            ..
+        }) = previous
+            && Some(&id) != new_id.as_ref()
         {
             let _ = self.workspace.processes().stop(&id).await;
         }
@@ -559,6 +605,86 @@ mod tests {
                 .check("preview_open", &json!({"url": url}).to_string())
                 .unwrap()
                 .ask
+        );
+    }
+
+    #[tokio::test]
+    async fn a_url_on_the_servers_own_port_keeps_it_and_another_port_stops_it() {
+        let (_dir, tools, port, command) = served();
+        open(&tools, json!({"command": command, "port": port}))
+            .await
+            .0
+            .unwrap();
+        let own = format!("http://localhost:{port}/x");
+        assert!(tools.is_own_server(&own));
+        let (result, events) = open(&tools, json!({"url": own})).await;
+        result.unwrap();
+        assert!(
+            listening(port).await,
+            "its own page must not stop the server"
+        );
+        assert!(tools.is_own_server(&own));
+        assert_eq!(
+            events,
+            [ToolEvent::PreviewChanged {
+                url: Some(own.clone()),
+                command: Some(command.clone())
+            }]
+        );
+        assert_eq!(tools.workspace.processes().running(), 1);
+
+        let other = format!("http://localhost:{}/", u32::from(port) ^ 1);
+        let (result, events) = open(&tools, json!({"url": other})).await;
+        result.unwrap();
+        assert!(stops_listening(port).await, "another page stops the server");
+        assert_eq!(
+            events,
+            [ToolEvent::PreviewChanged {
+                url: Some(other),
+                command: None
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_ended_is_no_longer_the_sessions_own() {
+        let (_dir, tools, port, command) = served();
+        open(&tools, json!({"command": command, "port": port}))
+            .await
+            .0
+            .unwrap();
+        let url = format!("http://localhost:{port}/");
+        // Stopped behind the preview's back, as command_stop or a crash would.
+        tools.workspace.processes().stop_all();
+        assert!(stops_listening(port).await);
+        for _ in 0..50 {
+            if !tools.is_own_server(&url) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!tools.is_own_server(&url));
+        assert!(
+            tools
+                .check("preview_open", &json!({"url": url}).to_string())
+                .unwrap()
+                .ask
+        );
+        // The next call clears the dead page.
+        let events = Mutex::new(Vec::new());
+        let emit = |event: ToolEvent| events.lock().unwrap().push(event);
+        let context = ToolContext {
+            root: std::path::Path::new("."),
+            emit: &emit,
+        };
+        tools.clear_if_ended(&context);
+        assert_eq!(tools.url(), None);
+        assert_eq!(
+            events.into_inner().unwrap(),
+            [ToolEvent::PreviewChanged {
+                url: None,
+                command: None
+            }]
         );
     }
 
