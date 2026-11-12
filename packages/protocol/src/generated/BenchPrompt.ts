@@ -11,4 +11,9 @@ name: string, prompt_tokens: number, completion_tokens: number,
 /**
  * Milliseconds from sending the request to the first generated token.
  */
-ttft_ms: number, prompt_tok_s: number | null, gen_tok_s: number | null, };
+ttft_ms: number, prompt_tok_s: number | null, gen_tok_s: number | null,
+/**
+ * `prompt_tokens` is an estimate (the server reported no usage), so no prompt speed is
+ * claimed for this prompt.
+ */
+prompt_tokens_estimated: boolean, };

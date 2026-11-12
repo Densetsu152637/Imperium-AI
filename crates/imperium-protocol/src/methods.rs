@@ -2374,6 +2374,10 @@ pub struct BenchPrompt {
     pub prompt_tok_s: Option<f64>,
     #[serde(default)]
     pub gen_tok_s: Option<f64>,
+    /// `prompt_tokens` is an estimate (the server reported no usage), so no prompt speed is
+    /// claimed for this prompt.
+    #[serde(default)]
+    pub prompt_tokens_estimated: bool,
 }
 
 /// `models.config`: every local model's llama.cpp settings and every model-table row's

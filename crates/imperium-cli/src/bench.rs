@@ -119,12 +119,33 @@ pub fn results(model: Option<String>) -> anyhow::Result<()> {
             println!("No saved benchmark results. Run one with `imperium models bench`.");
             return Ok(());
         }
-        println!("This machine is {}.", listing.hardware_fingerprint);
+        println!("{}", this_machine(&listing));
         for result in &listing.results {
-            print_result(result);
+            let here = listing
+                .hardware_fingerprints
+                .contains(&result.hardware_fingerprint);
+            print_result(result, here);
         }
         Ok(())
     })
+}
+
+/// Which fingerprints are this machine's: one per runtime (llama.cpp, vLLM), so a result whose
+/// fingerprint is any of them was measured here with the runtime now in use.
+fn this_machine(listing: &imperium_protocol::methods::ModelBenchResultsResult) -> String {
+    let mut fingerprints = listing.hardware_fingerprints.clone();
+    if fingerprints.is_empty() {
+        fingerprints.push(listing.hardware_fingerprint.clone());
+    }
+    let described: Vec<String> = fingerprints
+        .iter()
+        .zip(["llama.cpp", "vLLM"])
+        .map(|(fingerprint, runtime)| format!("{fingerprint} for {runtime}"))
+        .collect();
+    format!(
+        "This machine is {}; results marked (this machine) were measured here, with the runtime now in use.",
+        described.join(", ")
+    )
 }
 
 fn plural(count: usize, noun: &str) -> String {
@@ -165,7 +186,12 @@ pub(crate) fn describe(result: &BenchResult) -> Vec<String> {
         lines.push(format!(
             "    {:<7} {:>5} prompt tok  {:>4} out tok  first token {:>6.0} ms  prompt {}  gen {}",
             prompt.name,
-            prompt.prompt_tokens,
+            // A size the server did not report is an estimate, shown with a tilde.
+            if prompt.prompt_tokens_estimated {
+                format!("~{}", prompt.prompt_tokens)
+            } else {
+                prompt.prompt_tokens.to_string()
+            },
             prompt.completion_tokens,
             prompt.ttft_ms,
             opt(prompt.prompt_tok_s, |r| format!("{r:.0} tok/s")),
@@ -175,9 +201,13 @@ pub(crate) fn describe(result: &BenchResult) -> Vec<String> {
     lines
 }
 
-fn print_result(result: &BenchResult) {
-    for line in describe(result) {
-        println!("{line}");
+fn print_result(result: &BenchResult, here: bool) {
+    for (index, line) in describe(result).into_iter().enumerate() {
+        if index == 0 && here {
+            println!("{line}  (this machine)");
+        } else {
+            println!("{line}");
+        }
     }
 }
 
@@ -209,6 +239,7 @@ mod tests {
                 ttft_ms: 212.0,
                 prompt_tok_s: Some(94.0),
                 gen_tok_s: None,
+                prompt_tokens_estimated: false,
             }],
             error: None,
         }

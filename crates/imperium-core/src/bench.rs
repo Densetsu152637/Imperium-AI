@@ -111,6 +111,8 @@ pub struct Bench {
     next_id: AtomicU64,
     /// Serialises reads and writes of the results file.
     store: Mutex<()>,
+    /// Test hook: the next run's task panics when it starts.
+    panic_next: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug)]
@@ -262,10 +264,54 @@ pub fn results(state: &DaemonState, params: ModelBenchResultsParams) -> ModelBen
 
 // ---- the hardware fingerprint ----
 
+/// What identifies the `llama-server` in use: the label for the fingerprint's words, and what
+/// else goes into its hash. An installed build is told by the release folder it is in (the
+/// pinned release, or an earlier one used until it installs) and its pack; a `custom` or
+/// `detected` server by its file name, size and modification time, since it can be replaced
+/// without notice. A server that is not there yet is the pinned release's build to come.
+fn server_identity(pack: &str, server: &Path) -> (String, String) {
+    let Ok(meta) = std::fs::metadata(server) else {
+        return (
+            format!("llama.cpp {} {pack}", llama_cpp_ref()),
+            String::new(),
+        );
+    };
+    if pack != "custom" && pack != "detected" {
+        // <releases>/<release>/<archive>/bin/llama-server
+        if let Some(release) = server
+            .ancestors()
+            .nth(3)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+        {
+            return (format!("llama.cpp {release} {pack}"), String::new());
+        }
+    }
+    let name = server
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("llama-server");
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| since.as_secs());
+    (
+        format!("llama.cpp {pack} {name}"),
+        format!("{} bytes, modified {modified}", meta.len()),
+    )
+}
+
 /// A short hash of the hardware and the runtime build the numbers belong to, and the same in
-/// words. A llama.cpp model is tied to the release Imperium pins and the pack (or `custom`, or
-/// `detected`) in use; a vLLM model is tied to vLLM alone, since llama.cpp does not serve it.
-pub(crate) fn fingerprint(hardware: &Hardware, runtime: &str, pack: &str) -> (String, String) {
+/// words. A llama.cpp model is tied to the actual `llama-server` in use ([`server_identity`]:
+/// its release and pack, or the identity of a `custom` or `detected` binary); a vLLM model is
+/// tied to vLLM alone, since llama.cpp does not serve it.
+pub(crate) fn fingerprint(
+    hardware: &Hardware,
+    runtime: &str,
+    pack: &str,
+    server: &Path,
+) -> (String, String) {
     const GIB: u64 = 1024 * 1024 * 1024;
     let mut gpus: Vec<String> = hardware
         .gpus
@@ -286,13 +332,16 @@ pub(crate) fn fingerprint(hardware: &Hardware, runtime: &str, pack: &str) -> (St
     };
     parts.push(memory);
     parts.push(format!("{} cores", hardware.cpu_cores));
+    let mut hashed = String::new();
     parts.push(if runtime == "vllm" {
         "vLLM".to_string()
     } else {
-        format!("llama.cpp {} {pack}", llama_cpp_ref())
+        let (label, extra) = server_identity(pack, server);
+        hashed = extra;
+        label
     });
     let label = parts.join(", ");
-    let digest = Sha256::digest(label.as_bytes());
+    let digest = Sha256::digest(format!("{label}{hashed}").as_bytes());
     let hash: String = digest
         .iter()
         .take(6)
@@ -304,7 +353,10 @@ pub(crate) fn fingerprint(hardware: &Hardware, runtime: &str, pack: &str) -> (St
 /// The fingerprint and description for models of `runtime` on this machine.
 fn current_fingerprints(state: &DaemonState, runtime: &str) -> (String, String) {
     match state.local_runtime() {
-        Some(local) => fingerprint(local.hardware(), runtime, &local.server().0),
+        Some(local) => {
+            let (pack, server) = local.server();
+            fingerprint(local.hardware(), runtime, &pack, &server)
+        }
         None => ("none".into(), "no local models".into()),
     }
 }
@@ -411,6 +463,12 @@ pub fn start(state: Arc<DaemonState>, params: ModelBenchParams) -> Result<BenchR
 }
 
 impl Bench {
+    /// Test hook: makes the next run's task panic, to see that the run is then `failed`.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn inject_panic(&self) {
+        self.panic_next.store(true, Ordering::SeqCst);
+    }
+
     fn update_entry(&self, run_id: &str, change: impl FnOnce(&mut Entry)) {
         let mut runs = self.lock();
         if let Some(entry) = runs.iter_mut().find(|entry| entry.run.run_id == run_id) {
@@ -422,6 +480,9 @@ impl Bench {
 /// Measures each model in turn, one failing without stopping the others.
 async fn run_all(state: Arc<DaemonState>, run_id: String, models: Vec<String>, cold: bool) {
     let bench = state.bench();
+    if bench.panic_next.swap(false, Ordering::SeqCst) {
+        panic!("injected benchmark panic");
+    }
     for id in &models {
         bench.update(&state, &run_id, |run| {
             run.current = Some(id.clone());
@@ -734,6 +795,7 @@ fn prompt_result(prompt: &Prompt, streamed: &Streamed) -> BenchPrompt {
             u64::from(completion_tokens.saturating_sub(1)),
             streamed.generating,
         ),
+        prompt_tokens_estimated: streamed.prompt_tokens.is_none(),
     }
 }
 
@@ -954,6 +1016,7 @@ mod tests {
             ttft_ms,
             prompt_tok_s: Some(1.0),
             gen_tok_s: Some(speed),
+            prompt_tokens_estimated: false,
         }
     }
 
@@ -973,6 +1036,91 @@ mod tests {
         assert_eq!(summarise(&[]), (None, None, None));
     }
 
+    fn hardware() -> Hardware {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        Hardware {
+            gpus: vec![Gpu {
+                name: "RTX".into(),
+                vendor: "nvidia".into(),
+                vram_total_bytes: 24 * GIB,
+                vram_free_bytes: 24 * GIB,
+                driver: None,
+            }],
+            ram_total_bytes: 64 * GIB,
+            ram_available_bytes: 64 * GIB,
+            cpu_cores: 16,
+            unified_memory: false,
+            overridden: false,
+        }
+    }
+
+    fn installed(root: &Path, release: &str, pack: &str) -> PathBuf {
+        let server = root
+            .join("llama-cpp")
+            .join(release)
+            .join(pack)
+            .join("bin")
+            .join("llama-server");
+        std::fs::create_dir_all(server.parent().unwrap()).unwrap();
+        std::fs::write(&server, "binary").unwrap();
+        server
+    }
+
+    #[test]
+    fn the_fingerprint_follows_the_binary_in_use_not_just_the_pinned_release() {
+        let hardware = hardware();
+        let dir = tempfile::tempdir().unwrap();
+        // An earlier release in use until the pinned one installs is not the pinned release.
+        let earlier = installed(dir.path(), "b100", "linux-x64-cuda12");
+        let (first, label) = fingerprint(&hardware, "llamacpp", "linux-x64-cuda12", &earlier);
+        assert!(
+            label.ends_with("llama.cpp b100 linux-x64-cuda12"),
+            "{label}"
+        );
+        let other = installed(dir.path(), "b101", "linux-x64-cuda12");
+        let (second, label) = fingerprint(&hardware, "llamacpp", "linux-x64-cuda12", &other);
+        assert!(
+            label.ends_with("llama.cpp b101 linux-x64-cuda12"),
+            "{label}"
+        );
+        assert_ne!(first, second);
+        // Nothing installed yet: the pinned release's build to come.
+        let (pending, label) = fingerprint(
+            &hardware,
+            "llamacpp",
+            "linux-x64-cuda12",
+            &dir.path().join("none"),
+        );
+        assert!(label.contains(llama_cpp_ref()), "{label}");
+        assert_ne!(pending, first);
+    }
+
+    #[test]
+    fn a_custom_or_detected_server_is_told_by_its_name_size_and_age() {
+        let hardware = hardware();
+        let dir = tempfile::tempdir().unwrap();
+        let server = dir.path().join("my-llama-server");
+        std::fs::write(&server, "one").unwrap();
+        let (first, label) = fingerprint(&hardware, "llamacpp", "custom", &server);
+        assert!(
+            label.ends_with("llama.cpp custom my-llama-server"),
+            "{label}"
+        );
+        assert_eq!(
+            fingerprint(&hardware, "llamacpp", "custom", &server).0,
+            first
+        );
+        // The same path, replaced by a different build.
+        std::fs::write(&server, "a longer binary").unwrap();
+        assert_ne!(
+            fingerprint(&hardware, "llamacpp", "custom", &server).0,
+            first
+        );
+        let (detected, label) = fingerprint(&hardware, "llamacpp", "detected", &server);
+        assert!(label.contains("detected"), "{label}");
+        assert_ne!(detected, first);
+    }
+
     #[test]
     fn the_fingerprint_follows_the_machine_not_its_free_memory() {
         const GIB: u64 = 1024 * 1024 * 1024;
@@ -990,7 +1138,7 @@ mod tests {
             unified_memory: false,
             overridden: false,
         };
-        let (first, label) = fingerprint(&hardware, "llamacpp", "cuda12");
+        let (first, label) = fingerprint(&hardware, "llamacpp", "cuda12", Path::new("missing"));
         assert_eq!(
             label,
             format!(
@@ -1000,14 +1148,26 @@ mod tests {
         );
         hardware.gpus[0].vram_free_bytes = 2 * GIB;
         hardware.ram_available_bytes = GIB;
-        assert_eq!(fingerprint(&hardware, "llamacpp", "cuda12").0, first);
-        assert_ne!(fingerprint(&hardware, "llamacpp", "vulkan").0, first);
+        assert_eq!(
+            fingerprint(&hardware, "llamacpp", "cuda12", Path::new("missing")).0,
+            first
+        );
+        assert_ne!(
+            fingerprint(&hardware, "llamacpp", "vulkan", Path::new("missing")).0,
+            first
+        );
         // A vLLM model is not tied to a llama.cpp build.
-        let (vllm, label) = fingerprint(&hardware, "vllm", "cuda12");
+        let (vllm, label) = fingerprint(&hardware, "vllm", "cuda12", Path::new("missing"));
         assert!(label.ends_with(", vLLM") && vllm != first, "{label}");
-        assert_eq!(fingerprint(&hardware, "vllm", "vulkan").0, vllm);
+        assert_eq!(
+            fingerprint(&hardware, "vllm", "vulkan", Path::new("missing")).0,
+            vllm
+        );
         hardware.cpu_cores = 8;
-        assert_ne!(fingerprint(&hardware, "llamacpp", "cuda12").0, first);
+        assert_ne!(
+            fingerprint(&hardware, "llamacpp", "cuda12", Path::new("missing")).0,
+            first
+        );
     }
 
     #[test]
