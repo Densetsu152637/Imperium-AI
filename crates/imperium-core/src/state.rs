@@ -195,7 +195,8 @@ pub struct DaemonState {
     checkpoints: Mutex<HashMap<String, Arc<crate::checkpoints::SessionCheckpoints>>>,
     /// Budget stops the person approved, by session, budget, and window.
     budget_confirmed: Mutex<HashSet<String>>,
-    /// Test hook: the day budgets count as today (`None`: the local date).
+    /// Test hook: the day session gates count as today (`None`: the local date).
+    #[cfg(any(test, feature = "testing"))]
     budget_day: Mutex<Option<chrono::NaiveDate>>,
     /// Each running session's browser, for the user to take over and drive.
     browsers: Mutex<HashMap<String, BrowserSetup>>,
@@ -289,6 +290,7 @@ impl DaemonState {
             model_cards: imperium_memory::models::CardIndex::new(),
             checkpoints: Mutex::new(HashMap::new()),
             budget_confirmed: Mutex::new(HashSet::new()),
+            #[cfg(any(test, feature = "testing"))]
             budget_day: Mutex::new(None),
             browsers: Mutex::new(HashMap::new()),
             compare_fault: std::sync::atomic::AtomicUsize::new(0),
@@ -1850,7 +1852,7 @@ impl DaemonState {
         imperium_protocol::methods::EnvironmentListResult { environments, git }
     }
 
-    /// The permission rules running sessions check calls against, and the global grants.
+    /// The budgets and the usage they count.
     pub fn budgets(&self) -> &crate::budgets::BudgetBook {
         &self.budgets
     }
@@ -1863,17 +1865,24 @@ impl DaemonState {
             .contains(key)
     }
 
-    /// The day budgets count as today.
+    /// The day session gates count as today ([`DaemonState::set_budget_today`] overrides it in
+    /// tests).
     pub(crate) fn budget_today(&self) -> chrono::NaiveDate {
-        (*self
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(day) = *self
             .budget_day
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner))
-        .unwrap_or_else(|| chrono::Local::now().date_naive())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return day;
+        }
+        chrono::Local::now().date_naive()
     }
 
-    /// Test hook: makes budgets count `day` as today for session gates (`None` undoes it).
-    #[doc(hidden)]
+    /// Test hook: session gates (`stops_for`, so turn-start checks and `CallGate`) count `day`
+    /// as today; recording usage, standings, and alerts keep using the real date. `None` undoes
+    /// it. Compiled only for this crate's tests or with the `testing` feature.
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_budget_today(&self, day: Option<chrono::NaiveDate>) {
         *self
             .budget_day
@@ -1888,6 +1897,7 @@ impl DaemonState {
             .insert(key.to_string());
     }
 
+    /// The permission rules running sessions check calls against, and the global grants.
     pub fn permissions(&self) -> &crate::permissions::PermissionStore {
         &self.permissions
     }
