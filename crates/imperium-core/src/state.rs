@@ -101,6 +101,10 @@ pub struct SessionOptions {
     /// Home's session folder, made by [`DaemonState::create_in_environment`].
     #[doc(hidden)]
     pub home_dir: Option<String>,
+    /// The persistent agent of the session's environment whose permission profile binds it: the
+    /// agent's own session, and the sessions it starts (which keep the binding after a restart).
+    /// The profile only narrows the session.
+    pub agent_id: Option<String>,
 }
 
 /// Where a session works: its environment and every folder, the working directory first.
@@ -542,6 +546,24 @@ impl DaemonState {
             .with_sandbox(sandbox))
     }
 
+    /// The profile of the persistent agent `agent_id` of `environment_id`, as the agent has it
+    /// now. An agent deleted since keeps the profile its running sessions hold; after a restart
+    /// nothing remembers it.
+    fn agent_profile(
+        &self,
+        environment_id: Option<&str>,
+        agent_id: &str,
+    ) -> Option<imperium_tools::AgentProfile> {
+        let permissions = environment_id
+            .and_then(|id| self.environments.get(id))
+            .and_then(|env| env.agents.into_iter().find(|agent| agent.id == agent_id))
+            .map(|agent| agent.permissions);
+        match permissions {
+            Some(permissions) => Some(self.permissions.agent_profile(agent_id, &permissions)),
+            None => self.permissions.known_agent(agent_id),
+        }
+    }
+
     /// What connector tests last learned about each MCP server.
     pub fn connector_status(&self) -> &crate::connectors::StatusCache {
         &self.connectors
@@ -937,6 +959,8 @@ impl DaemonState {
                 permission_mode: meta["permission_mode"]
                     .as_str()
                     .and_then(|mode| mode.parse().ok()),
+                // A session an agent started stays under that agent's profile.
+                agent_id: meta["agent_id"].as_str().map(str::to_string),
                 ..SessionOptions::default()
             };
             let created = match meta["environment_id"].as_str() {
@@ -1345,6 +1369,13 @@ impl DaemonState {
             &options.runtime,
             options.environment_id.as_deref(),
         )?;
+        if let Some(profile) = options
+            .agent_id
+            .as_deref()
+            .and_then(|agent_id| self.agent_profile(options.environment_id.as_deref(), agent_id))
+        {
+            workspace = workspace.with_profile(profile);
+        }
         // An environment's sessions also get its repositories' worktrees, unless it turned them
         // off. A session started on its own worktrees keeps to them, so its edits stay apart
         // from the user's checkout.
@@ -1609,6 +1640,7 @@ impl DaemonState {
                 "comparison_id": placement.comparison_id,
                 "effort": effort.as_str(),
                 "permission_mode": permission_mode.as_str(),
+                "agent_id": options.agent_id,
             });
             let path = self.meta_path(&id);
             if let Err(error) = std::fs::write(&path, meta.to_string()) {

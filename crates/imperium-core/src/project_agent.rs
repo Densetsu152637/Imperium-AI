@@ -9,6 +9,11 @@
 //! agent), and compacting its conversation when a turn starts over the model's budget. Agents
 //! of one environment run independently, each with its own name, role and session limits.
 //!
+//! An agent's permission profile (`EnvironmentAgent::permissions`) binds its own session and
+//! every session it starts (and their subagents): the sessions carry the agent's id, look the
+//! profile up when they start and read the same live handle afterwards, so a change applies at
+//! once and a restart keeps the binding.
+//!
 //! The sessions an agent starts are background sessions: they rank below the user's sessions
 //! and pause while the machine is busy. With `prefer_quiet` (the default) a session is created
 //! at once but gets its brief only when the machine is quiet, or after `max_defer`. The waiting
@@ -281,6 +286,7 @@ fn start_one(
         today: Mutex::new((Local::now().date_naive(), 0)),
         max_sessions: project.max_sessions,
         max_per_day: project.max_sessions_per_day,
+        agent_id: None,
     });
     let (session, events) = daemon
         .create_session_with(
@@ -478,7 +484,11 @@ fn agent_instructions(agent: &EnvironmentAgent) -> String {
     text
 }
 
-fn new_environment_launcher(daemon: &Arc<DaemonState>, environment_id: &str) -> Arc<Launcher> {
+fn new_environment_launcher(
+    daemon: &Arc<DaemonState>,
+    environment_id: &str,
+    agent_id: &str,
+) -> Arc<Launcher> {
     Arc::new(Launcher {
         daemon: Arc::downgrade(daemon),
         // An environment has no settings for deferring: its agent's sessions wait for a quiet
@@ -491,6 +501,7 @@ fn new_environment_launcher(daemon: &Arc<DaemonState>, environment_id: &str) -> 
         today: Mutex::new((Local::now().date_naive(), 0)),
         max_sessions: ENVIRONMENT_MAX_SESSIONS,
         max_per_day: ENVIRONMENT_MAX_PER_DAY,
+        agent_id: Some(agent_id.to_string()),
     })
 }
 
@@ -506,7 +517,7 @@ fn start_environment_agent(
             .project_agents()
             .launchers()
             .entry(agent.id.clone())
-            .or_insert_with(|| new_environment_launcher(daemon, &env.id)),
+            .or_insert_with(|| new_environment_launcher(daemon, &env.id, &agent.id)),
     );
     // The same session as before when its journal is still there and it is not running as an
     // ordinary session (unarchived by hand); archived when the agent was stopped, it comes
@@ -541,6 +552,7 @@ fn start_environment_agent(
                 instructions: Some(agent_instructions(agent)),
                 persistent: true,
                 auto_compact: true,
+                agent_id: Some(agent.id.clone()),
                 ..SessionOptions::default()
             },
         )
@@ -597,6 +609,8 @@ struct Launcher {
     today: Mutex<(NaiveDate, u32)>,
     max_sessions: usize,
     max_per_day: u32,
+    /// For an environment agent: the agent whose permission profile the sessions it starts keep.
+    agent_id: Option<String>,
     /// Hold a session back until the machine is quiet, for at most `max_defer`.
     prefer_quiet: bool,
     max_defer: Duration,
@@ -643,6 +657,7 @@ impl SessionLauncher for Launcher {
             // What it starts is background work: it ranks below the user's sessions.
             let options = SessionOptions {
                 background: true,
+                agent_id: self.agent_id.clone(),
                 ..SessionOptions::default()
             };
             let created = match &self.target {

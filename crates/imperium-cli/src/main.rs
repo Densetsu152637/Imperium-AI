@@ -376,8 +376,10 @@ enum AgentCommand {
         /// What the agent is for, added to its instructions.
         #[arg(long)]
         role: Option<String>,
+        #[command(flatten)]
+        profile: env::ProfileArgs,
     },
-    /// Rename an agent or change its role.
+    /// Rename an agent or change its role or permission profile.
     Set {
         /// Environment name or id.
         env: String,
@@ -387,6 +389,8 @@ enum AgentCommand {
         name: Option<String>,
         #[arg(long)]
         role: Option<String>,
+        #[command(flatten)]
+        profile: env::ProfileArgs,
     },
     /// Delete an agent (its session is archived).
     Rm {
@@ -646,13 +650,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     env: id,
                     name,
                     role,
-                } => env::agent_add(id, name, role),
+                    profile,
+                } => env::agent_add(id, name, role, profile),
                 AgentCommand::Set {
                     env: id,
                     agent,
                     name,
                     role,
-                } => env::agent_set(id, agent, name, role),
+                    profile,
+                } => env::agent_set(id, agent, name, role, profile),
                 AgentCommand::Rm { env: id, agent } => env::agent_remove(id, agent),
             },
         },

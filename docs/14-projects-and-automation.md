@@ -98,17 +98,68 @@ an agent twice.
 | Method | Params | Result |
 | --- | --- | --- |
 | `environments.agent_list` | `{ environment_id }` | `{ agents: EnvironmentAgent[] }` |
-| `environments.agent_create` | `{ environment_id, name, role? }` | `EnvironmentAgent` plus `started` and, when it could not start (no folder yet, no model), `reason`; the agent is added anyway and starts when the cause is fixed |
-| `environments.agent_update` | `{ environment_id, agent_id, name?, role? }` | `EnvironmentAgent` |
+| `environments.agent_create` | `{ environment_id, name, role?, permissions? }` | `EnvironmentAgent` plus `started` and, when it could not start (no folder yet, no model), `reason`; the agent is added anyway and starts when the cause is fixed |
+| `environments.agent_update` | `{ environment_id, agent_id, name?, role?, permissions? }` (`permissions` replaces the [permission profile](#agent-permission-profiles-implemented) and applies at once, without a restart) | `EnvironmentAgent` |
 | `environments.agent_delete` | `{ environment_id, agent_id }` | `{}` |
 
-`EnvironmentAgent` is `{ id, name, role, session_id }` (`session_id` is none until the agent has
-started); `EnvironmentInfo.agents` carries them, and every change is announced as
+`EnvironmentAgent` is `{ id, name, role, session_id, permissions }` (`session_id` is none until
+the agent has started; `permissions` is the [permission profile](#agent-permission-profiles-implemented)); `EnvironmentInfo.agents` carries them, and every change is announced as
 `environments.changed`. From the command line: `imperium env agent list <env>`, `imperium env
-agent add <env> <name> [--role TEXT]`, `imperium env agent set <env> <agent> [--name N] [--role
-TEXT]`, and `imperium env agent rm <env> <agent>` (an agent by name or id). **Breaking:** the
+agent add <env> <name> [--role TEXT] [profile flags]`, `imperium env agent set <env> <agent> [--name N] [--role
+TEXT] [profile flags]`, and `imperium env agent rm <env> <agent>` (an agent by name or id). **Breaking:** the
 earlier `imperium env agent <env> on|off` no longer exists. In the desktop, the
 environment window's *Agents* section lists them with *Add agent*, edit and delete.
+
+#### Agent permission profiles (implemented)
+
+Each agent can carry a **permission profile**: what it may use *beyond* the environment's own
+permissions. A profile **only narrows**: it hides tools the agent would otherwise have and
+refuses calls to them. It grants nothing: the environment's path grants, rules and permission
+mode ([05](05-tools-and-isolation.md#permissions)) and the safety floor decide every call that
+remains, exactly as for any session, and a tool the session was never offered (a server that is
+not configured, a plugin that is not installed) stays absent however the profile reads. The
+default profile, which an agent has until you set one, restricts nothing, so existing agents
+behave as before.
+
+| Field | Values | Effect |
+| --- | --- | --- |
+| `mcp` | `all` (default), `none`, `named` | Which MCP servers' tools (`mcp__<server>__<tool>`) the agent is offered and may call; `named` uses `mcp_servers`, the servers' names as in the configuration, compared ignoring case. `named` with no name is `none` |
+| `plugins` | `all` (default), `none`, `named` | Which plugins the agent may activate (`activate_plugin`) and use the tools of; `named` uses `plugin_names` |
+| `local_files_only` | `false` (default), `true` | The lock below; overrides `mcp` and `plugins` |
+
+**Local files only** removes everything that reaches outside the files: the web, browser,
+search, media and live-preview tools, MCP servers' and plugins' tools (and `activate_plugin`),
+the other integrations (model listing, app-config and session-search tools, suggestions), and
+`run_command` with `command_output` and `command_stop`. What remains are the file tools
+(`read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`), planning, skills, memory,
+`ask_user` and delegation. The file tools are confined to the environment's folders and the
+agent's own scratch folder: no path grant, project worktree or attachments folder opens
+anything more, and `..`, absolute paths and symbolic links are checked after resolution, like
+the folder sandbox itself. Where a read-only grant covers part of a folder it stays read-only.
+
+**Enforcement.** The profile is applied when the tool list is assembled for each model call
+(so the model is not told about a hidden tool) and again when a call arrives, so a call to a tool
+the profile hides (from a stale list, from memory, or after the profile was tightened during a
+turn) is refused with a message naming the profile, never run. The file tools and command
+runner check it themselves too, so a local-files-only session cannot run a command or reach
+another path even if a call got past the agent loop. **Delegation does not escape it:**
+subagents and chunk agents of the agent's session share its profile, and the sessions the agent
+starts with `start_session` are bound to the same agent: the binding is recorded with the
+session (`agent_id` in its meta file), so it survives a daemon restart, and an agent deleted
+since leaves its running sessions under the profile they hold until the daemon restarts. A
+changed profile (`environments.agent_update`) applies from the next call of the agent's running
+session and of every session it started; the agent is not restarted.
+
+Not covered: the hooks the user configured run as configured, an MCP server a profile forbids
+may still be started with the session (its tools are hidden and refused), and a mod's
+panel is not an agent tool, so profiles do not apply to mods.
+
+From the command line, `imperium env agent add|set` take `--mcp all|none|NAME,NAME`,
+`--plugins all|none|NAME,NAME`, and `--local-only` / `--no-local-only`; a flag not given keeps
+the agent's current setting, and `imperium env agent list` shows what each agent is limited to.
+In the desktop, the agent form has a *Permissions* group (a local-files-only checkbox and an
+*All / None / Only these* choice, with names, for MCP servers and for plugins), and a row shows
+a short summary of a limited agent.
 
 **Migration and deprecated fields.** An environment saved with the earlier single persistent
 session (`persistent_agent: true` with an `agent_session_id`) becomes one agent named "Persistent

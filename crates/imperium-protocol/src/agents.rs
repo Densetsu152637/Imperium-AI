@@ -7,6 +7,45 @@ use ts_rs::TS;
 
 use crate::methods::{Accepted, EnvironmentInfo, Method};
 
+/// Which of a kind of outside tool an agent may use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ToolAccess {
+    // Everything the environment and session offer: no extra restriction.
+    #[default]
+    All,
+    // None of them.
+    None,
+    // Only the ones named next to it.
+    Named,
+}
+
+/// What an agent may use beyond the environment's own permissions. A profile only narrows: it
+/// hides tools the agent would have had and refuses calls to them, and grants nothing the
+/// environment, its permission mode or the safety floor deny. The default restricts nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentPermissions {
+    // MCP servers (by their names in the configuration).
+    #[serde(default)]
+    pub mcp: ToolAccess,
+    // The servers allowed when `mcp` is `named`.
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
+    // Plugins the agent may activate and use the tools of.
+    #[serde(default)]
+    pub plugins: ToolAccess,
+    // The plugins allowed when `plugins` is `named`.
+    #[serde(default)]
+    pub plugin_names: Vec<String>,
+    // Local files only: no web, browser, search, media, MCP, plugin or other integration tools
+    // and no commands, with file tools kept to the environment's folders and the agent's
+    // scratch folder. Overrides the two lists above.
+    #[serde(default)]
+    pub local_files_only: bool,
+}
+
 /// One persistent agent of an environment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -22,6 +61,10 @@ pub struct EnvironmentAgent {
     /// The agent's session id once it has started; kept when its session is archived.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// What the agent may use beyond the environment's own permissions; also binds the
+    /// sessions and subagents it starts.
+    #[serde(default)]
+    pub permissions: AgentPermissions,
 }
 
 /// `environments.agent_list`: the environment's persistent agents.
@@ -81,10 +124,15 @@ pub struct EnvironmentAgentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub role: Option<String>,
+    /// The agent's permission profile; unrestricted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub permissions: Option<AgentPermissions>,
 }
 
-/// `environments.agent_update`: renames an agent or changes its role. A changed role applies
-/// from the agent's next start, which happens at once; its conversation continues.
+/// `environments.agent_update`: renames an agent, changes its role or its permission profile. A
+/// changed role applies from the agent's next start, which happens at once; its conversation
+/// continues. A changed profile applies from the agent's next tool call, without a restart.
 #[derive(Debug)]
 pub struct EnvironmentAgentUpdate;
 
@@ -105,6 +153,11 @@ pub struct EnvironmentAgentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub role: Option<String>,
+    /// Replaces the agent's permission profile; it applies at once, to the agent's running
+    /// session and to the sessions it started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub permissions: Option<AgentPermissions>,
 }
 
 /// `environments.agent_delete`: removes an agent. Its session stops and is archived, so its

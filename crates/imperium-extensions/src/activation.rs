@@ -159,6 +159,14 @@ impl PluginTools {
             })
     }
 
+    /// The active plugin that offers `tool`.
+    pub fn plugin_of(&self, tool: &str) -> Option<String> {
+        self.lock()
+            .iter()
+            .find(|active| active.servers.find(tool).is_some())
+            .map(|active| active.name.clone())
+    }
+
     /// The servers of the active plugin that offers `tool`.
     fn servers_for(&self, tool: &str) -> Option<Arc<McpServers>> {
         self.lock()
@@ -182,6 +190,11 @@ impl ToolProvider for PluginTools {
 
     fn handles(&self, name: &str) -> bool {
         self.servers_for(name).is_some()
+    }
+
+    fn server_of(&self, name: &str) -> Option<String> {
+        self.servers_for(name)
+            .and_then(|servers| servers.find(name).map(|tool| tool.server.clone()))
     }
 
     /// As for any MCP tool: asks first unless the server's `allow` list covers the tool.

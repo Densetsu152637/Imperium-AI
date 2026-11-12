@@ -68,8 +68,18 @@ persistent agents, each with its own name, role, session and limits, created exp
 environment has none) with `environments.agent_create`, `imperium env agent add`, or *Add agent* in
 the environment window; the earlier single persistent session migrates to one agent with its
 history, and the old `persistent_agent` fields stay as aliases for protocol 0.22
-([14](14-projects-and-automation.md#persistent-agents-implemented)). Per-agent permission
-profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent initiative follow.
+([14](14-projects-and-automation.md#persistent-agents-implemented)). Per-agent initiative
+follows.
+
+Implemented: **per-agent permission profiles.** An agent can be limited to some MCP servers and
+plugins (or none) or locked to local files only (no web, MCP, plugin or command tools, file tools
+kept to the environment's folders and its scratch folder). The profile only narrows what the
+environment allows, is enforced when the tool list is built and again at call time, binds the
+subagents and sessions the agent starts, and is edited in the desktop's agent form, with
+`imperium env agent add|set --mcp --plugins --local-only`, and through `environments.agent_create`
+and `environments.agent_update` (protocol 0.28)
+([14](14-projects-and-automation.md#agent-permission-profiles-implemented),
+[05](05-tools-and-isolation.md#agent-permission-profiles-implemented)).
 
 ## Next (in order)
 

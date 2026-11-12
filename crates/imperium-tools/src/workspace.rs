@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::permissions::{PathGrant, PathMode, Permissions, Target, expand_home};
 use crate::processes::Processes;
+use crate::profile::AgentProfile;
 use crate::project_worktrees::ProjectWorktrees;
 use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
 use crate::{Sandbox, ToolError};
@@ -41,6 +42,9 @@ pub struct Workspace {
     scratch: Option<PathBuf>,
     /// Commands started in the background; clones share them.
     processes: Processes,
+    /// The persistent agent's profile, when the session belongs to one: it can only narrow what
+    /// the workspace allows (see [`AgentProfile`]).
+    profile: AgentProfile,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -97,6 +101,7 @@ impl Workspace {
             worktrees: None,
             scratch: None,
             processes: Processes::default(),
+            profile: AgentProfile::default(),
         })
     }
 
@@ -140,6 +145,7 @@ impl Workspace {
             worktrees: None,
             scratch: None,
             processes: Processes::default(),
+            profile: AgentProfile::default(),
         })
     }
 
@@ -198,8 +204,12 @@ impl Workspace {
                 }))
                 .filter(|(folder, _, _)| inside(folder))
                 .max_by_key(|(folder, _, grant)| (folder.len(), *grant));
+        // Local files only keeps to the folders themselves: no grant opens anything more.
+        let outside_folders = self.profile.local_files_only()
+            && !remote.folders.iter().any(|folder| inside(folder.as_str()));
         match covering {
             None => Err(ToolError::OutsideWorkspace(path.into())),
+            Some(_) if outside_folders => Err(ToolError::OutsideWorkspace(path.into())),
             Some((_, false, _)) if write => Err(ToolError::ReadOnly(path.into())),
             Some(_) => Ok(resolved),
         }
@@ -365,6 +375,18 @@ impl Workspace {
         &self.permissions
     }
 
+    /// The same workspace for a persistent agent's session: under `profile`, which only narrows
+    /// what the folders, grants and rules allow. Local files only confines file tools to the
+    /// folders and the scratch folder.
+    pub fn with_profile(self, profile: AgentProfile) -> Self {
+        Workspace { profile, ..self }
+    }
+
+    /// The agent profile the session's calls are limited by (unrestricted unless set).
+    pub fn profile(&self) -> &AgentProfile {
+        &self.profile
+    }
+
     /// The paths outside the folders the tools may also use.
     pub fn grants(&self) -> &[GrantedPath] {
         &self.grants
@@ -475,11 +497,28 @@ impl Workspace {
             resolved = self.locate_checked(path)?;
         }
         let resolved = resolved.ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+        // Local files only keeps to the folders and the scratch folder, however the path is
+        // spelled and whatever grants or project worktrees would also open it.
+        if self.profile.local_files_only() && !self.in_local_scope(&resolved) {
+            return Err(ToolError::OutsideWorkspace(path.to_string()));
+        }
         match self.writable(&resolved) {
             None => Err(ToolError::OutsideWorkspace(path.to_string())),
             Some(false) if write => Err(ToolError::ReadOnly(path.to_string())),
             Some(_) => Ok(resolved),
         }
+    }
+
+    /// Whether a canonical path is inside one of the folders or the scratch folder, the only
+    /// places an agent limited to local files may use.
+    fn in_local_scope(&self, resolved: &Path) -> bool {
+        self.roots()
+            .into_iter()
+            .any(|root| resolved.starts_with(root))
+            || self
+                .scratch
+                .as_deref()
+                .is_some_and(|scratch| resolved.starts_with(scratch))
     }
 
     /// Whether a canonical path may be written: `None` outside every folder and grant. The
@@ -885,5 +924,183 @@ mod tests {
                 .with_folders([outside.path().join("missing")])
                 .is_err()
         );
+    }
+
+    /// A workspace with a folder, a second folder, a scratch folder and a writable grant, and a
+    /// folder next to the first that nothing opens.
+    struct Layout {
+        first: tempfile::TempDir,
+        second: tempfile::TempDir,
+        scratch: tempfile::TempDir,
+        grant: tempfile::TempDir,
+        sibling: tempfile::TempDir,
+        workspace: Workspace,
+    }
+
+    fn layout() -> Layout {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let grant = tempfile::tempdir().unwrap();
+        let sibling = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(first.path())
+            .unwrap()
+            .with_folders([second.path()])
+            .unwrap()
+            .with_grants(&[PathGrant {
+                path: grant.path().display().to_string(),
+                mode: PathMode::ReadWrite,
+            }])
+            .with_scratch(scratch.path());
+        Layout {
+            first,
+            second,
+            scratch,
+            grant,
+            sibling,
+            workspace,
+        }
+    }
+
+    fn at(dir: &tempfile::TempDir, name: &str) -> String {
+        dir.path().join(name).to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn local_files_only_keeps_files_to_the_folders_and_the_scratch_folder() {
+        let layout = layout();
+        let locked = layout.workspace.clone().with_profile(AgentProfile::new(
+            crate::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            },
+        ));
+        // Without the lock the grant is open (the lock narrows, it does not change the rest).
+        assert!(
+            layout
+                .workspace
+                .resolve(&at(&layout.grant, "g.txt"))
+                .is_ok()
+        );
+
+        for inside in [
+            "notes.txt".to_string(),
+            "src/new/main.rs".to_string(),
+            at(&layout.first, "abs.txt"),
+            at(&layout.second, "other.txt"),
+            at(&layout.scratch, "scratch.txt"),
+        ] {
+            assert!(locked.resolve(&inside).is_ok(), "{inside} should be open");
+            assert!(
+                locked.resolve_writable(&inside).is_ok(),
+                "{inside} should be writable"
+            );
+        }
+        for outside in [
+            "..".to_string(),
+            "../x".to_string(),
+            "src/../../x".to_string(),
+            "nothing/../../x".to_string(),
+            at(&layout.sibling, "x.txt"),
+            // Open by a grant for an unrestricted agent, closed by the lock.
+            at(&layout.grant, "g.txt"),
+        ] {
+            assert!(
+                matches!(
+                    locked.resolve(&outside),
+                    Err(ToolError::OutsideWorkspace(_))
+                ),
+                "{outside} should be refused"
+            );
+            assert!(
+                matches!(
+                    locked.resolve_writable(&outside),
+                    Err(ToolError::OutsideWorkspace(_))
+                ),
+                "{outside} should be refused for writing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_profile_never_opens_a_path_the_workspace_refuses() {
+        let layout = layout();
+        let read_only = Workspace::new(layout.first.path())
+            .unwrap()
+            .with_grants(&[PathGrant {
+                path: layout.grant.path().display().to_string(),
+                mode: PathMode::Read,
+            }]);
+        for rules in [
+            crate::profile::ProfileRules::default(),
+            crate::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            },
+            crate::profile::ProfileRules {
+                mcp: crate::profile::Allowlist::All,
+                plugins: crate::profile::Allowlist::All,
+                local_files_only: false,
+            },
+        ] {
+            let workspace = read_only.clone().with_profile(AgentProfile::new(rules));
+            assert!(matches!(
+                workspace.resolve(&at(&layout.sibling, "x")),
+                Err(ToolError::OutsideWorkspace(_))
+            ));
+            assert!(matches!(
+                workspace.resolve_writable(&at(&layout.grant, "g")),
+                Err(ToolError::ReadOnly(_)) | Err(ToolError::OutsideWorkspace(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn the_lock_applies_to_calls_already_in_flight_from_the_next_one() {
+        let layout = layout();
+        let profile = AgentProfile::default();
+        let workspace = layout.workspace.clone().with_profile(profile.clone());
+        let granted = at(&layout.grant, "g.txt");
+        assert!(workspace.resolve(&granted).is_ok());
+        profile.set(crate::profile::ProfileRules {
+            local_files_only: true,
+            ..Default::default()
+        });
+        assert!(matches!(
+            workspace.resolve(&granted),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+    }
+
+    #[test]
+    fn local_files_only_keeps_a_remote_workspace_to_its_folders() {
+        let workspace = Workspace::remote(
+            Remote::Ssh { host: "box".into() },
+            &["/home/me/project".to_string()],
+            Arc::new(crate::ProcessRunner),
+        )
+        .unwrap()
+        .with_grants(&[PathGrant {
+            path: "/opt/toolchains".into(),
+            mode: PathMode::Read,
+        }]);
+        assert!(
+            workspace
+                .resolve_remote("/opt/toolchains/bin/go", false)
+                .is_ok()
+        );
+        let locked = workspace.with_profile(AgentProfile::new(crate::profile::ProfileRules {
+            local_files_only: true,
+            ..Default::default()
+        }));
+        assert!(locked.resolve_remote("src/main.rs", true).is_ok());
+        assert!(matches!(
+            locked.resolve_remote("/opt/toolchains/bin/go", false),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        assert!(matches!(
+            locked.resolve_remote("../other", false),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
     }
 }

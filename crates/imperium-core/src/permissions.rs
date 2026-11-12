@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError, RwLock};
 
 use imperium_config::PermissionSettings;
+use imperium_protocol::agents::{AgentPermissions, ToolAccess};
 use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::EnvironmentUpdateParams;
 use imperium_protocol::permissions as wire;
@@ -15,6 +16,7 @@ use imperium_tools::permissions::{
     PathGrant, PathMode, PermissionRule, Permissions, RuleAction, SharedRules, home_dir,
     validate_grant, validate_rule,
 };
+use imperium_tools::{AgentProfile, Allowlist, ProfileRules};
 
 use crate::state::DaemonState;
 
@@ -24,6 +26,9 @@ pub struct PermissionStore {
     global_rules: SharedRules,
     global_grants: RwLock<Vec<PathGrant>>,
     environments: Mutex<HashMap<String, SharedRules>>,
+    /// Each persistent agent's profile, by agent id: the handle its sessions (and the sessions
+    /// and subagents they start) hold, so a change applies to them at once.
+    agents: Mutex<HashMap<String, AgentProfile>>,
 }
 
 impl PermissionStore {
@@ -32,7 +37,36 @@ impl PermissionStore {
             global_rules: SharedRules::new(settings.rules.clone()),
             global_grants: RwLock::new(settings.grants.clone()),
             environments: Mutex::default(),
+            agents: Mutex::default(),
         }
+    }
+
+    /// The agent's profile handle, set to `permissions` (made on first use). Every session of
+    /// the agent holds the same handle.
+    pub fn agent_profile(&self, agent_id: &str, permissions: &AgentPermissions) -> AgentProfile {
+        let profile = self
+            .agents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(agent_id.to_string())
+            .or_default()
+            .clone();
+        profile.set(profile_rules(permissions));
+        profile
+    }
+
+    /// The profile handle of an agent that was started in this run, if there is one.
+    pub fn known_agent(&self, agent_id: &str) -> Option<AgentProfile> {
+        self.agents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(agent_id)
+            .cloned()
+    }
+
+    /// Applies a changed profile to the agent's running sessions.
+    pub fn set_agent(&self, agent_id: &str, permissions: &AgentPermissions) {
+        self.agent_profile(agent_id, permissions);
     }
 
     /// The global grants as last saved.
@@ -144,6 +178,81 @@ pub fn checked(set: &wire::PermissionSet) -> Result<wire::PermissionSet, String>
         rules.push(rule);
     }
     Ok(wire::PermissionSet { grants, rules })
+}
+
+// ---- agent permission profiles ----
+
+/// The rules the tools enforce for a profile as the protocol carries it.
+pub fn profile_rules(permissions: &AgentPermissions) -> ProfileRules {
+    let list = |access: ToolAccess, names: &[String]| match access {
+        ToolAccess::All => Allowlist::All,
+        ToolAccess::None => Allowlist::none(),
+        ToolAccess::Named => Allowlist::Named(names.to_vec()),
+    };
+    ProfileRules {
+        mcp: list(permissions.mcp, &permissions.mcp_servers),
+        plugins: list(permissions.plugins, &permissions.plugin_names),
+        local_files_only: permissions.local_files_only,
+    }
+}
+
+/// Most names one allowlist may hold, and the longest name.
+const MAX_ALLOWED_NAMES: usize = 100;
+const MAX_NAME_CHARS: usize = 200;
+
+fn checked_names(label: &str, names: &[String]) -> Result<Vec<String>, String> {
+    let mut checked: Vec<String> = Vec::new();
+    for name in names {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if name.chars().count() > MAX_NAME_CHARS || name.chars().any(char::is_control) {
+            return Err(format!("{label}: {name:?} is not a valid name"));
+        }
+        if !checked.iter().any(|known| known.eq_ignore_ascii_case(name)) {
+            checked.push(name.to_string());
+        }
+    }
+    if checked.len() > MAX_ALLOWED_NAMES {
+        return Err(format!("{label}: at most {MAX_ALLOWED_NAMES} names"));
+    }
+    Ok(checked)
+}
+
+/// One allowlist as sent, normalised: names are trimmed and deduplicated (ignoring case), kept
+/// only for `named`, and `named` with no name is `none`.
+fn checked_list(
+    label: &str,
+    access: ToolAccess,
+    names: &[String],
+) -> Result<(ToolAccess, Vec<String>), String> {
+    let names = checked_names(label, names)?;
+    Ok(match access {
+        ToolAccess::Named if names.is_empty() => (ToolAccess::None, Vec::new()),
+        ToolAccess::Named => (ToolAccess::Named, names),
+        other => (other, Vec::new()),
+    })
+}
+
+/// An agent's profile as sent, checked and normalised; an invalid one is refused with the reason.
+pub fn checked_agent_permissions(
+    permissions: &AgentPermissions,
+) -> Result<AgentPermissions, String> {
+    let (mcp, mcp_servers) =
+        checked_list("mcp_servers", permissions.mcp, &permissions.mcp_servers)?;
+    let (plugins, plugin_names) = checked_list(
+        "plugin_names",
+        permissions.plugins,
+        &permissions.plugin_names,
+    )?;
+    Ok(AgentPermissions {
+        mcp,
+        mcp_servers,
+        plugins,
+        plugin_names,
+        local_files_only: permissions.local_files_only,
+    })
 }
 
 fn invalid(message: impl Into<String>) -> ErrorObject {
@@ -468,6 +577,83 @@ mod tests {
             rules: Vec::new(),
         };
         assert!(checked(&bad).is_err());
+    }
+
+    #[test]
+    fn agent_profiles_are_normalised_and_converted() {
+        let clean = checked_agent_permissions(&AgentPermissions {
+            mcp: ToolAccess::Named,
+            mcp_servers: vec![
+                " github ".into(),
+                "GitHub".into(),
+                "".into(),
+                "slack".into(),
+            ],
+            plugins: ToolAccess::Named,
+            plugin_names: vec!["  ".into()],
+            local_files_only: false,
+        })
+        .unwrap();
+        assert_eq!(clean.mcp_servers, ["github", "slack"]);
+        // A named list with no name allows none.
+        assert_eq!(clean.plugins, ToolAccess::None);
+        assert!(clean.plugin_names.is_empty());
+        // Names are kept only for `named`.
+        let all = checked_agent_permissions(&AgentPermissions {
+            mcp: ToolAccess::All,
+            mcp_servers: vec!["github".into()],
+            ..AgentPermissions::default()
+        })
+        .unwrap();
+        assert!(all.mcp_servers.is_empty());
+        assert!(
+            checked_agent_permissions(&AgentPermissions {
+                mcp: ToolAccess::Named,
+                mcp_servers: vec!["bad\u{0}name".into()],
+                ..AgentPermissions::default()
+            })
+            .is_err()
+        );
+        assert!(
+            checked_agent_permissions(&AgentPermissions {
+                plugins: ToolAccess::Named,
+                plugin_names: (0..=MAX_ALLOWED_NAMES).map(|n| format!("p{n}")).collect(),
+                ..AgentPermissions::default()
+            })
+            .is_err()
+        );
+
+        assert!(profile_rules(&AgentPermissions::default()).is_unrestricted());
+        let rules = profile_rules(&clean);
+        assert_eq!(
+            rules.mcp,
+            Allowlist::Named(vec!["github".into(), "slack".into()])
+        );
+        assert!(rules.plugins.is_none());
+        assert!(!rules.local_files_only);
+    }
+
+    #[test]
+    fn a_changed_agent_profile_reaches_the_sessions_holding_its_handle() {
+        let store = PermissionStore::new(&PermissionSettings::default());
+        let locked = AgentPermissions {
+            local_files_only: true,
+            ..AgentPermissions::default()
+        };
+        let held = store.agent_profile("a1", &AgentPermissions::default());
+        assert!(held.is_unrestricted());
+        store.set_agent("a1", &locked);
+        assert!(held.local_files_only());
+        // Another agent has a handle of its own.
+        assert!(
+            store
+                .agent_profile("a2", &AgentPermissions::default())
+                .is_unrestricted()
+        );
+        // The same agent started again gets the same handle.
+        assert_eq!(held, store.agent_profile("a1", &locked));
+        assert_eq!(store.known_agent("a1"), Some(held));
+        assert_eq!(store.known_agent("nobody"), None);
     }
 
     #[test]

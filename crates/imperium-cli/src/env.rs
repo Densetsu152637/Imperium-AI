@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use imperium_cli::client::Client;
 use imperium_protocol::agents::{
-    EnvironmentAgentCreate, EnvironmentAgentCreateParams, EnvironmentAgentDelete,
-    EnvironmentAgentList, EnvironmentAgentListParams, EnvironmentAgentRef, EnvironmentAgentUpdate,
-    EnvironmentAgentUpdateParams,
+    AgentPermissions, EnvironmentAgent, EnvironmentAgentCreate, EnvironmentAgentCreateParams,
+    EnvironmentAgentDelete, EnvironmentAgentList, EnvironmentAgentListParams, EnvironmentAgentRef,
+    EnvironmentAgentUpdate, EnvironmentAgentUpdateParams, ToolAccess,
 };
 use imperium_protocol::methods::{
     EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
@@ -157,8 +157,83 @@ pub fn agent_list(env: String) -> anyhow::Result<()> {
     })
 }
 
+/// Permission profile flags of `imperium env agent add` and `set`. A flag not given keeps the
+/// agent's profile as it is (a new agent has no restriction).
+#[derive(Debug, Default, Clone, PartialEq, Eq, clap::Args)]
+pub struct ProfileArgs {
+    /// MCP servers the agent may use: `all`, `none`, or a comma-separated list of server names.
+    #[arg(long, value_name = "all|none|NAMES")]
+    pub mcp: Option<String>,
+    /// Plugins the agent may activate and use: `all`, `none`, or a comma-separated list of
+    /// plugin names.
+    #[arg(long, value_name = "all|none|NAMES")]
+    pub plugins: Option<String>,
+    /// Limit the agent to local files: no web, browser, search, MCP, plugin or command tools, and
+    /// file tools kept to the environment's folders and the agent's scratch folder.
+    #[arg(long, conflicts_with = "no_local_only")]
+    pub local_only: bool,
+    /// Lift the local-files-only limit.
+    #[arg(long)]
+    pub no_local_only: bool,
+}
+
+impl ProfileArgs {
+    /// Whether no flag was given.
+    pub fn is_empty(&self) -> bool {
+        *self == ProfileArgs::default()
+    }
+
+    /// `current` with the flags applied.
+    pub fn apply(&self, current: &AgentPermissions) -> anyhow::Result<AgentPermissions> {
+        let mut next = current.clone();
+        if let Some(value) = &self.mcp {
+            (next.mcp, next.mcp_servers) = parse_access(value).context("--mcp")?;
+        }
+        if let Some(value) = &self.plugins {
+            (next.plugins, next.plugin_names) = parse_access(value).context("--plugins")?;
+        }
+        if self.local_only {
+            next.local_files_only = true;
+        }
+        if self.no_local_only {
+            next.local_files_only = false;
+        }
+        Ok(next)
+    }
+}
+
+/// `all`, `none`, or a comma-separated list of names.
+fn parse_access(value: &str) -> anyhow::Result<(ToolAccess, Vec<String>)> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "all" => Ok((ToolAccess::All, Vec::new())),
+        "none" => Ok((ToolAccess::None, Vec::new())),
+        _ => {
+            let names: Vec<String> = value
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect();
+            if names.is_empty() {
+                bail!("expected all, none, or a comma-separated list of names");
+            }
+            Ok((ToolAccess::Named, names))
+        }
+    }
+}
+
 /// Adds a persistent agent to an environment.
-pub fn agent_add(env: String, name: String, role: Option<String>) -> anyhow::Result<()> {
+pub fn agent_add(
+    env: String,
+    name: String,
+    role: Option<String>,
+    profile: ProfileArgs,
+) -> anyhow::Result<()> {
+    let permissions = if profile.is_empty() {
+        None
+    } else {
+        Some(profile.apply(&AgentPermissions::default())?)
+    };
     block_on(async {
         let (mut client, _) = connect().await?;
         let environment_id = resolve(&mut client, &env).await?.id;
@@ -167,6 +242,7 @@ pub fn agent_add(env: String, name: String, role: Option<String>) -> anyhow::Res
                 environment_id,
                 name,
                 role,
+                permissions,
             })
             .await?;
         print!("{}", describe_agent(&agent.agent));
@@ -180,23 +256,30 @@ pub fn agent_add(env: String, name: String, role: Option<String>) -> anyhow::Res
     })
 }
 
-/// Renames an agent or changes its role. The agent is a name or an id.
+/// Renames an agent or changes its role or permission profile. The agent is a name or an id.
 pub fn agent_set(
     env: String,
     agent: String,
     name: Option<String>,
     role: Option<String>,
+    profile: ProfileArgs,
 ) -> anyhow::Result<()> {
     block_on(async {
         let (mut client, _) = connect().await?;
         let environment_id = resolve(&mut client, &env).await?.id;
-        let agent_id = resolve_agent(&mut client, &environment_id, &agent).await?;
+        let current = resolve_agent(&mut client, &environment_id, &agent).await?;
+        let permissions = if profile.is_empty() {
+            None
+        } else {
+            Some(profile.apply(&current.permissions)?)
+        };
         let agent = client
             .call::<EnvironmentAgentUpdate>(EnvironmentAgentUpdateParams {
                 environment_id,
-                agent_id,
+                agent_id: current.id,
                 name,
                 role,
+                permissions,
             })
             .await?;
         print!("{}", describe_agent(&agent));
@@ -209,7 +292,9 @@ pub fn agent_remove(env: String, agent: String) -> anyhow::Result<()> {
     block_on(async {
         let (mut client, _) = connect().await?;
         let environment_id = resolve(&mut client, &env).await?.id;
-        let agent_id = resolve_agent(&mut client, &environment_id, &agent).await?;
+        let agent_id = resolve_agent(&mut client, &environment_id, &agent)
+            .await?
+            .id;
         client
             .call::<EnvironmentAgentDelete>(EnvironmentAgentRef {
                 environment_id,
@@ -225,7 +310,7 @@ async fn resolve_agent(
     client: &mut Client,
     environment_id: &str,
     name_or_id: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<EnvironmentAgent> {
     let result = client
         .call::<EnvironmentAgentList>(EnvironmentAgentListParams {
             environment_id: environment_id.to_string(),
@@ -235,17 +320,46 @@ async fn resolve_agent(
         .agents
         .iter()
         .find(|agent| agent.id == name_or_id || agent.name.eq_ignore_ascii_case(name_or_id))
-        .map(|agent| agent.id.clone())
+        .cloned()
         .ok_or_else(|| anyhow::anyhow!("no agent {name_or_id:?}; see imperium env agent list"))
 }
 
-fn describe_agent(agent: &imperium_protocol::agents::EnvironmentAgent) -> String {
+fn describe_agent(agent: &EnvironmentAgent) -> String {
     let session = agent.session_id.as_deref().unwrap_or("not started");
     let mut text = format!("{}  {}  (session: {session})\n", agent.id, agent.name);
     if !agent.role.is_empty() {
         text.push_str(&format!("    role: {}\n", agent.role));
     }
+    if let Some(limits) = describe_permissions(&agent.permissions) {
+        text.push_str(&format!("    limited to: {limits}\n"));
+    }
     text
+}
+
+/// What a profile restricts, or `None` when it restricts nothing.
+fn describe_permissions(permissions: &AgentPermissions) -> Option<String> {
+    if *permissions == AgentPermissions::default() {
+        return None;
+    }
+    if permissions.local_files_only {
+        return Some(
+            "local files only (no web, MCP, plugin or command tools; files kept to the environment's folders and its scratch folder)"
+                .into(),
+        );
+    }
+    let part = |label: &str, access: ToolAccess, names: &[String]| match access {
+        ToolAccess::All => None,
+        ToolAccess::None => Some(format!("{label}: none")),
+        ToolAccess::Named => Some(format!("{label}: {}", names.join(", "))),
+    };
+    let parts: Vec<String> = [
+        part("MCP servers", permissions.mcp, &permissions.mcp_servers),
+        part("plugins", permissions.plugins, &permissions.plugin_names),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    Some(parts.join("; "))
 }
 
 pub fn test(env: String) -> anyhow::Result<()> {
@@ -439,10 +553,67 @@ mod tests {
                 name: "Planner".into(),
                 role: String::new(),
                 session_id: None,
+                permissions: AgentPermissions::default(),
             });
         let shown = describe(&remote);
         assert!(shown.contains("runtime: wsl Ubuntu") && shown.contains("agent Planner"));
         assert_eq!(absolute(Path::new("/srv/app")).unwrap(), "/srv/app");
+    }
+
+    #[test]
+    fn profile_flags_build_a_permission_profile() {
+        assert!(ProfileArgs::default().is_empty());
+        let base = AgentPermissions::default();
+        let both = ProfileArgs {
+            mcp: Some("github, Slack".into()),
+            plugins: Some("none".into()),
+            ..ProfileArgs::default()
+        }
+        .apply(&base)
+        .unwrap();
+        assert_eq!(both.mcp, ToolAccess::Named);
+        assert_eq!(both.mcp_servers, ["github", "Slack"]);
+        assert_eq!(both.plugins, ToolAccess::None);
+        assert!(!both.local_files_only);
+
+        // A flag not given keeps what the agent has; others change it.
+        let locked = ProfileArgs {
+            local_only: true,
+            ..ProfileArgs::default()
+        }
+        .apply(&both)
+        .unwrap();
+        assert_eq!(locked.mcp_servers, ["github", "Slack"]);
+        assert!(locked.local_files_only);
+        let open = ProfileArgs {
+            mcp: Some("ALL".into()),
+            no_local_only: true,
+            ..ProfileArgs::default()
+        }
+        .apply(&locked)
+        .unwrap();
+        assert_eq!(open.mcp, ToolAccess::All);
+        assert!(open.mcp_servers.is_empty());
+        assert!(!open.local_files_only);
+        assert!(
+            ProfileArgs {
+                plugins: Some(" , ".into()),
+                ..ProfileArgs::default()
+            }
+            .apply(&base)
+            .is_err()
+        );
+
+        assert_eq!(describe_permissions(&base), None);
+        assert_eq!(
+            describe_permissions(&both).unwrap(),
+            "MCP servers: github, Slack; plugins: none"
+        );
+        assert!(
+            describe_permissions(&locked)
+                .unwrap()
+                .starts_with("local files only")
+        );
     }
 
     #[test]

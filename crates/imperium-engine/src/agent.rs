@@ -22,7 +22,7 @@ use imperium_tools::permissions::{
     CallKind, Decision, PermissionMode, PermissionRule, Refusal, RuleAction, Target, decide_call,
     safety_floor, suggest,
 };
-use imperium_tools::{Access, Invocation, specs};
+use imperium_tools::{Access, Invocation, SHELL_TOOLS, ToolSource, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
 use serde_json::json;
@@ -291,9 +291,15 @@ impl Agent {
                 memory_instructions(memory, can_delegate),
             ));
         }
-        // Tool providers' rules for their tools (the web tools' citation rules).
+        // Tool providers' rules for their tools (the web tools' citation rules). An agent
+        // limited to local files is offered none of the integrations, so none of their rules.
         for provider in &shared.tools {
             if !can_delegate && !provider.for_subagents() {
+                continue;
+            }
+            if provider.group() == ToolGroup::Builtin
+                && !shared.workspace.profile().allows_provider_tools()
+            {
                 continue;
             }
             if let Some(instructions) = provider.instructions() {
@@ -648,23 +654,37 @@ impl Agent {
         if self.single_call {
             return (Vec::new(), Vec::new());
         }
+        // The agent's permission profile only hides tools here (and refuses them again when
+        // they are called): it never adds one.
+        let profile = self.shared.workspace.profile();
         let mut tools = specs();
+        if !profile.allows_shell() {
+            tools.retain(|tool| !SHELL_TOOLS.contains(&tool.name.as_str()));
+        }
         let mcp_start = tools.len();
         for provider in self.providers(ToolGroup::External) {
-            tools.extend(provider.specs());
+            tools.extend(
+                provider
+                    .specs()
+                    .into_iter()
+                    .filter(|tool| profile.allows_mcp(provider.server_of(&tool.name).as_deref())),
+            );
         }
         let mcp = mcp_start..tools.len();
-        tools.extend(self.shared.extensions.plugins.specs());
+        let lazy = &self.shared.extensions.plugins;
+        tools.extend(lazy.specs().into_iter().filter(|tool| {
+            lazy.plugin_of(&tool.name)
+                .is_some_and(|plugin| profile.allows_plugin(&plugin))
+        }));
         let plugins = mcp.end..tools.len();
         tools.push(update_plan_spec());
         if !self.shared.extensions.skills.is_empty() {
             tools.push(load_skill_spec());
         }
-        let lazy = &self.shared.extensions.plugins;
         if lazy
             .plugins()
             .iter()
-            .any(|plugin| !lazy.is_active(&plugin.name))
+            .any(|plugin| !lazy.is_active(&plugin.name) && profile.allows_plugin(&plugin.name))
         {
             tools.push(activate_plugin_spec());
         }
@@ -674,8 +694,10 @@ impl Agent {
         if self.can_delegate && self.shared.launcher.is_some() {
             tools.push(start_session_spec());
         }
-        for provider in self.providers(ToolGroup::Builtin) {
-            tools.extend(provider.specs());
+        if profile.allows_provider_tools() {
+            for provider in self.providers(ToolGroup::Builtin) {
+                tools.extend(provider.specs());
+            }
         }
         if self.shared.memory.is_some() {
             tools.extend([memory_search_spec(), memory_read_spec()]);
@@ -1375,6 +1397,16 @@ impl Agent {
             name: String,
         }
         let args: Args = parse(arguments)?;
+        if let Some(why) = self
+            .shared
+            .workspace
+            .profile()
+            .refusal(&ToolSource::Plugin { plugin: &args.name })
+        {
+            return Err(format!(
+                "This agent's permission profile does not allow this: {why}."
+            ));
+        }
         match self.shared.extensions.plugins.activate(&args.name).await? {
             Activation::AlreadyActive { tools } => Ok(format!(
                 "Plugin {} is already active. Its tools: {}",
@@ -1794,10 +1826,50 @@ impl Agent {
         }
     }
 
+    /// Why the agent's permission profile refuses a call to the tool `name`, if it does. The
+    /// tool list hides these tools, but a conversation can hold a stale list (the profile
+    /// changed, or the model remembers a tool), so every call is checked again here.
+    fn profile_refusal(&self, name: &str) -> Option<String> {
+        let profile = self.shared.workspace.profile();
+        if profile.is_unrestricted() {
+            return None;
+        }
+        if SHELL_TOOLS.contains(&name) {
+            return profile.refusal(&ToolSource::Shell);
+        }
+        if name == ACTIVATE_PLUGIN {
+            return profile.refusal(&ToolSource::PluginActivation);
+        }
+        if let Some(plugin) = self.shared.extensions.plugins.plugin_of(name) {
+            return profile.refusal(&ToolSource::Plugin { plugin: &plugin });
+        }
+        let provider = self.provider_for(name)?;
+        match provider.group() {
+            ToolGroup::External => {
+                let server = provider.server_of(name);
+                profile.refusal(&ToolSource::Mcp {
+                    server: server.as_deref(),
+                })
+            }
+            ToolGroup::Builtin => profile.refusal(&ToolSource::Provider),
+        }
+    }
+
     /// Runs one tool call and returns the text the model sees.
     async fn run_tool(&mut self, call: &ToolCall) -> String {
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
+        if let Some(why) = self.profile_refusal(name) {
+            return self.tool_finished(
+                call,
+                name,
+                false,
+                format!(
+                    "This agent's permission profile does not allow this: {why}. {name} was not run."
+                ),
+                None,
+            );
+        }
         let tool = match name {
             "update_plan" => AgentTool::UpdatePlan,
             "spawn_agent" if self.can_delegate => AgentTool::SpawnAgent,
