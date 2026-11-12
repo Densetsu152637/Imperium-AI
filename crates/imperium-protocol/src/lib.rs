@@ -7,6 +7,7 @@
 pub mod agents;
 pub mod budgets;
 pub mod discovery;
+pub mod initiative;
 pub mod jsonrpc;
 pub mod methods;
 pub mod permissions;

@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::initiative::Initiative;
 use crate::methods::{Accepted, EnvironmentInfo, Method};
 
 /// Which of a kind of outside tool an agent may use.
@@ -61,6 +62,10 @@ pub struct EnvironmentAgent {
     /// The agent's session id once it has started; kept when its session is archived.
     #[serde(default)]
     pub session_id: Option<String>,
+    /// How much initiative the agent takes: `off` (the default, for new agents too), `suggest`
+    /// or `act` (docs/14, Initiative). Nothing proactive happens unless it is turned on.
+    #[serde(default)]
+    pub initiative: Initiative,
     /// What the agent may use beyond the environment's own permissions; also binds the
     /// sessions and subagents it starts.
     #[serde(default)]
@@ -124,6 +129,10 @@ pub struct EnvironmentAgentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub role: Option<String>,
+    /// Initiative to start with (`off` when left out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub initiative: Option<Initiative>,
     /// The agent's permission profile; unrestricted when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -153,6 +162,10 @@ pub struct EnvironmentAgentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub role: Option<String>,
+    /// A new initiative; it applies from the agent's next look and restarts nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub initiative: Option<Initiative>,
     /// Replaces the agent's permission profile; it applies at once, to the agent's running
     /// session and to the sessions it started.
     #[serde(default, skip_serializing_if = "Option::is_none")]

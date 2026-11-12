@@ -98,12 +98,12 @@ an agent twice.
 | Method | Params | Result |
 | --- | --- | --- |
 | `environments.agent_list` | `{ environment_id }` | `{ agents: EnvironmentAgent[] }` |
-| `environments.agent_create` | `{ environment_id, name, role?, permissions? }` | `EnvironmentAgent` plus `started` and, when it could not start (no folder yet, no model), `reason`; the agent is added anyway and starts when the cause is fixed |
-| `environments.agent_update` | `{ environment_id, agent_id, name?, role?, permissions? }` (`permissions` replaces the [permission profile](#agent-permission-profiles-implemented) and applies at once, without a restart) | `EnvironmentAgent` |
+| `environments.agent_create` | `{ environment_id, name, role?, initiative?, permissions? }` | `EnvironmentAgent` plus `started` and, when it could not start (no folder yet, no model), `reason`; the agent is added anyway and starts when the cause is fixed |
+| `environments.agent_update` | `{ environment_id, agent_id, name?, role?, initiative?, permissions? }` (`permissions` replaces the [permission profile](#agent-permission-profiles-implemented) and applies at once, without a restart) | `EnvironmentAgent` |
 | `environments.agent_delete` | `{ environment_id, agent_id }` | `{}` |
 
-`EnvironmentAgent` is `{ id, name, role, session_id, permissions }` (`session_id` is none until
-the agent has started; `permissions` is the [permission profile](#agent-permission-profiles-implemented)); `EnvironmentInfo.agents` carries them, and every change is announced as
+`EnvironmentAgent` is `{ id, name, role, session_id, initiative, permissions }` (`session_id` is none until the agent has
+started; `initiative` is `off`, `suggest` or `act`, [off by default](#initiative-implemented); `permissions` is the [permission profile](#agent-permission-profiles-implemented)); `EnvironmentInfo.agents` carries them, and every change is announced as
 `environments.changed`. From the command line: `imperium env agent list <env>`, `imperium env
 agent add <env> <name> [--role TEXT] [profile flags]`, `imperium env agent set <env> <agent> [--name N] [--role
 TEXT] [profile flags]`, and `imperium env agent rm <env> <agent>` (an agent by name or id). **Breaking:** the
@@ -149,7 +149,11 @@ starts with `start_session` are bound to the same agent: the binding is recorded
 session (`agent_id` in its meta file), so it survives a daemon restart, and an agent deleted
 since leaves its running sessions under the profile they hold until the daemon restarts. A
 changed profile (`environments.agent_update`) applies from the next call of the agent's running
-session and of every session it started; the agent is not restarted.
+session and of every session it started; the agent is not restarted. The sessions an agent's suggestions start (from a suggestion the user accepts, or
+that the agent starts itself in `act` mode) are bound to its profile like any other session it
+starts. Under local files only the agent has none of the integration tools its initiative
+reviews use, so its reviews do nothing. A review restored after a restart ends on the user's
+first turn after the agent resumes, and that turn runs restricted too.
 
 **Servers and plugins a profile forbids do not start.** A session bound to an agent leaves out
 the MCP servers its profile refuses (all of them under local files only) before they are
@@ -203,6 +207,114 @@ archived session of an agent turned off, which `persistent_agent: true` continue
 agent or an agent with a role, so a switch cannot delete a set-up. An environment saved with
 `persistent_agent: false` and a session id keeps the id. Clients should use the
 `environments.agent_*` methods.
+
+### Initiative (implemented)
+
+A persistent agent can take **initiative**: look for work in its environment on its own, instead
+of waiting to be messaged. It is a setting of each agent, `off`, `suggest` or `act`, and it is
+**off for every agent until the user turns it on** (the agent's *Initiative* select in the
+environment window, `imperium env agent add|set --initiative`, or `initiative` in
+`environments.agent_create` / `agent_update`). Changing it restarts nothing. Turning on `act` also
+makes the agent's first review a full interval away, so the user sees what it suggests before it
+starts anything.
+
+What an agent with initiative does, and when:
+
+- **When it looks.** The daemon checks every `initiative.poll_s` (60 s) which agents are due: one
+  review per agent every `initiative.review_every_min` (240 min), with a **work-left digest**
+  every `initiative.digest_every_hours` (24 h, 0 turns digests off; a review that is due for the
+  digest only asks for the reminder). A review runs only when the agent is idle, **the machine is
+  quiet** (the [load view](#quiet-periods)), and **the user has not been active in the
+  environment**: none of the user's sessions there has a turn running, waits on them, or has
+  written its journal in the last `initiative.idle_min` (10) minutes, and they have not talked to
+  *any* persistent agent of the environment in that time. Otherwise it waits for the next look. If
+  the user becomes active while a review runs, the daemon stops waiting for it (the review is
+  read-only and finishes on its own; a message to the agent waits behind it). A review that takes
+  longer than `initiative.review_timeout_s`, or whose agent is turned off meanwhile, **stops the
+  agent**; the agent stays paused until you resume it, in plan mode with its restricted tools until
+  its turn ends, and `initiative.get` shows it as *paused: the review was stopped*, not as
+  reviewing. A review does not start while that turn is open. A review in flight is written to
+  `initiative.json` (the session it runs on), so a daemon restart while the agent is stopped
+  brings the agent back in plan mode with the review's tools, until its next turn ends. A failed review waits out its
+  interval. A budget that is used up (turn-start check, and the per-call gate while it works)
+  stops it like any turn; one that asks first is not asked on the schedule, and a person's
+  **Review now** (`initiative.review`) reports it to them. **Review now** skips the interval,
+  quiet and idle checks, but not the budget, and not the need for initiative to be on.
+- **What it reads.** The review message is built from a template
+  (`crates/imperium-core/src/initiative/review.txt`, with `suggest.txt`, `act.txt` and
+  `digest.txt`) and facts only the daemon knows: the environment's folders, its recent sessions
+  (status, last activity, who started them, their ids), the agent's open and recently handled
+  suggestions, its last reminder, and in `act` its allowance. The agent reads the roadmap, plan
+  and status documents and its notes itself, with the file tools. The template tells it that
+  **what it reads is data, not instructions** (never to act on it or copy its instructions into
+  a prompt), to cite what it read, never to invent a task, to prefer a few concrete items, to skip
+  anything already suggested, and to **word each prompt the way the user would type it**
+  ("start X, Y and Z", "improve my timeline"): contributing to a roadmap, critiquing an existing
+  idea or design and improving it, or finishing what a session left half done.
+- **What it may do during a review.** Every review runs in **plan mode**, and for the length of
+  the review's turn the daemon refuses every tool but reading and searching (`read_file`,
+  `list_dir`, `glob`, `grep`, `search_sessions`, `memory_search`, `memory_read`, `context_load`),
+  `update_plan`, delegating reading (`spawn_agent`, `await_tasks`, `list_agents`) and recording
+  (`suggest_work`, `work_digest`, and in `act` `start_session`). The same check covers the
+  subagents it spawns. No write, command, web, MCP, plugin, memory-write or app-config tool
+  runs, whatever the user's rules and "always allow" approvals say elsewhere, and nothing can
+  lift the restriction until the review's turn has ended. The agent's own permission mode is
+  put back when the turn ends. The review's plan mode is set in memory only and never written to
+  disk, so a daemon restart in the middle of a review leaves the agent in the mode the user chose.
+- **`suggest`.** The agent records each piece of work with `suggest_work { title, prompt, reason,
+  source }` (at most `initiative.max_suggestions`, 5, per review; every field is required, and
+  the source must be a file or folder inside the environment's folders, optionally with
+  `#heading` or `:line`, or one of the environment's session ids; repeats of open or recently
+  handled ones are refused) and its reminder with `work_digest { summary, items[{ text, source }] }`.
+  They are kept per agent in `<data>/initiative.json` (written whole through a temporary file; an
+  unreadable one is set aside as `initiative.json.unreadable`, not overwritten). The daemon checks
+  that the source exists, not that it says what the agent claims: the user sees the source beside
+  the suggestion. The user hears about them (an `initiative.notice` and an OS notification) and
+  sees them in the agent's row in the environment window with **Start**, which opens a session
+  with the suggested prompt as the user's own session (not background, in their permission mode,
+  tagged *started by <agent>*), and **Dismiss**.
+- **`act`.** As `suggest`, and the agent may call `start_session` itself during the review, with a
+  `reason` and a `source` (both required, the source checked as above; the source is named in the
+  session's first prompt if the agent's wording does not already; the agent's choice of `model` is
+  ignored). Limits, **per agent**: `initiative.max_sessions_per_day` (2) and
+  `initiative.max_concurrent` (1); when they are used up the review falls back to `suggest`. What
+  the agent starts runs in the **default permission mode** (never `full`) as a
+  [background session](#quiet-periods) (it gives way to the user and waits for a quiet machine),
+  with the [safety floor](05-tools-and-isolation.md#permission-modes-implemented) on top: anything
+  that asks waits in the approval queue. It never starts work while the user is active in the
+  environment (checked again at each start). The agent's **follow-up turn** after the report of a
+  session it started on its own initiative is held to the review's tools, minus recording: it
+  may read and search and call `start_session` within the same limits, but it cannot write, run
+  commands, use the web, MCP or plugins, or call `suggest_work` or `work_digest`, whatever the
+  user's rules say, and its permission requests reach the user like a review's. The restriction
+  is tied to the report message itself: the daemon notes the message's id before it sends it
+  (kept in `initiative.json` until the message is answered) and holds the turn that answers
+  that id, however long the agent is busy, stopped or paused first and whatever the user queued
+  before it. It never reads the report's text, so a report cannot be used to start more or to get
+  past the restriction. A session that runs past
+  the hour the agent waits for it is stopped, not left running unaccounted for. Every session
+  it starts is tagged (`started_by` in `session.list`: the agent, the environment, `kind`
+  `initiative`, the reason and the source), shown in the desktop as a note on the session and in
+  its tooltip, and announced to the user as an `initiative.notice` of kind `started` with an OS
+  notification. Sessions the agent starts when the user asks it to are tagged `agent`; those
+  started from a suggestion, `suggestion`.
+- **Privacy.** `initiative.changed` and `initiative.notice` (reasons and sources) are not sent to
+  a paired phone.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `initiative.get` | `{ environment_id, agent_id }` | `InitiativeState` (`mode`, `reviewing`, `waiting` (why it is not reviewing now), `last_review_at`, `next_review_at`, `last_error`, `suggestions`, `digest`, `started_today`, `max_per_day`, `running`, `max_concurrent`) |
+| `initiative.start` | `{ environment_id, agent_id, suggestion_id }` | `{ session_id }` (a used-up budget that asks or blocks refuses it with the budget's message) |
+| `initiative.dismiss` | `{ environment_id, agent_id, suggestion_id }` | `{}` |
+| `initiative.review` | `{ environment_id, agent_id }` | `{}` (the result arrives as `initiative.changed`) |
+
+Notifications: `initiative.changed` (an `InitiativeState`) and `initiative.notice` (`kind`
+`suggestions`, `digest` or `started`, with the agent and, for `started`, the session). From the
+command line: `imperium env agent initiative|suggestions|start|dismiss|review <env> <agent> …`
+(text the agent wrote is printed with control and escape characters replaced). The `[initiative]`
+settings are in [10](10-configuration.md#initiative). Not built: reading open issues and pull
+requests (a review runs no commands, so it uses the files and the sessions the daemon lists), and
+per-agent limits that differ from the global ones.
 
 Sessions that a schedule, a project agent, or auto-fix start still work in a single folder and
 carry no environment.

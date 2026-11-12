@@ -315,6 +315,14 @@ const FIELDS: Field[] = [
     description: "A system notification when a new version has downloaded and installs on restart.",
     control: { type: "toggle" },
   },
+  {
+    key: "notifyInitiative",
+    section: "notifications",
+    label: "Notify about agents' suggestions and sessions",
+    description:
+      "A system notification when a persistent agent with initiative suggests work, reminds you what is left, or starts a session.",
+    control: { type: "toggle" },
+  },
 ];
 
 // ---- Daemon settings sections (config.describe groups by top-level table) ----
