@@ -33,8 +33,13 @@ pub fn list() -> anyhow::Result<()> {
                 (Some(at), _) => format!("last failed {at}"),
                 (None, _) => "never run".into(),
             };
+            let place = row
+                .environment
+                .as_deref()
+                .map(|environment| format!("  in environment {environment}"))
+                .unwrap_or_default();
             println!(
-                "{:<24} {:<26} {:<8} {}  ({last})",
+                "{:<24} {:<26} {:<8} {}  ({last}){place}",
                 row.id, row.trigger, row.action, state
             );
         }

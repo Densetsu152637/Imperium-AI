@@ -22,7 +22,7 @@ use imperium_tools::permissions::{
     CallKind, Decision, PermissionMode, PermissionRule, Refusal, RuleAction, Target, decide_call,
     safety_floor, suggest,
 };
-use imperium_tools::{Access, Invocation, Workspace, specs};
+use imperium_tools::{Access, Invocation, ToolError, Workspace, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
 use serde_json::json;
@@ -1349,7 +1349,7 @@ impl Agent {
         let scope = Scope::parse(&args.scope)
             .ok_or_else(|| format!("unknown scope {:?}; use global or environment", args.scope))?;
         // `project` and `project-private` were folded into the environment's memory; they are
-        // still accepted, as that, for one protocol version (0.30).
+        // still accepted, as that, for one protocol version (0.31).
         if scope == Scope::Environment {
             let alias = Scope::is_legacy_name(&args.scope);
             let mut done = self.environment_remember(memory, args).await?;
@@ -2025,6 +2025,14 @@ impl Agent {
             Access::Write => CallKind::Edit,
             Access::Execute => CallKind::Execute,
         };
+        // A write into a read-only mount fails whatever the user would answer, so it is not
+        // asked about.
+        if invocation.access() == Access::Write
+            && let Some(path) = invocation.path()
+            && let Err(error @ ToolError::ReadOnly(_)) = self.workspace.resolve_writable(path)
+        {
+            return finish(false, format!("error: {error}"));
+        }
         let mode = self.workspace.permissions().mode();
         let floored = safety_floor(kind, &target);
         let decision = decide_call(mode, kind, rule, floored);
@@ -2125,6 +2133,13 @@ impl Agent {
                 "the session is in plan mode, which only reads: a writer subagent edits files, \
                  so none was started. Start a read-only subagent, or ask the user to leave plan \
                  mode"
+                    .into(),
+            );
+        }
+        if writes && self.workspace.is_read_only() {
+            return Err(
+                "this session's folders are a read-only mount: a writer subagent edits files, \
+                 so none was started. Start a read-only subagent instead"
                     .into(),
             );
         }
@@ -3291,7 +3306,7 @@ struct RememberArgs {
 /// Added to the result of a memory tool called with the name of a scope that no longer exists.
 const LEGACY_SCOPE_NOTE: &str = "\n(Note: the scopes project and project-private were folded into \
 environment memory, so this used environment memory; use scope environment. The old names stop \
-working after protocol 0.30.)";
+working after protocol 0.31.)";
 
 /// The scopes a memory tool's optional `scope` argument names, and whether it used an old name:
 /// none or `all` is both, `global` and `environment` are one each, and `project`,

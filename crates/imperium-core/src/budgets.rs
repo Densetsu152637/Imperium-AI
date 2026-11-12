@@ -115,6 +115,9 @@ pub struct BudgetBook {
     /// Calls that were admitted but have not been recorded yet, with what they are expected to
     /// use, so calls that arrive together cannot all pass a budget that has room for one.
     reserved: Mutex<Vec<Reserved>>,
+    /// Budgets from environments' own configuration files, by environment id: counted beside
+    /// the user's, but not part of their settings (they are never saved).
+    environment_limits: Mutex<BTreeMap<String, Vec<Budget>>>,
     next_reservation: std::sync::atomic::AtomicU64,
 }
 
@@ -153,8 +156,29 @@ impl BudgetBook {
             path: Some(path),
             inner: Mutex::new((settings, ledger)),
             reserved: Mutex::new(Vec::new()),
+            environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
         }
+    }
+
+    /// Sets the budgets environment `id`'s own configuration file asks for (none removes
+    /// them). They are counted with the user's: shown among the standings, alerting, and
+    /// stopping the environment's sessions.
+    pub fn set_environment_limits(&self, id: &str, limits: Vec<Budget>) {
+        let mut all = lock(&self.environment_limits);
+        if limits.is_empty() {
+            all.remove(id);
+        } else {
+            all.insert(id.to_string(), limits);
+        }
+    }
+
+    fn environment_budgets(&self) -> Vec<Budget> {
+        lock(&self.environment_limits)
+            .values()
+            .flatten()
+            .cloned()
+            .collect()
     }
 
     /// Admits a call of `origin` expected to use `tokens` and `cost_usd`, unless a used-up
@@ -231,9 +255,15 @@ impl BudgetBook {
     }
 
     pub fn set_settings(&self, settings: BudgetSettings) {
+        let extra = self.environment_budgets();
         let mut inner = lock(&self.inner);
         // Forget alerts of budgets that are gone.
-        let ids: Vec<&str> = settings.limits.iter().map(|b| b.id.as_str()).collect();
+        let ids: Vec<&str> = settings
+            .limits
+            .iter()
+            .chain(extra.iter())
+            .map(|b| b.id.as_str())
+            .collect();
         inner.1.alerted.retain(|id, _| ids.contains(&id.as_str()));
         inner.0 = settings;
         self.save(&inner.1);
@@ -241,6 +271,7 @@ impl BudgetBook {
 
     /// Adds a call on `today` and returns the alerts it sets off.
     pub fn record(&self, today: NaiveDate, call: &CallUsage) -> Vec<Fired> {
+        let extra = self.environment_budgets();
         let mut inner = lock(&self.inner);
         let (settings, ledger) = &mut *inner;
         let environment = call.environment_id.clone().unwrap_or_default();
@@ -270,7 +301,7 @@ impl BudgetBook {
         }
 
         let mut fired = Vec::new();
-        for budget in &settings.limits {
+        for budget in settings.limits.iter().chain(extra.iter()) {
             let origin = Origin {
                 environment: call.environment_id.as_deref(),
                 spec: Some(&call.spec),
@@ -311,11 +342,13 @@ impl BudgetBook {
 
     /// Every budget's standing on `today`.
     pub fn standings(&self, today: NaiveDate) -> Vec<Standing> {
+        let extra = self.environment_budgets();
         let inner = lock(&self.inner);
         let (settings, ledger) = &*inner;
         settings
             .limits
             .iter()
+            .chain(extra.iter())
             .map(|budget| {
                 let (start, end) = window(budget.window, today, settings);
                 let (tokens, cost) = used(ledger, budget, start, end);
@@ -1144,6 +1177,33 @@ mod tests {
     }
 
     #[test]
+    fn an_environments_own_budgets_count_beside_the_users_and_can_be_taken_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = BudgetBook::load(dir.path().join("usage.json"), settings(Vec::new()));
+        let today = date("2026-11-11");
+        book.set_environment_limits(
+            "e1",
+            vec![Budget {
+                id: "e1:cap".into(),
+                ..weekly_env(100, BudgetAction::Block)
+            }],
+        );
+        assert!(book.gate(today, origin(Some("e1"), Some("x:m"))).is_none());
+        let fired = book.record(today, &call(Some("e1"), "x:m", 150, None));
+        assert!(!fired.is_empty(), "the budget alerts like any other");
+        let stop = book.gate(today, origin(Some("e1"), Some("x:m"))).unwrap();
+        assert_eq!(stop.budget.id, "e1:cap");
+        // Another environment is not stopped, and the user's saved budgets never held it.
+        assert!(book.gate(today, origin(Some("e2"), Some("x:m"))).is_none());
+        assert!(book.settings().limits.is_empty());
+        assert_eq!(book.standings(today).len(), 1);
+        // Taking the file away takes its budgets away.
+        book.set_environment_limits("e1", Vec::new());
+        assert!(book.gate(today, origin(Some("e1"), Some("x:m"))).is_none());
+        assert!(book.standings(today).is_empty());
+    }
+
+    #[test]
     fn an_approval_is_for_one_window_of_one_budget_in_one_session() {
         let stop = |window_end: &str| Stop {
             budget: weekly_env(1, BudgetAction::Ask),
@@ -1256,6 +1316,7 @@ mod tests {
         let book = BudgetBook {
             path: None,
             reserved: Mutex::new(Vec::new()),
+            environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
             inner: Mutex::new((
                 settings(vec![Budget {
@@ -1292,6 +1353,7 @@ mod tests {
         let book = BudgetBook {
             path: None,
             reserved: Mutex::new(Vec::new()),
+            environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
             inner: Mutex::new((
                 settings(vec![
@@ -1424,6 +1486,7 @@ mod tests {
         let book = BudgetBook {
             path: None,
             reserved: Mutex::new(Vec::new()),
+            environment_limits: Mutex::default(),
             next_reservation: std::sync::atomic::AtomicU64::new(1),
             inner: Mutex::new((
                 settings(vec![Budget {

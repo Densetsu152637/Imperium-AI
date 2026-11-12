@@ -38,7 +38,7 @@ impl Scope {
 
     /// The scope named `text`. `project`, `project-private`, `project_private` and `private`
     /// are the names of the scopes that were folded into the environment's memory; they are
-    /// still accepted, as [`Scope::Environment`], for one protocol version (0.30) so agents and
+    /// still accepted, as [`Scope::Environment`], for one protocol version (0.31) so agents and
     /// scripts that use them keep working (see [`Scope::is_legacy_name`]).
     pub fn parse(text: &str) -> Option<Self> {
         Some(match text {

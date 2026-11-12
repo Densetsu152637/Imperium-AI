@@ -86,6 +86,9 @@ pub struct Permissions {
     pub global: SharedRules,
     pub environment: SharedRules,
     pub mode: SharedMode,
+    /// Rules fixed for the session when it started, counted with its environment's: the ask
+    /// and deny rules of the environment's own configuration file.
+    fixed: Vec<PermissionRule>,
 }
 
 impl PartialEq for Permissions {
@@ -93,6 +96,7 @@ impl PartialEq for Permissions {
         Arc::ptr_eq(&self.global.0, &other.global.0)
             && Arc::ptr_eq(&self.environment.0, &other.environment.0)
             && Arc::ptr_eq(&self.mode.0, &other.mode.0)
+            && self.fixed == other.fixed
     }
 }
 
@@ -104,6 +108,17 @@ impl Permissions {
             global,
             environment,
             mode: SharedMode::default(),
+            fixed: Vec::new(),
+        }
+    }
+
+    /// The same rules with `rules` added for this session. They are evaluated apart from the
+    /// global and environment rules and the stronger action wins, so a fixed `ask` never
+    /// weakens a `deny`.
+    pub fn with_fixed_rules(self, rules: Vec<PermissionRule>) -> Self {
+        Permissions {
+            fixed: rules,
+            ..self
         }
     }
 
@@ -117,7 +132,14 @@ impl Permissions {
 
     /// What the rules say about a call to `tool` on `target`; `None` when no rule matches.
     pub fn evaluate(&self, tool: &str, target: &Target) -> Option<RuleAction> {
-        evaluate(&self.global.get(), &self.environment.get(), tool, target)
+        let own = evaluate(&self.global.get(), &self.environment.get(), tool, target);
+        if self.fixed.is_empty() {
+            return own;
+        }
+        // The fixed rules are not subject to "an environment rule overrides a global one of equal
+        // specificity": they only add to what the user's rules say, so they can make a call
+        // ask or deny but never undo the user's deny.
+        own.max(evaluate(&[], &self.fixed, tool, target))
     }
 
     /// Whether any rule could ask about or deny something, so callers can skip per-file checks
@@ -127,6 +149,7 @@ impl Permissions {
             .get()
             .iter()
             .chain(self.environment.get().iter())
+            .chain(self.fixed.iter())
             .any(|rule| rule.action != RuleAction::Allow)
     }
 
@@ -899,6 +922,51 @@ mod tests {
     }
 
     use RuleAction::{Allow, Ask, Deny};
+
+    #[test]
+    fn fixed_rules_add_to_the_users_rules_and_never_weaken_them() {
+        let path = Target::Path {
+            absolute: "/p/secret.txt".into(),
+            relative: Some("secret.txt".into()),
+        };
+        for (tool, pattern) in [
+            ("read_file", "secret.txt"),
+            ("*", "secret.txt"),
+            ("read_file", ""),
+        ] {
+            // The user's deny stands against a fixed ask of the same specificity.
+            let denied = Permissions::new(
+                SharedRules::new(vec![rule(tool, pattern, Deny)]),
+                SharedRules::default(),
+            )
+            .with_fixed_rules(vec![rule(tool, pattern, Ask)]);
+            assert_eq!(
+                denied.evaluate("read_file", &path),
+                Some(Deny),
+                "{tool} {pattern}"
+            );
+        }
+        // Where the user has no opinion, or only allows, a fixed ask or deny applies.
+        let allowed = Permissions::new(
+            SharedRules::new(vec![rule("read_file", "", Allow)]),
+            SharedRules::default(),
+        )
+        .with_fixed_rules(vec![rule("read_file", "secret.txt", Ask)]);
+        assert_eq!(allowed.evaluate("read_file", &path), Some(Ask));
+        let silent = Permissions::default().with_fixed_rules(vec![rule("read_file", "", Deny)]);
+        assert_eq!(silent.evaluate("read_file", &path), Some(Deny));
+        assert_eq!(silent.evaluate("write_file", &path), None);
+        // Commands too.
+        let commands = Permissions::new(
+            SharedRules::new(vec![rule("run_command", "rm", Deny)]),
+            SharedRules::default(),
+        )
+        .with_fixed_rules(vec![rule("run_command", "rm", Ask)]);
+        assert_eq!(
+            commands.evaluate("run_command", &command("rm x")),
+            Some(Deny)
+        );
+    }
 
     #[test]
     fn globs_keep_single_stars_within_a_segment() {

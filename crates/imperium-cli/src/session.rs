@@ -54,7 +54,11 @@ fn describe(session: &SessionSummary) -> String {
         },
         session.model.as_deref().unwrap_or("no model"),
         session.project_dir,
-        title,
+        if session.read_only {
+            format!("[read-only] {title}")
+        } else {
+            title.to_string()
+        },
     )
 }
 

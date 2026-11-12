@@ -44,7 +44,7 @@ syncing them to the host.
 
 `memory_remember` (and the optional `scope` of `memory_search` and `memory_read`) still accept the
 old scope names **`project`**, **`project-private`** (also `project_private`, `private`) for **one
-protocol version, 0.30**: they mean `environment`, the entry is written to the environment's
+protocol version, 0.31**: they mean `environment`, the entry is written to the environment's
 `Memory.md`, and the tool result says the name is old. The tools no longer advertise them. A
 later protocol version removes them, and then they are refused as unknown scopes. `project` is
 still one of the entry *types* (a project's goals and constraints), which is unrelated.

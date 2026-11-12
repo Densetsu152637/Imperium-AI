@@ -287,10 +287,14 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     merge report, and the worktrees go with the session
     ([14](14-projects-and-automation.md#worktrees)). The planned `[worktrees]` settings and the
     Worktrees pane are not built.
-27. **Environment configuration.** An environment's own `.imperium/config.toml` (instructions,
-    policy, plugins, MCP servers, routing, budgets), sessions narrowed to a subfolder or a
-    read-only mount, and schedules and project agents per environment
-    ([14](14-projects-and-automation.md)).
+27. **Environment configuration** (implemented). An environment's own `.imperium/config.toml`
+    in its first folder (instructions, policy, plugins, MCP servers, routing, budgets) that can
+    only narrow the user's settings and needs `mcp.trusted_projects` before it starts a server or
+    plugin ([14](14-projects-and-automation.md#environment-configuration-implemented)); sessions
+    narrowed to a subfolder or a read-only mount, enforced per isolation tier
+    ([14](14-projects-and-automation.md#narrowed-sessions-implemented)); and schedules and
+    project agents attached to an environment
+    ([14](14-projects-and-automation.md#schedules-and-project-agents-per-environment-implemented)).
 28. **Local runtimes and hardware.** vLLM as a supervised runtime, GPU probes for AMD, Intel,
     and Apple Silicon, and memory estimates calibrated against measured use
     ([04](04-models-and-routing.md)).
@@ -359,8 +363,8 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     `-legacy`, whatever exceeds the 2,000/24,000 character limits moved to `Memory.archive.md`,
     originals backed up, recorded, idempotent); folders in no environment are left until one has
     them. `project` and `project-private` stay accepted as names for `environment` for protocol
-    0.30 only ([17](17-memory.md#migrating-older-project-memory), [10](10-configuration.md)).
-    Protocol 0.30.
+    0.31 only ([17](17-memory.md#migrating-older-project-memory), [10](10-configuration.md)).
+    Protocol 0.31.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
