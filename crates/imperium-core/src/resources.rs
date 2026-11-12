@@ -302,6 +302,8 @@ pub(crate) fn assemble(inputs: &Inputs<'_>) -> ResourceSnapshot {
                 slots_in_use: model.slots_in_use,
                 queued: model.queued,
                 cpu_pinned: model.cpu_pinned,
+                draft_model: model.draft.clone(),
+                draft_notice: model.draft_notice.clone(),
                 claimed: model.claimed,
                 sessions: sessions.into_iter().map(str::to_string).collect(),
                 pid: model.pid,
@@ -530,6 +532,8 @@ mod tests {
             claimed: false,
             cpu_pinned: false,
             stale: false,
+            draft: None,
+            draft_notice: None,
             crashed: false,
         }
     }

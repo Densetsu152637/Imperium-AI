@@ -189,6 +189,27 @@ impl RuntimeBackend for LlamaCpp {
                 args.push("--no-mmproj-offload".into());
             }
         }
+        if let Some(draft) = &spec.draft {
+            // Speculative decoding: the draft proposes tokens, the model checks them
+            // (llama.cpp b12180, tools/server README: `--spec-draft-model`, `--spec-type`,
+            // `--spec-draft-n-max`, `--spec-draft-n-min`, `--spec-draft-ngl`). A draft model
+            // does nothing without `--spec-type draft-simple`, whose default is `none`.
+            args.extend([
+                "--spec-draft-model".into(),
+                draft.path.display().to_string(),
+                "--spec-type".into(),
+                "draft-simple".into(),
+            ]);
+            for (flag, value) in [
+                ("--spec-draft-n-max", draft.max),
+                ("--spec-draft-n-min", draft.min),
+                ("--spec-draft-ngl", draft.gpu_layers),
+            ] {
+                if let Some(value) = value {
+                    args.extend([flag.into(), value.to_string()]);
+                }
+            }
+        }
         args.extend(spec.extra_args.iter().cloned());
         args
     }

@@ -304,6 +304,8 @@ mod tests {
             pool_tokens: 8192,
             pool_reserved_tokens: 0,
             stale: false,
+            draft: None,
+            draft_notice: None,
             crashed: false,
         }
     }

@@ -35,6 +35,10 @@ pub struct GgufInfo {
     /// `reasoning_effort` variable); `None` when the file has no template, or one too long to
     /// read.
     pub template_reasons: Option<bool>,
+    /// `tokenizer.ggml.model`, the tokenizer family (`llama`, `gpt2`, ...).
+    pub tokenizer_model: Option<String>,
+    /// Entries in the vocabulary (`tokenizer.ggml.tokens`); the entries themselves are not read.
+    pub vocab_size: Option<u64>,
     /// What the model card fields of the header say (`general.*`), for the model's card.
     pub about: About,
 }
@@ -158,6 +162,13 @@ pub fn read(reader: &mut (impl Read + Seek)) -> Result<GgufInfo, GgufError> {
     for _ in 0..kv_count {
         let key = read_string(reader)?.ok_or(GgufError::Malformed("key too long"))?;
         let kind = read_u32(reader)?;
+        if key == "tokenizer.ggml.tokens" && kind == ARRAY {
+            let element = read_u32(reader)?;
+            let count = read_u64(reader)?;
+            skip_array(reader, element, count)?;
+            info.vocab_size = Some(count);
+            continue;
+        }
         let texts = matches!(key.as_str(), "general.tags" | "general.languages");
         match read_value(reader, kind, texts)? {
             Value::Text(text) => {
@@ -170,6 +181,7 @@ pub fn read(reader: &mut (impl Read + Seek)) -> Result<GgufInfo, GgufError> {
                     "general.size_label" => about.size_label = Some(text),
                     "general.description" => about.description = Some(text),
                     "general.license" => about.license = Some(text),
+                    "tokenizer.ggml.model" => info.tokenizer_model = Some(text),
                     "tokenizer.chat_template" => {
                         info.template_reasons = Some(imperium_api::template_reasons(&text));
                     }
@@ -271,23 +283,29 @@ fn read_value(reader: &mut (impl Read + Seek), kind: u32, texts: bool) -> Result
                 }
                 return Ok(Value::Texts(list));
             }
-            match fixed_size(element) {
-                Some(size) => skip(
-                    reader,
-                    count
-                        .checked_mul(size)
-                        .ok_or(GgufError::Malformed("array too large"))?,
-                )?,
-                None => {
-                    for _ in 0..count {
-                        read_value(reader, element, false)?;
-                    }
-                }
-            }
+            skip_array(reader, element, count)?;
             Value::Skipped
         }
         _ => return Err(GgufError::Malformed("unknown value type")),
     })
+}
+
+/// Skips `count` elements of type `element` of an array whose header was read.
+fn skip_array(reader: &mut (impl Read + Seek), element: u32, count: u64) -> Result<(), GgufError> {
+    match fixed_size(element) {
+        Some(size) => skip(
+            reader,
+            count
+                .checked_mul(size)
+                .ok_or(GgufError::Malformed("array too large"))?,
+        )?,
+        None => {
+            for _ in 0..count {
+                read_value(reader, element, false)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn fixed_size(kind: u32) -> Option<u64> {
@@ -496,6 +514,26 @@ mod tests {
         );
         let none = read(&mut Cursor::new(llama("plain"))).unwrap();
         assert_eq!(none.template_reasons, None);
+    }
+
+    #[test]
+    fn the_tokenizer_family_and_vocabulary_size_are_read() {
+        let bytes = header(&[
+            ("general.architecture", V::Str("qwen3")),
+            ("tokenizer.ggml.model", V::Str("gpt2")),
+            ("tokenizer.ggml.tokens", V::StrArray(&["a", "b", "c"])),
+            ("qwen3.block_count", V::U32(48)),
+        ]);
+        let info = read(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!(info.tokenizer_model.as_deref(), Some("gpt2"));
+        assert_eq!(info.vocab_size, Some(3));
+        // The key after the vocabulary is still read: the array was skipped whole.
+        assert_eq!(info.block_count, Some(48));
+        let none = read(&mut Cursor::new(header(&[(
+            "general.architecture",
+            V::Str("x"),
+        )])));
+        assert_eq!(none.unwrap().vocab_size, None);
     }
 
     #[test]

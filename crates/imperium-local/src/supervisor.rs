@@ -67,6 +67,7 @@ use crate::planner::{self, Budget, Footprint, Placement, prompt_cache_mb};
 use crate::residency::{Action, LoadAsk, Move, Reason, ResidencyPolicy, Standard};
 use crate::scan::{Format, LocalModel};
 use crate::slot_files::{self, Saved, SlotFiles};
+use crate::speculative::{self, Draft, Drafting};
 
 const MIB: u64 = 1024 * 1024;
 
@@ -118,6 +119,18 @@ impl CpuLane {
 /// follows the model's recent calls, and long generations weigh more than short ones.
 const THROUGHPUT_KEEP: f64 = 0.8;
 
+/// The draft model a server is started with for speculative decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftSpec {
+    pub path: PathBuf,
+    /// `--spec-draft-n-max`; `None` keeps llama.cpp's default.
+    pub max: Option<u32>,
+    /// `--spec-draft-n-min`; `None` keeps llama.cpp's default.
+    pub min: Option<u32>,
+    /// `--spec-draft-ngl`; `None` lets llama.cpp place every layer.
+    pub gpu_layers: Option<u32>,
+}
+
 /// What a server is started with.
 #[derive(Debug, Clone)]
 pub struct LaunchSpec {
@@ -148,6 +161,8 @@ pub struct LaunchSpec {
     pub slot_save_path: Option<PathBuf>,
     /// vLLM's `--gpu-memory-utilization` (the share of GPU memory it may take).
     pub gpu_memory_utilization: f64,
+    /// The draft model for speculative decoding (llama.cpp only).
+    pub draft: Option<DraftSpec>,
     pub extra_args: Vec<String>,
 }
 
@@ -177,6 +192,7 @@ impl PartialEq for LaunchSpec {
             && self.cache_ram_mb == other.cache_ram_mb
             && self.slot_save_path == other.slot_save_path
             && self.gpu_memory_utilization == other.gpu_memory_utilization
+            && self.draft == other.draft
             && self.extra_args == other.extra_args
     }
 }
@@ -329,6 +345,10 @@ pub struct LoadedStatus {
     pub pool_reserved_tokens: u32,
     /// Started with settings that have changed since; it restarts once nothing is using it.
     pub stale: bool,
+    /// The draft model it was started with for speculative decoding, if any.
+    pub draft: Option<String>,
+    /// Why a configured draft model is not in use, if so (it runs without it).
+    pub draft_notice: Option<String>,
     /// Its server exited on its own: calls wait until it is unloaded ([`Reason::Crashed`]) and
     /// loaded again.
     pub crashed: bool,
@@ -681,6 +701,10 @@ struct Loaded {
     /// A call found its server gone ([`Server::exited`]): no call takes a slot on it until the
     /// residency controller unloads it ([`Reason::Crashed`]).
     crashed: bool,
+    /// The draft model it runs with, if any.
+    draft: Option<String>,
+    /// Why a configured draft is not in use.
+    draft_notice: Option<String>,
 }
 
 impl Loaded {
@@ -1048,6 +1072,8 @@ struct Load {
     served_pool: u32,
     /// It is pinned to the CPU lane.
     cpu_pinned: bool,
+    /// The draft model it is started with, and why a configured one is not used.
+    drafting: Drafting,
     /// Why the victims give way.
     why: Reason,
 }
@@ -1083,6 +1109,9 @@ pub struct Supervisor {
     /// The KV pool each model's calls have asked for beyond the one it starts with; forgotten
     /// when the model is unloaded, so it starts small again.
     grown: Mutex<HashMap<String, u32>>,
+    /// Per model, the draft model its server failed to start with and why: it loads without
+    /// that draft until its settings or the installed models change.
+    draft_failed: Mutex<HashMap<String, (String, String)>>,
     /// Why each waiting holder's call waits, while it does.
     waits: Mutex<HashMap<String, LocalWait>>,
     events: broadcast::Sender<SwapEvent>,
@@ -1122,6 +1151,20 @@ impl fmt::Debug for Supervisor {
             .field("backends", &self.backends)
             .field("launcher", &self.launcher)
             .finish_non_exhaustive()
+    }
+}
+
+/// What `model` needs started with `launch`, with `draft`'s memory added when it drafts.
+fn drafted_footprint(
+    model: &LocalModel,
+    launch: &ModelLaunch,
+    draft: Option<&Draft>,
+    on_cpu: bool,
+) -> Footprint {
+    let footprint = Footprint::of(model, launch);
+    match draft {
+        Some(draft) => footprint.with_draft(draft.memory(launch.pool_tokens, on_cpu)),
+        None => footprint,
     }
 }
 
@@ -1183,6 +1226,7 @@ impl Supervisor {
             slot_files,
             cpu_pinned: Mutex::default(),
             grown: Mutex::default(),
+            draft_failed: Mutex::default(),
             waits: Mutex::default(),
             events: broadcast::channel(64).0,
             moves: broadcast::channel(256).0,
@@ -1202,6 +1246,7 @@ impl Supervisor {
     /// from disk can no longer be loaded again.
     pub fn set_models(&self, models: Vec<LocalModel>) {
         *lock(&self.models) = models;
+        lock(&self.draft_failed).clear();
     }
 
     /// The memory loads are planned against now: measured when the supervisor started, and
@@ -1426,6 +1471,7 @@ impl Supervisor {
     /// `unload_stale_now`). This never waits.
     pub fn set_model_settings(&self, settings: BTreeMap<String, LocalModelSettings>) {
         *lock(&self.model_settings) = settings;
+        lock(&self.draft_failed).clear();
         self.mark_stale();
     }
 
@@ -1496,13 +1542,18 @@ impl Supervisor {
         trained: Option<u64>,
     ) -> u32 {
         let cpu = self.cpu_slots(&model.id).is_some();
+        // A draft that fits beside the model at the least working pool counts in what the
+        // pool must leave room for.
+        let drafting = self.drafting(model, launch, context::MIN_FIT_TOKENS);
         let place = |tokens: u32| {
-            let footprint = Footprint::of(
+            let footprint = drafted_footprint(
                 model,
                 &ModelLaunch {
                     pool_tokens: tokens,
                     ..launch.clone()
                 },
+                drafting.draft(),
+                cpu,
             );
             if cpu {
                 backend.place_on_cpu(footprint, self.start_budget)
@@ -1553,7 +1604,92 @@ impl Supervisor {
 
     /// What loading `model` needs with the settings it is started with.
     pub fn footprint(&self, model: &LocalModel) -> Footprint {
-        Footprint::of(model, &self.launch(&model.id))
+        let launch = self.launch(&model.id);
+        let drafting = self.drafting(model, &launch, launch.pool_tokens);
+        drafted_footprint(
+            model,
+            &launch,
+            drafting.draft(),
+            self.cpu_slots(&model.id).is_some(),
+        )
+    }
+
+    /// What `model`'s draft setting comes to when it loads with a KV pool of `pool_tokens`: the
+    /// draft is used when it is installed, compatible, and fits on an empty machine beside the
+    /// model without pushing the model's layers off the GPU; otherwise the model runs without
+    /// it ([`Drafting::Skipped`]).
+    pub fn drafting(&self, model: &LocalModel, launch: &ModelLaunch, pool_tokens: u32) -> Drafting {
+        let resolved = {
+            let models = lock(&self.models);
+            speculative::resolve(model, launch, &models)
+        };
+        let Drafting::On(draft) = resolved else {
+            return resolved;
+        };
+        if let Some((failed, reason)) = lock(&self.draft_failed).get(&model.id)
+            && *failed == draft.model.id
+        {
+            return Drafting::Skipped(reason.clone());
+        }
+        let Some(backend) = self.backend(model.format) else {
+            return Drafting::Skipped(speculative::skipped(
+                &draft.model.id,
+                "no runtime serves the model",
+            ));
+        };
+        if backend.id() != backend::LLAMA_CPP {
+            return Drafting::Skipped(speculative::skipped(
+                &draft.model.id,
+                "only llama.cpp can use a draft model",
+            ));
+        }
+        let cpu = self.cpu_slots(&model.id).is_some();
+        let sized = ModelLaunch {
+            pool_tokens,
+            ..launch.clone()
+        };
+        let place = |footprint: Footprint| {
+            if cpu {
+                backend.place_on_cpu(footprint, self.start_budget)
+            } else {
+                backend.place(footprint, self.start_budget)
+            }
+        };
+        let alone = place(Footprint::of(model, &sized));
+        let with = place(drafted_footprint(model, &sized, Some(&draft), cpu));
+        let fits = match (&alone, &with) {
+            (_, None) => Err("it does not fit in memory beside the model"),
+            (Some(alone), Some(with)) if alone.all_layers_on_gpu && !with.all_layers_on_gpu => {
+                Err("beside it, some of the model's layers would no longer fit on the GPU")
+            }
+            _ => Ok(()),
+        };
+        match fits {
+            Ok(()) => Drafting::On(draft),
+            Err(reason) => Drafting::Skipped(speculative::skipped(&draft.model.id, reason)),
+        }
+    }
+
+    /// The draft model `model` runs with while loaded with `launch`'s settings, or what its draft
+    /// setting comes to when it loads: the draft's id and, when a configured draft is not used,
+    /// the notice saying why.
+    pub fn draft_state(
+        &self,
+        model: &LocalModel,
+        launch: &ModelLaunch,
+    ) -> (Option<String>, Option<String>) {
+        if let Some(loaded) = lock(&self.state)
+            .loaded
+            .get(&model.id)
+            .filter(|loaded| !loaded.launch.restarts_for(launch))
+        {
+            return (loaded.draft.clone(), loaded.draft_notice.clone());
+        }
+        let drafting = self.drafting(model, &launch, launch.pool_tokens);
+        (
+            drafting.draft().map(|draft| draft.model.id.clone()),
+            drafting.notice().map(str::to_string),
+        )
     }
 
     /// Where `model` goes within a budget when served by `backend`: on the CPU lane if it is
@@ -1576,6 +1712,8 @@ impl Supervisor {
         cpu: bool,
     ) -> impl Fn(Budget) -> Option<Placement> {
         let launch = self.launch(&model.id);
+        let drafting = self.drafting(model, &launch, launch.pool_tokens);
+        let draft = drafting.draft().cloned();
         let model = model.clone();
         // The pool may give way down to a working context (or what the launch starts with, if
         // less); the weights never give way for it.
@@ -1586,12 +1724,14 @@ impl Supervisor {
         let elastic = backend.slot_aware();
         move |budget| {
             let at = |tokens: u32| {
-                let footprint = Footprint::of(
+                let footprint = drafted_footprint(
                     &model,
                     &ModelLaunch {
                         pool_tokens: tokens,
                         ..launch.clone()
                     },
+                    draft.as_ref(),
+                    cpu,
                 );
                 if cpu {
                     backend.place_on_cpu(footprint, budget)
@@ -1644,7 +1784,11 @@ impl Supervisor {
         };
         let place = self.placer(model, backend);
         let placement = place(left).or_else(|| place(self.budget()))?;
-        Some((placement, Self::placed_pool(model, &launch, &placement)))
+        let drafting = self.drafting(model, &launch, launch.pool_tokens);
+        Some((
+            placement,
+            Self::placed_pool(model, &launch, drafting.draft(), &placement),
+        ))
     }
 
     /// Whether `model` fits in memory now: loaded, fitting beside the loaded models, fitting
@@ -1676,12 +1820,23 @@ impl Supervisor {
 
     /// The KV pool `placement` (from [`Supervisor::placer`]) was made with: the launch's pool,
     /// or less when it was cut to keep the layers on the GPU.
-    fn placed_pool(model: &LocalModel, launch: &ModelLaunch, placement: &Placement) -> u32 {
-        let per_token = model.info.kv_bytes_per_token_kv(
-            planner::cache_element_bytes(&launch.cache_type_k),
-            planner::cache_element_bytes(&launch.cache_type_v),
-        );
-        let weights = model.size_bytes + planner::RUNTIME_OVERHEAD_BYTES;
+    fn placed_pool(
+        model: &LocalModel,
+        launch: &ModelLaunch,
+        draft: Option<&Draft>,
+        placement: &Placement,
+    ) -> u32 {
+        // The draft's context follows the pool: its KV cache grows with it, the rest does not.
+        let per_token = model
+            .info
+            .kv_bytes_per_token_kv(
+                planner::cache_element_bytes(&launch.cache_type_k),
+                planner::cache_element_bytes(&launch.cache_type_v),
+            )
+            .map(|per_token| per_token + draft.map_or(0, Draft::kv_bytes_per_token));
+        let weights = model.size_bytes
+            + planner::RUNTIME_OVERHEAD_BYTES
+            + draft.map_or(0, Draft::fixed_bytes);
         match per_token {
             Some(per_token) if per_token > 0 => {
                 let kv = placement.required_bytes.saturating_sub(weights);
@@ -1699,9 +1854,11 @@ impl Supervisor {
         model: &LocalModel,
         launch: &ModelLaunch,
     ) -> (Footprint, Option<Placement>) {
-        let footprint = Footprint::of(model, launch);
+        let cpu = self.cpu_slots(&model.id).is_some();
+        let drafting = self.drafting(model, launch, launch.pool_tokens);
+        let footprint = drafted_footprint(model, launch, drafting.draft(), cpu);
         let placement = self.backend(model.format).and_then(|backend| {
-            if self.cpu_slots(&model.id).is_some() {
+            if cpu {
                 backend.place_on_cpu(footprint, self.budget())
             } else {
                 backend.place(footprint, self.budget())
@@ -1771,6 +1928,8 @@ impl Supervisor {
                     pool_tokens: loaded.pool.pool_tokens,
                     pool_reserved_tokens: loaded.pool.reserved_tokens(),
                     stale: loaded.stale,
+                    draft: loaded.draft.clone(),
+                    draft_notice: loaded.draft_notice.clone(),
                     crashed: loaded.has_crashed(),
                 }
             })
@@ -2372,7 +2531,13 @@ impl Supervisor {
         ticket: &Ticket<'_>,
     ) -> Result<Plan, String> {
         let launch = self.launch(&model.id);
-        let footprint = Footprint::of(model, &launch);
+        let drafting = self.drafting(model, &launch, launch.pool_tokens);
+        let footprint = drafted_footprint(
+            model,
+            &launch,
+            drafting.draft(),
+            self.cpu_slots(&model.id).is_some(),
+        );
         let no_room = || {
             format!(
                 "not enough memory for {} (needs {} MiB)",
@@ -2486,9 +2651,10 @@ impl Supervisor {
             victims,
             call: ticket.seq,
             priority,
-            served_pool: Self::placed_pool(model, &launch, &placement),
+            served_pool: Self::placed_pool(model, &launch, drafting.draft(), &placement),
             launch,
             cpu_pinned: on_cpu,
+            drafting,
             why,
         })))
     }
@@ -2513,6 +2679,7 @@ impl Supervisor {
             mut launch,
             cpu_pinned,
             served_pool,
+            drafting,
             why,
         } = load;
         // A pool cut to keep the layers on the GPU beside the loaded models: one agent may use
@@ -2558,10 +2725,20 @@ impl Supervisor {
                 .iter()
                 .cloned(),
         );
-        let spec = LaunchSpec {
+        let mut draft_notice = drafting.notice().map(str::to_string);
+        if let Some(notice) = &draft_notice {
+            tracing::warn!(model = %model.id, notice, "the configured draft model is not used");
+        }
+        let mut spec = LaunchSpec {
             backend: Arc::clone(&backend),
             format: model.format,
             gpu_memory_utilization: backend.gpu_memory_utilization(&placement, self.budget()),
+            draft: drafting.draft().map(|draft| DraftSpec {
+                path: draft.model.path.clone(),
+                max: draft.max,
+                min: draft.min,
+                gpu_layers: draft.gpu_layers,
+            }),
             model_id: model.id.clone(),
             model_path: model.path.clone(),
             mmproj: model.mmproj.clone(),
@@ -2589,11 +2766,32 @@ impl Supervisor {
         // that ran out the launcher's time is not.
         let launched = match self.launcher.launch(&spec).await {
             Err(error) if !error.timed_out => {
-                tracing::warn!(model = %model.id, %error, "could not start the model; trying once more");
+                if let Some(draft) = drafting.draft()
+                    && spec.draft.take().is_some()
+                {
+                    // The draft may be what the server refused (an incompatible vocabulary
+                    // the header did not show, or too little memory): try without it, and
+                    // keep loading without it until the settings or the models change.
+                    let reason = speculative::skipped(
+                        &draft.model.id,
+                        &format!("the server did not start with it ({})", error.message),
+                    );
+                    tracing::warn!(model = %model.id, %error, draft = %draft.model.id, "could not start the model with its draft; trying without it");
+                    lock(&self.draft_failed)
+                        .insert(model.id.clone(), (draft.model.id.clone(), reason.clone()));
+                    draft_notice = Some(reason);
+                } else {
+                    tracing::warn!(model = %model.id, %error, "could not start the model; trying once more");
+                }
                 self.launcher.launch(&spec).await
             }
             launched => launched,
         };
+        let draft_used = spec
+            .draft
+            .as_ref()
+            .and(drafting.draft())
+            .map(|draft| draft.model.id.clone());
         let load_action = Action::Load {
             model: model.id.clone(),
         };
@@ -2614,13 +2812,18 @@ impl Supervisor {
             Move::done(load_action, cause)
                 .took(seconds, placement.vram_bytes + placement.ram_bytes)
                 .detail(format!(
-                    "{} of {} layers on the GPU, KV pool {} tokens",
+                    "{} of {} layers on the GPU, KV pool {} tokens{}",
                     placement.gpu_layers,
                     model
                         .info
                         .block_count
                         .map_or_else(|| "?".to_string(), |n| n.to_string()),
-                    served.pool_tokens
+                    served.pool_tokens,
+                    match (&draft_used, &draft_notice) {
+                        (Some(draft), _) => format!(", draft model {draft}"),
+                        (None, Some(notice)) => format!(". {notice}"),
+                        (None, None) => String::new(),
+                    }
                 )),
         );
         let pool = SlotPool::new(
@@ -2676,6 +2879,8 @@ impl Supervisor {
                     squeezed,
                     promoting: false,
                     crashed: false,
+                    draft: draft_used,
+                    draft_notice,
                 },
             );
         }
@@ -3443,6 +3648,8 @@ mod tests {
         running: Arc<AtomicUsize>,
         /// The runtime id and arguments of each launch.
         launched: Mutex<Vec<(String, Vec<String>)>>,
+        /// A server given a draft model refuses to start (an incompatible draft).
+        refuse_drafts: std::sync::atomic::AtomicBool,
     }
 
     struct FakeServer {
@@ -3467,6 +3674,9 @@ mod tests {
             Box::pin(async move {
                 self.launches.fetch_add(1, Ordering::SeqCst);
                 lock(&self.launched).push((spec.backend.id().to_string(), spec.args()));
+                if spec.draft.is_some() && self.refuse_drafts.load(Ordering::SeqCst) {
+                    return Err(LaunchError::from("draft vocabulary does not match"));
+                }
                 self.running.fetch_add(1, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 Ok(Box::new(FakeServer {
@@ -3706,6 +3916,7 @@ mod tests {
     #[test]
     fn launch_arguments_carry_the_plan() {
         let spec = LaunchSpec {
+            draft: None,
             backend: Arc::new(LlamaCpp::default()),
             format: Format::Gguf,
             gpu_memory_utilization: 0.9,
@@ -3793,6 +4004,7 @@ mod tests {
     #[test]
     fn llama_server_shares_one_kv_pool() {
         let spec = LaunchSpec {
+            draft: None,
             backend: Arc::new(LlamaCpp::default()),
             format: Format::Gguf,
             gpu_memory_utilization: 0.9,
@@ -4292,5 +4504,213 @@ mod tests {
         let moved = moves.try_recv().unwrap();
         assert_eq!(moved.action.name(), "set_budget");
         assert_eq!(moved.reason, Reason::Budget);
+    }
+
+    /// `main` (6 GiB) with `small` (1 GiB) configured as its draft, on 10 GiB of VRAM.
+    fn drafting_supervisor(
+        launcher: Arc<FakeLauncher>,
+        models: Vec<LocalModel>,
+        draft: &str,
+    ) -> Arc<Supervisor> {
+        let mut settings = settings();
+        settings.models.insert(
+            "main".into(),
+            LocalModelSettings {
+                draft_model: Some(draft.into()),
+                draft_max: Some(8),
+                draft_min: Some(2),
+                draft_gpu_layers: Some(99),
+                ..LocalModelSettings::default()
+            },
+        );
+        Supervisor::start(models, settings, Runtimes::default(), &hardware(), launcher)
+    }
+
+    fn last_args(launcher: &FakeLauncher) -> String {
+        let launched = lock(&launcher.launched);
+        launched
+            .last()
+            .map(|(_, args)| args.join(" "))
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn draft_flags_are_passed_only_when_a_draft_is_configured() {
+        let spec = LaunchSpec {
+            backend: Arc::new(LlamaCpp::default()),
+            format: Format::Gguf,
+            gpu_memory_utilization: 0.0,
+            model_id: "m".into(),
+            model_path: PathBuf::from("m.gguf"),
+            mmproj: None,
+            context: 4096,
+            pool_tokens: 4096,
+            slots: 1,
+            gpu_layers: 99,
+            cpu_only: false,
+            cache_type_k: "f16".into(),
+            cache_type_v: "f16".into(),
+            flash_attn: "auto".into(),
+            cache_ram_mb: 0,
+            slot_save_path: None,
+            draft: None,
+            extra_args: vec!["--x".into()],
+        };
+        let plain = spec.args().join(" ");
+        assert!(
+            !plain.contains("draft") && !plain.contains("--spec-type"),
+            "{plain}"
+        );
+        let drafted = LaunchSpec {
+            draft: Some(DraftSpec {
+                path: PathBuf::from("d.gguf"),
+                max: Some(8),
+                min: Some(2),
+                gpu_layers: Some(0),
+            }),
+            ..spec.clone()
+        };
+        let args = drafted.args().join(" ");
+        assert!(
+            args.ends_with(
+                "--spec-draft-model d.gguf --spec-type draft-simple --spec-draft-n-max 8 \
+                 --spec-draft-n-min 2 --spec-draft-ngl 0 --x"
+            ),
+            "{args}"
+        );
+        // Unset parameters leave llama.cpp's own defaults.
+        let bare = LaunchSpec {
+            draft: Some(DraftSpec {
+                path: PathBuf::from("d.gguf"),
+                max: None,
+                min: None,
+                gpu_layers: None,
+            }),
+            ..spec
+        };
+        let args = bare.args().join(" ");
+        assert!(
+            args.ends_with("--spec-draft-model d.gguf --spec-type draft-simple --x"),
+            "{args}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_usable_draft_is_launched_and_counted_in_the_memory_plan() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let models = vec![model("main", 6), model("small", 1)];
+        let drafted = drafting_supervisor(Arc::clone(&launcher), models.clone(), "small");
+        let plain_launcher = Arc::new(FakeLauncher::default());
+        let plain = Supervisor::start(
+            models,
+            settings(),
+            Runtimes::default(),
+            &hardware(),
+            plain_launcher.clone(),
+        );
+        let main = drafted
+            .models()
+            .into_iter()
+            .find(|m| m.id == "main")
+            .unwrap();
+        // The draft's weights, its KV cache and its buffers are part of what the model needs.
+        let extra =
+            drafted.footprint(&main).required_bytes() - plain.footprint(&main).required_bytes();
+        assert!(extra > GIB && extra < 3 * GIB, "{extra}");
+
+        let _lease = drafted.acquire("main", "holder").await.unwrap();
+        let args = last_args(&launcher);
+        assert!(
+            args.contains(
+                "--spec-draft-model small.gguf --spec-type draft-simple --spec-draft-n-max 8 \
+                 --spec-draft-n-min 2 --spec-draft-ngl 99"
+            ),
+            "{args}"
+        );
+        let status = drafted.loaded().remove(0);
+        assert_eq!(status.draft.as_deref(), Some("small"));
+        assert_eq!(status.draft_notice, None);
+        // The residency controller sees the draft's memory as the model's.
+        let _plain_lease = plain.acquire("main", "holder").await.unwrap();
+        assert!(!last_args(&plain_launcher).contains("--spec-draft-model"));
+        let without = plain.loaded().remove(0);
+        assert_eq!(
+            status.vram_bytes - without.vram_bytes,
+            extra,
+            "loaded memory counts the draft"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_incompatible_draft_loads_the_model_without_it_and_says_why() {
+        for (draft, models, why) in [
+            ("absent", vec![model("main", 6)], "not an installed model"),
+            (
+                "other",
+                {
+                    let mut other = model("other", 1);
+                    other.info.tokenizer_model = Some("llama".into());
+                    let mut main = model("main", 6);
+                    main.info.tokenizer_model = Some("gpt2".into());
+                    vec![main, other]
+                },
+                "tokenizer",
+            ),
+            (
+                "big-draft",
+                // 3 GiB with its KV cache fits nowhere beside the 6 GiB model (no RAM to spill to).
+                vec![model("main", 6), model("big-draft", 3)],
+                "does not fit in memory beside the model",
+            ),
+        ] {
+            let launcher = Arc::new(FakeLauncher::default());
+            let supervisor = drafting_supervisor(Arc::clone(&launcher), models, draft);
+            let main = supervisor
+                .models()
+                .into_iter()
+                .find(|m| m.id == "main")
+                .unwrap();
+            // The notice is there before the model loads, for the settings view.
+            let (used, notice) = supervisor.draft_state(&main, &supervisor.launch("main"));
+            assert_eq!(used, None, "{draft}");
+            assert!(
+                notice.as_deref().unwrap().contains(why),
+                "{draft}: {notice:?}"
+            );
+            let _lease = supervisor.acquire("main", "holder").await.unwrap();
+            let args = last_args(&launcher);
+            assert!(
+                !args.contains("--spec-draft-model") && !args.contains("--spec-type"),
+                "{draft}: {args}"
+            );
+            let status = supervisor.loaded().remove(0);
+            assert_eq!(status.draft, None);
+            assert!(status.draft_notice.unwrap().contains(why), "{draft}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_draft_the_server_refuses_is_dropped_and_not_tried_again() {
+        let launcher = Arc::new(FakeLauncher::default());
+        launcher.refuse_drafts.store(true, Ordering::SeqCst);
+        let models = vec![model("main", 6), model("small", 1)];
+        let supervisor = drafting_supervisor(Arc::clone(&launcher), models, "small");
+        let lease = supervisor.acquire("main", "holder").await.unwrap();
+        // One launch with the draft, refused, then one without it.
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+        let args = last_args(&launcher);
+        assert!(!args.contains("--spec-draft-model"), "{args}");
+        let status = supervisor.loaded().remove(0);
+        assert_eq!(status.draft, None);
+        let notice = status.draft_notice.unwrap();
+        assert!(
+            notice.contains("small") && notice.contains("did not start"),
+            "{notice}"
+        );
+        // The next load goes straight to the launch without the draft.
+        drop(lease);
+        supervisor.unload("main").await.unwrap();
+        let _again = supervisor.acquire("main", "holder").await.unwrap();
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 3);
     }
 }

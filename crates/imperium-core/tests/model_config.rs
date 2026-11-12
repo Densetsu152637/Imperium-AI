@@ -360,3 +360,90 @@ async fn cards_and_hidden_models_are_saved() {
         "{error}"
     );
 }
+
+#[tokio::test]
+async fn a_draft_model_is_saved_shown_and_explained_when_it_cannot_be_used() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    std::fs::write(home.path().join("models").join("small.gguf"), gguf()).unwrap();
+    daemon.rescan_local_models();
+    let file = Paths::under(home.path()).app_models_file();
+    let row = |config: &Value, id: &str| {
+        config["local"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .unwrap()
+            .clone()
+    };
+
+    // The draft settings are saved to the app file and read back by the configuration layers.
+    let update = json!({"local": [{"id": "tiny", "settings": {
+        "draft_model": "small", "draft_max": 8, "draft_min": 2, "draft_gpu_layers": 0
+    }}]});
+    let result = call(&mut socket, "models.set_config", update)
+        .await
+        .unwrap();
+    let tiny = row(&result, "tiny");
+    assert_eq!(tiny["saved"]["draft_model"], "small");
+    assert_eq!(tiny["effective"]["draft_max"], 8);
+    assert_eq!(tiny["effective"]["draft_gpu_layers"], 0);
+    let loaded = imperium_config::load(&Paths::under(home.path()), None, [])
+        .unwrap()
+        .settings()
+        .unwrap();
+    let draft = loaded.launch_of("tiny").draft.unwrap();
+    assert_eq!(
+        (draft.model.as_str(), draft.max, draft.min),
+        ("small", Some(8), Some(2))
+    );
+    // Both files are the same size, so the draft would not speed anything up: the model
+    // loads without it, and the settings view says so.
+    assert_eq!(tiny["draft_in_use"], Value::Null);
+    assert!(
+        tiny["draft_notice"]
+            .as_str()
+            .unwrap()
+            .contains("not smaller"),
+        "{tiny}"
+    );
+    assert_eq!(row(&result, "small")["draft_notice"], Value::Null);
+
+    // A draft that is not installed is accepted (it may be downloaded later) and explained.
+    let missing = json!({"local": [{"id": "tiny", "settings": {"draft_model": "gone"}}]});
+    let result = call(&mut socket, "models.set_config", missing)
+        .await
+        .unwrap();
+    assert!(
+        row(&result, "tiny")["draft_notice"]
+            .as_str()
+            .unwrap()
+            .contains("not an installed model")
+    );
+
+    // Draft parameters without a draft, and a model drafting for itself, are refused.
+    let before = std::fs::read_to_string(&file).unwrap();
+    for (settings, expected) in [
+        (json!({"draft_max": 4}), "draft_max needs draft_model"),
+        (json!({"draft_model": "tiny"}), "the model itself"),
+        (
+            json!({"draft_model": "small", "draft_max": 2, "draft_min": 5}),
+            "may not exceed",
+        ),
+    ] {
+        let error = call(
+            &mut socket,
+            "models.set_config",
+            json!({"local": [{"id": "tiny", "settings": settings}]}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error["code"], -32602, "{error}");
+        assert!(
+            error["message"].as_str().unwrap().contains(expected),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    }
+}

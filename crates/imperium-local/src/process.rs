@@ -347,6 +347,7 @@ mod tests {
             PathBuf::from("."),
         );
         let spec = LaunchSpec {
+            draft: None,
             backend: Arc::new(LlamaCpp::default()),
             format: Format::Gguf,
             gpu_memory_utilization: 0.9,
