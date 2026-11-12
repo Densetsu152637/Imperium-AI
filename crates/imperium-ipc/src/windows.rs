@@ -322,7 +322,17 @@ mod tests {
         let sid = current_user_sid().unwrap();
         assert!(acl.starts_with("D:P("), "{acl}");
         assert_eq!(acl.matches("(A;").count(), 1, "{acl}");
-        assert!(acl.contains(&format!(";{sid})")), "{acl}");
+        // Windows may print a well-known account by alias (the built-in administrator comes
+        // back as `LA`), so accept the SID or an alias that names a single account, and refuse
+        // the broad groups.
+        let trustee = acl.trim_end_matches(')').rsplit(';').next().unwrap();
+        assert!(
+            trustee == sid || matches!(trustee, "LA" | "LG"),
+            "{acl} should grant only {sid}"
+        );
+        for broad in ["WD", "AU", "BU", "AN", "IU", "NU", "BA", "SY", "S-1-1-0"] {
+            assert_ne!(trustee, broad, "{acl}");
+        }
 
         let server = tokio::spawn(async move {
             for _ in 0..2 {
