@@ -168,7 +168,7 @@ impl BudgetBook {
         origin: Origin<'_>,
         tokens: u64,
         cost_usd: f64,
-    ) -> Result<u64, Stop> {
+    ) -> Result<u64, Box<Stop>> {
         let mut reserved = lock(&self.reserved);
         let mut stop: Option<Stop> = None;
         for standing in self.standings(today) {
@@ -205,7 +205,7 @@ impl BudgetBook {
             }
         }
         if let Some(stop) = stop {
-            return Err(stop);
+            return Err(Box::new(stop));
         }
         let id = self
             .next_reservation
