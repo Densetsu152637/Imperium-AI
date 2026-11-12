@@ -25,7 +25,7 @@ async fn target(
     agent: &str,
 ) -> anyhow::Result<(String, String)> {
     let environment_id = resolve(client, env).await?.id;
-    let agent_id = resolve_agent(client, &environment_id, agent).await?;
+    let agent_id = resolve_agent(client, &environment_id, agent).await?.id;
     Ok((environment_id, agent_id))
 }
 
