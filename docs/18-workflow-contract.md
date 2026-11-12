@@ -222,7 +222,8 @@ this off.
 Only a call that succeeded counts as opening a directory: one that was denied by a rule, blocked
 by a hook, or failed loads nothing. The files in the workspace's root folder are skipped as well
 as the project folder's when they are the project's own file (same path) or have the same
-bytes (compared by length first, then in bounded chunks); a worktree root file that differs
+bytes (compared by length first, then in bounded chunks; files over 1 MiB count as different,
+so they are loaded, cut at 16 KiB); a worktree root file that differs
 from what the manifest serves is loaded. A discovered file that is refused (a symbolic link
 leading outside the allowed folders, or a file that is not UTF-8) is skipped silently: nothing
 is loaded and no note is added.
