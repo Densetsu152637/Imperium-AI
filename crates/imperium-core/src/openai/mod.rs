@@ -460,10 +460,11 @@ pub(crate) async fn set(
     let current = state.settings();
     let now: &OpenAiApiSettings = &current.api.openai_compatible;
     let allow_lan = params.allow_lan.unwrap_or(now.allow_lan);
-    // Turning the network off puts the address back on this computer.
+    // Turning the network off puts an address that is not on this computer back on it; a
+    // loopback address (such as ::1) the user chose stays.
     let bind = match (&params.bind, params.allow_lan) {
         (Some(bind), _) => bind.clone(),
-        (None, Some(false)) => "127.0.0.1".to_string(),
+        (None, Some(false)) if listen_ip(&now.bind, false).is_err() => "127.0.0.1".to_string(),
         (None, _) => now.bind.clone(),
     };
     listen_ip(&bind, allow_lan).map_err(invalid)?;
@@ -477,7 +478,7 @@ pub(crate) async fn set(
     if let Some(allow_lan) = params.allow_lan {
         writes.push(("allow_lan", json!(allow_lan)));
     }
-    if params.bind.is_some() || params.allow_lan == Some(false) {
+    if params.bind.is_some() || bind != now.bind {
         writes.push(("bind", json!(bind.trim())));
     }
     if let Some(port) = params.port {

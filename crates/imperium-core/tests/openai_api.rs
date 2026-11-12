@@ -990,6 +990,71 @@ async fn a_client_that_hangs_up_before_the_answer_still_counts() {
 }
 
 #[tokio::test]
+async fn a_server_that_never_answers_is_given_up_on_after_the_models_max_wait_and_the_call_counts()
+{
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "[runtime.llamacpp]\nmax_wait_s = 2\n").await;
+    let (base, token) = fixture.enable().await;
+    fixture
+        .call(
+            "budgets.set",
+            json!({
+                "week_start": "monday", "month_start_day": 1, "thresholds": [50, 80, 100],
+                "limits": [{
+                    "id": "", "name": "", "scope": "source", "target": "api",
+                    "window": "daily", "tokens": 1000000, "cost_usd": null,
+                    "thresholds": null, "action": "warn"
+                }]
+            }),
+        )
+        .await;
+    let began = std::time::Instant::now();
+    let reply = post_chat(
+        &base,
+        &token,
+        &json!({"model": "llamacpp:tiny", "messages": [{"role": "user", "content": "hang"}]}),
+    )
+    .await;
+    assert_eq!(reply.status(), 502);
+    let error: Value = reply.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "upstream_unreachable");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("within 2 s"),
+        "{error}"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(30),
+        "the limit is the model's, not 10 minutes"
+    );
+    // The server held the request, so the call is counted by its estimate.
+    let status = fixture.call("budgets.get", json!({})).await;
+    assert!(
+        status["status"][0]["tokens_used"].as_u64().unwrap() > 0,
+        "{status}"
+    );
+}
+
+#[tokio::test]
+async fn turning_the_network_off_keeps_a_loopback_address_the_user_chose() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(
+        home.path(),
+        "[api.openai_compatible]\nallow_lan = true\nbind = \"::1\"\n",
+    )
+    .await;
+    let status = fixture.call("api.set", json!({"allow_lan": false})).await;
+    assert_eq!(status["allow_lan"], false);
+    assert_eq!(status["bind"], "::1");
+    let saved =
+        std::fs::read_to_string(imperium_config::Paths::under(home.path()).user_config_file())
+            .unwrap();
+    assert!(saved.contains("bind = \"::1\""), "{saved}");
+}
+
+#[tokio::test]
 async fn turning_the_network_off_puts_the_address_back_on_this_computer() {
     let home = tempfile::tempdir().unwrap();
     let mut fixture = fixture(
