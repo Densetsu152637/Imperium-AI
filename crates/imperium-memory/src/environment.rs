@@ -437,7 +437,8 @@ pub fn for_reading(text: &str) -> String {
 /// speak outside it. Whatever the case or the spacing between `<`, `/` and the name (spaces,
 /// tabs, newlines), and also when the `<` or the `/` is written as a character reference a
 /// viewer might turn back into one: `&lt;`, `&lt` with no semicolon, `&#60;`, `&#060;`,
-/// `&#x3c;`, `&#x03c;`, `&sol;`, `&#47;`.
+/// `&#x3c;`, `&#x03c;`, `&sol;`, `&#47;` and `&#x2f;`, and the numeric ones also without their
+/// semicolon (`&#60`, `&#x3c`, `&#47`).
 fn neutralise(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     let bytes = text.as_bytes();
@@ -498,36 +499,36 @@ enum Opening {
 }
 
 /// The character reference `text` ends with, as (where it starts, the character it stands for),
-/// when it is one of the few that matter here. `&lt` and `&sol` count without their semicolon.
+/// when it is one of the few that matter here. `&lt`, `&sol` and numeric references (`&#60`,
+/// `&#x3c`) count without their semicolon, as browsers accept them.
 fn reference_before(text: &str) -> Option<(usize, char)> {
-    if let Some(body) = text.strip_suffix(';') {
-        let start = body.rfind('&')?;
-        let name = &body[start + 1..];
-        if name.len() > 10 {
-            return None;
-        }
-        let character = match name {
-            "lt" => '<',
-            "sol" => '/',
-            "tab" => '\t',
-            "newline" => '\n',
-            _ => {
-                let code = if let Some(hex) = name.strip_prefix("#x") {
-                    u32::from_str_radix(hex, 16).ok()?
-                } else {
-                    name.strip_prefix('#')?.parse::<u32>().ok()?
-                };
-                char::from_u32(code)?
-            }
-        };
-        return Some((start, character));
+    let (body, terminated) = match text.strip_suffix(';') {
+        Some(body) => (body, true),
+        None => (text, false),
+    };
+    let start = body.rfind('&')?;
+    let name = &body[start + 1..];
+    if name.is_empty() || name.len() > 10 {
+        return None;
     }
-    for (suffix, character) in [("&lt", '<'), ("&sol", '/')] {
-        if text.ends_with(suffix) {
-            return Some((text.len() - suffix.len(), character));
-        }
-    }
-    None
+    let character = match name {
+        "lt" => '<',
+        "sol" => '/',
+        "tab" if terminated => '\t',
+        "newline" if terminated => '\n',
+        _ => numeric_reference(name)?,
+    };
+    Some((start, character))
+}
+
+/// The character a numeric reference's name (`#60`, `#x3c`, `#060`) stands for.
+fn numeric_reference(name: &str) -> Option<char> {
+    let code = if let Some(hex) = name.strip_prefix("#x") {
+        u32::from_str_radix(hex, 16).ok()?
+    } else {
+        name.strip_prefix('#')?.parse::<u32>().ok()?
+    };
+    char::from_u32(code)
 }
 
 #[cfg(test)]
@@ -684,6 +685,11 @@ mod tests {
             "x &lt/environment-memory> y",
             "x &ltenvironment-memory> y",
             "x &lt;&#10;/environment-memory> y",
+            "x &#60/environment-memory> y",
+            "x &#x3cenvironment-memory> y",
+            "x &#060environment-memory> y",
+            "x <&#47environment-memory> y",
+            "x &#x3c&#x2fenvironment-memory> y",
             "x </ENVIRONMENT-MEMORY> y",
         ];
         for case in cases {
@@ -695,7 +701,9 @@ mod tests {
                 !shown.contains("<\n/") && !shown.contains("<\r") && !shown.contains("< /"),
                 "{case} -> {shown}"
             );
-            for open in ["&lt;", "&lt", "&#60;", "&#060;", "&#x3c;", "&#x03c;"] {
+            for open in [
+                "&lt;", "&lt", "&#60;", "&#60", "&#060;", "&#060", "&#x3c;", "&#x3c", "&#x03c;",
+            ] {
                 assert!(
                     !shown.contains(&format!("{open}/environment-memory"))
                         && !shown.contains(&format!("{open}environment-memory"))

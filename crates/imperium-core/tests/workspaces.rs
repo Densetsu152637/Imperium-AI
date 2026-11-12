@@ -836,3 +836,54 @@ async fn the_sweep_spares_agents_unreadable_records_old_sessions_and_links() {
             .is_file()
     );
 }
+
+/// A directory junction (`mklink /J`), which needs no privilege; false where `cmd` cannot make one.
+#[cfg(windows)]
+fn junction(target: &Path, link: &Path) -> bool {
+    std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn the_sweep_does_not_follow_junctions() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("keep.txt"), "keep").unwrap();
+    let state = daemon(home.path(), "http://127.0.0.1:9/v1");
+    let env = environment(&state, "Work", project.path());
+    let sessions = root_of(home.path()).join(&env).join("sessions");
+
+    // A junction inside an orphan folder: the folder goes, what the junction leads to stays.
+    let orphan = "aaaaaaaaaaaaaaaa";
+    seed_session_files(home.path(), &env, orphan);
+    assert!(
+        junction(outside.path(), &sessions.join(orphan).join("out")),
+        "`cmd /c mklink /J` is not available here, so junctions went untested"
+    );
+    // A junction as `sessions` and a junction as the environment folder, each leading to an
+    // orphan-looking session folder.
+    let hex = "cccccccccccccccc";
+    let behind_sessions = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(behind_sessions.path().join(hex)).unwrap();
+    let other = root_of(home.path()).join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    assert!(junction(behind_sessions.path(), &other.join("sessions")));
+    let behind_env = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(behind_env.path().join("sessions").join(hex)).unwrap();
+    assert!(junction(
+        behind_env.path(),
+        &root_of(home.path()).join("linked")
+    ));
+
+    assert_eq!(state.sweep_orphan_scratch(), 1, "only the real orphan");
+    assert!(!sessions.join(orphan).exists());
+    assert!(outside.path().join("keep.txt").is_file());
+    assert!(behind_sessions.path().join(hex).is_dir());
+    assert!(behind_env.path().join("sessions").join(hex).is_dir());
+}

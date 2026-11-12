@@ -5,7 +5,7 @@
 /** `--bg` of each theme (styles.css); also the native window backgrounds (main.rs). */
 export const BOOT_BACKGROUND = { dark: "#0b0c0e", light: "#f4f5f7" } as const;
 
-/** localStorage key holding the last theme, read by the inline script in index.html. */
+/** localStorage key holding the last theme, read by public/boot.js (linked from index.html). */
 export const THEME_KEY = "imperium.theme";
 
 /** How long the loading screen fades out. */

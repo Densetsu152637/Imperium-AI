@@ -512,8 +512,9 @@ worktrees** switch turns this off. A writer subagent (`spawn_agent` with `access
 works only in worktrees made for it, with the session's grants, permission rules (absolute
 path rules for the root's paths match the same file in its worktree) and sandbox tier
 unchanged, the project worktrees closed to it, its hooks run in its worktree, and tools tied to
-the session's folders (the preview) not offered, so its edits stay out of the root's checkout
-until the root merges its branch
+the session's folders (the preview) not offered, so its file edits stay out of the root's checkout
+until the root merges its branch (the confinement is of the file tools: commands and MCP tools
+follow the permission mode and the safety floor, not the worktree)
 ([parallel writers](14-projects-and-automation.md#worktrees)).
 
 | Tier            | Boundary                                                                     | Protects against                                    | Does not protect against                           |

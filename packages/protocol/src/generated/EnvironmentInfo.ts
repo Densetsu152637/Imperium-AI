@@ -30,7 +30,7 @@ pinned: boolean,
  */
 runtime: EnvironmentRuntime, 
 /**
- * Deprecated (since protocol 0.22, removed in 0.23): whether the environment has any
+ * Deprecated (since protocol 0.22, removed in a later version): whether the environment has any
  * persistent agent. Read-only in effect: derived from `agents`.
  */
 persistent_agent: boolean, 
@@ -40,7 +40,7 @@ persistent_agent: boolean,
  */
 pet: string | null, 
 /**
- * Deprecated (since protocol 0.22, removed in 0.23): the first agent's session id.
+ * Deprecated (since protocol 0.22, removed in a later version): the first agent's session id.
  */
 agent_session_id: string | null, 
 /**

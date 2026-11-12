@@ -75,7 +75,8 @@ async fn watch(model: Option<String>, warm: bool) -> anyhow::Result<()> {
             continue;
         }
         for result in update.results.iter().skip(printed) {
-            print_result(result);
+            // This run's own results, measured here just now: no marker is needed.
+            print_result(result, false);
         }
         printed = update.results.len();
         if update.state != "running" {
@@ -119,12 +120,33 @@ pub fn results(model: Option<String>) -> anyhow::Result<()> {
             println!("No saved benchmark results. Run one with `imperium models bench`.");
             return Ok(());
         }
-        println!("This machine is {}.", listing.hardware_fingerprint);
+        println!("{}", this_machine(&listing));
         for result in &listing.results {
-            print_result(result);
+            let here = listing
+                .hardware_fingerprints
+                .contains(&result.hardware_fingerprint);
+            print_result(result, here);
         }
         Ok(())
     })
+}
+
+/// Which fingerprints are this machine's: one per runtime (llama.cpp, vLLM), so a result whose
+/// fingerprint is any of them was measured here with the runtime now in use.
+fn this_machine(listing: &imperium_protocol::methods::ModelBenchResultsResult) -> String {
+    let mut fingerprints = listing.hardware_fingerprints.clone();
+    if fingerprints.is_empty() {
+        fingerprints.push(listing.hardware_fingerprint.clone());
+    }
+    let described: Vec<String> = fingerprints
+        .iter()
+        .zip(["llama.cpp", "vLLM"])
+        .map(|(fingerprint, runtime)| format!("{fingerprint} for {runtime}"))
+        .collect();
+    format!(
+        "This machine is {}; results marked (this machine) were measured here, with the runtime now in use.",
+        described.join(", ")
+    )
 }
 
 fn plural(count: usize, noun: &str) -> String {
@@ -165,7 +187,12 @@ pub(crate) fn describe(result: &BenchResult) -> Vec<String> {
         lines.push(format!(
             "    {:<7} {:>5} prompt tok  {:>4} out tok  first token {:>6.0} ms  prompt {}  gen {}",
             prompt.name,
-            prompt.prompt_tokens,
+            // A size the server did not report is an estimate, shown with a tilde.
+            if prompt.prompt_tokens_estimated {
+                format!("~{}", prompt.prompt_tokens)
+            } else {
+                prompt.prompt_tokens.to_string()
+            },
             prompt.completion_tokens,
             prompt.ttft_ms,
             opt(prompt.prompt_tok_s, |r| format!("{r:.0} tok/s")),
@@ -175,8 +202,17 @@ pub(crate) fn describe(result: &BenchResult) -> Vec<String> {
     lines
 }
 
-fn print_result(result: &BenchResult) {
-    for line in describe(result) {
+/// A result's lines, the first marked when it was measured on this machine.
+fn render(result: &BenchResult, here: bool) -> Vec<String> {
+    let mut lines = describe(result);
+    if here && let Some(first) = lines.first_mut() {
+        first.push_str("  (this machine)");
+    }
+    lines
+}
+
+fn print_result(result: &BenchResult, here: bool) {
+    for line in render(result, here) {
         println!("{line}");
     }
 }
@@ -209,9 +245,36 @@ mod tests {
                 ttft_ms: 212.0,
                 prompt_tok_s: Some(94.0),
                 gen_tok_s: None,
+                prompt_tokens_estimated: false,
             }],
             error: None,
         }
+    }
+
+    #[test]
+    fn a_result_measured_here_is_marked_and_an_estimated_prompt_size_has_a_tilde() {
+        let mut here = result();
+        here.prompts[0].prompt_tokens_estimated = true;
+        here.prompts[0].prompt_tok_s = None;
+        let lines = render(&here, true);
+        assert!(lines[0].ends_with("(this machine)"), "{lines:?}");
+        assert!(lines[3].contains("~20 prompt tok"), "{lines:?}");
+        let elsewhere = render(&result(), false);
+        assert!(!elsewhere[0].contains("this machine"), "{elsewhere:?}");
+        assert!(elsewhere[3].contains("20 prompt tok") && !elsewhere[3].contains('~'));
+    }
+
+    #[test]
+    fn the_header_names_this_machine_for_each_runtime() {
+        let listing = imperium_protocol::methods::ModelBenchResultsResult {
+            hardware_fingerprint: "aaa".into(),
+            hardware_fingerprints: vec!["aaa".into(), "bbb".into()],
+            results: Vec::new(),
+            runs: Vec::new(),
+        };
+        let text = this_machine(&listing);
+        assert!(text.contains("aaa for llama.cpp, bbb for vLLM"), "{text}");
+        assert!(text.contains("(this machine)"), "{text}");
     }
 
     #[test]

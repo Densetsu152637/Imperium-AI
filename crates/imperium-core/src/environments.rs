@@ -25,6 +25,9 @@ pub enum EnvironmentError {
     Folder(String, std::io::Error),
     #[error("could not save the environments: {0}")]
     Save(std::io::Error),
+    /// The saved environments could not be read at start, so nothing is saved over them.
+    #[error("{0}")]
+    ReadOnly(String),
 }
 
 /// The id of the built-in Home environment: fixed, and valid as a folder name
@@ -65,22 +68,38 @@ struct File {
 pub struct Environments {
     path: PathBuf,
     list: Mutex<Vec<EnvironmentInfo>>,
+    /// Why the saved file could not be read, when it could not: every change is then refused.
+    read_only: Option<String>,
+    /// Agents made from a legacy persistent session when the file was loaded, until each starts
+    /// for the first time (its session is then titled after the agent).
+    migrated: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Environments {
-    /// Reads `path`; a missing file is an empty store, an unreadable one is set aside with a
-    /// warning so it is not overwritten.
+    /// Reads `path`; a missing file is an empty store. An unreadable one is set aside with a
+    /// warning, and the store is then read-only: it lists Home, but every change fails with
+    /// [`EnvironmentError::ReadOnly`] so nothing is saved over what could not be read.
     pub fn load(path: PathBuf) -> Self {
-        // Whether the file was left where it is although it could not be read: then Home is not
-        // saved over it.
-        let mut keep_file = false;
+        let mut read_only: Option<String> = None;
         let mut set_aside = |path: &Path, error: &dyn std::fmt::Display| {
             let aside = path.with_extension("json.unreadable");
             tracing::warn!(path = %path.display(), %error, "could not read the environments; setting the file aside");
-            if let Err(error) = std::fs::rename(path, aside) {
-                tracing::warn!(%error, "could not set the environments file aside; it is left as it is");
-                keep_file = true;
-            }
+            // What is said about the file is what happened to it.
+            read_only = Some(match std::fs::rename(path, aside) {
+                Ok(()) => format!(
+                    "the saved environments could not be read ({error}); the file was set aside as \
+                     environments.json.unreadable, and changes are refused so it is not replaced. \
+                     Restore the file and restart the daemon"
+                ),
+                Err(rename) => {
+                    tracing::warn!(error = %rename, "could not set the environments file aside; it is left as it is");
+                    format!(
+                        "the saved environments could not be read ({error}) and could not be set \
+                         aside; the file is left as it is, and changes are refused so it is not \
+                         replaced. Fix or restore it and restart the daemon"
+                    )
+                }
+            });
         };
         let list = match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<File>(&text) {
@@ -103,18 +122,37 @@ impl Environments {
         // Environments saved before multiple agents had one persistent session: it becomes
         // the environment's agent, with the session it had (history and all).
         let mut migrated = false;
+        let mut migrated_agents = std::collections::HashSet::new();
         for env in &mut list {
-            migrated |= migrate_legacy_agent(env);
+            if migrate_legacy_agent(env) {
+                migrated = true;
+                migrated_agents.extend(env.agents.iter().map(|agent| agent.id.clone()));
+            }
             normalize(env);
         }
         if migrated && let Err(error) = save(&path, &list) {
             tracing::warn!(path = %path.display(), %error, "could not save the migrated environments");
         }
+        let save_home = read_only.is_none();
+        // Agents made from a legacy session wait for their first start to be retitled; the wait
+        // is kept in a file, so a start that failed, or a restart before it, does not lose it.
+        let had_pending = !migrated_agents.is_empty();
+        let mut pending = read_pending(&path);
+        pending.extend(migrated_agents);
+        pending.retain(|id| {
+            list.iter()
+                .any(|env| env.agents.iter().any(|agent| agent.id == *id))
+        });
+        if had_pending {
+            write_pending(&path, &pending);
+        }
         let store = Environments {
             path,
             list: Mutex::new(list),
+            read_only,
+            migrated: Mutex::new(pending),
         };
-        store.ensure_home(!keep_file);
+        store.ensure_home(save_home);
         store
     }
 
@@ -141,6 +179,20 @@ impl Environments {
             tracing::warn!(%error, "could not save the Home environment; it is kept in memory");
         }
         *list = next;
+    }
+
+    /// Whether `agent_id` was made from a legacy persistent session at load and has not started
+    /// since; true once, so its session is retitled on its first start only.
+    pub fn take_migrated(&self, agent_id: &str) -> bool {
+        let mut pending = self
+            .migrated
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let was = pending.remove(agent_id);
+        if was {
+            write_pending(&self.path, &pending);
+        }
+        was
     }
 
     pub fn list(&self) -> Vec<EnvironmentInfo> {
@@ -527,6 +579,9 @@ impl Environments {
         &self,
         edit: impl FnOnce(&mut Vec<EnvironmentInfo>) -> Result<(), EnvironmentError>,
     ) -> Result<(), EnvironmentError> {
+        if let Some(reason) = &self.read_only {
+            return Err(EnvironmentError::ReadOnly(reason.clone()));
+        }
         let mut list = self.lock();
         let mut next = list.clone();
         edit(&mut next)?;
@@ -705,20 +760,72 @@ fn find_agent<'a>(
         .ok_or_else(|| EnvironmentError::NotFound(agent_id.to_string()))
 }
 
+/// Whether `c` has no place in a name: a control character (line breaks and tabs included), the
+/// Unicode line and paragraph separators, or a bidirectional control or mark, which can make a
+/// name read differently from what it is.
+fn hidden_in_names(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{2028}'
+                | '\u{2029}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{061C}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+        )
+}
+
+const HIDDEN_IN_NAME: &str = "line breaks, bidirectional controls or other control characters";
+
 fn valid_agent_name(name: &str) -> Result<String, EnvironmentError> {
+    // Looked at as written, before the edges are trimmed: a separator at the edge is refused
+    // too, not quietly dropped.
+    if name.chars().any(hidden_in_names) {
+        return Err(EnvironmentError::Invalid(format!(
+            "an agent's name cannot contain {HIDDEN_IN_NAME}"
+        )));
+    }
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 60 {
         return Err(EnvironmentError::Invalid(
             "an agent needs a name of 1 to 60 characters".into(),
         ));
     }
-    // The name goes into the agent's instructions and titles: one line of ordinary characters.
-    if name.chars().any(char::is_control) {
-        return Err(EnvironmentError::Invalid(
-            "an agent's name cannot contain line breaks or other control characters".into(),
-        ));
-    }
     Ok(name.to_string())
+}
+
+/// The agents waiting for their first start to be retitled, kept beside the environments.
+fn pending_path(environments: &Path) -> PathBuf {
+    environments.with_file_name("agents-to-retitle.json")
+}
+
+fn read_pending(environments: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(pending_path(environments))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
+        .map(|ids| ids.into_iter().collect())
+        .unwrap_or_default()
+}
+
+fn write_pending(environments: &Path, pending: &std::collections::HashSet<String>) {
+    let path = pending_path(environments);
+    let result = if pending.is_empty() {
+        match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+            _ => Ok(()),
+        }
+    } else {
+        let mut ids: Vec<&String> = pending.iter().collect();
+        ids.sort();
+        serde_json::to_string(&ids)
+            .map_err(std::io::Error::other)
+            .and_then(|text| std::fs::write(&path, text))
+    };
+    if let Err(error) = result {
+        tracing::warn!(path = %path.display(), %error, "could not record the agents still to retitle");
+    }
 }
 
 /// A name as compared for uniqueness: trimmed and lower-cased with Unicode rules, as the
@@ -746,6 +853,11 @@ fn valid_role(role: &str) -> Result<String, EnvironmentError> {
 }
 
 fn valid_name(name: &str) -> Result<String, EnvironmentError> {
+    if name.chars().any(hidden_in_names) {
+        return Err(EnvironmentError::Invalid(format!(
+            "an environment's name cannot contain {HIDDEN_IN_NAME}"
+        )));
+    }
     let name = name.trim();
     if name.is_empty() {
         return Err(EnvironmentError::Invalid(
@@ -1077,6 +1189,18 @@ mod tests {
         let listed = envs.list();
         assert!(listed.len() == 1 && listed[0].builtin, "only Home is left");
         assert!(data.path().join("environments.json.unreadable").exists());
+        // Changes are refused, and nothing is written in the file's place.
+        assert!(matches!(
+            new(&envs, "Work", None, &[]),
+            Err(EnvironmentError::ReadOnly(_))
+        ));
+        assert!(matches!(
+            envs.delete("anything"),
+            Err(EnvironmentError::ReadOnly(_))
+        ));
+        assert!(!data.path().join("environments.json").exists());
+        let message = new(&envs, "Work", None, &[]).unwrap_err().to_string();
+        assert!(message.contains("could not be read"), "{message}");
     }
 
     #[test]
@@ -1201,7 +1325,17 @@ mod tests {
         assert!(envs.add_agent(&env.id, &"é".repeat(61), None).is_err());
         assert!(envs.add_agent(&env.id, "  ", None).is_err());
         // One line of ordinary characters: no line breaks or other control characters.
-        for name in ["Plan\nner", "Plan\rner", "Plan\u{7}ner", "Plan\u{1b}[2J"] {
+        for name in [
+            "Plan\nner",
+            "Plan\rner",
+            "Plan\u{7}ner",
+            "Plan\u{1b}[2J",
+            "Plan\u{2028}ner",
+            "Plan\u{2029}ner",
+            "Plan\u{202e}ner",
+            "\u{202a}Planner",
+            "Plan\u{2066}ner\u{2069}",
+        ] {
             let error = envs.add_agent(&env.id, name, None).unwrap_err().to_string();
             assert!(error.contains("control characters"), "{name:?}: {error}");
         }
@@ -1378,6 +1512,70 @@ mod tests {
         std::fs::remove_dir(data.path().join("environments.json.tmp")).unwrap();
         let again = store(data.path()).list();
         assert_eq!(again[1].agents[0].session_id.as_deref(), Some("sess-1"));
+    }
+
+    #[test]
+    fn a_migrated_agent_is_reported_until_it_has_started_once() {
+        let data = tempfile::tempdir().unwrap();
+        legacy_file(data.path(), true, Some("sess-1"));
+        let envs = store(data.path());
+        let agent = envs.list().remove(1).agents.remove(0);
+        // A restart before the first start (or a first start that failed) loses nothing.
+        let restarted = store(data.path());
+        assert!(restarted.take_migrated(&agent.id));
+        assert!(!restarted.take_migrated(&agent.id), "only the first start");
+        // Once it has started, a later load has nothing to retitle.
+        assert!(!store(data.path()).take_migrated(&agent.id));
+    }
+
+    #[test]
+    fn names_refuse_separators_marks_and_controls_anywhere_including_the_edges() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        let env = new(&envs, "Work", None, &[path(&folder)]).unwrap();
+        for bad in [
+            "\u{2028}Planner",
+            "Planner\u{2029}",
+            "\u{200E}Planner",
+            "Plan\u{200F}ner",
+            "Planner\u{061C}",
+            "\nPlanner",
+            "Planner\t",
+        ] {
+            assert!(envs.add_agent(&env.id, bad, None).is_err(), "{bad:?}");
+            assert!(new(&envs, bad, None, &[]).is_err(), "environment {bad:?}");
+        }
+        // Spaces at the edges are only trimmed.
+        assert_eq!(
+            envs.add_agent(&env.id, "  Planner  ", None).unwrap().name,
+            "Planner"
+        );
+        assert_eq!(new(&envs, "  Home 2  ", None, &[]).unwrap().name, "Home 2");
+    }
+
+    #[test]
+    fn the_read_only_message_says_what_happened_to_the_file() {
+        let data = tempfile::tempdir().unwrap();
+        std::fs::write(data.path().join("environments.json"), "not json").unwrap();
+        let envs = store(data.path());
+        let said = new(&envs, "Work", None, &[]).unwrap_err().to_string();
+        assert!(said.contains("was set aside"), "{said}");
+
+        // Where the file cannot be moved aside (a folder with something in it is in the way).
+        let data = tempfile::tempdir().unwrap();
+        std::fs::write(data.path().join("environments.json"), "not json").unwrap();
+        let aside = data.path().join("environments.json.unreadable");
+        std::fs::create_dir_all(&aside).unwrap();
+        std::fs::write(aside.join("keep"), "x").unwrap();
+        let envs = store(data.path());
+        let said = new(&envs, "Work", None, &[]).unwrap_err().to_string();
+        assert!(said.contains("could not be set aside"), "{said}");
+        assert!(!said.contains("was set aside"), "{said}");
+        assert!(
+            data.path().join("environments.json").is_file(),
+            "left where it was"
+        );
     }
 
     #[test]

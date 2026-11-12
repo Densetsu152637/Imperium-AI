@@ -50,7 +50,9 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
 
   const save = async () => {
     if (!draft) return;
-    const name = draft.name.trim();
+    // Only spaces at the edges are dropped: a separator or a control there is refused, as the
+    // daemon refuses it, not quietly trimmed.
+    const name = draft.name.replace(/^ +| +$/g, "");
     const problem = nameProblem(name);
     if (problem) {
       setError(problem);
@@ -61,7 +63,7 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
       return;
     }
     setNotice(null);
-    const outcome: { created: EnvironmentAgentCreated | null } = { created: null };
+    const outcome: { created: EnvironmentAgentCreated | null; saved: boolean } = { created: null, saved: false };
     const done = await run(async (c, environment_id) => {
       if (draft.id === null) {
         outcome.created = await c.call<EnvironmentAgentCreated>("environments.agent_create", {
@@ -70,12 +72,18 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
           role: draft.role.trim(),
         });
       } else {
-        await c.call("environments.agent_update", { environment_id, agent_id: draft.id, name, role: draft.role.trim() });
+        outcome.created = await c.call<EnvironmentAgentCreated>("environments.agent_update", {
+          environment_id,
+          agent_id: draft.id,
+          name,
+          role: draft.role.trim(),
+        });
+        outcome.saved = true;
       }
     });
     if (done) {
       setDraft(null);
-      setNotice(notStartedNotice(outcome.created));
+      setNotice(notStartedNotice(outcome.created, outcome.saved ? "was saved" : "was added"));
     }
   };
 
