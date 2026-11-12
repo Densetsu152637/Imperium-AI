@@ -78,6 +78,7 @@ import { queueParams, type QueueChange } from "./queue";
 import { ModBus, ModFrame } from "./mods/ModFrame";
 import { ApprovalsPanel } from "./panels/ApprovalsPanel";
 import { BrowserPanel } from "./panels/BrowserPanel";
+import { PreviewPanel } from "./panels/PreviewPanel";
 import { LocalModelsPanel } from "./panels/LocalModelsPanel";
 import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
@@ -1216,7 +1217,8 @@ export function App() {
     { id: "telemetry", title: "Telemetry", body: <TelemetryPanel sessions={allSessions} models={modelTable?.models ?? []} /> },
     { id: "resources", title: "Resources", body: <ResourcesPanel client={client} /> },
     { id: "usage", title: "Usage", body: <UsagePanel client={client} /> },
-    { id: "browser", title: "Browser", body: <BrowserPanel session={session} /> },
+    { id: "preview", title: "Preview", body: <PreviewPanel session={session} /> },
+    { id: "browser", title: "Browser", body: <BrowserPanel session={session} client={client} /> },
     ...modPanels("right"),
   ];
   // Approvals appear in the main window only while something waits, but a detached one stays.
@@ -1510,6 +1512,7 @@ const PANELS: { id: string; title: string }[] = [
   { id: "telemetry", title: "Telemetry" },
   { id: "resources", title: "Resources" },
   { id: "usage", title: "Usage" },
+  { id: "preview", title: "Preview" },
   { id: "browser", title: "Browser" },
 ];
 

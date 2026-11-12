@@ -3027,6 +3027,100 @@ pub struct SuggestionRespondResult {
     pub job: Option<DownloadJob>,
 }
 
+/// `session.browser_control`: the user takes over the session's browser (`user` true) or gives
+/// it back to the agent (`user` false). While the user drives, the agent's browser tools are
+/// refused with a message saying so, and `browser_control` events tell every client. Taking
+/// over starts the browser if it is not running, and returns its page.
+#[derive(Debug)]
+pub struct SessionBrowserControl;
+
+impl Method for SessionBrowserControl {
+    const NAME: &'static str = "session.browser_control";
+    type Params = BrowserControlParams;
+    type Result = BrowserControlResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BrowserControlParams {
+    pub session_id: String,
+    pub user: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BrowserControlResult {
+    /// The browser's page after taking over; absent when giving back.
+    #[serde(default)]
+    pub view: Option<BrowserPage>,
+}
+
+/// The browser's page: URL, title, and a JPEG screenshot (base64).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BrowserPage {
+    pub url: String,
+    pub title: String,
+    pub screenshot: String,
+}
+
+/// `session.browser_act`: an action of the user in the browser they have taken over
+/// (`session.browser_control`); refused when the user is not driving. Returns the page after
+/// the action, which is also sent as a `browser_view` event.
+#[derive(Debug)]
+pub struct SessionBrowserAct;
+
+impl Method for SessionBrowserAct {
+    const NAME: &'static str = "session.browser_act";
+    type Params = BrowserActParams;
+    type Result = BrowserActResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BrowserActParams {
+    pub session_id: String,
+    pub action: BrowserAction,
+}
+
+/// What the user does in the browser. `click` positions are fractions (0 to 1) of the page's
+/// visible width and height, so a client scales a click on the screenshot without knowing the
+/// page's size.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export)]
+pub enum BrowserAction {
+    /// Go to an http or https URL.
+    Navigate {
+        url: String,
+    },
+    Back,
+    Forward,
+    Reload,
+    Click {
+        x: f64,
+        y: f64,
+    },
+    /// Type text into the focused element.
+    Type {
+        text: String,
+    },
+    /// Press a named key such as `Enter`, `Tab`, `Backspace`, or `Escape`.
+    Key {
+        key: String,
+    },
+    /// Scroll the page by `dy` pixels (positive is down).
+    Scroll {
+        dy: f64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BrowserActResult {
+    pub view: BrowserPage,
+}
+
 /// Notification sent to every client when a session starts, whoever started it (a client, a
 /// schedule, a project agent, or auto-fix). The payload is a [`SessionSummary`].
 pub const SESSION_CREATED: &str = "session.created";

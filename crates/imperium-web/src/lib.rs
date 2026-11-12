@@ -4,6 +4,7 @@
 
 pub mod browser;
 pub mod html;
+pub mod preview;
 pub mod search;
 mod tools;
 
@@ -13,11 +14,12 @@ use std::time::Duration;
 use imperium_api::ToolSpec;
 use imperium_protocol::tools as contract;
 
+pub use preview::{PreviewTools, loopback_url};
 pub use search::{
     Brave, SearchConfig, SearchFuture, SearchProvider, SearchProviderBuilder, SearchProviders,
     Searxng, Tavily,
 };
-pub use tools::{BrowserSetup, WebTools};
+pub use tools::{BrowserSetup, Takeover, USER_DRIVING, WebTools};
 
 /// Longest page text kept from one fetch.
 const MAX_PAGE_CHARS: usize = 200_000;

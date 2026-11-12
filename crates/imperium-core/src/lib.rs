@@ -4,6 +4,7 @@
 mod approvals;
 mod attachments;
 mod autofix;
+mod browser_control;
 mod budgets;
 pub use budgets::{CallGate, CallUsage, check_call};
 mod checkpoints;

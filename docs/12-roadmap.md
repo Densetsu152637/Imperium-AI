@@ -133,8 +133,14 @@ the wait reason in the desktop.
    match, and the `search_sessions` tool, which reaches only the agent's own environment unless
    `memory.session_search_scope` is `all` ([17](17-memory.md#session-search-implemented),
    [07](07-desktop-ui.md#session-search-implemented)).
-9. **Live preview and browser.** A live preview of the app being built and an integrated
-   browser the user drives, beside the agent's own browser view.
+9. **Live preview and browser** (implemented). A Preview panel shows the page the project's dev
+   server serves (an agent starts it with `preview_open`, a command and port run as a managed
+   background process under the session's sandbox and permission rules, or shows a loopback
+   URL; loopback pages only, enforced in the daemon, the panel, and the window's CSP), and the
+   Browser panel lets the user take over the agent's browser (click, type, navigate, back,
+   *Give back to agent*) while the agent's browser tools are refused
+   ([05](05-tools-and-isolation.md#live-preview-implemented),
+   [07](07-desktop-ui.md#preview-and-browser-panels-implemented)). Protocol 0.18.
 10. **Local-model extras.** Speculative decoding with draft models, a local model benchmark,
     and an OpenAI-compatible local API server for other tools.
 11. **Sharing and sync (design)** (designed). Design plans for session sharing and export, and

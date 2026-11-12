@@ -485,6 +485,7 @@ impl ToolProvider for SuggestTool {
             // Only a proposal: the user consents to any download separately.
             ask: false,
             needs_context: false,
+            command: None,
         })
     }
 

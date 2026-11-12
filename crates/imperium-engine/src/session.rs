@@ -199,6 +199,32 @@ pub fn new_session_id() -> Result<String, getrandom::Error> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+/// A restart ends what the earlier run left open: the browser goes back to the agent (the user's
+/// takeover does not survive it) and the preview's page, whose server stopped with the old
+/// run, is closed. Clients replaying the history then see neither as still in force.
+fn reset_after_restart(emitter: &Emitter, history: &History) {
+    let (mut user_drives, mut previewing) = (false, false);
+    for event in history.lock().iter() {
+        match &event.event {
+            SessionEvent::BrowserControl { user } => user_drives = *user,
+            SessionEvent::PreviewChanged { url, .. } => previewing = url.is_some(),
+            _ => {}
+        }
+    }
+    if user_drives {
+        emitter.emit_raw(ROOT_AGENT, SessionEvent::BrowserControl { user: false });
+    }
+    if previewing {
+        emitter.emit_raw(
+            ROOT_AGENT,
+            SessionEvent::PreviewChanged {
+                url: None,
+                command: None,
+            },
+        );
+    }
+}
+
 impl Session {
     /// Starts the session's root agent task. Must be called from within a Tokio runtime.
     pub fn spawn(config: SessionConfig) -> std::io::Result<Self> {
@@ -243,6 +269,9 @@ impl Session {
             controls: Arc::clone(&controls),
             agents: Arc::clone(&agents),
         });
+        if config.resume {
+            reset_after_restart(&emitter, &history);
+        }
         let inboxes = Arc::new(Inboxes::new(Arc::clone(&emitter), &history.lock()));
         let shared = SharedSlot::default();
         let task = tokio::spawn(run(

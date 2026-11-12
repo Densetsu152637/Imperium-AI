@@ -402,6 +402,7 @@ impl ToolProvider for ListModelsTool {
             // Read-only: it describes the models and loads none.
             ask: false,
             needs_context: false,
+            command: None,
         })
     }
 
