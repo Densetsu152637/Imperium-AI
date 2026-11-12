@@ -4,6 +4,7 @@ import type { ResumePolicy } from "./ResumePolicy";
 import type { SessionHold } from "./SessionHold";
 import type { SessionStatus } from "./SessionStatus";
 import type { SessionWorktree } from "./SessionWorktree";
+import type { StartedBy } from "./StartedBy";
 
 export type SessionSummary = { session_id: string, 
 /**
@@ -98,4 +99,9 @@ comparison_id?: string,
 /**
  * The session's folders are a read-only mount (`session.create` `read_only`).
  */
-read_only: boolean, };
+read_only: boolean, 
+/**
+ * Set when a persistent agent started the session (or the user started one of its
+ * suggestions): shown as "started by <agent>" with the reason.
+ */
+started_by?: StartedBy, };

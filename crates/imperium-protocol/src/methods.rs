@@ -336,6 +336,11 @@ pub struct SessionSummary {
     /// The session's folders are a read-only mount (`session.create` `read_only`).
     #[serde(default)]
     pub read_only: bool,
+    /// Set when a persistent agent started the session (or the user started one of its
+    /// suggestions): shown as "started by <agent>" with the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub started_by: Option<crate::initiative::StartedBy>,
 }
 
 /// Where a branched session came from.

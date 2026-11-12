@@ -5,7 +5,7 @@
 // small budget mark shows when a budget over the session (its environment, endpoint, or model, or
 // all usage) has passed an alert threshold.
 
-import { CornerDownRight, Gauge, GitBranch, GitCompare, Paperclip, Pencil, Play, ShieldCheck, ShieldPlus, SlidersHorizontal, Square, Trash, X } from "lucide-react";
+import { Bot, CornerDownRight, Gauge, GitBranch, GitCompare, Paperclip, Pencil, Play, ShieldCheck, ShieldPlus, SlidersHorizontal, Square, Trash, X } from "lucide-react";
 import { useEffect, useId, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -74,6 +74,7 @@ import { useSettings } from "../settings";
 import { canStop, isStopShortcut, isStopped } from "../stop";
 import { editStillValid, queueActions, queueLabel, steeredLabel, type QueueChange } from "../queue";
 import { ModelName } from "../components/ModelName";
+import { startedByNote } from "../agents";
 import { branchNote } from "../branches";
 
 type Props = {
@@ -302,6 +303,13 @@ export function SessionPanel({
               Compare side by side
             </button>
           )}
+        </p>
+      )}
+
+      {session.summary.started_by && (
+        <p className="branch-note muted" title={startedByNote(session.summary.started_by)}>
+          <Bot aria-hidden="true" />
+          <span>{startedByNote(session.summary.started_by)}</span>
         </p>
       )}
 

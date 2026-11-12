@@ -13,6 +13,9 @@ use imperium_protocol::agents::{
     EnvironmentAgentUpdateParams,
 };
 use imperium_protocol::budgets::{BudgetsGet, BudgetsGetParams, BudgetsSet, BudgetsUsage};
+use imperium_protocol::initiative::{
+    InitiativeDismiss, InitiativeGet, InitiativeReview, InitiativeStart,
+};
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
@@ -216,6 +219,9 @@ impl Connection {
         let permitted = match notification.method.as_str() {
             imperium_protocol::methods::RESOURCES_CHANGED => self.watches_resources(),
             imperium_protocol::methods::MODEL_BENCH_PROGRESS => self.allowed.is_none(),
+            // Suggestions, reasons and sources are the user's own business, not a phone's.
+            imperium_protocol::initiative::INITIATIVE_CHANGED
+            | imperium_protocol::initiative::INITIATIVE_NOTICE => self.allowed.is_none(),
             _ => true,
         };
         permitted && self.events.allows(&notification.method)
@@ -479,6 +485,18 @@ impl Connection {
             method if method.starts_with("environments.") => {
                 self.environment_call(method, request.params)
             }
+            InitiativeGet::NAME => call::<InitiativeGet>(request.params, |params| {
+                crate::initiative::get(&self.state, params)
+            }),
+            InitiativeStart::NAME => call::<InitiativeStart>(request.params, |params| {
+                crate::initiative::start_suggestion(&self.state, params)
+            }),
+            InitiativeDismiss::NAME => call::<InitiativeDismiss>(request.params, |params| {
+                crate::initiative::dismiss(&self.state, params).map(|()| Accepted {})
+            }),
+            InitiativeReview::NAME => call::<InitiativeReview>(request.params, |params| {
+                crate::initiative::review_now(&self.state, params).map(|()| Accepted {})
+            }),
             ModelList::NAME => call::<ModelList>(request.params, |_: ModelListParams| {
                 Ok(self.state.model_table())
             }),
@@ -1128,6 +1146,15 @@ impl Connection {
                     let agent = envs
                         .add_agent(&p.environment_id, &p.name, p.role.as_deref())
                         .map_err(failed)?;
+                    if let Some(initiative) = p.initiative {
+                        envs.set_agent_initiative(&p.environment_id, &agent.id, initiative)
+                            .map_err(failed)?;
+                        if initiative == imperium_protocol::initiative::Initiative::Act {
+                            self.state
+                                .initiative()
+                                .postpone_review(&agent.id, crate::initiative::now_ms());
+                        }
+                    }
                     // Started at once; an environment without folders starts it when one is
                     // added. Whether it did, and if not why, goes back with it.
                     let failed = crate::project_agent::sync_environment_agent_report(
@@ -1149,6 +1176,9 @@ impl Connection {
             EnvironmentAgentUpdate::NAME => {
                 call::<EnvironmentAgentUpdate>(params, |p: EnvironmentAgentUpdateParams| {
                     let before = self.agent_of(&p.environment_id, &p.agent_id);
+                    let was_act = before.as_ref().is_some_and(|agent| {
+                        agent.initiative == imperium_protocol::initiative::Initiative::Act
+                    });
                     let agent = envs
                         .update_agent(
                             &p.environment_id,
@@ -1173,6 +1203,20 @@ impl Connection {
                             &p.environment_id,
                         );
                     }
+                    if let Some(initiative) = p.initiative {
+                        // Applies from the agent's next look; nothing restarts.
+                        envs.set_agent_initiative(&p.environment_id, &agent.id, initiative)
+                            .map_err(failed)?;
+                        // The first review after `act` is turned on is a full interval away, so
+                        // the user can see what the agent suggests before it starts anything.
+                        if initiative == imperium_protocol::initiative::Initiative::Act && !was_act
+                        {
+                            self.state
+                                .initiative()
+                                .postpone_review(&agent.id, crate::initiative::now_ms());
+                        }
+                        crate::initiative::announce(&self.state, &agent.id);
+                    }
                     Ok(self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent))
                 })
             }
@@ -1181,12 +1225,20 @@ impl Connection {
                     envs.remove_agent(&p.environment_id, &p.agent_id)
                         .map_err(failed)?;
                     self.state.sync_environment_agent(&p.environment_id);
+                    self.state.initiative().forget_agent(&p.agent_id);
                     Ok(Accepted {})
                 })
             }
             EnvironmentDelete::NAME => call::<EnvironmentDelete>(params, |p: EnvironmentRef| {
+                let agents: Vec<String> = envs
+                    .get(&p.id)
+                    .map(|env| env.agents.iter().map(|agent| agent.id.clone()).collect())
+                    .unwrap_or_default();
                 envs.delete(&p.id).map_err(failed)?;
                 self.state.sync_environment_agent(&p.id);
+                for agent in agents {
+                    self.state.initiative().forget_agent(&agent);
+                }
                 Ok(Accepted {})
             }),
             EnvironmentAddFolder::NAME => {

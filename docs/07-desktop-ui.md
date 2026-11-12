@@ -822,6 +822,15 @@ with *Create* or *Save*. For a remote runtime the folders are paths inside it
 ([runtimes](14-projects-and-automation.md#runtimes-implemented)), typed in with *Add path*
 instead of the folder picker.
 
+Each agent in that section has an *Initiative* select (*Off*, *Suggest*, *Act*; off for a new agent) and a
+*Review now* button (`AgentInitiative`). With initiative on, its row shows where it stands (reviewing,
+waiting and why, the last review, the `act` allowance), the **suggestions** it made with their
+reason, source and prompt and **Start** (opens the new session) and **Dismiss**, the handled ones,
+and its latest *Work left* reminder, following `initiative.changed`. A session an agent started
+carries a note under its header (*Started by Planner in Work on its own initiative: …*) and in its
+tooltip in the list, and `initiative.notice` raises an OS notification (Settings → Notifications →
+*Notify about agents' suggestions and sessions*; clicking one for a started session opens it).
+
 The window's *Agents* section (`EnvironmentAgents`) lists the environment's
 [persistent agents](14-projects-and-automation.md#persistent-agents-implemented): a new
 environment has none, *Add agent* asks for a name and an optional role, and each row has edit

@@ -153,6 +153,10 @@ pub struct Settings {
     /// How busy the machine must be before autonomous work yields (see docs/14).
     #[serde(default)]
     pub load: LoadSettings,
+    /// `[initiative]`: how often and how far environments' persistent agents act on their own
+    /// (see docs/14).
+    #[serde(default)]
+    pub initiative: InitiativeSettings,
     #[serde(default)]
     pub sessions: SessionSettings,
     /// `[workspaces]`: where each environment's working folder lives (see docs/10).
@@ -731,6 +735,47 @@ impl Default for LoadSettings {
             saturated_free_ram_mb: 512,
             saturated_swaps_per_min: 3,
             interactive_hold_min: 5,
+        }
+    }
+}
+
+/// `[initiative]`: limits for the initiative of environments' persistent agents. Each
+/// environment chooses `off`, `suggest` or `act` for its own agent; these say how often the
+/// agent looks, when it counts the environment as idle, and what `act` may start.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct InitiativeSettings {
+    /// Minutes between an agent's reviews of its environment.
+    pub review_every_min: u64,
+    /// Minutes an environment must have had no activity in the user's sessions before its agent
+    /// takes initiative (a session working or waiting on the user counts as active).
+    pub idle_min: u64,
+    /// Hours between work-left digests (a reminder of the roadmap or plan items and unfinished
+    /// sessions); 0 turns digests off.
+    pub digest_every_hours: u64,
+    /// Suggestions one review may make.
+    pub max_suggestions: u32,
+    /// Sessions an agent in `act` mode may start per day, and at once.
+    pub max_sessions_per_day: u32,
+    pub max_concurrent: u32,
+    /// Seconds between the daemon's looks at whether any agent is due (it does nothing in
+    /// between).
+    pub poll_s: u64,
+    /// Seconds a review may take before the agent is stopped.
+    pub review_timeout_s: u64,
+}
+
+impl Default for InitiativeSettings {
+    fn default() -> Self {
+        InitiativeSettings {
+            review_every_min: 240,
+            idle_min: 10,
+            digest_every_hours: 24,
+            max_suggestions: 5,
+            max_sessions_per_day: 2,
+            max_concurrent: 1,
+            poll_s: 60,
+            review_timeout_s: 1800,
         }
     }
 }

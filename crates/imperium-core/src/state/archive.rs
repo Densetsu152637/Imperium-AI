@@ -115,6 +115,7 @@ impl DaemonState {
             branched_from: serde_json::from_value(meta["branched_from"].clone()).ok(),
             comparison_id: meta["comparison_id"].as_str().map(str::to_string),
             read_only: meta["read_only"] == true,
+            started_by: serde_json::from_value(meta["started_by"].clone()).ok(),
         };
         self.archived_map().insert(id.to_string(), summary);
     }

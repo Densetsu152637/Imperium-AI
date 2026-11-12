@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use imperium_protocol::agents::EnvironmentAgent;
+use imperium_protocol::initiative::Initiative;
 use imperium_protocol::methods::{
     EnvironmentCreateParams, EnvironmentInfo, EnvironmentRuntime, EnvironmentUpdateParams,
 };
@@ -322,6 +323,7 @@ impl Environments {
                 name: name.clone(),
                 role: role.clone(),
                 session_id: None,
+                initiative: Initiative::Off,
             });
             Ok(())
         })?;
@@ -368,6 +370,37 @@ impl Environments {
             .into_iter()
             .find(|agent| agent.id == agent_id)
             .expect("checked above"))
+    }
+
+    /// Sets how much initiative an agent takes.
+    pub fn set_agent_initiative(
+        &self,
+        id: &str,
+        agent_id: &str,
+        initiative: Initiative,
+    ) -> Result<EnvironmentAgent, EnvironmentError> {
+        let env = self.change_one(id, |env| {
+            find_agent(env, agent_id)?.initiative = initiative;
+            Ok(())
+        })?;
+        Ok(env
+            .agents
+            .into_iter()
+            .find(|agent| agent.id == agent_id)
+            .expect("checked above"))
+    }
+
+    /// The environment and agent with this agent id, wherever it is.
+    pub fn find_agent_anywhere(
+        &self,
+        agent_id: &str,
+    ) -> Option<(EnvironmentInfo, EnvironmentAgent)> {
+        self.lock().iter().find_map(|env| {
+            env.agents
+                .iter()
+                .find(|agent| agent.id == agent_id)
+                .map(|agent| (env.clone(), agent.clone()))
+        })
     }
 
     /// Removes an agent and returns it (its session id says what to archive).
@@ -676,6 +709,7 @@ fn default_agent(session_id: Option<String>) -> Result<EnvironmentAgent, getrand
         name: DEFAULT_AGENT_NAME.into(),
         role: String::new(),
         session_id,
+        initiative: Initiative::Off,
     })
 }
 
