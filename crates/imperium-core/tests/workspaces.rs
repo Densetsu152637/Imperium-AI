@@ -610,3 +610,51 @@ async fn a_client_subscribed_before_a_move_keeps_receiving_from_the_restarted_se
     }
     assert!(saw_reply, "the turn's events reached the old subscription");
 }
+
+#[tokio::test]
+async fn two_moves_at_once_never_strand_the_data() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), "http://127.0.0.1:9/v1");
+    let env = environment(&state, "Work", project.path());
+    let (session, _events) = state
+        .create_in_environment(&env, None, SessionOptions::default())
+        .unwrap();
+    let id = session.id().to_string();
+    drop(session);
+    seed_session_files(home.path(), &env, &id);
+
+    let targets = [elsewhere.path().join("one"), elsewhere.path().join("two")];
+    let threads: Vec<_> = targets
+        .iter()
+        .map(|target| {
+            let state = Arc::clone(&state);
+            let target = target.display().to_string();
+            std::thread::spawn(move || state.move_workspaces(&target))
+        })
+        .collect();
+    let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    assert!(results.iter().any(Result::is_ok), "{results:?}");
+
+    // The data is wherever the setting now says, and nowhere else.
+    let root = PathBuf::from(state.workspaces_where().root);
+    assert!(targets.iter().any(|target| *target == root), "{root:?}");
+    assert!(
+        root.join(&env)
+            .join("sessions")
+            .join(&id)
+            .join("notes.txt")
+            .is_file()
+    );
+    for target in &targets {
+        if *target != root {
+            assert!(
+                !target.join(&env).exists() || std::fs::read_dir(target).unwrap().next().is_none(),
+                "data stranded at {}",
+                target.display()
+            );
+        }
+    }
+    assert!(!root_of(home.path()).join(&env).exists());
+}

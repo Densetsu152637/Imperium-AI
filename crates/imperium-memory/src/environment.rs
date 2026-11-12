@@ -86,6 +86,18 @@ impl EnvironmentMemory {
         kind: &str,
         body: &str,
     ) -> Result<bool, MemoryError> {
+        Self::check(name, description, kind, body)?;
+        let section = format!(
+            "## {name}\n_{} ({kind})_\n\n{}\n",
+            description.trim().replace('\n', " "),
+            body.trim()
+        );
+        self.write_section(name, &section)
+    }
+
+    /// The checks that need no file: name, type, description, body length, and secrets. Run
+    /// before the user is asked to approve an entry, so they never approve one that is refused.
+    pub fn check(name: &str, description: &str, kind: &str, body: &str) -> Result<(), MemoryError> {
         let name_ok = !name.is_empty()
             && name.len() <= 64
             && !name.starts_with('-')
@@ -110,17 +122,16 @@ impl EnvironmentMemory {
         if let Some(reason) = looks_secret(&format!("{description}\n{body}")) {
             return Err(MemoryError::LooksSecret(reason));
         }
-        let section = format!(
-            "## {name}\n_{} ({kind})_\n\n{}\n",
-            description.trim().replace('\n', " "),
-            body.trim()
-        );
+        Ok(())
+    }
+
+    fn write_section(&self, name: &str, section: &str) -> Result<bool, MemoryError> {
         let _turn = WRITES
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let file = self.file();
         let existing = std::fs::read_to_string(&file).unwrap_or_default();
-        let (updated, replaced) = upsert_section(&existing, name, &section);
+        let (updated, replaced) = upsert_section(&existing, name, section);
         if updated.chars().count() > MAX_CONTEXT_CHARS {
             return Err(MemoryError::TooLong(format!(
                 "Memory.md would pass {MAX_CONTEXT_CHARS} characters, which is all that fits in \
@@ -336,6 +347,17 @@ mod tests {
             Err(MemoryError::LooksSecret(_))
         ));
         assert!(!memory.file().exists());
+    }
+
+    #[test]
+    fn the_checks_that_need_no_file_can_run_before_asking() {
+        assert!(EnvironmentMemory::check("ok", "d", "project", "b").is_ok());
+        assert!(EnvironmentMemory::check("Bad", "d", "project", "b").is_err());
+        assert!(EnvironmentMemory::check("ok", "d", "nope", "b").is_err());
+        let long = "x".repeat(MAX_BODY_CHARS + 1);
+        assert!(EnvironmentMemory::check("ok", "d", "project", &long).is_err());
+        let secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+        assert!(EnvironmentMemory::check("ok", "d", "project", secret).is_err());
     }
 
     #[test]

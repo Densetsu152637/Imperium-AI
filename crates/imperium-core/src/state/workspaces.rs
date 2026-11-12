@@ -115,14 +115,15 @@ impl DaemonState {
         } else {
             PathBuf::from(target)
         };
-        let old = self.workspaces_root();
         // Held while the data and the setting change, so no session starts, ends or is archived
         // on the old place meanwhile; released before the idle sessions are restarted.
-        let (staged_report, affected) = {
+        let (staged_report, affected, old) = {
             let _moving = self
                 .workspaces_lock
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
+            // Read under the lock: a move that ran first has already changed the root.
+            let old = self.workspaces_root();
             if std::env::var_os("IMPERIUM_WORKSPACES__ROOT").is_some() {
                 return Err(
                     "IMPERIUM_WORKSPACES__ROOT sets the working folders' place and wins over \
@@ -227,7 +228,7 @@ impl DaemonState {
                     },
                 );
             });
-            ((method, files, bytes, warnings), affected)
+            ((method, files, bytes, warnings), affected, old)
         };
         let (method, files, bytes, mut warnings) = staged_report;
         // Restart the idle sessions whose scratch folder moved so they point at the new one.

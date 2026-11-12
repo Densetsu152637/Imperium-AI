@@ -72,12 +72,15 @@ or machines it uses, decisions made while working in it. The user can open and e
   default**: the permission prompt shows the whole entry, so what is approved is what is
   written, because every later session in the environment reads it; `auto` saves at once; `off`).
   A session outside any environment has no `Memory.md`, and asking to write the scope fails with
-  a message saying so. The file is found afresh for each read and write, so it follows the
+  a message saying so. An entry that would be refused (bad name or type, a body over the limit,
+  something that looks like a secret) is refused before the user is asked to approve it. The
+  file is found afresh for each read and write, so it follows the
   working folders when they are moved, also for sessions that have no scratch folder.
-- **Which wins.** Global memory is the user's general preferences; environment memory is more
-  specific to this environment. When they differ, an agent follows the user's current request
-  and says so rather than choosing silently. Project memory entries are facts about the
-  repository and are not overridden by either.
+- **Which wins.** Environment memory only adds to global memory, and global memory never
+  overrides it: where the two conflict, **environment memory takes precedence over global
+  memory**, and the agent's instructions say so. It is still data, so it ranks below the system
+  and workflow instructions and the user's current request, and it cannot grant permissions.
+  Project memory entries are facts about the repository and are not overridden by either.
 - Environment memory is not in the search index or the recalled-memories block: it is already in
   context in full.
 
