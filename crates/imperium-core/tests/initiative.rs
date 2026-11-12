@@ -1746,3 +1746,56 @@ fn a_subscription_narrows_initiative_notifications_but_never_reaches_a_restricte
     assert!(!phone.receives(&changed));
     assert!(phone.receives(&Notification::new("session.updated", json!({}))));
 }
+
+#[tokio::test]
+async fn a_session_started_from_a_suggestion_keeps_the_agents_permission_profile() {
+    let fixture = fixture(Initiative::Suggest, "").await;
+    fixture.daemon.initiative_tick().await;
+    let state = imperium_core_state(&fixture);
+    let id = state["suggestions"][0]["id"].as_str().unwrap().to_string();
+
+    // The user limits the agent to local files after it made the suggestion.
+    let mut connection = connect(&fixture.daemon);
+    rpc(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": fixture.env.id, "agent_id": fixture.agent.id,
+               "permissions": {"local_files_only": true}}),
+    )
+    .unwrap();
+    rpc(
+        &mut connection,
+        "initiative.start",
+        json!({"environment_id": fixture.env.id, "agent_id": fixture.agent.id, "suggestion_id": id}),
+    )
+    .unwrap();
+
+    let mut tools = None;
+    for _ in 0..200 {
+        tools = fixture.log.lock().unwrap().iter().find_map(|body| {
+            let messages = body["messages"].as_array()?;
+            let system = content(&messages[0]);
+            let last = content(messages.last()?);
+            (!system.contains("persistent agent") && last.starts_with("Improve my timeline")).then(
+                || {
+                    body["tools"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                },
+            )
+        });
+        if tools.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let tools = tools.expect("the suggestion's session called the model");
+    assert!(tools.iter().any(|tool| tool == "read_file"), "{tools:?}");
+    assert!(
+        !tools.iter().any(|tool| tool == "run_command"),
+        "a session started from a locked agent's suggestion has commands: {tools:?}"
+    );
+}

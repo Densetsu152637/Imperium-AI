@@ -374,6 +374,19 @@ aliases). Not yet: domain rules for `web_fetch`, an `auto` mode where a classifi
 routine actions, and logging decisions in the session journal beyond the events it already
 records.
 
+### Agent permission profiles (implemented)
+
+A persistent agent of an environment can be limited further than the environment: an allowlist
+of MCP servers, an allowlist of plugins, and a **local files only** lock that removes web,
+browser, search, media, MCP, plugin and command tools and confines the file tools to the
+environment's folders and the agent's scratch folder. A profile only narrows: it hides tools
+from the list the model gets and refuses calls to them, and the rules, permission modes and
+safety floor below still decide every call that remains. It binds the agent's subagents and the
+sessions it starts, and keeps the servers and plugins it forbids from starting. Only **local files
+only** is a boundary against the agent itself; allowlists are not, because an agent that can run
+commands can change its own profile through the daemon. See
+[agent permission profiles](14-projects-and-automation.md#agent-permission-profiles-implemented).
+
 ### Permission modes (implemented)
 
 Each session has a permission mode, which decides calls together with the rules. New sessions
@@ -433,6 +446,8 @@ answers:
   `powershell -Command -`); PowerShell running a string or another process (`iex`,
   `Invoke-Expression`, `Start-Process`, `saps`, `Invoke-Command`); and `git -c alias.<name>=…`
   with a `!` (shell) alias, quoted or not.
+- `imperium env agent add|set|rm`, which could loosen an agent's own
+  [permission profile](14-projects-and-automation.md#agent-permission-profiles-implemented).
 - Writing files that hold secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
   `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`) or anything with a `.git` folder
   in its absolute path, such as a linked worktree's main repository's hooks.
@@ -475,6 +490,17 @@ The file tools stay tier 0 (they run in the daemon, confined to the workspace). 
 forcing tiers per model or agent, GPU flags for containers, Windows AppContainer, and a default
 dev image.
 
+**Read-only mounts (implemented):** a session started with `read_only`
+([14](14-projects-and-automation.md#narrowed-sessions-implemented)) mounts its folders read-only
+under each tier: the OS tier binds nothing in the folders writable (the whole filesystem is
+read-only there already, and bubblewrap binds the folders read-only last, Seatbelt denies writes
+under them last), the container tier adds `:ro` to the folder mounts, and tier 0 cannot confine a
+command, so it refuses `run_command` and background commands instead of running them. The file
+tools refuse writes and edits without asking. A writable path grant inside or around a read-only
+folder does not reopen it: the file tools, the OS sandbox and the container mounts (a grant that
+overlaps a folder is mounted `:ro`) all keep the folder read-only, while grants elsewhere, such as
+the session's scratch folder, keep their mode.
+
 ### Environment runtimes (implemented)
 
 An [environment's runtime](14-projects-and-automation.md#runtimes-implemented) can move a
@@ -498,7 +524,7 @@ written (after resolving `.` and `..`); links inside the runtime are not followe
 `run_command` reports the exit code, output, and errors as on this machine, and the session's
 isolation reads `runtime · ssh <host>` (or the container or distribution). A Docker **image**
 without a container is the container tier above with the environment's local folders mounted
-(network on). The permission prompts and approvals are unchanged; hooks still run on this
+(network per `isolation.network`). The permission prompts and approvals are unchanged; hooks still run on this
 machine (in its temporary folder).
 
 **Worktrees:** a session can be started on git worktrees of its environment's repositories so

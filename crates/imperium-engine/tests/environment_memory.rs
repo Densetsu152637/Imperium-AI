@@ -95,7 +95,7 @@ fn start(
         notices: Vec::new(),
         extensions: Default::default(),
         memory: Some(SessionMemory {
-            store: Store::new(&dir.join("data"), None),
+            store: Store::new(&dir.join("data")),
             settings: MemorySettings {
                 write: imperium_config::MemoryWrite {
                     environment: policy,
@@ -207,6 +207,11 @@ async fn environment_memory_is_in_every_call_including_after_compaction() {
 
 /// The model saves an environment memory on its first call, then finishes.
 async fn saving_model() -> String {
+    saving_model_in("environment").await
+}
+
+/// The same, naming `scope`.
+async fn saving_model_in(scope: &'static str) -> String {
     let step = Arc::new(Mutex::new(0usize));
     let app = Router::new().route(
         "/v1/chat/completions",
@@ -220,7 +225,7 @@ async fn saving_model() -> String {
                         "name": "staging-reset",
                         "description": "When staging is reset",
                         "type": "project",
-                        "scope": "environment",
+                        "scope": scope,
                         "body": NOTE
                     });
                     stream(json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"m",
@@ -256,6 +261,33 @@ async fn memory_remember_with_the_environment_scope_writes_a_section_and_keeps_t
         text.contains("## staging-reset") && text.contains(NOTE),
         "{text}"
     );
+}
+
+#[tokio::test]
+async fn the_old_project_scope_names_still_write_environment_memory_for_one_version() {
+    for old in ["project", "project-private"] {
+        let url = saving_model_in(old).await;
+        let dir = tempfile::tempdir().unwrap();
+        let memory_file = dir.path().join("env").join("Memory.md");
+        let session = start(&url, dir.path(), &memory_file, None, WritePolicy::Auto);
+
+        let events = turn(&session, "remember the staging reset").await;
+        assert!(events.iter().any(|event| matches!(event,
+            SessionEvent::MemorySaved { name, scope } if name == "staging-reset" && scope == "environment")),
+            "{old} is saved as environment memory");
+        assert!(events.iter().any(|event| matches!(event,
+            SessionEvent::ToolFinished { ok: true, output, .. } if output.contains("folded into environment memory"))),
+            "{old}: the result says the name is old");
+        let text = std::fs::read_to_string(&memory_file).unwrap();
+        assert!(
+            text.contains("## staging-reset") && text.contains(NOTE),
+            "{text}"
+        );
+        assert!(
+            !dir.path().join(".imperium").exists(),
+            "nothing is written to a project folder"
+        );
+    }
 }
 
 #[test]

@@ -1,10 +1,12 @@
-//! Agent memory: one fact per Markdown file with front matter, in three scopes (global, the
-//! project's shared folder, and the user's private notes about a project), with an index,
-//! term-based search, and a redaction check that keeps secrets out; plus the session index
-//! ([`sessions`]) that makes past sessions searchable, and the model cards agents search when
-//! they choose a model ([`models`]), on the same retrieval primitives ([`retrieval`]).
+//! Agent memory in two scopes: global (one fact per Markdown file with front matter, with an
+//! index, term-based search, and a redaction check that keeps secrets out) and an environment's
+//! own `Memory.md` ([`environment`]). The older project-shared and project-private scopes were
+//! folded into the environment's file ([`migrate`]). Plus the session index ([`sessions`]) that
+//! makes past sessions searchable, and the model cards agents search when they choose a model
+//! ([`models`]), on the same retrieval primitives ([`retrieval`]).
 
 pub mod environment;
+pub mod migrate;
 pub mod models;
 pub mod retrieval;
 mod search;
@@ -21,28 +23,38 @@ pub use search::score;
 pub enum Scope {
     /// About the user, across every project: `<data>/memory/global/`.
     Global,
-    /// The project's shared memory, which can be committed: `<project>/.imperium/memory/`.
-    Project,
-    /// The user's own notes about a project: `<data>/memory/projects/<id>/`.
-    ProjectPrivate,
+    /// One environment's `Memory.md` ([`environment`]); not a folder of entries, so a [`Store`]
+    /// holds none.
+    Environment,
 }
 
 impl Scope {
     pub fn as_str(self) -> &'static str {
         match self {
             Scope::Global => "global",
-            Scope::Project => "project",
-            Scope::ProjectPrivate => "project-private",
+            Scope::Environment => "environment",
         }
     }
 
+    /// The scope named `text`. `project`, `project-private`, `project_private` and `private`
+    /// are the names of the scopes that were folded into the environment's memory; they are
+    /// still accepted, as [`Scope::Environment`], for one protocol version (0.31) so agents and
+    /// scripts that use them keep working (see [`Scope::is_legacy_name`]).
     pub fn parse(text: &str) -> Option<Self> {
         Some(match text {
             "global" => Scope::Global,
-            "project" => Scope::Project,
-            "project-private" | "project_private" | "private" => Scope::ProjectPrivate,
+            "environment" => Scope::Environment,
+            _ if Scope::is_legacy_name(text) => Scope::Environment,
             _ => return None,
         })
+    }
+
+    /// Whether `text` is the old name of a scope that is now the environment's memory.
+    pub fn is_legacy_name(text: &str) -> bool {
+        matches!(
+            text,
+            "project" | "project-private" | "project_private" | "private"
+        )
     }
 }
 
@@ -98,7 +110,7 @@ pub enum MemoryError {
     BadKind(String),
     #[error("a description is required")]
     NoDescription,
-    #[error("{0} memory is not available in this session (no project)")]
+    #[error("{0} memory is not kept as separate entries here")]
     NoScope(&'static str),
     #[error("refused: the entry looks like it contains a secret ({0})")]
     LooksSecret(&'static str),
@@ -108,39 +120,31 @@ pub enum MemoryError {
     Io(String, std::io::Error),
 }
 
-/// The memory folders for one session.
+/// The user's global memory entries. (An environment's memory is its `Memory.md`, see
+/// [`environment::EnvironmentMemory`].)
 #[derive(Debug, Clone)]
 pub struct Store {
     global: PathBuf,
-    project: Option<PathBuf>,
-    private: Option<PathBuf>,
 }
 
 impl Store {
-    /// `data_dir` is Imperium's data folder; `project_dir` the session's project, if any.
-    pub fn new(data_dir: &Path, project_dir: Option<&Path>) -> Self {
-        let memory = data_dir.join("memory");
+    /// `data_dir` is Imperium's data folder.
+    pub fn new(data_dir: &Path) -> Self {
         Store {
-            global: memory.join("global"),
-            project: project_dir.map(|dir| dir.join(".imperium").join("memory")),
-            private: project_dir.map(|dir| memory.join("projects").join(project_id(dir))),
+            global: data_dir.join("memory").join("global"),
         }
     }
 
     pub fn dir(&self, scope: Scope) -> Option<&Path> {
         match scope {
             Scope::Global => Some(&self.global),
-            Scope::Project => self.project.as_deref(),
-            Scope::ProjectPrivate => self.private.as_deref(),
+            Scope::Environment => None,
         }
     }
 
-    /// Every entry, global first, then project, then private, each sorted by name.
+    /// Every global entry, sorted by name.
     pub fn list(&self) -> Vec<Entry> {
-        [Scope::Global, Scope::Project, Scope::ProjectPrivate]
-            .into_iter()
-            .flat_map(|scope| self.list_scope(scope))
-            .collect()
+        self.list_scope(Scope::Global)
     }
 
     fn list_scope(&self, scope: Scope) -> Vec<Entry> {
@@ -408,10 +412,9 @@ mod tests {
     }
 
     #[test]
-    fn entries_save_list_search_and_forget_across_scopes() {
+    fn entries_save_list_search_and_forget() {
         let data = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        let store = Store::new(data.path(), Some(project.path()));
+        let store = Store::new(data.path());
         store
             .save(entry(
                 "prefers-pnpm",
@@ -420,43 +423,28 @@ mod tests {
                 "Run pnpm install.",
             ))
             .unwrap();
-        store
+        let saved = store
             .save(entry(
-                "ci-on-windows",
-                Scope::Project,
+                "windows-first",
+                Scope::Global,
                 "CI must pass on Windows",
                 "Test with cmd quoting.",
             ))
             .unwrap();
-        let saved = store
-            .save(entry(
-                "my-notes",
-                Scope::ProjectPrivate,
-                "Personal notes",
-                "Ask about deploys.",
-            ))
-            .unwrap();
         assert!(saved.path.starts_with(data.path()));
+        let index = std::fs::read_to_string(data.path().join("memory/global/INDEX.md")).unwrap();
         assert!(
-            project
-                .path()
-                .join(".imperium/memory/ci-on-windows.md")
-                .is_file()
-        );
-        let index =
-            std::fs::read_to_string(project.path().join(".imperium/memory/INDEX.md")).unwrap();
-        assert!(
-            index.contains("[ci-on-windows](ci-on-windows.md)"),
+            index.contains("[windows-first](windows-first.md)"),
             "{index}"
         );
 
         let names: Vec<_> = store.list().into_iter().map(|e| e.name).collect();
-        assert_eq!(names, ["prefers-pnpm", "ci-on-windows", "my-notes"]);
+        assert_eq!(names, ["prefers-pnpm", "windows-first"]);
         assert_eq!(
             store.search("which package manager, npm or pnpm?", 5)[0].name,
             "prefers-pnpm"
         );
-        assert_eq!(store.search("windows quoting", 5)[0].name, "ci-on-windows");
+        assert_eq!(store.search("windows quoting", 5)[0].name, "windows-first");
         assert!(store.search("kubernetes", 5).is_empty());
         assert!(
             store
@@ -480,19 +468,31 @@ mod tests {
             ("Updated.", created)
         );
 
-        assert!(store.forget("my-notes", Scope::ProjectPrivate).unwrap());
-        assert!(!store.forget("my-notes", Scope::ProjectPrivate).unwrap());
-        assert_eq!(store.list().len(), 2);
+        assert!(store.forget("windows-first", Scope::Global).unwrap());
+        assert!(!store.forget("windows-first", Scope::Global).unwrap());
+        assert_eq!(store.list().len(), 1);
+    }
+
+    #[test]
+    fn the_old_project_scope_names_mean_the_environment() {
+        for name in ["project", "project-private", "project_private", "private"] {
+            assert_eq!(Scope::parse(name), Some(Scope::Environment), "{name}");
+            assert!(Scope::is_legacy_name(name));
+        }
+        assert_eq!(Scope::parse("environment"), Some(Scope::Environment));
+        assert!(!Scope::is_legacy_name("environment"));
+        assert_eq!(Scope::parse("global"), Some(Scope::Global));
+        assert_eq!(Scope::parse("elsewhere"), None);
     }
 
     #[test]
     fn invalid_or_secret_entries_are_refused() {
         let data = tempfile::tempdir().unwrap();
-        let store = Store::new(data.path(), None);
+        let store = Store::new(data.path());
         let bad_name = store.save(entry("Has Spaces", Scope::Global, "d", "b"));
         assert!(matches!(bad_name, Err(MemoryError::BadName(_))));
-        let no_project = store.save(entry("x", Scope::Project, "d", "b"));
-        assert!(matches!(no_project, Err(MemoryError::NoScope(_))));
+        let not_entries = store.save(entry("x", Scope::Environment, "d", "b"));
+        assert!(matches!(not_entries, Err(MemoryError::NoScope(_))));
         let key = store.save(entry(
             "key",
             Scope::Global,

@@ -1066,7 +1066,10 @@ async fn wait_for_review(
             }
             () = &mut deadline => {
                 // Nothing more runs; the turn ends when the agent is resumed, still restricted.
-                session.stop();
+                // Only if this review is still the one running: it may have ended just now.
+                if daemon.initiative().is_reviewing(agent_id) {
+                    session.stop();
+                }
                 announce(daemon, agent_id);
                 return Err(format!(
                     "the review timed out after {} s and the agent was stopped; resume it to let the turn end",
@@ -1076,7 +1079,9 @@ async fn wait_for_review(
             _ = look.tick() => {
                 let current = daemon.environments().find_agent_anywhere(agent_id);
                 if current.is_none_or(|(_, agent)| agent.initiative == Initiative::Off) {
-                    session.stop();
+                    if daemon.initiative().is_reviewing(agent_id) {
+                        session.stop();
+                    }
                     announce(daemon, agent_id);
                     return Err("initiative was turned off during the review, so the agent was stopped; resume it to let the turn end".into());
                 }
@@ -1633,6 +1638,9 @@ pub(crate) fn start_suggestion(
                     reason: suggestion.reason.clone(),
                     source: Some(suggestion.source.clone()),
                 }),
+                // The session the user starts from a suggestion keeps the agent's permission
+                // profile, so a locked agent cannot widen itself by suggesting work.
+                agent_id: Some(agent.id.clone()),
                 ..SessionOptions::default()
             },
         )

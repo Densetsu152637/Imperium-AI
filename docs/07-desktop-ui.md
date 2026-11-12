@@ -776,6 +776,14 @@ it and when it resets.
 
 ## Environments and sessions (implemented)
 
+**Environment configuration and narrowed sessions (implemented).** The environment window's
+*Configuration file* section reports what the environment's own `.imperium/config.toml` changes
+(`environments.config`): the files read, whether the folder is in `mcp.trusted_projects`, what
+was applied, and what was refused. The new-session panel has an *Only this subfolder* field and a
+*Read-only* switch for an environment with a folder (both turn *Start in a worktree* off); a
+read-only session is marked `[read-only]` in `imperium session list`
+([14](14-projects-and-automation.md#narrowed-sessions-implemented)).
+
 The Environments panel lists the daemon's
 [environments](14-projects-and-automation.md#environments-implemented), one row each: the
 environment's icon and name, a pin mark when pinned, and a *⋯* menu on the right with *Edit*,
@@ -825,8 +833,11 @@ tooltip in the list, and `initiative.notice` raises an OS notification (Settings
 The window's *Agents* section (`EnvironmentAgents`) lists the environment's
 [persistent agents](14-projects-and-automation.md#persistent-agents-implemented): a new
 environment has none, *Add agent* asks for a name and an optional role, and each row has edit
-(rename, change the role) and delete (with a confirmation: the agent's history is archived). Each
-action applies at once; the list follows `environments.changed`.
+(rename, change the role or the [permissions](14-projects-and-automation.md#agent-permission-profiles-implemented):
+a *Local files only* checkbox and an *All / None / Only these* choice, with names, for MCP
+servers and for plugins) and delete (with a confirmation: the agent's history is archived). A
+limited agent's row shows what it is limited to. Each action applies at once; the list follows
+`environments.changed`.
 
 **New session (implemented):** *New session* (the *+* in the Sessions panel's header; disabled while
 disconnected) opens the new-session composer in the middle panel, which is also what the middle

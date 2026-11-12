@@ -70,6 +70,14 @@ enum Command {
         /// branch (`imperium/<session id>`, or the branch given).
         #[arg(long, value_name = "BRANCH", num_args = 0..=1, default_missing_value = "")]
         worktree: Option<String>,
+        /// Narrow the session to one folder inside the environment's folders (absolute, or
+        /// relative to its first folder): the only folder the agent can use.
+        #[arg(long, value_name = "FOLDER", conflicts_with = "worktree")]
+        subfolder: Option<String>,
+        /// Mount the session's folders read-only: the agent reads but never writes there, and
+        /// commands run only under isolation.tier = os or container.
+        #[arg(long, conflicts_with = "worktree")]
+        read_only: bool,
     },
     /// Manage sessions (also `sessions`).
     #[command(alias = "sessions")]
@@ -92,13 +100,10 @@ enum Command {
         #[command(subcommand)]
         command: ModelsCommand,
     },
-    /// Saved memories for the current project (or --project) and global ones.
+    /// Your global memories. (An environment's notes are its Memory.md.)
     Memory {
         #[command(subcommand)]
         command: MemoryCommand,
-        /// Project folder; defaults to the current directory.
-        #[arg(long, global = true)]
-        project: Option<PathBuf>,
     },
     /// The OpenAI-compatible API other tools use your models through.
     Api {
@@ -250,7 +255,7 @@ enum FoldersCommand {
 
 #[derive(Debug, Subcommand)]
 enum MemoryCommand {
-    /// List memories: global, the project's shared ones, and your private project notes.
+    /// List your global memories.
     List,
     /// Find memories relevant to a query.
     Search { query: String },
@@ -259,7 +264,7 @@ enum MemoryCommand {
     /// Delete a memory.
     Forget {
         name: String,
-        /// global, project, or project-private; defaults to where the name is found.
+        /// Only global is listed here; environment memory is the environment's Memory.md file.
         #[arg(long)]
         scope: Option<String>,
     },
@@ -384,8 +389,10 @@ enum AgentCommand {
         /// How much initiative it takes: off (the default), suggest, or act.
         #[arg(long, value_parser = ["off", "suggest", "act"])]
         initiative: Option<String>,
+        #[command(flatten)]
+        profile: env::ProfileArgs,
     },
-    /// Rename an agent or change its role.
+    /// Rename an agent or change its role or permission profile.
     Set {
         /// Environment name or id.
         env: String,
@@ -397,6 +404,8 @@ enum AgentCommand {
         role: Option<String>,
         #[arg(long, value_parser = ["off", "suggest", "act"])]
         initiative: Option<String>,
+        #[command(flatten)]
+        profile: env::ProfileArgs,
     },
     /// Delete an agent (its session is archived).
     Rm {
@@ -506,6 +515,12 @@ enum EnvCommand {
     },
     /// Check that an environment's runtime can be reached.
     Test {
+        /// Environment name or id.
+        env: String,
+    },
+    /// Show what the environment's own `.imperium/config.toml` changes for its sessions, and
+    /// what it asked for that was refused (it can only narrow your settings).
+    Config {
         /// Environment name or id.
         env: String,
     },
@@ -647,12 +662,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             model,
             context,
             worktree,
+            subfolder,
+            read_only,
         } => chat::run(
             env,
             project,
             model,
             context,
             worktree.map(|branch| (!branch.is_empty()).then_some(branch)),
+            subfolder,
+            read_only,
         ),
         Command::Session { command } => match command {
             SessionCommand::List { archived } => session::list(archived),
@@ -689,6 +708,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 host,
             } => env::set_runtime(id, env::runtime(&kind, image, container, distro, host)?),
             EnvCommand::Test { env: id } => env::test(id),
+            EnvCommand::Config { env: id } => env::config(id),
             EnvCommand::Agent { command } => match command {
                 AgentCommand::List { env: id } => env::agent_list(id),
                 AgentCommand::Add {
@@ -696,14 +716,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     name,
                     role,
                     initiative,
-                } => env::agent_add(id, name, role, initiative),
+                    profile,
+                } => env::agent_add(id, name, role, initiative, profile),
                 AgentCommand::Set {
                     env: id,
                     agent,
                     name,
                     role,
                     initiative,
-                } => env::agent_set(id, agent, name, role, initiative),
+                    profile,
+                } => env::agent_set(id, agent, name, role, initiative, profile),
                 AgentCommand::Rm { env: id, agent } => env::agent_remove(id, agent),
                 AgentCommand::Initiative { env: id, agent } => initiative::show(id, agent),
                 AgentCommand::Suggestions { env: id, agent } => initiative::suggestions(id, agent),
@@ -851,11 +873,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     packs,
                 },
         } => workflow::resolve(&role, &task, project, packs),
-        Command::Memory { command, project } => match command {
-            MemoryCommand::List => memory::list(project),
-            MemoryCommand::Search { query } => memory::search(&query, project),
-            MemoryCommand::Show { name } => memory::show(&name, project),
-            MemoryCommand::Forget { name, scope } => memory::forget(&name, scope, project),
+        Command::Memory { command } => match command {
+            MemoryCommand::List => memory::list(),
+            MemoryCommand::Search { query } => memory::search(&query),
+            MemoryCommand::Show { name } => memory::show(&name),
+            MemoryCommand::Forget { name, scope } => memory::forget(&name, scope),
         },
     }
 }
@@ -922,6 +944,20 @@ async fn connect() -> anyhow::Result<(Client, String)> {
 fn explain(key: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let config = imperium_config::load(&paths, project.as_deref(), std::env::vars())?;
+    for warning in config.warnings() {
+        eprintln!("note: {warning}");
+    }
+    if let Some(project) = &project {
+        // The project's own file is not a layer; this is what it narrows.
+        let narrowed =
+            imperium_config::EnvironmentConfig::load(project, "project").apply(&config.settings()?);
+        for line in &narrowed.applied {
+            println!("project file applies: {line}");
+        }
+        for line in &narrowed.refused {
+            println!("project file refused: {line}");
+        }
+    }
     let Some(explained) = config.explain(key) else {
         bail!("{key} is not set");
     };

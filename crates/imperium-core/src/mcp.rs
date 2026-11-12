@@ -30,12 +30,7 @@ pub fn session_servers(
     let Ok(text) = std::fs::read_to_string(&file) else {
         return (specs, notices);
     };
-    let trusted = settings
-        .mcp
-        .trusted_projects
-        .iter()
-        .any(|trusted| same_folder(trusted, project_dir));
-    if !trusted {
+    if !settings.mcp.trusts(project_dir) {
         notices.push(format!(
             "{} defines MCP servers that were not started. To run them, add this project to \
              mcp.trusted_projects in your user config.",
@@ -119,13 +114,6 @@ pub(crate) fn configured(
             .timeout_s
             .map_or(DEFAULT_TIMEOUT, Duration::from_secs),
     })
-}
-
-fn same_folder(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
-    }
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ pub enum ToolError {
     Invalid(String),
     #[error("{0} is outside the workspace")]
     OutsideWorkspace(String),
-    #[error("{0} is read-only: a path grant allows reading it, not writing")]
+    #[error("{0} is read-only: a read-only grant or mount allows reading it, not writing")]
     ReadOnly(String),
     #[error("{0}")]
     Io(String),
@@ -357,6 +357,14 @@ impl Invocation {
     }
 
     pub async fn execute(&self, workspace: &Workspace) -> Result<String, ToolError> {
+        // An agent limited to local files runs no commands, whatever offered or approved the call.
+        if crate::profile::SHELL_TOOLS.contains(&self.tool_name())
+            && !workspace.profile().allows_shell()
+        {
+            return Err(ToolError::Invalid(
+                "this agent is limited to local files only: it runs no commands".into(),
+            ));
+        }
         match self {
             Invocation::ReadFile {
                 path,
@@ -582,5 +590,38 @@ mod tests {
                 content: "one\ntwo".into()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn a_workspace_limited_to_local_files_runs_no_commands_but_edits_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path())
+            .unwrap()
+            .with_profile(crate::AgentProfile::new(crate::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
+        for (name, arguments) in [
+            ("run_command", r#"{"command":"echo hi"}"#),
+            ("run_command", r#"{"command":"echo hi","background":true}"#),
+            ("command_output", r#"{"id":"p1"}"#),
+            ("command_stop", r#"{"id":"p1"}"#),
+        ] {
+            let error = Invocation::parse(name, arguments)
+                .unwrap()
+                .execute(&workspace)
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("local files only"),
+                "{name}: {error}"
+            );
+        }
+        Invocation::parse("write_file", r#"{"path":"a.txt","content":"x"}"#)
+            .unwrap()
+            .execute(&workspace)
+            .await
+            .unwrap();
+        assert!(dir.path().join("a.txt").is_file());
     }
 }

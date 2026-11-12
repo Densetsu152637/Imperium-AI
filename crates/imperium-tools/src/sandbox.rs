@@ -59,36 +59,52 @@ impl Sandbox {
         grants: &[GrantedPath],
         command: &str,
     ) -> Result<Command, ToolError> {
-        self.named_command(roots, grants, command, None)
+        self.named_command(roots, grants, command, None, false)
     }
 
     /// Like [`Sandbox::command`]; a container is given `name`, so a background command's
-    /// container can be removed by name when it is stopped.
+    /// container can be removed by name when it is stopped. With `read_only` the folders are a
+    /// read-only mount: the OS sandbox and the container mount `roots` read-only (grants keep
+    /// their own mode), and tier 0, which cannot keep a command from writing, refuses it.
     pub(crate) fn named_command(
         &self,
         roots: &[&Path],
         grants: &[GrantedPath],
         command: &str,
         name: Option<&str>,
+        read_only: bool,
     ) -> Result<Command, ToolError> {
         let Some(root) = roots.first() else {
             return Err(ToolError::Io("the workspace has no folder".into()));
         };
         match self {
             Sandbox::Policy => {
+                if read_only {
+                    return Err(ToolError::Io(READ_ONLY_TIER_0.into()));
+                }
                 let mut process = shell(command);
                 process.current_dir(root);
                 Ok(process)
             }
             Sandbox::Os { network } => {
-                let mut writable: Vec<&Path> = roots.to_vec();
+                let mut writable: Vec<&Path> = if read_only {
+                    Vec::new()
+                } else {
+                    roots.to_vec()
+                };
                 writable.extend(
                     grants
                         .iter()
                         .filter(|grant| grant.writable)
                         .map(|grant| grant.path.as_path()),
                 );
-                os_command(&writable, command, *network)
+                // A writable grant inside (or around) a read-only folder must not reopen it.
+                let protected: Vec<&Path> = if read_only {
+                    roots.to_vec()
+                } else {
+                    Vec::new()
+                };
+                os_command(root, &writable, &protected, command, *network)
             }
             Sandbox::Container {
                 runtime,
@@ -96,7 +112,7 @@ impl Sandbox {
                 network,
             } => {
                 let mut process = Command::new(runtime);
-                let mut args = container_args(roots, grants, image, *network, command);
+                let mut args = container_args(roots, grants, image, *network, command, read_only);
                 if let Some(name) = name {
                     // After `run --rm -i`.
                     args.splice(3..3, ["--name".to_string(), name.to_string()]);
@@ -108,15 +124,23 @@ impl Sandbox {
     }
 }
 
+/// Why a read-only session cannot run commands under tier 0.
+const READ_ONLY_TIER_0: &str = "this session's folders are a read-only mount, and tier 0 \
+(folder policy) cannot keep a command from writing there, so commands are refused; set \
+isolation.tier to \"container\" (or \"os\" on Linux and macOS) to run commands in a read-only \
+session";
+
 /// The first folder is mounted at `/workspace` (the working directory) and the others at
-/// `/folders/2`, `/folders/3`, … in order. Grants are mounted at their own path when it is a
-/// POSIX path, else (a Windows path) at `/grants/1`, `/grants/2`, …; read-only ones with `:ro`.
+/// `/folders/2`, `/folders/3`, … in order, read-only (`:ro`) when `read_only`. Grants are
+/// mounted at their own path when it is a POSIX path, else (a Windows path) at `/grants/1`,
+/// `/grants/2`, …; read-only ones with `:ro`.
 fn container_args(
     roots: &[&Path],
     grants: &[GrantedPath],
     image: &str,
     network: bool,
     command: &str,
+    read_only: bool,
 ) -> Vec<String> {
     let mut args = vec!["run".into(), "--rm".into(), "-i".into()];
     if !network {
@@ -128,7 +152,8 @@ fn container_args(
         } else {
             format!("/folders/{}", index + 1)
         };
-        args.extend(["-v".into(), format!("{}:{target}", root.display())]);
+        let mode = if read_only { ":ro" } else { "" };
+        args.extend(["-v".into(), format!("{}:{target}{mode}", root.display())]);
     }
     for (index, grant) in grants.iter().enumerate() {
         let source = grant.display_path();
@@ -137,7 +162,17 @@ fn container_args(
         } else {
             format!("/grants/{}", index + 1)
         };
-        let mode = if grant.writable { "" } else { ":ro" };
+        // A writable grant that is inside a read-only folder, or around it, would reopen it at
+        // the grant's own path: it is mounted read-only too.
+        let reopens = read_only
+            && roots
+                .iter()
+                .any(|root| grant.path.starts_with(root) || root.starts_with(&grant.path));
+        let mode = if grant.writable && !reopens {
+            ""
+        } else {
+            ":ro"
+        };
         args.extend(["-v".into(), format!("{source}:{target}{mode}")]);
     }
     args.extend([
@@ -159,32 +194,46 @@ fn displayed(roots: &[&Path]) -> Vec<String> {
         .collect()
 }
 
+/// Runs `command` in `cwd` with writes allowed only in `writable` (and temporary files), and
+/// never in `protected`, even where a writable path covers it.
 #[cfg(target_os = "linux")]
-fn os_command(roots: &[&Path], command: &str, network: bool) -> Result<Command, ToolError> {
-    let roots = displayed(roots);
+fn os_command(
+    cwd: &Path,
+    writable: &[&Path],
+    protected: &[&Path],
+    command: &str,
+    network: bool,
+) -> Result<Command, ToolError> {
     let mut process = Command::new("bwrap");
     process
-        .args(bwrap_args(&roots, network))
+        .args(bwrap_args(
+            &displayed(writable),
+            &displayed(protected),
+            &cwd.display().to_string(),
+            network,
+        ))
         .args(["sh", "-c", command]);
-    process.current_dir(&roots[0]);
+    process.current_dir(cwd);
     Ok(process)
 }
 
-/// bubblewrap: the whole filesystem read-only, the workspace's folders and a private /tmp
-/// writable, its own process namespace, and optionally no network. Runs in the first folder.
+/// bubblewrap: the whole filesystem read-only, the `writable` paths and a private /tmp
+/// writable, its own process namespace, and optionally no network. Runs in `cwd`. The
+/// `protected` paths are bound read-only last, so they stay read-only inside a writable one.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn bwrap_args(roots: &[String], network: bool) -> Vec<String> {
+fn bwrap_args(writable: &[String], protected: &[String], cwd: &str, network: bool) -> Vec<String> {
     let mut args: Vec<String> = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
         .iter()
         .chain(&["--tmpfs", "/tmp"])
         .map(|arg| arg.to_string())
         .collect();
-    for root in roots {
-        args.extend(["--bind".into(), root.clone(), root.clone()]);
+    for path in writable {
+        args.extend(["--bind".into(), path.clone(), path.clone()]);
     }
-    if let Some(first) = roots.first() {
-        args.extend(["--chdir".into(), first.clone()]);
+    for path in protected {
+        args.extend(["--ro-bind".into(), path.clone(), path.clone()]);
     }
+    args.extend(["--chdir".into(), cwd.to_string()]);
     args.extend(["--unshare-pid".into(), "--die-with-parent".into()]);
     if !network {
         args.push("--unshare-net".into());
@@ -193,20 +242,30 @@ fn bwrap_args(roots: &[String], network: bool) -> Vec<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn os_command(roots: &[&Path], command: &str, network: bool) -> Result<Command, ToolError> {
+fn os_command(
+    cwd: &Path,
+    writable: &[&Path],
+    protected: &[&Path],
+    command: &str,
+    network: bool,
+) -> Result<Command, ToolError> {
     let mut process = Command::new("sandbox-exec");
     process
-        .args(["-p", &seatbelt_profile(&displayed(roots), network)])
+        .args([
+            "-p",
+            &seatbelt_profile(&displayed(writable), &displayed(protected), network),
+        ])
         .args(["sh", "-c", command]);
-    process.current_dir(roots[0]);
+    process.current_dir(cwd);
     Ok(process)
 }
 
-/// A Seatbelt profile allowing everything but writes outside the workspace's folders and
-/// temporary folders, and optionally network access.
+/// A Seatbelt profile allowing everything but writes outside the `writable` paths and
+/// temporary folders, and optionally network access. Writes under the `protected` paths are
+/// denied last, and the last matching rule wins.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn seatbelt_profile(roots: &[String], network: bool) -> String {
-    let folders: String = roots
+fn seatbelt_profile(writable: &[String], protected: &[String], network: bool) -> String {
+    let folders: String = writable
         .iter()
         .map(|root| {
             let quoted = root.replace('\\', "\\\\").replace('"', "\\\"");
@@ -218,6 +277,10 @@ fn seatbelt_profile(roots: &[String], network: bool) -> String {
          (allow file-write* {folders}(subpath \"/private/tmp\") \
          (subpath \"/private/var/folders\") (literal \"/dev/null\") (literal \"/dev/tty\"))"
     );
+    for path in protected {
+        let quoted = path.replace('\\', "\\\\").replace('"', "\\\"");
+        profile.push_str(&format!("(deny file-write* (subpath \"{quoted}\"))"));
+    }
     if !network {
         profile.push_str("(deny network*)");
     }
@@ -225,7 +288,13 @@ fn seatbelt_profile(roots: &[String], network: bool) -> String {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn os_command(_roots: &[&Path], _command: &str, _network: bool) -> Result<Command, ToolError> {
+fn os_command(
+    _cwd: &Path,
+    _writable: &[&Path],
+    _protected: &[&Path],
+    _command: &str,
+    _network: bool,
+) -> Result<Command, ToolError> {
     Err(ToolError::Io(
         "the OS sandbox tier is not available on this platform yet; set isolation.tier = \
          \"container\" or \"policy\""
@@ -245,18 +314,114 @@ mod tests {
             "ubuntu:24.04",
             false,
             "make test",
+            false,
         );
         assert_eq!(
             args.join(" "),
             "run --rm -i --network none -v /home/me/project:/workspace -w /workspace ubuntu:24.04 sh -c make test"
         );
-        let networked = container_args(&[Path::new("/p")], &[], "img", true, "x");
+        let networked = container_args(&[Path::new("/p")], &[], "img", true, "x", false);
         assert!(!networked.contains(&"--network".to_string()));
-        let both =
-            container_args(&[Path::new("/p"), Path::new("/q")], &[], "img", true, "x").join(" ");
+        let both = container_args(
+            &[Path::new("/p"), Path::new("/q")],
+            &[],
+            "img",
+            true,
+            "x",
+            false,
+        )
+        .join(" ");
         assert!(
             both.contains("-v /p:/workspace -v /q:/folders/2 -w /workspace"),
             "{both}"
+        );
+    }
+
+    #[test]
+    fn a_read_only_mount_is_mounted_read_only_in_a_container() {
+        let grants = [GrantedPath {
+            path: "/home/me/.cargo".into(),
+            writable: true,
+        }];
+        let args = container_args(
+            &[Path::new("/p"), Path::new("/q")],
+            &grants,
+            "img",
+            true,
+            "x",
+            true,
+        )
+        .join(" ");
+        assert!(
+            args.contains("-v /p:/workspace:ro -v /q:/folders/2:ro"),
+            "{args}"
+        );
+        // A writable grant (the scratch folder) stays writable.
+        assert!(
+            args.contains("-v /home/me/.cargo:/home/me/.cargo -w"),
+            "{args}"
+        );
+    }
+
+    #[test]
+    fn a_read_only_mount_is_not_writable_in_the_os_sandbox() {
+        let scratch = vec!["/data/scratch".to_string()];
+        let protected = vec!["/home/me/project".to_string()];
+        let args = bwrap_args(&scratch, &protected, "/home/me/project", false).join(" ");
+        assert!(args.starts_with("--ro-bind / /"), "{args}");
+        assert!(!args.contains(" --bind /home/me/project"), "{args}");
+        assert!(
+            args.contains("--ro-bind /home/me/project /home/me/project"),
+            "{args}"
+        );
+        assert!(
+            args.contains("--bind /data/scratch /data/scratch"),
+            "{args}"
+        );
+        assert!(args.contains("--chdir /home/me/project"), "{args}");
+        let profile = seatbelt_profile(&scratch, &protected, false);
+        assert!(profile.contains("(subpath \"/data/scratch\")"), "{profile}");
+        assert!(
+            profile.ends_with("(deny file-write* (subpath \"/home/me/project\"))(deny network*)"),
+            "{profile}"
+        );
+    }
+
+    #[test]
+    fn a_writable_grant_cannot_reopen_a_read_only_folder() {
+        let grants = [
+            GrantedPath {
+                path: "/p/build".into(),
+                writable: true,
+            },
+            GrantedPath {
+                path: "/".into(),
+                writable: true,
+            },
+            GrantedPath {
+                path: "/elsewhere".into(),
+                writable: true,
+            },
+        ];
+        let args = container_args(&[Path::new("/p")], &grants, "img", true, "x", true).join(" ");
+        assert!(args.contains("-v /p/build:/p/build:ro"), "{args}");
+        assert!(args.contains("-v /:/:ro"), "{args}");
+        assert!(args.contains("-v /elsewhere:/elsewhere -w"), "{args}");
+        let writable =
+            container_args(&[Path::new("/p")], &grants, "img", true, "x", false).join(" ");
+        assert!(writable.contains("-v /p/build:/p/build -v"), "{writable}");
+    }
+
+    #[test]
+    fn tier_0_refuses_commands_in_a_read_only_mount() {
+        let error = Sandbox::Policy
+            .named_command(&[Path::new("/p")], &[], "ls", None, true)
+            .unwrap_err();
+        assert!(error.to_string().contains("read-only mount"), "{error}");
+        assert!(
+            Sandbox::Policy
+                .named_command(&[Path::new("/p")], &[], "ls", None, false)
+                .is_ok()
         );
     }
 
@@ -276,7 +441,7 @@ mod tests {
                 writable: false,
             },
         ];
-        let args = container_args(&[Path::new("/p")], &grants, "img", true, "x").join(" ");
+        let args = container_args(&[Path::new("/p")], &grants, "img", true, "x", false).join(" ");
         assert!(
             args.contains("-v /home/me/.cargo:/home/me/.cargo -v"),
             "{args}"
@@ -291,7 +456,7 @@ mod tests {
     #[test]
     fn os_sandboxes_write_only_inside_the_workspace() {
         let roots = ["/home/me/project".to_string(), "/home/me/docs".to_string()];
-        let args = bwrap_args(&roots, false).join(" ");
+        let args = bwrap_args(&roots, &[], &roots[0], false).join(" ");
         assert!(args.starts_with("--ro-bind / /"), "{args}");
         assert!(
             args.contains("--bind /home/me/project /home/me/project"),
@@ -302,12 +467,12 @@ mod tests {
             "{args}"
         );
         assert!(args.ends_with("--unshare-net"), "{args}");
-        let profile = seatbelt_profile(&roots, true);
+        let profile = seatbelt_profile(&roots, &[], true);
         assert!(profile.contains("(deny file-write*)"));
         assert!(profile.contains("(subpath \"/home/me/project\")"));
         assert!(profile.contains("(subpath \"/home/me/docs\")"));
         assert!(!profile.contains("deny network"));
-        assert!(seatbelt_profile(&["/p".into()], false).ends_with("(deny network*)"));
+        assert!(seatbelt_profile(&["/p".into()], &[], false).ends_with("(deny network*)"));
     }
 
     #[test]

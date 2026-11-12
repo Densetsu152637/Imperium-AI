@@ -84,6 +84,8 @@ async fn run() -> anyhow::Result<()> {
     daemon.remember_config(&config);
     daemon.start_pets();
     daemon.reconcile_workspaces();
+    // After the working folders are in place, before sessions resume and read `Memory.md`.
+    daemon.migrate_memory();
     let resumed = daemon.resume_sessions();
     if resumed > 0 {
         tracing::info!(

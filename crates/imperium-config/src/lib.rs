@@ -1,12 +1,18 @@
 //! Imperium's data locations, layered configuration, and keychain secrets.
 //!
 //! Configuration is assembled from layers, later ones overriding earlier ones key by key:
-//! built-in defaults, the user's `config.toml`, the project's `.imperium/config.toml` and
-//! `.imperium/config.local.toml`, then `IMPERIUM_<SECTION>__<KEY>` environment variables.
+//! built-in defaults, the user's `config.toml`, the desktop app's `models.toml`, then
+//! `IMPERIUM_<SECTION>__<KEY>` environment variables. A project's `.imperium/config.toml` is not
+//! a layer: it belongs to the repository, so it is read only through [`EnvironmentConfig`],
+//! which can narrow the settings and never widen them.
 //! Every value remembers which layer set it, for `imperium config explain`.
+//!
+//! A session's settings add one more step: an environment's own `.imperium/config.toml` is
+//! checked against the user's settings and can only narrow them ([`EnvironmentConfig`]).
 
 mod budgets;
 mod endpoints;
+mod environment;
 mod layers;
 mod local_models;
 mod mcp_servers;
@@ -21,6 +27,7 @@ pub use budgets::{
     WeekStart, save_budgets,
 };
 pub use endpoints::{save_endpoint, valid_endpoint_id};
+pub use environment::{ENVIRONMENT_CONFIG_FILES, EnvironmentConfig, EnvironmentSettings};
 pub use layers::{
     Config, ConfigError, Explained, Layer, Source, load, load_layers, replace_app_layer,
 };

@@ -9,6 +9,11 @@
 //! agent), and compacting its conversation when a turn starts over the model's budget. Agents
 //! of one environment run independently, each with its own name, role and session limits.
 //!
+//! An agent's permission profile (`EnvironmentAgent::permissions`) binds its own session and
+//! every session it starts (and their subagents): the sessions carry the agent's id, look the
+//! profile up when they start and read the same live handle afterwards, so a change applies at
+//! once and a restart keeps the binding.
+//!
 //! The sessions an agent starts are background sessions: they rank below the user's sessions
 //! and pause while the machine is busy. With `prefer_quiet` (the default) a session is created
 //! at once but gets its brief only when the machine is quiet, or after `max_defer`. The waiting
@@ -43,13 +48,13 @@ woken by events: schedules firing, sessions you started finishing (their report 
 message), and messages from the user. For each event decide what to do. Answer or act \
 directly only for small things; for real work call start_session with a self-contained brief, \
 then end your turn: you use no tokens while sessions run. When a report arrives, check it and \
-decide whether anything follows. Keep a short backlog in memory (project-private) so you can \
+decide whether anything follows. Keep a short backlog in environment memory (memory_remember, scope environment) so you can \
 resume after a restart. Start only the sessions that are needed.";
 
 const ENVIRONMENT_INSTRUCTIONS: &str = "You are one of this environment's persistent agents: a \
 long-lived assistant for the folders of this environment. Your conversation continues across \
 days and daemon restarts; older turns are summarised when it grows, so keep important facts, \
-decisions, and an open-task list in memory (project-private) as well. Answer and act directly \
+decisions, and an open-task list in environment memory as well. Answer and act directly \
 for small things; for larger work call start_session with a self-contained brief (it runs in \
 this environment) and end your turn; its report arrives as a message. When the daemon sends an \
 Initiative review message, it is not from the user: follow it exactly. Report only work you \
@@ -215,6 +220,12 @@ fn canonical(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// The key a project agent attached to an environment is registered under (and the "project"
+/// `imperium project tell` names it by): `environment:<id>`.
+pub(crate) fn environment_key(environment_id: &str) -> PathBuf {
+    PathBuf::from(format!("environment:{environment_id}"))
+}
+
 /// A dispatched session's brief that was waiting for a quiet machine when the daemon stopped
 /// (restored by [`DaemonState::resume_sessions`]).
 #[derive(Debug)]
@@ -235,12 +246,38 @@ pub fn start(daemon: &Arc<DaemonState>) {
         if !project.agent {
             continue;
         }
-        match start_one(daemon, &project) {
+        let (key, folder_key, started) = match &project.environment {
+            Some(environment) => match daemon.environments().find(environment) {
+                Ok(env) => (
+                    environment_key(&env.id),
+                    // Briefs that waited across a restart name the session's folder.
+                    env.folders
+                        .first()
+                        .map(|folder| canonical(Path::new(folder))),
+                    start_one(daemon, &project, Some(env.id.as_str())),
+                ),
+                Err(error) => {
+                    tracing::warn!(environment = %environment, %error, "project agent did not start");
+                    continue;
+                }
+            },
+            None => (
+                canonical(&project.path),
+                None,
+                start_one(daemon, &project, None),
+            ),
+        };
+        match started {
             Ok(launcher) => {
-                launchers.insert(canonical(&project.path), launcher);
+                if let Some(folder) = folder_key {
+                    launchers
+                        .entry(folder)
+                        .or_insert_with(|| Arc::clone(&launcher));
+                }
+                launchers.insert(key, launcher);
             }
             Err(error) => {
-                tracing::warn!(project = %project.path.display(), %error, "project agent did not start");
+                tracing::warn!(project = %key.display(), %error, "project agent did not start");
             }
         }
     }
@@ -276,11 +313,17 @@ fn unix_ms() -> u64 {
         })
 }
 
+/// Starts the agent of one `[[projects]]` entry: for its folder, or for the environment
+/// (`environment_id`) it is attached to.
 fn start_one(
     daemon: &Arc<DaemonState>,
     project: &ProjectSettings,
+    environment_id: Option<&str>,
 ) -> Result<Arc<Launcher>, String> {
-    let path = project.path.display().to_string();
+    let path = match environment_id {
+        Some(id) => environment_key(id).display().to_string(),
+        None => project.path.display().to_string(),
+    };
     let max_defer = match project.max_defer.as_deref().map(parse_duration) {
         Some(Ok(length)) => length,
         Some(Err(error)) => {
@@ -293,32 +336,44 @@ fn start_one(
         prefer_quiet: project.prefer_quiet,
         max_defer,
         daemon: Arc::downgrade(daemon),
-        target: Target::Folder(path.clone()),
+        target: match environment_id {
+            Some(id) => Target::EnvironmentProject(id.to_string()),
+            None => Target::Folder(path.clone()),
+        },
         agent: Arc::new(AgentSlot::default()),
         active: Arc::new(AtomicUsize::new(0)),
         today: Mutex::new((Local::now().date_naive(), 0)),
         max_sessions: project.max_sessions,
         max_per_day: project.max_sessions_per_day,
+        agent_id: None,
     });
-    let (session, events) = daemon
-        .create_session_with(
-            &path,
-            project.agent_model.as_deref(),
-            SessionOptions {
-                launcher: Some(Arc::clone(&launcher) as Arc<dyn SessionLauncher>),
-                instructions: Some(INSTRUCTIONS.into()),
-                // Unattended: its approvals go to a queue, so it never starts in the user's
-                // `permissions.mode` (plan would stall it, ask would flood the queue).
-                permission_mode: Some(imperium_api::PermissionMode::Default),
-                ..SessionOptions::default()
-            },
-        )
-        .map_err(|error| error.to_string())?;
+    let options = SessionOptions {
+        launcher: Some(Arc::clone(&launcher) as Arc<dyn SessionLauncher>),
+        instructions: Some(INSTRUCTIONS.into()),
+        // Unattended: its approvals go to a queue, so it never starts in the user's
+        // `permissions.mode` (plan would stall it, ask would flood the queue); an
+        // environment's own file may still make it stricter.
+        permission_mode: Some(match environment_id {
+            Some(id) => daemon.unattended_mode(&daemon.environment_settings(Some(id)).settings),
+            None => imperium_api::PermissionMode::Default,
+        }),
+        ..SessionOptions::default()
+    };
+    let model = project.agent_model.as_deref();
+    let (session, events) = match environment_id {
+        Some(id) => daemon.create_in_environment(id, model, options),
+        None => daemon.create_session_with(&path, model, options),
+    }
+    .map_err(|error| error.to_string())?;
     launcher.agent.set(&session);
+    let key = match environment_id {
+        Some(id) => environment_key(id),
+        None => canonical(&project.path),
+    };
     daemon
         .project_agents()
         .lock()
-        .insert(canonical(&project.path), Arc::clone(&session));
+        .insert(key, Arc::clone(&session));
     tokio::spawn(answer_permissions(Arc::downgrade(daemon), session, events));
     tracing::info!(project = %path, "project agent started");
     Ok(launcher)
@@ -460,7 +515,7 @@ pub fn retitle_environment_agents(daemon: &Arc<DaemonState>, environment_id: &st
 }
 
 /// A memory entry prefix for an agent: its name in lower case with dashes, since the
-/// project-private memory is the environment's, shared by every one of its agents.
+/// environment memory is shared by every one of its agents.
 fn memory_prefix(name: &str) -> String {
     let mut prefix = String::new();
     for c in name.chars() {
@@ -483,8 +538,8 @@ fn memory_prefix(name: &str) -> String {
 fn agent_instructions(agent: &EnvironmentAgent) -> String {
     let prefix = memory_prefix(&agent.name);
     let mut text = format!(
-        "{ENVIRONMENT_INSTRUCTIONS}\n\nYour name is {}. The memory you save (project-private, \
-         and the environment's Memory.md) is shared by every agent of this environment: begin the \
+        "{ENVIRONMENT_INSTRUCTIONS}\n\nYour name is {}. The memory you save in the \
+         environment's Memory.md is shared by every agent of this environment: begin the \
          name of each entry you save with \"{prefix}-\" \
          and keep your open-task list in \"{prefix}-open-tasks\", so you do not overwrite another \
          agent's notes.",
@@ -516,6 +571,7 @@ fn new_environment_launcher(
         today: Mutex::new((Local::now().date_naive(), 0)),
         max_sessions: ENVIRONMENT_MAX_SESSIONS,
         max_per_day: ENVIRONMENT_MAX_PER_DAY,
+        agent_id: Some(agent_id.to_string()),
     })
 }
 
@@ -566,6 +622,7 @@ fn start_environment_agent(
                 instructions: Some(agent_instructions(agent)),
                 persistent: true,
                 auto_compact: true,
+                agent_id: Some(agent.id.clone()),
                 initiative_agent: Some(agent.id.clone()),
                 ..SessionOptions::default()
             },
@@ -615,6 +672,8 @@ enum Target {
     Folder(String),
     /// A persistent agent of an environment.
     Environment { environment: String, agent: String },
+    /// A project agent attached to an environment (`[[projects]]` `environment`).
+    EnvironmentProject(String),
 }
 
 /// Starts sessions for one project's (or environment's) agent and reports back to it.
@@ -628,6 +687,8 @@ struct Launcher {
     today: Mutex<(NaiveDate, u32)>,
     max_sessions: usize,
     max_per_day: u32,
+    /// For an environment agent: the agent whose permission profile the sessions it starts keep.
+    agent_id: Option<String>,
     /// Hold a session back until the machine is quiet, for at most `max_defer`.
     prefer_quiet: bool,
     max_defer: Duration,
@@ -774,15 +835,28 @@ impl Launcher {
             // What it starts is background work: it ranks below the user's sessions, and runs in
             // the default permission mode (the safety floor applies; nobody is there to answer
             // more, so what asks goes to the approval queue).
+            // An environment's own file may still make it stricter.
+            let environment_id = match &self.target {
+                Target::Folder(_) => None,
+                Target::Environment { environment, .. }
+                | Target::EnvironmentProject(environment) => Some(environment.as_str()),
+            };
             let options = SessionOptions {
                 background: true,
-                permission_mode: Some(imperium_api::PermissionMode::Default),
+                permission_mode: Some(match environment_id {
+                    Some(id) => {
+                        daemon.unattended_mode(&daemon.environment_settings(Some(id)).settings)
+                    }
+                    None => imperium_api::PermissionMode::Default,
+                }),
                 started_by,
+                agent_id: self.agent_id.clone(),
                 ..SessionOptions::default()
             };
             let created = match &self.target {
                 Target::Folder(project) => daemon.create_session_with(project, model, options),
-                Target::Environment { environment, .. } => {
+                Target::Environment { environment, .. }
+                | Target::EnvironmentProject(environment) => {
                     daemon.create_in_environment(environment, model, options)
                 }
             };

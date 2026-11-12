@@ -41,7 +41,7 @@ a conversation (not offered today, [12](12-roadmap.md) item 7).
 | Checkpoints | Commits on private refs `refs/imperium/checkpoints/<session>/<n>` in the user's own repository, linked by `<id>.checkpoints/<n>.json` to the journal and saved conversation; `git push` does not send them | [14](14-projects-and-automation.md#checkpoints-and-rewinding) |
 | Secret checks | Two separate detectors, each returning only the first reason found, never a span. Export uses `credential_in` (`crates/imperium-core/src/export.rs`): 14 key prefixes with a body of 16+ key characters, a private-key header, and JWTs; git hashes do not count. Memory writes use `imperium_memory::looks_secret`: 8 prefixes, a private-key header, and a long token-like-string rule | [02](02-architecture.md#protocol), [07](07-desktop-ui.md#exporting-transcripts-implemented), [17](17-memory.md) |
 | Config layers | Defaults, user `config.toml`, app `models.toml`, host, project `.imperium/config.toml` (shareable) and `.imperium/config.local.toml` (git-ignored), session, environment variables | [10](10-configuration.md#layers) |
-| Shareable project files | `<project>/.imperium/memory/` ("can be committed"), `.imperium/config.toml`, `.imperium/policy/`, `.imperium/skills/` | [17](17-memory.md#scopes), [10](10-configuration.md#layers), [08](08-agent-policy.md#layering-and-overrides), [06](06-extensibility.md) |
+| Shareable project files | `.imperium/config.toml`, `.imperium/policy/`, `.imperium/skills/` | [17](17-memory.md#scopes), [10](10-configuration.md#layers), [08](08-agent-policy.md#layering-and-overrides), [06](06-extensibility.md) |
 | Environments, permissions | `environments.json` in the data folder, with each environment's folders, runtime and permission rules; global rules in `[permissions]` | [14](14-projects-and-automation.md#environments-implemented), [05](05-tools-and-isolation.md#permissions) |
 | Plugin trust | A plugin with hooks or MCP servers that an agent installs is added to `extensions.disabled_plugins`; nothing in it runs until the user turns it on in Connectors, where its source is shown; installs record `.imperium-source.json` provenance and are logged in the config change journal with undo | [06](06-extensibility.md#agents-manage-the-app-config-implemented), PR #122 |
 | Settings export | "Import/export of the whole configuration (secrets excluded)" is listed as a recommended option, not built | [10](10-configuration.md#other-recommended-options) |
@@ -219,7 +219,7 @@ key ([11](11-ci-cd.md)) is for releases and is not reused.
 | Mods | Yes, as a lock list | Same as plugins |
 | Permission rules (global and per-environment) | Yes, with restrictions | See [trust](#decision-23-trust-model): deny and ask rules sync freely; allow rules need review |
 | Budgets (`[budgets]` limits, thresholds, actions) | Yes, as team defaults | Not `usage.json` (that is this machine's ledger) |
-| Shared memory | Already shared | `<project>/.imperium/memory/` travels with the repository ([17](17-memory.md#scopes)); not part of sync |
+| Shared project memory | Not a memory scope any more | A `<project>/.imperium/memory/` folder in a repository is merged once into the environment's `Memory.md` and left in place ([17](17-memory.md#migrating-older-project-memory)); an environment's `Memory.md` is local and not part of sync |
 | Secrets, keychain contents, pairing keys, device tokens (`devices.json`) | **Never** | A synced entry may name a secret; the value is entered per machine ([10](10-configuration.md#secrets)) |
 | Local paths: folder paths, path grants, worktree locations, `local-paths` values | **Never** | Grants are machine paths ([05](05-tools-and-isolation.md#path-grants)); `worktrees.location` is per-machine ([08](08-agent-policy.md#local-paths-come-from-app-settings)) |
 | Personal settings: theme, layout, personality, pets owned, notification preferences, window state | **Never** (opt-in per key later) | Identity of the user, not of the team |
@@ -251,7 +251,7 @@ leak one by accident.
 
 **Recommendation: A first; B only if teams outgrow polling.** Git also matches how the rest of
 the product already shares: packs are Git repositories (D9), extensions install from git URLs,
-and project memory and config travel in the project's repository. The sync repository is
+and project config travels in the project's repository. The sync repository is
 read by a *synced layer* (below), which is the same code a server transport would feed later.
 
 Mechanics:

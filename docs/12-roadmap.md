@@ -14,7 +14,7 @@ local models.
 | 2 | Desktop shell (merged) | Tauri app, tiling layout, scaling controls, conversation, telemetry pane | Ultrawide and 4K layouts verified; live tokens/sec and cost per call |
 | 3 | Planning and delegation (merged) | Plan phase and plan tools, plan UI, `spawn_agent`/`await_tasks`, task tree UI, budgets, router v1 (rules + cost scoring) | Root plans, delegates steps to 3 subagents on different endpoints, and uses no tokens while waiting |
 | 4 | Local models (merged) | Model folders, GGUF parsing, runtime packs, llama.cpp supervision, hardware probe, memory planner | Router reuses a loaded model or falls back to hosted when memory is short |
-| 5 | Ecosystem and memory (merged) | MCP client, skills, hooks, Claude Code plugin compatibility, UI mod SDK, policy packs, the workflow contract with context retrieval, global and project memory (files, search, recall, write approval) | Third-party MCP server, skill, and UI mod work unmodified; default policy can be disabled; a memory saved in one project's session is recalled in a new session; a hosted root and a local subagent given the same role and task load the same workflow files |
+| 5 | Ecosystem and memory (merged) | MCP client, skills, hooks, Claude Code plugin compatibility, UI mod SDK, policy packs, the workflow contract with context retrieval, global and environment memory (files, search, recall, write approval) | Third-party MCP server, skill, and UI mod work unmodified; default policy can be disabled; a memory saved in one project's session is recalled in a new session; a hosted root and a local subagent given the same role and task load the same workflow files |
 | 6 | Projects and automation (merged) | Projects, project agents, schedules, daemon at login, GitHub events and auto-fix responders | A cron schedule runs while the window is closed and notifies on completion; a failing PR check is fixed and pushed after approval |
 | 7 | Isolation and remote (merged) | OS sandbox tier, container tier, SSH hosts, vLLM (Linux/WSL2/remote) | Remote project runs on an SSH host's GPU from the local desktop |
 | 8 | Web and browser (merged) | Web search providers, fetch, CDP browser tools | Agent researches and cites sources; browser pane mirrors agent actions |
@@ -69,8 +69,18 @@ environment has none) with `environments.agent_create`, `imperium env agent add`
 the environment window; the earlier single persistent session migrates to one agent with its
 history, and the old `persistent_agent` fields stay as deprecated aliases until a later
 protocol version removes them
-([14](14-projects-and-automation.md#persistent-agents-implemented)). Per-agent permission
-profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent initiative follow.
+([14](14-projects-and-automation.md#persistent-agents-implemented)). Per-agent initiative
+follows.
+
+Implemented: **per-agent permission profiles.** An agent can be limited to some MCP servers and
+plugins (or none) or locked to local files only (no web, MCP, plugin or command tools, file tools
+kept to the environment's folders and its scratch folder). The profile only narrows what the
+environment allows, is enforced when the tool list is built and again at call time, binds the
+subagents and sessions the agent starts, and is edited in the desktop's agent form, with
+`imperium env agent add|set --mcp --plugins --local-only`, and through `environments.agent_create`
+and `environments.agent_update` (protocol 0.28)
+([14](14-projects-and-automation.md#agent-permission-profiles-implemented),
+[05](05-tools-and-isolation.md#agent-permission-profiles-implemented)).
 
 ## Next (in order)
 
@@ -287,10 +297,14 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     merge report, and the worktrees go with the session
     ([14](14-projects-and-automation.md#worktrees)). The planned `[worktrees]` settings and the
     Worktrees pane are not built.
-27. **Environment configuration.** An environment's own `.imperium/config.toml` (instructions,
-    policy, plugins, MCP servers, routing, budgets), sessions narrowed to a subfolder or a
-    read-only mount, and schedules and project agents per environment
-    ([14](14-projects-and-automation.md)).
+27. **Environment configuration** (implemented). An environment's own `.imperium/config.toml`
+    in its first folder (instructions, policy, plugins, MCP servers, routing, budgets) that can
+    only narrow the user's settings and needs `mcp.trusted_projects` before it starts a server or
+    plugin ([14](14-projects-and-automation.md#environment-configuration-implemented)); sessions
+    narrowed to a subfolder or a read-only mount, enforced per isolation tier
+    ([14](14-projects-and-automation.md#narrowed-sessions-implemented)); and schedules and
+    project agents attached to an environment
+    ([14](14-projects-and-automation.md#schedules-and-project-agents-per-environment-implemented)).
 28. **Local runtimes and hardware.** vLLM as a supervised runtime, GPU probes for AMD, Intel,
     and Apple Silicon, and memory estimates calibrated against measured use
     ([04](04-models-and-routing.md)).
@@ -359,6 +373,16 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     ([14](14-projects-and-automation.md#initiative-implemented),
     [10](10-configuration.md#initiative), [07](07-desktop-ui.md)). Open issues and pull
     requests are not read yet.
+
+39. **One project memory** (implemented). Project-private and project-shared memory are folded
+    into the environment's `Memory.md`: memory has two scopes, global and environment, in the
+    tools, the prompt and Settings. Older entries of an environment's working directory are
+    merged into its `Memory.md` at start (duplicates skipped, differing bodies kept as
+    `-legacy`, whatever exceeds the 2,000/24,000 character limits moved to `Memory.archive.md`,
+    originals backed up, recorded, idempotent); folders in no environment are left until one has
+    them. `project` and `project-private` stay accepted as names for `environment` for protocol
+    0.31 only ([17](17-memory.md#migrating-older-project-memory), [10](10-configuration.md)).
+    Protocol 0.31.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.

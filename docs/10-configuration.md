@@ -9,12 +9,18 @@ Later layers override earlier ones, key by key:
    (2a. App settings: `<config>/models.toml`, written by the desktop app; see below)
 3. Host config (SSH host's own `config.toml`)
 4. Project config: `<project>/.imperium/config.toml` (shareable) and
-   `<project>/.imperium/config.local.toml` (git-ignored)
+   `<project>/.imperium/config.local.toml` (git-ignored). **Narrow-only, not a plain layer:** the
+   files belong to the repository, so they are never merged as settings. They are read through an
+   allow-list and checked against layers 1 to 3 so they can only make things stricter (see the
+   environment layer below)
 5. Session overrides
 6. Environment variables (`IMPERIUM_*`) and CLI flags
 
-Implemented so far (phase 0): defaults, user config, project config, app settings, and
-environment variables. Host config, session overrides, and CLI flags arrive with the features that need
+Implemented so far (phase 0): defaults, user config, app settings, and environment variables. A session's settings add an **environment layer** after these: the
+environment's own `.imperium/config.toml` (first folder) checked against the user's settings so it
+can only narrow them, never run a program, and start servers or plugins only for a folder in
+`mcp.trusted_projects` ([14](14-projects-and-automation.md#environment-configuration-implemented)).
+`imperium env config <env>` shows what it changes. Host config, session overrides, and CLI flags arrive with the features that need
 them.
 
 - **Environment variables** use `IMPERIUM_<SECTION>__<KEY>` with a double underscore between
@@ -36,7 +42,10 @@ them.
 - **Unknown keys are ignored**, so a config written for a newer version still loads; a known
   key with the wrong type is an error naming the problem.
 - `imperium config explain <key> [--project <dir>]` shows the effective value and the layer
-  that set it (for example `set by environment variable IMPERIUM_DAEMON__PORT`).
+  that set it (for example `set by environment variable IMPERIUM_DAEMON__PORT`). With
+  `--project` it also lists what the project's own `.imperium` files apply and refuse as
+  narrowing; they are never shown as the layer that set a value. `imperium workflow` ignores the
+  project's files for the same reason (a repository cannot name workflow packs to trust).
 - `imperium config set <key> <value>...` and `imperium config unset <key>` change a setting from
   the same table the app uses (below), such as `imperium config set policy.personality luxion`.
   With a daemon running they go through `config.set`, so settings it applies at once take
@@ -144,8 +153,8 @@ listed; edit them in the file.
 | `extensions.plugin_dirs` | none | More plugin folders (Claude Code layout), besides `<config>/plugins` |
 | `extensions.lazy` | `true` | Load skills and plugins on first use: agents start with only each one's name and description ([06](06-extensibility.md#lazy-skills-and-plugins-implemented)). `false` puts every skill's instructions in the prompt and starts every plugin's servers with the session |
 | `extensions.eager` | none | Skills and plugins, by name, loaded up front even when `extensions.lazy` is on |
-| `memory.enabled` | `true` | Global and project memory ([17](17-memory.md)) |
-| `memory.write.global`, `.project`, `.project_private` | `ask`, `ask`, `auto` | Whether agents may save memories in each scope: `auto`, `ask`, or `off` |
+| `memory.enabled` | `true` | Global memory and each environment's `Memory.md` ([17](17-memory.md)) |
+| `memory.write.global` | `ask` | Whether agents may save global memories: `auto`, `ask`, or `off`. (`memory.write.project` and `memory.write.project_private` were folded into the environment scope and are ignored in older config files, see [17](17-memory.md#migrating-older-project-memory).) |
 | `memory.write.environment` | `ask` | Whether agents may write to an environment's `Memory.md`, which every later session there reads as part of its instructions, so a write shows the whole entry for approval by default ([17](17-memory.md#environment-memory-implemented)) |
 | `memory.recall` | `true` | Put the best-matching memories before each message |
 | `memory.max_index_tokens`, `memory.max_recall_tokens` | `1500`, `1500` | Budgets for the index in agent instructions and for recalled memories |

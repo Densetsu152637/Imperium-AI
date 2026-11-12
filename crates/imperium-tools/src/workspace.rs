@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::permissions::{PathGrant, PathMode, Permissions, Target, expand_home};
 use crate::processes::Processes;
+use crate::profile::AgentProfile;
 use crate::project_worktrees::ProjectWorktrees;
 use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
 use crate::writer_trees::{WriterHandle, WriterStart};
@@ -47,6 +48,16 @@ pub struct Workspace {
     /// For a writer subagent's workspace: each worktree folder (canonical) and the delegator's
     /// folder it stands in for, so permission rules written for the delegator's paths match.
     path_map: Vec<(PathBuf, PathBuf)>,
+    /// The persistent agent's profile, when the session belongs to one: it can only narrow what
+    /// the workspace allows (see [`AgentProfile`]).
+    profile: AgentProfile,
+    /// Folders an agent limited to local files may not touch even when a folder of the
+    /// environment contains them (the daemon's configuration and data folders), canonical.
+    protected: Vec<PathBuf>,
+    /// The folders are a read-only mount: nothing in them can be written, edited or deleted,
+    /// and commands run only where the isolation tier can keep them from writing there.
+    /// Writable grants (the scratch folder, attachments) stay writable.
+    read_only: bool,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -105,6 +116,9 @@ impl Workspace {
             processes: Processes::default(),
             writers: None,
             path_map: Vec::new(),
+            profile: AgentProfile::default(),
+            protected: Vec::new(),
+            read_only: false,
         })
     }
 
@@ -150,6 +164,9 @@ impl Workspace {
             writers: None,
             path_map: Vec::new(),
             processes: Processes::default(),
+            profile: AgentProfile::default(),
+            protected: Vec::new(),
+            read_only: false,
         })
     }
 
@@ -198,18 +215,30 @@ impl Workspace {
                     .is_some_and(|rest| rest.starts_with('/'))
         };
         // The deepest folder or grant containing the path decides whether it is writable.
+        let folders_writable = !self.read_only;
+        if self.read_only && remote.folders.iter().any(|folder| inside(folder)) {
+            return if write {
+                Err(ToolError::ReadOnly(path.into()))
+            } else {
+                Ok(resolved)
+            };
+        }
         let covering =
             remote
                 .folders
                 .iter()
-                .map(|folder| (folder.as_str(), true, false))
+                .map(|folder| (folder.as_str(), folders_writable, false))
                 .chain(self.grants.iter().filter_map(|grant| {
                     grant.path.to_str().map(|path| (path, grant.writable, true))
                 }))
                 .filter(|(folder, _, _)| inside(folder))
                 .max_by_key(|(folder, _, grant)| (folder.len(), *grant));
+        // Local files only keeps to the folders themselves: no grant opens anything more.
+        let outside_folders = self.profile.local_files_only()
+            && !remote.folders.iter().any(|folder| inside(folder.as_str()));
         match covering {
             None => Err(ToolError::OutsideWorkspace(path.into())),
+            Some(_) if outside_folders => Err(ToolError::OutsideWorkspace(path.into())),
             Some((_, false, _)) if write => Err(ToolError::ReadOnly(path.into())),
             Some(_) => Ok(resolved),
         }
@@ -423,6 +452,24 @@ impl Workspace {
         Workspace { sandbox, ..self }
     }
 
+    /// The same workspace with its folders (and the project worktrees) mounted read-only: the
+    /// file tools refuse to write, edit or delete anything in them, and commands run only under
+    /// a tier that can keep them from writing there (the OS sandbox and the container tier
+    /// mount the folders read-only; tier 0 cannot, so its commands are refused). Grants keep
+    /// their own mode, so the scratch folder stays writable. Copies made with
+    /// [`Workspace::with_roots`] stay read-only.
+    pub fn with_read_only(self) -> Self {
+        Workspace {
+            read_only: true,
+            ..self
+        }
+    }
+
+    /// Whether the folders are a read-only mount ([`Workspace::with_read_only`]).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     /// The same workspace with calls checked against `permissions`.
     pub fn with_permissions(self, permissions: Permissions) -> Self {
         Workspace {
@@ -434,6 +481,35 @@ impl Workspace {
     /// The permission rules calls in this workspace are checked against.
     pub fn permissions(&self) -> &Permissions {
         &self.permissions
+    }
+
+    /// The same workspace for a persistent agent's session: under `profile`, which only narrows
+    /// what the folders, grants and rules allow. Local files only confines file tools to the
+    /// folders and the scratch folder.
+    pub fn with_profile(self, profile: AgentProfile) -> Self {
+        Workspace { profile, ..self }
+    }
+
+    /// The same workspace with folders an agent limited to local files may not use, such as the
+    /// daemon's configuration and data folders: they hold settings, secrets and other sessions,
+    /// and an environment's folder may contain them. The session's scratch folder is exempt.
+    pub fn with_protected_folders<P: AsRef<Path>>(
+        mut self,
+        folders: impl IntoIterator<Item = P>,
+    ) -> Self {
+        for folder in folders {
+            if let Ok(folder) = folder.as_ref().canonicalize()
+                && !self.protected.contains(&folder)
+            {
+                self.protected.push(folder);
+            }
+        }
+        self
+    }
+
+    /// The agent profile the session's calls are limited by (unrestricted unless set).
+    pub fn profile(&self) -> &AgentProfile {
+        &self.profile
     }
 
     /// The paths outside the folders the tools may also use.
@@ -546,6 +622,16 @@ impl Workspace {
             resolved = self.locate_checked(path)?;
         }
         let resolved = resolved.ok_or_else(|| ToolError::OutsideWorkspace(path.to_string()))?;
+        // Local files only keeps to the folders and the scratch folder, however the path is
+        // spelled and whatever grants or project worktrees would also open it.
+        if self.profile.local_files_only()
+            && (!self.in_local_scope(&resolved)
+                || (cfg!(windows) && has_stream_name(&resolved))
+                || self.in_protected_folder(&resolved)
+                || (write && self.is_configuration_file(&resolved)))
+        {
+            return Err(ToolError::OutsideWorkspace(path.to_string()));
+        }
         match self.writable(&resolved) {
             None => Err(ToolError::OutsideWorkspace(path.to_string())),
             Some(false) if write => Err(ToolError::ReadOnly(path.to_string())),
@@ -553,15 +639,97 @@ impl Workspace {
         }
     }
 
+    /// Whether a canonical path is a file that configures what the daemon does with an
+    /// environment's folder: its own `.imperium/config.toml` and `config.local.toml`, and a
+    /// project's `.mcp.json`. An agent limited to local files may not write them (it could
+    /// start servers or load plugin hooks in the next session), also when they do not exist yet.
+    fn is_configuration_file(&self, resolved: &Path) -> bool {
+        // By name first: file systems on Windows and macOS ignore case, Windows drops trailing
+        // dots and spaces and takes `name:stream` for a stream of `name`, so none of these
+        // spellings may get past a comparison of the exact bytes. Over-matching on a file system
+        // that tells them apart is harmless.
+        let by_name = self.roots().into_iter().any(|root| {
+            let Ok(relative) = resolved.strip_prefix(root) else {
+                return false;
+            };
+            let parts: Vec<String> = relative
+                .components()
+                .map(|part| {
+                    let name = part.as_os_str().to_string_lossy();
+                    let name = name.split(':').next().unwrap_or_default();
+                    name.trim_end_matches(['.', ' ']).to_string()
+                })
+                .collect();
+            let name = parts.join("/");
+            // Folded both ways: some file systems fold `ſ` to `S` and `ı` to `I`, which
+            // lowercasing alone does not undo.
+            CONFIGURATION_FILES.iter().any(|file| {
+                name.to_lowercase() == *file || name.to_uppercase() == file.to_uppercase()
+            })
+        });
+        by_name
+            || self.roots().into_iter().any(|root| {
+                CONFIGURATION_FILES.iter().any(|name| {
+                    let file = root.join(name);
+                    // Where the file really is, also through a linked `.imperium` folder.
+                    let real = file.canonicalize().unwrap_or_else(|_| {
+                        match (
+                            file.parent().and_then(|dir| dir.canonicalize().ok()),
+                            file.file_name(),
+                        ) {
+                            (Some(dir), Some(name)) => dir.join(name),
+                            _ => file.clone(),
+                        }
+                    });
+                    resolved == real
+                })
+            })
+    }
+
+    /// Whether a canonical path is inside a protected folder (and not in the scratch folder).
+    fn in_protected_folder(&self, resolved: &Path) -> bool {
+        let in_scratch = self
+            .scratch
+            .as_deref()
+            .is_some_and(|scratch| resolved.starts_with(scratch));
+        !in_scratch
+            && self
+                .protected
+                .iter()
+                .any(|folder| resolved.starts_with(folder))
+    }
+
+    /// Whether a canonical path is inside one of the folders or the scratch folder, the only
+    /// places an agent limited to local files may use.
+    fn in_local_scope(&self, resolved: &Path) -> bool {
+        self.roots()
+            .into_iter()
+            .any(|root| resolved.starts_with(root))
+            || self
+                .scratch
+                .as_deref()
+                .is_some_and(|scratch| resolved.starts_with(scratch))
+    }
+
     /// Whether a canonical path may be written: `None` outside every folder and grant. The
     /// deepest folder or grant containing it decides (a grant wins over a folder at the same
     /// depth). Project worktrees count as folders.
     fn writable(&self, resolved: &Path) -> Option<bool> {
         let worktrees = self.extra_worktrees();
+        // A read-only mount wins over a writable grant inside (or around) it.
+        if self.read_only
+            && self
+                .roots()
+                .into_iter()
+                .chain(worktrees.iter().map(PathBuf::as_path))
+                .any(|root| resolved.starts_with(root))
+        {
+            return Some(false);
+        }
         self.roots()
             .into_iter()
             .chain(worktrees.iter().map(PathBuf::as_path))
-            .map(|root| (root, true, false))
+            .map(|root| (root, !self.read_only, false))
             .chain(
                 self.grants
                     .iter()
@@ -644,6 +812,19 @@ impl Workspace {
         }
     }
 }
+
+/// Whether a component of a path has a `:` (on Windows the start of an alternate data stream).
+fn has_stream_name(path: &Path) -> bool {
+    path.components()
+        .any(|part| matches!(part, Component::Normal(name) if name.to_string_lossy().contains(':')))
+}
+
+/// Files, relative to a folder of an environment, that configure what the daemon starts there.
+const CONFIGURATION_FILES: [&str; 3] = [
+    ".imperium/config.toml",
+    ".imperium/config.local.toml",
+    ".mcp.json",
+];
 
 fn existing_dir(path: &Path) -> std::io::Result<PathBuf> {
     let path = path.canonicalize()?;
@@ -925,6 +1106,117 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_mount_can_be_read_but_not_written_except_in_writable_grants() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        std::fs::write(first.path().join("notes.txt"), "one").unwrap();
+        let workspace = Workspace::new(first.path())
+            .unwrap()
+            .with_folders([second.path()])
+            .unwrap()
+            .with_grants(&[PathGrant {
+                path: scratch.path().display().to_string(),
+                mode: PathMode::ReadWrite,
+            }])
+            .with_read_only();
+        assert!(workspace.is_read_only());
+        // Reading and listing work everywhere.
+        assert!(workspace.resolve("notes.txt").is_ok());
+        assert!(
+            workspace
+                .resolve(&second.path().join("x.txt").to_string_lossy())
+                .is_ok()
+        );
+        // Writing, editing, and deleting are refused in every folder, new files included.
+        for path in [
+            "notes.txt".to_string(),
+            "new.txt".to_string(),
+            second.path().join("x.txt").display().to_string(),
+        ] {
+            assert!(
+                matches!(
+                    workspace.resolve_writable(&path),
+                    Err(ToolError::ReadOnly(_))
+                ),
+                "{path}"
+            );
+        }
+        // The scratch grant is still writable, and what is outside stays outside.
+        let in_scratch = scratch.path().join("tmp.txt");
+        assert!(
+            workspace
+                .resolve_writable(&in_scratch.to_string_lossy())
+                .is_ok()
+        );
+        let outside = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            workspace.resolve(&outside.path().join("x").to_string_lossy()),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        // Narrowing to another set of folders keeps the mount read-only.
+        let narrowed = workspace.with_roots(&[second.path()]).unwrap();
+        assert!(narrowed.is_read_only());
+        assert!(narrowed.resolve_writable("x.txt").is_err());
+    }
+
+    #[test]
+    fn a_writable_grant_inside_or_around_a_read_only_folder_does_not_reopen_it() {
+        let outer = tempfile::tempdir().unwrap();
+        let project = outer.path().join("project");
+        std::fs::create_dir_all(project.join("build")).unwrap();
+        let grant = |path: &Path| PathGrant {
+            path: path.display().to_string(),
+            mode: PathMode::ReadWrite,
+        };
+        let workspace = Workspace::new(&project)
+            .unwrap()
+            .with_grants(&[grant(&project.join("build")), grant(outer.path())])
+            .with_read_only();
+        for path in [project.join("build").join("out.o"), project.join("src.rs")] {
+            assert!(
+                matches!(
+                    workspace.resolve_writable(&path.to_string_lossy()),
+                    Err(ToolError::ReadOnly(_))
+                ),
+                "{}",
+                path.display()
+            );
+        }
+        // Beside the folder, the grant still works.
+        let beside = outer.path().join("notes.txt");
+        assert!(
+            workspace
+                .resolve_writable(&beside.to_string_lossy())
+                .is_ok()
+        );
+        // Without the mount the inner grant is writable, as before.
+        let open = Workspace::new(&project)
+            .unwrap()
+            .with_grants(&[grant(&project.join("build"))]);
+        assert!(
+            open.resolve_writable(&project.join("build/out.o").to_string_lossy())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_read_only_remote_workspace_refuses_writes_in_its_folders() {
+        let workspace = Workspace::remote(
+            Remote::Ssh { host: "box".into() },
+            &["/home/me/project".to_string()],
+            Arc::new(crate::ProcessRunner),
+        )
+        .unwrap()
+        .with_read_only();
+        assert!(workspace.resolve_remote("src/main.rs", false).is_ok());
+        assert!(matches!(
+            workspace.resolve_remote("src/main.rs", true),
+            Err(ToolError::ReadOnly(_))
+        ));
+    }
+
+    #[test]
     fn every_folder_of_an_environment_is_inside_and_nothing_else() {
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
@@ -956,5 +1248,330 @@ mod tests {
                 .with_folders([outside.path().join("missing")])
                 .is_err()
         );
+    }
+
+    /// A workspace with a folder, a second folder, a scratch folder and a writable grant, and a
+    /// folder next to the first that nothing opens.
+    struct Layout {
+        first: tempfile::TempDir,
+        second: tempfile::TempDir,
+        scratch: tempfile::TempDir,
+        grant: tempfile::TempDir,
+        sibling: tempfile::TempDir,
+        workspace: Workspace,
+    }
+
+    fn layout() -> Layout {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let grant = tempfile::tempdir().unwrap();
+        let sibling = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(first.path())
+            .unwrap()
+            .with_folders([second.path()])
+            .unwrap()
+            .with_grants(&[PathGrant {
+                path: grant.path().display().to_string(),
+                mode: PathMode::ReadWrite,
+            }])
+            .with_scratch(scratch.path());
+        Layout {
+            first,
+            second,
+            scratch,
+            grant,
+            sibling,
+            workspace,
+        }
+    }
+
+    fn at(dir: &tempfile::TempDir, name: &str) -> String {
+        dir.path().join(name).to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn local_files_only_keeps_files_to_the_folders_and_the_scratch_folder() {
+        let layout = layout();
+        let locked = layout.workspace.clone().with_profile(AgentProfile::new(
+            crate::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            },
+        ));
+        // Without the lock the grant is open (the lock narrows, it does not change the rest).
+        assert!(
+            layout
+                .workspace
+                .resolve(&at(&layout.grant, "g.txt"))
+                .is_ok()
+        );
+
+        for inside in [
+            "notes.txt".to_string(),
+            "src/new/main.rs".to_string(),
+            at(&layout.first, "abs.txt"),
+            at(&layout.second, "other.txt"),
+            at(&layout.scratch, "scratch.txt"),
+        ] {
+            assert!(locked.resolve(&inside).is_ok(), "{inside} should be open");
+            assert!(
+                locked.resolve_writable(&inside).is_ok(),
+                "{inside} should be writable"
+            );
+        }
+        for outside in [
+            "..".to_string(),
+            "../x".to_string(),
+            "src/../../x".to_string(),
+            "nothing/../../x".to_string(),
+            at(&layout.sibling, "x.txt"),
+            // Open by a grant for an unrestricted agent, closed by the lock.
+            at(&layout.grant, "g.txt"),
+        ] {
+            assert!(
+                matches!(
+                    locked.resolve(&outside),
+                    Err(ToolError::OutsideWorkspace(_))
+                ),
+                "{outside} should be refused"
+            );
+            assert!(
+                matches!(
+                    locked.resolve_writable(&outside),
+                    Err(ToolError::OutsideWorkspace(_))
+                ),
+                "{outside} should be refused for writing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_profile_never_opens_a_path_the_workspace_refuses() {
+        let layout = layout();
+        let read_only = Workspace::new(layout.first.path())
+            .unwrap()
+            .with_grants(&[PathGrant {
+                path: layout.grant.path().display().to_string(),
+                mode: PathMode::Read,
+            }]);
+        for rules in [
+            crate::profile::ProfileRules::default(),
+            crate::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            },
+            crate::profile::ProfileRules {
+                mcp: crate::profile::Allowlist::All,
+                plugins: crate::profile::Allowlist::All,
+                local_files_only: false,
+            },
+        ] {
+            let workspace = read_only.clone().with_profile(AgentProfile::new(rules));
+            assert!(matches!(
+                workspace.resolve(&at(&layout.sibling, "x")),
+                Err(ToolError::OutsideWorkspace(_))
+            ));
+            assert!(matches!(
+                workspace.resolve_writable(&at(&layout.grant, "g")),
+                Err(ToolError::ReadOnly(_)) | Err(ToolError::OutsideWorkspace(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn the_lock_applies_to_calls_already_in_flight_from_the_next_one() {
+        let layout = layout();
+        let profile = AgentProfile::default();
+        let workspace = layout.workspace.clone().with_profile(profile.clone());
+        let granted = at(&layout.grant, "g.txt");
+        assert!(workspace.resolve(&granted).is_ok());
+        profile.set(crate::profile::ProfileRules {
+            local_files_only: true,
+            ..Default::default()
+        });
+        assert!(matches!(
+            workspace.resolve(&granted),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+    }
+
+    #[test]
+    fn local_files_only_keeps_a_remote_workspace_to_its_folders() {
+        let workspace = Workspace::remote(
+            Remote::Ssh { host: "box".into() },
+            &["/home/me/project".to_string()],
+            Arc::new(crate::ProcessRunner),
+        )
+        .unwrap()
+        .with_grants(&[PathGrant {
+            path: "/opt/toolchains".into(),
+            mode: PathMode::Read,
+        }]);
+        assert!(
+            workspace
+                .resolve_remote("/opt/toolchains/bin/go", false)
+                .is_ok()
+        );
+        let locked = workspace.with_profile(AgentProfile::new(crate::profile::ProfileRules {
+            local_files_only: true,
+            ..Default::default()
+        }));
+        assert!(locked.resolve_remote("src/main.rs", true).is_ok());
+        assert!(matches!(
+            locked.resolve_remote("/opt/toolchains/bin/go", false),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+        assert!(matches!(
+            locked.resolve_remote("../other", false),
+            Err(ToolError::OutsideWorkspace(_))
+        ));
+    }
+
+    #[test]
+    fn local_files_only_refuses_the_daemons_folders_even_inside_an_environment_folder() {
+        let project = tempfile::tempdir().unwrap();
+        let config = project.path().join("fake-config");
+        let data = project.path().join("fake-data");
+        std::fs::create_dir_all(data.join("scratch")).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("config.toml"), "secret").unwrap();
+        let workspace = Workspace::new(project.path())
+            .unwrap()
+            .with_scratch(&data.join("scratch"))
+            .with_protected_folders([&config, &data]);
+        let settings = config.join("config.toml").to_string_lossy().to_string();
+        // Without the lock the folder is the agent's like any other.
+        assert!(workspace.resolve(&settings).is_ok());
+        let locked = workspace.with_profile(AgentProfile::new(crate::profile::ProfileRules {
+            local_files_only: true,
+            ..Default::default()
+        }));
+        for path in [
+            settings,
+            "fake-config/config.toml".to_string(),
+            "fake-config/new.toml".to_string(),
+            "fake-data/sessions/x.jsonl".to_string(),
+            "src/../fake-config/config.toml".to_string(),
+        ] {
+            assert!(
+                matches!(locked.resolve(&path), Err(ToolError::OutsideWorkspace(_))),
+                "{path} should be refused"
+            );
+            assert!(locked.resolve_writable(&path).is_err(), "{path}");
+        }
+        // The rest of the folder and the session's scratch folder (inside the data folder) stay.
+        assert!(locked.resolve("src/main.rs").is_ok());
+        assert!(locked.resolve("fake-data/scratch/notes.txt").is_ok());
+    }
+
+    #[test]
+    fn local_files_only_may_not_write_the_files_that_configure_the_folder() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".imperium")).unwrap();
+        std::fs::write(project.path().join(".imperium/config.toml"), "x = 1").unwrap();
+        let open = Workspace::new(project.path()).unwrap();
+        let locked = open
+            .clone()
+            .with_profile(AgentProfile::new(crate::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
+        for file in [
+            ".imperium/config.toml",
+            ".imperium/config.local.toml",
+            ".mcp.json",
+            "./.imperium/../.mcp.json",
+        ] {
+            // An agent without the lock writes them like any file.
+            assert!(open.resolve_writable(file).is_ok(), "{file}");
+            assert!(
+                matches!(
+                    locked.resolve_writable(file),
+                    Err(ToolError::OutsideWorkspace(_))
+                ),
+                "{file} should be refused for writing"
+            );
+        }
+        // Reading them and writing anything else stays open.
+        assert!(locked.resolve(".imperium/config.toml").is_ok());
+        assert!(
+            locked
+                .resolve_writable(".imperium/skills/a/SKILL.md")
+                .is_ok()
+        );
+        assert!(locked.resolve_writable("src/main.rs").is_ok());
+    }
+
+    #[test]
+    fn the_configuration_files_are_matched_by_name_not_by_bytes() {
+        let project = tempfile::tempdir().unwrap();
+        let locked = Workspace::new(project.path())
+            .unwrap()
+            .with_profile(AgentProfile::new(crate::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
+        // Spellings a case-insensitive or Windows file system maps onto the files, whether or not
+        // the folder or the file exists. Case is checked everywhere; the rest where it applies.
+        let mut spellings = vec![
+            ".MCP.json",
+            ".Mcp.JSON",
+            ".IMPERIUM/config.toml",
+            ".Imperium/CONFIG.toml",
+            ".imperium/Config.Local.toml",
+            ".mcp.jſon",
+            ".ımperium/config.toml",
+        ];
+        if cfg!(windows) {
+            spellings.extend([
+                ".mcp.json.",
+                ".mcp.json ",
+                ".mcp.json::$DATA",
+                ".imperium/config.toml.",
+                ".imperium\\config.toml::$DATA",
+            ]);
+        }
+        for file in &spellings {
+            assert!(
+                locked.resolve_writable(file).is_err(),
+                "{file} should be refused (folder absent)"
+            );
+        }
+        // The same with the folder present and the file absent.
+        std::fs::create_dir_all(project.path().join(".imperium")).unwrap();
+        for file in &spellings {
+            assert!(
+                locked.resolve_writable(file).is_err(),
+                "{file} should be refused (folder present)"
+            );
+        }
+        // Other names stay open, also ones that only look alike.
+        for file in [
+            ".mcp.json.bak",
+            ".imperium/config.toml.bak",
+            ".imperium/notes.toml",
+            "mcp.json",
+        ] {
+            assert!(locked.resolve_writable(file).is_ok(), "{file}");
+        }
+    }
+
+    #[test]
+    fn a_writer_subagents_workspace_keeps_the_delegators_profile() {
+        let layout = layout();
+        let profile = AgentProfile::default();
+        let workspace = layout.workspace.clone().with_profile(profile.clone());
+        let tree = tempfile::tempdir().unwrap();
+        let moved = workspace.with_roots(&[tree.path()]).unwrap();
+        assert_eq!(moved.profile(), &profile);
+        profile.set(crate::profile::ProfileRules {
+            local_files_only: true,
+            ..Default::default()
+        });
+        assert!(moved.profile().local_files_only());
+        // Outside the writer's own folders is refused; inside is open.
+        assert!(moved.resolve(&at(&layout.first, "x")).is_err());
+        assert!(moved.resolve(&at(&tree, "x")).is_ok());
     }
 }

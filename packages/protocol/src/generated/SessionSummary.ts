@@ -97,6 +97,10 @@ branched_from?: BranchOrigin,
  */
 comparison_id?: string, 
 /**
+ * The session's folders are a read-only mount (`session.create` `read_only`).
+ */
+read_only: boolean, 
+/**
  * Set when a persistent agent started the session (or the user started one of its
  * suggestions): shown as "started by <agent>" with the reason.
  */

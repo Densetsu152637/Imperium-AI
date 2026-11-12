@@ -333,6 +333,9 @@ pub struct SessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub comparison_id: Option<String>,
+    /// The session's folders are a read-only mount (`session.create` `read_only`).
+    #[serde(default)]
+    pub read_only: bool,
     /// Set when a persistent agent started the session (or the user started one of its
     /// suggestions): shown as "started by <agent>" with the reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1042,6 +1045,20 @@ pub struct SessionCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub worktree_branch: Option<String>,
+    /// Narrow the session to one folder inside the environment's folders: an absolute path, or
+    /// a path relative to the first folder. The folder is then the session's only folder and
+    /// working directory; the environment's other folders are closed to it. Not with
+    /// `worktree`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub subfolder: Option<String>,
+    /// Mount the session's folders read-only: its file tools read and list but never write,
+    /// edit or delete there (its scratch folder stays writable), and commands run only under a
+    /// tier that can keep them from writing there (`os` and `container`; tier 0 refuses them).
+    /// Not with `worktree`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub read_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1312,6 +1329,35 @@ impl Method for EnvironmentDelete {
 #[ts(export)]
 pub struct EnvironmentRef {
     pub id: String,
+}
+
+/// `environments.config`: what the environment's own `.imperium/config.toml` (and
+/// `config.local.toml`) in its first folder changes for the sessions started there, and what was
+/// refused. The files can only narrow the user's settings.
+#[derive(Debug)]
+pub struct EnvironmentConfigGet;
+
+impl Method for EnvironmentConfigGet {
+    const NAME: &'static str = "environments.config";
+    type Params = EnvironmentRef;
+    type Result = EnvironmentConfigResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentConfigResult {
+    /// The folder whose `.imperium` folder holds the files: the environment's first folder.
+    /// None when it has no folder on this machine.
+    pub folder: Option<String>,
+    /// The files that were read.
+    pub files: Vec<String>,
+    /// Whether the folder is in the user's `mcp.trusted_projects`, so the servers and plugins
+    /// the files name may start.
+    pub trusted: bool,
+    /// What the files changed, one line each.
+    pub applied: Vec<String>,
+    /// What was ignored or refused, and why, one line each.
+    pub refused: Vec<String>,
 }
 
 /// `environments.add_folder`: add an existing folder to an environment. Sessions started from
@@ -2868,6 +2914,10 @@ pub struct ScheduleRow {
     /// `prompt` or `command`.
     pub action: String,
     pub project: String,
+    /// The environment the schedule runs in (`action.environment`); none for a schedule that
+    /// works in a bare `project` folder.
+    #[serde(default)]
+    pub environment: Option<String>,
     /// RFC 3339 local times.
     pub next_run: Option<String>,
     pub last_run: Option<String>,

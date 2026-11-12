@@ -69,6 +69,12 @@ impl ToolProvider for McpTools {
             .is_some_and(|servers| servers.find(name).is_some())
     }
 
+    fn server_of(&self, name: &str) -> Option<String> {
+        self.servers()
+            .and_then(|servers| servers.find(name))
+            .map(|tool| tool.server.clone())
+    }
+
     /// Asks first unless the server's `allow` list covers the tool. MCP tools may act on
     /// anything, so they wait for required context.
     fn check(&self, name: &str, arguments: &str) -> Result<ToolCheck, String> {

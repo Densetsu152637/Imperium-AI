@@ -114,6 +114,13 @@ pub trait ToolProvider: Send + Sync + fmt::Debug {
     /// Whether this provider runs the tool called `name`.
     fn handles(&self, name: &str) -> bool;
 
+    /// The outside server (MCP) the tool called `name` comes from, by the name in the
+    /// configuration, so a persistent agent's permission profile can allow some servers and not
+    /// others. `None` for tools that come from no server.
+    fn server_of(&self, _name: &str) -> Option<String> {
+        None
+    }
+
     /// Reads a call's arguments and says how to check it. An error goes back to the model
     /// before any hook runs.
     fn check(&self, name: &str, arguments: &str) -> Result<ToolCheck, String>;

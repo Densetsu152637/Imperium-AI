@@ -1032,6 +1032,23 @@ button.icon-only.panel-tool .lucide {
   white-space: nowrap;
 }
 
+.environment-config-lines {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.environment-config-lines.refused {
+  color: var(--muted, inherit);
+}
+
+.new-session-subfolder {
+  min-width: 9rem;
+  max-width: 14rem;
+  font-size: 0.8rem;
+}
+
 
 .conversation {
   flex: 1;
@@ -3980,6 +3997,44 @@ button.colour-choice[aria-checked="true"]::after {
 
 .environment-agent-form textarea {
   resize: vertical;
+}
+
+.environment-agents .agent-limits {
+  flex: none;
+  font-size: 0.7rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 0.35rem;
+}
+
+.agent-access {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  min-width: 0;
+}
+
+.agent-access p {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.agent-access-lock {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.agent-access-row {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
 }
 
 .environment-folders button.icon-only {

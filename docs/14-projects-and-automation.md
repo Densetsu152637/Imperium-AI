@@ -50,7 +50,7 @@ object tagged by `kind`:
 | `kind` | Fields | Tools run | Folders are |
 | --- | --- | --- | --- |
 | `local` (default) | none | on this machine, under `isolation.tier` | local folders |
-| `docker` | `image` | each command in a fresh container from `image` (the container tier, network on) | local folders, mounted at `/workspace`, `/folders/2`, … |
+| `docker` | `image` | each command in a fresh container from `image` (the container tier, network per `isolation.network`) | local folders, mounted at `/workspace`, `/folders/2`, … |
 | `docker` | `image`, `container` | `docker exec` into that running container | paths inside the container |
 | `wsl` | `distro` | `wsl.exe -d <distro> --cd <folder> --exec sh -c …` (Windows only) | Linux paths; Windows paths are translated to `/mnt/<drive>/…` |
 | `ssh` | `host` | the system `ssh` client (`BatchMode`, so keys and agents from your SSH config; never passwords) | paths on the host |
@@ -90,27 +90,115 @@ archives it, so its history is listed with the other archived sessions. Changing
 role restarts it with the same conversation; changing the environment's runtime restarts all of
 them; saving an agent with the same name and role restarts nothing, and a restart keeps the
 agent's limits and the reports of the sessions it already started. Deleting the environment stops
-them too. Agents have no pet in the nursery. The project-private memory and the environment's `Memory.md` ([17](17-memory.md#environment-memory-implemented)) are
+them too. Agents have no pet in the nursery. The environment's `Memory.md` ([17](17-memory.md#environment-memory-implemented)), where project memory lives too, is
 shared by all its agents, so each agent is told to begin the names of the entries it saves with its own
 name (lower case, with dashes; an environment-scope entry is a section of `Memory.md` named
-the same way) and to keep its open-task list in `<name>-open-tasks`. Adding,
+the same way) and to keep its open-task list in `<name>-open-tasks`. These saves go through `memory.write.environment` (`ask` by default, so each waits for the user's approval until it is set to `auto`; before the unification they went to project-private memory with `auto`). Adding,
 renaming, changing the role of, or deleting agents of one environment is serialised: it never starts
 an agent twice.
 
 | Method | Params | Result |
 | --- | --- | --- |
 | `environments.agent_list` | `{ environment_id }` | `{ agents: EnvironmentAgent[] }` |
-| `environments.agent_create` | `{ environment_id, name, role?, initiative? }` | `EnvironmentAgent` plus `started` and, when it could not start (no folder yet, no model), `reason`; the agent is added anyway and starts when the cause is fixed |
-| `environments.agent_update` | `{ environment_id, agent_id, name?, role?, initiative? }` | `EnvironmentAgent` plus `started` and, when a changed agent could not restart, `reason`, like `agent_create` |
+| `environments.agent_create` | `{ environment_id, name, role?, initiative?, permissions? }` | `EnvironmentAgent` plus `started` and, when it could not start (no folder yet, no model), `reason`; the agent is added anyway and starts when the cause is fixed |
+| `environments.agent_update` | `{ environment_id, agent_id, name?, role?, initiative?, permissions? }` (`permissions` replaces the [permission profile](#agent-permission-profiles-implemented) and applies at once, without a restart) | `EnvironmentAgent` plus `started` and, when a changed agent could not restart, `reason`, like `agent_create` |
 | `environments.agent_delete` | `{ environment_id, agent_id }` | `{}` |
 
-`EnvironmentAgent` is `{ id, name, role, session_id, initiative }` (`session_id` is none until the agent has
-started; `initiative` is `off`, `suggest` or `act`, [off by default](#initiative-implemented)); `EnvironmentInfo.agents` carries them, and every change is announced as
+`EnvironmentAgent` is `{ id, name, role, session_id, initiative, permissions }` (`session_id` is none until the agent has
+started; `initiative` is `off`, `suggest` or `act`, [off by default](#initiative-implemented); `permissions` is the [permission profile](#agent-permission-profiles-implemented)); `EnvironmentInfo.agents` carries them, and every change is announced as
 `environments.changed`. From the command line: `imperium env agent list <env>`, `imperium env
-agent add <env> <name> [--role TEXT]`, `imperium env agent set <env> <agent> [--name N] [--role
-TEXT]`, and `imperium env agent rm <env> <agent>` (an agent by name or id). **Breaking:** the
+agent add <env> <name> [--role TEXT] [profile flags]`, `imperium env agent set <env> <agent> [--name N] [--role
+TEXT] [profile flags]`, and `imperium env agent rm <env> <agent>` (an agent by name or id). **Breaking:** the
 earlier `imperium env agent <env> on|off` no longer exists. In the desktop, the
 environment window's *Agents* section lists them with *Add agent*, edit and delete.
+
+#### Agent permission profiles (implemented)
+
+Each agent can carry a **permission profile**: what it may use *beyond* the environment's own
+permissions. A profile **only narrows**: it hides tools the agent would otherwise have and
+refuses calls to them. It grants nothing: the environment's path grants, rules and permission
+mode ([05](05-tools-and-isolation.md#permissions)) and the safety floor decide every call that
+remains, exactly as for any session, and a tool the session was never offered (a server that is
+not configured, a plugin that is not installed) stays absent however the profile reads. The
+default profile, which an agent has until you set one, restricts nothing, so existing agents
+behave as before.
+
+| Field | Values | Effect |
+| --- | --- | --- |
+| `mcp` | `all` (default), `none`, `named` | Which MCP servers' tools (`mcp__<server>__<tool>`) the agent is offered and may call; `named` uses `mcp_servers`, the servers' names as in the configuration, compared ignoring case. `named` with no name is `none` |
+| `plugins` | `all` (default), `none`, `named` | Which plugins the agent may activate (`activate_plugin`) and use the tools of; `named` uses `plugin_names` |
+| `local_files_only` | `false` (default), `true` | The lock below; overrides `mcp` and `plugins` |
+
+**Local files only** removes everything that reaches outside the files: the web, browser,
+search, media and live-preview tools, MCP servers' and plugins' tools (and `activate_plugin`),
+the other integrations (model listing, app-config and session-search tools, suggestions), and
+`run_command` with `command_output` and `command_stop`. What remains are the file tools
+(`read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`), planning, skills, memory,
+`ask_user` and delegation. The file tools are confined to the environment's folders and the
+agent's own scratch folder: no path grant, project worktree or attachments folder opens
+anything more, the daemon's own configuration and data folders are refused even when an
+environment folder contains them (the scratch folder is exempt), and `..`, absolute paths and symbolic links are checked after resolution, like
+the folder sandbox itself. Where a read-only grant covers part of a folder it stays read-only.
+
+**Enforcement.** The profile is applied when the tool list is assembled for each model call
+(so the model is not told about a hidden tool) and again when a call arrives, so a call to a tool
+the profile hides (from a stale list, from memory, or after the profile was tightened during a
+turn) is refused with a message naming the profile, never run. The file tools and command
+runner check it themselves too, so a local-files-only session cannot run a command or reach
+another path even if a call got past the agent loop. **Delegation does not escape it:**
+subagents and chunk agents of the agent's session share its profile, and the sessions the agent
+starts with `start_session` are bound to the same agent: the binding is recorded with the
+session (`agent_id` in its meta file), so it survives a daemon restart, and an agent deleted
+since leaves its running sessions under the profile they hold until the daemon restarts. A
+changed profile (`environments.agent_update`) applies from the next call of the agent's running
+session and of every session it started; the agent is not restarted. The sessions an agent's suggestions start (from a suggestion the user accepts, or
+that the agent starts itself in `act` mode) are bound to its profile like any other session it
+starts. Under local files only the agent has none of the integration tools its initiative
+reviews use, so its reviews do nothing. A review restored after a restart ends on the user's
+first turn after the agent resumes, and that turn runs restricted too.
+
+**Servers and plugins a profile forbids do not start.** A session bound to an agent leaves out
+the MCP servers its profile refuses (all of them under local files only) before they are
+started, the project's own `.mcp.json` included, and does not start eager or restored plugins it
+refuses, so an agent that can write a project's `.mcp.json` cannot get a command run by starting a
+session. A session whose agent no longer exists keeps the profile recorded with it
+(`agent_permissions` in its meta file, kept current while the agent exists); with no record it
+gets the strictest profile (local files only, no servers, no plugins), so a session is never
+looser than the agent that started it. Switching an agent to local files only also stops the
+background commands its sessions had started, at the session's next step (servers that were
+already running are left running but unreachable).
+
+**A hard boundary needs local files only.** An agent that may run commands can reach the daemon
+like any client (`imperium env agent set …`, or the protocol directly) and loosen its own
+profile, so the allowlists alone are a guard against mistakes, not a security boundary: a
+command that runs `imperium env agent add|set|rm` always asks a person (the safety floor,
+[05](05-tools-and-isolation.md#permissions)), but a script can still call the protocol. Only
+**local files only**, which gives the agent no commands, holds against the agent itself. Even
+then a locked agent can influence other sessions through what it may edit: files in the
+environment's folders that other sessions read (instructions, skills, commands, hooks'
+scripts) and the shared memory. The files that configure what the daemon starts in a folder
+are out of its reach: a local-files-only agent may not write `<folder>/.imperium/config.toml`,
+`.imperium/config.local.toml` or `.mcp.json` (also when they do not exist yet), and a session
+bound to it ignores the environment file's plugin folders and disabled plugins, so it cannot
+get a server or a plugin hook run by editing them. Allowlist names are compared ignoring case, so two servers whose
+names differ only by case cannot be told apart.
+
+**Remote runtimes.** For an environment on a Docker, WSL or SSH runtime the folder confinement
+is lexical (`..` and absolute paths are resolved, symbolic links inside the runtime cannot be
+followed from here), as it is for every session there.
+
+Not covered: the hooks the user configured run as configured (they are the user's, not the
+agent's), and a mod's panel is not an agent tool, so profiles do not apply to mods. A session
+bound to an agent runs no hook of a plugin its profile refuses (tightening a profile on a running
+session leaves the plugin hooks already loaded active until the session restarts; a plugin's skills and commands
+are only text and stay listed).
+
+From the command line, `imperium env agent add|set` take `--mcp all|none|NAME,NAME`,
+`--plugins all|none|NAME,NAME`, and `--local-only` / `--no-local-only`; a flag not given keeps
+the agent's current setting, and `imperium env agent list` shows what each agent is limited to.
+In the desktop, the agent form has a *Permissions* group (a local-files-only checkbox and an
+*All / None / Only these* choice, with names, for MCP servers and for plugins), and a row shows
+a short summary of a limited agent.
 
 **Migration and deprecated fields.** An environment saved with the earlier single persistent
 session (`persistent_agent: true` with an `agent_session_id`) becomes one agent named "Persistent
@@ -362,15 +450,104 @@ From the command line: `imperium workspaces where` and `imperium workspaces move
 desktop's environment window shows the environment's working folder with *Open Memory.md* and
 *Open folder*, and Settings → *Working folders* has the root with a folder picker.
 
-### Planned
+### Environment configuration (implemented)
 
-An environment will also define:
+An environment can carry its own configuration in the **first folder's** `.imperium/config.toml`
+(shared with the repository) and `.imperium/config.local.toml` (git-ignored, read after it).
+Why there and not in the environment's working folder under `workspaces.root`: the file belongs to
+the project, travels with the repository, and is read where `.mcp.json` and skills
+already are; the working folder holds only what is private to this machine (`Memory.md`, scratch
+folders), may not exist yet, and Home has no project folder at all. An environment on a remote
+runtime or with no folder has no such file read (project files on a remote runtime are not read
+yet), and the file is read from the environment's first folder even when a session works on a
+worktree of it. It is read each time a session starts, so a change applies to sessions started
+afterwards.
 
-- **Its configuration layer** (`.imperium/config.toml`), instructions, policy overrides,
-  plugins, MCP servers, routing rules, and budgets. Today these come from the working directory
-  (the first folder).
-- **Narrowed sessions:** a session limited to a subfolder or a read-only mount.
-- **Schedules** (below), which are still configured per folder.
+The file is **repository-owned, so it can only narrow** the user's settings (the same property as
+refusing a repository's git config that would run a program, [above](#review-pane-implemented)).
+It is read through an allow-list and every value is checked against the user's own settings:
+
+| Section | The file may | Refused |
+| --- | --- | --- |
+| `instructions` | add notes (up to 20 000 characters) that are shown to the model framed as repository data: context that cannot grant permissions, change approvals or enable tools | |
+| `[policy]` | pick the personality | |
+| `[permissions]` | a stricter `mode`; `ask` and `deny` rules, which are evaluated apart from the user's rules and the stronger action wins (a repository's `ask` never weakens the user's `deny`) | a looser mode, `allow` rules, `grants` |
+| `[isolation]` | a stricter `tier` (policy, then os, then container); `network = false` | a looser tier, `network = true` over the user's `false`, the container image or runtime |
+| `[extensions]` | `disabled_plugins` and `plugin_dirs` (relative to the folder), both only once the folder is trusted (a plugin may be a guard hook, so a repository cannot switch one off) | `eager`, `lazy`; either key without trust |
+| `[mcp.servers.<name>]` | add servers once the folder is trusted; the user's server of the same name wins; each entry is checked on its own (one bad entry drops only itself) | servers without trust; `allow`, `secret_env` and `bearer_token` (a repository's server gets no keychain secret and no tool that runs unasked); `trusted_projects` (a repository cannot trust itself) |
+| `[routing]` | `prefer = "local"`; rules whose `use` models are all `location = "local"` in the user's table, with no `tier` and no cloud `location`, checked before the user's rules | `cloud` or `cheapest`, rules by tier or tag alone, rules with a `tier` or a cloud `location`, rules naming a cloud model |
+| `[budgets]` | `limits`: each is forced to scope `environment` on this environment and its id is prefixed with the environment's, so it counts beside the user's budgets and never replaces one | other scopes, other `[budgets]` keys |
+
+Everything else (`[[hooks]]`, `[[schedules]]`, `[[projects]]`, endpoints, models, runtimes,
+workflow packs, ...) is ignored and reported: a repository's hooks would run commands on open, and
+schedules and project agents are attached to an environment from the user's own config (below).
+"Trusted" is the user's `mcp.trusted_projects`, the same list that decides whether a project's
+`.mcp.json` servers start. A file is read only if it is a regular file whose real path is inside
+the environment's folder (a link or a `.imperium` folder that leads out, a device, and a pipe are
+refused without being opened), is no larger than 256 KiB, and is valid UTF-8 TOML; otherwise it is
+reported and skipped, the other file still applies, and nothing here can stop the daemon starting
+or a session resuming. What was refused is listed by
+`environments.config`, `imperium env config <env>`, the environment window's *Configuration
+file* section, and in a notice at the start of every session in the environment. The effective
+settings are the user's layers, then this narrowing step, then the session's own choices
+(`session.control`); a session's explicit permission mode is never overridden.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `environments.config` | `{ id }` (an environment id or name) | `{ folder, files, trusted, applied, refused }` |
+
+### Narrowed sessions (implemented)
+
+`session.create` takes two options that narrow what a session's tools reach:
+
+- **`subfolder`**: a folder inside one of the environment's folders, absolute or relative to the
+  first folder. It becomes the session's only folder and working directory, so the environment's
+  other folders and the rest of that folder are closed to the file tools and, under the OS and
+  container tiers, to commands (which can write only there). At tier 0 a command still runs with
+  the user's own rights from that folder: narrowing does not confine it, as no tier-0 setting
+  does. It must be an existing folder inside the environment (links and `..` are resolved
+  first); in a remote runtime it is a path inside it. `imperium chat --env <env> --subfolder
+  src/app`.
+- **`read_only`**: the folders (and the project worktrees) are a read-only mount. The file tools
+  read, list, search and glob but `write_file` and `edit_file` are refused outright without
+  asking; the session's scratch folder and attachments stay writable. Commands are enforced per
+  [isolation tier](05-tools-and-isolation.md#isolation-tiers): the OS tier does not bind the
+  folders writable, the container tier mounts them `:ro`, and tier 0 (`policy`) cannot keep a
+  command from writing, so `run_command` is refused there (set `isolation.tier` to `container`,
+  or `os` on Linux and macOS); commands in a remote runtime are refused too. A writable path
+  grant inside or around a read-only folder does not reopen it (the file tools, bubblewrap,
+  Seatbelt and the container mounts all keep the folder read-only; only grants elsewhere, such as
+  the scratch folder, stay writable). A read-only session has no live preview, no writer
+  subagents, and no project memory store at all (there is none any more: environment memory is the
+  environment's `Memory.md`, which lives outside the folder, so a read-only session may still write it under `memory.write.environment`). MCP servers and the user's own hooks still run unconfined in a read-only
+  session: they are the user's, and the read-only mount covers the agent's file tools and
+  commands, not them. `imperium chat --env <env> --read-only`.
+
+The two combine, and neither combines with `worktree`. Both are kept with the session, so it
+resumes narrowed after a restart, and `session.list` reports `read_only` (the narrowed folder is
+in `folders`). The desktop's new-session panel has an *Only this subfolder* field and a
+*Read-only* switch.
+
+### Schedules and project agents per environment (implemented)
+
+A schedule or project agent can be attached to an environment instead of a folder:
+
+- `[[schedules]]` `action.environment = "<id or name>"` in place of `action.project`. A `prompt`
+  starts a background session in the environment (all its folders, its permissions, its own
+  configuration file); a `command` runs in its first folder; an `agent` message wakes the
+  environment's persistent agents, or only the one `action.to_agent` names (name or id). The
+  environment is looked up when the run starts, so a deleted one fails the run with a message.
+  `schedules.list` rows carry `environment`, and `imperium schedule list` shows it.
+- `[[projects]]` `environment = "<id or name>"` in place of `path` gives the environment a
+  [project agent](#project-agent) with the usual `max_sessions` and quiet settings; the sessions
+  it starts work in the environment, and it starts in `default` mode or the stricter mode the
+  environment's own file asked for. It is listed by `imperium project list` as
+  `environment:<id>`, and `imperium project tell --project environment:<id> "..."` wakes it.
+
+Exactly one of the folder and the environment is set; the configuration is refused otherwise.
+These stay in the user's config (or `schedules`), never in the environment's own file, since a
+schedule can run a command. An environment's [persistent agents](#persistent-agents-implemented)
+remain the agents that live in the environment itself.
 
 ## Worktrees
 
@@ -741,7 +918,7 @@ icon, and notes beyond the agent's memory tools.
 - On each wake it decides what to do with the event and either acts directly (small things) or
   **creates a new session** with a brief, which runs under normal routing, budgets, and
   permissions. It receives the session's completion report, not its transcript.
-- It keeps a short project memory (notes file and task backlog) so it can resume after restarts.
+- It keeps a short backlog and notes in the environment's memory (`Memory.md`) so it can resume after restarts.
 - Budgets: a daily token/cost cap and a max number of concurrent sessions it may start.
 - Permissions are the project's, with one extra rule: actions that would normally prompt the
   user are queued as **approval requests** (shown in the desktop app and phone app) instead of
