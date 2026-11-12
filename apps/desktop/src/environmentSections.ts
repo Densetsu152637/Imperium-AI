@@ -33,19 +33,19 @@ export function initialSection(kind: Kind, confirmDelete: boolean): EnvironmentS
   return confirmDelete && sectionsFor(kind).some((section) => section.id === "danger") ? "danger" : "general";
 }
 
-/**
- * The controls each section holds, by accessible name or visible text, and the source file that
- * renders them. Every control of the old single page is listed once.
- */
-export const SECTION_CONTROLS: Record<EnvironmentSectionId, { file: string; controls: string[] }> = {
-  general: { file: "EnvironmentWindow.tsx", controls: ["Environment name", "Search icons", "aria-label=\"Icon\"", "aria-label=\"Colour\"", "aria-label=\"Pet\""] },
-  folders: {
-    file: "EnvironmentWindow.tsx",
-    controls: ["Add folder", "Folder inside the runtime", "Add path", "Remove ${folder}", "<EnvironmentRuntimeFields"],
-  },
-  agents: { file: "panels/EnvironmentAgents.tsx", controls: ["Add agent", "Edit ${agent.name}", "Delete ${agent.name}", "<AgentInitiative", "Local files only", "MCP servers", "Plugins", "Save agent"] },
-  memory: { file: "EnvironmentWindow.tsx", controls: ["Open Memory.md", "Open folder"] },
-  config: { file: "panels/EnvironmentConfigSection.tsx", controls: ["Reload", "Applied", "Refused"] },
-  permissions: { file: "EnvironmentWindow.tsx", controls: ["<PermissionsEditor"] },
-  danger: { file: "EnvironmentWindow.tsx", controls: ["Delete environment", "Keep"] },
-};
+/** Whether a section's pane is hidden. Panes stay mounted, so an agent draft survives a switch. */
+export const paneHidden = (selected: EnvironmentSectionId, pane: EnvironmentSectionId): boolean => selected !== pane;
+
+/** What Ctrl+S / Enter saves: the open agent form while one is shown, else the environment. */
+export const saveTarget = (agentFormOpen: boolean): "agent" | "environment" => (agentFormOpen ? "agent" : "environment");
+
+/** The footer Save waits while the agent form holds unsaved changes (saving would drop them). */
+export const footerSaveBlocked = (agentFormDirty: boolean): boolean => agentFormDirty;
+
+/** What a close request does: ask first when there are unsaved edits, close on the second request. */
+export const closeAction = (dirty: boolean, confirming: boolean): "close" | "confirm" =>
+  dirty && !confirming ? "confirm" : "close";
+
+/** Whether anything in the window is unsaved. */
+export const environmentDirty = (edits: Record<string, boolean>): boolean => Object.values(edits).some(Boolean);
+

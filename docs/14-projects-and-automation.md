@@ -279,7 +279,8 @@ What an agent with initiative does, and when:
   unreadable one is set aside as `initiative.json.unreadable`, not overwritten). The daemon checks
   that the source exists, not that it says what the agent claims: the user sees the source beside
   the suggestion. The user hears about them (an `initiative.notice` and an OS notification) and
-  sees them in the agent's row in the environment window with **Start**, which opens a session
+  sees them in the agent's edit view in the environment window's Agents section (its row shows
+  an *N suggestions* badge while some wait) with **Start**, which opens a session
   with the suggested prompt as the user's own session (not background, in their permission mode,
   tagged *started by <agent>*), and **Dismiss**.
 - **`act`.** As `suggest`, and the agent may call `start_session` itself during the review, with a

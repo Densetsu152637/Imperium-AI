@@ -811,7 +811,10 @@ navigation stacks above the content like theirs:
   worktrees* switch ([Runtime and agents](#environments-and-sessions-implemented)).
 - **Agents:** a compact list, one row per agent (name, role, limits, initiative, *not running*) with
   *Edit* and *Delete*; *Add agent* and *Edit* open an edit view that replaces the list (name, role,
-  permissions, and for an existing agent its initiative) with *Back to agents*.
+  permissions, and for an existing agent its initiative, which applies at once) with *Back to
+  agents*; a row shows an *N suggestions* badge while its initiative has suggestions waiting. The
+  Agents pane stays mounted when another section is selected, so an open form is kept. While the
+  form has unsaved changes the footer *Save* is disabled and Ctrl+S saves the agent.
 - **Memory & working folder** and **Configuration file** (existing environments only): see
   below.
 - **Permissions:** the environment's path grants and rules ([permissions](#permissions-implemented)).
@@ -819,7 +822,9 @@ navigation stacks above the content like theirs:
 
 A new environment is created with all of it at once (it has no working folder, configuration file,
 agents to edit or delete yet); for an existing one, folder changes and agents apply at once and the
-rest with *Save*. Home has a fixed runtime and no Danger zone. *Delete environment* asks once more
+rest with *Save*. Closing with unsaved edits (Esc, outside click, ×, Cancel) shows a *Discard changes?* notice;
+closing again, or *Discard*, drops them. A runtime that cannot be saved (a missing image or host)
+jumps to *Folders & runtime* with the error. Home has a fixed runtime and no Danger zone. *Delete environment* asks once more
 (folders on disk are untouched); *Delete* in a row's menu opens the window at that question, in the
 Danger zone. Icons and colours are stored with the
 environment in the daemon. The first time the app connects after environments arrived, every

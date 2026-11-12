@@ -6,19 +6,29 @@
 // the daemon announces the changed environment (`environments.changed`), which redraws the list.
 
 import { ChevronLeft, Pencil, Plus, Trash } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useImperativeHandle, useState, type Ref } from "react";
 
-import type { EnvironmentAgent, EnvironmentAgentCreated, EnvironmentInfo, ToolAccess } from "@imperium/protocol";
+import type {
+  EnvironmentAgent,
+  EnvironmentAgentCreated,
+  EnvironmentInfo,
+  InitiativeState,
+  Notification,
+  ToolAccess,
+} from "@imperium/protocol";
 
 import {
   type PermissionDraft,
+  agentDraftDirty,
   describePermissions,
   draftOfPermissions,
   nameProblem,
   nameTaken,
   notStartedNotice,
+  openSuggestions,
   permissionsChanged,
   permissionsOfDraft,
+  suggestionsLabel,
 } from "../agents";
 import { Select } from "../components/Select";
 import { Row, RowNote } from "../components/SettingsRow";
@@ -33,7 +43,13 @@ type Props = {
   disabled?: boolean;
   /** Opens a session the user started from an agent's suggestion. */
   onOpenSession?: (sessionId: string) => void;
+  /** Lets the window save the open agent form (Ctrl+S). */
+  ref?: Ref<EnvironmentAgentsHandle>;
+  /** The agent form was opened, changed or closed: `open` while shown, `dirty` while it holds unsaved changes. */
+  onDraftChange?: (state: { open: boolean; dirty: boolean }) => void;
 };
+
+export type EnvironmentAgentsHandle = { save: () => void };
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -46,7 +62,7 @@ type Draft = {
   initial: PermissionDraft;
 };
 
-export function EnvironmentAgents({ environment, client, disabled, onOpenSession }: Props) {
+export function EnvironmentAgents({ environment, client, disabled, onOpenSession, ref, onDraftChange }: Props) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -54,8 +70,47 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
   /** A note that is not an error: the agent was added but is not running yet. */
   const [notice, setNotice] = useState<string | null>(null);
   const agents = environment?.agents ?? [];
+  const [suggestions, setSuggestions] = useState<Record<string, number>>({});
 
-  const run = async (work: (client: DaemonClient, environmentId: string) => Promise<unknown>) => {
+  const saved = draft?.id ? (agents.find((agent) => agent.id === draft.id) ?? null) : null;
+  const isOpen = draft !== null;
+  const dirty = draft !== null && agentDraftDirty(draft, saved);
+  useEffect(() => {
+    onDraftChange?.({ open: isOpen, dirty });
+  }, [isOpen, dirty, onDraftChange]);
+
+  // Open suggestions per agent with initiative on, for the badge on its row.
+  const environmentId = environment?.id;
+  const watched = agents
+    .filter((agent) => (agent.initiative ?? "off") !== "off")
+    .map((agent) => agent.id)
+    .join(",");
+  useEffect(() => {
+    if (!client || !environmentId || !watched) {
+      setSuggestions({});
+      return;
+    }
+    let live = true;
+    for (const agent_id of watched.split(",")) {
+      client
+        .call<InitiativeState>("initiative.get", { environment_id: environmentId, agent_id })
+        .then((state) => live && setSuggestions((all) => ({ ...all, [agent_id]: openSuggestions(state).length })))
+        .catch(() => {});
+    }
+    const stop = client.onNotification((notification: Notification) => {
+      if (notification.method !== "initiative.changed") return;
+      const state = notification.params as InitiativeState;
+      if (live && state.environment_id === environmentId) {
+        setSuggestions((all) => ({ ...all, [state.agent_id]: openSuggestions(state).length }));
+      }
+    });
+    return () => {
+      live = false;
+      stop();
+    };
+  }, [client, environmentId, watched]);
+
+  const run =async (work: (client: DaemonClient, environmentId: string) => Promise<unknown>) => {
     if (!client || !environment) return false;
     setBusy(true);
     setError(null);
@@ -112,6 +167,8 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
     }
   };
 
+  useImperativeHandle(ref, () => ({ save: () => void save() }));
+
   const remove = async (agent: EnvironmentAgent) => {
     const done = await run((c, environment_id) =>
       c.call("environments.agent_delete", { environment_id, agent_id: agent.id }),
@@ -143,12 +200,19 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
       <>
         <Row
           label={draft.id === null ? "New agent" : `Edit ${editing?.name ?? draft.name}`}
-          description="Changes apply when you save the agent; the environment's own Save is not needed for agents."
+          description="Name, role and permissions apply when you save the agent (Ctrl+S), not with the environment's Save. The Initiative select below applies as soon as you change it."
         >
           <button type="button" onClick={() => setDraft(null)} disabled={busy}>
             <ChevronLeft aria-hidden="true" /> Back to agents
           </button>
         </Row>
+        {error && (
+          <RowNote>
+            <p className="error" role="alert">
+              {error}
+            </p>
+          </RowNote>
+        )}
         <Row label="Name" description="At most 60 characters; unique in this environment.">
           <input
             type="text"
@@ -224,13 +288,6 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
             />
           </RowNote>
         )}
-        {error && (
-          <RowNote>
-            <p className="error" role="alert">
-              {error}
-            </p>
-          </RowNote>
-        )}
       </>
     );
   }
@@ -278,6 +335,14 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
                 {(agent.initiative ?? "off") !== "off" && (
                   <span className="agent-limits" title="What the agent does on its own when idle">
                     Initiative: {agent.initiative}
+                  </span>
+                )}
+                {suggestionsLabel(suggestions[agent.id] ?? 0) && (
+                  <span
+                    className="agent-limits agent-suggestions-badge"
+                    title="Suggestions waiting for you: open Edit to start or dismiss them"
+                  >
+                    {suggestionsLabel(suggestions[agent.id] ?? 0)}
                   </span>
                 )}
                 {!agent.session_id && (

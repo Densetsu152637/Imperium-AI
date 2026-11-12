@@ -3967,12 +3967,6 @@ button.colour-choice[aria-checked="true"]::after {
   height: 1.7rem;
 }
 
-.environment-head-actions {
-  display: flex;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-}
-
 .working-folder-path {
   display: block;
   overflow: hidden;

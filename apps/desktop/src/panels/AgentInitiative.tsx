@@ -1,4 +1,4 @@
-// A persistent agent's initiative, under its row in the environment window: how much it takes
+// A persistent agent's initiative, in its edit view (Agents section of the environment window): how much it takes
 // (off, suggest, act), where it stands (reviewing, waiting and why, limits in act mode), the
 // work it suggests with one-click Start and Dismiss, and its latest reminder of what is left. The
 // mode is saved at once; the state follows `initiative.changed`.

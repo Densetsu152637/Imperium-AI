@@ -45,9 +45,18 @@ import { ModalNavGroup, ModalNavItem, SettingsModal } from "./components/Setting
 import { Row, RowNote } from "./components/SettingsRow";
 import type { DaemonClient } from "./daemon/client";
 import { pickFolder } from "./daemon/connection";
-import { initialSection, sectionsFor, type EnvironmentSectionId } from "./environmentSections";
+import {
+  closeAction,
+  environmentDirty,
+  footerSaveBlocked,
+  initialSection,
+  paneHidden,
+  saveTarget,
+  sectionsFor,
+  type EnvironmentSectionId,
+} from "./environmentSections";
 import { searchIcons } from "./icons";
-import { EnvironmentAgents } from "./panels/EnvironmentAgents";
+import { EnvironmentAgents, type EnvironmentAgentsHandle } from "./panels/EnvironmentAgents";
 import { EnvironmentConfigSection } from "./panels/EnvironmentConfigSection";
 import { EnvironmentRuntimeFields, draftOf, isRemote, runtimeOf, sameRuntime } from "./panels/EnvironmentRuntimeFields";
 import { GlyphSvg, ICON_COLORS, ProjectIcon, environmentIcon, sameFolder, type ProjectIconChoice } from "./projectIcons";
@@ -117,6 +126,10 @@ export function EnvironmentWindow({
   const [section, setSection] = useState<EnvironmentSectionId>(() =>
     initialSection({ creating, builtin }, confirmDelete),
   );
+  const [initialChoice] = useState(choice);
+  const [discarding, setDiscarding] = useState(false);
+  const [agentForm, setAgentForm] = useState({ open: false, dirty: false });
+  const agentsRef = useRef<EnvironmentAgentsHandle>(null);
   const [deleting, setDeleting] = useState(confirmDelete);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -207,6 +220,7 @@ export function EnvironmentWindow({
     }
     const chosen = runtimeOf(runtime);
     if (typeof chosen === "string") {
+      setSection("folders");
       setError(chosen);
       return;
     }
@@ -250,6 +264,35 @@ export function EnvironmentWindow({
     }
   };
 
+  /** Saves the environment, when it can be saved now. */
+  const saveEnvironment = () => {
+    if (!busy && client && name.trim() && !footerSaveBlocked(agentForm.dirty)) void save();
+  };
+
+  /** Ctrl+S: the open agent form first, else the environment. */
+  const saveNow = () => {
+    if (busy || !client) return;
+    if (saveTarget(agentForm.open) === "agent") agentsRef.current?.save();
+    else saveEnvironment();
+  };
+
+  const unsaved = environmentDirty({
+    name: name !== (environment?.name ?? ""),
+    icon: choice.icon !== initialChoice.icon || choice.color !== initialChoice.color,
+    pet: pet !== (environment?.pet ?? ""),
+    worktrees: projectWorktrees !== (environment?.project_worktrees ?? true),
+    runtime: runtimeChanged || (creating && runtime.kind !== "local"),
+    folders: creating && newFolders.length > 0,
+    permissions: permissionsChanged,
+    agent: agentForm.dirty,
+  });
+
+  /** Esc, the backdrop, the X and Cancel: unsaved edits ask first; asking again discards them. */
+  const requestClose = () => {
+    if (closeAction(unsaved, discarding) === "confirm") setDiscarding(true);
+    else onClose();
+  };
+
   const title = creating ? "New environment" : `Edit ${environment.name}`;
   const sections = sectionsFor({ creating, builtin });
   const current = sections.find((entry) => entry.id === section) ?? sections[0];
@@ -272,10 +315,16 @@ export function EnvironmentWindow({
           {error}
         </span>
       )}
-      <button type="button" onClick={onClose}>
+      <button type="button" onClick={requestClose}>
         Cancel
       </button>
-      <button type="button" className="primary" onClick={() => void save()} disabled={busy || !client || !name.trim()}>
+      <button
+        type="button"
+        className="primary"
+        onClick={saveEnvironment}
+        disabled={busy || !client || !name.trim() || footerSaveBlocked(agentForm.dirty)}
+        title={footerSaveBlocked(agentForm.dirty) ? "Save or cancel the agent you are editing first (Agents section)" : undefined}
+      >
         {creating ? "Create" : "Save"}
       </button>
     </>
@@ -287,12 +336,27 @@ export function EnvironmentWindow({
       title={current.label}
       nav={nav}
       footer={footer}
-      onClose={onClose}
+      notice={
+        discarding && (
+          <div className="settings-notice" role="alertdialog" aria-label="Discard changes?">
+            <span>Discard changes? Unsaved edits to this environment will be lost.</span>
+            <span className="row-actions">
+              <button type="button" onClick={() => setDiscarding(false)} autoFocus>
+                Keep editing
+              </button>
+              <button type="button" className="danger" onClick={onClose}>
+                Discard
+              </button>
+            </span>
+          </div>
+        )
+      }
+      onClose={requestClose}
       onKeyDown={(event) => {
         // Ctrl+S (Cmd+S on macOS) saves, like the model editor.
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
           event.preventDefault();
-          if (!busy && client && name.trim()) void save();
+          saveNow();
         }
       }}
     >
@@ -309,7 +373,7 @@ export function EnvironmentWindow({
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
-                  void save();
+                  saveEnvironment();
                 }
               }}
             />
@@ -478,17 +542,20 @@ export function EnvironmentWindow({
         </>
       )}
 
-      {current.id === "agents" && (
+      {/* Always mounted, hidden from other sections: switching away keeps an open agent form. */}
+      <div hidden={paneHidden(current.id, "agents")}>
         <EnvironmentAgents
+          ref={agentsRef}
           environment={environment}
           client={client}
           disabled={busy}
+          onDraftChange={setAgentForm}
           onOpenSession={(sessionId) => {
             onOpenSession?.(sessionId);
             onClose();
           }}
         />
-      )}
+      </div>
 
       {current.id === "memory" && !creating && (
         <>
