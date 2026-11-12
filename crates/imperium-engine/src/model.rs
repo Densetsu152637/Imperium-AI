@@ -423,11 +423,48 @@ pub fn route_noted(
                     .then(a_rank.2.cmp(&b_rank.2))
             })
     };
-    let model = best(preferred_location, preferred_tier)
+    let chosen = best(preferred_location, preferred_tier)
         .or_else(|| best(None, preferred_tier))
-        .or_else(|| best(None, tier))
-        .map_or_else(|| fallback.clone(), |chosen| chosen.model.clone());
-    finish(model, note)
+        .or_else(|| best(None, tier));
+    if let Some(chosen) = chosen {
+        return finish(chosen.model.clone(), note);
+    }
+    // A task confined to one location (an explicit `location`, or a rule's) stays there: when
+    // only the queue limit left nothing in it, take the least bad row in that location rather
+    // than the session's model, which may be somewhere else.
+    if location.is_some() && routing.max_queue_wait_s > 0 {
+        let relaxed = RoutingSettings {
+            max_queue_wait_s: 0,
+            ..routing.clone()
+        };
+        let mut routed = route_noted(catalog, &relaxed, fallback, request, local);
+        if routed.model.spec != fallback.spec {
+            routed.notes.insert(
+                0,
+                "every model in the task's location was backed up, so the queue limit was not applied"
+                    .to_string(),
+            );
+            return routed;
+        }
+    }
+    finish(fallback.clone(), note)
+}
+
+/// The location a task is confined to: the call's, else the first matching rule of the user's.
+pub fn effective_location(routing: &RoutingSettings, request: TaskRequest<'_>) -> Option<Location> {
+    request.location.or_else(|| {
+        routing
+            .rules
+            .iter()
+            .find(|rule| {
+                rule.when_tier.is_none_or(|tier| tier == request.tier)
+                    && rule
+                        .when_tag
+                        .as_ref()
+                        .is_none_or(|tag| request.tags.contains(tag))
+            })
+            .and_then(|rule| rule.location)
+    })
 }
 
 /// The next tier up from `tier`; `None` for the highest.
@@ -463,7 +500,17 @@ pub fn escalate(
         .filter(|c| c.model.spec != failed)
         .cloned()
         .collect();
-    let in_rest = |model: &ResolvedModel| rest.iter().any(|c| c.model.spec == model.spec);
+    // A route is acceptable only when it is a table row (never the session's model, which the
+    // router falls back to when nothing fits), in the task's location, at or above `floor`.
+    let acceptable = |routed: &Routed, floor: Tier| {
+        routed.model.spec != fallback.spec
+            && rest
+                .iter()
+                .find(|c| c.model.spec == routed.model.spec)
+                .is_some_and(|c| {
+                    c.tier >= floor && request.location.is_none_or(|wanted| c.location == wanted)
+                })
+    };
     let listed = routing
         .rules
         .iter()
@@ -484,7 +531,7 @@ pub fn escalate(
             ..request
         };
         let routed = route_noted(&rest, routing, fallback, named, local);
-        if in_rest(&routed.model)
+        if acceptable(&routed, request.tier)
             && catalog
                 .iter()
                 .any(|c| &c.id == id && c.model.spec == routed.model.spec)
@@ -496,13 +543,14 @@ pub fn escalate(
         .iter()
         .find(|c| c.model.spec == failed)
         .map_or(request.tier, |c| c.tier);
+    let above = tier_above(failed_tier)?;
     let stronger = TaskRequest {
         named: None,
-        tier: tier_above(failed_tier)?,
+        tier: above,
         ..request
     };
     let routed = route_noted(&rest, routing, fallback, stronger, local);
-    in_rest(&routed.model).then_some(routed)
+    acceptable(&routed, above).then_some(routed)
 }
 
 #[cfg(test)]
@@ -1243,6 +1291,127 @@ tier = "basic"
             ..request
         };
         assert_eq!(run(&routing, &loaded(300, 10), named).model.model, "large");
+    }
+
+    #[test]
+    fn a_task_confined_to_a_location_stays_there_when_every_row_is_backed_up() {
+        let routing = RoutingSettings {
+            prefer: Preference::Local,
+            ..RoutingSettings::default()
+        };
+        let local = BusyLocal(vec![
+            ("small", Availability::Loaded, 300),
+            ("large", Availability::Loaded, 400),
+        ]);
+        let confined = TaskRequest {
+            location: Some(Location::Local),
+            ..TaskRequest::default()
+        };
+        let routed = route_noted(
+            &local_catalog(),
+            &routing,
+            &fallback(),
+            confined,
+            Some(&local),
+        );
+        // Not the session's model, not the hosted row: a local row, with the reason.
+        assert_eq!(routed.model.model, "small");
+        assert!(routed.notes[0].contains("backed up"), "{:?}", routed.notes);
+        // A rule's location confines the task the same way.
+        let ruled = RoutingSettings {
+            rules: vec![RoutingRule {
+                when_tag: Some("local-only".into()),
+                location: Some(Location::Local),
+                ..RoutingRule::default()
+            }],
+            ..routing
+        };
+        let tags = ["local-only".to_string()];
+        let request = TaskRequest {
+            tags: &tags,
+            ..TaskRequest::default()
+        };
+        let routed = route_noted(&local_catalog(), &ruled, &fallback(), request, Some(&local));
+        assert_eq!(routed.model.model, "small");
+    }
+
+    #[test]
+    fn escalation_stays_in_the_tasks_location_and_never_falls_back_to_the_session_model() {
+        let routing = RoutingSettings::default();
+        let request = TaskRequest {
+            tier: Tier::Basic,
+            location: Some(Location::Local),
+            ..TaskRequest::default()
+        };
+        // Nothing local above the failed model: no retry, though cloud rows exist.
+        let mut rows = catalog();
+        rows.retain(|c| c.location == Location::Cloud);
+        assert!(
+            escalate(
+                &rows,
+                &routing,
+                &fallback(),
+                request,
+                "endpoint:cheap",
+                1,
+                None
+            )
+            .is_none()
+        );
+        // A rule's escalate list naming a cloud row does not move a local task off the machine.
+        let listed = RoutingSettings {
+            rules: vec![RoutingRule {
+                when_tag: Some("code".into()),
+                escalate: vec!["big".into()],
+                ..RoutingRule::default()
+            }],
+            ..RoutingSettings::default()
+        };
+        let tags = ["code".to_string()];
+        let coding = TaskRequest {
+            tags: &tags,
+            ..request
+        };
+        assert!(
+            escalate(
+                &rows,
+                &listed,
+                &fallback(),
+                coding,
+                "endpoint:cheap",
+                1,
+                None
+            )
+            .is_none()
+        );
+        // A row that is the session's own model is not a stronger route.
+        let mut same = catalog();
+        same.retain(|c| c.id == "cheap" || c.id == "mid");
+        same.iter_mut().find(|c| c.id == "mid").unwrap().model.spec = fallback().spec;
+        let anywhere = TaskRequest {
+            tier: Tier::Basic,
+            ..TaskRequest::default()
+        };
+        assert!(
+            escalate(
+                &same,
+                &routing,
+                &fallback(),
+                anywhere,
+                "endpoint:cheap",
+                1,
+                None
+            )
+            .is_none()
+        );
+        // The retry is at least the tier above the failed model's.
+        let low = TaskRequest {
+            tier: Tier::Strong,
+            ..TaskRequest::default()
+        };
+        let mut weak = catalog();
+        weak.retain(|c| c.id != "big");
+        assert!(escalate(&weak, &routing, &fallback(), low, "endpoint:mid", 1, None).is_none());
     }
 
     #[test]

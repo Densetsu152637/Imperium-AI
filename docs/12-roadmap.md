@@ -298,7 +298,8 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     expected queue wait is over `routing.max_queue_wait_s` is skipped for the next eligible
     route; models lacking a capability a task needs (`vision`, `tools`, `long_context`) are
     skipped with a reason; a failed or unsure subagent is retried on a stronger route within
-    `routing.escalation_attempts`; and `critique`, `review`, `verify` and `proof-check` tasks
+    `routing.escalation_attempts` (off by default; a retry follows the first attempt's
+    `TaskFinished` event); and `critique`, `review`, `verify` and `proof-check` tasks
     prefer a CPU-lane row that can take them. Each choice that skipped a model or used a
     built-in rule says so in a notice ([04](04-models-and-routing.md#routing-extras-implemented)).
     Not built: a cost score weighing load latency against price, and a task deadline that keeps

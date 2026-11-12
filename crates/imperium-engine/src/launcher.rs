@@ -42,4 +42,11 @@ pub trait SessionLauncher: Send + Sync + fmt::Debug {
     fn allows_start_in_plan_mode(&self) -> bool {
         false
     }
+
+    /// Whether the daemon, not the agent, chooses models right now (an initiative turn): the
+    /// agent's model choice is ignored, so nothing may pick a different one for it, such as
+    /// retrying a failed subagent on a stronger route.
+    fn model_choice_ignored(&self) -> bool {
+        false
+    }
 }

@@ -688,6 +688,15 @@ impl SessionLauncher for Launcher {
         crate::initiative::review_restriction(&daemon, agent, tool)
     }
 
+    fn model_choice_ignored(&self) -> bool {
+        let Target::Environment { agent, .. } = &self.target else {
+            return false;
+        };
+        self.daemon
+            .upgrade()
+            .is_some_and(|daemon| crate::initiative::initiative_turn(&daemon, agent))
+    }
+
     fn allows_start_in_plan_mode(&self) -> bool {
         let Target::Environment { agent, .. } = &self.target else {
             return false;

@@ -2188,7 +2188,16 @@ impl Agent {
         // edits stay in its worktree, and a second model would start over on top of them.
         let retry = (!isolated && !writes).then(|| Retry {
             tier,
-            location,
+            // Where the task was confined (the call's location, else a rule's) stays so.
+            location: crate::model::effective_location(
+                &self.shared.routing,
+                TaskRequest {
+                    tier,
+                    location,
+                    tags: &args.tags,
+                    ..TaskRequest::default()
+                },
+            ),
             tags: args.tags.clone(),
             role: role.clone(),
             workspace: workspace.clone(),
@@ -3510,7 +3519,7 @@ fn clip(text: &str, max: usize) -> String {
 /// runs `agent.spawn` hooks first (`spawned` is their payload); a resumed one is fitted to its
 /// model's context window first, compacting a long conversation.
 /// Whether a report calls for a stronger route: the task failed, or the subagent said it is not
-/// confident (its report starts with `CONFIDENCE: LOW`). A paused task is neither.
+/// confident (its report's first line is exactly `CONFIDENCE: LOW`). A paused task is neither.
 fn needs_escalation(report: &TaskReport) -> bool {
     if report.paused {
         return false;
@@ -3518,9 +3527,9 @@ fn needs_escalation(report: &TaskReport) -> bool {
     !report.ok
         || report
             .report
-            .trim_start()
-            .to_ascii_uppercase()
-            .starts_with("CONFIDENCE: LOW")
+            .lines()
+            .next()
+            .is_some_and(|line| line.trim() == "CONFIDENCE: LOW")
 }
 
 /// What a subagent needs to be retried on a stronger route when it fails.
@@ -3548,8 +3557,13 @@ async fn run_escalating(
 ) -> TaskReport {
     let shared = Arc::clone(&agent.shared);
     let id = agent.id.clone();
-    let session_model = agent.model.clone();
+    // What routing falls back to when nothing fits: never an escalation target.
+    let session_model = shared
+        .agents
+        .model(ROOT_AGENT)
+        .unwrap_or_else(|| agent.model.clone());
     let mut failed_spec = agent.model.spec.clone();
+    let mut failed_local = agent.model.local;
     let mut report = run_subagent(agent, brief.clone(), Some(spawned), false).await;
     let Some(retry) = retry else {
         return report;
@@ -3561,6 +3575,26 @@ async fn run_escalating(
         let notice = |message: String| {
             shared.emitter.emit(&id, SessionEvent::Notice { message });
         };
+        // On an initiative turn the daemon chooses the models, not the agent: no escalation.
+        if shared
+            .launcher
+            .as_ref()
+            .is_some_and(|launcher| launcher.model_choice_ignored())
+        {
+            break;
+        }
+        // A budget the user has not approved, or declined, at the model that just ran: stop
+        // rather than spend on a stronger one.
+        if let Some(gate) = &shared.budget_gate
+            && let crate::BudgetVerdict::Ask { .. } = gate.check(&failed_spec)
+        {
+            notice(format!(
+                "{id} on {failed_spec} needs a stronger route but its budget is waiting for approval, so it is not retried"
+            ));
+            break;
+        }
+        // The subagent answered but said it is unsure, as opposed to failing.
+        let unsure = report.ok;
         let request = TaskRequest {
             named: None,
             tier: retry.tier,
@@ -3584,6 +3618,13 @@ async fn run_escalating(
             break;
         };
         let spec = routed.model.spec.clone();
+        // An unsure answer from a local model never sends the task off the machine.
+        if unsure && failed_local && !routed.model.local {
+            notice(format!(
+                "{id} on {failed_spec} was unsure, but the stronger route {spec} is hosted, so it is not retried"
+            ));
+            break;
+        }
         if let Some(gate) = &shared.budget_gate
             && let crate::BudgetVerdict::Blocked(message) = gate.check(&spec)
         {
@@ -3616,6 +3657,7 @@ async fn run_escalating(
             truncate(&report.report, REPORT_CHARS)
         );
         failed_spec = spec;
+        failed_local = next.model.local;
         report = run_subagent(next.pausable(), text, None, false).await;
     }
     report
@@ -4048,13 +4090,23 @@ mod tests {
         assert!(needs_escalation(&report(
             true,
             false,
-            "  confidence: low\nnot sure"
+            "CONFIDENCE: LOW\nnot sure"
+        )));
+        assert!(!needs_escalation(&report(
+            true,
+            false,
+            "confidence: low\nnot sure"
         )));
         assert!(!needs_escalation(&report(true, false, "done")));
         assert!(!needs_escalation(&report(
             true,
             false,
-            "all fine; confidence: low is a phrase"
+            "CONFIDENCE: LOW is a phrase"
+        )));
+        assert!(!needs_escalation(&report(
+            true,
+            false,
+            "all fine\nCONFIDENCE: LOW"
         )));
         // A pause is the user steering, not a failure.
         assert!(!needs_escalation(&report(false, true, "paused")));

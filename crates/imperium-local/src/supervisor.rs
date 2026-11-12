@@ -4339,6 +4339,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_expected_queue_wait_follows_busy_slots_and_queued_calls() {
+        let supervisor = supervisor(Arc::new(FakeLauncher::default()));
+        // Not loaded: nothing to wait for.
+        assert_eq!(LocalModels::queue_wait_s(supervisor.as_ref(), "a"), 0);
+        let first = supervisor.acquire("a", "h0").await.unwrap();
+        // A slot is free.
+        assert_eq!(LocalModels::queue_wait_s(supervisor.as_ref(), "a"), 0);
+        let second = supervisor.acquire("a", "h1").await.unwrap();
+        // Both slots busy, nobody queued: this call is next, half a default call per slot.
+        assert_eq!(LocalModels::queue_wait_s(supervisor.as_ref(), "a"), 15);
+        for name in ["w1", "w2", "w3"] {
+            let supervisor = Arc::clone(&supervisor);
+            tokio::spawn(async move {
+                let _lease = supervisor.acquire("a", name).await;
+            });
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        // Three queued ahead: four calls over two slots.
+        assert_eq!(LocalModels::queue_wait_s(supervisor.as_ref(), "a"), 60);
+        drop((first, second));
+    }
+
+    #[tokio::test]
     async fn a_cancelled_wait_leaves_the_queue() {
         let supervisor = supervisor(Arc::new(FakeLauncher::default()));
         let _held = [

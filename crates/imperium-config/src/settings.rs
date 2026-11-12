@@ -1557,7 +1557,7 @@ pub struct RoutingSettings {
     #[serde(default = "default_long_context_tokens")]
     pub long_context_tokens: u32,
     /// How many times a failed subagent is retried on a stronger route; `0` turns escalation
-    /// off. Default 1.
+    /// off. Default 0 (off): a retry costs another model run.
     #[serde(default = "default_escalation_attempts")]
     pub escalation_attempts: u32,
 }
@@ -1575,7 +1575,7 @@ fn default_long_context_tokens() -> u32 {
 }
 
 fn default_escalation_attempts() -> u32 {
-    1
+    0
 }
 
 fn default_true() -> bool {

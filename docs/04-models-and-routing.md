@@ -1228,10 +1228,15 @@ permissions as before.
   wait for a slot (`LocalModels::queue_wait_s`: calls queued ahead and the busy slots, times the
   model's recent seconds per call; 30 s per call before any is measured; 0 when a slot is free
   or the model is not loaded). A local model whose wait is over `routing.max_queue_wait_s`
-  (default `120`; `0` turns it off) is skipped for the next eligible route, hosted if the call
-  and rules allow it, and the task's notice says which model was skipped and the wait. Rows
-  reached only by a rule or a name (the CPU lane) are never skipped for their queue; their wait
-  is bounded by the row's `max_wait_s`.
+  (default `120`; `0` turns it off) is skipped for the next eligible route, and the task's
+  notice says which model was skipped and the wait. The next route is a hosted model only when
+  the call's `location` and your rules leave one: a task confined to a location (the call's, or
+  a rule's) stays in it, and when every row there is backed up it takes the least bad one
+  without the limit, with a notice, rather than the session's model. Only otherwise, when no
+  row fits, the session's model carries on. A table row named in the call is skipped like any
+  other when backed up; only rows the ranking never reaches (CPU-lane rows, and local models
+  outside the table, which are reached only by a rule or a name) are never skipped for their
+  queue, since their wait is bounded by the row's `max_wait_s`.
 - **Capability filters.** A task needs *vision* when it carries the tag `vision`, *long
   context* with the tag `long-context`, and *tools* unless it is `single_call`; a rule can add
   to these with `require = ["vision", "tools", "long_context"]` for the tasks it matches. A
@@ -1241,15 +1246,25 @@ permissions as before.
   `routing.long_context_tokens` (default `100000`; an unknown window does not qualify). A model
   without a needed capability is skipped, even when named, and the notice gives the reason; when
   none qualifies the session's model carries on.
-- **Escalation.** A subagent that fails, or whose report begins `CONFIDENCE: LOW` (the subagent
-  prompt asks for it when the task is beyond the model), is run again with its report appended
-  to the brief on a stronger route, up to `routing.escalation_attempts` times (default `1`;
-  `0` turns it off). The route comes from the first matching rule's `escalate = ["id", ...]`
-  (one id per attempt, in order), else the router runs again from the tier above the failed
-  model's, never choosing the failed model; at the top tier there is nowhere to go and the
-  failure is reported. A model whose budget blocks is not tried and one whose budget asks is
-  approved at its first call, as for any subagent. Writer subagents (`access: "write"`) are not
-  retried: their edits stay in their worktree. A notice marks each retry; the task keeps its id.
+- **Escalation (off by default).** Each retry is another model run, usually on a dearer
+  model, charged to that model's budget, so `routing.escalation_attempts` defaults to `0`. Set
+  it to turn escalation on: a subagent that fails, or whose report's first line is exactly
+  `CONFIDENCE: LOW` (the subagent prompt asks for it when the task is beyond the model), is run
+  again with its report appended to the brief on a stronger route, up to that many times. The
+  route comes from the first matching rule's `escalate = ["id", ...]` (one id per attempt, in
+  order), else the router runs again from the tier above the model that ran last, never
+  choosing a model that already ran for the task. Only a table row qualifies: never the
+  session's model, never a row outside the task's location (the call's, or a rule's), never one
+  below the requested tier; at the top tier, or with no such row, the failure is reported. An
+  unsure (not failed) local model is never retried on a hosted one, so a task kept on the
+  machine stays there. A model whose budget blocks is not tried; a budget that is waiting for
+  your approval at the model that just ran stops the escalation instead of asking again, and
+  a budget that asks at the stronger model asks you at its first call, as for any subagent.
+  On an initiative turn the daemon, not the agent, chooses models, so nothing is escalated.
+  Writer subagents (`access: "write"`) are not retried: their edits stay in their worktree. A
+  notice marks each retry. The task keeps its id, so a client sees the first attempt's
+  `TaskFinished` (not ok, or ok with the unsure report) before the retry's own, and the
+  report `await_tasks` returns is the last attempt's.
 - **Built-in CPU-lane rules.** Tasks tagged `critique`, `review`, `verify` or `proof-check`
   prefer a row pinned to the [CPU lane](#runtimes) that can take them now (at or above the
   task's tier, within its location, and not backed up past the queue limit), choosing the

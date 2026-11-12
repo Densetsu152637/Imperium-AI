@@ -783,7 +783,7 @@ max_wait_s = 9",
         assert!(routing.builtin_cpu_lane);
         assert_eq!(routing.max_queue_wait_s, 120);
         assert_eq!(routing.long_context_tokens, 100_000);
-        assert_eq!(routing.escalation_attempts, 1);
+        assert_eq!(routing.escalation_attempts, 0);
         let table = r#"
             [routing]
             max_queue_wait_s = 0
