@@ -80,7 +80,8 @@ pub fn spawn_agent() -> ToolDefinition {
             "location": {"type": "string", "enum": ["local", "cloud"], "description": "Restrict to models on this machine or at hosted providers"},
             "tags": {"type": "array", "items": {"type": "string"}, "description": "Labels such as code or vision that delegation rules match. Task classes route by default: refactor, tests, ui, format, docs prefer small local models; architecture, math, proof, algorithm, design prefer cloud frontier models."},
             "single_call": {"type": "boolean", "description": "The subagent gets the brief and no tools, answers in exactly one model call, and its reply is the report. Use for hard, self-contained questions; put everything it needs in the brief. Default false."},
-            "effort": {"type": "string", "enum": ["low", "medium", "high", "max"], "description": "How hard the subagent's model thinks, if it can reason. Default: the session's effort."}
+            "effort": {"type": "string", "enum": ["low", "medium", "high", "max"], "description": "How hard the subagent's model thinks, if it can reason. Default: the session's effort."},
+            "access": {"type": "string", "enum": ["read", "write"], "description": "Set \"write\" for a subagent that will edit files while other writers run at the same time: it gets a git worktree of its own on its own branch (made from the project's last commit), its file tools and commands work there, and when it finishes its changes are committed on that branch and its report says whether the branch merges cleanly; merge it yourself. Outside a repository it shares your folders. Leave it out for a lone writer that should edit your folders directly, and for subagents that only read (they always share your folders). Default read."}
         }, "required": ["brief"]}),
         status: ToolStatus::Available,
     }

@@ -291,6 +291,11 @@ async fn listening(port: u16) -> bool {
 }
 
 impl ToolProvider for PreviewTools {
+    /// The preview serves the session's own folders; a writer works in worktrees of its own.
+    fn for_writers(&self) -> bool {
+        false
+    }
+
     fn instructions(&self) -> Option<&str> {
         Some(
             "Preview: preview_open shows the app you are building in the user's Preview panel. \

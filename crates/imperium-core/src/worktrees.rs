@@ -175,7 +175,7 @@ pub fn apply(folders: &[String], worktrees: &[SessionWorktree]) -> Vec<String> {
 /// The linked worktree (from the repository's own list) that holds the recorded folder `path`.
 /// Refused when a link stands at the recorded folder or between it and that worktree's top:
 /// the folder would then lead into some other worktree.
-fn registered_root(repo: &Path, path: &Path) -> Result<String, String> {
+pub(crate) fn registered_root(repo: &Path, path: &Path) -> Result<String, String> {
     let listed = git(repo, &["worktree", "list", "--porcelain"])?;
     let wanted = path
         .canonicalize()

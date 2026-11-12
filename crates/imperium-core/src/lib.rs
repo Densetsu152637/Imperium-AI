@@ -42,6 +42,7 @@ mod suggestions;
 mod token;
 mod workspaces;
 mod worktrees;
+mod writers;
 
 pub use approvals::Approvals;
 pub use autofix::{fix_ci, watch_pull_requests};
@@ -61,3 +62,4 @@ pub use scheduler::Scheduler;
 pub use server::serve;
 pub use state::{CreateError, DaemonState, SessionOptions};
 pub use token::AccessToken;
+pub use writers::GitWriterTrees;

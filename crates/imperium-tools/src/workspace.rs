@@ -6,7 +6,8 @@ use crate::permissions::{PathGrant, PathMode, Permissions, Target, expand_home};
 use crate::processes::Processes;
 use crate::project_worktrees::ProjectWorktrees;
 use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
-use crate::{Sandbox, ToolError};
+use crate::writer_trees::{WriterHandle, WriterStart};
+use crate::{Sandbox, ToolError, WriterTrees};
 
 /// The folders an agent works in: an environment's folders, the first of which is the working
 /// directory (the root). Relative paths given to tools resolve against the root; absolute paths
@@ -41,6 +42,11 @@ pub struct Workspace {
     scratch: Option<PathBuf>,
     /// Commands started in the background; clones share them.
     processes: Processes,
+    /// Makes writer subagents' worktrees, when the daemon offers them.
+    writers: Option<WriterHandle>,
+    /// For a writer subagent's workspace: each worktree folder (canonical) and the delegator's
+    /// folder it stands in for, so permission rules written for the delegator's paths match.
+    path_map: Vec<(PathBuf, PathBuf)>,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -97,6 +103,8 @@ impl Workspace {
             worktrees: None,
             scratch: None,
             processes: Processes::default(),
+            writers: None,
+            path_map: Vec::new(),
         })
     }
 
@@ -139,6 +147,8 @@ impl Workspace {
             permissions: Permissions::default(),
             worktrees: None,
             scratch: None,
+            writers: None,
+            path_map: Vec::new(),
             processes: Processes::default(),
         })
     }
@@ -347,6 +357,67 @@ impl Workspace {
             .collect()
     }
 
+    /// The same workspace with `writers` making worktrees for parallel writer subagents. Local
+    /// workspaces only; a remote one is unchanged.
+    pub fn with_writer_trees(mut self, writers: Arc<dyn WriterTrees>) -> Self {
+        if self.remote.is_none() {
+            self.writers = Some(WriterHandle(writers));
+        }
+        self
+    }
+
+    /// Makes and finishes writer subagents' worktrees, when this workspace has them.
+    pub fn writer_trees(&self) -> Option<Arc<dyn WriterTrees>> {
+        self.writers.as_ref().map(|handle| Arc::clone(&handle.0))
+    }
+
+    /// The same workspace with other folders (the first is the working directory; each must be
+    /// an existing directory) and nothing else of its own: the grants, sandbox, permissions and
+    /// background commands stay, but the project worktrees do not open, the scratch folder is
+    /// no longer marked as the agent's own (it is shared), and the copy cannot make worktrees.
+    pub fn with_roots<P: AsRef<Path>>(&self, folders: &[P]) -> std::io::Result<Self> {
+        let Some((first, rest)) = folders.split_first() else {
+            return Err(std::io::Error::other("a workspace needs a folder"));
+        };
+        let mut moved = Workspace {
+            root: existing_dir(first.as_ref())?,
+            extra: Vec::new(),
+            worktrees: None,
+            writers: None,
+            scratch: None,
+            path_map: Vec::new(),
+            ..self.clone()
+        };
+        moved = moved.with_folders(rest)?;
+        Ok(moved)
+    }
+
+    /// The workspace of a writer subagent on `start`'s folders: [`Workspace::with_roots`], and
+    /// permission rules see a path in a worktree as the same path in the delegator's folder it
+    /// stands in for.
+    pub fn with_writer_folders(&self, start: &WriterStart) -> std::io::Result<Self> {
+        let mut moved = self.with_roots(&start.folders)?;
+        for (tree, parent) in start.folders.iter().zip(&start.parents) {
+            if let (Ok(tree), Ok(parent)) = (tree.canonicalize(), parent.canonicalize())
+                && tree != parent
+            {
+                moved.path_map.push((tree, parent));
+            }
+        }
+        Ok(moved)
+    }
+
+    /// `full` as the delegator's folders have it, for a writer's worktree path; any other path
+    /// as it is.
+    fn parent_equivalent(&self, full: &Path) -> PathBuf {
+        for (tree, parent) in &self.path_map {
+            if let Ok(rest) = full.strip_prefix(tree) {
+                return parent.join(rest);
+            }
+        }
+        full.to_path_buf()
+    }
+
     /// The same workspace with commands run under `sandbox`.
     pub fn with_sandbox(self, sandbox: Sandbox) -> Self {
         Workspace { sandbox, ..self }
@@ -397,7 +468,7 @@ impl Workspace {
             if shown.is_empty() { ".".into() } else { shown }
         });
         Target::Path {
-            absolute: plain(&full).replace('\\', "/"),
+            absolute: plain(&self.parent_equivalent(&full)).replace('\\', "/"),
             relative,
         }
     }
@@ -410,7 +481,7 @@ impl Workspace {
             if shown.is_empty() { ".".into() } else { shown }
         });
         Target::Path {
-            absolute: plain(full).replace('\\', "/"),
+            absolute: plain(&self.parent_equivalent(full)).replace('\\', "/"),
             relative,
         }
     }
