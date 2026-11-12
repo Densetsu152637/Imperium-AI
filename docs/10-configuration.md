@@ -209,11 +209,18 @@ limits = [
 - **Action** when a budget is used up: `warn` (the default) only alerts; `ask` makes each new
   turn in the scope ask first (`session.send` fails with `-32008` until it is repeated with
   `confirm_budget`); `block` refuses new turns in the scope until the window resets. The check
-  also runs before every model call and subagent spawn, against the model that call uses, so a
-  budget used up in the middle of a turn stops the next call there (the turn fails with the budget
-  message), a subagent on a blocked endpoint or model is refused, and an `ask` budget pauses the
-  agent for approval once per window (answering the permission prompt, or confirming the turn).
-  A call already running finishes; steering a running turn is not stopped. Scheduled runs
+  also runs before every model call, every compaction (automatic, manual, and on a model switch)
+  and every subagent spawn, against the model that call uses, so a budget used up in the middle
+  of a turn stops the next call there (the turn fails with the budget message), a subagent on a
+  blocked endpoint or model is refused, and steering a running turn is gated at its next call.
+  Compaction summaries are counted in the usage (they are paid calls); the short title calls are
+  neither gated nor counted. A budget that asks pauses the agent with a permission request
+  (an unattended session's waits in the approvals queue like any other), once per budget, per
+  session, and window: parallel subagents raise one prompt, and with several used-up budgets that
+  ask, each one is asked. The approval (or `confirm_budget`) is held in the daemon's memory, so a
+  restart asks again, and it ends when the window rolls over. It is not skipped by allow rules,
+  the `full` permission mode, or pre-approved tools, and declining fails the turn. A call already
+  running finishes. Scheduled runs
   and project-agent briefs in a scope that asks or blocks do not start.
 
 `budgets.get` returns the budgets and where each stands, `budgets.set` replaces them (applied at

@@ -296,3 +296,57 @@ async fn a_used_up_budget_stops_calls_to_its_scope_not_only_new_turns() {
     gate.confirm(&key);
     assert_eq!(gate.check("asked:m"), BudgetVerdict::Go);
 }
+
+#[tokio::test]
+async fn several_used_up_ask_budgets_are_each_asked_and_confirmed_covers_all() {
+    use imperium_engine::{BudgetGate, BudgetVerdict};
+    let home = tempfile::tempdir().unwrap();
+    let url = fake_model().await;
+    let state = daemon(home.path(), &url);
+    let mut connection = Connection::new(Arc::clone(&state));
+    handshake(&mut connection);
+    let limit = |name: &str| {
+        json!({"id": "", "name": name, "scope": "endpoint", "target": "asked",
+               "window": "daily", "tokens": 100, "cost_usd": null,
+               "thresholds": null, "action": "ask"})
+    };
+    call(
+        &mut connection,
+        2,
+        "budgets.set",
+        json!({
+            "week_start": "monday", "month_start_day": 1, "thresholds": [100],
+            "limits": [limit("First"), limit("Second")]
+        }),
+    );
+    state.budgets().record(
+        chrono::Local::now().date_naive(),
+        &imperium_core::CallUsage {
+            environment_id: None,
+            spec: "asked:m".into(),
+            tokens: 500,
+            cost_usd: None,
+        },
+    );
+    // Confirming covers every budget that asks.
+    assert!(imperium_core::check_call(&state, None, "asked:m", false).is_err());
+    assert!(imperium_core::check_call(&state, None, "asked:m", true).is_ok());
+
+    let project = tempfile::tempdir().unwrap();
+    let created = call(
+        &mut connection,
+        3,
+        "session.create",
+        json!({"project_dir": project.path()}),
+    );
+    let session_id = created["session_id"].as_str().unwrap().to_string();
+    let gate = imperium_core::CallGate::new(Arc::downgrade(&state), session_id);
+    let mut asked = Vec::new();
+    while let BudgetVerdict::Ask { message, key } = gate.check("asked:m") {
+        assert!(!asked.contains(&key), "asked twice about {key}");
+        asked.push(key.clone());
+        assert!(message.starts_with("First") || message.starts_with("Second"));
+        gate.confirm(&key);
+    }
+    assert_eq!(asked.len(), 2, "each budget is asked about once");
+}

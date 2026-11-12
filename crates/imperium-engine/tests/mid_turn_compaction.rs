@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::routing::post;
-use imperium_engine::{ResolvedModel, Session, SessionConfig};
+use imperium_engine::{BudgetGate, BudgetVerdict, ResolvedModel, Session, SessionConfig};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{AgentEvent, SessionEvent};
 use imperium_tools::Workspace;
@@ -67,7 +67,11 @@ async fn serve(fake: Arc<Fake>, finish_on_summary: bool) -> String {
                 });
                 let reads = messages.iter().filter(|m| m["role"] == "tool").count();
                 let reply = if is_summary(&body) {
-                    stream(json!({"choices": [{"delta": {"content": SUMMARY}}]}))
+                    format!(
+                        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                        json!({"choices": [{"delta": {"content": SUMMARY}}]}),
+                        json!({"choices": [], "usage": {"prompt_tokens": 700, "completion_tokens": 40}})
+                    )
                 } else if (summarised && finish_on_summary) || fake.turns().len() > 8 {
                     stream(json!({"choices": [{"delta": {"content": "finished"}}]}))
                 } else {
@@ -86,6 +90,15 @@ async fn serve(fake: Arc<Fake>, finish_on_summary: bool) -> String {
 }
 
 fn start(url: &str, dir: &std::path::Path, auto_compact_at: Option<f64>) -> Session {
+    start_gated(url, dir, auto_compact_at, None)
+}
+
+fn start_gated(
+    url: &str,
+    dir: &std::path::Path,
+    auto_compact_at: Option<f64>,
+    budget_gate: Option<Arc<dyn BudgetGate>>,
+) -> Session {
     Session::spawn(SessionConfig {
         id: "s".into(),
         workspace: Workspace::new(dir).unwrap(),
@@ -123,7 +136,7 @@ fn start(url: &str, dir: &std::path::Path, auto_compact_at: Option<f64>) -> Sess
         auto_compact_at,
         background: None,
         checkpoints: None,
-        budget_gate: None,
+        budget_gate,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),
@@ -268,4 +281,132 @@ async fn a_low_threshold_is_clamped_and_compaction_cannot_loop() {
         // Aimed well under the 5,000-token trigger.
         assert!(after <= 4_000 + 400, "{after}");
     }
+}
+
+/// Lets calls through while fewer than `allowed` requests reached the fake, then blocks.
+struct BlockAfter {
+    fake: Arc<Fake>,
+    allowed: usize,
+}
+
+impl std::fmt::Debug for BlockAfter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BlockAfter")
+    }
+}
+
+impl BudgetGate for BlockAfter {
+    fn check(&self, _spec: &str) -> BudgetVerdict {
+        if self.fake.requests.lock().unwrap().len() >= self.allowed {
+            BudgetVerdict::Blocked("Daily is used up; model calls are blocked.".into())
+        } else {
+            BudgetVerdict::Go
+        }
+    }
+
+    fn confirm(&self, _key: &str) {}
+}
+
+/// Blocks once switched on.
+#[derive(Debug)]
+struct Switch(std::sync::atomic::AtomicBool);
+
+impl BudgetGate for Switch {
+    fn check(&self, _spec: &str) -> BudgetVerdict {
+        if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+            BudgetVerdict::Blocked("Daily is used up; model calls are blocked.".into())
+        } else {
+            BudgetVerdict::Go
+        }
+    }
+
+    fn confirm(&self, _key: &str) {}
+}
+
+#[tokio::test]
+async fn a_blocked_budget_stops_the_turn_before_it_compacts() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake), true).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "word ".repeat(1_500)).unwrap();
+    // A threshold the conversation is over after the first read.
+    let gate = Arc::new(BlockAfter {
+        fake: Arc::clone(&fake),
+        allowed: 1,
+    });
+    let session = start_gated(&url, dir.path(), Some(0.05), Some(gate));
+    let mut events = session.subscribe();
+    session
+        .send("read a.txt until you are done".into())
+        .unwrap();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+            .await
+            .expect("an event within 20 s")
+            .unwrap()
+            .event;
+        match event {
+            SessionEvent::TurnFailed { message } => {
+                assert!(message.contains("blocked"), "{message}");
+                break;
+            }
+            SessionEvent::TurnCompleted { .. } => panic!("the turn completed"),
+            SessionEvent::CompactionStarted { .. } => panic!("it compacted"),
+            _ => {}
+        }
+    }
+    assert_eq!(fake.summaries(), 0, "no summary request was made");
+    assert_eq!(fake.turns().len(), 1, "only the first call went out");
+}
+
+#[tokio::test]
+async fn a_manual_compaction_is_gated_on_its_model() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake), true).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "word ".repeat(1_500)).unwrap();
+    // The turns run freely; the budget is used up after them.
+    let gate = Arc::new(Switch(std::sync::atomic::AtomicBool::new(false)));
+    let session = start_gated(&url, dir.path(), None, Some(gate.clone()));
+    // Build a conversation with a few turns.
+    for text in ["one", "two", "three", "four", "five"] {
+        let mut events = session.subscribe();
+        session.send(text.into()).unwrap();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(20), events.recv())
+                .await
+                .expect("an event within 20 s")
+                .unwrap()
+                .event;
+            if matches!(
+                event,
+                SessionEvent::TurnCompleted { .. } | SessionEvent::TurnFailed { .. }
+            ) {
+                break;
+            }
+        }
+    }
+    gate.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    let before = fake.requests.lock().unwrap().len();
+    let outcome = session.compact().await;
+    assert!(outcome.is_err(), "the budget stopped the summary call");
+    assert_eq!(fake.summaries(), 0);
+    assert_eq!(fake.requests.lock().unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn a_compaction_summary_counts_as_a_model_call() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake), true).await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "word ".repeat(1_500)).unwrap();
+    let session = start(&url, dir.path(), Some(0.85));
+    let events = turn(&session, "read a.txt until you are done").await;
+    assert_eq!(fake.summaries(), 1);
+    // The summary call's usage was recorded like any other call's, for budgets to count.
+    assert!(events.iter().any(|event| matches!(
+        event,
+        SessionEvent::ModelCallCompleted { model, usage, .. }
+            if model == "a:model" && usage.prompt_tokens == 700 && usage.completion_tokens == 40
+    )));
 }

@@ -228,6 +228,28 @@ impl BudgetBook {
             .collect()
     }
 
+    /// Every used-up budget over a session in `environment` using `spec` whose action is not
+    /// `warn`, in configuration order.
+    pub fn stops(
+        &self,
+        today: NaiveDate,
+        environment: Option<&str>,
+        spec: Option<&str>,
+    ) -> Vec<Stop> {
+        self.standings(today)
+            .into_iter()
+            .filter(|standing| {
+                standing.budget.action != BudgetAction::Warn
+                    && standing.share >= 1.0
+                    && applies(&standing.budget, environment, spec)
+            })
+            .map(|standing| Stop {
+                budget: standing.budget,
+                window_end: standing.window_end,
+            })
+            .collect()
+    }
+
     /// The used-up budget, among those over a session in `environment` using `spec`, that has
     /// the strongest action (block over ask); `None` when new turns may start.
     pub fn gate(
@@ -236,30 +258,12 @@ impl BudgetBook {
         environment: Option<&str>,
         spec: Option<&str>,
     ) -> Option<Stop> {
-        let mut stop: Option<Stop> = None;
-        for standing in self.standings(today) {
-            let budget = &standing.budget;
-            if budget.action == BudgetAction::Warn
-                || standing.share < 1.0
-                || !applies(budget, environment, spec)
-            {
-                continue;
-            }
-            let stronger = match &stop {
-                None => true,
-                Some(current) => {
-                    current.budget.action == BudgetAction::Ask
-                        && budget.action == BudgetAction::Block
-                }
-            };
-            if stronger {
-                stop = Some(Stop {
-                    budget: budget.clone(),
-                    window_end: standing.window_end,
-                });
-            }
-        }
-        stop
+        let mut stops = self.stops(today, environment, spec);
+        let at = stops
+            .iter()
+            .position(|stop| stop.budget.action == BudgetAction::Block)
+            .unwrap_or(0);
+        (!stops.is_empty()).then(|| stops.swap_remove(at))
     }
 
     /// Usage over the `days` days up to `today`, limited to `budget`'s scope when given:
@@ -709,34 +713,30 @@ pub fn usage(
     })
 }
 
-/// The `-32008` error for a turn a used-up budget stops, unless it asks and was confirmed.
-/// An approval is remembered for the session's later model calls ([`CallGate`]).
+/// The `-32008` error for a turn a used-up budget stops, unless every budget that stops it
+/// only asks and was confirmed. An approval is remembered for the session's later model calls
+/// ([`CallGate`]).
 pub fn check(state: &DaemonState, session_id: &str, confirmed: bool) -> Result<(), ErrorObject> {
     let Some(session) = state.session(session_id) else {
         return Ok(());
     };
     let summary = state.summary(&session);
     let spec = summary.model.as_deref();
-    let result = check_call(
-        state,
-        summary.environment_id.as_deref(),
-        spec.unwrap_or_default(),
-        confirmed,
-    );
-    if confirmed
-        && result.is_ok()
-        && let Some(stop) = stop_for(state, summary.environment_id.as_deref(), spec)
-    {
-        state.confirm_budget(&confirm_key(session_id, &stop));
+    let environment = summary.environment_id.as_deref();
+    let result = check_call(state, environment, spec.unwrap_or_default(), confirmed);
+    if confirmed && result.is_ok() {
+        for stop in stops_for(state, environment, spec) {
+            state.confirm_budget(&confirm_key(session_id, &stop));
+        }
     }
     result
 }
 
 /// The one per-call budget check: whether a call to the model `spec` (a catalog id or a spec;
 /// empty for none) by a session in `environment` may go ahead. A used-up budget in its scope
-/// that blocks is a `-32008` error; one that asks is too, unless `confirmed`. The engine runs
-/// it before every model call and subagent spawn ([`CallGate`]); the local API runs it before
-/// every request it serves.
+/// that blocks is a `-32008` error; so is one that asks, unless `confirmed` (which covers every
+/// budget that asks). The engine runs it before every model call and subagent spawn
+/// ([`CallGate`]); the local API runs it before every request it serves.
 pub fn check_call(
     state: &DaemonState,
     environment: Option<&str>,
@@ -744,20 +744,24 @@ pub fn check_call(
     confirmed: bool,
 ) -> Result<(), ErrorObject> {
     let spec = (!spec.is_empty()).then_some(spec);
-    match stop_for(state, environment, spec) {
-        Some(stop) if !(stop.budget.action == BudgetAction::Ask && confirmed) => {
-            Err(stop_error(state, &stop))
-        }
-        _ => Ok(()),
+    let stops = stops_for(state, environment, spec);
+    // Block wins over ask.
+    let stop = stops
+        .iter()
+        .find(|stop| stop.budget.action == BudgetAction::Block)
+        .or_else(|| stops.first().filter(|_| !confirmed));
+    match stop {
+        Some(stop) => Err(stop_error(state, stop)),
+        None => Ok(()),
     }
 }
 
-/// The used-up budget with the strongest action over a call to `spec` in `environment`.
-fn stop_for(state: &DaemonState, environment: Option<&str>, spec: Option<&str>) -> Option<Stop> {
+/// The used-up budgets that stop a call to `spec` in `environment`.
+fn stops_for(state: &DaemonState, environment: Option<&str>, spec: Option<&str>) -> Vec<Stop> {
     let spec = spec.map(|model| resolve_spec(state, model));
     state
         .budgets()
-        .gate(Local::now().date_naive(), environment, spec.as_deref())
+        .stops(Local::now().date_naive(), environment, spec.as_deref())
 }
 
 fn confirm_key(session_id: &str, stop: &Stop) -> String {
@@ -788,21 +792,22 @@ impl imperium_engine::BudgetGate for CallGate {
             .session(&self.session_id)
             .and_then(|session| state.summary(&session).environment_id);
         let spec = (!spec.is_empty()).then_some(spec);
-        let Some(stop) = stop_for(&state, environment.as_deref(), spec) else {
-            return BudgetVerdict::Go;
-        };
-        let message = stop_error(&state, &stop).message;
-        match stop.budget.action {
-            BudgetAction::Block => BudgetVerdict::Blocked(message),
-            _ => {
-                let key = confirm_key(&self.session_id, &stop);
-                if state.budget_confirmed(&key) {
-                    BudgetVerdict::Go
-                } else {
-                    BudgetVerdict::Ask { message, key }
-                }
+        let stops = stops_for(&state, environment.as_deref(), spec);
+        // Block wins; otherwise the first budget that asks and was not approved yet.
+        if let Some(stop) = stops
+            .iter()
+            .find(|stop| stop.budget.action == BudgetAction::Block)
+        {
+            return BudgetVerdict::Blocked(stop_error(&state, stop).message);
+        }
+        for stop in &stops {
+            let key = confirm_key(&self.session_id, stop);
+            if !state.budget_confirmed(&key) {
+                let message = stop_error(&state, stop).message;
+                return BudgetVerdict::Ask { message, key };
             }
         }
+        BudgetVerdict::Go
     }
 
     fn confirm(&self, key: &str) {
@@ -958,6 +963,52 @@ mod tests {
             action,
             ..Budget::default()
         }
+    }
+
+    #[test]
+    fn an_approval_is_for_one_window_of_one_budget_in_one_session() {
+        let stop = |window_end: &str| Stop {
+            budget: weekly_env(1, BudgetAction::Ask),
+            window_end: date(window_end),
+        };
+        let this_week = confirm_key("s1", &stop("2026-11-16"));
+        assert_eq!(this_week, confirm_key("s1", &stop("2026-11-16")));
+        // The window rolled over, or another session: asked again.
+        assert_ne!(this_week, confirm_key("s1", &stop("2026-11-23")));
+        assert_ne!(this_week, confirm_key("s2", &stop("2026-11-16")));
+    }
+
+    #[test]
+    fn stops_lists_every_used_up_budget_and_gate_prefers_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = BudgetBook::load(
+            dir.path().join("usage.json"),
+            settings(vec![
+                Budget {
+                    id: "a".into(),
+                    ..weekly_env(10, BudgetAction::Ask)
+                },
+                Budget {
+                    id: "b".into(),
+                    ..weekly_env(10, BudgetAction::Ask)
+                },
+                Budget {
+                    id: "c".into(),
+                    ..weekly_env(10, BudgetAction::Warn)
+                },
+            ]),
+        );
+        let today = date("2026-11-11");
+        book.record(today, &call(Some("e1"), "x:m", 50, None));
+        let ids = |stops: Vec<Stop>| -> Vec<String> {
+            stops.into_iter().map(|stop| stop.budget.id).collect()
+        };
+        assert_eq!(ids(book.stops(today, Some("e1"), Some("x:m"))), ["a", "b"]);
+        assert!(book.stops(today, Some("other"), Some("x:m")).is_empty());
+        assert_eq!(
+            book.gate(today, Some("e1"), None).unwrap().budget.action,
+            BudgetAction::Ask
+        );
     }
 
     fn thresholds_of(fired: &[Fired]) -> Vec<u32> {

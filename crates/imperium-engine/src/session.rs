@@ -647,6 +647,8 @@ pub(crate) struct Shared {
     pub enforce: Enforce,
     pub launcher: Option<Arc<dyn SessionLauncher>>,
     pub budget_gate: Option<Arc<dyn crate::BudgetGate>>,
+    /// Held while a budget approval is asked, so agents running in parallel raise one prompt.
+    pub budget_ask: tokio::sync::Mutex<()>,
     pub instructions: Option<String>,
     /// The root agent's personality block; see [`SessionConfig::personality`].
     pub personality: Option<String>,
@@ -772,6 +774,7 @@ async fn run(
         enforce: config.enforce,
         launcher: config.launcher,
         budget_gate: config.budget_gate,
+        budget_ask: tokio::sync::Mutex::new(()),
         instructions: config.instructions,
         personality: config.personality,
         background: config.background,
