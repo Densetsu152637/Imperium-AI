@@ -647,6 +647,37 @@ fn files_that_look_like_secrets_are_left_out_of_the_commit_and_a_switched_branch
 }
 
 #[test]
+fn a_secret_file_in_a_folder_with_an_unusual_name_is_still_held_back() {
+    let repo = repository();
+    let journals = tempfile::tempdir().unwrap();
+    let writers = GitWriterTrees::new("s5b", &journals.path().join("s5b.jsonl"), None);
+    let folders = canonical(&repo);
+    let one = writers.start("t1", &folders).unwrap().unwrap();
+    let tree = one.folders[0].clone();
+    // Git quotes names like these in its default listing, so the floor must see them as written.
+    std::fs::create_dir_all(tree.join("café")).unwrap();
+    std::fs::write(tree.join("café").join(".env"), "KEY=1\n").unwrap();
+    std::fs::write(tree.join("café").join("notes naïve.txt"), "fine\n").unwrap();
+    let report = writers.finish("t1", true);
+    assert!(report.contains("Not committed"), "{report}");
+    assert!(report.contains("café/.env"), "{report}");
+    assert!(git_fails(&tree, &["show", "imperium/s5b-t1:café/.env"]));
+    assert_eq!(
+        git(&tree, &["show", "imperium/s5b-t1:café/notes naïve.txt"]),
+        "fine"
+    );
+}
+
+#[test]
+fn the_record_of_a_deleted_session_goes_only_when_its_worktrees_were_removed() {
+    // Not asked to remove them: the record can go. Asked, and all removed: it can go.
+    assert!(GitWriterTrees::may_forget(false, &["x".into()]));
+    assert!(GitWriterTrees::may_forget(true, &[]));
+    // Asked, and some stayed: it stays, naming them.
+    assert!(!GitWriterTrees::may_forget(true, &["/w/t1: in use".into()]));
+}
+
+#[test]
 fn a_writer_is_not_committed_when_committing_is_forbidden() {
     let repo = repository();
     let journals = tempfile::tempdir().unwrap();

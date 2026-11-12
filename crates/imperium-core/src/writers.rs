@@ -190,6 +190,12 @@ impl GitWriterTrees {
         outcome
     }
 
+    /// Whether the record beside a deleted session's journal can go: unless worktrees were asked
+    /// to be removed and some could not be, in which case it stays, so it still names them.
+    pub fn may_forget(remove_worktrees: bool, failed: &[String]) -> bool {
+        !remove_worktrees || failed.is_empty()
+    }
+
     /// Forgets the record beside `journal` (the session was deleted).
     pub fn forget(journal: &Path) {
         let registry = registry_path(journal);
@@ -288,10 +294,16 @@ fn commit_all(root: &Path, task: &str, branch: &str) -> Result<(String, Vec<Stri
     }
     check_repository_config(root, Step::Commit, "commit it")?;
     git(root, &["add", "-A"])?;
-    // Files that hold secrets are not committed for the writer.
-    let staged_names = git(root, &["diff", "--cached", "--name-only", "--no-ext-diff"])?;
+    // Files that hold secrets are not committed for the writer. The names are read separated by
+    // NULs, so a name with unusual characters (which git would otherwise quote) is checked as it
+    // is written.
+    let staged_names = git(
+        root,
+        &["diff", "--cached", "-z", "--name-only", "--no-ext-diff"],
+    )?;
     let held: Vec<String> = staged_names
-        .lines()
+        .split('\0')
+        .filter(|name| !name.is_empty())
         .filter(|name| {
             safety_floor(
                 CallKind::Edit,

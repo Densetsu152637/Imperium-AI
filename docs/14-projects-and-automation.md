@@ -333,7 +333,10 @@ mode, and an `access` other than `read` or `write` is an error.
   worktrees plus the session's path grants: the [project worktrees](#worktrees) do not open
   for it, `..`, absolute paths and links that lead to the delegator's checkout are refused like
   any path outside the folders, it cannot start worktrees itself, and tools tied to the
-  session's own folders (the live preview) are not offered to it. The session's scratch folder
+  session's own folders (the live preview) are not offered to it. This confinement is of the
+  **file tools**: `run_command` starts in the writer's worktree but a command is not confined to
+  it, and MCP and plugin tools act wherever they act for any agent; both follow the permission
+  mode, the rules and the safety floor, not the worktree. The session's scratch folder
   is shared, so a writer is not told it is its own. Permission rules written for the delegator's
   paths (absolute path patterns) also match the same file in a writer's worktree, which is
   checked as that path; relative patterns are relative to its working directory as usual.
@@ -375,7 +378,12 @@ mode, and an `access` other than `read` or `write` is an error.
   own `git worktree list`, then `git worktree prune`), keeping every branch; what a writer
   stopped part-way had not committed yet is committed on its branch first, as well as that can
   be done (this does not ask the `git_commit` rule). Without `remove_worktrees` they stay, and
-  their branches are in `git branch` and `git worktree list`.
+  their branches are in `git branch` and `git worktree list`. The record is deleted with the
+  session, except when `remove_worktrees` was asked and some worktree could not be removed (it is
+  in the result's `failed`): then the record stays beside the journal and still names it. The
+  files a writer's commit leaves out as secrets (the safety floor's paths, such as `.env`) are
+  found from git's NUL-separated listing of the staged files, so a name git would quote (a
+  folder such as `café/`) is checked as it is written.
 
 **Planned:** worktree behaviour as explicit configuration, set globally and overridable
 per project:
