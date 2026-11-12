@@ -318,6 +318,10 @@ async fn an_old_persistent_session_becomes_an_agent_with_its_history() {
     };
     let mut saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     for env in saved["environments"].as_array_mut().unwrap() {
+        // Only the environment the test made; Home stays as it is.
+        if env["builtin"] == true {
+            continue;
+        }
         let object = env.as_object_mut().unwrap();
         object.remove("agents");
         object.insert("persistent_agent".into(), json!(true));
