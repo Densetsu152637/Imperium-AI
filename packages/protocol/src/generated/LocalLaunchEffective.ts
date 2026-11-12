@@ -33,4 +33,8 @@ max_gpu_layers: number | null, max_wait_s: number, max_output_tokens: number,
 /**
  * Every extra argument, the global ones first.
  */
-extra_args: Array<string>, };
+extra_args: Array<string>, 
+/**
+ * The draft model configured for speculative decoding, if any.
+ */
+draft_model: string | null, draft_max: number | null, draft_min: number | null, draft_gpu_layers: number | null, };

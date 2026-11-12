@@ -37,6 +37,15 @@ queued: number,
  */
 cpu_pinned: boolean, 
 /**
+ * The draft model it runs with for speculative decoding; its memory is in `vram_bytes` and
+ * `ram_bytes`.
+ */
+draft_model: string | null, 
+/**
+ * Why a configured draft model is not in use: the model runs without it.
+ */
+draft_notice: string | null, 
+/**
  * An agent is mid-turn on it (between its calls), so it stays loaded.
  */
 claimed: boolean, 

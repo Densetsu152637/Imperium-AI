@@ -46,4 +46,14 @@ context_length: number | null,
  * What the model's own metadata says (its GGUF header, a vision projector, a Hugging Face
  * model card beside it); agents read it after the user's card.
  */
-metadata_card: string, };
+metadata_card: string, 
+/**
+ * The draft model in use (loaded) or that would be used when the model loads; null when
+ * none is configured or it cannot be used.
+ */
+draft_in_use: string | null, 
+/**
+ * Why a configured draft model is not used: the model loads without it. `required_bytes`
+ * counts the draft only while it is used.
+ */
+draft_notice: string | null, };

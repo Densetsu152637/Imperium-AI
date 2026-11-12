@@ -371,6 +371,7 @@ mod tests {
                 kv_bytes: GIB / 2,
                 layers: Some(32),
                 max_gpu_layers: None,
+                draft: crate::planner::DraftMemory::default(),
             },
             budget,
         )
@@ -549,6 +550,7 @@ mod tests {
                     kv_bytes: GIB / 2,
                     layers: Some(32),
                     max_gpu_layers: None,
+                    draft: crate::planner::DraftMemory::default(),
                 },
                 budget,
             )
@@ -694,6 +696,7 @@ mod tests {
                     kv_bytes: GIB,
                     layers: Some(48),
                     max_gpu_layers: None,
+                    draft: crate::planner::DraftMemory::default(),
                 },
                 budget,
             )

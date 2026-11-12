@@ -159,8 +159,14 @@ and `environments.agent_update` (protocol 0.28)
    *Give back to agent*) while the agent's browser tools are refused
    ([05](05-tools-and-isolation.md#live-preview-implemented),
    [07](07-desktop-ui.md#preview-and-browser-panels-implemented)). Protocol 0.18.
-10. **Local-model extras.** Speculative decoding with draft models, a local model benchmark,
-    and an OpenAI-compatible local API server for other tools. The API server is implemented:
+10. **Local-model extras** (implemented). Speculative decoding with draft
+    models, a local model benchmark, and an OpenAI-compatible local API server for other tools.
+    Speculative decoding is implemented: a per-model `draft_model` (an installed, smaller GGUF
+    with the same tokenizer family) with `draft_max`, `draft_min` and `draft_gpu_layers`, passed
+    to llama-server's `--spec-draft-model` and `--spec-type draft-simple`; the draft counts in the
+    model's memory plan and residency accounting, and a missing, incompatible or oversized draft
+    loads the model without it and says why ([04](04-models-and-routing.md#speculative-decoding-implemented),
+    [07](07-desktop-ui.md), [10](10-configuration.md)). Protocol 0.24. The API server is implemented:
     opt-in, loopback by default, with its own token in the secret store, `/v1/models` and
     `/v1/chat/completions` (streamed or not), calls that go through the residency controller
     and count toward budgets as the `api` source, hosted models only by explicit per-model
@@ -172,8 +178,8 @@ and `environments.agent_update` (protocol 0.28)
     call, never unasked and cancellable, and measures load time, time to first token, prompt and
     generation speed and peak memory from the real stream, saved per model, hardware fingerprint
     and date ([04](04-models-and-routing.md#local-model-benchmark-implemented),
-    [07](07-desktop-ui.md#local-model-benchmark-implemented)). Protocol 0.21. Speculative
-    decoding is not.
+    [07](07-desktop-ui.md#local-model-benchmark-implemented)). Protocol 0.21. Both parts
+    are implemented, so item 10 is fully implemented.
 11. **Sharing and sync (design)** (designed). Design plans for session sharing and export, and
     for team sync: a portable session bundle with shared redaction, a mandatory preview and
     read-only import with explicit forking, and team sync as a git-backed config layer that
