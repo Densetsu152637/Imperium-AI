@@ -112,6 +112,13 @@ impl Extensions {
 /// never from the project, since a repository's hooks would run commands on open. Only skills'
 /// front matter is read and no plugin server is started here.
 pub fn load(sources: &Sources) -> Extensions {
+    load_with(sources, &|_| true)
+}
+
+/// [`load`], keeping the hooks only of the plugins `hooks_allowed` says yes to (a persistent
+/// agent's permission profile may refuse a plugin; its skills and commands are only text, but a
+/// hook runs a command).
+pub fn load_with(sources: &Sources, hooks_allowed: &dyn Fn(&str) -> bool) -> Extensions {
     let mut plugin_dirs = vec![sources.config_dir.join("plugins")];
     plugin_dirs.extend(sources.plugin_dirs.iter().cloned());
     let (mut plugins, mut notices) = plugins::discover(&plugin_dirs, sources.server_timeout);
@@ -157,7 +164,9 @@ pub fn load(sources: &Sources) -> Extensions {
             Some(plugin.name.clone()),
         ));
         // Hooks are active from the start: see the module documentation.
-        hooks.extend(plugin.hooks);
+        if hooks_allowed(&plugin.name) {
+            hooks.extend(plugin.hooks);
+        }
         if !plugin.servers.is_empty() {
             lazy_plugins.push(LazyPlugin {
                 eager: eager(&plugin.name),
@@ -231,6 +240,16 @@ mod tests {
             r#"{"mcpServers": {"server": {"command": "lint-server"}}}"#,
         );
         (config, project)
+    }
+
+    #[test]
+    fn a_plugin_the_caller_refuses_brings_no_hooks_but_still_its_text() {
+        let (config, project) = fixture();
+        let sources = sources(config.path(), project.path(), true, &[]);
+        let refused = load_with(&sources, &|plugin| plugin != "lint");
+        assert!(refused.hooks.is_empty());
+        assert!(refused.index().unwrap().contains("- style: House style"));
+        assert!(!load_with(&sources, &|_| true).hooks.is_empty());
     }
 
     #[test]

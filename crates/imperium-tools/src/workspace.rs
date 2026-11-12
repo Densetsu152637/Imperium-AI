@@ -625,7 +625,9 @@ impl Workspace {
         // Local files only keeps to the folders and the scratch folder, however the path is
         // spelled and whatever grants or project worktrees would also open it.
         if self.profile.local_files_only()
-            && (!self.in_local_scope(&resolved) || self.in_protected_folder(&resolved))
+            && (!self.in_local_scope(&resolved)
+                || self.in_protected_folder(&resolved)
+                || (write && self.is_configuration_file(&resolved)))
         {
             return Err(ToolError::OutsideWorkspace(path.to_string()));
         }
@@ -634,6 +636,29 @@ impl Workspace {
             Some(false) if write => Err(ToolError::ReadOnly(path.to_string())),
             Some(_) => Ok(resolved),
         }
+    }
+
+    /// Whether a canonical path is a file that configures what the daemon does with an
+    /// environment's folder: its own `.imperium/config.toml` and `config.local.toml`, and a
+    /// project's `.mcp.json`. An agent limited to local files may not write them (it could
+    /// start servers or load plugin hooks in the next session), also when they do not exist yet.
+    fn is_configuration_file(&self, resolved: &Path) -> bool {
+        self.roots().into_iter().any(|root| {
+            CONFIGURATION_FILES.iter().any(|name| {
+                let file = root.join(name);
+                // Where the file really is, also through a linked `.imperium` folder.
+                let real = file.canonicalize().unwrap_or_else(|_| {
+                    match (
+                        file.parent().and_then(|dir| dir.canonicalize().ok()),
+                        file.file_name(),
+                    ) {
+                        (Some(dir), Some(name)) => dir.join(name),
+                        _ => file.clone(),
+                    }
+                });
+                resolved == real
+            })
+        })
     }
 
     /// Whether a canonical path is inside a protected folder (and not in the scratch folder).
@@ -762,6 +787,13 @@ impl Workspace {
         }
     }
 }
+
+/// Files, relative to a folder of an environment, that configure what the daemon starts there.
+const CONFIGURATION_FILES: [&str; 3] = [
+    ".imperium/config.toml",
+    ".imperium/config.local.toml",
+    ".mcp.json",
+];
 
 fn existing_dir(path: &Path) -> std::io::Result<PathBuf> {
     let path = path.canonicalize()?;
@@ -1400,6 +1432,44 @@ mod tests {
         // The rest of the folder and the session's scratch folder (inside the data folder) stay.
         assert!(locked.resolve("src/main.rs").is_ok());
         assert!(locked.resolve("fake-data/scratch/notes.txt").is_ok());
+    }
+
+    #[test]
+    fn local_files_only_may_not_write_the_files_that_configure_the_folder() {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".imperium")).unwrap();
+        std::fs::write(project.path().join(".imperium/config.toml"), "x = 1").unwrap();
+        let open = Workspace::new(project.path()).unwrap();
+        let locked = open
+            .clone()
+            .with_profile(AgentProfile::new(crate::profile::ProfileRules {
+                local_files_only: true,
+                ..Default::default()
+            }));
+        for file in [
+            ".imperium/config.toml",
+            ".imperium/config.local.toml",
+            ".mcp.json",
+            "./.imperium/../.mcp.json",
+        ] {
+            // An agent without the lock writes them like any file.
+            assert!(open.resolve_writable(file).is_ok(), "{file}");
+            assert!(
+                matches!(
+                    locked.resolve_writable(file),
+                    Err(ToolError::OutsideWorkspace(_))
+                ),
+                "{file} should be refused for writing"
+            );
+        }
+        // Reading them and writing anything else stays open.
+        assert!(locked.resolve(".imperium/config.toml").is_ok());
+        assert!(
+            locked
+                .resolve_writable(".imperium/skills/a/SKILL.md")
+                .is_ok()
+        );
+        assert!(locked.resolve_writable("src/main.rs").is_ok());
     }
 
     #[test]

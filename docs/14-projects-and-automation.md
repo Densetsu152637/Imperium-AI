@@ -176,8 +176,11 @@ command that runs `imperium env agent add|set|rm` always asks a person (the safe
 **local files only**, which gives the agent no commands, holds against the agent itself. Even
 then a locked agent can influence other sessions through what it may edit: files in the
 environment's folders that other sessions read (instructions, skills, commands, hooks'
-scripts, a project's `.mcp.json`, which sessions of a trusted project start) and the shared
-memory. Allowlist names are compared ignoring case, so two servers whose
+scripts) and the shared memory. The files that configure what the daemon starts in a folder
+are out of its reach: a local-files-only agent may not write `<folder>/.imperium/config.toml`,
+`.imperium/config.local.toml` or `.mcp.json` (also when they do not exist yet), and a session
+bound to it ignores the environment file's plugin folders and disabled plugins, so it cannot
+get a server or a plugin hook run by editing them. Allowlist names are compared ignoring case, so two servers whose
 names differ only by case cannot be told apart.
 
 **Remote runtimes.** For an environment on a Docker, WSL or SSH runtime the folder confinement
@@ -185,9 +188,9 @@ is lexical (`..` and absolute paths are resolved, symbolic links inside the runt
 followed from here), as it is for every session there.
 
 Not covered: the hooks the user configured run as configured (they are the user's, not the
-agent's), the hooks a plugin brings still run for a session whose profile says `plugins: none`
-(only the plugin's servers and tools are held back), and a mod's panel is not an agent tool, so
-profiles do not apply to mods.
+agent's), and a mod's panel is not an agent tool, so profiles do not apply to mods. A session
+bound to an agent runs no hook of a plugin its profile refuses (a plugin's skills and commands
+are only text and stay listed).
 
 From the command line, `imperium env agent add|set` take `--mcp all|none|NAME,NAME`,
 `--plugins all|none|NAME,NAME`, and `--local-only` / `--no-local-only`; a flag not given keeps
