@@ -184,6 +184,22 @@ listed; edit them in the file.
 
 Configuration is read when the daemon starts; restart it after editing.
 
+## Initiative
+
+`[initiative]` limits what persistent agents do on their own
+([14](14-projects-and-automation.md#initiative-implemented)); each agent chooses `off` (the
+default), `suggest` or `act` for itself.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `initiative.review_every_min` | `240` | Minutes between an agent's reviews of its environment |
+| `initiative.idle_min` | `10` | Minutes the user's sessions in the environment, and their chat with any of its agents, must have been quiet before an agent looks |
+| `initiative.digest_every_hours` | `24` | Hours between work-left digests (part of a review); `0` turns them off |
+| `initiative.max_suggestions` | `5` | Suggestions one review may make |
+| `initiative.max_sessions_per_day`, `initiative.max_concurrent` | `2`, `1` | Sessions an agent in `act` may start per day and at once (each agent has its own count) |
+| `initiative.poll_s` | `60` | Seconds between the daemon's looks at which agents are due (it does nothing in between) |
+| `initiative.review_timeout_s` | `1800` | Seconds a review may take before the agent is stopped (it stays restricted until its turn ends) |
+
 ## Budgets
 
 Budgets put limits on model usage over a window and alert as it fills up. The daemon records

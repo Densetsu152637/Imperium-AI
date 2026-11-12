@@ -3874,14 +3874,79 @@ button.colour-choice[aria-checked="true"]::after {
   font-size: 0.85rem;
 }
 
-.environment-agents li {
+.environment-agents > li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.2rem 0.2rem 0.4rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.environment-agents .agent-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
-  padding: 0.2rem 0.2rem 0.2rem 0.6rem;
+}
+
+.agent-initiative {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-right: 0.4rem;
+}
+
+.agent-initiative-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.agent-initiative-line {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.agent-suggestions,
+.agent-suggestions-done,
+.agent-digest ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+}
+
+.agent-suggestions > li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
   border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  background: var(--surface-1, transparent);
+  border: 1px solid var(--border);
+}
+
+.agent-suggestion-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.agent-suggestion-actions {
+  display: flex;
+  gap: 0.35rem;
+  flex: none;
+}
+
+.agent-digest p {
+  margin: 0;
 }
 
 .environment-agents li.muted {

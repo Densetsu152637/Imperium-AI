@@ -513,6 +513,34 @@ impl Session {
             .map_err(|_| SessionClosed)
     }
 
+    /// The id of the message (as [`send_message`](Self::send_message) returned it) the root
+    /// agent is handling now, from when it leaves the queue until its turn ends; `None` between
+    /// turns.
+    pub fn turn_message(&self) -> Option<String> {
+        self.controls.turn_message()
+    }
+
+    /// A message id to send with [`send_as`](Self::send_as), for a sender that must note the id
+    /// before the message can start a turn.
+    pub fn reserve_message_id(&self) -> String {
+        self.inboxes.next_id()
+    }
+
+    /// Like [`send`](Self::send), under an id from [`reserve_message_id`](Self::reserve_message_id).
+    pub fn send_as(&self, id: String, text: String) -> Result<(), QueueError> {
+        if text.trim().is_empty() {
+            return Err(QueueError::Empty);
+        }
+        self.commands
+            .send(Command::Message(QueuedMessage {
+                id,
+                text,
+                steer: false,
+                attachments: Vec::new(),
+            }))
+            .map_err(|_| QueueError::Closed)
+    }
+
     /// Sends a user message to the root agent (`agent_id` `None` or `root`) or to a running
     /// subagent. `Queue` runs it as a new turn once the agent's current turn ends (at once when
     /// it is idle); `Steer` joins the running turn after its current model response and tool
@@ -889,18 +917,19 @@ async fn run(
         // session stopped they keep waiting, and new ones join them.
         let stopped = *stop.borrow_and_update();
         let next = if stopped { None } else { queue.pop() };
-        let (text, attachments) = match next {
-            Some(message) => (message.text, message.attachments),
+        let (message_id, text, attachments) = match next {
+            Some(message) => (message.id, message.text, message.attachments),
             None => match tokio::select! {
-                // Resumed: the queue runs.
-                _ = stop.changed(), if stopped => continue,
+                // Stopped or resumed while waiting here: look again, so a message that arrives
+                // after a stop waits for the resume instead of starting a turn.
+                _ = stop.changed() => continue,
                 command = commands.recv() => command,
             } {
                 Some(Command::Message(message)) if stopped => {
                     shared.inboxes.queue_for_root(message);
                     continue;
                 }
-                Some(Command::Message(message)) => (message.text, message.attachments),
+                Some(Command::Message(message)) => (message.id, message.text, message.attachments),
                 // Subagents still running after their parent's turn may be waiting for this.
                 Some(Command::Respond {
                     request_id,
@@ -944,7 +973,11 @@ async fn run(
                 None => return,
             },
         };
+        // From here until the message's turn ends (or is given up on), the message it answers can
+        // be told: a message taken off the queue is never out of sight.
+        shared.controls.set_turn_message(Some(message_id));
         let Some(text) = shared.prepare_prompt(text).await else {
+            shared.controls.set_turn_message(None);
             continue;
         };
         if root.fit_pending() {
@@ -975,6 +1008,7 @@ async fn run(
                             ),
                         },
                     );
+                    shared.controls.set_turn_message(None);
                     continue;
                 }
             }
@@ -1039,6 +1073,7 @@ async fn run(
             }
             handles_open
         };
+        shared.controls.set_turn_message(None);
         save_messages(
             &shared,
             &config.journal_path,

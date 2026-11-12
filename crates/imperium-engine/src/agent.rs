@@ -1181,6 +1181,10 @@ impl Agent {
             brief: String,
             #[serde(default)]
             model: Option<String>,
+            #[serde(default)]
+            reason: Option<String>,
+            #[serde(default)]
+            source: Option<String>,
         }
         let args: Args = parse(arguments)?;
         if args.brief.trim().is_empty() {
@@ -1191,7 +1195,20 @@ impl Agent {
             .launcher
             .as_ref()
             .ok_or("this session cannot start sessions")?;
-        let id = launcher.launch(&args.brief, args.model.as_deref()).await?;
+        let id = launcher
+            .launch_request(crate::LaunchRequest {
+                brief: &args.brief,
+                model: args.model.as_deref(),
+                reason: args
+                    .reason
+                    .as_deref()
+                    .filter(|text| !text.trim().is_empty()),
+                source: args
+                    .source
+                    .as_deref()
+                    .filter(|text| !text.trim().is_empty()),
+            })
+            .await?;
         Ok(format!(
             "started session {id}; its report will arrive as a message when it finishes"
         ))
@@ -1890,6 +1907,15 @@ impl Agent {
     async fn run_tool(&mut self, call: &ToolCall) -> String {
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
+        // A turn the daemon limits (an initiative review) may use only the tools it lists.
+        if let Some(why) = self
+            .shared
+            .launcher
+            .as_ref()
+            .and_then(|launcher| launcher.restricted(name))
+        {
+            return self.tool_finished(call, name, false, format!("error: {why}"), None);
+        }
         let tool = match name {
             "update_plan" => AgentTool::UpdatePlan,
             "spawn_agent" if self.can_delegate => AgentTool::SpawnAgent,
@@ -1940,7 +1966,14 @@ impl Agent {
         };
         // Plan mode only reads: starting a session (which would not be in plan mode) or saving
         // a memory changes things.
+        let start_allowed = matches!(tool, AgentTool::StartSession)
+            && self
+                .shared
+                .launcher
+                .as_ref()
+                .is_some_and(|launcher| launcher.allows_start_in_plan_mode());
         if matches!(tool, AgentTool::StartSession | AgentTool::MemoryRemember)
+            && !start_allowed
             && self.workspace.permissions().mode() == PermissionMode::Plan
         {
             return self.tool_finished(call, name, false, refused(Refusal::Plan, summary), None);
@@ -3366,7 +3399,9 @@ fn start_session_spec() -> ToolSpec {
         description: "Start a new session in this project with a self-contained brief; it runs on its own and its report arrives later as a message. You use no tokens while it runs.".into(),
         parameters: json!({"type": "object", "properties": {
             "brief": {"type": "string"},
-            "model": {"type": "string", "description": "Optional model table id or <endpoint>:<model>"}
+            "model": {"type": "string", "description": "Optional model table id or <endpoint>:<model>"},
+            "reason": {"type": "string", "description": "Why you start it, in a sentence (shown to the user with the session)"},
+            "source": {"type": "string", "description": "What you read that led to it: a file and section, an issue, a session"}
         }, "required": ["brief"]}),
     }
 }

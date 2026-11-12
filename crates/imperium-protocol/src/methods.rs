@@ -333,6 +333,11 @@ pub struct SessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub comparison_id: Option<String>,
+    /// Set when a persistent agent started the session (or the user started one of its
+    /// suggestions): shown as "started by <agent>" with the reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub started_by: Option<crate::initiative::StartedBy>,
 }
 
 /// Where a branched session came from.
