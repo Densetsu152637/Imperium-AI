@@ -181,10 +181,15 @@ impl Browser {
     /// other answer (a navigation refused, a page replaced by another) means the request ended.
     async fn warm_up_within(&mut self, port: u16, limit: Duration) -> Result<(), String> {
         let started = Instant::now();
-        let outcome = tokio::time::timeout(
-            limit,
-            Self::warm_up_navigations(port, limit, self.log_path.clone()),
-        )
+        let outcome = tokio::time::timeout(limit, async {
+            let opened = Self::warm_up_navigations(port, limit, self.log_path.clone()).await?;
+            if opened {
+                // A page that was opened and closed can leave the one being driven in the
+                // background, where a screenshot waits for a frame that is never drawn.
+                self.bring_to_front(limit).await?;
+            }
+            Ok::<(), String>(())
+        })
         .await;
         let elapsed = started.elapsed();
         match outcome {
@@ -210,11 +215,26 @@ impl Browser {
         }
     }
 
+    async fn bring_to_front(&mut self, limit: Duration) -> Result<(), String> {
+        match self
+            .call_within(limit, "Page.bringToFront", json!({}))
+            .await
+        {
+            Err(error) if !error.starts_with("Page.bringToFront: ") => Err(error),
+            Err(error) => {
+                tracing::debug!(%error, "the browser refused to bring its page to the front");
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+        }
+    }
+
+    /// Opens, loads and closes the throwaway page; true when it was opened.
     async fn warm_up_navigations(
         port: u16,
         limit: Duration,
         log_path: PathBuf,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let base = format!("http://127.0.0.1:{port}");
         let client = reqwest::Client::new();
         let created = match client
@@ -234,12 +254,12 @@ impl Browser {
             Ok(target) => target,
             Err(error) => {
                 tracing::warn!(%error, "could not open a page to warm the browser up");
-                return Ok(());
+                return Ok(false);
             }
         };
         let Some(id) = target["id"].as_str().map(str::to_string) else {
             tracing::warn!("the browser opened a page without an id");
-            return Ok(());
+            return Ok(false);
         };
         let outcome = match page_socket(&json!([target]), port) {
             Ok(Some(socket_url)) => {
@@ -248,9 +268,23 @@ impl Browser {
             Ok(None) => Ok(()),
             Err(error) => Err(error),
         };
-        // Close it whatever happened; failing to is harmless.
+        // Close it whatever happened (failing to is harmless) and wait until it is gone.
         let _ = client.get(format!("{base}/json/close/{id}")).send().await;
-        outcome
+        for _ in 0..30 {
+            let listed = match client.get(format!("{base}/json/list")).send().await {
+                Ok(response) => response.json::<Value>().await.ok(),
+                Err(_) => None,
+            };
+            let present = listed
+                .as_ref()
+                .and_then(Value::as_array)
+                .is_some_and(|targets| targets.iter().any(|target| target["id"] == id.as_str()));
+            if !present {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        outcome.map(|()| true)
     }
 
     async fn navigate_throwaway(
@@ -821,7 +855,10 @@ mod tests {
                 let mut head = [0u8; 16];
                 let n = stream.peek(&mut head).await.unwrap_or(0);
                 let head = &head[..n];
-                if head.starts_with(b"PUT /json/new") || head.starts_with(b"GET /json/close") {
+                if head.starts_with(b"PUT /json/new")
+                    || head.starts_with(b"GET /json/close")
+                    || head.starts_with(b"GET /json/list")
+                {
                     let request = read_request(&mut stream).await;
                     let body = if request.starts_with("PUT") {
                         json!({
@@ -830,6 +867,9 @@ mod tests {
                             "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/page/T1"),
                         })
                         .to_string()
+                    } else if request.starts_with("GET /json/list") {
+                        // The throwaway page is gone as soon as it is closed.
+                        "[]".to_string()
                     } else {
                         let line = request.lines().next().unwrap_or_default().to_string();
                         closed_seen.lock().unwrap().push(line);
@@ -936,7 +976,7 @@ mod tests {
     #[tokio::test]
     async fn a_refused_warm_up_navigation_is_not_a_failure() {
         let debugger = mock_debugger(Mock::Refusing).await;
-        let (mut browser, _dir, _) = mock_browser(Mock::Silent, "").await;
+        let (mut browser, _dir, _) = mock_browser(Mock::Answering, "").await;
         browser
             .warm_up_within(debugger.port, Duration::from_secs(10))
             .await
@@ -952,8 +992,9 @@ mod tests {
             .warm_up_within(debugger.port, Duration::from_secs(10))
             .await
             .unwrap();
-        // The page being driven was sent nothing, so its history holds nothing of the warm-up.
-        assert!(driven.lock().unwrap().is_empty());
+        // The page being driven was navigated nowhere, so its history holds nothing of the
+        // warm-up; it was only brought to the front.
+        assert_eq!(*driven.lock().unwrap(), ["Page.bringToFront "]);
         let navigations = debugger.page.lock().unwrap().clone();
         assert_eq!(
             navigations,
