@@ -112,6 +112,31 @@ pub struct Standing {
 pub struct BudgetBook {
     path: Option<PathBuf>,
     inner: Mutex<(BudgetSettings, Ledger)>,
+    /// Calls that were admitted but have not been recorded yet, with what they are expected to
+    /// use, so calls that arrive together cannot all pass a budget that has room for one.
+    reserved: Mutex<Vec<Reserved>>,
+    next_reservation: std::sync::atomic::AtomicU64,
+}
+
+/// What an admitted call is expected to use until it is recorded.
+#[derive(Debug)]
+struct Reserved {
+    id: u64,
+    environment: Option<String>,
+    spec: String,
+    source: Option<String>,
+    tokens: u64,
+    cost_usd: f64,
+}
+
+impl Reserved {
+    fn origin(&self) -> Origin<'_> {
+        Origin {
+            environment: self.environment.as_deref(),
+            spec: Some(&self.spec),
+            source: self.source.as_deref(),
+        }
+    }
 }
 
 impl BudgetBook {
@@ -127,7 +152,78 @@ impl BudgetBook {
         BudgetBook {
             path: Some(path),
             inner: Mutex::new((settings, ledger)),
+            reserved: Mutex::new(Vec::new()),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
         }
+    }
+
+    /// Admits a call of `origin` expected to use `tokens` and `cost_usd`, unless a used-up
+    /// budget that asks or blocks covers it. The check counts the calls admitted before and not
+    /// yet recorded, and the call is entered among them atomically, so calls that arrive
+    /// together cannot all pass a budget with room for one. Drop the reservation with
+    /// [`BudgetBook::release`] once the call is recorded or abandoned.
+    pub fn reserve(
+        &self,
+        today: NaiveDate,
+        origin: Origin<'_>,
+        tokens: u64,
+        cost_usd: f64,
+    ) -> Result<u64, Stop> {
+        let mut reserved = lock(&self.reserved);
+        let mut stop: Option<Stop> = None;
+        for standing in self.standings(today) {
+            let budget = &standing.budget;
+            if budget.action == BudgetAction::Warn || !applies(budget, origin) {
+                continue;
+            }
+            let (held_tokens, held_cost) = reserved
+                .iter()
+                .filter(|held| applies(budget, held.origin()))
+                .fold((0u64, 0.0), |(t, c), held| {
+                    (t.saturating_add(held.tokens), c + held.cost_usd)
+                });
+            let share = share(
+                budget,
+                standing.tokens.saturating_add(held_tokens),
+                standing.cost_usd + held_cost,
+            );
+            if share < 1.0 {
+                continue;
+            }
+            let stronger = match &stop {
+                None => true,
+                Some(current) => {
+                    current.budget.action == BudgetAction::Ask
+                        && budget.action == BudgetAction::Block
+                }
+            };
+            if stronger {
+                stop = Some(Stop {
+                    budget: budget.clone(),
+                    window_end: standing.window_end,
+                });
+            }
+        }
+        if let Some(stop) = stop {
+            return Err(stop);
+        }
+        let id = self
+            .next_reservation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        reserved.push(Reserved {
+            id,
+            environment: origin.environment.map(str::to_string),
+            spec: origin.spec.unwrap_or_default().to_string(),
+            source: origin.source.map(str::to_string),
+            tokens,
+            cost_usd,
+        });
+        Ok(id)
+    }
+
+    /// Forgets a reservation made by [`BudgetBook::reserve`].
+    pub fn release(&self, id: u64) {
+        lock(&self.reserved).retain(|held| held.id != id);
     }
 
     pub fn settings(&self) -> BudgetSettings {
@@ -765,28 +861,55 @@ pub fn check(state: &DaemonState, session_id: &str, confirmed: bool) -> Result<(
     Err(stop_error(state, &stop))
 }
 
-/// Why a call to `spec` through the API is refused, when a used-up budget covers it. An API
-/// call cannot be asked about, so a budget that asks refuses it as one that blocks does.
-pub(crate) fn refuse_api_call(state: &DaemonState, spec: &str) -> Option<String> {
+/// An admitted API call's claim on the budgets: what it is expected to use counts against them,
+/// for calls that arrive meanwhile, until it is dropped (when the call has been recorded or
+/// abandoned).
+#[derive(Debug)]
+pub(crate) struct ApiReservation {
+    state: Arc<DaemonState>,
+    id: u64,
+}
+
+impl Drop for ApiReservation {
+    fn drop(&mut self) {
+        self.state.budgets().release(self.id);
+    }
+}
+
+/// Admits an API call to `spec` expected to use `tokens` and `cost_usd`, or says why a used-up
+/// budget refuses it. An API call cannot be asked, so a budget that asks refuses it as one that
+/// blocks does.
+pub(crate) fn reserve_api_call(
+    state: &Arc<DaemonState>,
+    spec: &str,
+    tokens: u64,
+    cost_usd: f64,
+) -> Result<ApiReservation, String> {
     let today = Local::now().date_naive();
-    let stop = state.budgets().gate(
-        today,
-        Origin {
-            environment: None,
-            spec: Some(spec),
-            source: Some(SOURCE_API),
-        },
-    )?;
-    let label = label(state, &stop.budget);
-    let reset = day(stop.window_end);
-    Some(match stop.budget.action {
-        BudgetAction::Block => {
-            format!("{label} is used up until {reset}; calls through the API are blocked.")
+    let origin = Origin {
+        environment: None,
+        spec: Some(spec),
+        source: Some(SOURCE_API),
+    };
+    match state.budgets().reserve(today, origin, tokens, cost_usd) {
+        Ok(id) => Ok(ApiReservation {
+            state: Arc::clone(state),
+            id,
+        }),
+        Err(stop) => {
+            let label = label(state, &stop.budget);
+            let reset = day(stop.window_end);
+            Err(match stop.budget.action {
+                BudgetAction::Block => {
+                    format!("{label} is used up until {reset}; calls through the API are blocked.")
+                }
+                _ => format!(
+                    "{label} is used up until {reset}; it asks before new work starts, and a call \
+                     through the API cannot be asked, so it is refused."
+                ),
+            })
         }
-        _ => format!(
-            "{label} is used up until {reset}; it asks before new work starts, and a call              through the API cannot be asked, so it is refused."
-        ),
-    })
+    }
 }
 
 /// A model as a spec: catalog ids are looked up; specs pass through.
@@ -1003,6 +1126,8 @@ mod tests {
     fn cost_budgets_count_priced_calls_and_the_further_limit_wins() {
         let book = BudgetBook {
             path: None,
+            reserved: Mutex::new(Vec::new()),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
             inner: Mutex::new((
                 settings(vec![Budget {
                     id: "router".into(),

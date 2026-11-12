@@ -180,7 +180,7 @@ export function ApiSection({ client }: { client: DaemonClient }) {
       >
         <Switch
           checked={status.allow_lan}
-          onChange={(allow_lan) => void apply(allow_lan ? { allow_lan } : { allow_lan, bind: "127.0.0.1" })}
+          onChange={(allow_lan) => void apply({ allow_lan })}
           label="Allow other computers"
           disabled={busy}
         />

@@ -1241,6 +1241,7 @@ enabled = false           # on: listen as below; off: stop at once
 port = 0                  # 0 until chosen: the first enable picks a free port (from 11500) and saves it
 bind = "127.0.0.1"        # loopback only, unless allow_lan is set
 allow_lan = false         # risky: lets bind be an address other computers can reach
+max_concurrent = 4        # most calls in flight at once; one more gets a 429
 expose = []               # specs of hosted models to serve; local models need no entry
 ```
 
@@ -1274,6 +1275,14 @@ Settings → API, `imperium api enable|disable|status|token [rotate]`, and `api.
   slot is released when the response ends or the client disconnects (which also stops the
   generation). API calls rank as interactive. The response begins when the slot is held, so a
   client with a short timeout should allow for a model load. Nothing bypasses the controller.
+  At most `max_concurrent` calls are in flight (running, or queued behind a model); one more
+  is refused at once with `429` `rate_limit_exceeded`, and a call keeps its place until its
+  answer, a streamed one included, has ended. Timeouts keep a stuck call from holding a slot:
+  a model server gets 10 minutes to begin its answer (to finish it, for a call that is not
+  streamed), a streamed answer may pause 5 minutes between chunks, and a client that leaves a
+  chunk unread for a minute is given up on, which ends the generation. A client that hangs up
+  does not escape the meter: the call is recorded by its estimate (the prompt, and nothing of
+  the reply) when it is dropped.
   The reply of a local model is capped by the slot's token reservation (`max_tokens` is
   clamped to it, which `runtime.llamacpp.max_output_tokens` sets; raise it, or set 0 for no
   cap, to allow longer replies).
@@ -1295,6 +1304,14 @@ Settings → API, `imperium api enable|disable|status|token [rotate]`, and `api.
   used up and blocks or asks refuses the call before it reaches the model, with
   `429` and `{"error": {"type": "insufficient_quota", "code": "budget_exceeded", ...}}`;
   nobody can be asked through the API, so an asking budget refuses as a blocking one does.
+  A call is admitted by what it is expected to use (its prompt estimate plus its `max_tokens`,
+  or 1,024 tokens, priced at the endpoint's prices), and that counts against the budgets for
+  calls that arrive meanwhile until the call is recorded with what it really used, so calls
+  that arrive together cannot all pass a budget with room for one. The check is still "used
+  up", not "would be used up": a call that fits the remaining room is admitted, and a later
+  one is refused. Hosted replies are not capped by Imperium: the model's `max_tokens` is the
+  client's own (none if it sends none), so one call can use more than the budget has left;
+  the budgets stop the calls after it, not that call.
 - **Errors** use OpenAI's shape, `{"error": {"message", "type", "param", "code"}}`: `400` for a
   bad request or one the model's server rejects (such as a prompt that does not fit), `401`,
   `404` for an unknown or unexposed model or URL, `429` for budgets (or the endpoint's own rate

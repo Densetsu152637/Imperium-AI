@@ -4,6 +4,7 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
@@ -52,6 +53,18 @@ const INLINE_DATA_CHARS: f64 = 3000.0;
 /// Chunks of a streamed answer held for a slow client before the model server is made to wait.
 const STREAM_BACKLOG: usize = 32;
 
+/// Longest the model's server may take to begin its answer (for a call that is not streamed,
+/// to finish it), after the call holds its slot.
+const UPSTREAM_START_TIMEOUT: Duration = Duration::from_secs(600);
+/// Longest a streamed answer may go without a chunk before the call is given up.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Longest the client may leave a streamed chunk unread before the call is given up, so a
+/// client that stops reading cannot hold a slot for ever.
+const CLIENT_STALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// Tokens of reply a call without `max_tokens` is expected to use when it is admitted to the
+/// budgets; what it really uses is recorded when it ends.
+const DEFAULT_REPLY_RESERVE: u64 = 1024;
+
 pub(super) async fn chat_completions(State(api): State<Arc<ApiState>>, body: Bytes) -> Response {
     match handle(&api, &body).await {
         Ok(response) => response,
@@ -61,6 +74,11 @@ pub(super) async fn chat_completions(State(api): State<Arc<ApiState>>, body: Byt
 
 async fn handle(api: &ApiState, body: &[u8]) -> Result<Response, ApiError> {
     let daemon = api.daemon.upgrade().ok_or_else(ApiError::shutting_down)?;
+    // Held for the whole call, the stream included: the cap is on work in flight.
+    let permit = daemon
+        .openai()
+        .try_permit(daemon.settings().api.openai_compatible.max_concurrent)
+        .ok_or_else(ApiError::too_many_calls)?;
     let request: Value = serde_json::from_slice(body)
         .map_err(|error| ApiError::invalid(format!("The body is not valid JSON: {error}")))?;
     let request = request
@@ -84,11 +102,6 @@ async fn handle(api: &ApiState, body: &[u8]) -> Result<Response, ApiError> {
     }
     let served = models::find(&daemon, requested)
         .map_err(|hint| ApiError::model_not_found(requested, &hint))?;
-    // A call that no budget stops: the API is a source of its own, so a budget can cap it, and
-    // nobody can answer an "ask" budget here, so it refuses like a "block" one.
-    if let Some(message) = budgets::refuse_api_call(&daemon, &served.id) {
-        return Err(ApiError::budget(message));
-    }
     let resolved = daemon
         .resolve_model(Some(&served.id))
         .map_err(|error| ApiError::unavailable(error.to_string()))?;
@@ -132,6 +145,23 @@ async fn handle(api: &ApiState, body: &[u8]) -> Result<Response, ApiError> {
         request.get("messages").unwrap_or(&Value::Null),
         request.get("tools").unwrap_or(&Value::Null),
     );
+    // Admitted to the budgets for what the call is expected to use, which counts against them
+    // for calls that arrive meanwhile: the API is a source of its own, so a budget can cap it,
+    // and nobody can answer an "ask" budget here, so it refuses like a "block" one.
+    let expected = Usage {
+        prompt_tokens: u64::from(prompt_estimate),
+        completion_tokens: client_cap.unwrap_or(DEFAULT_REPLY_RESERVE),
+        cached_tokens: 0,
+    };
+    let reservation = budgets::reserve_api_call(
+        &daemon,
+        &served.id,
+        expected.prompt_tokens + expected.completion_tokens,
+        resolved
+            .pricing
+            .map_or(0.0, |pricing| pricing.cost_usd(&expected)),
+    )
+    .map_err(ApiError::budget)?;
     let (base_url, api_key, lease) = if resolved.local {
         let lease = take_slot(&daemon, api, &resolved, prompt_estimate).await?;
         (lease.base_url.clone(), None, Some(lease))
@@ -171,18 +201,7 @@ async fn handle(api: &ApiState, body: &[u8]) -> Result<Response, ApiError> {
     if let Some(key) = &api_key {
         sending = sending.bearer_auth(key);
     }
-    let started = Instant::now();
-    let response = sending.send().await.map_err(|error| {
-        ApiError::unreachable(format!(
-            "The model's server did not answer: {}",
-            error.without_url()
-        ))
-    })?;
-    let status = response.status();
-    if !status.is_success() {
-        let text = response.text().await.unwrap_or_default();
-        return Err(ApiError::upstream(status.as_u16(), &failure_detail(&text)));
-    }
+    // From here the call counts, whether it ends or the client goes away first (see `Call`).
     let call = Call {
         local: resolved
             .local
@@ -197,15 +216,49 @@ async fn handle(api: &ApiState, body: &[u8]) -> Result<Response, ApiError> {
         model: resolved.model.clone(),
         pricing: resolved.pricing,
         prompt_estimate,
-        started,
+        started: Instant::now(),
+        finished: AtomicBool::new(false),
+        _reservation: reservation,
+        _permit: permit,
     };
+    let started = call.started;
+    let sent = tokio::time::timeout(UPSTREAM_START_TIMEOUT, sending.send()).await;
+    let response = match sent {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            call.abandon();
+            return Err(ApiError::unreachable(format!(
+                "The model's server did not answer: {}",
+                error.without_url()
+            )));
+        }
+        Err(_) => {
+            call.abandon();
+            return Err(ApiError::unreachable(format!(
+                "The model's server did not begin its answer within {} s.",
+                UPSTREAM_START_TIMEOUT.as_secs()
+            )));
+        }
+    };
+    let status = response.status();
+    if !status.is_success() {
+        call.abandon();
+        let text = response.text().await.unwrap_or_default();
+        return Err(ApiError::upstream(status.as_u16(), &failure_detail(&text)));
+    }
     if streaming {
         return Ok(stream(call, response, lease, wants_usage));
     }
-    let mut answer: Value = response
-        .json()
-        .await
-        .map_err(|error| ApiError::upstream(502, &format!("the reply was not JSON: {error}")))?;
+    let mut answer: Value = match response.json().await {
+        Ok(answer) => answer,
+        Err(error) => {
+            call.abandon();
+            return Err(ApiError::upstream(
+                502,
+                &format!("the reply was not JSON: {error}"),
+            ));
+        }
+    };
     drop(lease);
     let usage = read_usage(&answer);
     let reply_chars = answer["choices"]
@@ -291,12 +344,36 @@ struct Call {
     started: Instant,
     /// The local runtime, when the model is local: it keeps the measured speed.
     local: Option<Arc<Supervisor>>,
+    /// Whether the call has been recorded (or given up as not having used anything).
+    finished: AtomicBool,
+    /// What the call was admitted to the budgets for; released after the call is recorded.
+    _reservation: budgets::ApiReservation,
+    /// The call's place among the calls in flight.
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl Drop for Call {
+    /// A call that ends without being finished, such as one whose client disconnected, has
+    /// already used the model: it is recorded by estimate (the prompt it sent and nothing of
+    /// the reply), so a client that always hangs up cannot use the models unmetered.
+    fn drop(&mut self) {
+        self.finish(None, 0, None);
+    }
 }
 
 impl Call {
-    /// Counts the call against the budgets as an `api` call and, for a local model, records
-    /// how fast it generated. Without usage from the server, the call counts by estimate.
+    /// Gives the call up as one that used nothing (the model's server refused it).
+    fn abandon(&self) {
+        self.finished.store(true, Ordering::SeqCst);
+    }
+
+    /// Counts the call against the budgets as an `api` call, once, and, for a local model,
+    /// records how fast it generated. Without usage from the server, the call counts by
+    /// estimate.
     fn finish(&self, usage: Option<Usage>, reply_chars: usize, generating: Option<Duration>) {
+        if self.finished.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let usage = usage.unwrap_or(Usage {
             prompt_tokens: u64::from(self.prompt_estimate),
             completion_tokens: (reply_chars as u64).div_ceil(3),
@@ -365,21 +442,30 @@ async fn pump(
     let mut usage = None;
     let mut reply_chars = 0usize;
     let mut first_token: Option<Instant> = None;
-    'relay: while let Some(chunk) = chunks.next().await {
-        let chunk = match chunk {
-            Ok(chunk) => chunk,
-            Err(error) => {
+    'relay: loop {
+        let chunk = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, chunks.next()).await {
+            Ok(Some(Ok(chunk))) => chunk,
+            Ok(None) => break,
+            Ok(Some(Err(error))) => {
                 let failure = ApiError::unreachable(format!(
                     "The model's server stopped answering: {}",
                     error.without_url()
                 ));
-                let _ = send.send(event(&failure.to_json())).await;
+                deliver(&send, event(&failure.to_json())).await;
+                break;
+            }
+            Err(_) => {
+                let failure = ApiError::unreachable(format!(
+                    "The model's server sent nothing for {} s; the call was given up.",
+                    STREAM_IDLE_TIMEOUT.as_secs()
+                ));
+                deliver(&send, event(&failure.to_json())).await;
                 break;
             }
         };
         for payload in lines.push(&chunk) {
             if payload == "[DONE]" {
-                let _ = send.send(Bytes::from_static(b"data: [DONE]\n\n")).await;
+                deliver(&send, Bytes::from_static(b"data: [DONE]\n\n")).await;
                 break 'relay;
             }
             let Ok(mut value) = serde_json::from_str::<Value>(&payload) else {
@@ -411,9 +497,9 @@ async fn pump(
                     object.remove("usage");
                 }
             }
-            if send.send(event(&value)).await.is_err() {
-                // The client went away: dropping the model server's connection stops the
-                // generation, and the call counts for what it produced.
+            if !deliver(&send, event(&value)).await {
+                // The client went away or stopped reading: dropping the model server's
+                // connection stops the generation, and the call counts for what it produced.
                 break 'relay;
             }
         }
@@ -426,6 +512,19 @@ async fn pump(
             .map(|first| first.elapsed())
             .or_else(|| Some(call.started.elapsed())),
     );
+    // The call's claim on the budgets and its place among the calls in flight end before the
+    // client sees the end of the answer, so a call it sends next finds them free.
+    drop(call);
+    drop(send);
+}
+
+/// Hands a chunk to the client's response body. False when the client has gone, or has left
+/// the chunk unread for [`CLIENT_STALL_TIMEOUT`].
+async fn deliver(send: &mpsc::Sender<Bytes>, chunk: Bytes) -> bool {
+    matches!(
+        tokio::time::timeout(CLIENT_STALL_TIMEOUT, send.send(chunk)).await,
+        Ok(Ok(()))
+    )
 }
 
 fn event(value: &Value) -> Bytes {
@@ -552,6 +651,17 @@ mod tests {
         let estimate = estimate_tokens(&messages, &Value::Null);
         assert!((1000..3000).contains(&estimate), "{estimate}");
         assert!(estimate_tokens(&json!([]), &Value::Null) >= 64);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_client_that_stops_reading_is_given_up_on() {
+        let (send, mut receive) = mpsc::channel::<Bytes>(1);
+        assert!(deliver(&send, Bytes::from_static(b"a")).await);
+        // The body is full and nobody reads it: the next chunk waits, then gives up.
+        assert!(!deliver(&send, Bytes::from_static(b"b")).await);
+        // A reader that has gone is given up on at once.
+        receive.close();
+        assert!(!deliver(&send, Bytes::from_static(b"c")).await);
     }
 
     #[test]

@@ -198,6 +198,7 @@ pub static SETTINGS: &[SettingDef] = &[
     live(def("api.openai_compatible.port", "API port", Integer, "Port of the API server; 0 picks a free one the first time the API is enabled and keeps it.")),
     live(def("api.openai_compatible.bind", "API address", STRING, "Address the API server listens on. Only loopback addresses (127.0.0.1) are accepted unless the next setting allows more.")),
     live(def("api.openai_compatible.allow_lan", "Allow the API on the network", Bool, "Lets the API address be one that other computers can reach. Risky: the API uses plain HTTP, so anyone on the network who learns the token can use your models (and the hosted ones you expose).")),
+    live(def("api.openai_compatible.max_concurrent", "API calls at once", Integer, "Most calls the API serves at once, running or waiting for a model; one more is refused with a 429 error so a runaway tool cannot pile up work.")),
     live(def("api.openai_compatible.expose", "Hosted models in the API", StringList, "Specs (<endpoint>:<model>) of hosted models other tools may use through the API, spending your keys and money. Local models need no entry; hosted ones are never served unless listed.")),
     def("pets.enabled", "Pets", Bool, "Show a desktop pet."),
     def("pets.pet", "Pet", STRING, "The pet's id; the first found when empty."),

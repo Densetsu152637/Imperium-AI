@@ -79,6 +79,7 @@ listed; edit them in the file.
 | `api.openai_compatible.port` | `0` | Port of the API server. `0` means none is chosen yet: the first enable picks a free one (from 11500 up), saves it here, and keeps it |
 | `api.openai_compatible.bind` | `127.0.0.1` | Address the API server listens on. A loopback address (`127.0.0.1`, `::1`, `localhost`) unless `allow_lan` is set; any other is refused and the server does not start |
 | `api.openai_compatible.allow_lan` | `false` | Lets `bind` be an address other computers can reach. Risky: the API is plain HTTP, so anyone on the network who learns the API token can use your models and the hosted ones exposed |
+| `api.openai_compatible.max_concurrent` | `4` | Most [API](04-models-and-routing.md#openai-compatible-local-api-implemented) calls in flight at once (running, or waiting for a model); one more is refused with a `429` `rate_limit_exceeded` error. Applies at once |
 | `api.openai_compatible.expose` | none | Specs (`<endpoint>:<model>`) of hosted model-table rows the API also serves, spending your keys and money; nothing hosted is served unless listed. Local models need no entry |
 | `agents.max_steps` | `50` | Model calls an agent may make in one turn before it stops |
 | `resume.mode` | `wait_for_reset` | When a provider's usage runs out: `wait_for_reset`, `at_time`, `retry_every`, or `stop` (each session can override it) |

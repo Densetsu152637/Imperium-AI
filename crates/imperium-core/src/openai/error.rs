@@ -64,6 +64,18 @@ impl ApiError {
         )
     }
 
+    /// The API already has all the calls in flight it allows.
+    pub(super) fn too_many_calls() -> Self {
+        ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_exceeded",
+            "rate_limit_exceeded",
+            "The API is serving as many calls at once as it allows \
+             (api.openai_compatible.max_concurrent). Try again when one finishes."
+                .into(),
+        )
+    }
+
     /// A used-up budget refuses the call. OpenAI reports exhausted quotas as 429
     /// `insufficient_quota`, which clients know not to retry at once.
     pub(super) fn budget(message: impl Into<String>) -> Self {

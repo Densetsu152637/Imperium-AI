@@ -46,6 +46,12 @@ async fn fake_model_server() -> (String, Received) {
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
         received.lock().unwrap().push((auth, body.clone()));
+        // A user message of "slow" makes the server take a while; "hang" never answers.
+        match body["messages"][0]["content"].as_str() {
+            Some("slow") => tokio::time::sleep(Duration::from_millis(800)).await,
+            Some("hang") => tokio::time::sleep(Duration::from_secs(120)).await,
+            _ => {}
+        }
         let rejected = body["messages"]
             .as_array()
             .is_some_and(|messages| messages.iter().any(|m| m["content"] == "reject"));
@@ -544,7 +550,14 @@ async fn a_used_up_api_budget_refuses_calls_in_an_openai_shaped_error() {
     let mut ask = saved["settings"].clone();
     ask["limits"][0]["action"] = json!("ask");
     fixture.call("budgets.set", ask).await;
-    assert_eq!(post_chat(&base, &token, &body).await.status(), 429);
+    let asked = post_chat(&base, &token, &body).await;
+    assert_eq!(asked.status(), 429);
+    let message = asked.json::<Value>().await.unwrap()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("cannot be asked"), "{message}");
+    assert!(!message.contains("  "), "no stray spaces: {message:?}");
     let mut elsewhere = saved["settings"].clone();
     elsewhere["limits"][0]["scope"] = json!("environment");
     elsewhere["limits"][0]["target"] = json!("some-environment");
@@ -825,4 +838,176 @@ async fn the_token_is_never_written_to_the_config_the_data_folder_or_the_logs() 
     for secret in [&token, &rotated, &"sk-hosted-key".to_string()] {
         assert!(!logged.contains(secret.as_str()), "a secret is in the logs");
     }
+}
+
+fn slow_body() -> Value {
+    json!({"model": "llamacpp:tiny", "messages": [{"role": "user", "content": "slow"}]})
+}
+
+#[tokio::test]
+async fn no_more_calls_run_at_once_than_the_cap_allows() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "[api.openai_compatible]\nmax_concurrent = 2\n").await;
+    let (base, token) = fixture.enable().await;
+    let body = slow_body();
+    let (a, b, c) = tokio::join!(
+        post_chat(&base, &token, &body),
+        post_chat(&base, &token, &body),
+        post_chat(&base, &token, &body)
+    );
+    let mut statuses = vec![
+        a.status().as_u16(),
+        b.status().as_u16(),
+        c.status().as_u16(),
+    ];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [200, 200, 429]);
+    let refused = [a, b, c]
+        .into_iter()
+        .find(|reply| reply.status() == 429)
+        .unwrap();
+    let error: Value = refused.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "rate_limit_exceeded");
+    // The places are free again once the calls end, a streamed one's included.
+    assert_eq!(post_chat(&base, &token, &slow_body()).await.status(), 200);
+    let mut streamed = slow_body();
+    streamed["stream"] = json!(true);
+    let reply = post_chat(&base, &token, &streamed).await;
+    assert_eq!(reply.status(), 200);
+    reply.text().await.unwrap();
+    let (d, e) = tokio::join!(
+        post_chat(&base, &token, &body),
+        post_chat(&base, &token, &body)
+    );
+    assert_eq!((d.status(), e.status()), (200, 200));
+}
+
+#[tokio::test]
+async fn calls_that_arrive_together_cannot_all_pass_a_budget_with_room_for_one() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    let (base, token) = fixture.enable().await;
+    // 30 tokens through the API per day, blocking. A call is expected to use more than that
+    // when it is admitted, so while one is running the others find the budget spoken for.
+    fixture
+        .call(
+            "budgets.set",
+            json!({
+                "week_start": "monday", "month_start_day": 1, "thresholds": [50, 80, 100],
+                "limits": [{
+                    "id": "", "name": "", "scope": "source", "target": "api",
+                    "window": "daily", "tokens": 30, "cost_usd": null,
+                    "thresholds": null, "action": "block"
+                }]
+            }),
+        )
+        .await;
+    let body = slow_body();
+    let (a, b, c) = tokio::join!(
+        post_chat(&base, &token, &body),
+        post_chat(&base, &token, &body),
+        post_chat(&base, &token, &body)
+    );
+    let mut statuses = vec![
+        a.status().as_u16(),
+        b.status().as_u16(),
+        c.status().as_u16(),
+    ];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [200, 429, 429], "exactly one call passes");
+    let refused = [a, b, c]
+        .into_iter()
+        .find(|reply| reply.status() == 429)
+        .unwrap();
+    assert_eq!(
+        refused.json::<Value>().await.unwrap()["error"]["code"],
+        "budget_exceeded"
+    );
+    assert_eq!(
+        fixture.received.lock().unwrap().len(),
+        1,
+        "one reached the model"
+    );
+    // What counts afterwards is what the call used, not what it was expected to.
+    let status = fixture.call("budgets.get", json!({})).await;
+    assert_eq!(status["status"][0]["tokens_used"], 17);
+    assert_eq!(
+        post_chat(&base, &token, &chat_body("llamacpp:tiny", json!({})))
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(
+        post_chat(&base, &token, &chat_body("llamacpp:tiny", json!({})))
+            .await
+            .status(),
+        429,
+        "used up at 34 of 30"
+    );
+}
+
+#[tokio::test]
+async fn a_client_that_hangs_up_before_the_answer_still_counts() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(home.path(), "").await;
+    let (base, token) = fixture.enable().await;
+    fixture
+        .call(
+            "budgets.set",
+            json!({
+                "week_start": "monday", "month_start_day": 1, "thresholds": [50, 80, 100],
+                "limits": [{
+                    "id": "", "name": "", "scope": "source", "target": "api",
+                    "window": "daily", "tokens": 1000000, "cost_usd": null,
+                    "thresholds": null, "action": "warn"
+                }]
+            }),
+        )
+        .await;
+    // The model never answers; the client gives up after a moment.
+    let hung = reqwest::Client::new()
+        .post(format!("{base}/chat/completions"))
+        .bearer_auth(&token)
+        .timeout(Duration::from_millis(400))
+        .json(&json!({"model": "llamacpp:tiny", "messages": [{"role": "user", "content": "hang"}]}))
+        .send()
+        .await;
+    assert!(hung.is_err());
+    let used = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let status = fixture.call("budgets.get", json!({})).await;
+            let used = status["status"][0]["tokens_used"].as_u64().unwrap();
+            if used > 0 {
+                break used;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the abandoned call is recorded");
+    assert!(used > 0, "counted by its estimate: {used}");
+    assert_eq!(fixture.received.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn turning_the_network_off_puts_the_address_back_on_this_computer() {
+    let home = tempfile::tempdir().unwrap();
+    let mut fixture = fixture(
+        home.path(),
+        "[api.openai_compatible]\nallow_lan = true\nbind = \"0.0.0.0\"\n",
+    )
+    .await;
+    let status = fixture.call("api.get", json!({})).await;
+    assert_eq!(
+        (status["allow_lan"].clone(), status["bind"].clone()),
+        (json!(true), json!("0.0.0.0"))
+    );
+    let status = fixture.call("api.set", json!({"allow_lan": false})).await;
+    assert_eq!(status["allow_lan"], false);
+    assert_eq!(status["bind"], "127.0.0.1");
+    let saved =
+        std::fs::read_to_string(imperium_config::Paths::under(home.path()).user_config_file())
+            .unwrap();
+    assert!(saved.contains("bind = \"127.0.0.1\""), "{saved}");
+    assert!(saved.contains("allow_lan = false"), "{saved}");
 }

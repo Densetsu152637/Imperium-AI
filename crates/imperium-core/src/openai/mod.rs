@@ -64,6 +64,8 @@ pub struct OpenAiApi {
     /// The token requests are checked against, kept here so a request reads no keychain.
     token: Mutex<Option<AccessToken>>,
     requests: AtomicU64,
+    /// The calls in flight: its size is `max_concurrent`, made again when that changes.
+    limit: Mutex<Option<(u32, Arc<tokio::sync::Semaphore>)>>,
 }
 
 #[derive(Debug)]
@@ -123,6 +125,24 @@ impl OpenAiApi {
         let text = fresh.as_str().to_string();
         *lock(&self.token) = Some(fresh);
         Ok(text)
+    }
+
+    /// A place among the calls in flight, or `None` when `max` are already running. Held by a
+    /// call until it ends.
+    pub(crate) fn try_permit(&self, max: u32) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let max = max.max(1);
+        let semaphore = {
+            let mut limit = lock(&self.limit);
+            match &*limit {
+                Some((size, semaphore)) if *size == max => Arc::clone(semaphore),
+                _ => {
+                    let semaphore = Arc::new(tokio::sync::Semaphore::new(max as usize));
+                    *limit = Some((max, Arc::clone(&semaphore)));
+                    semaphore
+                }
+            }
+        };
+        semaphore.try_acquire_owned().ok()
     }
 
     fn accepts(&self, authorization: &str) -> bool {
@@ -439,8 +459,13 @@ pub(crate) async fn set(
 ) -> Result<ApiStatus, ErrorObject> {
     let current = state.settings();
     let now: &OpenAiApiSettings = &current.api.openai_compatible;
-    let bind = params.bind.clone().unwrap_or_else(|| now.bind.clone());
     let allow_lan = params.allow_lan.unwrap_or(now.allow_lan);
+    // Turning the network off puts the address back on this computer.
+    let bind = match (&params.bind, params.allow_lan) {
+        (Some(bind), _) => bind.clone(),
+        (None, Some(false)) => "127.0.0.1".to_string(),
+        (None, _) => now.bind.clone(),
+    };
     listen_ip(&bind, allow_lan).map_err(invalid)?;
     if let Some(expose) = &params.expose {
         check_expose(&current, expose)?;
@@ -452,7 +477,7 @@ pub(crate) async fn set(
     if let Some(allow_lan) = params.allow_lan {
         writes.push(("allow_lan", json!(allow_lan)));
     }
-    if let Some(bind) = &params.bind {
+    if params.bind.is_some() || params.allow_lan == Some(false) {
         writes.push(("bind", json!(bind.trim())));
     }
     if let Some(port) = params.port {

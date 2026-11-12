@@ -22,6 +22,9 @@ enabled = false
 port = 0
 # Address to listen on. Only loopback addresses are accepted unless `allow_lan` is true.
 bind = "127.0.0.1"
+# Most calls the API serves at once (running or queued behind a model); one more is refused
+# with a 429 so a runaway client cannot pile up work.
+max_concurrent = 4
 # Allows a `bind` that is not loopback, which lets other machines on the network use the API
 # with its token over plain HTTP. Risky: leave it off unless you know the network is trusted.
 allow_lan = false
@@ -491,6 +494,8 @@ pub struct OpenAiApiSettings {
     pub bind: String,
     /// Allows a `bind` that is not loopback.
     pub allow_lan: bool,
+    /// Most calls in flight at once; the next is refused with `429`. At least 1.
+    pub max_concurrent: u32,
     /// Specs of hosted models the server also offers; a model is never offered unless it is
     /// local or listed here.
     pub expose: Vec<String>,
@@ -503,6 +508,7 @@ impl Default for OpenAiApiSettings {
             port: 0,
             bind: "127.0.0.1".into(),
             allow_lan: false,
+            max_concurrent: 4,
             expose: Vec::new(),
         }
     }
