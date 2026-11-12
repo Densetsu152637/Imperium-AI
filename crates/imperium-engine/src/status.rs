@@ -69,6 +69,8 @@ pub struct Controls {
     /// Whether the user stopped the session: agents halt at their next safe point while set.
     /// Follows `work_stopped` and `work_resumed`, so a replayed journal restores it.
     stop: watch::Sender<bool>,
+    /// The id of the queued message whose turn the root agent is running, while it runs.
+    turn_message: Mutex<Option<String>>,
 }
 
 impl Controls {
@@ -80,7 +82,19 @@ impl Controls {
             wake: Notify::new(),
             run_now: RunNow::default(),
             stop: watch::Sender::new(false),
+            turn_message: Mutex::new(None),
         }
+    }
+
+    /// The id of the message (as `send_message` returned it) whose turn the root agent is
+    /// running now; `None` between turns. Read by whoever must know which message a running
+    /// turn answers, such as the daemon holding a turn to extra restrictions.
+    pub fn turn_message(&self) -> Option<String> {
+        lock(&self.turn_message).clone()
+    }
+
+    pub(crate) fn set_turn_message(&self, id: Option<String>) {
+        *lock(&self.turn_message) = id;
     }
 
     /// Whether the user stopped the session.

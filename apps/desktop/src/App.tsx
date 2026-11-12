@@ -33,6 +33,7 @@ import type {
   SessionCompareResult,
   SessionComparePickParams,
   SessionCreateResult,
+  InitiativeNotice,
   SessionEventParams,
   DownloadJob,
   LocalModelListResult,
@@ -53,7 +54,7 @@ import { addColumn, applyDrop, reconcile, removeColumn, sameArrangement, visible
 import { Columns, type PanelSpec } from "./layout/Columns";
 import { PanelWindow } from "./layout/PanelWindow";
 import { getLayout, resetLayout, updateLayout, type DetachedPanel } from "./layout/state";
-import { downloadNotice, sessionNotice, updateNotice } from "./attention";
+import { downloadNotice, initiativeNotice, sessionNotice, updateNotice } from "./attention";
 import { budgetNotice, budgetStop } from "./budgets";
 import { focusMainWindow, notify, onNoticeOpened } from "./notify";
 import {
@@ -303,6 +304,10 @@ export function App() {
         }
         if (notification.method === "budgets.changed") {
           setBudgets(notification.params as BudgetsResult);
+          return;
+        }
+        if (notification.method === "initiative.notice") {
+          if (!isDetached) void notify(initiativeNotice(notification.params as InitiativeNotice), settingsRef.current);
           return;
         }
         if (notification.method === "budgets.alert") {
@@ -1475,6 +1480,7 @@ export function App() {
             setEnvId((current) => (current === id ? null : current));
           }}
           onClose={() => setEnvWindow(null)}
+          onOpenSession={selectSession}
         />
       )}
       {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={daemon} />}

@@ -346,6 +346,18 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     no persistent agent, and cannot be deleted
     ([14](14-projects-and-automation.md#home-implemented)).
 
+38. **Agent initiative** (implemented). Persistent agents can look for work on their own, when the
+    machine is quiet and the user is idle in the environment: per agent `off` (the default),
+    `suggest` (a read-only review of the roadmap, plans, notes and sessions that yields a short
+    list of suggested work with a source each, shown with one-click *Start*, plus a daily
+    work-left reminder) or `act` (it may also start a few tagged background sessions itself,
+    worded as the user would word them, in default permission mode and within per-agent daily and
+    concurrent limits that also bind the follow-up turn after a report), with `initiative.*`,
+    notifications, `imperium env agent …`, and `[initiative]` settings
+    ([14](14-projects-and-automation.md#initiative-implemented),
+    [10](10-configuration.md#initiative), [07](07-desktop-ui.md)). Open issues and pull
+    requests are not read yet.
+
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
 

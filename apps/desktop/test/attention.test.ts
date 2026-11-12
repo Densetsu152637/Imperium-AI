@@ -18,9 +18,10 @@ const defaults = {
   notifyBudget: true,
   notifyDownload: true,
   notifyUpdate: true,
+  notifyInitiative: true,
 } as AppSettings;
 
-const ALL: Attention[] = ["approval", "finished", "failed", "budget", "download", "update"];
+const ALL: Attention[] = ["approval", "finished", "failed", "budget", "download", "update", "initiative"];
 
 test("every kind shows a system notification in the background by default", () => {
   for (const kind of ALL) assert.equal(deliveryFor(kind, defaults, false).system, true, kind);
@@ -39,6 +40,7 @@ test("each kind follows its own switch", () => {
   assert.equal(deliveryFor("update", { ...defaults, notifyUpdate: false }, false).system, false);
   assert.equal(deliveryFor("budget", { ...defaults, notifyBudget: false }, false).system, false);
   assert.equal(deliveryFor("approval", { ...defaults, notifyApproval: false }, false).system, false);
+  assert.equal(deliveryFor("initiative", { ...defaults, notifyInitiative: false }, false).system, false);
 });
 
 test("sounds and the title badge keep their own settings", () => {
