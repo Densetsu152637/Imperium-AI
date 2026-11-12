@@ -313,10 +313,16 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     again, empty, when it is unarchived. Changing the root moves the whole tree (rename, or copy
     and verify, with rollback), from Settings, `imperium workspaces move`, or `config set`
     ([14](14-projects-and-automation.md#environment-working-folders-implemented),
-    [17](17-memory.md#environment-memory-implemented)). Follow-ups not built: a sweep for
-    scratch folders of sessions that were never archived or deleted, and the handles of
-    background processes that a session started in its scratch folder, which can keep a folder
-    from being deleted or moved.
+    [17](17-memory.md#environment-memory-implemented)). Orphan scratch folders are swept at
+    start. Not built: tracking the background processes a session started in its scratch folder,
+    which can keep a folder from being deleted or moved.
+
+37. **Home environment** (implemented). A built-in *Home* environment exists without being
+    created, is the default for a session started with no environment or project, has no
+    project folders (each session works in its own scratch folder, with Home's `Memory.md`),
+    reaches web-hosted files and the user's connectors under the normal permission modes, runs
+    no persistent agent, and cannot be deleted
+    ([14](14-projects-and-automation.md#home-implemented)).
 
 37. **Agent initiative** (implemented). Persistent agents can look for work on their own, when the
     machine is quiet and the user is idle in the environment: per agent `off` (the default),

@@ -33,12 +33,17 @@ pub fn run(
     context_summary: bool,
     worktree: Option<Option<String>>,
 ) -> anyhow::Result<()> {
+    // With neither --env nor --project the session starts in the built-in Home environment,
+    // which has no project folders to put on a worktree.
+    if worktree.is_some() && env.is_none() && project.is_none() {
+        anyhow::bail!(
+            "--worktree needs a project: give --project <dir> (or --env <name>); without one \
+             the session starts in Home, which has no project folders"
+        );
+    }
     let project = match (&env, project) {
         (Some(_), _) => None,
-        (None, Some(project)) => Some(project),
-        (None, None) => {
-            Some(std::env::current_dir().context("could not read the current directory")?)
-        }
+        (None, project) => project,
     };
     let project = project
         .map(|project| {
@@ -77,6 +82,13 @@ pub fn run(
                 .unwrap_or("no model yet (pick one with /model <id>)"),
             session.folders.join(", ")
         );
+        if session.environment_id.as_deref() == Some("home") {
+            println!(
+                "This is the Home environment: no project folders, only the scratch folder above. \
+                 To work on a project, start with --project <dir> (or --project . for the current \
+                 directory) or --env <name>."
+            );
+        }
         println!(
             "Type a message. While the agent works, messages queue and run in order; /steer \
              <text> adds a message to the running turn, /queue lists what waits. /context shows \

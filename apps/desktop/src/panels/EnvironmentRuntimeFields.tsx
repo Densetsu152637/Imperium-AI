@@ -59,6 +59,7 @@ export function EnvironmentRuntimeFields({
   projectWorktrees,
   onProjectWorktrees,
   disabled,
+  fixedLocal = false,
   testBlocked,
   onTest,
 }: {
@@ -68,6 +69,8 @@ export function EnvironmentRuntimeFields({
   projectWorktrees: boolean;
   onProjectWorktrees: (on: boolean) => void;
   disabled?: boolean;
+  /** The runtime cannot be chosen: it is this machine (the built-in Home environment). */
+  fixedLocal?: boolean;
   /** Why Test cannot run now (unsaved changes, no environment yet), if it cannot. */
   testBlocked?: string | null;
   onTest: () => Promise<RuntimeTestResult>;
@@ -93,16 +96,20 @@ export function EnvironmentRuntimeFields({
     <section className="environment-section environment-runtime" aria-label="Runtime">
       <div className="environment-section-head">
         <span className="environment-label">Runtime</span>
-        <Select
-          aria-label="Runtime"
-          value={draft.kind}
-          disabled={disabled}
-          options={KINDS}
-          onChange={(kind) => {
-            setResult(null);
-            onChange({ ...draft, kind: kind as Kind });
-          }}
-        />
+        {fixedLocal ? (
+          <span className="muted">This machine</span>
+        ) : (
+          <Select
+            aria-label="Runtime"
+            value={draft.kind}
+            disabled={disabled}
+            options={KINDS}
+            onChange={(kind) => {
+              setResult(null);
+              onChange({ ...draft, kind: kind as Kind });
+            }}
+          />
+        )}
       </div>
       {draft.kind === "docker" && (
         <>

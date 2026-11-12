@@ -1017,7 +1017,8 @@ pub struct SearchHighlight {
 #[ts(export)]
 pub struct SessionCreateParams {
     /// The environment the session works in: its folders are the sandbox, the first is the
-    /// working directory. Give this or `project_dir`.
+    /// working directory. Give this or `project_dir`; with neither, the session starts in the
+    /// built-in Home environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub environment_id: Option<String>,
@@ -1107,6 +1108,11 @@ pub struct EnvironmentInfo {
     /// (`session.create` `worktree`) and remote runtimes do not get them.
     #[serde(default = "yes")]
     pub project_worktrees: bool,
+    /// The built-in Home environment: always present, listed first, never deleted, and the
+    /// default for a session started with no environment or project chosen. It has no project
+    /// folders unless the user adds some; its sessions work in their scratch folders.
+    #[serde(default)]
+    pub builtin: bool,
 }
 
 /// Where an environment's tools run. `local` is this machine (under the configured isolation

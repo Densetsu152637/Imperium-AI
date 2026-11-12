@@ -19,12 +19,12 @@ RPC:
 | `environments.create` | `{ name, icon?, color?, folders, runtime?, persistent_agent?, pet?, project_worktrees? }` (`persistent_agent` is [deprecated](#persistent-agents-implemented)) | `EnvironmentInfo` |
 | `environments.update` | `{ id, name?, icon?, color?, pinned?, runtime?, persistent_agent?, pet?, project_worktrees? }` (empty icon/colour/pet clears it; `persistent_agent` is [deprecated](#persistent-agents-implemented): `true` adds the default agent when there are none, `false` removes only that default agent and is refused with an error when the environment has more than one agent or an agent with a role) | `EnvironmentInfo` |
 | `environments.test_runtime` | `{ id }` | `{ ok, message }` |
-| `environments.delete` | `{ id }` | `{}` (folders and running sessions are left alone) |
+| `environments.delete` | `{ id }` | `{}` (folders and running sessions are left alone; Home is refused) |
 | `environments.add_folder` | `{ id, folder }` (an existing absolute folder) | `EnvironmentInfo` |
 | `environments.remove_folder` | `{ id, folder }` | `EnvironmentInfo` |
 
 `EnvironmentInfo` is `{ id, name, icon, color, folders, pinned, runtime, agents, persistent_agent
-(deprecated), agent_session_id (deprecated), pet, project_worktrees }`, where `project_worktrees` (on unless turned off)
+(deprecated), agent_session_id (deprecated), pet, project_worktrees, builtin }`, where `builtin` marks [Home](#home-implemented), and `project_worktrees` (on unless turned off)
 opens the folders' [git worktrees](#worktrees) to its sessions, and `pet` is the environment's default pet (an installed pet's id) for the
 [nursery](16-pets.md#imperium-nursery), or none to let the nursery decide; folders first-to-last with the working directory first; pinned environments are listed first by clients. Every change is announced to all clients as `environments.changed`
 (the full list). `session.create` takes `environment_id`; `project_dir` still works and maps to
@@ -196,6 +196,45 @@ sessions the daemon lists), and per-agent limits that differ from the global one
 Sessions that a schedule, a project agent, or auto-fix start still work in a single folder and
 carry no environment.
 
+### Home (implemented)
+
+**Home** is the one environment that exists without being created: a general-purpose place for
+menial work that touches web-hosted files and connectors, not a project. The daemon makes it when
+it starts (`id` `home`, named *Home*, with its own house icon), puts it first in
+`environments.list` with `builtin: true`, and keeps exactly one however often it restarts. A
+store written before Home existed gains it on the next start; nothing else in the store is
+touched.
+
+- **Default target.** A session started with neither `environment_id` nor `project_dir`
+  (`session.create {}`, `imperium chat` with neither `--env` nor `--project`, and the desktop's
+  new-session panel until another environment is chosen) works in Home. This changes `imperium
+  chat`, which used to start in the current directory: `imperium chat --project .` does that.
+  The chat's first lines say when the session is in Home and how to choose a project, and
+  `--worktree` without `--project` or `--env` is an error pointing at `--project`, since Home has
+  no project to put on a worktree.
+- **No project folders.** Its `folders` are empty. Each session works in its own
+  [scratch folder](#environment-working-folders-implemented) (`<root>/home/sessions/<id>/`),
+  which is the session's working directory and only folder. The file tools refuse any path
+  outside it (and outside the paths the user granted). `run_command` starts there, but a command
+  is not confined to a folder: how far it reaches follows the permission mode and the
+  [isolation tier](05-tools-and-isolation.md#isolation-tiers) like any session's. Home's
+  `Memory.md` is `<root>/home/Memory.md`, read into every Home session like any environment's.
+  A user who wants Home's agents to see a project adds its folder (`imperium env add-folder home
+  <folder>`, or the environment window), or grants a path in Home's permissions; Home then
+  works in that folder like any environment, with the scratch folder beside it. A worktree
+  start is refused while Home has no folders.
+- **Web files and connectors.** Home's sessions get the same tools as any session: `web_fetch`,
+  `web_search` and the browser tools when `[web]` allows them, and the user's MCP connectors.
+  They follow the session's [permission mode](05-tools-and-isolation.md#permissions) and the
+  safety floor: in the default mode a site not in `web.allow_domains` asks first, and plan mode
+  refuses what would ask.
+- **No persistent agent.** `persistent_agent` is off, as for any new environment. Nothing runs
+  in Home until the user starts a session or explicitly turns the agent on.
+- **What can change.** Home can be renamed, given another icon, colour or pet, pinned (it is
+  listed first either way), and given folders and permissions. Its runtime stays this machine.
+  `environments.delete` on it fails with an error, the CLI and the desktop (no *Delete* in its
+  menu or window) do not offer it, and `imperium env list` marks it `built in`.
+
 ### Environment working folders (implemented)
 
 Every environment has a **working folder** of its own, apart from its project folders: a place for
@@ -226,7 +265,17 @@ on the drive where their other data is kept):
   Deleting a session deletes it too. Nothing is moved to a trash: the folder is scratch space, and
   what should last belongs in the environment's folders or in memory. Deleting an environment
   leaves its working folder alone (its sessions' folders go with those sessions, and `Memory.md`
-  stays until the user deletes it).
+  stays until the user deletes it). At start, after sessions were resumed and the agents
+  started, the daemon deletes scratch folders whose session no longer exists (the daemon was
+  killed before it could clean up, or the session was deleted while it was off). A folder stays
+  when its session is running, is an environment's or project's agent, or has a record that is
+  not known to be archived: only a missing record, or one that says archived, makes a session
+  gone, so a record that cannot be read or parsed, or a session older than `agents.resume_days`
+  that is no longer resumed, keeps its folder. Only folders directly under
+  `<root>/<environment-id>/sessions/` are touched, with a safe environment name and a generated
+  session id (16 hex digits), and never through a link: a symlink or junction as the environment
+  folder, as `sessions`, or as the session folder is skipped, and links inside a session folder
+  are removed, not followed.
 - **`Memory.md`** is the environment's own memory, read into the context of every session in that
   environment and written by agents with the `environment` scope of `memory_remember`
   ([17](17-memory.md#environment-memory-implemented)). It is created on its first write.

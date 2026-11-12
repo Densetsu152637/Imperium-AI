@@ -156,7 +156,7 @@ async fn a_new_environment_has_no_agents_and_nothing_starts() {
     let id = new_environment(&mut connection, folder.path());
 
     let listed = call(&mut connection, "environments.list", json!({}));
-    let env = &listed["environments"][0];
+    let env = &listed["environments"][1];
     assert_eq!(env["agents"], json!([]));
     assert_eq!(env["persistent_agent"], false);
     assert!(env["agent_session_id"].is_null());
@@ -318,6 +318,10 @@ async fn an_old_persistent_session_becomes_an_agent_with_its_history() {
     };
     let mut saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     for env in saved["environments"].as_array_mut().unwrap() {
+        // Only the environment the test made; Home stays as it is.
+        if env["builtin"] == true {
+            continue;
+        }
         let object = env.as_object_mut().unwrap();
         object.remove("agents");
         object.insert("persistent_agent".into(), json!(true));
@@ -328,7 +332,7 @@ async fn an_old_persistent_session_becomes_an_agent_with_its_history() {
     let state = daemon(home.path(), &url);
     let mut connection = connect(&state);
     let listed = call(&mut connection, "environments.list", json!({}));
-    let env = &listed["environments"][0];
+    let env = &listed["environments"][1];
     assert_eq!(env["agents"].as_array().unwrap().len(), 1, "{env}");
     assert_eq!(env["agents"][0]["session_id"], session_id.as_str());
     state.start_project_agents();
@@ -338,7 +342,7 @@ async fn an_old_persistent_session_becomes_an_agent_with_its_history() {
     // The migration was saved: another start finds the agent without migrating again.
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(
-        saved["environments"][0]["agents"].as_array().unwrap().len(),
+        saved["environments"][1]["agents"].as_array().unwrap().len(),
         1
     );
 
@@ -350,8 +354,8 @@ async fn an_old_persistent_session_becomes_an_agent_with_its_history() {
     );
     assert!(state.project_agents().environment_agents().is_empty());
     let env = call(&mut connection, "environments.list", json!({}));
-    assert_eq!(env["environments"][0]["agents"], json!([]));
-    assert_eq!(env["environments"][0]["persistent_agent"], false);
+    assert_eq!(env["environments"][1]["agents"], json!([]));
+    assert_eq!(env["environments"][1]["persistent_agent"], false);
 }
 
 fn find_file(root: &std::path::Path, name: &str) -> std::path::PathBuf {

@@ -366,6 +366,11 @@ fn pick(environments: Vec<EnvironmentInfo>, id_or_name: &str) -> anyhow::Result<
 
 fn describe(env: &EnvironmentInfo) -> String {
     let mut text = format!("{}  {}\n", env.id, env.name);
+    if env.builtin {
+        text.push_str(
+            "    built in: the default for sessions started with no environment or project\n",
+        );
+    }
     if env.runtime != EnvironmentRuntime::Local {
         text.push_str(&format!("    runtime: {}\n", runtime_label(&env.runtime)));
     }
@@ -373,7 +378,11 @@ fn describe(env: &EnvironmentInfo) -> String {
         let session = agent.session_id.as_deref().unwrap_or("not started");
         text.push_str(&format!("    agent {}: {session}\n", agent.name));
     }
-    if env.folders.is_empty() {
+    if env.folders.is_empty() && env.builtin {
+        text.push_str(
+            "    (no project folders: sessions work in their own scratch folders; add paths with imperium env add-folder)\n",
+        );
+    } else if env.folders.is_empty() {
         text.push_str("    (no folders yet: imperium env add-folder <env> <folder>)\n");
     }
     for (index, folder) in env.folders.iter().enumerate() {
@@ -419,6 +428,7 @@ mod tests {
             pinned: false,
             permissions: Default::default(),
             project_worktrees: true,
+            builtin: false,
         }
     }
 
