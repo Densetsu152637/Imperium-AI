@@ -6,7 +6,8 @@ use crate::permissions::{PathGrant, PathMode, Permissions, Target, expand_home};
 use crate::processes::Processes;
 use crate::project_worktrees::ProjectWorktrees;
 use crate::runtime::{Remote, Runner, normalize_posix, wsl_path};
-use crate::{Sandbox, ToolError};
+use crate::writer_trees::WriterHandle;
+use crate::{Sandbox, ToolError, WriterTrees};
 
 /// The folders an agent works in: an environment's folders, the first of which is the working
 /// directory (the root). Relative paths given to tools resolve against the root; absolute paths
@@ -41,6 +42,8 @@ pub struct Workspace {
     scratch: Option<PathBuf>,
     /// Commands started in the background; clones share them.
     processes: Processes,
+    /// Makes writer subagents' worktrees, when the daemon offers them.
+    writers: Option<WriterHandle>,
 }
 
 /// A path outside the workspace's folders that the tools may use: canonical on this machine,
@@ -97,6 +100,7 @@ impl Workspace {
             worktrees: None,
             scratch: None,
             processes: Processes::default(),
+            writers: None,
         })
     }
 
@@ -139,6 +143,7 @@ impl Workspace {
             permissions: Permissions::default(),
             worktrees: None,
             scratch: None,
+            writers: None,
             processes: Processes::default(),
         })
     }
@@ -345,6 +350,40 @@ impl Workspace {
             .map(Path::to_path_buf)
             .chain(self.project_worktrees())
             .collect()
+    }
+
+    /// The same workspace with `writers` making worktrees for parallel writer subagents. Local
+    /// workspaces only; a remote one is unchanged.
+    pub fn with_writer_trees(mut self, writers: Arc<dyn WriterTrees>) -> Self {
+        if self.remote.is_none() {
+            self.writers = Some(WriterHandle(writers));
+        }
+        self
+    }
+
+    /// Makes and finishes writer subagents' worktrees, when this workspace has them.
+    pub fn writer_trees(&self) -> Option<Arc<dyn WriterTrees>> {
+        self.writers.as_ref().map(|handle| Arc::clone(&handle.0))
+    }
+
+    /// The same workspace with other folders (the first is the working directory; each must be
+    /// an existing directory) and nothing else of its own: the grants, scratch folder, sandbox,
+    /// permissions and background commands stay, but the project worktrees do not open and the
+    /// copy cannot make worktrees. A writer subagent works in this, so its edits stay in its
+    /// own worktrees.
+    pub fn with_roots<P: AsRef<Path>>(&self, folders: &[P]) -> std::io::Result<Self> {
+        let Some((first, rest)) = folders.split_first() else {
+            return Err(std::io::Error::other("a workspace needs a folder"));
+        };
+        let mut moved = Workspace {
+            root: existing_dir(first.as_ref())?,
+            extra: Vec::new(),
+            worktrees: None,
+            writers: None,
+            ..self.clone()
+        };
+        moved = moved.with_folders(rest)?;
+        Ok(moved)
     }
 
     /// The same workspace with commands run under `sandbox`.

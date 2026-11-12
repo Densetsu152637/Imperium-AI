@@ -222,8 +222,45 @@ The **Project worktrees** switch in the environment's window (`project_worktrees
 own worktree (above) keeps to its worktrees, so its edits stay apart from your checkout, and
 remote runtimes do not get project worktrees.
 
-**Planned:** parallel writing subagents can each work in their own Git worktree, so concurrent
-edits never collide. Worktree behaviour is explicit configuration, set globally and overridable
+**Implemented: worktrees for parallel writers** (roadmap item 26). `spawn_agent` takes
+`access: "read" | "write"` (default `read`). A **read** subagent shares its delegator's folders,
+as before. A **write** subagent works in git worktrees of its own, so writers running at the
+same time never edit the same files:
+
+- **Start.** Every folder of the delegator inside a git repository is replaced by the same place
+  in a new worktree of that repository, on a new branch `imperium/<first 8 characters of the
+  session id>-<task id>` (`imperium/ab12cd34-t1`) made from the repository's current `HEAD` (the
+  delegator's own worktree, if it works on one). Folders outside git stay as they are. The
+  writer's file tools, commands, and system prompt use the worktrees: its working directory is
+  the first, the project worktrees of [project worktrees](#worktrees) do not open for it, and it
+  cannot start worktrees itself. Worktrees are placed and made like a session's own (above:
+  `<sessions.worktree_dir>/<repo name>/<branch>` or the repository's `.worktrees/<branch>`, hooks
+  off, repositories with filter drivers or signing programs refused), and the writer starts from
+  the last commit: uncommitted changes in the delegator's checkout are not in the worktree, and
+  the start says so.
+- **Outside git** (or in a session that cannot make worktrees, such as a remote runtime), a
+  writer shares the delegator's folders as before, with a notice (a `notice` event, and a note in
+  `spawn_agent`'s result). A failure to make the worktree is returned to the delegator, which can
+  start the subagent without `access`. `access` is ignored for `single_call` subagents.
+- **Result.** When the writer stops working (its report is ready), everything it changed is
+  committed on its branch (`add -A`, `commit --no-verify`, with the daemon's git safeguards;
+  a commit identity is supplied if none is configured), and the report starts with the branch,
+  the worktree, the commit, the changed files, and whether merging the branch into the
+  delegator's current branch would be clean or would conflict, and in which files (`git
+  merge-tree`, which changes neither checkout). Nothing is merged: the delegator (or you) merges
+  with ordinary git, in the review flow above, where the merge then shows as the session's
+  changes; conflicts are reported, never resolved by the daemon. The daemon never resets,
+  checks out, or edits anything in the delegator's folders for a writer; the only things it adds
+  to the repository are the writer's branch, its worktree, and the objects git writes to
+  compute the merge outlook.
+- **Resume and cleanup.** A finished writer can be resumed (`resume_agent`) and goes back to its
+  worktrees; its next stop commits again. Writers' worktrees are recorded beside the session's
+  journal (`<session>.writers.json`) and, like a session's own, stay until
+  `session.delete { remove_worktrees: true }` removes them (with the same looking-up in the
+  repository's own `git worktree list`), keeping every branch. Without `remove_worktrees`
+  they stay, and their branches are in `git branch` and `git worktree list`.
+
+**Planned:** worktree behaviour as explicit configuration, set globally and overridable
 per project:
 
 ```toml
@@ -246,7 +283,7 @@ max_disk_gb = 50                # per project; new worktrees are refused above t
 | `in-repo`  | `<repo>/.imperium/worktrees/<name>` (added to `.git/info/exclude`) |
 | `custom`   | `custom_path` with placeholders expanded                  |
 
-- A Worktrees pane lists every worktree with its branch, owning session or task, ahead/behind
+- (Planned, as the settings above are:) A Worktrees pane lists every worktree with its branch, owning session or task, ahead/behind
   counts, dirty state, and disk use, with actions to open, sync with base, merge, or remove.
 - Merging a writer's worktree back is an explicit step (by the parent agent under policy, or by
   the user); conflicts are reported, never force-resolved.

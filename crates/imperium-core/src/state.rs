@@ -1506,6 +1506,17 @@ impl DaemonState {
             .data_dir()
             .join("sessions")
             .join(format!("{id}.jsonl"));
+        // Writer subagents started with `access: "write"` get worktrees of their own (local
+        // folders only).
+        let workspace = if remote {
+            workspace
+        } else {
+            workspace.with_writer_trees(Arc::new(crate::writers::GitWriterTrees::new(
+                &id,
+                &journal_path,
+                self.worktree_dir(),
+            )))
+        };
         // Remembered sessions on this machine checkpoint their repositories' files before each
         // turn that changes them.
         let checkpoints =
@@ -1684,16 +1695,7 @@ impl DaemonState {
                 .clone()
                 .filter(|branch| !branch.trim().is_empty())
                 .unwrap_or_else(|| format!("imperium/{}", &id[..id.len().min(8)]));
-            // Read afresh, so a change in Settings applies to the next session.
-            let fresh = crate::connectors::saved_settings(&self.paths);
-            let current = self.settings();
-            let dir = fresh
-                .as_ref()
-                .unwrap_or(&*current)
-                .sessions
-                .worktree_dir
-                .clone()
-                .filter(|dir| !dir.as_os_str().is_empty());
+            let dir = self.worktree_dir();
             let (used, made) = crate::worktrees::create(&folders, branch.trim(), dir.as_deref())
                 .map_err(CreateError::Worktree)?;
             folders = used;
@@ -1777,6 +1779,17 @@ impl DaemonState {
                 (result.removed_worktrees, result.failed) = crate::worktrees::remove(&own);
             }
         }
+        // So do the worktrees of its writer subagents, on the same terms (branches stay).
+        let journal = sessions.join(format!("{id}.jsonl"));
+        if remove_worktrees {
+            let writers = crate::writers::GitWriterTrees::recorded(&journal);
+            if !writers.is_empty() {
+                let (removed, failed) = crate::worktrees::remove(&writers);
+                result.removed_worktrees.extend(removed);
+                result.failed.extend(failed);
+            }
+        }
+        crate::writers::GitWriterTrees::forget(&journal);
         self.announce(
             imperium_protocol::methods::SESSION_DELETED,
             SessionDeleteParams {
@@ -1785,6 +1798,20 @@ impl DaemonState {
             },
         );
         Ok(result)
+    }
+
+    /// Where sessions put their worktrees (`sessions.worktree_dir`), read afresh so a change in
+    /// Settings applies to the next one; `None` puts them inside their repositories.
+    fn worktree_dir(&self) -> Option<PathBuf> {
+        let fresh = crate::connectors::saved_settings(&self.paths);
+        let current = self.settings();
+        fresh
+            .as_ref()
+            .unwrap_or(&*current)
+            .sessions
+            .worktree_dir
+            .clone()
+            .filter(|dir| !dir.as_os_str().is_empty())
     }
 
     /// Worktree folders that running and archived sessions work in.
