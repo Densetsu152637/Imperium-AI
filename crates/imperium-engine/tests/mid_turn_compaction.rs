@@ -123,6 +123,7 @@ fn start(url: &str, dir: &std::path::Path, auto_compact_at: Option<f64>) -> Sess
         auto_compact_at,
         background: None,
         checkpoints: None,
+        budget_gate: None,
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),

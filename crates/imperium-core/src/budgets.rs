@@ -2,8 +2,8 @@
 //! and model spec in `<data>/usage.json`, so windows survive restarts. Budgets from the user
 //! config (`[budgets]`) count those records over daily, weekly, or monthly windows in local
 //! time, alert once per threshold per window (`budgets.alert`), and, once used up, can make new
-//! turns in their scope ask first or stop ([`DaemonState::budget_gate`]). Turns already running
-//! finish.
+//! turns in their scope ask first or stop, and the same check runs before every model call and
+//! subagent spawn ([`CallGate`], [`check_call`]), so a budget used up mid-turn stops the next call.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -551,8 +551,8 @@ fn alert_message(label: &str, alert: &Fired) -> String {
     if alert.share >= 1.0 {
         let then = match alert.budget.action {
             BudgetAction::Warn => "",
-            BudgetAction::Ask => " New turns ask before they start.",
-            BudgetAction::Block => " New turns are blocked.",
+            BudgetAction::Ask => " New turns and model calls ask first.",
+            BudgetAction::Block => " New turns and model calls are blocked.",
         };
         format!("{label} is used up ({percent}%) until {reset}.{then}")
     } else {
@@ -710,27 +710,106 @@ pub fn usage(
 }
 
 /// The `-32008` error for a turn a used-up budget stops, unless it asks and was confirmed.
+/// An approval is remembered for the session's later model calls ([`CallGate`]).
 pub fn check(state: &DaemonState, session_id: &str, confirmed: bool) -> Result<(), ErrorObject> {
     let Some(session) = state.session(session_id) else {
         return Ok(());
     };
     let summary = state.summary(&session);
-    let spec = summary
-        .model
-        .as_deref()
-        .map(|model| resolve_spec(state, model));
-    let today = Local::now().date_naive();
-    let Some(stop) =
-        state
-            .budgets()
-            .gate(today, summary.environment_id.as_deref(), spec.as_deref())
-    else {
-        return Ok(());
-    };
-    if stop.budget.action == BudgetAction::Ask && confirmed {
-        return Ok(());
+    let spec = summary.model.as_deref();
+    let result = check_call(
+        state,
+        summary.environment_id.as_deref(),
+        spec.unwrap_or_default(),
+        confirmed,
+    );
+    if confirmed
+        && result.is_ok()
+        && let Some(stop) = stop_for(state, summary.environment_id.as_deref(), spec)
+    {
+        state.confirm_budget(&confirm_key(session_id, &stop));
     }
-    Err(stop_error(state, &stop))
+    result
+}
+
+/// The one per-call budget check: whether a call to the model `spec` (a catalog id or a spec;
+/// empty for none) by a session in `environment` may go ahead. A used-up budget in its scope
+/// that blocks is a `-32008` error; one that asks is too, unless `confirmed`. The engine runs
+/// it before every model call and subagent spawn ([`CallGate`]); the local API runs it before
+/// every request it serves.
+pub fn check_call(
+    state: &DaemonState,
+    environment: Option<&str>,
+    spec: &str,
+    confirmed: bool,
+) -> Result<(), ErrorObject> {
+    let spec = (!spec.is_empty()).then_some(spec);
+    match stop_for(state, environment, spec) {
+        Some(stop) if !(stop.budget.action == BudgetAction::Ask && confirmed) => {
+            Err(stop_error(state, &stop))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The used-up budget with the strongest action over a call to `spec` in `environment`.
+fn stop_for(state: &DaemonState, environment: Option<&str>, spec: Option<&str>) -> Option<Stop> {
+    let spec = spec.map(|model| resolve_spec(state, model));
+    state
+        .budgets()
+        .gate(Local::now().date_naive(), environment, spec.as_deref())
+}
+
+fn confirm_key(session_id: &str, stop: &Stop) -> String {
+    format!("{session_id}|{}|{}", stop.budget.id, stop.window_end)
+}
+
+/// A session's gate on its model calls and subagent spawns: a budget used up mid-turn stops
+/// the next call, not only the next turn.
+#[derive(Debug)]
+pub struct CallGate {
+    state: std::sync::Weak<DaemonState>,
+    session_id: String,
+}
+
+impl CallGate {
+    pub fn new(state: std::sync::Weak<DaemonState>, session_id: String) -> Self {
+        Self { state, session_id }
+    }
+}
+
+impl imperium_engine::BudgetGate for CallGate {
+    fn check(&self, spec: &str) -> imperium_engine::BudgetVerdict {
+        use imperium_engine::BudgetVerdict;
+        let Some(state) = self.state.upgrade() else {
+            return BudgetVerdict::Go;
+        };
+        let environment = state
+            .session(&self.session_id)
+            .and_then(|session| state.summary(&session).environment_id);
+        let spec = (!spec.is_empty()).then_some(spec);
+        let Some(stop) = stop_for(&state, environment.as_deref(), spec) else {
+            return BudgetVerdict::Go;
+        };
+        let message = stop_error(&state, &stop).message;
+        match stop.budget.action {
+            BudgetAction::Block => BudgetVerdict::Blocked(message),
+            _ => {
+                let key = confirm_key(&self.session_id, &stop);
+                if state.budget_confirmed(&key) {
+                    BudgetVerdict::Go
+                } else {
+                    BudgetVerdict::Ask { message, key }
+                }
+            }
+        }
+    }
+
+    fn confirm(&self, key: &str) {
+        if let Some(state) = self.state.upgrade() {
+            state.confirm_budget(key);
+        }
+    }
 }
 
 /// A model as a spec: catalog ids are looked up; specs pass through.
@@ -752,7 +831,7 @@ fn stop_error(state: &DaemonState, stop: &Stop) -> ErrorObject {
     let reset = day(stop.window_end);
     let message = match stop.budget.action {
         BudgetAction::Block => {
-            format!("{label} is used up until {reset}; new turns are blocked.")
+            format!("{label} is used up until {reset}; new turns and model calls are blocked.")
         }
         _ => format!("{label} is used up until {reset}. Start the turn anyway?"),
     };

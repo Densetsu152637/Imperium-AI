@@ -767,6 +767,13 @@ impl Agent {
             // What the reservation counted for the prompt, to compare with what it was.
             let mut estimate: u32;
             let (client, queue_wait, started, first_text, result) = loop {
+                // A used-up budget stops spend here, before each call, mid-turn included.
+                if let Some(message) = self.budget_stop().await {
+                    self.emit(SessionEvent::TurnFailed {
+                        message: message.clone(),
+                    });
+                    return self.outcome(message, false, total);
+                }
                 // A local model's slot is held for this one request, not for the turn: tool
                 // calls, `await_tasks`, and usage-limit pauses run without one. The model is
                 // loaded here if needed.
@@ -1617,6 +1624,28 @@ impl Agent {
         Ok((endpoint, Some(lease)))
     }
 
+    /// Why the next call to this agent's model must not happen: a used-up budget that blocks,
+    /// or one that asks and the person declined. A budget that asks waits here for approval,
+    /// once for the rest of the session's window.
+    async fn budget_stop(&self) -> Option<String> {
+        let gate = self.shared.budget_gate.as_ref()?;
+        match gate.check(&self.model.spec) {
+            crate::BudgetVerdict::Go => None,
+            crate::BudgetVerdict::Blocked(message) => Some(message),
+            crate::BudgetVerdict::Ask { message, key } => {
+                if self
+                    .approve_with("budget", &message, None, false, true)
+                    .await
+                {
+                    gate.confirm(&key);
+                    None
+                } else {
+                    Some(format!("{message} The call was not approved."))
+                }
+            }
+        }
+    }
+
     fn outcome(&self, text: String, ok: bool, usage: Usage) -> TurnOutcome {
         TurnOutcome {
             text,
@@ -1881,6 +1910,13 @@ impl Agent {
             },
             self.shared.local.as_deref(),
         );
+        // A model whose budget is used up and blocks is not started; one that asks is
+        // approved at the subagent's first call.
+        if let Some(gate) = &self.shared.budget_gate
+            && let crate::BudgetVerdict::Blocked(message) = gate.check(&model.spec)
+        {
+            return Err(message);
+        }
         let task_id = self.shared.next_task_id();
         self.emit(SessionEvent::TaskSpawned {
             task_id: task_id.clone(),

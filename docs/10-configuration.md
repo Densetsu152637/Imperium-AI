@@ -208,8 +208,12 @@ limits = [
   `budgets.alert`; the desktop shows them as notifications (Settings → Notifications).
 - **Action** when a budget is used up: `warn` (the default) only alerts; `ask` makes each new
   turn in the scope ask first (`session.send` fails with `-32008` until it is repeated with
-  `confirm_budget`); `block` refuses new turns in the scope until the window resets. Turns already
-  running, messages already queued, and steering a running turn are not stopped. Scheduled runs
+  `confirm_budget`); `block` refuses new turns in the scope until the window resets. The check
+  also runs before every model call and subagent spawn, against the model that call uses, so a
+  budget used up in the middle of a turn stops the next call there (the turn fails with the budget
+  message), a subagent on a blocked endpoint or model is refused, and an `ask` budget pauses the
+  agent for approval once per window (answering the permission prompt, or confirming the turn).
+  A call already running finishes; steering a running turn is not stopped. Scheduled runs
   and project-agent briefs in a scope that asks or blocks do not start.
 
 `budgets.get` returns the budgets and where each stands, `budgets.set` replaces them (applied at

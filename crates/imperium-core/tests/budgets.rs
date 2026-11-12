@@ -227,3 +227,72 @@ async fn used_up_budgets_ask_then_block_new_turns_and_usage_survives_a_restart()
     assert_eq!(status["status"][0]["budget"]["action"], "block");
     assert_eq!(status["status"][0]["alerted"], json!([50, 80, 100]));
 }
+
+#[tokio::test]
+async fn a_used_up_budget_stops_calls_to_its_scope_not_only_new_turns() {
+    use imperium_engine::{BudgetGate, BudgetVerdict};
+    let home = tempfile::tempdir().unwrap();
+    let url = fake_model().await;
+    let state = daemon(home.path(), &url);
+    let mut connection = Connection::new(Arc::clone(&state));
+    handshake(&mut connection);
+    // Endpoint `other` blocks and endpoint `asked` asks once 100 tokens are spent; they have been.
+    let limit = |target: &str, action: &str| {
+        json!({"id": "", "name": "", "scope": "endpoint", "target": target,
+               "window": "daily", "tokens": 100, "cost_usd": null,
+               "thresholds": null, "action": action})
+    };
+    call(
+        &mut connection,
+        2,
+        "budgets.set",
+        json!({
+            "week_start": "monday", "month_start_day": 1, "thresholds": [100],
+            "limits": [limit("other", "block"), limit("asked", "ask")]
+        }),
+    );
+    let today = chrono::Local::now().date_naive();
+    for endpoint in ["other", "asked"] {
+        state.budgets().record(
+            today,
+            &imperium_core::CallUsage {
+                environment_id: None,
+                spec: format!("{endpoint}:m"),
+                tokens: 500,
+                cost_usd: None,
+            },
+        );
+    }
+
+    // The per-call check, for any caller: the scope's models are refused, others are not.
+    let error = imperium_core::check_call(&state, None, "other:m", false).unwrap_err();
+    assert_eq!(error.code, codes::BUDGET_EXCEEDED);
+    assert_eq!(error.data.unwrap()["action"], "block");
+    assert!(imperium_core::check_call(&state, None, "fake:m", false).is_ok());
+    // Ask stops until confirmed; block stays blocked.
+    assert!(imperium_core::check_call(&state, None, "asked:m", false).is_err());
+    assert!(imperium_core::check_call(&state, None, "asked:m", true).is_ok());
+    assert!(imperium_core::check_call(&state, None, "other:m", true).is_err());
+
+    // The session's gate, which the engine asks before each model call and spawn: a session
+    // whose root runs on `fake` is refused a subagent on `other`.
+    let project = tempfile::tempdir().unwrap();
+    let created = call(
+        &mut connection,
+        3,
+        "session.create",
+        json!({"project_dir": project.path()}),
+    );
+    let session_id = created["session_id"].as_str().unwrap().to_string();
+    let gate = imperium_core::CallGate::new(Arc::downgrade(&state), session_id);
+    assert!(matches!(
+        gate.check("other:m"),
+        BudgetVerdict::Blocked(message) if message.contains("blocked")
+    ));
+    assert_eq!(gate.check("fake:m"), BudgetVerdict::Go);
+    let BudgetVerdict::Ask { key, .. } = gate.check("asked:m") else {
+        panic!("an asking budget should ask");
+    };
+    gate.confirm(&key);
+    assert_eq!(gate.check("asked:m"), BudgetVerdict::Go);
+}
