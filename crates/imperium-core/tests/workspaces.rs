@@ -639,7 +639,7 @@ async fn two_moves_at_once_never_strand_the_data() {
 
     // The data is wherever the setting now says, and nowhere else.
     let root = PathBuf::from(state.workspaces_where().root);
-    assert!(targets.iter().any(|target| *target == root), "{root:?}");
+    assert!(targets.contains(&root), "{root:?}");
     assert!(
         root.join(&env)
             .join("sessions")
