@@ -149,8 +149,8 @@ listed; edit them in the file.
 | `extensions.plugin_dirs` | none | More plugin folders (Claude Code layout), besides `<config>/plugins` |
 | `extensions.lazy` | `true` | Load skills and plugins on first use: agents start with only each one's name and description ([06](06-extensibility.md#lazy-skills-and-plugins-implemented)). `false` puts every skill's instructions in the prompt and starts every plugin's servers with the session |
 | `extensions.eager` | none | Skills and plugins, by name, loaded up front even when `extensions.lazy` is on |
-| `memory.enabled` | `true` | Global and project memory ([17](17-memory.md)) |
-| `memory.write.global`, `.project`, `.project_private` | `ask`, `ask`, `auto` | Whether agents may save memories in each scope: `auto`, `ask`, or `off` |
+| `memory.enabled` | `true` | Global memory and each environment's `Memory.md` ([17](17-memory.md)) |
+| `memory.write.global` | `ask` | Whether agents may save global memories: `auto`, `ask`, or `off`. (`memory.write.project` and `memory.write.project_private` were folded into the environment scope and are ignored in older config files, see [17](17-memory.md#migrating-older-project-memory).) |
 | `memory.write.environment` | `ask` | Whether agents may write to an environment's `Memory.md`, which every later session there reads as part of its instructions, so a write shows the whole entry for approval by default ([17](17-memory.md#environment-memory-implemented)) |
 | `memory.recall` | `true` | Put the best-matching memories before each message |
 | `memory.max_index_tokens`, `memory.max_recall_tokens` | `1500`, `1500` | Budgets for the index in agent instructions and for recalled memories |

@@ -22,7 +22,7 @@ implemented behaviour and to mark anything still aspirational.
 | 14  | [Projects and automation](14-projects-and-automation.md) | Projects, project agents, schedules                    |
 | 15  | [Mobile and remote](15-mobile-and-remote.md)      | Phone app, pairing, connectivity                              |
 | 16  | [Pets](16-pets.md)                                | Pixel companions driven by agent state                        |
-| 17  | [Memory](17-memory.md)                            | Global and project memory: storage, recall, writing, privacy  |
+| 17  | [Memory](17-memory.md)                            | Global and environment memory: storage, recall, writing, privacy  |
 | 18  | [Workflow contract](18-workflow-contract.md)      | Public contract for custom workflows; context retrieval (RAG) |
 | 19  | [Sharing and sync](19-sharing-and-sync.md)        | Session bundles, redaction, import; team sync design (designed) |
 

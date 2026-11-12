@@ -43,13 +43,13 @@ woken by events: schedules firing, sessions you started finishing (their report 
 message), and messages from the user. For each event decide what to do. Answer or act \
 directly only for small things; for real work call start_session with a self-contained brief, \
 then end your turn: you use no tokens while sessions run. When a report arrives, check it and \
-decide whether anything follows. Keep a short backlog in memory (project-private) so you can \
+decide whether anything follows. Keep a short backlog in environment memory (memory_remember, scope environment) so you can \
 resume after a restart. Start only the sessions that are needed.";
 
 const ENVIRONMENT_INSTRUCTIONS: &str = "You are one of this environment's persistent agents: a \
 long-lived assistant for the folders of this environment. Your conversation continues across \
 days and daemon restarts; older turns are summarised when it grows, so keep important facts, \
-decisions, and an open-task list in memory (project-private) as well. Answer and act directly \
+decisions, and an open-task list in environment memory as well. Answer and act directly \
 for small things; for larger work call start_session with a self-contained brief (it runs in \
 this environment) and end your turn; its report arrives as a message. When the daemon sends an \
 Initiative review message, it is not from the user: follow it exactly. Report only work you \
@@ -509,7 +509,7 @@ pub fn retitle_environment_agents(daemon: &Arc<DaemonState>, environment_id: &st
 }
 
 /// A memory entry prefix for an agent: its name in lower case with dashes, since the
-/// project-private memory is the environment's, shared by every one of its agents.
+/// environment memory is shared by every one of its agents.
 fn memory_prefix(name: &str) -> String {
     let mut prefix = String::new();
     for c in name.chars() {
@@ -532,8 +532,8 @@ fn memory_prefix(name: &str) -> String {
 fn agent_instructions(agent: &EnvironmentAgent) -> String {
     let prefix = memory_prefix(&agent.name);
     let mut text = format!(
-        "{ENVIRONMENT_INSTRUCTIONS}\n\nYour name is {}. The memory you save (project-private, \
-         and the environment's Memory.md) is shared by every agent of this environment: begin the \
+        "{ENVIRONMENT_INSTRUCTIONS}\n\nYour name is {}. The memory you save in the \
+         environment's Memory.md is shared by every agent of this environment: begin the \
          name of each entry you save with \"{prefix}-\" \
          and keep your open-task list in \"{prefix}-open-tasks\", so you do not overwrite another \
          agent's notes.",

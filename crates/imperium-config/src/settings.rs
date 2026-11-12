@@ -952,7 +952,7 @@ pub enum Enforce {
     Off,
 }
 
-/// Global and project memory (see docs/17-memory.md).
+/// Global memory and environments' `Memory.md` (see docs/17-memory.md).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct MemorySettings {
@@ -1003,9 +1003,9 @@ pub enum SessionSearchScope {
 #[serde(default)]
 pub struct MemoryWrite {
     pub global: WritePolicy,
-    pub project: WritePolicy,
-    pub project_private: WritePolicy,
-    /// An environment's `Memory.md` (see docs/17-memory.md#environment-memory).
+    /// An environment's `Memory.md`, which also holds what used to be the project's private
+    /// and shared memory (see docs/17-memory.md#environment-memory-implemented). The older
+    /// `project` and `project_private` keys are ignored.
     pub environment: WritePolicy,
 }
 
@@ -1013,8 +1013,6 @@ impl Default for MemoryWrite {
     fn default() -> Self {
         MemoryWrite {
             global: WritePolicy::Ask,
-            project: WritePolicy::Ask,
-            project_private: WritePolicy::Auto,
             environment: WritePolicy::Ask,
         }
     }

@@ -1,5 +1,5 @@
-//! Phase 5 exit criterion: a memory saved in one project's session is recalled in a new
-//! session of that project.
+//! Phase 5 exit criterion: a global memory saved in one session is recalled in a new
+//! session.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -36,9 +36,9 @@ async fn model(last_user: Arc<Mutex<String>>) -> String {
                 let body = if step.fetch_add(1, Ordering::SeqCst) == 0 {
                     let arguments = json!({
                         "name": "release-checklist",
-                        "description": "How releases are cut in this project",
-                        "type": "project",
-                        "scope": "project",
+                        "description": "How releases are cut",
+                        "type": "feedback",
+                        "scope": "global",
                         "body": "Releases are tagged vX.Y.Z from main after the CI gate passes."
                     });
                     sse(json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"m",
@@ -81,10 +81,10 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         notices: Vec::new(),
         extensions: Default::default(),
         memory: Some(SessionMemory {
-            store: Store::new(data, Some(project)),
+            store: Store::new(data),
             settings: MemorySettings {
                 write: MemoryWrite {
-                    project: WritePolicy::Ask,
+                    global: WritePolicy::Ask,
                     ..MemoryWrite::default()
                 },
                 ..MemorySettings::default()
@@ -160,7 +160,7 @@ async fn plan_mode_refuses_to_save_a_memory() {
             .iter()
             .any(|e| matches!(e, SessionEvent::MemorySaved { .. }))
     );
-    assert!(!project.path().join(".imperium/memory").exists());
+    assert!(!data.path().join("memory/global").exists());
 }
 
 #[tokio::test]
@@ -175,11 +175,10 @@ async fn a_memory_saved_in_one_session_is_recalled_in_the_next() {
     assert!(events.iter().any(|e| matches!(e,
         SessionEvent::PermissionRequested { tool, .. } if tool == "memory_remember")));
     assert!(events.iter().any(|e| matches!(e,
-        SessionEvent::MemorySaved { name, scope } if name == "release-checklist" && scope == "project")));
+        SessionEvent::MemorySaved { name, scope } if name == "release-checklist" && scope == "global")));
     assert!(
-        project
-            .path()
-            .join(".imperium/memory/release-checklist.md")
+        data.path()
+            .join("memory/global/release-checklist.md")
             .is_file()
     );
 

@@ -47,6 +47,7 @@ use crate::suggestions::{SuggestTool, Suggestions};
 mod agent_config;
 mod archive;
 mod branch;
+mod memory_migration;
 mod model_awareness;
 mod session_search;
 mod titles;
@@ -1730,6 +1731,11 @@ impl DaemonState {
             placement.comparison_id = meta["comparison_id"].as_str().map(str::to_string);
             placement.started_by = serde_json::from_value(meta["started_by"].clone()).ok();
         }
+        // Older project memory of the environment's folder is in its Memory.md before the
+        // session reads it (a no-op once merged).
+        if let Some(environment) = &placement.environment_id {
+            self.migrate_environment_memory(environment);
+        }
         // Tool providers in the order their tools are offered (MCP tools always come first).
         let mut tools: Vec<Arc<dyn ToolProvider>> = Vec::new();
         if !mcp.is_empty() {
@@ -1860,12 +1866,9 @@ impl DaemonState {
                 load: self.load_view(),
             }),
             memory: self.settings().memory.enabled.then(|| SessionMemory {
-                // A read-only mount gets no project store: it lives in the project's folder
-                // (`.imperium/memory`), which the session must not write.
-                store: Store::new(
-                    self.paths.data_dir(),
-                    (!remote && !options.read_only).then_some(project_dir_path),
-                ),
+                // The global store only; an environment's Memory.md lives in its working folder,
+                // outside the project, so a read-only session may write it (under the policy).
+                store: Store::new(self.paths.data_dir()),
                 settings: self.settings().memory.clone(),
                 // Looked up on each use, so it follows the working folders when they move.
                 environment: placement

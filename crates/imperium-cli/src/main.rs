@@ -100,13 +100,10 @@ enum Command {
         #[command(subcommand)]
         command: ModelsCommand,
     },
-    /// Saved memories for the current project (or --project) and global ones.
+    /// Your global memories. (An environment's notes are its Memory.md.)
     Memory {
         #[command(subcommand)]
         command: MemoryCommand,
-        /// Project folder; defaults to the current directory.
-        #[arg(long, global = true)]
-        project: Option<PathBuf>,
     },
     /// The OpenAI-compatible API other tools use your models through.
     Api {
@@ -258,7 +255,7 @@ enum FoldersCommand {
 
 #[derive(Debug, Subcommand)]
 enum MemoryCommand {
-    /// List memories: global, the project's shared ones, and your private project notes.
+    /// List your global memories.
     List,
     /// Find memories relevant to a query.
     Search { query: String },
@@ -267,7 +264,7 @@ enum MemoryCommand {
     /// Delete a memory.
     Forget {
         name: String,
-        /// global, project, or project-private; defaults to where the name is found.
+        /// Only global is listed here; environment memory is the environment's Memory.md file.
         #[arg(long)]
         scope: Option<String>,
     },
@@ -870,11 +867,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     packs,
                 },
         } => workflow::resolve(&role, &task, project, packs),
-        Command::Memory { command, project } => match command {
-            MemoryCommand::List => memory::list(project),
-            MemoryCommand::Search { query } => memory::search(&query, project),
-            MemoryCommand::Show { name } => memory::show(&name, project),
-            MemoryCommand::Forget { name, scope } => memory::forget(&name, scope, project),
+        Command::Memory { command } => match command {
+            MemoryCommand::List => memory::list(),
+            MemoryCommand::Search { query } => memory::search(&query),
+            MemoryCommand::Show { name } => memory::show(&name),
+            MemoryCommand::Forget { name, scope } => memory::forget(&name, scope),
         },
     }
 }
