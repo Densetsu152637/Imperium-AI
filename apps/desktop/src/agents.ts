@@ -27,6 +27,9 @@ export function nameProblem(name: string): string | null {
       (code >= 0x7f && code <= 0x9f) ||
       code === 0x2028 ||
       code === 0x2029 ||
+      code === 0x200e ||
+      code === 0x200f ||
+      code === 0x061c ||
       (code >= 0x202a && code <= 0x202e) ||
       (code >= 0x2066 && code <= 0x2069)
     );
@@ -37,7 +40,7 @@ export function nameProblem(name: string): string | null {
 
 /** What to tell the user after adding an agent that did not start (it starts once the cause is fixed). */
 export const notStartedNotice = (created: EnvironmentAgentCreated | null, did = "was added"): string | null =>
-  created && !created.started
+  created && created.started === false
     ? `“${created.name}” ${did} but is not running yet: ${created.reason ?? "it has not started"}`
     : null;
 

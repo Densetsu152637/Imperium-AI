@@ -112,6 +112,7 @@ pub struct Bench {
     /// Serialises reads and writes of the results file.
     store: Mutex<()>,
     /// Test hook: the next run's task panics when it starts.
+    #[cfg(any(test, feature = "testing"))]
     panic_next: std::sync::atomic::AtomicBool,
 }
 
@@ -480,8 +481,11 @@ impl Bench {
 /// Measures each model in turn, one failing without stopping the others.
 async fn run_all(state: Arc<DaemonState>, run_id: String, models: Vec<String>, cold: bool) {
     let bench = state.bench();
-    if bench.panic_next.swap(false, Ordering::SeqCst) {
-        panic!("injected benchmark panic");
+    #[cfg(any(test, feature = "testing"))]
+    {
+        if bench.panic_next.swap(false, Ordering::SeqCst) {
+            panic!("injected benchmark panic");
+        }
     }
     for id in &models {
         bench.update(&state, &run_id, |run| {

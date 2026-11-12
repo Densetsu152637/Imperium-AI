@@ -1830,10 +1830,9 @@ impl DaemonState {
             writer_failures.clone_from(&failed);
             result.failed.extend(failed);
         }
-        // The record stays while a writer's worktree could not be removed, so it still names it.
-        if crate::writers::GitWriterTrees::may_forget(remove_worktrees, &writer_failures) {
-            crate::writers::GitWriterTrees::forget(&journal);
-        }
+        // The record goes, except for the writers whose worktrees could not be removed, which it
+        // keeps naming for cleaning up by hand.
+        crate::writers::GitWriterTrees::settle(&journal, remove_worktrees, &writer_failures);
         if remove_worktrees && !placement.worktrees.is_empty() {
             // A worktree another session also works in (a branch shares its source's) is
             // theirs too, and may hold uncommitted work: it stays.

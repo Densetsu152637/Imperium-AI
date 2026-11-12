@@ -47,7 +47,9 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
 
   const save = async () => {
     if (!draft) return;
-    const name = draft.name.trim();
+    // Only spaces at the edges are dropped: a separator or a control there is refused, as the
+    // daemon refuses it, not quietly trimmed.
+    const name = draft.name.replace(/^ +| +$/g, "");
     const problem = nameProblem(name);
     if (problem) {
       setError(problem);

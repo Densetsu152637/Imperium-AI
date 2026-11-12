@@ -812,6 +812,18 @@ async fn an_agent_that_cannot_start_is_added_and_says_why() {
     );
     assert!(created["session_id"].is_null());
     assert_eq!(created["name"], "Planner");
+    // Changing it restarts it, which cannot work either: the update says so too.
+    let updated = call(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": empty, "agent_id": created["id"], "role": "Plans."}),
+    );
+    assert_eq!(updated["started"], false, "{updated}");
+    assert!(
+        updated["reason"].as_str().unwrap().contains("no folders"),
+        "{updated}"
+    );
+    assert_eq!(updated["role"], "Plans.");
     // Adding a folder starts it.
     call(
         &mut connection,

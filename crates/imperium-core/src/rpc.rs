@@ -1063,7 +1063,7 @@ impl Connection {
         let envs = self.state.environments();
         let failed = |error: EnvironmentError| {
             let code = match error {
-                EnvironmentError::Save(_) => codes::INTERNAL_ERROR,
+                EnvironmentError::Save(_) | EnvironmentError::ReadOnly(_) => codes::INTERNAL_ERROR,
                 _ => codes::INVALID_PARAMS,
             };
             ErrorObject::new(code, error.to_string())

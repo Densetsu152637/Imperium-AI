@@ -288,7 +288,8 @@ pub fn for_reading(text: &str) -> String {
 /// speak outside it. Whatever the case or the spacing between `<`, `/` and the name (spaces,
 /// tabs, newlines), and also when the `<` or the `/` is written as a character reference a
 /// viewer might turn back into one: `&lt;`, `&lt` with no semicolon, `&#60;`, `&#060;`,
-/// `&#x3c;`, `&#x03c;`, `&sol;`, `&#47;`.
+/// `&#x3c;`, `&#x03c;`, `&sol;`, `&#47;` and `&#x2f;`, and the numeric ones also without their
+/// semicolon (`&#60`, `&#x3c`, `&#47`).
 fn neutralise(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     let bytes = text.as_bytes();

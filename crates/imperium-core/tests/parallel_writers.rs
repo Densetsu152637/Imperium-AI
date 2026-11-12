@@ -669,12 +669,46 @@ fn a_secret_file_in_a_folder_with_an_unusual_name_is_still_held_back() {
 }
 
 #[test]
-fn the_record_of_a_deleted_session_goes_only_when_its_worktrees_were_removed() {
-    // Not asked to remove them: the record can go. Asked, and all removed: it can go.
-    assert!(GitWriterTrees::may_forget(false, &["x".into()]));
-    assert!(GitWriterTrees::may_forget(true, &[]));
-    // Asked, and some stayed: it stays, naming them.
-    assert!(!GitWriterTrees::may_forget(true, &["/w/t1: in use".into()]));
+fn the_record_of_a_deleted_session_keeps_only_the_writers_that_could_not_be_removed() {
+    let repo = repository();
+    let journals = tempfile::tempdir().unwrap();
+    let journal = journals.path().join("s7.jsonl");
+    let writers = GitWriterTrees::new("s7", &journal, None);
+    let folders = canonical(&repo);
+    writers.start("t1", &folders).unwrap().unwrap();
+    writers.start("t2", &folders).unwrap().unwrap();
+    let record = journals.path().join("s7.writers.json");
+    let read = || -> Vec<serde_json::Value> {
+        serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap()
+    };
+    let entries = read();
+    assert_eq!(entries.len(), 2);
+    let root_of = |task: &str| {
+        let entry = entries.iter().find(|entry| entry["task"] == task).unwrap();
+        entry["trees"][0]["root"].as_str().unwrap().to_string()
+    };
+
+    // Asked to remove the worktrees, and t2's could not be: only t2 stays on record.
+    GitWriterTrees::settle(&journal, true, &[format!("{}: in use", root_of("t2"))]);
+    let kept = read();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0]["task"], "t2");
+    // Everything removed: it goes.
+    GitWriterTrees::settle(&journal, true, &[]);
+    assert!(!record.exists());
+}
+
+#[test]
+fn the_record_goes_when_worktrees_were_not_asked_to_be_removed() {
+    let repo = repository();
+    let journals = tempfile::tempdir().unwrap();
+    let journal = journals.path().join("s8.jsonl");
+    let writers = GitWriterTrees::new("s8", &journal, None);
+    writers.start("t1", &canonical(&repo)).unwrap().unwrap();
+    let record = journals.path().join("s8.writers.json");
+    assert!(record.is_file());
+    GitWriterTrees::settle(&journal, false, &["x: failed".into()]);
+    assert!(!record.exists());
 }
 
 #[test]

@@ -862,9 +862,10 @@ async fn the_sweep_does_not_follow_junctions() {
     // A junction inside an orphan folder: the folder goes, what the junction leads to stays.
     let orphan = "aaaaaaaaaaaaaaaa";
     seed_session_files(home.path(), &env, orphan);
-    if !junction(outside.path(), &sessions.join(orphan).join("out")) {
-        return; // no `cmd`/`mklink` here
-    }
+    assert!(
+        junction(outside.path(), &sessions.join(orphan).join("out")),
+        "`cmd /c mklink /J` is not available here, so junctions went untested"
+    );
     // A junction as `sessions` and a junction as the environment folder, each leading to an
     // orphan-looking session folder.
     let hex = "cccccccccccccccc";

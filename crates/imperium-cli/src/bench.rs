@@ -202,13 +202,18 @@ pub(crate) fn describe(result: &BenchResult) -> Vec<String> {
     lines
 }
 
+/// A result's lines, the first marked when it was measured on this machine.
+fn render(result: &BenchResult, here: bool) -> Vec<String> {
+    let mut lines = describe(result);
+    if here && let Some(first) = lines.first_mut() {
+        first.push_str("  (this machine)");
+    }
+    lines
+}
+
 fn print_result(result: &BenchResult, here: bool) {
-    for (index, line) in describe(result).into_iter().enumerate() {
-        if index == 0 && here {
-            println!("{line}  (this machine)");
-        } else {
-            println!("{line}");
-        }
+    for line in render(result, here) {
+        println!("{line}");
     }
 }
 
@@ -244,6 +249,32 @@ mod tests {
             }],
             error: None,
         }
+    }
+
+    #[test]
+    fn a_result_measured_here_is_marked_and_an_estimated_prompt_size_has_a_tilde() {
+        let mut here = result();
+        here.prompts[0].prompt_tokens_estimated = true;
+        here.prompts[0].prompt_tok_s = None;
+        let lines = render(&here, true);
+        assert!(lines[0].ends_with("(this machine)"), "{lines:?}");
+        assert!(lines[3].contains("~20 prompt tok"), "{lines:?}");
+        let elsewhere = render(&result(), false);
+        assert!(!elsewhere[0].contains("this machine"), "{elsewhere:?}");
+        assert!(elsewhere[3].contains("20 prompt tok") && !elsewhere[3].contains('~'));
+    }
+
+    #[test]
+    fn the_header_names_this_machine_for_each_runtime() {
+        let listing = imperium_protocol::methods::ModelBenchResultsResult {
+            hardware_fingerprint: "aaa".into(),
+            hardware_fingerprints: vec!["aaa".into(), "bbb".into()],
+            results: Vec::new(),
+            runs: Vec::new(),
+        };
+        let text = this_machine(&listing);
+        assert!(text.contains("aaa for llama.cpp, bbb for vLLM"), "{text}");
+        assert!(text.contains("(this machine)"), "{text}");
     }
 
     #[test]

@@ -519,7 +519,13 @@ async fn a_saturated_machine_makes_the_benchmark_wait_and_does_not_unload_the_mo
         "{}",
         run["results"][0]
     );
-    while let Ok(note) = announced.try_recv() {
+    loop {
+        let note = match announced.try_recv() {
+            Ok(note) => note,
+            // Missed some: look at the rest.
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(_) => break,
+        };
         if note.method == "models.bench_progress" {
             assert_ne!(
                 note.params["step"], "unloading the idle model to time its load",
