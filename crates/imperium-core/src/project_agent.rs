@@ -332,7 +332,7 @@ fn start_one(
         max_defer,
         daemon: Arc::downgrade(daemon),
         target: match environment_id {
-            Some(id) => Target::Environment(id.to_string()),
+            Some(id) => Target::EnvironmentProject(id.to_string()),
             None => Target::Folder(path.clone()),
         },
         agent: Arc::new(AgentSlot::default()),
@@ -662,6 +662,8 @@ enum Target {
     Folder(String),
     /// A persistent agent of an environment.
     Environment { environment: String, agent: String },
+    /// A project agent attached to an environment (`[[projects]]` `environment`).
+    EnvironmentProject(String),
 }
 
 /// Starts sessions for one project's (or environment's) agent and reports back to it.
@@ -812,15 +814,27 @@ impl Launcher {
             // What it starts is background work: it ranks below the user's sessions, and runs in
             // the default permission mode (the safety floor applies; nobody is there to answer
             // more, so what asks goes to the approval queue).
+            // An environment's own file may still make it stricter.
+            let environment_id = match &self.target {
+                Target::Folder(_) => None,
+                Target::Environment { environment, .. }
+                | Target::EnvironmentProject(environment) => Some(environment.as_str()),
+            };
             let options = SessionOptions {
                 background: true,
-                permission_mode: Some(imperium_api::PermissionMode::Default),
+                permission_mode: Some(match environment_id {
+                    Some(id) => {
+                        daemon.unattended_mode(&daemon.environment_settings(Some(id)).settings)
+                    }
+                    None => imperium_api::PermissionMode::Default,
+                }),
                 started_by,
                 ..SessionOptions::default()
             };
             let created = match &self.target {
                 Target::Folder(project) => daemon.create_session_with(project, model, options),
-                Target::Environment { environment, .. } => {
+                Target::Environment { environment, .. }
+                | Target::EnvironmentProject(environment) => {
                     daemon.create_in_environment(environment, model, options)
                 }
             };
