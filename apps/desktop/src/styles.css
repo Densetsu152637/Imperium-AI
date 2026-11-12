@@ -1843,6 +1843,33 @@ button.danger:hover:not(:disabled) {
   font-weight: 600;
 }
 
+.bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  margin: 0.4rem 0 0.8rem;
+}
+
+.bench-table th,
+.bench-table td {
+  padding: 0.2rem 0.5rem;
+  font-weight: normal;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.bench-table th:first-child {
+  text-align: left;
+  white-space: normal;
+  word-break: break-all;
+}
+
+.bench-table thead th {
+  color: var(--muted);
+  font-size: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
 .context-swatch {
   display: inline-block;
   width: 0.7rem;

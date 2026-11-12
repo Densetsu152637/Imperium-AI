@@ -8,7 +8,7 @@ export type EnvironmentUpdateParams = { id: string, name?: string, icon?: string
  */
 runtime?: EnvironmentRuntime, 
 /**
- * Deprecated (since protocol 0.21, removed in 0.22): `true` adds an agent named
+ * Deprecated (since protocol 0.22, removed in 0.23): `true` adds an agent named
  * "Persistent agent" when the environment has none; `false` deletes all its agents. Use
  * `environments.agent_create` and `environments.agent_delete`.
  */

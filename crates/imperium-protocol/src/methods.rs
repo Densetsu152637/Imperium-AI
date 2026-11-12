@@ -1078,7 +1078,7 @@ pub struct EnvironmentInfo {
     /// Where the environment's file and command tools run.
     #[serde(default)]
     pub runtime: EnvironmentRuntime,
-    /// Deprecated (since protocol 0.21, removed in 0.22): whether the environment has any
+    /// Deprecated (since protocol 0.22, removed in 0.23): whether the environment has any
     /// persistent agent. Read-only in effect: derived from `agents`.
     #[serde(default)]
     pub persistent_agent: bool,
@@ -1086,7 +1086,7 @@ pub struct EnvironmentInfo {
     /// nursery decide.
     #[serde(default)]
     pub pet: Option<String>,
-    /// Deprecated (since protocol 0.21, removed in 0.22): the first agent's session id.
+    /// Deprecated (since protocol 0.22, removed in 0.23): the first agent's session id.
     #[serde(default)]
     pub agent_session_id: Option<String>,
     /// The environment's persistent agents, none unless created (`environments.agent_create`).
@@ -1193,7 +1193,7 @@ pub struct EnvironmentCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub runtime: Option<EnvironmentRuntime>,
-    /// Deprecated (since protocol 0.21, removed in 0.22): `true` adds one agent named
+    /// Deprecated (since protocol 0.22, removed in 0.23): `true` adds one agent named
     /// "Persistent agent". Use `environments.agent_create`. Nothing is created when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1244,7 +1244,7 @@ pub struct EnvironmentUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub runtime: Option<EnvironmentRuntime>,
-    /// Deprecated (since protocol 0.21, removed in 0.22): `true` adds an agent named
+    /// Deprecated (since protocol 0.22, removed in 0.23): `true` adds an agent named
     /// "Persistent agent" when the environment has none; `false` deletes all its agents. Use
     /// `environments.agent_create` and `environments.agent_delete`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2189,6 +2189,185 @@ pub struct ModelDownloadCancelParams {
 pub struct ModelDownloadCancelResult {
     /// False when no running download has that id.
     pub found: bool,
+}
+
+/// `models.bench`: starts a benchmark of installed local models. For each model it loads the
+/// model through the same launch and residency path every call uses (as a background call, so
+/// it waits while the machine is saturated and never evicts a model in use), sends a small fixed prompt
+/// set, and measures load time, time to first token, prompt-processing speed and generation
+/// speed from the real stream. The run is reported by `models.bench_progress`; each model's
+/// result is saved (per model, hardware fingerprint and date) and listed by
+/// `models.bench_results`. Nothing runs unless this method is called.
+#[derive(Debug)]
+pub struct ModelBench;
+
+impl Method for ModelBench {
+    const NAME: &'static str = "models.bench";
+    type Params = ModelBenchParams;
+    type Result = BenchRun;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelBenchParams {
+    /// One local model, by the id `models.local` lists; every local model that can run here
+    /// when absent.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Unload the model first when it is loaded and idle, so its load time is measured. A
+    /// model in use is never unloaded: its load time is left out. On by default.
+    #[serde(default)]
+    pub cold: Option<bool>,
+}
+
+/// `models.bench_results`: the saved results, newest first, and the benchmark runs of this
+/// daemon session.
+#[derive(Debug)]
+pub struct ModelBenchResults;
+
+impl Method for ModelBenchResults {
+    const NAME: &'static str = "models.bench_results";
+    type Params = ModelBenchResultsParams;
+    type Result = ModelBenchResultsResult;
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelBenchResultsParams {
+    /// Only this model's results.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelBenchResultsResult {
+    /// This machine's fingerprint for llama.cpp models, so a client can tell which results are
+    /// from it.
+    pub hardware_fingerprint: String,
+    /// The fingerprints of this machine for each runtime (llama.cpp, then vLLM); a result is from
+    /// this machine when its fingerprint is one of them.
+    pub hardware_fingerprints: Vec<String>,
+    pub results: Vec<BenchResult>,
+    /// Runs since the daemon started, oldest first; at most one is running.
+    pub runs: Vec<BenchRun>,
+}
+
+/// `models.bench_cancel`: stops a running benchmark. Models measured before it keep their
+/// saved results; the model being measured has none. The slot it held is released at once.
+#[derive(Debug)]
+pub struct ModelBenchCancel;
+
+impl Method for ModelBenchCancel {
+    const NAME: &'static str = "models.bench_cancel";
+    type Params = ModelBenchCancelParams;
+    type Result = ModelBenchCancelResult;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelBenchCancelParams {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ModelBenchCancelResult {
+    /// False when no running benchmark has that id.
+    pub found: bool,
+}
+
+/// Notification sent to every client as a benchmark progresses and when it ends. The payload
+/// is a [`BenchRun`].
+pub const MODEL_BENCH_PROGRESS: &str = "models.bench_progress";
+
+/// A benchmark run: which models, how far it is, and the results so far.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BenchRun {
+    /// Such as `bench-1`.
+    pub run_id: String,
+    /// `running`, `done`, `cancelled`, or `failed`.
+    pub state: String,
+    /// The local model ids the run covers, in order.
+    pub models: Vec<String>,
+    /// The model being measured now.
+    #[serde(default)]
+    pub current: Option<String>,
+    /// What the run is doing now, such as "waiting while the machine is saturated" or "prompt 2 of 3".
+    #[serde(default)]
+    pub step: Option<String>,
+    /// Models finished (measured or failed).
+    pub models_done: u32,
+    /// What has been measured so far in this run, also saved.
+    pub results: Vec<BenchResult>,
+    /// Why the run failed, or a note on how it ended.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// One model's measurements on one machine at one time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BenchResult {
+    pub model_id: String,
+    /// Which run measured it.
+    pub run_id: String,
+    /// When it was measured, RFC 3339 UTC.
+    pub date: String,
+    /// A short hash of the hardware and the runtime build (the llama.cpp release and pack, or
+    /// vLLM) the numbers belong to.
+    pub hardware_fingerprint: String,
+    /// The hardware in words, such as `NVIDIA RTX 4090 24 GB, 64 GB RAM, 16 cores`.
+    pub hardware: String,
+    /// The runtime that served it (`llamacpp` or `vllm`).
+    pub runtime: String,
+    /// How it was placed: `gpu`, `partial` or `cpu`.
+    pub placement: String,
+    /// The worse of the machine's load levels (`quiet`, `busy`, `saturated`) when the model's
+    /// turn began and when its last prompt ended; a busy machine spoils the numbers.
+    pub machine: String,
+    /// Seconds to start the model's server and make it ready; absent when it was already
+    /// loaded and in use.
+    #[serde(default)]
+    pub load_s: Option<f64>,
+    /// Median time to first token over the prompts, in milliseconds.
+    #[serde(default)]
+    pub ttft_ms: Option<f64>,
+    /// Prompt tokens per second of prompt processing, over all prompts.
+    #[serde(default)]
+    pub prompt_tok_s: Option<f64>,
+    /// Generated tokens per second after the first token, over all prompts.
+    #[serde(default)]
+    pub gen_tok_s: Option<f64>,
+    /// Highest system RAM the model's server process held while it ran, when it could be read.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub peak_ram_bytes: Option<u64>,
+    /// Highest GPU memory the model's server process held while it ran, when it could be read.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub peak_vram_bytes: Option<u64>,
+    pub prompts: Vec<BenchPrompt>,
+    /// Why the model could not be measured, when it could not.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// One prompt of the set, measured.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BenchPrompt {
+    /// `short`, `medium` or `long`.
+    pub name: String,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    /// Milliseconds from sending the request to the first generated token.
+    pub ttft_ms: f64,
+    #[serde(default)]
+    pub prompt_tok_s: Option<f64>,
+    #[serde(default)]
+    pub gen_tok_s: Option<f64>,
 }
 
 /// `models.config`: every local model's llama.cpp settings and every model-table row's
