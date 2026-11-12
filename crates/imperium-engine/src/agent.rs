@@ -2456,7 +2456,9 @@ impl Agent {
     /// a summary (the same compaction a model switch runs) and the turn goes on. Needs a known
     /// window. Never twice without progress: another attempt waits for two more messages, and
     /// a compaction that did not shrink the conversation stops them for the turn. A failure is
-    /// a notice; the turn goes on with the conversation as it is.
+    /// a notice; the turn goes on with the conversation as it is. When it is skipped because the
+    /// system prompt, tools, and carried context alone take most of the trigger, one notice says
+    /// so, once for the agent's lifetime (`compact_skip_noticed`), not once per turn.
     async fn compact_near_limit(&mut self, tools: &[(Category, String)]) {
         let Some(at) = self.shared.auto_compact_at.filter(|at| *at > 0.0) else {
             return;

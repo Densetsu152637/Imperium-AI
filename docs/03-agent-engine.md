@@ -365,7 +365,8 @@ turn. The desktop shows it in the session's *Context and outputs* section
   conversation has grown) while the turn continues with the conversation as it is. A
   compaction aims at 80% of the trigger at most, so the next call does not trigger it again,
   and none is tried when the system prompt, tools, and carried context alone take 80% of the
-  trigger (summarising could not get under it). The session's `auto_compact` flag stays what it was: also fit
+  trigger (summarising could not get under it); the agent then gives one notice saying so, once
+  for the agent's lifetime (not once per turn), and stays quiet afterwards. The session's `auto_compact` flag stays what it was: also fit
   the root conversation at the start of each turn (environment agents).
 - **What compaction never touches:** the system prompt (the policy index and role instructions,
   project instruction files such as `AGENTS.md`, eager skills, memory and web rules) is always

@@ -124,7 +124,12 @@ async fn a_skipped_mid_turn_compaction_is_noticed_once() {
 
     let first = run_turn(&session, "please read a.txt").await;
     assert_eq!(skipped(&first), 1, "{first:?}");
-    // Later turns hit the same check and stay quiet.
+    // After a skip the check backs off until the conversation has grown by four messages and a
+    // reply and a result (the `compact_mark`), so the second turn is too short to check again.
+    // The third is long enough: it runs the same check, finds the same thing, and the
+    // once-per-agent flag keeps it quiet. (Without the flag, this assertion fails.)
     let second = run_turn(&session, "and read it again").await;
     assert_eq!(skipped(&second), 0, "{second:?}");
+    let third = run_turn(&session, "and once more").await;
+    assert_eq!(skipped(&third), 0, "{third:?}");
 }
