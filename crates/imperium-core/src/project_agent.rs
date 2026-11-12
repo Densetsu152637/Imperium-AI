@@ -395,7 +395,7 @@ pub fn restart_environment_agents(
     daemon: &Arc<DaemonState>,
     environment_id: &str,
     only: Option<&str>,
-) {
+) -> Vec<(String, String)> {
     let lock = daemon.project_agents().sync_lock(environment_id);
     let _sync = lock.lock().unwrap_or_else(PoisonError::into_inner);
     for (agent_id, _) in daemon.project_agents().agents_of(environment_id) {
@@ -406,7 +406,7 @@ pub fn restart_environment_agents(
             daemon.forget_session(session.id());
         }
     }
-    sync_locked(daemon, environment_id);
+    sync_locked(daemon, environment_id)
 }
 
 fn sync_locked(daemon: &Arc<DaemonState>, environment_id: &str) -> Vec<(String, String)> {
@@ -575,8 +575,10 @@ fn start_environment_agent(
     // A review that was stopped when the daemon went down is still a review.
     crate::initiative::restore_review(daemon, &agent.id, &session);
     launcher.agent.set(&session);
-    if !resumed {
-        // A new agent is listed under its name until its first exchange is worth titling.
+    // A new agent is listed under its name until its first exchange is worth titling; so is an
+    // agent made from an older persistent session, whose title was its first message.
+    let migrated = daemon.environments().take_migrated(&agent.id);
+    if !resumed || migrated {
         let _ = daemon.set_title(session.id(), &agent_title(&env.name, &agent.name), true);
     }
     if agent.session_id.as_deref() != Some(session.id()) {

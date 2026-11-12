@@ -1928,12 +1928,16 @@ impl DaemonState {
         // The worktrees of its writer subagents go first (they were made from the session's
         // folders, which may be its own worktrees), on the same terms; branches stay.
         let journal = sessions.join(format!("{id}.jsonl"));
+        let mut writer_failures = Vec::new();
         if remove_worktrees {
             let (removed, failed) = crate::writers::GitWriterTrees::remove_recorded(&journal);
             result.removed_worktrees.extend(removed);
+            writer_failures.clone_from(&failed);
             result.failed.extend(failed);
         }
-        crate::writers::GitWriterTrees::forget(&journal);
+        // The record goes, except for the writers whose worktrees could not be removed, which it
+        // keeps naming for cleaning up by hand.
+        crate::writers::GitWriterTrees::settle(&journal, remove_worktrees, &writer_failures);
         if remove_worktrees && !placement.worktrees.is_empty() {
             // A worktree another session also works in (a branch shares its source's) is
             // theirs too, and may hold uncommitted work: it stays.
