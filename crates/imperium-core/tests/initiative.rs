@@ -810,6 +810,10 @@ async fn off_mode_is_the_agent_as_before() {
         .agent(&fixture.agent.id)
         .unwrap();
     agent.send("please start a session".into()).unwrap();
+    until("the agent to start its session", || {
+        fixture.other_sessions().len() == 1
+    })
+    .await;
     fixture.wait_until_idle().await;
     let started = fixture.other_sessions();
     assert_eq!(started.len(), 1);
