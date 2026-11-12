@@ -3,7 +3,7 @@
 //! config (`[budgets]`) count those records over daily, weekly, or monthly windows in local
 //! time, alert once per threshold per window (`budgets.alert`), and, once used up, can make new
 //! turns in their scope ask first or stop, and the same check runs before every model call and
-//! subagent spawn ([`CallGate`], [`check_call`]), so a budget used up mid-turn stops the next call.
+//! subagent spawn ([`CallGate`], [`check`]), so a budget used up mid-turn stops the next call.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -21,6 +21,9 @@ use tokio::sync::broadcast;
 
 use crate::state::DaemonState;
 
+/// The source of calls that come through the OpenAI-compatible API server.
+pub const SOURCE_API: &str = "api";
+
 /// How many days of usage are kept.
 const KEEP_DAYS: u64 = 400;
 const DATE: &str = "%Y-%m-%d";
@@ -33,6 +36,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CallUsage {
     pub environment_id: Option<String>,
+    /// The entry point the call came through when it was not a session's (`api`).
+    pub source: Option<String>,
     /// `<endpoint>:<model>`.
     pub spec: String,
     /// Prompt plus completion tokens.
@@ -47,6 +52,9 @@ struct Row {
     /// Empty for sessions outside an environment.
     #[serde(default)]
     environment: String,
+    /// Empty for a session's calls.
+    #[serde(default)]
+    source: String,
     spec: String,
     tokens: u64,
     cost_usd: f64,
@@ -104,6 +112,31 @@ pub struct Standing {
 pub struct BudgetBook {
     path: Option<PathBuf>,
     inner: Mutex<(BudgetSettings, Ledger)>,
+    /// Calls that were admitted but have not been recorded yet, with what they are expected to
+    /// use, so calls that arrive together cannot all pass a budget that has room for one.
+    reserved: Mutex<Vec<Reserved>>,
+    next_reservation: std::sync::atomic::AtomicU64,
+}
+
+/// What an admitted call is expected to use until it is recorded.
+#[derive(Debug)]
+struct Reserved {
+    id: u64,
+    environment: Option<String>,
+    spec: String,
+    source: Option<String>,
+    tokens: u64,
+    cost_usd: f64,
+}
+
+impl Reserved {
+    fn origin(&self) -> Origin<'_> {
+        Origin {
+            environment: self.environment.as_deref(),
+            spec: Some(&self.spec),
+            source: self.source.as_deref(),
+        }
+    }
 }
 
 impl BudgetBook {
@@ -119,7 +152,78 @@ impl BudgetBook {
         BudgetBook {
             path: Some(path),
             inner: Mutex::new((settings, ledger)),
+            reserved: Mutex::new(Vec::new()),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
         }
+    }
+
+    /// Admits a call of `origin` expected to use `tokens` and `cost_usd`, unless a used-up
+    /// budget that asks or blocks covers it. The check counts the calls admitted before and not
+    /// yet recorded, and the call is entered among them atomically, so calls that arrive
+    /// together cannot all pass a budget with room for one. Drop the reservation with
+    /// [`BudgetBook::release`] once the call is recorded or abandoned.
+    pub fn reserve(
+        &self,
+        today: NaiveDate,
+        origin: Origin<'_>,
+        tokens: u64,
+        cost_usd: f64,
+    ) -> Result<u64, Box<Stop>> {
+        let mut reserved = lock(&self.reserved);
+        let mut stop: Option<Stop> = None;
+        for standing in self.standings(today) {
+            let budget = &standing.budget;
+            if budget.action == BudgetAction::Warn || !applies(budget, origin) {
+                continue;
+            }
+            let (held_tokens, held_cost) = reserved
+                .iter()
+                .filter(|held| applies(budget, held.origin()))
+                .fold((0u64, 0.0), |(t, c), held| {
+                    (t.saturating_add(held.tokens), c + held.cost_usd)
+                });
+            let share = share(
+                budget,
+                standing.tokens.saturating_add(held_tokens),
+                standing.cost_usd + held_cost,
+            );
+            if share < 1.0 {
+                continue;
+            }
+            let stronger = match &stop {
+                None => true,
+                Some(current) => {
+                    current.budget.action == BudgetAction::Ask
+                        && budget.action == BudgetAction::Block
+                }
+            };
+            if stronger {
+                stop = Some(Stop {
+                    budget: budget.clone(),
+                    window_end: standing.window_end,
+                });
+            }
+        }
+        if let Some(stop) = stop {
+            return Err(Box::new(stop));
+        }
+        let id = self
+            .next_reservation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        reserved.push(Reserved {
+            id,
+            environment: origin.environment.map(str::to_string),
+            spec: origin.spec.unwrap_or_default().to_string(),
+            source: origin.source.map(str::to_string),
+            tokens,
+            cost_usd,
+        });
+        Ok(id)
+    }
+
+    /// Forgets a reservation made by [`BudgetBook::reserve`].
+    pub fn release(&self, id: u64) {
+        lock(&self.reserved).retain(|held| held.id != id);
     }
 
     pub fn settings(&self) -> BudgetSettings {
@@ -140,15 +244,16 @@ impl BudgetBook {
         let mut inner = lock(&self.inner);
         let (settings, ledger) = &mut *inner;
         let environment = call.environment_id.clone().unwrap_or_default();
+        let source = call.source.clone().unwrap_or_default();
         let rows = ledger.days.entry(day(today)).or_default();
-        let index = match rows
-            .iter()
-            .position(|row| row.environment == environment && row.spec == call.spec)
-        {
+        let index = match rows.iter().position(|row| {
+            row.environment == environment && row.source == source && row.spec == call.spec
+        }) {
             Some(index) => index,
             None => {
                 rows.push(Row {
                     environment,
+                    source,
                     spec: call.spec.clone(),
                     ..Row::default()
                 });
@@ -166,7 +271,12 @@ impl BudgetBook {
 
         let mut fired = Vec::new();
         for budget in &settings.limits {
-            if !applies(budget, call.environment_id.as_deref(), Some(&call.spec)) {
+            let origin = Origin {
+                environment: call.environment_id.as_deref(),
+                spec: Some(&call.spec),
+                source: call.source.as_deref(),
+            };
+            if !applies(budget, origin) {
                 continue;
             }
             let (start, end) = window(budget.window, today, settings);
@@ -228,20 +338,15 @@ impl BudgetBook {
             .collect()
     }
 
-    /// Every used-up budget over a session in `environment` using `spec` whose action is not
-    /// `warn`, in configuration order.
-    pub fn stops(
-        &self,
-        today: NaiveDate,
-        environment: Option<&str>,
-        spec: Option<&str>,
-    ) -> Vec<Stop> {
+    /// Every used-up budget over a call from `origin` whose action is not `warn`, in
+    /// configuration order.
+    pub fn stops(&self, today: NaiveDate, origin: Origin<'_>) -> Vec<Stop> {
         self.standings(today)
             .into_iter()
             .filter(|standing| {
                 standing.budget.action != BudgetAction::Warn
                     && standing.share >= 1.0
-                    && applies(&standing.budget, environment, spec)
+                    && applies(&standing.budget, origin)
             })
             .map(|standing| Stop {
                 budget: standing.budget,
@@ -250,15 +355,10 @@ impl BudgetBook {
             .collect()
     }
 
-    /// The used-up budget, among those over a session in `environment` using `spec`, that has
-    /// the strongest action (block over ask); `None` when new turns may start.
-    pub fn gate(
-        &self,
-        today: NaiveDate,
-        environment: Option<&str>,
-        spec: Option<&str>,
-    ) -> Option<Stop> {
-        let mut stops = self.stops(today, environment, spec);
+    /// The used-up budget, among those over a call from `origin`, that has the strongest action
+    /// (block over ask); `None` when new turns may start.
+    pub fn gate(&self, today: NaiveDate, origin: Origin<'_>) -> Option<Stop> {
+        let mut stops = self.stops(today, origin);
         let at = stops
             .iter()
             .position(|stop| stop.budget.action == BudgetAction::Block)
@@ -289,11 +389,7 @@ impl BudgetBook {
             let mut total = Total::new(day(date));
             for row in ledger.days.get(&day(date)).into_iter().flatten() {
                 if let Some(budget) = budget
-                    && !applies(
-                        budget,
-                        Some(row.environment.as_str()).filter(|e| !e.is_empty()),
-                        Some(&row.spec),
-                    )
+                    && !applies(budget, row.origin())
                 {
                     continue;
                 }
@@ -388,14 +484,36 @@ fn endpoint(spec: &str) -> &str {
     spec.split_once(':').map_or(spec, |(endpoint, _)| endpoint)
 }
 
-/// Whether a budget counts a call (or covers a session) in `environment` to `spec`.
-fn applies(budget: &Budget, environment: Option<&str>, spec: Option<&str>) -> bool {
+/// Where a model call, or a session about to make them, comes from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Origin<'a> {
+    /// The environment of the session.
+    pub environment: Option<&'a str>,
+    /// The model it calls, `<endpoint>:<model>`.
+    pub spec: Option<&'a str>,
+    /// The entry point, for calls that are not a session's (`api`).
+    pub source: Option<&'a str>,
+}
+
+impl Row {
+    fn origin(&self) -> Origin<'_> {
+        Origin {
+            environment: Some(self.environment.as_str()).filter(|e| !e.is_empty()),
+            spec: Some(&self.spec),
+            source: Some(self.source.as_str()).filter(|s| !s.is_empty()),
+        }
+    }
+}
+
+/// Whether a budget counts a call (or covers a session) from `origin`.
+fn applies(budget: &Budget, origin: Origin<'_>) -> bool {
     let target = budget.target.trim();
     match budget.scope {
         BudgetScope::Global => true,
-        BudgetScope::Environment => environment == Some(target),
-        BudgetScope::Endpoint => spec.is_some_and(|spec| endpoint(spec) == target),
-        BudgetScope::Model => spec == Some(target),
+        BudgetScope::Environment => origin.environment == Some(target),
+        BudgetScope::Endpoint => origin.spec.is_some_and(|spec| endpoint(spec) == target),
+        BudgetScope::Model => origin.spec == Some(target),
+        BudgetScope::Source => origin.source == Some(target),
     }
 }
 
@@ -419,8 +537,7 @@ fn used(ledger: &Ledger, budget: &Budget, start: NaiveDate, end: NaiveDate) -> (
     let mut cost = 0.0;
     for (_, rows) in ledger.days.range(start..end) {
         for row in rows {
-            let environment = Some(row.environment.as_str()).filter(|e| !e.is_empty());
-            if applies(budget, environment, Some(&row.spec)) {
+            if applies(budget, row.origin()) {
                 tokens = tokens.saturating_add(row.tokens);
                 cost += row.cost_usd;
             }
@@ -513,6 +630,7 @@ pub fn watch_session(
             };
             let call = CallUsage {
                 environment_id: environment_id.clone(),
+                source: None,
                 spec: model,
                 tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
                 cost_usd,
@@ -584,6 +702,8 @@ fn label(state: &DaemonState, budget: &Budget) -> String {
             .find(&budget.target)
             .map_or_else(|_| budget.target.clone(), |env| env.name),
         BudgetScope::Endpoint | BudgetScope::Model => budget.target.clone(),
+        BudgetScope::Source if budget.target == SOURCE_API => "API calls".to_string(),
+        BudgetScope::Source => budget.target.clone(),
     };
     format!("{scope}, {window}")
 }
@@ -721,47 +841,45 @@ pub fn check(state: &DaemonState, session_id: &str, confirmed: bool) -> Result<(
         return Ok(());
     };
     let summary = state.summary(&session);
-    let spec = summary.model.as_deref();
-    let environment = summary.environment_id.as_deref();
-    let result = check_call(state, environment, spec.unwrap_or_default(), confirmed);
-    if confirmed && result.is_ok() {
-        for stop in stops_for(state, environment, spec) {
-            state.confirm_budget(&confirm_key(session_id, &stop));
+    let stops = stops_for(
+        state,
+        summary.environment_id.as_deref(),
+        summary.model.as_deref(),
+    );
+    match verdict(&stops, confirmed) {
+        Some(stop) => Err(stop_error(state, stop)),
+        None => {
+            if confirmed {
+                for stop in &stops {
+                    state.confirm_budget(&confirm_key(session_id, stop));
+                }
+            }
+            Ok(())
         }
     }
-    result
 }
 
-/// The one per-call budget check: whether a call to the model `spec` (a catalog id or a spec;
-/// empty for none) by a session in `environment` may go ahead. A used-up budget in its scope
-/// that blocks is a `-32008` error; so is one that asks, unless `confirmed` (which covers every
-/// budget that asks). The engine runs it before every model call and subagent spawn
-/// ([`CallGate`]); the local API runs it before every request it serves.
-pub fn check_call(
-    state: &DaemonState,
-    environment: Option<&str>,
-    spec: &str,
-    confirmed: bool,
-) -> Result<(), ErrorObject> {
-    let spec = (!spec.is_empty()).then_some(spec);
-    let stops = stops_for(state, environment, spec);
-    // Block wins over ask.
-    let stop = stops
+/// The stop that refuses a session's turn: any budget that blocks, else (unless `confirmed`,
+/// which covers every budget that asks) the first that asks.
+fn verdict(stops: &[Stop], confirmed: bool) -> Option<&Stop> {
+    stops
         .iter()
         .find(|stop| stop.budget.action == BudgetAction::Block)
-        .or_else(|| stops.first().filter(|_| !confirmed));
-    match stop {
-        Some(stop) => Err(stop_error(state, stop)),
-        None => Ok(()),
-    }
+        .or_else(|| stops.first().filter(|_| !confirmed))
 }
 
-/// The used-up budgets that stop a call to `spec` in `environment`.
-fn stops_for(state: &DaemonState, environment: Option<&str>, spec: Option<&str>) -> Vec<Stop> {
-    let spec = spec.map(|model| resolve_spec(state, model));
-    state
-        .budgets()
-        .stops(Local::now().date_naive(), environment, spec.as_deref())
+/// The used-up budgets that stop a session's call to `model` (a catalog id or a spec) in
+/// `environment`. Budgets scoped to an entry point such as the API do not apply.
+fn stops_for(state: &DaemonState, environment: Option<&str>, model: Option<&str>) -> Vec<Stop> {
+    let spec = model.map(|model| resolve_spec(state, model));
+    state.budgets().stops(
+        state.budget_today(),
+        Origin {
+            environment,
+            spec: spec.as_deref(),
+            source: None,
+        },
+    )
 }
 
 fn confirm_key(session_id: &str, stop: &Stop) -> String {
@@ -813,6 +931,57 @@ impl imperium_engine::BudgetGate for CallGate {
     fn confirm(&self, key: &str) {
         if let Some(state) = self.state.upgrade() {
             state.confirm_budget(key);
+        }
+    }
+}
+
+/// An admitted API call's claim on the budgets: what it is expected to use counts against them,
+/// for calls that arrive meanwhile, until it is dropped (when the call has been recorded or
+/// abandoned).
+#[derive(Debug)]
+pub(crate) struct ApiReservation {
+    state: Arc<DaemonState>,
+    id: u64,
+}
+
+impl Drop for ApiReservation {
+    fn drop(&mut self) {
+        self.state.budgets().release(self.id);
+    }
+}
+
+/// Admits an API call to `spec` expected to use `tokens` and `cost_usd`, or says why a used-up
+/// budget refuses it. An API call cannot be asked, so a budget that asks refuses it as one that
+/// blocks does.
+pub(crate) fn reserve_api_call(
+    state: &Arc<DaemonState>,
+    spec: &str,
+    tokens: u64,
+    cost_usd: f64,
+) -> Result<ApiReservation, String> {
+    let today = Local::now().date_naive();
+    let origin = Origin {
+        environment: None,
+        spec: Some(spec),
+        source: Some(SOURCE_API),
+    };
+    match state.budgets().reserve(today, origin, tokens, cost_usd) {
+        Ok(id) => Ok(ApiReservation {
+            state: Arc::clone(state),
+            id,
+        }),
+        Err(stop) => {
+            let label = label(state, &stop.budget);
+            let reset = day(stop.window_end);
+            Err(match stop.budget.action {
+                BudgetAction::Block => {
+                    format!("{label} is used up until {reset}; calls through the API are blocked.")
+                }
+                _ => format!(
+                    "{label} is used up until {reset}; it asks before new work starts, and a call \
+                     through the API cannot be asked, so it is refused."
+                ),
+            })
         }
     }
 }
@@ -940,9 +1109,18 @@ mod tests {
     fn call(environment: Option<&str>, spec: &str, tokens: u64, cost: Option<f64>) -> CallUsage {
         CallUsage {
             environment_id: environment.map(str::to_string),
+            source: None,
             spec: spec.into(),
             tokens,
             cost_usd: cost,
+        }
+    }
+
+    fn origin<'a>(environment: Option<&'a str>, spec: Option<&'a str>) -> Origin<'a> {
+        Origin {
+            environment,
+            spec,
+            source: None,
         }
     }
 
@@ -1003,10 +1181,19 @@ mod tests {
         let ids = |stops: Vec<Stop>| -> Vec<String> {
             stops.into_iter().map(|stop| stop.budget.id).collect()
         };
-        assert_eq!(ids(book.stops(today, Some("e1"), Some("x:m"))), ["a", "b"]);
-        assert!(book.stops(today, Some("other"), Some("x:m")).is_empty());
         assert_eq!(
-            book.gate(today, Some("e1"), None).unwrap().budget.action,
+            ids(book.stops(today, origin(Some("e1"), Some("x:m")))),
+            ["a", "b"]
+        );
+        assert!(
+            book.stops(today, origin(Some("other"), Some("x:m")))
+                .is_empty()
+        );
+        assert_eq!(
+            book.gate(today, origin(Some("e1"), None))
+                .unwrap()
+                .budget
+                .action,
             BudgetAction::Ask
         );
     }
@@ -1068,6 +1255,8 @@ mod tests {
     fn cost_budgets_count_priced_calls_and_the_further_limit_wins() {
         let book = BudgetBook {
             path: None,
+            reserved: Mutex::new(Vec::new()),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
             inner: Mutex::new((
                 settings(vec![Budget {
                     id: "router".into(),
@@ -1102,6 +1291,8 @@ mod tests {
     fn used_up_budgets_ask_or_block_new_turns_in_their_scope() {
         let book = BudgetBook {
             path: None,
+            reserved: Mutex::new(Vec::new()),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
             inner: Mutex::new((
                 settings(vec![
                     weekly_env(100, BudgetAction::Ask),
@@ -1126,23 +1317,34 @@ mod tests {
             )),
         };
         let today = date("2026-11-10");
-        assert!(book.gate(today, Some("e1"), Some("a:small")).is_none());
+        assert!(
+            book.gate(today, origin(Some("e1"), Some("a:small")))
+                .is_none()
+        );
         book.record(today, &call(Some("e1"), "a:small", 150, None));
         // The global budget is used up too, but only warns.
-        let stop = book.gate(today, Some("e1"), Some("a:small")).unwrap();
+        let stop = book
+            .gate(today, origin(Some("e1"), Some("a:small")))
+            .unwrap();
         assert_eq!(
             (stop.budget.id.as_str(), stop.budget.action),
             ("work", BudgetAction::Ask)
         );
-        assert!(book.gate(today, Some("e2"), Some("a:small")).is_none());
+        assert!(
+            book.gate(today, origin(Some("e2"), Some("a:small")))
+                .is_none()
+        );
         book.record(today, &call(Some("e2"), "a:big", 150, None));
         // Block wins over ask.
-        let stop = book.gate(today, Some("e1"), Some("a:big")).unwrap();
+        let stop = book.gate(today, origin(Some("e1"), Some("a:big"))).unwrap();
         assert_eq!(stop.budget.action, BudgetAction::Block);
-        assert!(book.gate(today, Some("e2"), Some("a:small")).is_none());
+        assert!(
+            book.gate(today, origin(Some("e2"), Some("a:small")))
+                .is_none()
+        );
         // After the week the environment budget lets turns start again.
         assert!(
-            book.gate(date("2026-11-16"), Some("e1"), Some("a:small"))
+            book.gate(date("2026-11-16"), origin(Some("e1"), Some("a:small")))
                 .is_none()
         );
     }
@@ -1187,17 +1389,68 @@ mod tests {
             tokens: Some(1),
             ..Budget::default()
         };
-        assert!(applies(&budget(BudgetScope::Global, ""), None, None));
+        assert!(applies(
+            &budget(BudgetScope::Global, ""),
+            origin(None, None)
+        ));
         let env = budget(BudgetScope::Environment, "e1");
-        assert!(applies(&env, Some("e1"), Some("x:y")));
-        assert!(!applies(&env, Some("e2"), Some("x:y")));
-        assert!(!applies(&env, None, Some("x:y")));
+        assert!(applies(&env, origin(Some("e1"), Some("x:y"))));
+        assert!(!applies(&env, origin(Some("e2"), Some("x:y"))));
+        assert!(!applies(&env, origin(None, Some("x:y"))));
         let endpoint = budget(BudgetScope::Endpoint, "openrouter");
-        assert!(applies(&endpoint, None, Some("openrouter:qwen/qwen3")));
-        assert!(!applies(&endpoint, None, Some("llamacpp:qwen")));
-        assert!(!applies(&endpoint, None, None));
+        assert!(applies(
+            &endpoint,
+            origin(None, Some("openrouter:qwen/qwen3"))
+        ));
+        assert!(!applies(&endpoint, origin(None, Some("llamacpp:qwen"))));
+        assert!(!applies(&endpoint, origin(None, None)));
         let model = budget(BudgetScope::Model, "openrouter:qwen/qwen3");
-        assert!(applies(&model, None, Some("openrouter:qwen/qwen3")));
-        assert!(!applies(&model, None, Some("openrouter:other")));
+        assert!(applies(&model, origin(None, Some("openrouter:qwen/qwen3"))));
+        assert!(!applies(&model, origin(None, Some("openrouter:other"))));
+        let api = budget(BudgetScope::Source, "api");
+        let from_api = Origin {
+            source: Some("api"),
+            ..origin(None, Some("llamacpp:qwen"))
+        };
+        assert!(applies(&api, from_api));
+        assert!(!applies(&api, origin(None, Some("llamacpp:qwen"))));
+        // A global budget counts API calls too.
+        assert!(applies(&budget(BudgetScope::Global, ""), from_api));
+    }
+
+    #[test]
+    fn a_source_budget_counts_only_calls_from_that_source() {
+        let today = date("2026-11-11");
+        let book = BudgetBook {
+            path: None,
+            reserved: Mutex::new(Vec::new()),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
+            inner: Mutex::new((
+                settings(vec![Budget {
+                    id: "api-cap".into(),
+                    scope: BudgetScope::Source,
+                    target: "api".into(),
+                    window: BudgetWindow::Daily,
+                    tokens: Some(1000),
+                    action: BudgetAction::Block,
+                    ..Budget::default()
+                }]),
+                Ledger::default(),
+            )),
+        };
+        let from_api = |tokens| CallUsage {
+            source: Some("api".into()),
+            ..call(None, "llamacpp:m", tokens, None)
+        };
+        book.record(today, &call(None, "llamacpp:m", 5000, None));
+        let api = Origin {
+            source: Some("api"),
+            ..origin(None, Some("llamacpp:m"))
+        };
+        assert!(book.gate(today, api).is_none(), "sessions do not count");
+        book.record(today, &from_api(1200));
+        let stop = book.gate(today, api).expect("the API budget is used up");
+        assert_eq!(stop.budget.id, "api-cap");
+        assert!(book.gate(today, origin(None, Some("llamacpp:m"))).is_none());
     }
 }

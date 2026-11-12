@@ -34,6 +34,9 @@ pub enum BudgetScope {
     Endpoint,
     /// Calls to one model (`target` is its spec, `<endpoint>:<model>`).
     Model,
+    /// Calls that arrive through one entry point rather than from a session (`target` is its
+    /// name; `api` is the OpenAI-compatible local API server).
+    Source,
 }
 
 /// The period a budget resets over, in local time.
@@ -113,6 +116,9 @@ pub struct BudgetSettings {
     pub limits: Vec<Budget>,
 }
 
+/// The names a [`BudgetScope::Source`] budget may target.
+pub const SOURCES: [&str; 1] = ["api"];
+
 /// The thresholds a budget alerts at when none are configured.
 pub const DEFAULT_THRESHOLDS: [u32; 3] = [50, 80, 100];
 
@@ -152,10 +158,22 @@ impl BudgetSettings {
                 (BudgetScope::Global, false) => {
                     return Err(format!("budget {id:?} is global and takes no target"));
                 }
-                (BudgetScope::Environment | BudgetScope::Endpoint | BudgetScope::Model, true) => {
+                (
+                    BudgetScope::Environment
+                    | BudgetScope::Endpoint
+                    | BudgetScope::Model
+                    | BudgetScope::Source,
+                    true,
+                ) => {
                     return Err(format!("budget {id:?} needs a target for its scope"));
                 }
                 _ => {}
+            }
+            if budget.scope == BudgetScope::Source && !SOURCES.contains(&target) {
+                return Err(format!(
+                    "budget {id:?}: a source target is one of {}",
+                    SOURCES.join(", ")
+                ));
             }
             if budget.scope == BudgetScope::Model && !target.contains(':') {
                 return Err(format!(
@@ -282,6 +300,7 @@ fn budget_value(budget: &Budget) -> Value {
         BudgetScope::Environment => "environment",
         BudgetScope::Endpoint => "endpoint",
         BudgetScope::Model => "model",
+        BudgetScope::Source => "source",
     };
     table.insert("scope", scope.into());
     if !budget.target.trim().is_empty() {

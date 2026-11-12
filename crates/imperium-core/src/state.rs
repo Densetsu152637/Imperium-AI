@@ -155,6 +155,8 @@ pub struct DaemonState {
     pets: OnceLock<Option<Arc<PetEngine>>>,
     devices: Devices,
     phone_address: OnceLock<std::net::SocketAddr>,
+    /// The OpenAI-compatible API server for other tools.
+    openai: crate::openai::OpenAiApi,
     /// Pull requests sessions watch: session id to (repo, number).
     watches: Mutex<HashMap<String, (String, u64)>>,
     /// Turns what the daemon sees into quiet, busy, or saturated ([`start_sampling`]).
@@ -191,6 +193,8 @@ pub struct DaemonState {
     checkpoints: Mutex<HashMap<String, Arc<crate::checkpoints::SessionCheckpoints>>>,
     /// Budget stops the person approved, by session, budget, and window.
     budget_confirmed: Mutex<HashSet<String>>,
+    /// Test hook: the day budgets count as today (`None`: the local date).
+    budget_day: Mutex<Option<chrono::NaiveDate>>,
     /// Each running session's browser, for the user to take over and drive.
     browsers: Mutex<HashMap<String, BrowserSetup>>,
     /// Test hook: make `session.compare` fail after creating this many branches (0: never).
@@ -261,6 +265,7 @@ impl DaemonState {
             pets: OnceLock::new(),
             devices,
             phone_address: OnceLock::new(),
+            openai: crate::openai::OpenAiApi::default(),
             watches: Mutex::new(HashMap::new()),
             monitor,
             load_override: OnceLock::new(),
@@ -278,6 +283,7 @@ impl DaemonState {
             model_cards: imperium_memory::models::CardIndex::new(),
             checkpoints: Mutex::new(HashMap::new()),
             budget_confirmed: Mutex::new(HashSet::new()),
+            budget_day: Mutex::new(None),
             browsers: Mutex::new(HashMap::new()),
             compare_fault: std::sync::atomic::AtomicUsize::new(0),
         });
@@ -600,6 +606,10 @@ impl DaemonState {
 
     pub fn devices(&self) -> &Devices {
         &self.devices
+    }
+
+    pub(crate) fn openai(&self) -> &crate::openai::OpenAiApi {
+        &self.openai
     }
 
     /// Starts the phone listener when `phone.bind` is set. Call once.
@@ -1775,6 +1785,24 @@ impl DaemonState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(key)
+    }
+
+    /// The day budgets count as today.
+    pub(crate) fn budget_today(&self) -> chrono::NaiveDate {
+        (*self
+            .budget_day
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
+        .unwrap_or_else(|| chrono::Local::now().date_naive())
+    }
+
+    /// Test hook: makes budgets count `day` as today for session gates (`None` undoes it).
+    #[doc(hidden)]
+    pub fn set_budget_today(&self, day: Option<chrono::NaiveDate>) {
+        *self
+            .budget_day
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = day;
     }
 
     pub(crate) fn confirm_budget(&self, key: &str) {

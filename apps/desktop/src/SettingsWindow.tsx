@@ -20,6 +20,7 @@ import {
   Image,
   Info,
   Keyboard,
+  KeyRound,
   LayoutGrid,
   MemoryStick,
   MessageSquare,
@@ -58,6 +59,7 @@ import type {
   PermissionsResult,
 } from "@imperium/protocol";
 
+import { ApiSection } from "./components/ApiSection";
 import { BudgetsSection } from "./components/BudgetsEditor";
 import { formatAgo } from "./ago";
 import { changeDetails, installedByAgent, sourceLabel, undoLabel } from "./configChanges";
@@ -352,6 +354,7 @@ const APP_SECTIONS: Section[] = [
 ];
 const PERMISSIONS_SECTION: Section = { id: "permissions", label: "Permissions", group: "Agent and daemon" };
 const BUDGETS_SECTION: Section = { id: "budgets", label: "Budgets", group: "Agent and daemon" };
+const API_SECTION: Section = { id: "api", label: "API", group: "Agent and daemon" };
 const AGENT_CHANGES_SECTION: Section = { id: "agent-changes", label: "Changes by agents", group: "Agent and daemon" };
 const TAIL_SECTIONS: Section[] = [
   { id: "data", label: "Data and storage", group: "About" },
@@ -375,6 +378,7 @@ const SECTION_ICONS: Record<string, LucideIcon> = {
   data: HardDrive,
   permissions: ShieldCheck,
   budgets: Gauge,
+  api: KeyRound,
   "agent-changes": History,
   about: Info,
   "config:agents": Bot,
@@ -404,6 +408,7 @@ export const SETTINGS_SECTIONS: { id: string; label: string }[] = [
   ...Object.entries(CONFIG_SECTIONS).map(([id, label]) => ({ id: `config:${id}`, label })),
   PERMISSIONS_SECTION,
   BUDGETS_SECTION,
+  API_SECTION,
   AGENT_CHANGES_SECTION,
   ...TAIL_SECTIONS,
 ];
@@ -459,7 +464,7 @@ export function SettingsWindow(props: Props) {
       .filter(([id]) => present.has(id) || !config)
       .map(([id, label]) => ({ id: `config:${id}`, label, group: "Agent and daemon" }));
   }, [config]);
-  const sections = [...APP_SECTIONS, ...configSections, PERMISSIONS_SECTION, BUDGETS_SECTION, AGENT_CHANGES_SECTION, ...TAIL_SECTIONS];
+  const sections = [...APP_SECTIONS, ...configSections, PERMISSIONS_SECTION, BUDGETS_SECTION, API_SECTION, AGENT_CHANGES_SECTION, ...TAIL_SECTIONS];
 
   const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => onChange({ ...settings, [key]: value });
 
@@ -606,6 +611,8 @@ export function SettingsWindow(props: Props) {
         return client ? <PermissionsSection client={client} /> : <p className="muted">Connect to imperium-core to change permissions.</p>;
       case "budgets":
         return client ? <BudgetsSection client={client} /> : <p className="muted">Connect to imperium-core to manage budgets.</p>;
+      case "api":
+        return client ? <ApiSection client={client} /> : <p className="muted">Connect to imperium-core to manage the API.</p>;
       case "agent-changes":
         return client ? (
           <AgentChangesSection client={client} onChanged={props.onModelsChanged} />

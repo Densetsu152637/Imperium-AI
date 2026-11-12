@@ -1,3 +1,4 @@
+mod api;
 mod approvals;
 mod autostart;
 mod changes;
@@ -94,6 +95,11 @@ enum Command {
         /// Project folder; defaults to the current directory.
         #[arg(long, global = true)]
         project: Option<PathBuf>,
+    },
+    /// The OpenAI-compatible API other tools use your models through.
+    Api {
+        #[command(subcommand)]
+        command: ApiCommand,
     },
     /// Paired phones.
     Phone {
@@ -249,6 +255,27 @@ enum DaemonCommand {
     Stop,
     /// Print the running daemon's endpoint as JSON (used by `imperium remote connect`).
     Endpoint,
+}
+
+#[derive(Debug, Subcommand)]
+enum ApiCommand {
+    /// Show whether the API is on, where it listens, and the models it serves.
+    Status,
+    /// Turn the API on (the first time it also picks a port) and show how to use it.
+    Enable,
+    /// Turn the API off.
+    Disable,
+    /// Show the API token, or make a new one that replaces it.
+    Token {
+        #[command(subcommand)]
+        command: Option<TokenCommand>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TokenCommand {
+    /// Replace the token; the old one stops working at once.
+    Rotate,
 }
 
 #[derive(Debug, Subcommand)]
@@ -606,6 +633,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             command: RuntimeCommand::Use { path },
         } => local::use_server(path),
         Command::Resources { watch } => resources::show(watch),
+        Command::Api { command } => match command {
+            ApiCommand::Status => api::status(),
+            ApiCommand::Enable => api::set_enabled(true),
+            ApiCommand::Disable => api::set_enabled(false),
+            ApiCommand::Token { command } => api::token(command.is_some()),
+        },
         Command::Phone { command } => match command {
             PhoneCommand::Pair => phone::pair(),
             PhoneCommand::Devices => phone::devices(),
