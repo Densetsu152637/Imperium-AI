@@ -231,7 +231,7 @@ async fn memory_md_reaches_only_the_sessions_of_its_environment() {
         !beta.contains("green button"),
         "another environment's sessions never see it"
     );
-    assert!(beta.contains("<environment-memory>") && beta.contains("It is empty."));
+    assert!(beta.contains("Environment memory (Memory.md)") && beta.contains("It is empty."));
 }
 
 #[tokio::test]
