@@ -748,35 +748,44 @@ pub(crate) fn commit(
     if paths.is_empty() {
         return Err("the session changed nothing to commit in this repository".into());
     }
-    let mut add = command(&repo.top);
-    add.args(["add", "-A", "--"]).args(&paths);
-    run(&mut add)?;
-    let mut staged = command(&repo.top);
-    staged
-        .args([
-            "diff",
-            "--cached",
-            "--quiet",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--",
-        ])
-        .args(&paths);
-    if run(&mut staged).is_ok() {
-        return Err("nothing to commit: these changes are already committed".into());
+    // `add` stages the session's files; if anything after it fails, the index goes back to
+    // exactly what it was, so changes the user had staged in those files are not lost.
+    let snapshot = IndexSnapshot::take(&repo.top);
+    let committed = (|| -> Result<(), String> {
+        let mut add = command(&repo.top);
+        add.args(["add", "-A", "--"]).args(&paths);
+        run(&mut add)?;
+        let mut staged = command(&repo.top);
+        staged
+            .args([
+                "diff",
+                "--cached",
+                "--quiet",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--",
+            ])
+            .args(&paths);
+        if run(&mut staged).is_ok() {
+            return Err("nothing to commit: these changes are already committed".into());
+        }
+        let mut commit = command(&repo.top);
+        commit
+            .args([
+                "commit",
+                "--no-verify",
+                "--quiet",
+                "-m",
+                &params.message,
+                "--",
+            ])
+            .args(&paths);
+        run(&mut commit).map(|_| ())
+    })();
+    if let Err(error) = committed {
+        snapshot.restore();
+        return Err(error);
     }
-    let mut commit = command(&repo.top);
-    commit
-        .args([
-            "commit",
-            "--no-verify",
-            "--quiet",
-            "-m",
-            &params.message,
-            "--",
-        ])
-        .args(&paths);
-    run(&mut commit)?;
     let head = safe_git::head(&repo.top).unwrap_or_default();
     // What was committed is reviewed: the base becomes the working tree.
     let mut files = repo.base.clone();
@@ -793,6 +802,38 @@ pub(crate) fn commit(
         commit: Some(head),
         files: paths,
     })
+}
+
+/// A copy of a repository's index file, to put back when a step that stages files fails.
+struct IndexSnapshot {
+    path: Option<PathBuf>,
+    /// The index file's bytes; `None` when there was no index file.
+    bytes: Option<Vec<u8>>,
+}
+
+impl IndexSnapshot {
+    fn take(top: &Path) -> Self {
+        let mut locate = command(top);
+        locate.args(["rev-parse", "--git-path", "index"]);
+        let path = run(&mut locate)
+            .ok()
+            .and_then(|out| String::from_utf8(out).ok())
+            .map(|path| top.join(path.trim()));
+        let bytes = path.as_ref().and_then(|path| std::fs::read(path).ok());
+        Self { path, bytes }
+    }
+
+    fn restore(self) {
+        let Some(path) = self.path else { return };
+        match self.bytes {
+            Some(bytes) => {
+                let _ = std::fs::write(&path, bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
 }
 
 /// `gh`: the one set for tests, else the one on the PATH, if there is one.
@@ -830,9 +871,12 @@ impl Shell {
 
 /// Quotes a word for `shell`: plain when it is only safe characters, else in single quotes,
 /// inside which nothing is expanded. A POSIX `'` becomes `'\''`; PowerShell doubles every
-/// single quote it accepts, typographic ones included.
+/// single quote it accepts, typographic ones included, and quotes a word that starts with `@`
+/// (splatting there).
 fn quoted(word: &str, shell: Shell) -> String {
+    let splat = shell == Shell::PowerShell && word.starts_with('@');
     if !word.is_empty()
+        && !splat
         && word
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "-_./:@".contains(c))
@@ -1179,6 +1223,10 @@ mod tests {
             "'Add \"x\" $(rm -rf ~)'"
         );
         assert_eq!(quoted("it's", Posix), r"'it'\''s'");
+        // A leading `@` is splatting in PowerShell, so it is quoted there only.
+        assert_eq!(quoted("@args", PowerShell), "'@args'");
+        assert_eq!(quoted("@args", Posix), "@args");
+        assert_eq!(quoted("a@b", PowerShell), "a@b");
         // A title that would end the quotes and run a command, in each shell.
         let title = "x'; calc; 'y";
         assert_eq!(quoted(title, Posix), r"'x'\''; calc; '\''y'");
