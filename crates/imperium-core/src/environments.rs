@@ -1318,12 +1318,12 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         legacy_file(data.path(), true, Some("sess-1"));
         let first = store(data.path()).list();
-        assert_eq!(first[0].agents.len(), 1);
-        assert_eq!(first[0].agents[0].session_id.as_deref(), Some("sess-1"));
+        assert_eq!(first[1].agents.len(), 1);
+        assert_eq!(first[1].agents[0].session_id.as_deref(), Some("sess-1"));
         let saved = std::fs::read_to_string(data.path().join("environments.json")).unwrap();
         // Loading again finds the agent already there: same id, file untouched.
         let second = store(data.path()).list();
-        assert_eq!(second[0].agents, first[0].agents);
+        assert_eq!(second[1].agents, first[1].agents);
         assert_eq!(
             std::fs::read_to_string(data.path().join("environments.json")).unwrap(),
             saved
@@ -1337,20 +1337,20 @@ mod tests {
         // The temporary file cannot be written (a folder is in its place): the save fails.
         std::fs::create_dir(data.path().join("environments.json.tmp")).unwrap();
         let envs = store(data.path());
-        let agents = envs.list()[0].agents.clone();
+        let agents = envs.list()[1].agents.clone();
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].session_id.as_deref(), Some("sess-1"));
         // The file still has the old form, so the next load migrates the same session.
         std::fs::remove_dir(data.path().join("environments.json.tmp")).unwrap();
         let again = store(data.path()).list();
-        assert_eq!(again[0].agents[0].session_id.as_deref(), Some("sess-1"));
+        assert_eq!(again[1].agents[0].session_id.as_deref(), Some("sess-1"));
     }
 
     #[test]
     fn a_legacy_turned_off_agent_keeps_its_session_link_without_an_agent() {
         let data = tempfile::tempdir().unwrap();
         legacy_file(data.path(), false, Some("sess-old"));
-        let env = store(data.path()).list().remove(0);
+        let env = store(data.path()).list().remove(1);
         assert!(env.agents.is_empty() && !env.persistent_agent);
         assert_eq!(env.agent_session_id.as_deref(), Some("sess-old"));
         // Turning the deprecated switch on continues that session.
