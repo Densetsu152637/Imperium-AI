@@ -103,8 +103,8 @@ environment window's *Agents* section lists them with *Add agent*, edit and dele
 **Migration and deprecated fields.** An environment saved with the earlier single persistent
 session (`persistent_agent: true` with an `agent_session_id`) becomes one agent named "Persistent
 agent" the first time the daemon loads it; the session id is kept, so its history and conversation
-carry on, and the file is rewritten with the agent. For one protocol minor (0.19) the old fields
-remain as aliases and are removed in 0.20: `EnvironmentInfo.persistent_agent` is true while there
+carry on, and the file is rewritten with the agent. For one protocol minor (0.21) the old fields
+remain as aliases and are removed in 0.22: `EnvironmentInfo.persistent_agent` is true while there
 is any agent and `agent_session_id` is the first agent's session; `environments.create` or
 `environments.update` with `persistent_agent: true` adds an agent named "Persistent agent" when
 there is none, and `persistent_agent: false` deletes all the environment's agents (archiving

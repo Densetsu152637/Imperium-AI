@@ -13,7 +13,7 @@ folders: Array<string>,
  */
 runtime?: EnvironmentRuntime, 
 /**
- * Deprecated (since protocol 0.19, removed in 0.20): `true` adds one agent named
+ * Deprecated (since protocol 0.21, removed in 0.22): `true` adds one agent named
  * "Persistent agent". Use `environments.agent_create`. Nothing is created when left out.
  */
 persistent_agent?: boolean, 

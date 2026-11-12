@@ -67,7 +67,7 @@ Implemented: **multiple persistent agents per environment.** An environment hold
 persistent agents, each with its own name, role, session and limits, created explicitly (a new
 environment has none) with `environments.agent_create`, `imperium env agent add`, or *Add agent* in
 the environment window; the earlier single persistent session migrates to one agent with its
-history, and the old `persistent_agent` fields stay as aliases for protocol 0.19
+history, and the old `persistent_agent` fields stay as aliases for protocol 0.21
 ([14](14-projects-and-automation.md#persistent-agents-implemented)). Per-agent permission
 profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent initiative follow.
 
@@ -150,7 +150,14 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
    ([05](05-tools-and-isolation.md#live-preview-implemented),
    [07](07-desktop-ui.md#preview-and-browser-panels-implemented)). Protocol 0.18.
 10. **Local-model extras.** Speculative decoding with draft models, a local model benchmark,
-    and an OpenAI-compatible local API server for other tools.
+    and an OpenAI-compatible local API server for other tools. The API server is implemented:
+    opt-in, loopback by default, with its own token in the secret store, `/v1/models` and
+    `/v1/chat/completions` (streamed or not), calls that go through the residency controller
+    and count toward budgets as the `api` source, hosted models only by explicit per-model
+    opt-in, Settings → API and `imperium api`
+    ([04](04-models-and-routing.md#openai-compatible-local-api-implemented),
+    [07](07-desktop-ui.md#api-settings-implemented), [10](10-configuration.md)). Speculative
+    decoding and the benchmark are not.
 11. **Sharing and sync (design)** (designed). Design plans for session sharing and export, and
     for team sync: a portable session bundle with shared redaction, a mandatory preview and
     read-only import with explicit forking, and team sync as a git-backed config layer that
