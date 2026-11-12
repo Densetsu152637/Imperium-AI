@@ -879,7 +879,7 @@ async fn no_more_calls_run_at_once_than_the_cap_allows() {
         post_chat(&base, &token, &body),
         post_chat(&base, &token, &body)
     );
-    assert_eq!((d.status(), e.status()), (200, 200));
+    assert_eq!((d.status().as_u16(), e.status().as_u16()), (200, 200));
 }
 
 #[tokio::test]

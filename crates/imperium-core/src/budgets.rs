@@ -1162,6 +1162,8 @@ mod tests {
     fn used_up_budgets_ask_or_block_new_turns_in_their_scope() {
         let book = BudgetBook {
             path: None,
+            reserved: Mutex::new(Vec::new()),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
             inner: Mutex::new((
                 settings(vec![
                     weekly_env(100, BudgetAction::Ask),
@@ -1292,6 +1294,8 @@ mod tests {
         let today = date("2026-11-11");
         let book = BudgetBook {
             path: None,
+            reserved: Mutex::new(Vec::new()),
+            next_reservation: std::sync::atomic::AtomicU64::new(1),
             inner: Mutex::new((
                 settings(vec![Budget {
                     id: "api-cap".into(),
