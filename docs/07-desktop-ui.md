@@ -1185,7 +1185,7 @@ has a *reset* that clears the saved value. Fields: max context per agent (a numb
 *auto*, offered in the field's list; the placeholder shows the sized ceiling, such as *auto
 (131072)*), KV pool tokens (empty: starts small and grows on demand; a number fixes it), slots, K
 and V cache types (`q8_0` about halves the KV memory), flash attention, max GPU layers, *Draft model* (speculative decoding: the field lists the other installed
-llama.cpp models; with a draft set, *Draft max tokens*, *Draft min tokens* and *Draft GPU layers*
+llama.cpp models; with a draft set, *Draft max tokens*, *Draft min tokens* (0 or more, at most the maximum in effect) and *Draft GPU layers* (empty is llama.cpp's `auto`)
 become editable), max wait, max output tokens (0 is uncapped) and extra arguments (one per
 line). The summary says how much
 context one agent gets, and warns when a fixed KV pool was cut to keep the layers on the GPU or

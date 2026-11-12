@@ -4656,6 +4656,20 @@ mod tests {
             ),
             "{args}"
         );
+        // The environment cannot name a draft behind Imperium's back: llama.cpp's draft
+        // variables are removed from every llama.cpp server, `LLAMA_ARG_SPEC_TYPE` too while
+        // Imperium passes `--spec-type`.
+        let drafted_env = backend::scrubbed_env(&drafted);
+        assert!(drafted_env.contains(&"LLAMA_ARG_SPEC_DRAFT_MODEL"));
+        assert!(drafted_env.contains(&"LLAMA_ARG_SPEC_TYPE"));
+        let plain_env = backend::scrubbed_env(&spec);
+        assert!(plain_env.contains(&"LLAMA_ARG_N_GPU_LAYERS_DRAFT"));
+        assert!(!plain_env.contains(&"LLAMA_ARG_SPEC_TYPE"));
+        let vllm = LaunchSpec {
+            backend: Arc::new(Vllm::default()),
+            ..spec.clone()
+        };
+        assert!(backend::scrubbed_env(&vllm).is_empty());
         // Unset parameters leave llama.cpp's own defaults.
         let bare = LaunchSpec {
             draft: Some(DraftSpec {

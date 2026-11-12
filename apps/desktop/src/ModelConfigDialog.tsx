@@ -4,6 +4,7 @@
 // (SettingsModal): the models are its navigation, local ones and model-table rows in two groups.
 
 import { Boxes, Cpu, Search } from "lucide-react";
+import { checkDraft } from "./draftSettings";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
   LocalLaunchSettings,
@@ -196,13 +197,12 @@ function localSettings(draft: LocalDraft, config: LocalModelConfig): LocalLaunch
     draft_min: vllm ? null : integer(draft.draft_min, "Draft min tokens", 0),
     draft_gpu_layers: vllm ? null : integer(draft.draft_gpu_layers, "Draft GPU layers", 0),
   };
-  if (settings.draft_model === null && (settings.draft_max !== null || settings.draft_min !== null || settings.draft_gpu_layers !== null)) {
-    throw new Error("The draft settings need a draft model");
-  }
-  if (settings.draft_model === config.id) throw new Error("A model cannot draft for itself");
-  if (settings.draft_max !== null && settings.draft_min !== null && settings.draft_min > settings.draft_max) {
-    throw new Error("Draft min tokens may not exceed draft max tokens");
-  }
+  checkDraft(config.id, {
+    model: settings.draft_model,
+    max: settings.draft_max,
+    min: settings.draft_min,
+    gpuLayers: settings.draft_gpu_layers,
+  }, config.effective.draft_max);
   // A fixed pool must hold a fixed context; an `auto` context is capped to the pool instead.
   const fixedContext = contextAuto ? null : (context ?? (config.effective.context_auto ? null : config.effective.context));
   if (pool !== null && fixedContext !== null && pool < fixedContext) {
@@ -823,11 +823,11 @@ function LocalForm({
       })}
       {text("draft_min", "Draft min tokens", null, {
         disabled: vllm || draft.draft_model.trim() === "",
-        hint: "Fewest tokens the draft proposes per step. Empty: llama.cpp's default.",
+        hint: "Fewest tokens the draft proposes per step (0 is allowed). Empty: llama.cpp's default (0).",
       })}
       {text("draft_gpu_layers", "Draft GPU layers", null, {
         disabled: vllm || draft.draft_model.trim() === "",
-        hint: "Layers of the draft on the GPU; 0 keeps it in RAM. Empty: all of them.",
+        hint: "Layers of the draft on the GPU; 0 keeps it in RAM. Empty: llama.cpp places them (auto), normally all.",
       })}
       {text("max_wait_s", "Max wait (s)", eff.max_wait_s)}
       {text("max_output_tokens", "Max output tokens", eff.max_output_tokens, {

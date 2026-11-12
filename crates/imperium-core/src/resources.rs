@@ -620,6 +620,51 @@ mod tests {
     }
 
     #[test]
+    fn a_models_draft_and_its_notice_reach_the_snapshot() {
+        let now = Instant::now() + Duration::from_secs(3600);
+        let loaded = vec![
+            LoadedStatus {
+                draft: Some("small".into()),
+                ..loaded("drafted", None, 0)
+            },
+            LoadedStatus {
+                draft_notice: Some("Draft model x is not used: it is gone.".into()),
+                ..loaded("refused", None, 0)
+            },
+            loaded("plain", None, 0),
+        ];
+        let snapshot = assemble(&Inputs {
+            sample: sample(),
+            daemon_pid: 1,
+            loaded: &loaded,
+            sessions: &[],
+            calls: &[],
+            hosts: &HashMap::new(),
+            unified_memory: false,
+            now,
+        });
+        let by = |id: &str| {
+            snapshot
+                .local_models
+                .iter()
+                .find(|m| m.model == id)
+                .unwrap()
+        };
+        assert_eq!(by("drafted").draft_model.as_deref(), Some("small"));
+        assert_eq!(by("drafted").draft_notice, None);
+        assert_eq!(by("refused").draft_model, None);
+        assert!(
+            by("refused")
+                .draft_notice
+                .as_deref()
+                .unwrap()
+                .contains("gone")
+        );
+        assert_eq!(by("plain").draft_model, None);
+        assert_eq!(by("plain").draft_notice, None);
+    }
+
+    #[test]
     fn hosts_come_from_base_urls() {
         assert_eq!(
             host("https://api.openai.com/v1").as_deref(),

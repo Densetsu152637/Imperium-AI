@@ -537,6 +537,30 @@ mod tests {
     }
 
     #[test]
+    fn malformed_tokenizer_fields_are_ignored_not_fatal() {
+        // A tokenizer family that is a number and a vocabulary that is not a list: nothing is
+        // learned from them, and the keys after them are still read.
+        let bytes = header(&[
+            ("general.architecture", V::Str("qwen3")),
+            ("tokenizer.ggml.model", V::U32(7)),
+            ("tokenizer.ggml.tokens", V::U32(151_936)),
+            ("qwen3.block_count", V::U32(48)),
+        ]);
+        let info = read(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!((info.tokenizer_model, info.vocab_size), (None, None));
+        assert_eq!(info.block_count, Some(48));
+        // A vocabulary of numbers instead of strings still counts its entries.
+        let bytes = header(&[
+            ("general.architecture", V::Str("qwen3")),
+            ("tokenizer.ggml.tokens", V::I32Array(&[1, 2, 3, 4])),
+            ("qwen3.block_count", V::U32(48)),
+        ]);
+        let info = read(&mut Cursor::new(bytes)).unwrap();
+        assert_eq!(info.vocab_size, Some(4));
+        assert_eq!(info.block_count, Some(48));
+    }
+
+    #[test]
     fn other_files_are_rejected() {
         assert!(matches!(
             read(&mut Cursor::new(b"PK\x03\x04rest".to_vec())),

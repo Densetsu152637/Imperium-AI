@@ -2514,7 +2514,7 @@ pub struct LocalLaunchSettings {
     /// `draft_model`.
     #[serde(default)]
     pub draft_min: Option<u32>,
-    /// Layers of the draft placed on the GPU; 0 keeps it in RAM, null places every layer. Needs
+    /// Layers of the draft placed on the GPU; 0 keeps it in RAM, null leaves llama.cpp's `auto`. Needs
     /// `draft_model`.
     #[serde(default)]
     pub draft_gpu_layers: Option<u32>,

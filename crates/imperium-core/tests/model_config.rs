@@ -447,3 +447,32 @@ async fn a_draft_model_is_saved_shown_and_explained_when_it_cannot_be_used() {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
     }
 }
+
+#[tokio::test]
+async fn a_vllm_model_is_refused_a_draft_model() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    let hf = home.path().join("models").join("hf-model");
+    std::fs::create_dir_all(&hf).unwrap();
+    std::fs::write(
+        hf.join("config.json"),
+        r#"{"num_hidden_layers": 4, "hidden_size": 64, "num_attention_heads": 4,
+            "num_key_value_heads": 2, "head_dim": 16, "max_position_embeddings": 4096}"#,
+    )
+    .unwrap();
+    std::fs::write(hf.join("model.safetensors"), vec![0; 64]).unwrap();
+    daemon.rescan_local_models();
+    let error = call(
+        &mut socket,
+        "models.set_config",
+        json!({"local": [{"id": "hf-model", "settings": {"draft_model": "tiny"}}]}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error["code"], -32602, "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains("hf-model") && message.contains("does not apply to a vLLM model"),
+        "{message}"
+    );
+}
