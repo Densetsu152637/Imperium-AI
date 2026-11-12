@@ -332,7 +332,9 @@ impl EnvironmentConfig {
             // least private model.
             let local_only = !rule.use_models.is_empty()
                 && rule.tier.is_none()
-                && rule.location.is_none_or(|location| location == Location::Local)
+                && rule
+                    .location
+                    .is_none_or(|location| location == Location::Local)
                 && rule.use_models.iter().all(|id| {
                     base.models
                         .catalog
@@ -929,7 +931,9 @@ command = "ok"
         let out = applied(&dir, "");
         assert!(out.files.is_empty());
         assert!(
-            out.refused.iter().any(|line| line.contains("not a regular file")),
+            out.refused
+                .iter()
+                .any(|line| line.contains("not a regular file")),
             "{:?}",
             out.refused
         );
@@ -947,7 +951,11 @@ command = "ok"
 
         // Not UTF-8 text.
         let binary = project(&[]);
-        std::fs::write(binary.path().join(".imperium/config.toml"), [0xff, 0xfe, 0x00]).unwrap();
+        std::fs::write(
+            binary.path().join(".imperium/config.toml"),
+            [0xff, 0xfe, 0x00],
+        )
+        .unwrap();
         let out = applied(&binary, "");
         assert!(out.files.is_empty() && !out.refused.is_empty());
     }
@@ -970,7 +978,9 @@ command = "ok"
         let out = applied(&linked, "");
         assert!(out.instructions.is_none() && out.files.is_empty());
         assert!(
-            out.refused.iter().any(|line| line.contains("leads outside")),
+            out.refused
+                .iter()
+                .any(|line| line.contains("leads outside")),
             "{:?}",
             out.refused
         );
@@ -996,7 +1006,9 @@ command = "ok"
             let out = applied(&piped, "");
             assert!(out.files.is_empty());
             assert!(
-                out.refused.iter().any(|line| line.contains("not a regular file")),
+                out.refused
+                    .iter()
+                    .any(|line| line.contains("not a regular file")),
                 "{:?}",
                 out.refused
             );

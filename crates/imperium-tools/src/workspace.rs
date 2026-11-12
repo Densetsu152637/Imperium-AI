@@ -1034,10 +1034,7 @@ mod tests {
             .unwrap()
             .with_grants(&[grant(&project.join("build")), grant(outer.path())])
             .with_read_only();
-        for path in [
-            project.join("build").join("out.o"),
-            project.join("src.rs"),
-        ] {
+        for path in [project.join("build").join("out.o"), project.join("src.rs")] {
             assert!(
                 matches!(
                     workspace.resolve_writable(&path.to_string_lossy()),
@@ -1049,7 +1046,11 @@ mod tests {
         }
         // Beside the folder, the grant still works.
         let beside = outer.path().join("notes.txt");
-        assert!(workspace.resolve_writable(&beside.to_string_lossy()).is_ok());
+        assert!(
+            workspace
+                .resolve_writable(&beside.to_string_lossy())
+                .is_ok()
+        );
         // Without the mount the inner grant is writable, as before.
         let open = Workspace::new(&project)
             .unwrap()

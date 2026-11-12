@@ -661,3 +661,36 @@ agent = true
     let gone = run("env-gone").await;
     assert_eq!(gone.last_ok, Some(false));
 }
+
+#[tokio::test]
+async fn a_project_agent_of_an_environment_keeps_the_stricter_mode_its_file_asks_for() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    write(
+        &project.path().join(".imperium/config.toml"),
+        "[permissions]\nmode = \"plan\"",
+    );
+    let model = fake_model(Vec::new()).await;
+    let state = daemon(
+        home.path(),
+        &model.url,
+        "[[projects]]\nenvironment = \"Work\"\nagent = true",
+    );
+    let env = state
+        .environments()
+        .create(EnvironmentCreateParams {
+            name: "Work".into(),
+            folders: vec![project.path().display().to_string()],
+            ..EnvironmentCreateParams::default()
+        })
+        .unwrap();
+    state.start_project_agents();
+    let agent = state
+        .project_agents()
+        .get(Path::new(&format!("environment:{}", env.id)))
+        .expect("the project agent started");
+    assert_eq!(
+        state.summary(&agent).permission_mode.as_deref(),
+        Some("plan")
+    );
+}

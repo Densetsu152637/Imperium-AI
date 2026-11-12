@@ -929,14 +929,22 @@ mod tests {
             absolute: "/p/secret.txt".into(),
             relative: Some("secret.txt".into()),
         };
-        for (tool, pattern) in [("read_file", "secret.txt"), ("*", "secret.txt"), ("read_file", "")] {
+        for (tool, pattern) in [
+            ("read_file", "secret.txt"),
+            ("*", "secret.txt"),
+            ("read_file", ""),
+        ] {
             // The user's deny stands against a fixed ask of the same specificity.
             let denied = Permissions::new(
                 SharedRules::new(vec![rule(tool, pattern, Deny)]),
                 SharedRules::default(),
             )
             .with_fixed_rules(vec![rule(tool, pattern, Ask)]);
-            assert_eq!(denied.evaluate("read_file", &path), Some(Deny), "{tool} {pattern}");
+            assert_eq!(
+                denied.evaluate("read_file", &path),
+                Some(Deny),
+                "{tool} {pattern}"
+            );
         }
         // Where the user has no opinion, or only allows, a fixed ask or deny applies.
         let allowed = Permissions::new(
@@ -954,7 +962,10 @@ mod tests {
             SharedRules::default(),
         )
         .with_fixed_rules(vec![rule("run_command", "rm", Ask)]);
-        assert_eq!(commands.evaluate("run_command", &command("rm x")), Some(Deny));
+        assert_eq!(
+            commands.evaluate("run_command", &command("rm x")),
+            Some(Deny)
+        );
     }
 
     #[test]

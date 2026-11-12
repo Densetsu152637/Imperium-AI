@@ -168,7 +168,11 @@ fn container_args(
             && roots
                 .iter()
                 .any(|root| grant.path.starts_with(root) || root.starts_with(&grant.path));
-        let mode = if grant.writable && !reopens { "" } else { ":ro" };
+        let mode = if grant.writable && !reopens {
+            ""
+        } else {
+            ":ro"
+        };
         args.extend(["-v".into(), format!("{source}:{target}{mode}")]);
     }
     args.extend([
@@ -217,12 +221,7 @@ fn os_command(
 /// writable, its own process namespace, and optionally no network. Runs in `cwd`. The
 /// `protected` paths are bound read-only last, so they stay read-only inside a writable one.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn bwrap_args(
-    writable: &[String],
-    protected: &[String],
-    cwd: &str,
-    network: bool,
-) -> Vec<String> {
+fn bwrap_args(writable: &[String], protected: &[String], cwd: &str, network: bool) -> Vec<String> {
     let mut args: Vec<String> = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
         .iter()
         .chain(&["--tmpfs", "/tmp"])
@@ -408,8 +407,8 @@ mod tests {
         assert!(args.contains("-v /p/build:/p/build:ro"), "{args}");
         assert!(args.contains("-v /:/:ro"), "{args}");
         assert!(args.contains("-v /elsewhere:/elsewhere -w"), "{args}");
-        let writable = container_args(&[Path::new("/p")], &grants, "img", true, "x", false)
-            .join(" ");
+        let writable =
+            container_args(&[Path::new("/p")], &grants, "img", true, "x", false).join(" ");
         assert!(writable.contains("-v /p/build:/p/build -v"), "{writable}");
     }
 

@@ -886,8 +886,8 @@ fn explain(key: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
     }
     if let Some(project) = &project {
         // The project's own file is not a layer; this is what it narrows.
-        let narrowed = imperium_config::EnvironmentConfig::load(project, "project")
-            .apply(&config.settings()?);
+        let narrowed =
+            imperium_config::EnvironmentConfig::load(project, "project").apply(&config.settings()?);
         for line in &narrowed.applied {
             println!("project file applies: {line}");
         }
