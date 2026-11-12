@@ -507,6 +507,52 @@ async fn a_repositorys_own_config_that_would_run_programs_is_refused() {
     assert!(!dir.join("marker").exists());
 }
 
+/// A commit that git itself rejects leaves the index as it was: the files `git add` staged for
+/// the commit are unstaged again, new files included.
+#[tokio::test]
+async fn a_failed_commit_leaves_the_index_as_it_was() {
+    let repo = repository();
+    let dir = repo.path().to_path_buf();
+    let url = serve(dir.clone()).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &url, Some("allow"));
+    let mut connection = connect(&state).await;
+    let id = edited(&state, &dir).await;
+    let root =
+        ok::<SessionReviewResult>(&mut connection, "session.review", json!({"session_id": id}))
+            .await
+            .repos[0]
+            .clone();
+    // The user had staged part of a session file (staged, then changed again: `MM`).
+    git(&dir, &["add", "a.txt"]);
+    let mut text = read(dir.join("a.txt"));
+    text.push_str("added after staging\n");
+    std::fs::write(dir.join("a.txt"), text).unwrap();
+    let head = git(&dir, &["rev-parse", "HEAD"]);
+    let index = git(&dir, &["ls-files", "--stage"]);
+    let status = git(&dir, &["status", "--porcelain"]);
+    assert!(status.contains("MM a.txt"), "{status}");
+    // An invalid cleanup mode is refused by `git commit` itself, after the files are staged,
+    // whatever the identity or environment (so this does not depend on the machine's config).
+    git(&dir, &["config", "commit.cleanup", "bogus"]);
+    let failed = call(
+        &mut connection,
+        "session.review_commit",
+        json!({"session_id": id, "repo": root, "message": "x"}),
+    )
+    .await;
+    let message = failed.unwrap_err();
+    assert!(message.contains("cleanup"), "{message}");
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        git(&dir, &["ls-files", "--stage"]),
+        index,
+        "nothing stays staged"
+    );
+    assert_eq!(git(&dir, &["status", "--porcelain"]), status);
+    assert!(dir.join("new.txt").exists(), "the files are untouched");
+}
+
 /// A stand-in for `gh` that records that it ran.
 fn fake_gh(dir: &Path) -> (PathBuf, PathBuf) {
     let log = dir.join("gh-ran");
@@ -725,10 +771,12 @@ async fn permission_rules_deny_or_allow_commits() {
     );
 }
 
-/// A submodule's own config is never run by the push, even when the superproject asks to push
-/// submodules on demand.
+/// A repository holding a submodule whose own config would run a program (the superproject asks
+/// to push submodules on demand) is reviewed and a pull request is attempted without that
+/// program running. The push itself is never run against the submodule (`--recurse-submodules=no`,
+/// covered by the `push_args` unit test); this test does not reach that path, it guards the rest.
 #[tokio::test]
-async fn pushes_do_not_enter_submodules() {
+async fn a_submodule_with_a_hostile_config_does_not_run_during_review() {
     let tools = tempfile::tempdir().unwrap();
     let (gh, _log) = fake_gh(tools.path());
     let repo = repository();

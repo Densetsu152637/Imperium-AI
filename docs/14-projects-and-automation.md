@@ -183,7 +183,8 @@ session records its worktrees (`worktrees: [{ folder, path, branch, repo }]` in
 `session.list` and `session.create`, a **Worktree** badge in the app), keeps them when it
 resumes after a restart, and `session.delete { session_id, remove_worktrees }` (`imperium
 session delete <id> --remove-worktrees`) stops and forgets the session and removes its
-worktrees, keeping their branches. Worktrees are made only for local folders (not remote
+worktrees (except any that another session still records, which stay; see
+[Branching and comparison](#branching-and-comparison)), keeping their branches. Worktrees are made only for local folders (not remote
 runtimes). The daemon's git runs with hooks and fsmonitor off (no `post-checkout` hook runs),
 and a repository whose own config names the review's commit-time keys (filter drivers or
 signing programs; see [refused repository config](#review-pane-implemented)) is refused rather
@@ -395,7 +396,9 @@ The checkpoints are also what a session's changes are reviewed against
   `git add -A -- <files>` and `git commit --no-verify -- <files>` with hooks and fsmonitor off
   and paths taken literally (`GIT_LITERAL_PATHSPECS`), so a file named `[ab].txt` never matches
   `a.txt`. The commit message is prefilled with the session's title (written by its model) and
-  the files.
+  the files. If the commit fails, or there turns out to be nothing to commit, the repository's
+  index is put back byte for byte as it was before the files were staged, so changes you had
+  staged in those files are kept.
 - `session.review_pull_request { repo, title, body, base? }` pushes the current branch (read
   in full from `HEAD`, so a tag of the same name does not confuse it) to `origin` with
   `git push --recurse-submodules=no -u -- origin refs/heads/<branch>` and runs `gh pr create`

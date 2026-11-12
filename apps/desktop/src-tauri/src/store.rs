@@ -76,7 +76,9 @@ fn check_export(filename: &str, contents: &str) -> Result<&'static str, String> 
 }
 
 /// What to ask before saving a transcript the daemon warned about, if anything. The question is
-/// asked here, in the shell, so the page cannot skip or fake it.
+/// asked here, in the shell, as a guard for the user rather than a security boundary: the warning
+/// is passed in by the page, which can send none, so a missing warning is not a promise that the
+/// transcript is clean.
 fn confirmation(warning: Option<&str>) -> Option<String> {
     let warning = warning?.trim();
     (!warning.is_empty()).then(|| format!("{warning}\n\nSave it anyway?"))
@@ -85,7 +87,8 @@ fn confirmation(warning: Option<&str>) -> Option<String> {
 /// Saves an exported transcript: asks first when the daemon `warning`ed that it looks like it
 /// holds a credential, then opens the save dialog itself, suggesting `filename`, and writes
 /// `contents` to the one path the user picks there. Returns false when either was cancelled.
-/// The page cannot choose where the file goes, so it cannot write anywhere on its own.
+/// The page cannot choose where the file goes, so it cannot write anywhere on its own (it can,
+/// though, pass `warning: null` to skip the question).
 #[tauri::command]
 pub async fn save_export(
     app: tauri::AppHandle,

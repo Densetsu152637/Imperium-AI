@@ -596,8 +596,9 @@ every setting:
 - **Agent and daemon:** every setting the daemon exposes through `config.describe`, grouped by
   section (models, local runtime, memory, workflow, web, media, isolation, GitHub, pets, phone,
   resuming, network). *Personality* is a select of the personalities `personalities.list`
-  returns, by name, with the default marked, local ones labelled, and None. Changes go to the user config file through `config.set` and apply when
-  the daemon restarts; the window offers the restart.
+  returns, by name, with the default marked, local ones labelled, and None.
+  Changes go to the user config file through `config.set` and apply when the daemon restarts
+  (the window offers the restart), except Personality, which applies to new sessions at once.
 - **Permissions** (under Agent and daemon): the global path grants and permission rules; see
   [permissions](#permissions-implemented).
 - **API** (under Agent and daemon): the OpenAI-compatible local API; see
