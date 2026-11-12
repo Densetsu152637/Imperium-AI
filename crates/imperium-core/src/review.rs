@@ -783,8 +783,11 @@ pub(crate) fn commit(
         run(&mut commit).map(|_| ())
     })();
     if let Err(error) = committed {
-        snapshot.restore();
-        return Err(error);
+        // The index goes back; if it cannot, the error says so rather than hiding it.
+        return Err(match snapshot.restore() {
+            Ok(()) => error,
+            Err(note) => format!("{error} (and the index could not be put back: {note})"),
+        });
     }
     let head = safe_git::head(&repo.top).unwrap_or_default();
     // What was committed is reviewed: the base becomes the working tree.
@@ -823,15 +826,29 @@ impl IndexSnapshot {
         Self { path, bytes }
     }
 
-    fn restore(self) {
-        let Some(path) = self.path else { return };
+    /// Puts the index back: the saved bytes are written to a file beside it and renamed over it,
+    /// so a failure part-way leaves the index as it is rather than half written; an index that
+    /// did not exist is removed.
+    fn restore(self) -> Result<(), String> {
+        let Some(path) = self.path else {
+            return Ok(());
+        };
         match self.bytes {
             Some(bytes) => {
-                let _ = std::fs::write(&path, bytes);
+                let temporary = path.with_file_name("index.imperium-restore");
+                std::fs::write(&temporary, bytes)
+                    .and_then(|()| std::fs::rename(&temporary, &path))
+                    .map_err(|error| {
+                        let _ = std::fs::remove_file(&temporary);
+                        format!("{}: {error}", path.display())
+                    })
             }
-            None => {
-                let _ = std::fs::remove_file(&path);
-            }
+            None => match std::fs::remove_file(&path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    Err(format!("{}: {error}", path.display()))
+                }
+                _ => Ok(()),
+            },
         }
     }
 }
@@ -1111,6 +1128,80 @@ mod tests {
         assert_eq!(reverted, "a\rB\nc\nd\ne\nf\ng\nh\ni\nj\nk\n");
         let accepted = apply_hunk("x", old, new, &found[0].id, ReviewAction::Accept).unwrap();
         assert_eq!(accepted, "a\rB\nc\nd\ne\nf\ng\nh\ni\nj\nk\n");
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=t"])
+            .args(["-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn restoring_the_index_puts_the_saved_bytes_back_through_a_sibling_file() {
+        let repo = tempfile::tempdir().unwrap();
+        let dir = repo.path();
+        git_in(dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        git_in(dir, &["add", "a.txt"]);
+        git_in(dir, &["commit", "-q", "-m", "init"]);
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        let staged = git_in(dir, &["ls-files", "--stage"]);
+        let snapshot = IndexSnapshot::take(dir);
+        git_in(dir, &["add", "b.txt"]);
+        assert_ne!(git_in(dir, &["ls-files", "--stage"]), staged);
+        snapshot.restore().unwrap();
+        assert_eq!(git_in(dir, &["ls-files", "--stage"]), staged);
+        assert!(
+            !dir.join(".git").join("index.imperium-restore").exists(),
+            "the sibling file was renamed over the index"
+        );
+    }
+
+    #[test]
+    fn restoring_an_index_that_did_not_exist_removes_it() {
+        // An unborn branch with nothing staged has no index file at all.
+        let repo = tempfile::tempdir().unwrap();
+        let dir = repo.path();
+        git_in(dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        let index = dir.join(".git").join("index");
+        assert!(!index.exists());
+        let snapshot = IndexSnapshot::take(dir);
+        git_in(dir, &["add", "a.txt"]);
+        assert!(index.exists());
+        snapshot.restore().unwrap();
+        assert!(!index.exists(), "the index git made is removed");
+        assert!(git_in(dir, &["status", "--porcelain"]).contains("?? a.txt"));
+    }
+
+    #[test]
+    fn a_restore_that_fails_says_why_instead_of_hiding_it() {
+        let repo = tempfile::tempdir().unwrap();
+        // The "index" is a non-empty folder, which cannot be renamed over or removed as a file.
+        let index = repo.path().join("index");
+        std::fs::create_dir_all(index.join("inside")).unwrap();
+        let with_bytes = IndexSnapshot {
+            path: Some(index.clone()),
+            bytes: Some(b"saved".to_vec()),
+        };
+        let note = with_bytes.restore().unwrap_err();
+        assert!(note.contains("index"), "{note}");
+        assert!(
+            !repo.path().join("index.imperium-restore").exists(),
+            "the temporary file is cleaned up"
+        );
+        let without = IndexSnapshot {
+            path: Some(index),
+            bytes: None,
+        };
+        assert!(without.restore().is_err());
     }
 
     #[test]
