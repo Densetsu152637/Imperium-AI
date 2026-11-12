@@ -538,8 +538,8 @@ mod tests {
 
     /// Opens the preview served by `command`, which listens on the port named in `dir`. A port
     /// found free a moment ago can be taken by the time the server binds it (the other tests
-    /// in this binary bind ports too), so a refusal for a taken port, or a server that could not bind it, retries on another one.
-    /// Returns the port that was used.
+    /// in this binary bind ports too), so a refusal for a taken port, or a server that could
+    /// not bind it, retries on another one. Returns the port that was used.
     async fn open_served(
         dir: &std::path::Path,
         tools: &PreviewTools,
@@ -552,7 +552,9 @@ mod tests {
             {
                 return (port, result, events);
             }
+            let taken = port;
             port = free_port();
+            eprintln!("port {taken} was taken; retrying the preview on {port}");
             std::fs::write(dir.join("imperium-preview-port"), port.to_string()).unwrap();
         }
         let (result, events) = open(tools, json!({"command": command, "port": port})).await;
@@ -740,7 +742,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_loopback_urls_and_taken_ports_are_refused() {
-        let (_dir, tools, port, command) = served();
+        let (_dir, tools, _, command) = served();
         for url in [
             "https://example.com/",
             "http://192.168.0.2:3000",
@@ -751,7 +753,9 @@ mod tests {
             assert!(events.is_empty());
         }
         assert_eq!(tools.url(), None);
-        let held = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        // The port is taken by this listener, held until the call, not one found free earlier.
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = held.local_addr().unwrap().port();
         let (result, _) = open(&tools, json!({"command": command, "port": port})).await;
         assert!(result.unwrap_err().contains("already in use"));
         drop(held);
@@ -761,12 +765,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_that_ends_early_reports_its_output() {
-        let (_dir, tools, port, _) = served();
-        let (result, events) = open(
-            &tools,
-            json!({"command": "echo boom && exit 3", "port": port}),
-        )
-        .await;
+        let (_dir, tools, mut port, _) = served();
+        // A port found free a moment ago may be taken by now, which is another refusal.
+        let mut attempt = 0;
+        let (result, events) = loop {
+            let (result, events) = open(
+                &tools,
+                json!({"command": "echo boom && exit 3", "port": port}),
+            )
+            .await;
+            attempt += 1;
+            if attempt < 5 && matches!(&result, Err(error) if error.contains("already in use")) {
+                port = free_port();
+                continue;
+            }
+            break (result, events);
+        };
         let error = result.unwrap_err();
         assert!(error.contains("boom"), "{error}");
         assert!(error.contains("before listening"), "{error}");
