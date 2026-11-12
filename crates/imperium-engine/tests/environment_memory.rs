@@ -118,8 +118,9 @@ fn start(
         auto_compact_at,
         background: None,
         checkpoints: None,
-        keep_agent_state: true,
         budget_gate: None,
+        keep_agent_state: true,
+        effort: Default::default(),
         journal_path: dir.join(".sessions/s.jsonl"),
     })
     .unwrap()
