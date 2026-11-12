@@ -2325,6 +2325,7 @@ dependencies = [
  "imperium-client",
  "imperium-config",
  "imperium-core",
+ "imperium-ipc",
  "imperium-local",
  "imperium-memory",
  "imperium-protocol",

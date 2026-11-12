@@ -321,6 +321,10 @@ enum RemoteCommand {
         /// Local port for the forward; a free one by default.
         #[arg(long)]
         local_port: Option<u16>,
+        /// Forward the daemon's local socket (needs `daemon.socket` on the host and a Unix
+        /// machine here) instead of its TCP port.
+        #[arg(long)]
+        socket: bool,
     },
 }
 
@@ -695,8 +699,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     destination,
                     name,
                     local_port,
+                    socket,
                 },
-        } => remote::connect(&destination, name, local_port),
+        } => remote::connect(&destination, name, local_port, socket),
         Command::Daemon {
             command: DaemonCommand::Start,
         } => remote::start_daemon(),

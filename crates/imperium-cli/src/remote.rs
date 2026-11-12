@@ -43,6 +43,30 @@ pub fn forward_args(destination: &str, local: u16, remote: u16) -> Vec<String> {
     ]
 }
 
+/// `ssh` arguments that forward the Unix socket `local` on this machine to the daemon's socket
+/// `remote` on the host. OpenSSH creates `local` itself: the mask keeps it to this user, and the
+/// unlink option replaces one left by an earlier forward that died.
+pub fn socket_forward_args(
+    destination: &str,
+    local: &std::path::Path,
+    remote: &str,
+) -> Vec<String> {
+    vec![
+        "-N".into(),
+        "-o".into(),
+        "ExitOnForwardFailure=yes".into(),
+        "-o".into(),
+        "ServerAliveInterval=30".into(),
+        "-o".into(),
+        "StreamLocalBindMask=0177".into(),
+        "-o".into(),
+        "StreamLocalBindUnlink=yes".into(),
+        "-L".into(),
+        format!("{}:{remote}", local.display()),
+        destination.into(),
+    ]
+}
+
 fn ssh_output(destination: &str, remote_command: &str) -> anyhow::Result<std::process::Output> {
     Command::new("ssh")
         .args(["-o", "BatchMode=yes", destination, remote_command])
@@ -100,24 +124,53 @@ pub fn connect(
     destination: &str,
     name: Option<String>,
     local_port: Option<u16>,
+    over_socket: bool,
 ) -> anyhow::Result<()> {
     let name = name.unwrap_or_else(|| destination.replace(['@', ':', '/', '\\'], "_"));
     let remote = remote_endpoint(destination)?;
-    let remote_port = port_of(&remote.url)
-        .with_context(|| format!("unexpected remote daemon URL {}", remote.url))?;
-    let local = match local_port {
-        Some(port) => port,
-        None => free_port()?,
-    };
     let paths = Paths::from_env()?;
     let file = endpoint_file(&paths, &name);
-    let forwarded = DaemonEndpoint {
-        url: format!("ws://127.0.0.1:{local}/rpc"),
-        ..remote
+    let (forwarded, args) = if over_socket {
+        let remote_socket = match remote.socket.clone() {
+            Some(socket) if socket.starts_with('/') => socket,
+            Some(_) => bail!(
+                "{destination} listens on a Windows named pipe, which SSH cannot forward; \
+                 connect without --socket"
+            ),
+            None => bail!(
+                "{destination} has no local socket; set daemon.socket = true there and restart its daemon"
+            ),
+        };
+        if cfg!(windows) {
+            bail!("--socket needs a Unix machine on this side; connect without it");
+        }
+        let local = file.with_extension("sock");
+        let args = socket_forward_args(destination, &local, &remote_socket);
+        // No URL: the client reaches the daemon through the forwarded socket alone.
+        let forwarded = DaemonEndpoint {
+            url: String::new(),
+            socket: Some(local.display().to_string()),
+            ..remote
+        };
+        (forwarded, args)
+    } else {
+        let remote_port = port_of(&remote.url)
+            .with_context(|| format!("unexpected remote daemon URL {}", remote.url))?;
+        let local = match local_port {
+            Some(port) => port,
+            None => free_port()?,
+        };
+        let forwarded = DaemonEndpoint {
+            url: format!("ws://127.0.0.1:{local}/rpc"),
+            // The remote's socket path means nothing on this machine.
+            socket: None,
+            ..remote
+        };
+        (forwarded, forward_args(destination, local, remote_port))
     };
     write_private(&file, &serde_json::to_string_pretty(&forwarded)?)?;
     let mut tunnel = Command::new("ssh")
-        .args(forward_args(destination, local, remote_port))
+        .args(args)
         .spawn()
         .context("could not start the SSH forward")?;
     println!(
@@ -127,6 +180,9 @@ pub fn connect(
     );
     let status = tunnel.wait();
     let _ = std::fs::remove_file(&file);
+    if over_socket {
+        let _ = std::fs::remove_file(file.with_extension("sock"));
+    }
     let status = status.context("the SSH forward failed")?;
     if !status.success() {
         bail!("the SSH forward to {destination} ended: {status}");
@@ -182,6 +238,22 @@ mod tests {
         assert_eq!(
             args,
             "-N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L 127.0.0.1:40000:127.0.0.1:52011 gpu-box"
+        );
+    }
+
+    #[test]
+    fn socket_forwards_stay_private_and_replace_a_dead_one() {
+        let args = socket_forward_args(
+            "gpu-box",
+            std::path::Path::new("/home/me/remotes/gpu-box.sock"),
+            "/home/me/.local/share/imperium/ipc/daemon.sock",
+        )
+        .join(" ");
+        assert_eq!(
+            args,
+            "-N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+             -o StreamLocalBindMask=0177 -o StreamLocalBindUnlink=yes \
+             -L /home/me/remotes/gpu-box.sock:/home/me/.local/share/imperium/ipc/daemon.sock gpu-box"
         );
     }
 }

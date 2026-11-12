@@ -143,6 +143,63 @@ async fn a_wrong_token_fails_to_connect() {
     assert!(matches!(error, ClientError::Connect(_)), "{error}");
 }
 
+/// Serves the daemon on its local socket only, returning an endpoint with no TCP URL.
+async fn start_socket_daemon(data: &std::path::Path) -> DaemonEndpoint {
+    let listener = imperium_ipc::Listener::bind(data).unwrap();
+    let token = AccessToken::generate().unwrap();
+    let endpoint = DaemonEndpoint {
+        url: String::new(),
+        token: token.as_str().to_string(),
+        pid: std::process::id(),
+        socket: Some(listener.address()),
+        protocol: PROTOCOL_VERSION,
+    };
+    tokio::spawn(imperium_core::serve_ipc(
+        listener,
+        token,
+        daemon_with("", data),
+        std::future::pending(),
+    ));
+    endpoint
+}
+
+#[tokio::test]
+async fn the_client_connects_over_the_local_socket() {
+    let data = tempfile::tempdir().unwrap();
+    let endpoint = start_socket_daemon(data.path()).await;
+    let mut client = Client::connect(&endpoint, me()).await.unwrap();
+    assert_eq!(client.daemon().daemon.name, "imperium-core");
+    client.call::<Ping>(PingParams {}).await.unwrap();
+
+    // The token is checked there too.
+    let wrong = DaemonEndpoint {
+        token: "wrong".into(),
+        ..endpoint.clone()
+    };
+    assert!(matches!(
+        Client::connect(&wrong, me()).await,
+        Err(ClientError::Connect(_))
+    ));
+}
+
+#[tokio::test]
+async fn an_unreachable_socket_falls_back_to_the_loopback_url() {
+    let data = tempfile::tempdir().unwrap();
+    let mut endpoint = start_daemon(daemon_with("", data.path())).await;
+    endpoint.socket = Some(
+        data.path()
+            .join("missing.sock")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let mut client = Client::connect(&endpoint, me()).await.unwrap();
+    client.call::<Ping>(PingParams {}).await.unwrap();
+
+    // With no URL to fall back on, the socket's own error is returned.
+    endpoint.url = String::new();
+    assert!(Client::connect(&endpoint, me()).await.is_err());
+}
+
 #[test]
 fn a_missing_endpoint_file_means_the_daemon_is_not_running() {
     let dir = tempfile::tempdir().unwrap();

@@ -531,8 +531,12 @@ keep-alives) until Ctrl+C. The forwarded endpoint, with the remote daemon's per-
 is recorded in `<data>/remotes/<name>.json` (readable only by the user on Unix) and removed on
 disconnect; `imperium --remote <name> <command>` talks to the remote daemon, which owns the
 host's files, processes, models, and GPUs (its own `models.folders`, runtimes, and isolation
-apply). Not yet: installing `imperium-core` on the host, Unix-socket binding, `~/.ssh/config`
-discovery in the app, choosing a remote in the desktop app (its connection form accepts the
+apply). With `daemon.socket` on at the host (Unix hosts), `imperium remote connect
+<destination> --socket` forwards the host's Unix socket to a local socket instead of a TCP
+port (`ssh -N -L <local>.sock:<remote>/ipc/daemon.sock`, the local end mode 0600), and the
+recorded endpoint then has no URL, only that socket
+([02](02-architecture.md#protocol)). Not yet: installing `imperium-core` on the host,
+`~/.ssh/config` discovery in the app, choosing a remote in the desktop app (its connection form accepts the
 recorded URL and token), and cross-host routing.
 
 - Hosts are configured from `~/.ssh/config` entries or added manually; keys stay in the user's
