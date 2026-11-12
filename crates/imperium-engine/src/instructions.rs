@@ -191,6 +191,38 @@ fn nearest_existing(path: &Path) -> PathBuf {
         .unwrap_or_else(|| path.to_path_buf())
 }
 
+/// The most bytes compared when checking two instruction files for equal contents; larger
+/// files are treated as different (they are cut at 16 KiB when loaded anyway).
+const MAX_COMPARE_BYTES: u64 = 1024 * 1024;
+
+/// Whether two files have the same bytes: lengths first, then a chunked comparison, so a
+/// large or mismatched file is never read whole.
+fn same_contents(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(meta_a), Ok(meta_b)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    if meta_a.len() != meta_b.len() || meta_a.len() > MAX_COMPARE_BYTES {
+        return false;
+    }
+    let (Ok(mut file_a), Ok(mut file_b)) = (std::fs::File::open(a), std::fs::File::open(b)) else {
+        return false;
+    };
+    let (mut buf_a, mut buf_b) = ([0u8; 8192], [0u8; 8192]);
+    let mut remaining = meta_a.len();
+    while remaining > 0 {
+        let want = remaining.min(buf_a.len() as u64) as usize;
+        if file_a.read_exact(&mut buf_a[..want]).is_err()
+            || file_b.read_exact(&mut buf_b[..want]).is_err()
+            || buf_a[..want] != buf_b[..want]
+        {
+            return false;
+        }
+        remaining -= want as u64;
+    }
+    true
+}
+
 /// The instruction files the conversation does not hold for the directories in `touched`.
 /// The project folder's own files are left out: the workflow manifest serves those.
 pub(crate) fn discover(
@@ -237,10 +269,7 @@ pub(crate) fn discover(
             {
                 let counterpart = project.join(name);
                 if std::fs::canonicalize(&counterpart).ok() == std::fs::canonicalize(&file).ok()
-                    || matches!(
-                        (std::fs::read(&counterpart), std::fs::read(&file)),
-                        (Ok(theirs), Ok(ours)) if theirs == ours
-                    )
+                    || same_contents(&counterpart, &file)
                 {
                     continue;
                 }
@@ -291,6 +320,25 @@ pub(crate) fn discover(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_contents_checks_length_then_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let big = vec![b'x'; 20_000];
+        let mut other = big.clone();
+        other[19_999] = b'y';
+        let (a, b, c) = (write("a", &big), write("b", &big), write("c", &other));
+        let short = write("short", b"x");
+        assert!(same_contents(&a, &b));
+        assert!(!same_contents(&a, &c));
+        assert!(!same_contents(&a, &short));
+        assert!(!same_contents(&a, &dir.path().join("missing")));
+    }
 
     #[test]
     fn blocks_round_trip_through_a_message() {
