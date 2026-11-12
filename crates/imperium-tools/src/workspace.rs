@@ -205,6 +205,13 @@ impl Workspace {
         };
         // The deepest folder or grant containing the path decides whether it is writable.
         let folders_writable = !self.read_only;
+        if self.read_only && remote.folders.iter().any(|folder| inside(folder)) {
+            return if write {
+                Err(ToolError::ReadOnly(path.into()))
+            } else {
+                Ok(resolved)
+            };
+        }
         let covering =
             remote
                 .folders
@@ -583,6 +590,16 @@ impl Workspace {
     /// depth). Project worktrees count as folders.
     fn writable(&self, resolved: &Path) -> Option<bool> {
         let worktrees = self.extra_worktrees();
+        // A read-only mount wins over a writable grant inside (or around) it.
+        if self.read_only
+            && self
+                .roots()
+                .into_iter()
+                .chain(worktrees.iter().map(PathBuf::as_path))
+                .any(|root| resolved.starts_with(root))
+        {
+            return Some(false);
+        }
         self.roots()
             .into_iter()
             .chain(worktrees.iter().map(PathBuf::as_path))
@@ -1002,6 +1019,45 @@ mod tests {
         let narrowed = workspace.with_roots(&[second.path()]).unwrap();
         assert!(narrowed.is_read_only());
         assert!(narrowed.resolve_writable("x.txt").is_err());
+    }
+
+    #[test]
+    fn a_writable_grant_inside_or_around_a_read_only_folder_does_not_reopen_it() {
+        let outer = tempfile::tempdir().unwrap();
+        let project = outer.path().join("project");
+        std::fs::create_dir_all(project.join("build")).unwrap();
+        let grant = |path: &Path| PathGrant {
+            path: path.display().to_string(),
+            mode: PathMode::ReadWrite,
+        };
+        let workspace = Workspace::new(&project)
+            .unwrap()
+            .with_grants(&[grant(&project.join("build")), grant(outer.path())])
+            .with_read_only();
+        for path in [
+            project.join("build").join("out.o"),
+            project.join("src.rs"),
+        ] {
+            assert!(
+                matches!(
+                    workspace.resolve_writable(&path.to_string_lossy()),
+                    Err(ToolError::ReadOnly(_))
+                ),
+                "{}",
+                path.display()
+            );
+        }
+        // Beside the folder, the grant still works.
+        let beside = outer.path().join("notes.txt");
+        assert!(workspace.resolve_writable(&beside.to_string_lossy()).is_ok());
+        // Without the mount the inner grant is writable, as before.
+        let open = Workspace::new(&project)
+            .unwrap()
+            .with_grants(&[grant(&project.join("build"))]);
+        assert!(
+            open.resolve_writable(&project.join("build/out.o").to_string_lossy())
+                .is_ok()
+        );
     }
 
     #[test]

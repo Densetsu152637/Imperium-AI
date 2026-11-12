@@ -21,6 +21,7 @@
 //! what the user set up. "Trusted" is the user's own `mcp.trusted_projects`, as for `.mcp.json`.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use imperium_api::{PermissionMode, PermissionRule, RuleAction};
@@ -38,6 +39,38 @@ pub const ENVIRONMENT_CONFIG_FILES: [&str; 2] = ["config.toml", "config.local.to
 const MAX_FILE_BYTES: u64 = 256 * 1024;
 /// The longest `instructions` text kept, in characters.
 const MAX_INSTRUCTIONS_CHARS: usize = 20_000;
+
+/// Reads one of the repository's files as data. The file must be a regular file whose real path
+/// is inside `folder` (a link out of the folder, a device, or a pipe is refused without being
+/// opened), is checked again on the open handle, and is read with a hard limit, so a file that
+/// is swapped or endless cannot hang or fill the daemon. A missing file is `Ok(None)`.
+fn read_repository_file(folder: &Path, file: &Path) -> Result<Option<String>, String> {
+    let real = match file.canonicalize() {
+        Ok(real) => real,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("could not be read ({})", error.kind())),
+    };
+    if !real.starts_with(folder) {
+        return Err("leads outside the environment's folder".into());
+    }
+    if !real.is_file() {
+        return Err("is not a regular file".into());
+    }
+    let handle = std::fs::File::open(&real)
+        .map_err(|error| format!("could not be read ({})", error.kind()))?;
+    if !handle.metadata().is_ok_and(|meta| meta.is_file()) {
+        return Err("is not a regular file".into());
+    }
+    let mut text = String::new();
+    handle
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| format!("could not be read ({})", error.kind()))?;
+    if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
+        return Err(format!("is larger than {} KiB", MAX_FILE_BYTES / 1024));
+    }
+    Ok(Some(text))
+}
 
 /// What an environment's configuration files say, before they are checked against the user's
 /// own settings ([`EnvironmentConfig::apply`]).
@@ -107,44 +140,28 @@ impl EnvironmentConfig {
             ..EnvironmentConfig::default()
         };
         let mut merged = Table::new();
+        let real_folder = folder
+            .canonicalize()
+            .unwrap_or_else(|_| folder.to_path_buf());
         for name in ENVIRONMENT_CONFIG_FILES {
             let file = folder.join(".imperium").join(name);
-            match std::fs::metadata(&file) {
-                Ok(meta) if meta.len() > MAX_FILE_BYTES => {
-                    config.refused.push(format!(
-                        "{}: larger than {} KiB, so it was not read",
+            match read_repository_file(&real_folder, &file) {
+                Ok(None) => {}
+                // Only the parser's message is shown, never a line of the file: it is not ours.
+                Ok(Some(text)) => match text.parse::<Table>() {
+                    Ok(table) => {
+                        config.files.push(file);
+                        merge_tables(&mut merged, table);
+                    }
+                    Err(error) => config.refused.push(format!(
+                        "{}: not valid TOML ({})",
                         file.display(),
-                        MAX_FILE_BYTES / 1024
-                    ));
-                    continue;
-                }
-                Ok(_) => {}
-                // No file (or no folder): nothing to read.
-                Err(_) => continue,
-            }
-            let text = match std::fs::read_to_string(&file) {
-                Ok(text) => text,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    config.refused.push(format!(
-                        "{}: could not be read ({})",
-                        file.display(),
-                        error.kind()
-                    ));
-                    continue;
-                }
-            };
-            // Only the parser's message is shown, never a line of the file: it is not ours.
-            match text.parse::<Table>() {
-                Ok(table) => {
-                    config.files.push(file);
-                    merge_tables(&mut merged, table);
-                }
-                Err(error) => config.refused.push(format!(
-                    "{}: not valid TOML ({})",
-                    file.display(),
-                    error.message()
-                )),
+                        error.message()
+                    )),
+                },
+                Err(reason) => config
+                    .refused
+                    .push(format!("{}: {reason}, so it was not read", file.display())),
             }
         }
         config.read(merged);
@@ -246,7 +263,14 @@ impl EnvironmentConfig {
 
     fn apply_extensions(&self, trusted: bool, out: &mut EnvironmentSettings) {
         for name in &self.disabled_plugins {
-            if !out.settings.extensions.disabled_plugins.contains(name) {
+            // A plugin can be a guard (a hook that blocks a tool), so a repository cannot turn
+            // one off: only a trusted folder's file may disable plugins.
+            if !trusted {
+                out.refused.push(format!(
+                    "extensions.disabled_plugins: {name} was left on; a plugin may be a safety \
+                     check, so only a folder in mcp.trusted_projects can disable plugins"
+                ));
+            } else if !out.settings.extensions.disabled_plugins.contains(name) {
                 out.settings.extensions.disabled_plugins.push(name.clone());
                 out.applied
                     .push(format!("extensions.disabled_plugins: {name}"));
@@ -304,7 +328,11 @@ impl EnvironmentConfig {
         }
         let mut rules = Vec::new();
         for rule in &self.routing_rules {
+            // No cloud location and no raised tier: either could force the most expensive or
+            // least private model.
             let local_only = !rule.use_models.is_empty()
+                && rule.tier.is_none()
+                && rule.location.is_none_or(|location| location == Location::Local)
                 && rule.use_models.iter().all(|id| {
                     base.models
                         .catalog
@@ -318,7 +346,8 @@ impl EnvironmentConfig {
             } else {
                 out.refused.push(
                     "routing.rules: a rule was ignored; a repository's rule may only send work \
-                     to models of your table that run locally (`use` = local table ids)"
+                     to models of your table that run locally (`use` = local table ids, no \
+                     `tier`, no cloud `location`)"
                         .into(),
                 );
             }
@@ -531,6 +560,12 @@ impl EnvironmentConfig {
                 return;
             }
         };
+        if server.command.is_some() == server.url.is_some() {
+            self.refuse(format!(
+                "mcp.servers.{name}: set exactly one of command or url, so it was dropped"
+            ));
+            return;
+        }
         // A repository's server gets no keychain secret and no tool that runs unasked.
         if !server.secret_env.is_empty() || server.bearer_token.is_some() {
             server.secret_env.clear();
@@ -835,10 +870,142 @@ rules = [
 disabled_plugins = ["lint"]
 "#,
         )]);
+        // Untrusted: the rules narrow, but a plugin (maybe a guard) stays on.
         let out = applied(&dir, "[extensions]\ndisabled_plugins = [\"other\"]");
         assert_eq!(out.permission_rules.len(), 2);
         assert_eq!(out.permission_rules[0].action, RuleAction::Deny);
+        assert_eq!(out.settings.extensions.disabled_plugins, ["other"]);
+        assert!(
+            out.refused
+                .iter()
+                .any(|line| line.contains("disabled_plugins: lint was left on")),
+            "{:?}",
+            out.refused
+        );
+        // Trusted: the file may disable plugins.
+        let trusted = format!(
+            "[extensions]\ndisabled_plugins = [\"other\"]\n[mcp]\ntrusted_projects = [\"{}\"]",
+            quoted(&dir)
+        );
+        let out = applied(&dir, &trusted);
         assert_eq!(out.settings.extensions.disabled_plugins, ["other", "lint"]);
+    }
+
+    #[test]
+    fn one_bad_server_entry_drops_only_that_entry() {
+        let dir = project(&[(
+            "config.toml",
+            r#"
+[permissions]
+mode = "plan"
+[mcp.servers.both]
+command = "a"
+url = "http://x"
+[mcp.servers.neither]
+enabled = true
+[mcp.servers.good]
+command = "ok"
+"#,
+        )]);
+        let trusted = format!("[mcp]\ntrusted_projects = [\"{}\"]", quoted(&dir));
+        let out = applied(&dir, &trusted);
+        assert_eq!(out.settings.permissions.mode, PermissionMode::Plan);
+        let names: Vec<_> = out.settings.mcp.servers.keys().cloned().collect();
+        assert_eq!(names, ["good"]);
+        assert_eq!(
+            out.refused
+                .iter()
+                .filter(|line| line.contains("exactly one of command or url"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_small_regular_file_inside_the_folder_is_not_read() {
+        // A directory where the file should be.
+        let dir = project(&[]);
+        std::fs::create_dir_all(dir.path().join(".imperium/config.toml")).unwrap();
+        let out = applied(&dir, "");
+        assert!(out.files.is_empty());
+        assert!(
+            out.refused.iter().any(|line| line.contains("not a regular file")),
+            "{:?}",
+            out.refused
+        );
+
+        // Too large.
+        let padding = "# padding\n".repeat(40_000);
+        let big = project(&[("config.toml", padding.as_str())]);
+        let out = applied(&big, "");
+        assert!(out.files.is_empty());
+        assert!(
+            out.refused.iter().any(|line| line.contains("larger than")),
+            "{:?}",
+            out.refused
+        );
+
+        // Not UTF-8 text.
+        let binary = project(&[]);
+        std::fs::write(binary.path().join(".imperium/config.toml"), [0xff, 0xfe, 0x00]).unwrap();
+        let out = applied(&binary, "");
+        assert!(out.files.is_empty() && !out.refused.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_out_of_the_folder_and_pipes_are_not_read_or_opened() {
+        let secret = tempfile::tempdir().unwrap();
+        std::fs::write(
+            secret.path().join("secret.toml"),
+            "instructions = \"leaked\"",
+        )
+        .unwrap();
+        let linked = project(&[]);
+        std::os::unix::fs::symlink(
+            secret.path().join("secret.toml"),
+            linked.path().join(".imperium/config.toml"),
+        )
+        .unwrap();
+        let out = applied(&linked, "");
+        assert!(out.instructions.is_none() && out.files.is_empty());
+        assert!(
+            out.refused.iter().any(|line| line.contains("leads outside")),
+            "{:?}",
+            out.refused
+        );
+
+        // The whole .imperium folder is a link out.
+        let folder_link = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(
+            elsewhere.path().join("config.toml"),
+            "instructions = \"leaked\"",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), folder_link.path().join(".imperium")).unwrap();
+        let out = applied(&folder_link, "");
+        assert!(out.instructions.is_none(), "{:?}", out.refused);
+
+        // A pipe would block a read forever: it is refused without being opened.
+        let piped = project(&[]);
+        let made = std::process::Command::new("mkfifo")
+            .arg(piped.path().join(".imperium/config.toml"))
+            .status();
+        if made.is_ok_and(|status| status.success()) {
+            let out = applied(&piped, "");
+            assert!(out.files.is_empty());
+            assert!(
+                out.refused.iter().any(|line| line.contains("not a regular file")),
+                "{:?}",
+                out.refused
+            );
+        }
+        // A link to a device is refused the same way.
+        let device = project(&[]);
+        std::os::unix::fs::symlink("/dev/zero", device.path().join(".imperium/config.toml"))
+            .unwrap();
+        assert!(applied(&device, "").files.is_empty());
     }
 
     #[test]
@@ -898,6 +1065,14 @@ use = ["cloud-big"]
 [[routing.rules]]
 when_tag = "docs"
 tier = "frontier"
+[[routing.rules]]
+when_tag = "proof"
+use = ["small-local"]
+tier = "frontier"
+[[routing.rules]]
+when_tag = "review"
+use = ["small-local"]
+location = "cloud"
 "#,
         )]);
         let user = r#"
@@ -930,7 +1105,8 @@ use = ["cloud-big"]
                 .iter()
                 .filter(|line| line.starts_with("routing.rules"))
                 .count(),
-            2
+            4,
+            "cloud model, tier-only, raised tier, and cloud location are all refused"
         );
     }
 

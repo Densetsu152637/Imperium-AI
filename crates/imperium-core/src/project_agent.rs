@@ -327,8 +327,12 @@ fn start_one(
         launcher: Some(Arc::clone(&launcher) as Arc<dyn SessionLauncher>),
         instructions: Some(INSTRUCTIONS.into()),
         // Unattended: its approvals go to a queue, so it never starts in the user's
-        // `permissions.mode` (plan would stall it, ask would flood the queue).
-        permission_mode: Some(imperium_api::PermissionMode::Default),
+        // `permissions.mode` (plan would stall it, ask would flood the queue); an
+        // environment's own file may still make it stricter.
+        permission_mode: Some(match environment_id {
+            Some(id) => daemon.unattended_mode(&daemon.environment_settings(Some(id)).settings),
+            None => imperium_api::PermissionMode::Default,
+        }),
         ..SessionOptions::default()
     };
     let model = project.agent_model.as_deref();

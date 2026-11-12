@@ -478,9 +478,13 @@ dev image.
 **Read-only mounts (implemented):** a session started with `read_only`
 ([14](14-projects-and-automation.md#narrowed-sessions-implemented)) mounts its folders read-only
 under each tier: the OS tier binds nothing in the folders writable (the whole filesystem is
-read-only there already), the container tier adds `:ro` to the folder mounts (writable grants keep
-their own mode), and tier 0 cannot confine a command, so it refuses `run_command` and background
-commands instead of running them. The file tools refuse writes and edits without asking.
+read-only there already, and bubblewrap binds the folders read-only last, Seatbelt denies writes
+under them last), the container tier adds `:ro` to the folder mounts, and tier 0 cannot confine a
+command, so it refuses `run_command` and background commands instead of running them. The file
+tools refuse writes and edits without asking. A writable path grant inside or around a read-only
+folder does not reopen it: the file tools, the OS sandbox and the container mounts (a grant that
+overlaps a folder is mounted `:ro`) all keep the folder read-only, while grants elsewhere, such as
+the session's scratch folder, keep their mode.
 
 ### Environment runtimes (implemented)
 
@@ -505,7 +509,7 @@ written (after resolving `.` and `..`); links inside the runtime are not followe
 `run_command` reports the exit code, output, and errors as on this machine, and the session's
 isolation reads `runtime · ssh <host>` (or the container or distribution). A Docker **image**
 without a container is the container tier above with the environment's local folders mounted
-(network on). The permission prompts and approvals are unchanged; hooks still run on this
+(network per `isolation.network`). The permission prompts and approvals are unchanged; hooks still run on this
 machine (in its temporary folder).
 
 **Worktrees:** a session can be started on git worktrees of its environment's repositories so

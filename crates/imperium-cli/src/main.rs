@@ -881,6 +881,20 @@ async fn connect() -> anyhow::Result<(Client, String)> {
 fn explain(key: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let config = imperium_config::load(&paths, project.as_deref(), std::env::vars())?;
+    for warning in config.warnings() {
+        eprintln!("note: {warning}");
+    }
+    if let Some(project) = &project {
+        // The project's own file is not a layer; this is what it narrows.
+        let narrowed = imperium_config::EnvironmentConfig::load(project, "project")
+            .apply(&config.settings()?);
+        for line in &narrowed.applied {
+            println!("project file applies: {line}");
+        }
+        for line in &narrowed.refused {
+            println!("project file refused: {line}");
+        }
+    }
     let Some(explained) = config.explain(key) else {
         bail!("{key} is not set");
     };

@@ -112,19 +112,14 @@ impl Permissions {
         }
     }
 
-    /// The same rules with `rules` added for this session, counted with its environment's.
+    /// The same rules with `rules` added for this session. They are evaluated apart from the
+    /// global and environment rules and the stronger action wins, so a fixed `ask` never
+    /// weakens a `deny`.
     pub fn with_fixed_rules(self, rules: Vec<PermissionRule>) -> Self {
         Permissions {
             fixed: rules,
             ..self
         }
-    }
-
-    /// The environment's rules and the session's fixed ones.
-    fn environment_rules(&self) -> Vec<PermissionRule> {
-        let mut rules = self.environment.get();
-        rules.extend(self.fixed.iter().cloned());
-        rules
     }
 
     /// The same rules, starting in `mode` (a handle of its own, not shared with `self`).
@@ -137,7 +132,14 @@ impl Permissions {
 
     /// What the rules say about a call to `tool` on `target`; `None` when no rule matches.
     pub fn evaluate(&self, tool: &str, target: &Target) -> Option<RuleAction> {
-        evaluate(&self.global.get(), &self.environment_rules(), tool, target)
+        let own = evaluate(&self.global.get(), &self.environment.get(), tool, target);
+        if self.fixed.is_empty() {
+            return own;
+        }
+        // The fixed rules are not subject to "an environment rule overrides a global one of equal
+        // specificity": they only add to what the user's rules say, so they can make a call
+        // ask or deny but never undo the user's deny.
+        own.max(evaluate(&[], &self.fixed, tool, target))
     }
 
     /// Whether any rule could ask about or deny something, so callers can skip per-file checks
@@ -920,6 +922,40 @@ mod tests {
     }
 
     use RuleAction::{Allow, Ask, Deny};
+
+    #[test]
+    fn fixed_rules_add_to_the_users_rules_and_never_weaken_them() {
+        let path = Target::Path {
+            absolute: "/p/secret.txt".into(),
+            relative: Some("secret.txt".into()),
+        };
+        for (tool, pattern) in [("read_file", "secret.txt"), ("*", "secret.txt"), ("read_file", "")] {
+            // The user's deny stands against a fixed ask of the same specificity.
+            let denied = Permissions::new(
+                SharedRules::new(vec![rule(tool, pattern, Deny)]),
+                SharedRules::default(),
+            )
+            .with_fixed_rules(vec![rule(tool, pattern, Ask)]);
+            assert_eq!(denied.evaluate("read_file", &path), Some(Deny), "{tool} {pattern}");
+        }
+        // Where the user has no opinion, or only allows, a fixed ask or deny applies.
+        let allowed = Permissions::new(
+            SharedRules::new(vec![rule("read_file", "", Allow)]),
+            SharedRules::default(),
+        )
+        .with_fixed_rules(vec![rule("read_file", "secret.txt", Ask)]);
+        assert_eq!(allowed.evaluate("read_file", &path), Some(Ask));
+        let silent = Permissions::default().with_fixed_rules(vec![rule("read_file", "", Deny)]);
+        assert_eq!(silent.evaluate("read_file", &path), Some(Deny));
+        assert_eq!(silent.evaluate("write_file", &path), None);
+        // Commands too.
+        let commands = Permissions::new(
+            SharedRules::new(vec![rule("run_command", "rm", Deny)]),
+            SharedRules::default(),
+        )
+        .with_fixed_rules(vec![rule("run_command", "rm", Ask)]);
+        assert_eq!(commands.evaluate("run_command", &command("rm x")), Some(Deny));
+    }
 
     #[test]
     fn globs_keep_single_stars_within_a_segment() {
