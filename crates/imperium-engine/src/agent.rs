@@ -1815,6 +1815,15 @@ impl Agent {
     async fn run_tool(&mut self, call: &ToolCall) -> String {
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
+        // A turn the daemon limits (an initiative review) may use only the tools it lists.
+        if let Some(why) = self
+            .shared
+            .launcher
+            .as_ref()
+            .and_then(|launcher| launcher.restricted(name))
+        {
+            return self.tool_finished(call, name, false, format!("error: {why}"), None);
+        }
         let tool = match name {
             "update_plan" => AgentTool::UpdatePlan,
             "spawn_agent" if self.can_delegate => AgentTool::SpawnAgent,
@@ -1865,7 +1874,14 @@ impl Agent {
         };
         // Plan mode only reads: starting a session (which would not be in plan mode) or saving
         // a memory changes things.
+        let start_allowed = matches!(tool, AgentTool::StartSession)
+            && self
+                .shared
+                .launcher
+                .as_ref()
+                .is_some_and(|launcher| launcher.allows_start_in_plan_mode());
         if matches!(tool, AgentTool::StartSession | AgentTool::MemoryRemember)
+            && !start_allowed
             && self.shared.workspace.permissions().mode() == PermissionMode::Plan
         {
             return self.tool_finished(call, name, false, refused(Refusal::Plan, summary), None);

@@ -264,12 +264,15 @@ fn describe_agent(agent: &imperium_protocol::agents::EnvironmentAgent) -> String
     let session = agent.session_id.as_deref().unwrap_or("not started");
     let mut text = format!(
         "{}  {}  (session: {session}, initiative: {})\n",
-        agent.id,
-        agent.name,
+        crate::initiative::plain(&agent.id),
+        crate::initiative::plain(&agent.name),
         agent.initiative.as_str()
     );
     if !agent.role.is_empty() {
-        text.push_str(&format!("    role: {}\n", agent.role));
+        text.push_str(&format!(
+            "    role: {}\n",
+            crate::initiative::plain(&agent.role)
+        ));
     }
     text
 }

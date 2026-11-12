@@ -27,4 +27,19 @@ pub trait SessionLauncher: Send + Sync + fmt::Debug {
     fn launch_request<'a>(&'a self, request: LaunchRequest<'a>) -> LaunchFuture<'a> {
         self.launch(request.brief, request.model)
     }
+
+    /// A refusal for a tool call the launcher's owner does not allow right now, such as any
+    /// tool but reading and recording suggestions while the daemon runs an initiative review
+    /// with the agent. Checked before every tool call of every agent of the session (subagents
+    /// included), ahead of permission modes and rules.
+    fn restricted(&self, _tool: &str) -> Option<String> {
+        None
+    }
+
+    /// Whether `start_session` may run in plan mode now. Plan mode refuses it, since the session
+    /// it starts is not in plan mode; an initiative review in `act` mode starts sessions through
+    /// the launcher's own limits instead.
+    fn allows_start_in_plan_mode(&self) -> bool {
+        false
+    }
 }

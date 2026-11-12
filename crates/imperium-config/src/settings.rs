@@ -738,8 +738,8 @@ pub struct InitiativeSettings {
     /// Seconds between the daemon's looks at whether any agent is due (it does nothing in
     /// between).
     pub poll_s: u64,
-    /// Minutes a review may take before it is given up on.
-    pub review_timeout_min: u64,
+    /// Seconds a review may take before the agent is stopped.
+    pub review_timeout_s: u64,
 }
 
 impl Default for InitiativeSettings {
@@ -752,7 +752,7 @@ impl Default for InitiativeSettings {
             max_sessions_per_day: 2,
             max_concurrent: 1,
             poll_s: 60,
-            review_timeout_min: 30,
+            review_timeout_s: 1800,
         }
     }
 }

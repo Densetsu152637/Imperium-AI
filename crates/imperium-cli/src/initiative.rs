@@ -10,6 +10,14 @@ use imperium_protocol::initiative::{
 use crate::env::{resolve, resolve_agent};
 use crate::{block_on, connect};
 
+/// Agent text for a terminal: control and escape characters (which could move the cursor or
+/// rewrite what is shown) become spaces, and a line break ends the line.
+pub(crate) fn plain(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 /// The ids of the environment and agent a command names.
 async fn target(
     client: &mut imperium_cli::client::Client,
@@ -57,17 +65,17 @@ pub fn suggestions(env: String, agent: String) -> anyhow::Result<()> {
             };
             println!(
                 "  {}  [{status}] {}\n      prompt: {}\n      why: {} (from {})",
-                suggestion.id,
-                suggestion.title,
-                suggestion.prompt,
-                suggestion.reason,
-                suggestion.source
+                plain(&suggestion.id),
+                plain(&suggestion.title),
+                plain(&suggestion.prompt),
+                plain(&suggestion.reason),
+                plain(&suggestion.source)
             );
         }
         if let Some(digest) = &state.digest {
-            println!("  Work left: {}", digest.summary);
+            println!("  Work left: {}", plain(&digest.summary));
             for item in &digest.items {
-                println!("    - {} (from {})", item.text, item.source);
+                println!("    - {} (from {})", plain(&item.text), plain(&item.source));
             }
         }
         Ok(())
@@ -129,10 +137,10 @@ fn describe(state: &InitiativeState) -> String {
     if state.reviewing {
         text.push_str("  reviewing now\n");
     } else if let Some(waiting) = &state.waiting {
-        text.push_str(&format!("  waiting: {waiting}\n"));
+        text.push_str(&format!("  waiting: {}\n", plain(waiting)));
     }
     if let Some(error) = &state.last_error {
-        text.push_str(&format!("  last review failed: {error}\n"));
+        text.push_str(&format!("  last review failed: {}\n", plain(error)));
     }
     if state.mode == Initiative::Act {
         text.push_str(&format!(
@@ -152,6 +160,12 @@ fn describe(state: &InitiativeState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_text_cannot_move_the_cursor_or_end_a_line_early() {
+        assert_eq!(plain("a\u{1b}[2Jb\r\nc\u{7}"), "a [2Jb  c ");
+        assert_eq!(plain("plain text"), "plain text");
+    }
 
     #[test]
     fn the_state_is_described_with_its_limits_in_act_mode() {

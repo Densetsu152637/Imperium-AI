@@ -210,6 +210,9 @@ impl Connection {
         match notification.method.as_str() {
             imperium_protocol::methods::RESOURCES_CHANGED => self.watches_resources(),
             imperium_protocol::methods::MODEL_BENCH_PROGRESS => self.allowed.is_none(),
+            // Suggestions, reasons and sources are the user's own business, not a phone's.
+            imperium_protocol::initiative::INITIATIVE_CHANGED
+            | imperium_protocol::initiative::INITIATIVE_NOTICE => self.allowed.is_none(),
             _ => true,
         }
     }
@@ -1116,6 +1119,11 @@ impl Connection {
                     if let Some(initiative) = p.initiative {
                         envs.set_agent_initiative(&p.environment_id, &agent.id, initiative)
                             .map_err(failed)?;
+                        if initiative == imperium_protocol::initiative::Initiative::Act {
+                            self.state
+                                .initiative()
+                                .postpone_review(&agent.id, crate::initiative::now_ms());
+                        }
                     }
                     // Started at once; an environment without folders starts it when one is
                     // added. Whether it did, and if not why, goes back with it.
@@ -1138,6 +1146,9 @@ impl Connection {
             EnvironmentAgentUpdate::NAME => {
                 call::<EnvironmentAgentUpdate>(params, |p: EnvironmentAgentUpdateParams| {
                     let before = self.agent_of(&p.environment_id, &p.agent_id);
+                    let was_act = before.as_ref().is_some_and(|agent| {
+                        agent.initiative == imperium_protocol::initiative::Initiative::Act
+                    });
                     let agent = envs
                         .update_agent(
                             &p.environment_id,
@@ -1166,6 +1177,14 @@ impl Connection {
                         // Applies from the agent's next look; nothing restarts.
                         envs.set_agent_initiative(&p.environment_id, &agent.id, initiative)
                             .map_err(failed)?;
+                        // The first review after `act` is turned on is a full interval away, so
+                        // the user can see what the agent suggests before it starts anything.
+                        if initiative == imperium_protocol::initiative::Initiative::Act && !was_act
+                        {
+                            self.state
+                                .initiative()
+                                .postpone_review(&agent.id, crate::initiative::now_ms());
+                        }
                         crate::initiative::announce(&self.state, &agent.id);
                     }
                     Ok(self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent))

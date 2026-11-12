@@ -9,8 +9,8 @@ const SUGGEST: &str = include_str!("suggest.txt");
 const ACT: &str = include_str!("act.txt");
 const DIGEST: &str = include_str!("digest.txt");
 
-/// The start of every review message; the agent's instructions name it.
-#[cfg(test)]
+/// The start of every review message; the agent's instructions name it, and the daemon knows its
+/// own review turn by it.
 pub(crate) const MARKER: &str = "Initiative review for the environment";
 
 const REVIEW_TASK: &str = "- Review: find the most valuable next work (see \"Good work to look for\" below) and report it as the mode below says.";

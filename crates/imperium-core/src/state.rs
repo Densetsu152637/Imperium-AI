@@ -723,10 +723,25 @@ impl DaemonState {
                 .get(session.id())
                 .cloned()
                 .unwrap_or_default();
-            if placement.environment_id.as_deref() != Some(environment_id)
-                || placement.persistent
-                || session.is_background()
-            {
+            if placement.environment_id.as_deref() != Some(environment_id) {
+                continue;
+            }
+            // Talking to one of the environment's persistent agents is being active in it.
+            if placement.persistent {
+                let talked = self
+                    .project_agents
+                    .environment_agents()
+                    .into_iter()
+                    .find(|(_, _, session_id)| session_id == session.id())
+                    .is_some_and(|(_, agent_id, _)| {
+                        self.initiative.chatted_within(&agent_id, idle_ms(idle))
+                    });
+                if talked {
+                    return true;
+                }
+                continue;
+            }
+            if session.is_background() {
                 continue;
             }
             if matches!(

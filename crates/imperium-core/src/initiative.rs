@@ -7,7 +7,12 @@
 //! ([`prompt`]) with facts only the daemon knows; the agent reads the environment's documents
 //! itself and answers with tools: `suggest_work` and `work_digest` ([`tools`]) in `suggest`, and
 //! `start_session` as well in `act`. It runs only while the machine is quiet and the user has not
-//! been active in the environment, so it never competes with the user.
+//! been active in the environment (their sessions, or their chat with any agent of it), so it
+//! never competes with the user.
+//!
+//! While a review's turn runs, the agent is in plan mode and the launcher refuses every tool
+//! but reading, searching and recording ([`REVIEW_TOOLS`]), for the root agent and its subagents.
+//! The restrictions end when the turn does, not when the daemon stops waiting for it.
 //!
 //! What an agent suggests is kept in `initiative.json` in the data folder, per agent, with the
 //! sessions it started (for the daily limit). A suggestion becomes a session only when the user
@@ -19,7 +24,7 @@ mod prompt;
 mod tools;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -36,7 +41,7 @@ use imperium_protocol::jsonrpc::{ErrorObject, codes};
 use imperium_protocol::methods::EnvironmentInfo;
 use imperium_protocol::session::{AgentEvent, ROOT_AGENT, SessionEvent, SessionStatus};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 
 pub(crate) use tools::InitiativeTools;
 
@@ -48,6 +53,29 @@ const KEEP_OPEN: usize = 12;
 const KEEP_CLOSED: usize = 20;
 /// A handled suggestion is not suggested again for this long.
 const REPEAT_AFTER_MS: u64 = 7 * DAY_MS;
+
+/// The tools an agent may use during an initiative review, whoever calls them (the root agent or
+/// a subagent it spawned): read and search the environment and the notes, plan, delegate reading,
+/// and record suggestions. Everything else (writing, commands, the web, MCP tools, plugins,
+/// memory writes, the app's own config) is refused for the length of the turn. `start_session`
+/// is listed because `act` reviews use it; the launcher allows it only there.
+pub(crate) const REVIEW_TOOLS: &[&str] = &[
+    "read_file",
+    "list_dir",
+    "glob",
+    "grep",
+    "update_plan",
+    "context_load",
+    "memory_search",
+    "memory_read",
+    "search_sessions",
+    "spawn_agent",
+    "await_tasks",
+    "list_agents",
+    "suggest_work",
+    "work_digest",
+    "start_session",
+];
 
 pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
@@ -91,26 +119,52 @@ struct File {
     agents: BTreeMap<String, AgentBook>,
 }
 
-/// A review in progress: what the agent may do in it.
-#[derive(Debug, Clone)]
+/// What a review did.
+#[derive(Debug, Clone, Default)]
+pub struct Outcome {
+    pub suggestions: u32,
+    pub digest: bool,
+    pub reply: String,
+}
+
+/// A review in progress: what the agent may do in it, and what is needed to end it.
+#[derive(Debug)]
 pub(crate) struct Review {
     /// `suggest` or `act`: `act` only while the limits leave room.
     pub mode: Initiative,
     pub max_suggestions: u32,
     pub added: u32,
     pub digest_given: bool,
+    /// Whether this review also asked for the work-left reminder.
+    pub digest_attempted: bool,
+    /// The agent's permission mode before the review (put back when its turn ends), and the
+    /// session it was set on.
+    pub before: imperium_api::PermissionMode,
+    pub session_id: String,
+    /// The review's own turn has started (not some other turn of the agent).
+    pub started: bool,
+    pub reply: String,
+    /// Told how the review ended.
+    pub done: Option<oneshot::Sender<Result<Outcome, String>>>,
 }
 
 #[derive(Debug, Default)]
 struct Live {
     reviews: HashMap<String, Review>,
-    /// Agents that are working on the report of a session it started on its own
-    /// initiative: it follows the same limits as a review.
+    /// Agents that are working on the report of a session they started on their own initiative:
+    /// they follow the same limits as a review.
     follow_ups: HashSet<String>,
     running: HashMap<String, Arc<AtomicUsize>>,
-    /// Sessions started on the agent's own initiative, until the daemon stops.
+    /// Starts allowed but not yet recorded with a session, by agent.
+    pending: HashMap<String, u32>,
+    /// Sessions started on an agent's own initiative, until the daemon stops.
     sessions: HashSet<String>,
-    next_pending: u64,
+    /// Reports the daemon is about to deliver to an agent, whose turn is a follow-up.
+    reports: HashSet<String>,
+    /// When the user last talked to an agent (a message that was not the daemon's).
+    chats: HashMap<String, u64>,
+    /// Agents that were deleted: nothing is written for them again.
+    forgotten: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -118,6 +172,9 @@ struct Inner {
     path: Option<PathBuf>,
     book: Mutex<File>,
     live: Mutex<Live>,
+    /// Held while the file is written, so writes do not overtake each other. Never held with
+    /// `book` or `live` while writing.
+    writing: Mutex<()>,
 }
 
 /// The suggestions, digests and started sessions of every persistent agent, and what is running.
@@ -142,7 +199,6 @@ impl Drop for RunningGuard {
 pub(crate) struct Ticket {
     inner: Arc<Inner>,
     agent_id: String,
-    pending: String,
     counter: Arc<AtomicUsize>,
     committed: bool,
 }
@@ -152,18 +208,22 @@ impl Ticket {
     pub(crate) fn commit(mut self, session_id: &str) -> RunningGuard {
         {
             let mut book = lock(&self.inner.book);
-            if let Some(started) = book.agents.get_mut(&self.agent_id).and_then(|env| {
-                env.started
-                    .iter_mut()
-                    .find(|s| s.session_id == self.pending)
-            }) {
-                started.session_id = session_id.to_string();
+            let mut live = lock(&self.inner.live);
+            if !live.forgotten.contains(&self.agent_id) {
+                book.agents
+                    .entry(self.agent_id.clone())
+                    .or_default()
+                    .started
+                    .push(Started {
+                        at: now_ms(),
+                        session_id: session_id.to_string(),
+                    });
             }
-            InitiativeBook::save(&self.inner, &book);
+            let pending = live.pending.entry(self.agent_id.clone()).or_default();
+            *pending = pending.saturating_sub(1);
+            live.sessions.insert(session_id.to_string());
         }
-        lock(&self.inner.live)
-            .sessions
-            .insert(session_id.to_string());
+        InitiativeBook::save(&self.inner);
         self.committed = true;
         RunningGuard(Arc::clone(&self.counter))
     }
@@ -174,13 +234,10 @@ impl Drop for Ticket {
         if self.committed {
             return;
         }
-        {
-            let mut book = lock(&self.inner.book);
-            if let Some(env) = book.agents.get_mut(&self.agent_id) {
-                env.started.retain(|s| s.session_id != self.pending);
-            }
-            InitiativeBook::save(&self.inner, &book);
-        }
+        let mut live = lock(&self.inner.live);
+        let pending = live.pending.entry(self.agent_id.clone()).or_default();
+        *pending = pending.saturating_sub(1);
+        drop(live);
         self.counter.fetch_sub(1, Ordering::SeqCst);
     }
 }
@@ -201,11 +258,14 @@ fn normal(title: &str) -> String {
 }
 
 impl InitiativeBook {
-    /// Reads `path`; a missing or unreadable file starts empty.
+    /// Reads `path`; a missing file starts empty, and an unreadable one is set aside (not
+    /// overwritten) with a warning.
     pub fn load(path: PathBuf) -> Self {
         let file = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
-                tracing::warn!(path = %path.display(), %error, "the initiative file is unreadable; starting a new one");
+                let aside = path.with_extension("json.unreadable");
+                tracing::warn!(path = %path.display(), %error, "the initiative file is unreadable; setting it aside");
+                let _ = std::fs::rename(&path, aside);
                 File::default()
             }),
             Err(_) => File::default(),
@@ -215,44 +275,66 @@ impl InitiativeBook {
                 path: Some(path),
                 book: Mutex::new(file),
                 live: Mutex::new(Live::default()),
+                writing: Mutex::new(()),
             }),
         }
     }
 
-    fn save(inner: &Inner, file: &File) {
+    /// Writes the file: a temporary file renamed over it. Call with no lock on `book` or `live`
+    /// held; the state is read for the write after taking the write lock, so the last write has
+    /// the latest state.
+    fn save(inner: &Inner) {
         let Some(path) = &inner.path else { return };
-        let written = serde_json::to_string_pretty(file)
-            .map_err(std::io::Error::other)
-            .and_then(|text| std::fs::write(path, text));
+        let _writing = lock(&inner.writing);
+        let text = {
+            let book = lock(&inner.book);
+            serde_json::to_string_pretty(&*book)
+        };
+        let written = text.map_err(std::io::Error::other).and_then(|text| {
+            let temporary = path.with_extension("json.tmp");
+            std::fs::write(&temporary, text)?;
+            std::fs::rename(&temporary, path)
+        });
         if let Err(error) = written {
             tracing::warn!(path = %path.display(), %error, "could not save the initiative file");
         }
     }
 
     fn change<R>(&self, agent_id: &str, change: impl FnOnce(&mut AgentBook) -> R) -> R {
-        let mut book = lock(&self.inner.book);
-        let result = change(book.agents.entry(agent_id.to_string()).or_default());
-        Self::save(&self.inner, &book);
+        let result = {
+            let mut book = lock(&self.inner.book);
+            change(book.agents.entry(agent_id.to_string()).or_default())
+        };
+        Self::save(&self.inner);
         result
     }
 
     fn read<R>(&self, agent_id: &str, read: impl FnOnce(&AgentBook) -> R) -> R {
         let book = lock(&self.inner.book);
         match book.agents.get(agent_id) {
-            Some(env) => read(env),
+            Some(agent) => read(agent),
             None => read(&AgentBook::default()),
         }
     }
 
-    /// Forgets an agent that was deleted.
+    fn gone(&self, agent_id: &str) -> bool {
+        lock(&self.inner.live).forgotten.contains(agent_id)
+    }
+
+    /// Forgets an agent that was deleted: its records go, and nothing is written for it again.
     pub(crate) fn forget_agent(&self, agent_id: &str) {
-        let mut book = lock(&self.inner.book);
-        if book.agents.remove(agent_id).is_some() {
-            Self::save(&self.inner, &book);
+        let removed = {
+            let mut book = lock(&self.inner.book);
+            let mut live = lock(&self.inner.live);
+            live.forgotten.insert(agent_id.to_string());
+            live.reviews.remove(agent_id);
+            live.follow_ups.remove(agent_id);
+            live.chats.remove(agent_id);
+            book.agents.remove(agent_id).is_some()
+        };
+        if removed {
+            Self::save(&self.inner);
         }
-        let mut live = lock(&self.inner.live);
-        live.reviews.remove(agent_id);
-        live.follow_ups.remove(agent_id);
     }
 
     // --- reviews -----------------------------------------------------------------------
@@ -267,16 +349,43 @@ impl InitiativeBook {
         true
     }
 
-    pub(crate) fn end_review(&self, agent_id: &str) -> Option<Review> {
+    /// Ends a review, handing it back to say how.
+    pub(crate) fn take_review(&self, agent_id: &str) -> Option<Review> {
         lock(&self.inner.live).reviews.remove(agent_id)
     }
 
-    pub(crate) fn review(&self, agent_id: &str) -> Option<Review> {
-        lock(&self.inner.live).reviews.get(agent_id).cloned()
+    /// The mode a running review has (`suggest` or `act`).
+    pub(crate) fn review_mode(&self, agent_id: &str) -> Option<Initiative> {
+        lock(&self.inner.live)
+            .reviews
+            .get(agent_id)
+            .map(|review| review.mode)
     }
 
     pub(crate) fn is_reviewing(&self, agent_id: &str) -> bool {
         lock(&self.inner.live).reviews.contains_key(agent_id)
+    }
+
+    /// Whether the review's own turn has started.
+    pub(crate) fn review_started(&self, agent_id: &str) -> bool {
+        lock(&self.inner.live)
+            .reviews
+            .get(agent_id)
+            .is_some_and(|review| review.started)
+    }
+
+    fn mark_review_started(&self, agent_id: &str) {
+        if let Some(review) = lock(&self.inner.live).reviews.get_mut(agent_id) {
+            review.started = true;
+        }
+    }
+
+    fn push_review_text(&self, agent_id: &str, text: &str) {
+        if let Some(review) = lock(&self.inner.live).reviews.get_mut(agent_id)
+            && review.started
+        {
+            review.reply.push_str(text);
+        }
     }
 
     fn set_follow_up(&self, agent_id: &str, on: bool) {
@@ -289,21 +398,43 @@ impl InitiativeBook {
     }
 
     /// Whether the agent's current turn is a review, or the follow-up to a session it started
-    /// on its own: what it starts then follows the initiative limits.
+    /// on its own initiative: what it starts then follows the initiative limits.
     pub(crate) fn initiative_turn(&self, agent_id: &str) -> bool {
         let live = lock(&self.inner.live);
         live.reviews.contains_key(agent_id) || live.follow_ups.contains(agent_id)
     }
 
-    /// Whether `text` is the report of a session the agent started on its own initiative.
-    fn is_report_of_initiative_session(&self, text: &str) -> bool {
-        let Some(rest) = text.strip_prefix("Session ") else {
-            return false;
-        };
-        let id = rest.split_whitespace().next().unwrap_or_default();
+    /// Whether `id` is a session started on an agent's own initiative.
+    pub(crate) fn is_initiative_session(&self, id: &str) -> bool {
         lock(&self.inner.live).sessions.contains(id)
     }
 
+    /// Notes a report the daemon is about to send an agent, so its turn is known as a follow-up.
+    pub(crate) fn expect_report(&self, text: &str) {
+        lock(&self.inner.live).reports.insert(text.to_string());
+    }
+
+    /// Whether `text` is a report the daemon sent (and forgets it).
+    fn take_report(&self, text: &str) -> bool {
+        lock(&self.inner.live).reports.remove(text)
+    }
+
+    /// Notes that the user talked to the agent.
+    fn note_user_chat(&self, agent_id: &str, at: u64) {
+        lock(&self.inner.live)
+            .chats
+            .insert(agent_id.to_string(), at);
+    }
+
+    /// Whether the user talked to the agent in the last `within_ms`.
+    pub(crate) fn chatted_within(&self, agent_id: &str, within_ms: u64) -> bool {
+        lock(&self.inner.live)
+            .chats
+            .get(agent_id)
+            .is_some_and(|at| now_ms().saturating_sub(*at) < within_ms)
+    }
+
+    /// Records how a review ended. Nothing is written for an agent that was deleted.
     pub(crate) fn finish_review(
         &self,
         agent_id: &str,
@@ -311,12 +442,27 @@ impl InitiativeBook {
         digest_attempted: bool,
         error: Option<String>,
     ) {
-        self.change(agent_id, |env| {
-            env.last_review_at = Some(at);
+        if self.gone(agent_id) {
+            return;
+        }
+        self.change(agent_id, |agent| {
+            agent.last_review_at = Some(at);
             if digest_attempted {
-                env.last_digest_at = Some(at);
+                agent.last_digest_at = Some(at);
             }
-            env.last_error = error;
+            agent.last_error = error;
+        });
+    }
+
+    /// Makes the agent's next review (and reminder) a full interval away from `at` (after `act` is
+    /// turned on).
+    pub(crate) fn postpone_review(&self, agent_id: &str, at: u64) {
+        if self.gone(agent_id) {
+            return;
+        }
+        self.change(agent_id, |agent| {
+            agent.last_review_at = Some(at);
+            agent.last_digest_at = Some(at);
         });
     }
 
@@ -334,6 +480,9 @@ impl InitiativeBook {
     ) -> Result<WorkSuggestion, String> {
         {
             let mut live = lock(&self.inner.live);
+            if live.forgotten.contains(agent_id) {
+                return Err("this agent was deleted".to_string());
+            }
             let review = live.reviews.get_mut(agent_id).ok_or_else(|| {
                 "no initiative review is running; suggest work only when the daemon asks for a review"
                     .to_string()
@@ -347,9 +496,9 @@ impl InitiativeBook {
             review.added += 1;
         }
         let now = now_ms();
-        let result = self.change(agent_id, |env| {
+        let result = self.change(agent_id, |agent| {
             let key = normal(&title);
-            let repeated = env.suggestions.iter().any(|known| {
+            let repeated = agent.suggestions.iter().any(|known| {
                 normal(&known.title) == key
                     && (known.status == SuggestionStatus::Open
                         || now.saturating_sub(known.created_at) < REPEAT_AFTER_MS)
@@ -357,7 +506,7 @@ impl InitiativeBook {
             if repeated {
                 return Err(format!("{title:?} was suggested already; do not repeat it"));
             }
-            if env
+            if agent
                 .suggestions
                 .iter()
                 .filter(|s| s.status == SuggestionStatus::Open)
@@ -369,7 +518,7 @@ impl InitiativeBook {
                 ));
             }
             let suggestion = WorkSuggestion {
-                id: format!("s{now}-{}", env.suggestions.len()),
+                id: format!("s{now}-{}", agent.suggestions.len()),
                 title,
                 prompt,
                 reason,
@@ -378,8 +527,8 @@ impl InitiativeBook {
                 status: SuggestionStatus::Open,
                 session_id: None,
             };
-            env.suggestions.push(suggestion.clone());
-            prune(&mut env.suggestions, now);
+            agent.suggestions.push(suggestion.clone());
+            prune(&mut agent.suggestions, now);
             Ok(suggestion)
         });
         if result.is_err() {
@@ -399,14 +548,17 @@ impl InitiativeBook {
     ) -> Result<(), String> {
         {
             let mut live = lock(&self.inner.live);
+            if live.forgotten.contains(agent_id) {
+                return Err("this agent was deleted".to_string());
+            }
             let review = live.reviews.get_mut(agent_id).ok_or_else(|| {
                 "no initiative review is running; send a reminder only when the daemon asks for one"
                     .to_string()
             })?;
             review.digest_given = true;
         }
-        self.change(agent_id, |env| {
-            env.digest = Some(WorkDigest {
+        self.change(agent_id, |agent| {
+            agent.digest = Some(WorkDigest {
                 created_at: now_ms(),
                 summary,
                 items,
@@ -416,8 +568,8 @@ impl InitiativeBook {
     }
 
     pub(crate) fn suggestion(&self, agent_id: &str, id: &str) -> Option<WorkSuggestion> {
-        self.read(agent_id, |env| {
-            env.suggestions.iter().find(|s| s.id == id).cloned()
+        self.read(agent_id, |agent| {
+            agent.suggestions.iter().find(|s| s.id == id).cloned()
         })
     }
 
@@ -429,8 +581,8 @@ impl InitiativeBook {
         status: SuggestionStatus,
         session_id: Option<String>,
     ) -> bool {
-        self.change(agent_id, |env| {
-            match env
+        self.change(agent_id, |agent| {
+            match agent
                 .suggestions
                 .iter_mut()
                 .find(|s| s.id == id && s.status == SuggestionStatus::Open)
@@ -447,18 +599,27 @@ impl InitiativeBook {
 
     // --- sessions the agent starts ----------------------------------------------------
 
+    /// Sessions started today, recorded and about to be.
     pub fn started_today(&self, agent_id: &str) -> u32 {
         let today = Local::now().date_naive();
-        self.read(agent_id, |env| {
-            let count = env
+        let recorded = self.read(agent_id, |agent| {
+            agent
                 .started
                 .iter()
                 .filter(|started| local_day(started.at) == Some(today))
-                .count();
-            u32::try_from(count).unwrap_or(u32::MAX)
-        })
+                .count()
+        });
+        let pending = lock(&self.inner.live)
+            .pending
+            .get(agent_id)
+            .copied()
+            .unwrap_or(0);
+        u32::try_from(recorded)
+            .unwrap_or(u32::MAX)
+            .saturating_add(pending)
     }
 
+    /// Sessions the agent started that are still running (or about to).
     pub fn running(&self, agent_id: &str) -> u32 {
         let live = lock(&self.inner.live);
         live.running.get(agent_id).map_or(0, |counter| {
@@ -467,6 +628,8 @@ impl InitiativeBook {
     }
 
     /// Takes one of the day's and the moment's session slots, or says which limit is reached.
+    /// Nothing is written until a session uses the slot ([`Ticket::commit`]), so a crash between
+    /// leaves no record.
     pub(crate) fn begin_start(
         &self,
         agent_id: &str,
@@ -474,40 +637,36 @@ impl InitiativeBook {
         max_concurrent: u32,
     ) -> Result<Ticket, String> {
         let today = Local::now().date_naive();
-        let mut book = lock(&self.inner.book);
+        let book = lock(&self.inner.book);
         let mut live = lock(&self.inner.live);
+        if live.forgotten.contains(agent_id) {
+            return Err("this agent was deleted".to_string());
+        }
         let counter = Arc::clone(live.running.entry(agent_id.to_string()).or_default());
         if counter.load(Ordering::SeqCst) >= usize::try_from(max_concurrent).unwrap_or(usize::MAX) {
             return Err(format!(
                 "{max_concurrent} session(s) you started are still running (initiative.max_concurrent); wait for a report"
             ));
         }
-        let env = book.agents.entry(agent_id.to_string()).or_default();
-        let started_today = env
-            .started
-            .iter()
-            .filter(|started| local_day(started.at) == Some(today))
-            .count();
+        let recorded = book.agents.get(agent_id).map_or(0, |agent| {
+            agent
+                .started
+                .iter()
+                .filter(|started| local_day(started.at) == Some(today))
+                .count()
+        });
+        let pending = live.pending.get(agent_id).copied().unwrap_or(0);
+        let started_today = recorded.saturating_add(usize::try_from(pending).unwrap_or(0));
         if started_today >= usize::try_from(max_per_day).unwrap_or(usize::MAX) {
             return Err(format!(
                 "{max_per_day} session(s) were started on your initiative today (initiative.max_sessions_per_day); suggest the rest with suggest_work"
             ));
         }
-        live.next_pending += 1;
-        let pending = format!("pending-{}", live.next_pending);
-        env.started.push(Started {
-            at: now_ms(),
-            session_id: pending.clone(),
-        });
-        // Records older than a few days are of no use.
-        let cutoff = now_ms().saturating_sub(3 * DAY_MS);
-        env.started.retain(|started| started.at >= cutoff);
+        *live.pending.entry(agent_id.to_string()).or_default() += 1;
         counter.fetch_add(1, Ordering::SeqCst);
-        Self::save(&self.inner, &book);
         Ok(Ticket {
             inner: Arc::clone(&self.inner),
             agent_id: agent_id.to_string(),
-            pending,
             counter,
             committed: false,
         })
@@ -608,7 +767,9 @@ fn gate(
     Ok(session)
 }
 
-/// Whether the user's sessions in the environment are active now, or were lately.
+/// Whether the user is active in the environment now, or was lately: one of their sessions has
+/// a turn running, waits on them, or wrote its journal, or they talked to any of the
+/// environment's persistent agents.
 pub(crate) fn user_active(daemon: &DaemonState, environment_id: &str) -> bool {
     let idle = Duration::from_secs(daemon.settings().initiative.idle_min.saturating_mul(60));
     daemon.environment_user_active(environment_id, idle)
@@ -743,18 +904,15 @@ pub async fn tick(daemon: &Arc<DaemonState>) -> Vec<String> {
     reviewed
 }
 
-/// What a review did.
-#[derive(Debug, Clone, Default)]
-pub struct Outcome {
-    pub suggestions: u32,
-    pub digest: bool,
-    pub reply: String,
-}
-
-/// Runs one review with an agent now, if it may: the agent gets the review message and the
-/// permission mode that fits the mode (plan only for `suggest`, so it can read but change
-/// nothing and start nothing; `default` for `act`), and the mode it had is put back after.
-/// An `Err` says why nothing ran (nothing is recorded then) or how the turn failed.
+/// Runs one review with an agent now, if it may. The agent gets the review message in **plan
+/// mode**, and for the length of the turn the launcher refuses every tool but [`REVIEW_TOOLS`]
+/// (`start_session` only in `act` and within the limits). The restrictions, and the mode the
+/// agent had, are undone by the watcher when the review's own turn ends ([`conclude`]), not when
+/// this function stops waiting: a review that times out is stopped, and stays restricted until
+/// its turn ends.
+///
+/// An `Err` says why nothing ran (nothing is recorded then), how the turn failed, or why the
+/// wait ended early.
 pub(crate) async fn run_review(
     daemon: &Arc<DaemonState>,
     agent_id: &str,
@@ -779,6 +937,7 @@ pub(crate) async fn run_review(
     }
     let mode = effective_mode(daemon, &agent);
     let book = daemon.initiative();
+    let (done, finished) = oneshot::channel();
     let begun = book.begin_review(
         &agent.id,
         Review {
@@ -786,6 +945,12 @@ pub(crate) async fn run_review(
             max_suggestions: settings.initiative.max_suggestions,
             added: 0,
             digest_given: false,
+            digest_attempted: tasks.digest,
+            before: session.permission_mode(),
+            session_id: session.id().to_string(),
+            started: false,
+            reply: String::new(),
+            done: Some(done),
         },
     );
     if !begun {
@@ -794,72 +959,124 @@ pub(crate) async fn run_review(
     announce(daemon, &agent.id);
 
     let message = prompt::render(&facts(daemon, &env, &agent, &settings), mode, tasks);
-    let permission = if mode == Initiative::Act {
-        imperium_api::PermissionMode::Default
-    } else {
-        imperium_api::PermissionMode::Plan
-    };
-    let before = session.permission_mode();
-    daemon.set_permission_mode(&session, permission);
-    let events = session.subscribe();
-    let timeout = Duration::from_secs(settings.initiative.review_timeout_min.max(1) * 60);
-    let result = if session.send(message).is_err() {
-        Err("the agent's session closed".to_string())
-    } else {
-        daemon.wait_for_turn(&session, events, timeout).await
-    };
-    // Put the mode back unless the user changed it meanwhile.
-    if session.permission_mode() == permission {
-        daemon.set_permission_mode(&session, before);
+    // Every review is in plan mode: it reads and records, and changes nothing, whatever the
+    // user's rules and approvals allow elsewhere.
+    daemon.set_permission_mode(&session, imperium_api::PermissionMode::Plan);
+    if session.send(message).is_err() {
+        conclude(daemon, &agent.id, Err("the agent's session closed".into()));
+        return Err("the agent's session closed".into());
     }
-    let finished = book.end_review(&agent.id).unwrap_or(Review {
-        mode,
-        max_suggestions: 0,
-        added: 0,
-        digest_given: false,
-    });
+    let timeout = Duration::from_secs(settings.initiative.review_timeout_s.max(1));
+    wait_for_review(
+        daemon, &session, &env.id, &agent.id, trigger, timeout, finished,
+    )
+    .await
+}
+
+/// Waits for the review to end, checking now and then that it should go on.
+async fn wait_for_review(
+    daemon: &Arc<DaemonState>,
+    session: &Arc<imperium_engine::Session>,
+    environment_id: &str,
+    agent_id: &str,
+    trigger: Trigger,
+    timeout: Duration,
+    mut finished: oneshot::Receiver<Result<Outcome, String>>,
+) -> Result<Outcome, String> {
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    let mut look = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        tokio::select! {
+            result = &mut finished => {
+                return result.unwrap_or_else(|_| Err("the review ended without a result".into()));
+            }
+            () = &mut deadline => {
+                // Nothing more runs; the turn ends when the agent is resumed, still restricted.
+                session.stop();
+                return Err(format!(
+                    "the review timed out after {} s and the agent was stopped; resume it to let the turn end",
+                    timeout.as_secs()
+                ));
+            }
+            _ = look.tick() => {
+                let current = daemon.environments().find_agent_anywhere(agent_id);
+                if current.is_none_or(|(_, agent)| agent.initiative == Initiative::Off) {
+                    session.stop();
+                    return Err("initiative was turned off during the review, so the agent was stopped; resume it to let the turn end".into());
+                }
+                let book = daemon.initiative();
+                if trigger == Trigger::Schedule && book.review_started(agent_id) {
+                    let queued = session.queue(None).is_ok_and(|queued| !queued.is_empty());
+                    if queued || user_active(daemon, environment_id) {
+                        return Err("you became active in the environment; the review finishes in the background and your messages wait behind it".into());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Ends the review whose turn ended: puts the agent's permission mode back (on the session the
+/// review set it on), records how it went, tells the user, and tells whoever waits.
+fn conclude(daemon: &Arc<DaemonState>, agent_id: &str, result: Result<(), String>) {
+    let book = daemon.initiative();
+    let Some(mut review) = book.take_review(agent_id) else {
+        return;
+    };
+    if let Some(session) = daemon.project_agents().agent(agent_id)
+        && session.id() == review.session_id
+        && session.permission_mode() == imperium_api::PermissionMode::Plan
+    {
+        daemon.set_permission_mode(&session, review.before);
+    }
     let (reply, error) = match result {
-        Ok(reply) => (reply, None),
+        Ok(()) => (std::mem::take(&mut review.reply).trim().to_string(), None),
         Err(message) => (String::new(), Some(message)),
     };
-    // A failed review waits out the interval like a finished one, so it does not retry in a
-    // loop.
-    book.finish_review(&agent.id, now_ms(), tasks.digest, error.clone());
-    announce(daemon, &agent.id);
-    if finished.added > 0 {
-        notice(
-            daemon,
-            &env,
-            &agent,
-            NoticeKind::Suggestions,
-            format!("{} has {} suggestion(s)", agent.name, finished.added),
-            format!("Open {} to start one.", env.name),
-            None,
-        );
+    // A deleted agent leaves nothing behind.
+    if let Some((env, agent)) = daemon.environments().find_agent_anywhere(agent_id) {
+        // A failed review waits out the interval like a finished one, so it does not retry in
+        // a loop.
+        book.finish_review(agent_id, now_ms(), review.digest_attempted, error.clone());
+        announce(daemon, agent_id);
+        if review.added > 0 {
+            notice(
+                daemon,
+                &env,
+                &agent,
+                NoticeKind::Suggestions,
+                format!("{} has {} suggestion(s)", agent.name, review.added),
+                format!("Open {} to start one.", env.name),
+                None,
+            );
+        }
+        if review.digest_given {
+            let summary = book
+                .snapshot(agent_id)
+                .digest
+                .map(|digest| digest.summary)
+                .unwrap_or_default();
+            notice(
+                daemon,
+                &env,
+                &agent,
+                NoticeKind::Digest,
+                format!("Work left in {}", env.name),
+                summary,
+                None,
+            );
+        }
     }
-    if finished.digest_given {
-        let summary = book
-            .snapshot(&agent.id)
-            .digest
-            .map(|digest| digest.summary)
-            .unwrap_or_default();
-        notice(
-            daemon,
-            &env,
-            &agent,
-            NoticeKind::Digest,
-            format!("Work left in {}", env.name),
-            summary,
-            None,
-        );
-    }
-    match error {
-        Some(message) => Err(message),
-        None => Ok(Outcome {
-            suggestions: finished.added,
-            digest: finished.digest_given,
-            reply,
-        }),
+    if let Some(done) = review.done.take() {
+        let _ = done.send(match error {
+            Some(message) => Err(message),
+            None => Ok(Outcome {
+                suggestions: review.added,
+                digest: review.digest_given,
+                reply,
+            }),
+        });
     }
 }
 
@@ -890,10 +1107,11 @@ fn facts(
         sessions.push((
             active,
             format!(
-                "\"{}\" ({:?}, {}{by})",
+                "\"{}\" ({:?}, {}{by}; id {})",
                 imperium_api::truncate_chars(summary.title.trim(), 80),
                 summary.status,
                 ago(now, active),
+                summary.session_id,
             ),
         ));
     }
@@ -934,8 +1152,10 @@ fn ago(now: u64, then: u64) -> String {
     }
 }
 
-/// Watches an agent for the turns that report a session it started on its own initiative: what
-/// it starts in them follows the initiative limits too.
+/// Watches an agent for as long as its session lives: it ends reviews when their turn ends,
+/// answers (through the approval queue) what a review's agents ask, tells the daemon which turns
+/// are follow-ups to reports of sessions it started on its own initiative (they follow the same
+/// limits) and which are the user talking to the agent (that counts as the user being active).
 pub(crate) fn watch_agent(
     daemon: &Arc<DaemonState>,
     agent_id: String,
@@ -947,21 +1167,66 @@ pub(crate) fn watch_agent(
             let event = match events.recv().await {
                 Ok(event) => event,
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => return,
+                Err(broadcast::error::RecvError::Closed) => {
+                    // The session is gone (the agent restarted, or was deleted): a review that
+                    // was running on it cannot end any other way.
+                    if let Some(daemon) = weak.upgrade() {
+                        conclude(
+                            &daemon,
+                            &agent_id,
+                            Err("the agent's session ended during the review".into()),
+                        );
+                    }
+                    return;
+                }
             };
-            if event.agent_id != ROOT_AGENT {
-                continue;
-            }
             let Some(daemon) = weak.upgrade() else {
                 return;
             };
+            let book = daemon.initiative();
+            let root = event.agent_id == ROOT_AGENT;
             match event.event {
-                SessionEvent::TurnStarted { text, .. } => {
-                    let follow = daemon.initiative().is_report_of_initiative_session(&text);
-                    daemon.initiative().set_follow_up(&agent_id, follow);
+                // Nobody watches a review: what its agents ask goes to the approval queue.
+                SessionEvent::PermissionRequested {
+                    request_id,
+                    tool,
+                    summary,
+                    ..
+                } if book.is_reviewing(&agent_id) => {
+                    if let Some(session) = daemon.project_agents().agent(&agent_id) {
+                        daemon.bridge_permission(&session, request_id, &tool, summary);
+                    }
                 }
-                SessionEvent::TurnCompleted { .. } | SessionEvent::TurnFailed { .. } => {
-                    daemon.initiative().set_follow_up(&agent_id, false);
+                SessionEvent::QuestionsAsked {
+                    request_id,
+                    questions,
+                } if book.is_reviewing(&agent_id) => {
+                    if let Some(session) = daemon.project_agents().agent(&agent_id) {
+                        crate::state::answer_with_recommendations(&session, request_id, &questions);
+                    }
+                }
+                SessionEvent::TurnStarted { text, .. } if root => {
+                    if text.starts_with(prompt::MARKER) {
+                        book.mark_review_started(&agent_id);
+                    } else if book.take_report(&text) {
+                        book.set_follow_up(&agent_id, true);
+                    } else {
+                        book.set_follow_up(&agent_id, false);
+                        book.note_user_chat(&agent_id, now_ms());
+                    }
+                }
+                SessionEvent::TextDelta { text } if root => book.push_review_text(&agent_id, &text),
+                SessionEvent::TurnCompleted { .. } if root => {
+                    book.set_follow_up(&agent_id, false);
+                    if book.review_started(&agent_id) {
+                        conclude(&daemon, &agent_id, Ok(()));
+                    }
+                }
+                SessionEvent::TurnFailed { message } if root => {
+                    book.set_follow_up(&agent_id, false);
+                    if book.review_started(&agent_id) {
+                        conclude(&daemon, &agent_id, Err(message));
+                    }
                 }
                 _ => {}
             }
@@ -969,9 +1234,70 @@ pub(crate) fn watch_agent(
     });
 }
 
+/// Checks that `source` names something the agent could have read: a file or folder inside the
+/// environment's folders (optionally with a `#heading` or `:line`), or a session of the
+/// environment's it was shown. The daemon cannot check that it says what the agent claims.
+pub(crate) fn check_source(
+    daemon: &DaemonState,
+    env: &EnvironmentInfo,
+    source: &str,
+) -> Result<(), String> {
+    let source = source.trim();
+    let refused = || {
+        format!(
+            "source {source:?} is not something you read in this environment: name a file or folder inside its folders (for example docs/12-roadmap.md#next) or a session id from the list"
+        )
+    };
+    if source.is_empty() {
+        return Err(refused());
+    }
+    let path_part = source.split('#').next().unwrap_or_default();
+    let path_part = match path_part.rsplit_once(':') {
+        Some((path, line)) if !line.is_empty() && line.chars().all(|c| c.is_ascii_digit()) => path,
+        _ => path_part,
+    };
+    if daemon.session(path_part).is_some_and(|session| {
+        daemon.summary(&session).environment_id.as_deref() == Some(env.id.as_str())
+    }) || daemon.archived_sessions().iter().any(|archived| {
+        archived.session_id == path_part
+            && archived.environment_id.as_deref() == Some(env.id.as_str())
+    }) {
+        return Ok(());
+    }
+    let candidate = Path::new(path_part);
+    if path_part.is_empty()
+        || candidate
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(refused());
+    }
+    // Folders on another machine cannot be looked at from here: a clean relative path will do.
+    if env.runtime.is_remote() {
+        return if candidate.is_relative() {
+            Ok(())
+        } else {
+            Err(refused())
+        };
+    }
+    for folder in &env.folders {
+        let folder = Path::new(folder);
+        let full = if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            folder.join(candidate)
+        };
+        if full.starts_with(folder) && full.exists() {
+            return Ok(());
+        }
+    }
+    Err(refused())
+}
+
 /// Checks a `start_session` the agent makes during an initiative turn and takes a slot for it.
-/// Outside `act`, without a reason and a source, while the user is active, or past a limit, it
-/// is refused with a message the agent reads.
+/// Outside `act`, without a reason and a source, with a source that is not a file or session of
+/// the environment, while the user is active, or past a limit, it is refused with a message the
+/// agent reads.
 pub(crate) fn permit_start(
     daemon: &Arc<DaemonState>,
     env: &EnvironmentInfo,
@@ -981,9 +1307,7 @@ pub(crate) fn permit_start(
 ) -> Result<Ticket, String> {
     let settings = daemon.settings();
     let book = daemon.initiative();
-    let mode = book
-        .review(&agent.id)
-        .map_or(agent.initiative, |review| review.mode);
+    let mode = book.review_mode(&agent.id).unwrap_or(agent.initiative);
     if agent.initiative != Initiative::Act || mode != Initiative::Act {
         return Err(
             "this is an initiative turn and you are not in act mode (or today's limit is reached): do not start sessions; record the work with suggest_work and the user starts it".to_string(),
@@ -993,9 +1317,10 @@ pub(crate) fn permit_start(
         || source.is_none_or(|text| text.trim().is_empty())
     {
         return Err(
-            "during an initiative turn start_session needs `reason` (why now) and `source` (what you read: a file and heading, an issue, a session); without a source, do not start it".to_string(),
+            "during an initiative turn start_session needs `reason` (why now) and `source` (what you read: a file and heading, or a session id); without a source, do not start it".to_string(),
         );
     }
+    check_source(daemon, env, source.unwrap_or_default())?;
     if user_active(daemon, &env.id) {
         return Err(
             "the user is active in this environment, so you do not start work now; record it with suggest_work".to_string(),
@@ -1036,6 +1361,23 @@ pub(crate) fn announce_started(
         Some(session_id.to_string()),
     );
     announce(daemon, &agent.id);
+}
+
+/// The refusal the launcher gives a tool call during a review, or none when it is allowed.
+pub(crate) fn review_restriction(
+    daemon: &DaemonState,
+    agent_id: &str,
+    tool: &str,
+) -> Option<String> {
+    if !daemon.initiative().is_reviewing(agent_id) {
+        return None;
+    }
+    if REVIEW_TOOLS.contains(&tool) {
+        return None;
+    }
+    Some(format!(
+        "{tool} is not available during an initiative review: only reading, searching and recording suggestions (suggest_work, work_digest) are allowed"
+    ))
 }
 
 // --- methods -------------------------------------------------------------------------------
@@ -1089,6 +1431,7 @@ pub(crate) fn dismiss(
 }
 
 /// Starts an open suggestion as the user's own session, with its prompt as the first message.
+/// A used-up budget that asks or blocks refuses it with the budget's own message.
 pub(crate) fn start_suggestion(
     daemon: &Arc<DaemonState>,
     params: InitiativeSuggestionRef,
@@ -1142,14 +1485,15 @@ pub(crate) fn start_suggestion(
     Ok(InitiativeStartResult { session_id: id })
 }
 
-/// Reviews now, at a person's request; the result arrives as `initiative.changed`.
+/// Reviews now, at a person's request; the result arrives as `initiative.changed`. What stops it
+/// at once (initiative off, the agent busy, a used-up budget) is the caller's error.
 pub(crate) fn review_now(
     daemon: &Arc<DaemonState>,
     params: InitiativeRef,
 ) -> Result<(), ErrorObject> {
     let (env, agent) = subject(daemon, &params.environment_id, &params.agent_id)?;
-    // The checks that fail at once are reported to the caller.
-    gate(daemon, &env, &agent, Trigger::User).map_err(invalid)?;
+    let session = gate(daemon, &env, &agent, Trigger::User).map_err(invalid)?;
+    crate::budgets::check(daemon, session.id(), false)?;
     let daemon = Arc::clone(daemon);
     tokio::spawn(async move {
         if let Err(reason) = run_review(&daemon, &agent.id, Trigger::User).await {
@@ -1169,20 +1513,28 @@ mod tests {
                 path: None,
                 book: Mutex::new(File::default()),
                 live: Mutex::new(Live::default()),
+                writing: Mutex::new(()),
             }),
         }
     }
 
+    fn a_review(max: u32) -> Review {
+        Review {
+            mode: Initiative::Suggest,
+            max_suggestions: max,
+            added: 0,
+            digest_given: false,
+            digest_attempted: false,
+            before: imperium_api::PermissionMode::Default,
+            session_id: "s".into(),
+            started: false,
+            reply: String::new(),
+            done: None,
+        }
+    }
+
     fn review(book: &InitiativeBook, max: u32) {
-        assert!(book.begin_review(
-            "e",
-            Review {
-                mode: Initiative::Suggest,
-                max_suggestions: max,
-                added: 0,
-                digest_given: false,
-            }
-        ));
+        assert!(book.begin_review("e", a_review(max)));
     }
 
     fn suggest(book: &InitiativeBook, title: &str) -> Result<WorkSuggestion, String> {
@@ -1219,7 +1571,7 @@ mod tests {
         );
         // Handled work is not suggested again for a week.
         assert!(book.close_suggestion("e", &first.id, SuggestionStatus::Dismissed, None));
-        book.end_review("e");
+        assert!(book.take_review("e").is_some());
         review(&book, 2);
         assert!(
             suggest(&book, "Tidy the roadmap")
@@ -1234,6 +1586,8 @@ mod tests {
         let book = book();
         let first = book.begin_start("e", 2, 1).unwrap();
         assert_eq!(book.running("e"), 1);
+        // A slot taken counts toward the day before it has a session.
+        assert_eq!(book.started_today("e"), 1);
         assert!(
             book.begin_start("e", 2, 1)
                 .unwrap_err()
@@ -1249,18 +1603,96 @@ mod tests {
         drop(second.commit("s2"));
         assert_eq!(book.started_today("e"), 2);
         assert!(book.begin_start("e", 2, 1).unwrap_err().contains("today"));
-        // Another environment has its own allowance.
+        // Another agent has its own allowance.
         assert!(book.begin_start("other", 2, 1).is_ok());
     }
 
     #[test]
-    fn a_report_of_a_session_the_agent_started_is_recognised() {
+    fn a_report_the_daemon_announced_is_recognised_once() {
         let book = book();
-        book.begin_start("e", 2, 1).unwrap().commit("abc123");
-        assert!(book.is_report_of_initiative_session("Session abc123 finished. Its report:\n\nok"));
-        assert!(book.is_report_of_initiative_session("Session abc123 did not finish: x"));
-        assert!(!book.is_report_of_initiative_session("Session zzz finished."));
-        assert!(!book.is_report_of_initiative_session("please start a session"));
+        book.expect_report("Session abc finished. Its report:\n\nok");
+        assert!(book.take_report("Session abc finished. Its report:\n\nok"));
+        assert!(!book.take_report("Session abc finished. Its report:\n\nok"));
+        // Text that merely looks like a report is not one.
+        assert!(!book.take_report("Session zzz finished."));
+    }
+
+    #[test]
+    fn a_deleted_agent_is_not_recreated_by_a_late_write() {
+        let book = book();
+        review(&book, 2);
+        suggest(&book, "Tidy").unwrap();
+        book.forget_agent("e");
+        book.finish_review("e", 5, true, Some("late".into()));
+        book.postpone_review("e", 7);
+        let snapshot = book.snapshot("e");
+        assert!(snapshot.last_review_at.is_none() && snapshot.suggestions.is_empty());
+        assert!(suggest(&book, "Again").is_err());
+        assert!(book.begin_start("e", 2, 1).is_err());
+        assert!(!book.is_reviewing("e"));
+    }
+
+    #[test]
+    fn the_file_is_written_whole_and_an_unreadable_one_is_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("initiative.json");
+        let first = InitiativeBook::load(path.clone());
+        assert!(first.begin_review("e", a_review(2)));
+        suggest(&first, "Tidy the roadmap").unwrap();
+        drop(first);
+        // No temporary file is left, and the suggestion survives a reload.
+        assert!(!dir.path().join("initiative.json.tmp").exists());
+        let second = InitiativeBook::load(path.clone());
+        assert_eq!(second.snapshot("e").suggestions.len(), 1);
+        drop(second);
+
+        std::fs::write(&path, "{ not json").unwrap();
+        let third = InitiativeBook::load(path.clone());
+        assert!(third.snapshot("e").suggestions.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("initiative.json.unreadable")).unwrap(),
+            "{ not json",
+            "the damaged file is kept, not overwritten"
+        );
+    }
+
+    #[test]
+    fn user_chat_counts_for_a_while() {
+        let book = book();
+        assert!(!book.chatted_within("e", 60_000));
+        book.note_user_chat("e", now_ms());
+        assert!(book.chatted_within("e", 60_000));
+        assert!(!book.chatted_within("e", 0));
+        book.note_user_chat("e", now_ms().saturating_sub(120_000));
+        assert!(!book.chatted_within("e", 60_000));
+    }
+
+    #[test]
+    fn a_review_may_only_read_search_and_record() {
+        for tool in [
+            "read_file",
+            "grep",
+            "suggest_work",
+            "work_digest",
+            "start_session",
+        ] {
+            assert!(REVIEW_TOOLS.contains(&tool), "{tool}");
+        }
+        for tool in [
+            "write_file",
+            "edit_file",
+            "run_command",
+            "web_fetch",
+            "web_search",
+            "memory_remember",
+            "install_extension",
+            "set_model_card",
+            "activate_plugin",
+            "browser_navigate",
+            "generate_image",
+        ] {
+            assert!(!REVIEW_TOOLS.contains(&tool), "{tool}");
+        }
     }
 
     #[test]
