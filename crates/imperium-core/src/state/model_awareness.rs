@@ -181,6 +181,7 @@ impl DaemonState {
                 location: Location::Local,
                 tags: Vec::new(),
                 named_only: true,
+                cpu_lane: false,
             });
         }
         catalog

@@ -139,6 +139,7 @@ fn start_with(
         location: imperium_config::Location::Cloud,
         tags: Vec::new(),
         named_only: false,
+        cpu_lane: false,
     };
     Session::spawn(SessionConfig {
         id: "test".into(),

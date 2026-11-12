@@ -2690,6 +2690,7 @@ impl DaemonState {
                         location: entry.location,
                         tags: entry.tags.clone(),
                         named_only: entry.placement == ModelPlacement::Cpu,
+                        cpu_lane: entry.placement == ModelPlacement::Cpu,
                     }),
                     Err(error) => {
                         tracing::warn!(model = %entry.spec, %error, "skipping catalog model");

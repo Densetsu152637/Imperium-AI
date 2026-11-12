@@ -335,4 +335,11 @@ pub trait LocalModels: Send + Sync + fmt::Debug {
     fn tokens_per_s(&self, _model: &str) -> Option<f64> {
         None
     }
+    /// How long, in seconds, a call for `model` made now is expected to wait for a slot behind
+    /// the calls already running and queued, not counting loading it; `0` when a slot is free,
+    /// the model is not loaded, or the runtime cannot tell. An estimate from recent call times,
+    /// used by routing to send work elsewhere when a model is backed up.
+    fn queue_wait_s(&self, _model: &str) -> u32 {
+        0
+    }
 }

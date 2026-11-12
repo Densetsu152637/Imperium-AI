@@ -308,9 +308,17 @@ and `environments.agent_update` (protocol 0.28)
 28. **Local runtimes and hardware.** vLLM as a supervised runtime, GPU probes for AMD, Intel,
     and Apple Silicon, and memory estimates calibrated against measured use
     ([04](04-models-and-routing.md)).
-29. **Routing extras.** Queue-delay handling, capability filters, escalation, and built-in
-    rules sending critique, review, and verify tasks to the CPU lane
-    ([04](04-models-and-routing.md)).
+29. **Routing extras** (implemented). Queue-delay handling, capability filters, escalation, and built-in
+    rules sending critique, review, and verify tasks to the CPU lane. A local model whose
+    expected queue wait is over `routing.max_queue_wait_s` is skipped for the next eligible
+    route; models lacking a capability a task needs (`vision`, `tools`, `long_context`) are
+    skipped with a reason; a failed or unsure subagent is retried on a stronger route within
+    `routing.escalation_attempts` (off by default; a retry follows the first attempt's
+    `TaskFinished` event); and `critique`, `review`, `verify` and `proof-check` tasks
+    prefer a CPU-lane row that can take them. Each choice that skipped a model or used a
+    built-in rule says so in a notice ([04](04-models-and-routing.md#routing-extras-implemented)).
+    Not built: a cost score weighing load latency against price, and a task deadline that keeps
+    short tasks off the lane.
 30. **Hooks and mods.** More hook events, hooks that rewrite calls, HTTP hooks; more mod
     contribution points, install and update commands, a permission prompt at install, and
     trusted main-context mods ([06](06-extensibility.md)).

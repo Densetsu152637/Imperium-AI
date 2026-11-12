@@ -45,7 +45,10 @@ use crate::compact::{self, SwitchError};
 use crate::instructions;
 use crate::queue::{Inbox, QueueError, steering_text};
 use crate::session::{SessionMemory, Shared, lock};
-use crate::{LocalLease, LocalModels, LocalPresence, ResolvedModel, TaskRequest, route};
+use crate::{
+    LocalLease, LocalModels, LocalPresence, ResolvedModel, TaskRequest, escalate, route,
+    route_noted,
+};
 
 /// Longest tool output or report shown in events (the model receives the full text).
 const EVENT_OUTPUT_CHARS: usize = 2_000;
@@ -2241,7 +2244,7 @@ impl Agent {
             .as_deref()
             .map(str::parse::<Location>)
             .transpose()?;
-        let model = route(
+        let routed = route_noted(
             &self.shared.catalog,
             &self.shared.routing,
             // Only the root delegates, so this is the session's current model.
@@ -2252,9 +2255,12 @@ impl Agent {
                 location,
                 tags: &args.tags,
                 session: Some(&self.shared.session_id),
+                needs_tools: !args.single_call,
             },
             self.shared.local.as_deref(),
         );
+        let route_notes = routed.notes;
+        let model = routed.model;
         // A model whose budget is used up and blocks is not started; one that asks is
         // approved at the subagent's first call.
         if let Some(gate) = &self.shared.budget_gate
@@ -2326,7 +2332,33 @@ impl Agent {
             title: crate::title::task_title(args.title.as_deref(), &args.brief),
             at_ms: Some(crate::agents::now_ms()),
         });
+        // Why routing chose as it did, or passed models over: shown where the task starts.
+        for note in route_notes {
+            self.emit(SessionEvent::Notice {
+                message: format!("{task_id}: {note}"),
+            });
+        }
         let role = args.role.unwrap_or_else(|| "leaf".into());
+        // A failed task is retried on a stronger route, except a writer: its half-finished
+        // edits stay in its worktree, and a second model would start over on top of them.
+        let retry = (!isolated && !writes).then(|| Retry {
+            tier,
+            // Where the task was confined (the call's location, else a rule's) stays so.
+            location: crate::model::effective_location(
+                &self.shared.routing,
+                TaskRequest {
+                    tier,
+                    location,
+                    tags: &args.tags,
+                    ..TaskRequest::default()
+                },
+            ),
+            tags: args.tags.clone(),
+            role: role.clone(),
+            workspace: workspace.clone(),
+            effort,
+            single_call: args.single_call,
+        });
         let mut agent = Agent::new_in(
             task_id.clone(),
             Arc::clone(&self.shared),
@@ -2343,7 +2375,7 @@ impl Agent {
         if args.single_call {
             agent = agent.single_call();
         }
-        self.launch_subagent(agent.pausable(), args.brief, &task_id);
+        self.launch_subagent(agent.pausable(), args.brief, &task_id, retry);
         let mut started = format!("started {task_id}; call await_tasks to collect its report");
         if let Some(notice) = notice {
             self.emit(SessionEvent::Notice {
@@ -2356,10 +2388,16 @@ impl Agent {
 
     /// Starts `agent` on `brief` as its own task. (A plain function, so the async tool functions
     /// that call it do not contain the subagent's own future.)
-    fn launch_subagent(&mut self, agent: Agent, brief: String, task_id: &str) {
+    fn launch_subagent(
+        &mut self,
+        agent: Agent,
+        brief: String,
+        task_id: &str,
+        retry: Option<Retry>,
+    ) {
         let spawned = json!({"task_id": task_id, "brief": brief, "model": agent.model.spec});
         // Each subagent is its own task, so subagents run in parallel across the runtime's threads.
-        let handle = tokio::spawn(run_subagent(agent, brief, Some(spawned), false));
+        let handle = tokio::spawn(run_escalating(agent, brief, spawned, retry));
         self.tasks.insert(task_id.to_string(), handle);
         self.pausable_tasks.insert(task_id.to_string());
     }
@@ -2487,6 +2525,7 @@ impl Agent {
                 location: None,
                 tags: &[],
                 session: Some(&self.shared.session_id),
+                needs_tools: false,
             },
             self.shared.local.as_deref(),
         );
@@ -2856,7 +2895,9 @@ fn subagent_prompt(root: &str) -> String {
          you are given using the tools; paths are relative to the project folder. Look up facts \
          that can change rather than relying on what you learned in training. Your final reply \
          is your report to the agent that delegated to you: lead with the result, then what you \
-         found and anything left undone or not verified, concisely. A message marked <steering> \
+         found and anything left undone or not verified, concisely. If you could not do the \
+         task well and a stronger model should try again, begin your reply with the line \
+         `CONFIDENCE: LOW`. A message marked <steering> \
          arrived while you were working: take it into account and carry on."
     )
 }
@@ -3663,6 +3704,151 @@ fn clip(text: &str, max: usize) -> String {
 /// Runs a subagent's turn on `text`, then any messages queued for it, and reports. A new task
 /// runs `agent.spawn` hooks first (`spawned` is their payload); a resumed one is fitted to its
 /// model's context window first, compacting a long conversation.
+/// Whether a report calls for a stronger route: the task failed, or the subagent said it is not
+/// confident (its report's first line is exactly `CONFIDENCE: LOW`). A paused task is neither.
+fn needs_escalation(report: &TaskReport) -> bool {
+    if report.paused {
+        return false;
+    }
+    !report.ok
+        || report
+            .report
+            .lines()
+            .next()
+            .is_some_and(|line| line.trim() == "CONFIDENCE: LOW")
+}
+
+/// What a subagent needs to be retried on a stronger route when it fails.
+struct Retry {
+    tier: Tier,
+    location: Option<Location>,
+    tags: Vec<String>,
+    role: String,
+    workspace: Workspace,
+    effort: Option<Effort>,
+    single_call: bool,
+}
+
+/// Runs a subagent and, when it fails, runs the task again on a stronger route: up to
+/// `routing.escalation_attempts` times, each on the model [`escalate`] picks (a rule's
+/// `escalate` list, else the tier above the failed model's), never the model that just failed.
+/// The retry's brief carries the failed attempt's report. A model whose budget blocks it is not
+/// tried; one whose budget asks is approved at its first call, like any subagent's. A paused
+/// task is not a failure and is not retried.
+async fn run_escalating(
+    agent: Agent,
+    brief: String,
+    spawned: serde_json::Value,
+    retry: Option<Retry>,
+) -> TaskReport {
+    let shared = Arc::clone(&agent.shared);
+    let id = agent.id.clone();
+    // What routing falls back to when nothing fits: never an escalation target.
+    let session_model = shared
+        .agents
+        .model(ROOT_AGENT)
+        .unwrap_or_else(|| agent.model.clone());
+    let mut failed_spec = agent.model.spec.clone();
+    let mut failed_local = agent.model.local;
+    let mut report = run_subagent(agent, brief.clone(), Some(spawned), false).await;
+    let Some(retry) = retry else {
+        return report;
+    };
+    let max = shared.routing.escalation_attempts;
+    let mut attempt = 0;
+    while needs_escalation(&report) && attempt < max {
+        attempt += 1;
+        let notice = |message: String| {
+            shared.emitter.emit(&id, SessionEvent::Notice { message });
+        };
+        // On an initiative turn the daemon chooses the models, not the agent: no escalation.
+        if shared
+            .launcher
+            .as_ref()
+            .is_some_and(|launcher| launcher.model_choice_ignored())
+        {
+            break;
+        }
+        // A budget the user has not approved, or declined, at the model that just ran: stop
+        // rather than spend on a stronger one.
+        if let Some(gate) = &shared.budget_gate
+            && let crate::BudgetVerdict::Ask { .. } = gate.check(&failed_spec)
+        {
+            notice(format!(
+                "{id} on {failed_spec} needs a stronger route but its budget is waiting for approval, so it is not retried"
+            ));
+            break;
+        }
+        // The subagent answered but said it is unsure, as opposed to failing.
+        let unsure = report.ok;
+        let request = TaskRequest {
+            named: None,
+            tier: retry.tier,
+            location: retry.location,
+            tags: &retry.tags,
+            session: Some(&shared.session_id),
+            needs_tools: !retry.single_call,
+        };
+        let Some(routed) = escalate(
+            &shared.catalog,
+            &shared.routing,
+            &session_model,
+            request,
+            &failed_spec,
+            attempt,
+            shared.local.as_deref(),
+        ) else {
+            notice(format!(
+                "{id} on {failed_spec} needs a stronger route and none is available, so it is not retried"
+            ));
+            break;
+        };
+        let spec = routed.model.spec.clone();
+        // An unsure answer from a local model never sends the task off the machine.
+        if unsure && failed_local && !routed.model.local {
+            notice(format!(
+                "{id} on {failed_spec} was unsure, but the stronger route {spec} is hosted, so it is not retried"
+            ));
+            break;
+        }
+        if let Some(gate) = &shared.budget_gate
+            && let crate::BudgetVerdict::Blocked(message) = gate.check(&spec)
+        {
+            notice(format!(
+                "{id} on {failed_spec} needs a stronger route but was not retried on {spec}: {message}"
+            ));
+            break;
+        }
+        notice(format!(
+            "{id} did not succeed on {failed_spec}; retrying on {spec} (escalation {attempt} of {max})"
+        ));
+        for note in routed.notes {
+            notice(format!("{id}: {note}"));
+        }
+        let mut next = Agent::new_in(
+            id.clone(),
+            Arc::clone(&shared),
+            routed.model,
+            false,
+            retry.role.clone(),
+            retry.workspace.clone(),
+            None,
+        )
+        .with_effort(retry.effort);
+        if retry.single_call {
+            next = next.single_call();
+        }
+        let text = format!(
+            "{brief}\n\nAn earlier attempt at this task, by {failed_spec}, did not succeed or was not confident. Its report:\n{}",
+            truncate(&report.report, REPORT_CHARS)
+        );
+        failed_spec = spec;
+        failed_local = next.model.local;
+        report = run_subagent(next.pausable(), text, None, false).await;
+    }
+    report
+}
+
 async fn run_subagent(
     mut agent: Agent,
     text: String,
@@ -4075,6 +4261,41 @@ mod tests {
     fn clipped_reports_say_so() {
         assert_eq!(clip("short", 10), "short");
         assert!(clip(&"x".repeat(50), 10).ends_with("truncated to fit the merge window]"));
+    }
+
+    #[test]
+    fn failed_or_unsure_reports_call_for_a_stronger_route() {
+        let report = |ok, paused, text: &str| TaskReport {
+            task_id: "t1".into(),
+            model: "m".into(),
+            ok,
+            paused,
+            report: text.into(),
+        };
+        assert!(needs_escalation(&report(false, false, "it broke")));
+        assert!(needs_escalation(&report(
+            true,
+            false,
+            "CONFIDENCE: LOW\nnot sure"
+        )));
+        assert!(!needs_escalation(&report(
+            true,
+            false,
+            "confidence: low\nnot sure"
+        )));
+        assert!(!needs_escalation(&report(true, false, "done")));
+        assert!(!needs_escalation(&report(
+            true,
+            false,
+            "CONFIDENCE: LOW is a phrase"
+        )));
+        assert!(!needs_escalation(&report(
+            true,
+            false,
+            "all fine\nCONFIDENCE: LOW"
+        )));
+        // A pause is the user steering, not a failure.
+        assert!(!needs_escalation(&report(false, true, "paused")));
     }
 
     /// The delegation and planning tools sent to models are the protocol's exported definitions.

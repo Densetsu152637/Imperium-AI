@@ -820,12 +820,24 @@ struct Crash {
 struct Throughput {
     tokens: f64,
     seconds: f64,
+    /// Calls over the same recent window as `tokens` and `seconds`.
+    calls: f64,
 }
+
+/// What a call is assumed to take, in seconds, before any has been measured, for the queue
+/// wait routing expects.
+const DEFAULT_CALL_SECONDS: f64 = 30.0;
 
 impl Throughput {
     fn add(&mut self, tokens: f64, seconds: f64) {
         self.tokens = self.tokens * THROUGHPUT_KEEP + tokens;
         self.seconds = self.seconds * THROUGHPUT_KEEP + seconds;
+        self.calls = self.calls * THROUGHPUT_KEEP + 1.0;
+    }
+
+    /// Seconds a recent call spent generating, on average.
+    fn seconds_per_call(&self) -> Option<f64> {
+        (self.calls > 0.0 && self.seconds > 0.0).then(|| self.seconds / self.calls)
     }
 
     fn per_second(&self) -> Option<f64> {
@@ -3675,6 +3687,25 @@ impl LocalModels for Supervisor {
     fn tokens_per_s(&self, model: &str) -> Option<f64> {
         Supervisor::tokens_per_s(self, model)
     }
+
+    fn queue_wait_s(&self, model: &str) -> u32 {
+        let state = lock(&self.state);
+        let Some(loaded) = state.loaded.get(model) else {
+            return 0;
+        };
+        if loaded.pool.permits.available_permits() > 0 {
+            return 0;
+        }
+        // Every call queued ahead of this one, and this one, share the slots.
+        let ahead = f64::from(loaded.pool.waiting.load(Ordering::SeqCst)) + 1.0;
+        let slots = f64::from(loaded.pool.slots.max(1));
+        let per_call = state
+            .throughput
+            .get(model)
+            .and_then(Throughput::seconds_per_call)
+            .unwrap_or(DEFAULT_CALL_SECONDS);
+        (ahead / slots * per_call).ceil() as u32
+    }
 }
 
 #[cfg(test)]
@@ -4305,6 +4336,29 @@ mod tests {
             .unwrap();
         assert_eq!(name, "w3");
         assert_eq!(supervisor.loaded()[0].queued, 0);
+    }
+
+    #[tokio::test]
+    async fn the_expected_queue_wait_follows_busy_slots_and_queued_calls() {
+        let supervisor = supervisor(Arc::new(FakeLauncher::default()));
+        // Not loaded: nothing to wait for.
+        assert_eq!(LocalModels::queue_wait_s(supervisor.as_ref(), "a"), 0);
+        let first = supervisor.acquire("a", "h0").await.unwrap();
+        // A slot is free.
+        assert_eq!(LocalModels::queue_wait_s(supervisor.as_ref(), "a"), 0);
+        let second = supervisor.acquire("a", "h1").await.unwrap();
+        // Both slots busy, nobody queued: this call is next, half a default call per slot.
+        assert_eq!(LocalModels::queue_wait_s(supervisor.as_ref(), "a"), 15);
+        for name in ["w1", "w2", "w3"] {
+            let supervisor = Arc::clone(&supervisor);
+            tokio::spawn(async move {
+                let _lease = supervisor.acquire("a", name).await;
+            });
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        // Three queued ahead: four calls over two slots.
+        assert_eq!(LocalModels::queue_wait_s(supervisor.as_ref(), "a"), 60);
+        drop((first, second));
     }
 
     #[tokio::test]
