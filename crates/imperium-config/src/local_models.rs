@@ -146,34 +146,25 @@ const OWNED_FLAGS: &[&str] = &[
     "-cram",
     "--slot-save-path",
     "--device",
-    // Speculative decoding with a draft model (llama.cpp b12180), set by `draft_model`,
-    // `draft_max`, `draft_min` and `draft_gpu_layers`.
-    "-md",
-    "--model-draft",
-    "--spec-draft-model",
-    "--draft",
-    "--draft-n",
-    "--draft-max",
-    "--spec-draft-n-max",
-    "--draft-min",
-    "--draft-n-min",
-    "--spec-draft-n-min",
-    "-ngld",
-    "--gpu-layers-draft",
-    "--n-gpu-layers-draft",
-    "--spec-draft-ngl",
-    // Other ways to name or shape a draft model, which would bypass the memory plan.
-    "--spec-draft-hf",
-    "-hfd",
-    "-hfrd",
-    "--hf-repo-draft",
-    "--spec-draft-type-k",
-    "-ctkd",
-    "--cache-type-k-draft",
-    "--spec-draft-type-v",
-    "-ctvd",
-    "--cache-type-v-draft",
 ];
+/// Whether `flag` belongs to llama-server's draft model family (b12180), which `draft_model`,
+/// `draft_max`, `draft_min` and `draft_gpu_layers` replace: anything that names, loads, places,
+/// shapes or tunes a draft would bypass the memory plan. By pattern, so flags a later release
+/// adds to the family are covered: `--spec-draft-*`, `--draft*`, the long forms ending in
+/// `-draft` (`--model-draft`, `--gpu-layers-draft`, `--cache-type-k-draft`, ...), and the short
+/// ones (`-md`, `-ngld`, `-hfd`, `-hfrd`, `-ctkd`, `-ctvd`, `-devd`, `-otd`, `-cmoed`,
+/// `-ncmoed`, `-td`, `-tbd`, `-Cd`, `-Crd`, `-Cbd`).
+pub fn is_draft_flag(flag: &str) -> bool {
+    const SHORT: [&str; 15] = [
+        "-md", "-ngld", "-hfd", "-hfrd", "-ctkd", "-ctvd", "-devd", "-otd", "-cmoed", "-ncmoed",
+        "-td", "-tbd", "-Cd", "-Crd", "-Cbd",
+    ];
+    flag.starts_with("--spec-draft-")
+        || flag == "--draft"
+        || flag.starts_with("--draft-")
+        || (flag.starts_with("--") && flag.ends_with("-draft"))
+        || SHORT.contains(&flag)
+}
 /// llama-server's own default for `--spec-draft-n-max` (b12180), what `draft_max` replaces.
 pub const DEFAULT_DRAFT_MAX: u32 = 3;
 
@@ -470,18 +461,23 @@ pub fn check_local_model(settings: &LocalModelSettings) -> Result<(), String> {
     check_extra_args(
         settings.extra_args.iter().flatten(),
         settings.draft_model.is_some(),
+        true,
     )
 }
 
-/// Checks extra arguments for flags Imperium sets itself, and for `--spec-type` while a draft
-/// model is set (Imperium passes `--spec-type draft-simple` then).
+/// Checks extra arguments for the draft model flags, always, and for `--spec-type` while a draft
+/// model is set (Imperium passes `--spec-type draft-simple` then). With `all_owned`, also for
+/// every other flag Imperium sets itself: a model's own arguments. The global arguments are
+/// checked for the draft flags only, so a global `--flash-attn on` or `--ctx-size` written
+/// before these flags were owned keeps loading.
 fn check_extra_args<'a>(
     args: impl Iterator<Item = &'a String>,
     drafting: bool,
+    all_owned: bool,
 ) -> Result<(), String> {
     for arg in args {
         let flag = arg.split('=').next().unwrap_or(arg);
-        if OWNED_FLAGS.contains(&flag) {
+        if is_draft_flag(flag) || (all_owned && OWNED_FLAGS.contains(&flag)) {
             return Err(format!(
                 "extra_args may not contain {flag}, which Imperium sets itself"
             ));
@@ -594,12 +590,12 @@ impl Settings {
         })
         .map_err(|e| format!("runtime.llamacpp: {e}"))?;
         check_launch(&llama.default_launch()).map_err(|e| format!("runtime.llamacpp: {e}"))?;
-        check_extra_args(llama.extra_args.iter(), false)
+        check_extra_args(llama.extra_args.iter(), false, false)
             .map_err(|e| format!("runtime.llamacpp: {e}"))?;
         for (id, own) in &llama.models {
             check_local_model(own).map_err(|e| format!("runtime.llamacpp.models.{id:?}: {e}"))?;
             if own.draft_model.is_some() {
-                check_extra_args(llama.extra_args.iter(), true)
+                check_extra_args(llama.extra_args.iter(), true, false)
                     .map_err(|e| format!("runtime.llamacpp (with the draft of {id:?}): {e}"))?;
             }
             if own.draft_model.as_deref() == Some(id.as_str()) {
@@ -1237,6 +1233,18 @@ draft_gpu_layers = 0
         assert!(refused("draft_model = \"Big\"").contains("the model itself"));
         // Every way to name or shape a draft is Imperium's, with or without `=value`.
         for flag in [
+            "--spec-draft-p-min",
+            "--spec-draft-future-flag",
+            "--draft-p-split",
+            "--device-draft",
+            "--threads-batch-draft",
+            "--override-tensor-draft",
+            "-devd",
+            "-otd",
+            "-cmoed",
+            "-ncmoed",
+            "-td",
+            "-tbd",
             "-md",
             "--model-draft",
             "--spec-draft-model",
@@ -1263,7 +1271,15 @@ draft_gpu_layers = 0
             let args = format!("extra_args = [\"{flag}=x\"]");
             assert!(refused(&args).contains("Imperium sets itself"), "{flag}");
         }
-        // ... also in the global arguments, which reach every model.
+        // Flags Imperium has set since before the draft flags stay fine in the global
+        // arguments, where they were never checked.
+        let older = config(&[(
+            user(),
+            "[runtime.llamacpp]\nextra_args = [\"--flash-attn\", \"on\", \"--ctx-size=4096\", \"-ngl\", \"99\"]\n",
+        )])
+        .settings();
+        assert!(older.is_ok(), "{older:?}");
+        // ... but the draft flags are refused in the global arguments, which reach every model.
         let global = config(&[(
             user(),
             "[runtime.llamacpp]\nextra_args = [\"-md\", \"x.gguf\"]\n",

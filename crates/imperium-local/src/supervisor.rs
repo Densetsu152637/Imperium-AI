@@ -4660,11 +4660,37 @@ mod tests {
         // variables are removed from every llama.cpp server, `LLAMA_ARG_SPEC_TYPE` too while
         // Imperium passes `--spec-type`.
         let drafted_env = backend::scrubbed_env(&drafted);
-        assert!(drafted_env.contains(&"LLAMA_ARG_SPEC_DRAFT_MODEL"));
-        assert!(drafted_env.contains(&"LLAMA_ARG_SPEC_TYPE"));
+        assert!(
+            drafted_env
+                .iter()
+                .any(|n| n == "LLAMA_ARG_SPEC_DRAFT_MODEL")
+        );
+        assert!(drafted_env.iter().any(|n| n == "LLAMA_ARG_SPEC_TYPE"));
         let plain_env = backend::scrubbed_env(&spec);
-        assert!(plain_env.contains(&"LLAMA_ARG_N_GPU_LAYERS_DRAFT"));
-        assert!(!plain_env.contains(&"LLAMA_ARG_SPEC_TYPE"));
+        assert!(
+            plain_env
+                .iter()
+                .any(|n| n == "LLAMA_ARG_N_GPU_LAYERS_DRAFT")
+        );
+        assert!(!plain_env.iter().any(|n| n == "LLAMA_ARG_SPEC_TYPE"));
+        // Any `LLAMA_ARG_SPEC_DRAFT_*` present goes, known to this build or not; others stay.
+        let present = [
+            "LLAMA_ARG_SPEC_DRAFT_SOMETHING_NEW",
+            "LLAMA_ARG_HOST",
+            "LLAMA_ARG_SPEC_NGRAM",
+        ]
+        .map(String::from);
+        let names = backend::scrub_names(present, false);
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "LLAMA_ARG_SPEC_DRAFT_SOMETHING_NEW")
+        );
+        assert!(
+            !names
+                .iter()
+                .any(|n| n == "LLAMA_ARG_HOST" || n == "LLAMA_ARG_SPEC_NGRAM")
+        );
         let vllm = LaunchSpec {
             backend: Arc::new(Vllm::default()),
             ..spec.clone()

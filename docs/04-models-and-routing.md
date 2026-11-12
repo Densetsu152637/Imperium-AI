@@ -1024,10 +1024,11 @@ the draft guesses well. It is a per-model setting (`runtime.llamacpp.models."<id
   `--spec-draft-n-max`, `--spec-draft-n-min` and `--spec-draft-ngl` when the matching setting is
   set. Unset parameters leave llama.cpp's defaults (3 and 0 tokens, and `auto` for the GPU
   layers, which Imperium plans as the whole draft on the GPU). `--spec-type` defaults to `none`,
-  so the draft model alone would not draft. The draft flags (also `-hfd`, `-ctkd`, `-ctvd` and
-  their long forms) are Imperium's: they may not appear in `extra_args`, per model or global,
-  nor `--spec-type` while a draft is set. llama.cpp's own `LLAMA_ARG_*` environment variables
-  for the draft are removed from every llama-server's environment (`LLAMA_ARG_SPEC_TYPE` too
+  so the draft model alone would not draft. The draft flags, by pattern (`--spec-draft-*`, `--draft*`, the long forms ending in `-draft`,
+  and the short ones such as `-md`, `-ngld`, `-hfd`, `-ctkd`, `-devd`, `-td`), are Imperium's:
+  they may not appear in `extra_args`, per model or global, nor `--spec-type` while a draft is
+  set. Other flags Imperium sets are refused in a model's `extra_args` only, as before. llama.cpp's own `LLAMA_ARG_*` environment variables
+  for the draft (`LLAMA_ARG_SPEC_DRAFT_*` by prefix, and the others) are removed from every llama-server's environment (`LLAMA_ARG_SPEC_TYPE` too
   while a draft is set), so the environment cannot name a draft that is not in the memory plan.
 - **Memory.** The draft is part of the model's footprint everywhere the planner counts it: its
   weights, a KV cache as large as the model's pool at `f16` (llama.cpp sizes its context from

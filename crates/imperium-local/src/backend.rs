@@ -49,18 +49,34 @@ const DRAFT_ENV: [&str; 12] = [
     "LLAMA_ARG_SPEC_DRAFT_N_UBATCH",
 ];
 
+/// The prefix of llama.cpp's draft environment variables (`LLAMA_ARG_SPEC_DRAFT_*`), all of
+/// which are removed, those a later release adds too.
+const DRAFT_ENV_PREFIX: &str = "LLAMA_ARG_SPEC_DRAFT_";
+
 /// The environment variables to remove from the server started for `spec`: llama.cpp's draft
 /// settings, and `LLAMA_ARG_SPEC_TYPE` while Imperium passes `--spec-type draft-simple` itself
 /// (without a draft it is left to the user, such as for n-gram speculation).
-pub fn scrubbed_env(spec: &LaunchSpec) -> Vec<&'static str> {
+pub fn scrubbed_env(spec: &LaunchSpec) -> Vec<String> {
     if spec.backend.id() != LLAMA_CPP {
         return Vec::new();
     }
-    let mut variables = DRAFT_ENV.to_vec();
-    if spec.draft.is_some() {
-        variables.push("LLAMA_ARG_SPEC_TYPE");
+    let present = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok());
+    scrub_names(present, spec.draft.is_some())
+}
+
+/// [`scrubbed_env`] for the variables named in `present`: the known draft ones, and any
+/// `LLAMA_ARG_SPEC_DRAFT_*` among `present`.
+pub fn scrub_names(present: impl IntoIterator<Item = String>, drafting: bool) -> Vec<String> {
+    let mut names: Vec<String> = DRAFT_ENV.iter().map(ToString::to_string).collect();
+    names.extend(
+        present.into_iter().filter(|name| {
+            name.starts_with(DRAFT_ENV_PREFIX) && !DRAFT_ENV.contains(&name.as_str())
+        }),
+    );
+    if drafting {
+        names.push("LLAMA_ARG_SPEC_TYPE".into());
     }
-    variables
+    names
 }
 
 /// A local inference runtime serving an OpenAI-compatible API.

@@ -137,7 +137,7 @@ impl ProcessLauncher {
         // The draft model is Imperium's to choose and to count in memory: llama-server must not
         // pick one up from the environment the daemon runs in.
         for variable in crate::backend::scrubbed_env(spec) {
-            command.env_remove(variable);
+            command.env_remove(&variable);
         }
         library_path(&mut command, program);
         let mut child = command

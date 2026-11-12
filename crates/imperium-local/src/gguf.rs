@@ -561,6 +561,37 @@ mod tests {
     }
 
     #[test]
+    fn a_truncated_or_absurd_vocabulary_is_an_error_not_a_hang() {
+        // `header` writes the key count; one more key (the vocabulary) is appended by hand.
+        let with_tokens = |element: u32, count: u64, data: &[u8]| {
+            let mut bytes = header(&[("general.architecture", V::Str("qwen3"))]);
+            bytes[16..24].copy_from_slice(&2u64.to_le_bytes());
+            let key = b"tokenizer.ggml.tokens";
+            bytes.extend((key.len() as u64).to_le_bytes());
+            bytes.extend(key);
+            bytes.extend(9u32.to_le_bytes());
+            bytes.extend(element.to_le_bytes());
+            bytes.extend(count.to_le_bytes());
+            bytes.extend(data);
+            read(&mut Cursor::new(bytes))
+        };
+        // Strings: the count promises far more than the file holds.
+        let one = [3u64.to_le_bytes().as_slice(), b"abc".as_slice()].concat();
+        assert!(matches!(
+            with_tokens(8, u64::MAX / 2, &one),
+            Err(GgufError::Io(_))
+        ));
+        // Fixed-size elements: a count whose size overflows, and one that runs past the end.
+        assert!(matches!(
+            with_tokens(5, u64::MAX, &[]),
+            Err(GgufError::Malformed(_))
+        ));
+        let _ = with_tokens(5, 1 << 40, &[]); // a seek past the end: parsed, not hung on
+        // A complete one is read.
+        assert_eq!(with_tokens(5, 0, &[]).unwrap().vocab_size, Some(0));
+    }
+
+    #[test]
     fn other_files_are_rejected() {
         assert!(matches!(
             read(&mut Cursor::new(b"PK\x03\x04rest".to_vec())),
