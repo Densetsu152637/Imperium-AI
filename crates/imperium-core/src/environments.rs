@@ -26,6 +26,33 @@ pub enum EnvironmentError {
     Save(std::io::Error),
 }
 
+/// The id of the built-in Home environment: fixed, and valid as a folder name
+/// ([`crate::workspaces::safe_id`]), since its working folder is named after it.
+pub const HOME_ID: &str = "home";
+
+/// The Home environment as first made: no project folders, on this machine. Its working
+/// folder holds its `Memory.md` and its sessions' scratch folders.
+fn home() -> EnvironmentInfo {
+    EnvironmentInfo {
+        id: HOME_ID.into(),
+        name: "Home".into(),
+        icon: Some("house".into()),
+        color: Some("#c9822b".into()),
+        folders: Vec::new(),
+        pinned: false,
+        runtime: EnvironmentRuntime::Local,
+        persistent_agent: false,
+        pet: None,
+        agent_session_id: None,
+        // No agents until the user adds one.
+        agents: Vec::new(),
+        permissions: Default::default(),
+        // There are no repositories to open.
+        project_worktrees: false,
+        builtin: true,
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
     #[serde(default)]
@@ -43,17 +70,33 @@ impl Environments {
     /// Reads `path`; a missing file is an empty store, an unreadable one is set aside with a
     /// warning so it is not overwritten.
     pub fn load(path: PathBuf) -> Self {
+        // Whether the file was left where it is although it could not be read: then Home is not
+        // saved over it.
+        let mut keep_file = false;
+        let mut set_aside = |path: &Path, error: &dyn std::fmt::Display| {
+            let aside = path.with_extension("json.unreadable");
+            tracing::warn!(path = %path.display(), %error, "could not read the environments; setting the file aside");
+            if let Err(error) = std::fs::rename(path, aside) {
+                tracing::warn!(%error, "could not set the environments file aside; it is left as it is");
+                keep_file = true;
+            }
+        };
         let list = match std::fs::read_to_string(&path) {
             Ok(text) => match serde_json::from_str::<File>(&text) {
                 Ok(file) => file.environments,
                 Err(error) => {
-                    let aside = path.with_extension("json.unreadable");
-                    tracing::warn!(path = %path.display(), %error, "could not read the environments; setting the file aside");
-                    let _ = std::fs::rename(&path, aside);
+                    set_aside(&path, &error);
                     Vec::new()
                 }
             },
-            Err(_) => Vec::new(),
+            // No file yet: a fresh store.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            // Anything else (permissions, a folder in the way, a failing disk) says nothing about
+            // what is in the file, so it is never replaced by a store of just Home.
+            Err(error) => {
+                set_aside(&path, &error);
+                Vec::new()
+            }
         };
         let mut list = list;
         // Environments saved before multiple agents had one persistent session: it becomes
@@ -66,10 +109,37 @@ impl Environments {
         if migrated && let Err(error) = save(&path, &list) {
             tracing::warn!(path = %path.display(), %error, "could not save the migrated environments");
         }
-        Environments {
+        let store = Environments {
             path,
             list: Mutex::new(list),
+        };
+        store.ensure_home(!keep_file);
+        store
+    }
+
+    /// Makes sure Home is there, first in the list, and marked built in: on a fresh start, and
+    /// for a store written before Home existed. Nothing else in the store is touched.
+    fn ensure_home(&self, save_it: bool) {
+        let mut list = self.lock();
+        let mut next = list.clone();
+        match next.iter().position(|env| env.id == HOME_ID) {
+            Some(0) => {
+                if next[0].builtin {
+                    return;
+                }
+                next[0].builtin = true;
+            }
+            Some(at) => {
+                let mut env = next.remove(at);
+                env.builtin = true;
+                next.insert(0, env);
+            }
+            None => next.insert(0, home()),
         }
+        if save_it && let Err(error) = save(&self.path, &next) {
+            tracing::warn!(%error, "could not save the Home environment; it is kept in memory");
+        }
+        *list = next;
     }
 
     pub fn list(&self) -> Vec<EnvironmentInfo> {
@@ -139,6 +209,7 @@ impl Environments {
             pinned: false,
             permissions,
             project_worktrees: params.project_worktrees.unwrap_or(true),
+            builtin: false,
         };
         if params.persistent_agent == Some(true) {
             add_default_agent(&mut env)?;
@@ -179,6 +250,12 @@ impl Environments {
                 env.pinned = pinned;
             }
             if let Some(runtime) = runtime {
+                if env.builtin && runtime != EnvironmentRuntime::Local {
+                    return Err(EnvironmentError::Invalid(
+                        "Home works in its working folder on this machine; its runtime cannot change"
+                            .into(),
+                    ));
+                }
                 if matches!(runtime, EnvironmentRuntime::Wsl { .. }) {
                     for folder in &mut env.folders {
                         *folder = wsl_path(folder);
@@ -320,6 +397,12 @@ impl Environments {
 
     pub fn delete(&self, id: &str) -> Result<(), EnvironmentError> {
         self.change(|list| {
+            if list.iter().any(|env| env.id == id && env.builtin) {
+                return Err(EnvironmentError::Invalid(
+                    "Home is built in and cannot be deleted; rename it or remove its folders instead"
+                        .into(),
+                ));
+            }
             let before = list.len();
             list.retain(|env| env.id != id);
             if list.len() == before {
@@ -378,10 +461,13 @@ impl Environments {
     /// when there is none. This is how a bare project folder becomes an environment.
     pub fn for_folder(&self, folder: &str) -> Result<EnvironmentInfo, EnvironmentError> {
         let folder = existing_folder(folder)?;
+        // Home is not a project's environment, even once it has been given this folder.
         if let Some(env) = self.lock().iter().find(|env| {
-            env.folders
-                .first()
-                .is_some_and(|first| same(first, &folder))
+            !env.builtin
+                && env
+                    .folders
+                    .first()
+                    .is_some_and(|first| same(first, &folder))
         }) {
             return Ok(env.clone());
         }
@@ -859,7 +945,8 @@ mod tests {
             reloaded.delete(&other.id),
             Err(EnvironmentError::NotFound(_))
         ));
-        assert_eq!(store(data.path()).list().len(), 1);
+        // Home and the one left.
+        assert_eq!(store(data.path()).list().len(), 2);
     }
 
     #[test]
@@ -906,7 +993,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(cleared.pet, None);
-        assert_eq!(store(data.path()).list()[1].pet, None);
+        assert_eq!(store(data.path()).list()[2].pet, None);
     }
 
     #[test]
@@ -920,9 +1007,10 @@ mod tests {
             new(&envs, "x", None, &[missing]),
             Err(EnvironmentError::Folder(..))
         ));
-        assert!(
-            envs.list().is_empty(),
-            "nothing is created when a folder is refused"
+        assert_eq!(
+            envs.list().len(),
+            1,
+            "only Home: nothing is created when a folder is refused"
         );
         new(&envs, "Twin", None, &[]).unwrap();
         new(&envs, "twin", None, &[]).unwrap();
@@ -940,7 +1028,7 @@ mod tests {
         let first = envs.for_folder(&path(&project)).unwrap();
         let again = envs.for_folder(&path(&project)).unwrap();
         assert_eq!(first.id, again.id);
-        assert_eq!(envs.list().len(), 1);
+        assert_eq!(envs.list().len(), 2, "Home and the folder's environment");
         assert_eq!(
             first.name,
             project.path().file_name().unwrap().to_string_lossy()
@@ -952,8 +1040,116 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         std::fs::write(data.path().join("environments.json"), "not json").unwrap();
         let envs = store(data.path());
-        assert!(envs.list().is_empty());
+        let listed = envs.list();
+        assert!(listed.len() == 1 && listed[0].builtin, "only Home is left");
         assert!(data.path().join("environments.json.unreadable").exists());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_set_aside_not_replaced_by_home_alone() {
+        let data = tempfile::tempdir().unwrap();
+        // A folder where the file should be: reading it fails with something other than NotFound.
+        let in_the_way = data.path().join("environments.json");
+        std::fs::create_dir_all(&in_the_way).unwrap();
+        std::fs::write(in_the_way.join("precious.txt"), "kept").unwrap();
+        let envs = store(data.path());
+        assert_eq!(envs.list().len(), 1, "Home, in memory");
+        let aside = data.path().join("environments.json.unreadable");
+        assert_eq!(
+            std::fs::read_to_string(aside.join("precious.txt")).unwrap(),
+            "kept",
+            "what was there is kept"
+        );
+    }
+
+    #[test]
+    fn a_folder_given_to_home_still_gets_its_own_environment() {
+        let data = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        envs.add_folder(HOME_ID, &path(&project)).unwrap();
+        let made = envs.for_folder(&path(&project)).unwrap();
+        assert!(!made.builtin && made.id != HOME_ID);
+        assert_eq!(envs.list().len(), 2);
+    }
+
+    #[test]
+    fn home_always_exists_once_first_and_with_a_name_safe_for_a_folder() {
+        let data = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        let listed = envs.list();
+        assert_eq!(listed.len(), 1);
+        let home = &listed[0];
+        assert_eq!((home.id.as_str(), home.name.as_str()), (HOME_ID, "Home"));
+        assert!(home.builtin && home.folders.is_empty() && !home.persistent_agent);
+        assert!(home.agents.is_empty(), "no agents by default");
+        assert!(crate::workspaces::safe_id(&home.id));
+        // Restarts keep the one Home, with what the user changed about it.
+        envs.update(EnvironmentUpdateParams {
+            id: HOME_ID.into(),
+            name: Some("My place".into()),
+            ..EnvironmentUpdateParams::default()
+        })
+        .unwrap();
+        let again = store(data.path());
+        assert_eq!(again.list().len(), 1);
+        assert_eq!(again.get(HOME_ID).unwrap().name, "My place");
+    }
+
+    #[test]
+    fn a_store_from_before_home_gains_it_first_without_losing_anything() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let old = store(data.path());
+        let work = new(&old, "Work", None, &[path(&folder)]).unwrap();
+        // Written as an older version did: no Home, no `builtin` field.
+        let mut file: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(data.path().join("environments.json")).unwrap(),
+        )
+        .unwrap();
+        let kept: Vec<_> = file["environments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|env| env["id"] != HOME_ID)
+            .cloned()
+            .map(|mut env| {
+                env.as_object_mut().unwrap().remove("builtin");
+                env
+            })
+            .collect();
+        file["environments"] = serde_json::Value::Array(kept);
+        std::fs::write(data.path().join("environments.json"), file.to_string()).unwrap();
+
+        let upgraded = store(data.path());
+        let listed = upgraded.list();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, HOME_ID);
+        assert_eq!(listed[1], work);
+        assert_eq!(store(data.path()).list(), listed, "and it was saved");
+    }
+
+    #[test]
+    fn home_cannot_be_deleted_or_moved_to_another_runtime() {
+        let data = tempfile::tempdir().unwrap();
+        let envs = store(data.path());
+        assert!(matches!(
+            envs.delete(HOME_ID),
+            Err(EnvironmentError::Invalid(_))
+        ));
+        assert!(envs.get(HOME_ID).is_some());
+        let moved = envs.update(EnvironmentUpdateParams {
+            id: HOME_ID.into(),
+            runtime: Some(EnvironmentRuntime::Wsl {
+                distro: "Ubuntu".into(),
+            }),
+            ..EnvironmentUpdateParams::default()
+        });
+        assert!(matches!(moved, Err(EnvironmentError::Invalid(_))));
+        // Folders may be added by the user, who then opens that project to Home.
+        let folder = tempfile::tempdir().unwrap();
+        let with = envs.add_folder(HOME_ID, &path(&folder)).unwrap();
+        assert_eq!(with.folders.len(), 1);
     }
 
     fn agent_env(envs: &Environments, folder: &tempfile::TempDir) -> EnvironmentInfo {
@@ -1122,12 +1318,12 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         legacy_file(data.path(), true, Some("sess-1"));
         let first = store(data.path()).list();
-        assert_eq!(first[0].agents.len(), 1);
-        assert_eq!(first[0].agents[0].session_id.as_deref(), Some("sess-1"));
+        assert_eq!(first[1].agents.len(), 1);
+        assert_eq!(first[1].agents[0].session_id.as_deref(), Some("sess-1"));
         let saved = std::fs::read_to_string(data.path().join("environments.json")).unwrap();
         // Loading again finds the agent already there: same id, file untouched.
         let second = store(data.path()).list();
-        assert_eq!(second[0].agents, first[0].agents);
+        assert_eq!(second[1].agents, first[1].agents);
         assert_eq!(
             std::fs::read_to_string(data.path().join("environments.json")).unwrap(),
             saved
@@ -1141,20 +1337,20 @@ mod tests {
         // The temporary file cannot be written (a folder is in its place): the save fails.
         std::fs::create_dir(data.path().join("environments.json.tmp")).unwrap();
         let envs = store(data.path());
-        let agents = envs.list()[0].agents.clone();
+        let agents = envs.list()[1].agents.clone();
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].session_id.as_deref(), Some("sess-1"));
         // The file still has the old form, so the next load migrates the same session.
         std::fs::remove_dir(data.path().join("environments.json.tmp")).unwrap();
         let again = store(data.path()).list();
-        assert_eq!(again[0].agents[0].session_id.as_deref(), Some("sess-1"));
+        assert_eq!(again[1].agents[0].session_id.as_deref(), Some("sess-1"));
     }
 
     #[test]
     fn a_legacy_turned_off_agent_keeps_its_session_link_without_an_agent() {
         let data = tempfile::tempdir().unwrap();
         legacy_file(data.path(), false, Some("sess-old"));
-        let env = store(data.path()).list().remove(0);
+        let env = store(data.path()).list().remove(1);
         assert!(env.agents.is_empty() && !env.persistent_agent);
         assert_eq!(env.agent_session_id.as_deref(), Some("sess-old"));
         // Turning the deprecated switch on continues that session.
