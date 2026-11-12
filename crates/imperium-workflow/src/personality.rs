@@ -134,6 +134,12 @@ impl Sources {
     /// Every personality that can be selected, each id once (the one that wins), sorted by
     /// name. The default is always among them.
     pub fn list(&self) -> Vec<PersonalityInfo> {
+        self.list_with_warnings(&mut Vec::new())
+    }
+
+    /// [`Sources::list`], pushing a warning for each local file that exists but cannot be read
+    /// as UTF-8 text (it is still listed, under its id).
+    pub fn list_with_warnings(&self, warnings: &mut Vec<String>) -> Vec<PersonalityInfo> {
         let mut found: Vec<PersonalityInfo> = Vec::new();
         for (folder, origin) in self.folders() {
             for id in ids_in(&folder) {
@@ -143,9 +149,16 @@ impl Sources {
                     }
                     continue;
                 }
-                let name = std::fs::read_to_string(folder.join(format!("{id}.md")))
-                    .map(|text| display_name(&text, &id))
-                    .unwrap_or_else(|_| id.clone());
+                let path = folder.join(format!("{id}.md"));
+                let name = match std::fs::read_to_string(&path) {
+                    Ok(text) => display_name(&text, &id),
+                    Err(error) => {
+                        if origin == Origin::Local {
+                            warnings.push(unreadable_warning(&path, &error));
+                        }
+                        id.clone()
+                    }
+                };
                 found.push(PersonalityInfo {
                     id,
                     name,
@@ -166,13 +179,26 @@ impl Sources {
 
     /// The personality with this id, from the first folder that has it.
     pub fn find(&self, id: &str) -> Option<Personality> {
+        self.find_with_warnings(id, &mut Vec::new())
+    }
+
+    /// [`Sources::find`], pushing a warning when the local file for `id` exists but cannot be
+    /// read as UTF-8 text, instead of silently falling through to a pack or built-in copy.
+    pub fn find_with_warnings(&self, id: &str, warnings: &mut Vec<String>) -> Option<Personality> {
         if !is_valid_id(id) {
             return None;
         }
         let mut found: Option<Personality> = None;
         for (folder, origin) in self.folders() {
-            let Ok(text) = std::fs::read_to_string(folder.join(format!("{id}.md"))) else {
-                continue;
+            let path = folder.join(format!("{id}.md"));
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(error) => {
+                    if origin == Origin::Local && error.kind() != std::io::ErrorKind::NotFound {
+                        warnings.push(unreadable_warning(&path, &error));
+                    }
+                    continue;
+                }
             };
             match &mut found {
                 Some(winner) => {
@@ -218,23 +244,40 @@ impl Sources {
             };
         }
         let id = setting.trim();
-        if let Some(personality) = self.find(id) {
+        let mut warnings = Vec::new();
+        if let Some(personality) = self.find_with_warnings(id, &mut warnings) {
             return Selection {
                 personality: Some(personality),
-                warning: None,
+                warning: join_warnings(warnings),
             };
         }
         let fallback = self
-            .find(DEFAULT_PERSONALITY)
+            .find_with_warnings(DEFAULT_PERSONALITY, &mut warnings)
             .unwrap_or_else(built_in_default);
-        Selection {
-            warning: Some(format!(
+        warnings.insert(
+            0,
+            format!(
                 "personality \"{id}\" was not found in {}/ or a workflow pack; using {}",
                 FOLDER, fallback.info.name
-            )),
+            ),
+        );
+        Selection {
+            warning: join_warnings(warnings),
             personality: Some(fallback),
         }
     }
+}
+
+fn unreadable_warning(path: &Path, error: &std::io::Error) -> String {
+    format!(
+        "local personality file {} could not be read as UTF-8 text ({error}); ignoring it",
+        path.display()
+    )
+}
+
+fn join_warnings(mut warnings: Vec<String>) -> Option<String> {
+    warnings.dedup();
+    (!warnings.is_empty()).then(|| warnings.join("; "))
 }
 
 /// The default personality as compiled into the binary.
@@ -364,6 +407,38 @@ mod tests {
         assert!(list.iter().all(|info| info.origin == Origin::Local));
         assert!(list[2].overrides && !list[1].overrides);
         assert_eq!(list[1].name, "mine");
+    }
+
+    #[test]
+    fn an_unreadable_local_file_warns_instead_of_falling_back_silently() {
+        let config = tempfile::tempdir().unwrap();
+        let pack = tempfile::tempdir().unwrap();
+        write(
+            pack.path(),
+            "luxion",
+            "# Luxion
+
+Pack voice.
+",
+        );
+        std::fs::create_dir_all(config.path().join(FOLDER)).unwrap();
+        std::fs::write(
+            config.path().join(FOLDER).join("luxion.md"),
+            [0xff, 0xfe, 0x00],
+        )
+        .unwrap();
+        let sources = Sources {
+            config_dir: Some(config.path().to_path_buf()),
+            packs: vec![pack.path().to_path_buf()],
+            built_in: None,
+        };
+        let selection = sources.select("luxion");
+        let personality = selection.personality.unwrap();
+        assert!(personality.text.contains("Pack voice"));
+        assert!(selection.warning.unwrap().contains("luxion.md"));
+        let mut warnings = Vec::new();
+        sources.list_with_warnings(&mut warnings);
+        assert_eq!(warnings.len(), 1);
     }
 
     #[test]
