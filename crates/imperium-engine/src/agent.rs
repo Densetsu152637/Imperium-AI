@@ -1385,9 +1385,23 @@ impl Agent {
             Ok(check) => check,
             Err(error) => return finish(false, format!("error: {error}")),
         };
-        let rule = self.rule_for(name, &Target::Other);
+        // A call that runs a command is judged as `run_command` on that command.
+        let (rule_tool, target, kind, floored) = match &check.command {
+            Some(command) => {
+                let target = Target::Command(command.clone());
+                let floored = safety_floor(CallKind::Execute, &target);
+                ("run_command", target, CallKind::Execute, floored)
+            }
+            None => (
+                name,
+                Target::Other,
+                CallKind::Other { asks: check.ask },
+                false,
+            ),
+        };
+        let rule = self.rule_for(rule_tool, &target);
         let mode = self.shared.workspace.permissions().mode();
-        let decision = decide_call(mode, CallKind::Other { asks: check.ask }, rule, false);
+        let decision = decide_call(mode, kind, rule, floored);
         if let Decision::Refuse(why) = decision {
             return finish(false, refused(why, &check.summary));
         }
@@ -1402,11 +1416,11 @@ impl Agent {
         if let Decision::Ask { sticky } = decision
             && !self
                 .approve_with(
-                    name,
+                    rule_tool,
                     &check.summary,
-                    suggest(name, &Target::Other),
+                    suggest(rule_tool, &target),
                     sticky,
-                    false,
+                    floored,
                 )
                 .await
         {
@@ -3396,6 +3410,7 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
             title,
             screenshot,
         },
+        ToolEvent::PreviewChanged { url, command } => SessionEvent::PreviewChanged { url, command },
         _ => return None,
     })
 }
