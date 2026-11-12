@@ -112,7 +112,7 @@ steps: number, } | { "type": "turn_failed", message: string, } | { "type": "noti
 /**
  * For a plugin: the tools it added (`mcp__<server>__<tool>`).
  */
-tools?: Array<string>, } | { "type": "browser_view", url: string, title: string, screenshot: string, } | { "type": "paused", until_unix_ms: number, reason: string, 
+tools?: Array<string>, } | { "type": "browser_view", url: string, title: string, screenshot: string, } | { "type": "browser_control", user: boolean, } | { "type": "preview_changed", url: string | null, command: string | null, } | { "type": "paused", until_unix_ms: number, reason: string, 
 /**
  * Why it waits; older journals have no cause and mean a usage limit.
  */

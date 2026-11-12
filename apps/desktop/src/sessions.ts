@@ -21,6 +21,7 @@ import type { AgentSnapshot, SessionSnapshot } from "@imperium/mod-sdk";
 
 import { taskTitle } from "./agentView";
 import { modelAliases, modelName } from "./modelNames";
+import { applyPreviewEvent, type BrowserDriver } from "./preview";
 import { applySent, applyWait, type Sent, type Waits } from "./waits";
 
 export { taskTitle };
@@ -156,6 +157,10 @@ export type SessionState = {
   queue: QueuedMessage[];
   /** The agent's browser after its latest action. */
   browser: { url: string; title: string; screenshot: string } | null;
+  /** Who drives that browser: the agent, or the user who took it over (preview.ts). */
+  driver: BrowserDriver;
+  /** The page the Preview panel shows, as an agent opened it. */
+  preview: { url: string; command: string | null } | null;
   status: SessionStatus;
   /** What a watching or merged session follows, such as `owner/repo#12`. */
   statusDetail: string | null;
@@ -190,6 +195,8 @@ export const newSession = (summary: SessionSummary, updatedAt = 0): SessionState
   busy: false,
   queue: [],
   browser: null,
+  driver: "agent",
+  preview: null,
   status: summary.status,
   statusDetail: summary.status_detail,
   pause: summary.hold ? { untilMs: 0, reason: summary.hold.reason, cause: summary.hold.cause } : null,
@@ -439,6 +446,7 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
   if (event.type === "browser_view") {
     browser = { url: event.url, title: event.title, screenshot: event.screenshot };
   }
+  const { driver, preview } = applyPreviewEvent({ driver: state.driver ?? "agent", preview: state.preview ?? null }, event);
   if (event.type === "model_call_completed") {
     calls = [
       ...calls,
@@ -558,6 +566,8 @@ export function applyEvent(state: SessionState, agentEvent: AgentEvent, now: num
     busy,
     queue,
     browser,
+    driver,
+    preview,
     status,
     statusDetail,
     pause,

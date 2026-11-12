@@ -475,6 +475,13 @@ impl Processes {
         let _ = tokio::time::timeout(timeout, kills).await;
     }
 
+    /// How the command ended (`exited with code 1`, `stopped`, …), or `None` while it runs.
+    pub fn ended(&self, id: &str) -> Result<Option<String>, ToolError> {
+        let mut table = lock(&self.0);
+        let entry = find(&mut table, id)?;
+        Ok(entry.status.borrow().clone())
+    }
+
     /// How many commands are still running, counting those that exited but left processes
     /// they started running.
     pub fn running(&self) -> usize {
