@@ -163,7 +163,11 @@ async fn delegate(
             .unwrap();
         match event.event {
             SessionEvent::Notice { message } => notices.push(message),
-            SessionEvent::TurnCompleted { .. } => break,
+            SessionEvent::TurnCompleted { .. }
+                if event.agent_id == imperium_protocol::session::ROOT_AGENT =>
+            {
+                break;
+            }
             SessionEvent::TurnFailed { message } => panic!("the turn failed: {message}"),
             _ => {}
         }
