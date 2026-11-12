@@ -75,7 +75,8 @@ async fn watch(model: Option<String>, warm: bool) -> anyhow::Result<()> {
             continue;
         }
         for result in update.results.iter().skip(printed) {
-            print_result(result);
+            // This run's own results, measured here just now: no marker is needed.
+            print_result(result, false);
         }
         printed = update.results.len();
         if update.state != "running" {
