@@ -60,6 +60,7 @@ import type {
 } from "@imperium/protocol";
 
 import { ApiSection } from "./components/ApiSection";
+import { BenchmarkSection } from "./components/BenchmarkSection";
 import { BudgetsSection } from "./components/BudgetsEditor";
 import { formatAgo } from "./ago";
 import { changeDetails, installedByAgent, sourceLabel, undoLabel } from "./configChanges";
@@ -534,6 +535,7 @@ export function SettingsWindow(props: Props) {
             </Row>
           )}
           {rows}
+          {id === "models" && client && <BenchmarkSection client={client} />}
         </>
       );
     }

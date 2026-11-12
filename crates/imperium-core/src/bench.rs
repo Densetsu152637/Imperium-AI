@@ -749,8 +749,8 @@ pub(crate) fn summarise(prompts: &[BenchPrompt]) -> (Option<f64>, Option<f64>, O
     }
     (
         median,
-        (prompt_seconds > 0.0 && prompt_tokens > 0.0).then(|| prompt_tokens / prompt_seconds),
-        (generating > 0.0).then(|| generated / generating),
+        (prompt_seconds > 0.0 && prompt_tokens > 0.0).then_some(prompt_tokens / prompt_seconds),
+        (generating > 0.0).then_some(generated / generating),
     )
 }
 

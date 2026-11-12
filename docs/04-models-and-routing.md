@@ -75,6 +75,7 @@ read again, so such a save never brings an old value back.
 | `models.local` | `imperium models folders`, `imperium models local` | Also reports `configured_folders` (removable), `default_model`, and per model `repo`, `mmproj`, and `problem` |
 | `models.use` `{model}` | `imperium models use <id>` | Sets `models.default` from a local model id (`llamacpp:<id>`), a model-table id (its spec), or a spec |
 | `models.test` `{model, prompt?}` | `imperium models test <id>` | Loads the model if needed (as any session would, through the supervisor) and sends one short prompt; returns the reply, completion tokens, seconds, tokens per second (llama.cpp's own measurement when it reports one), and the load wait, or why it failed. Works for hosted models too |
+| `models.bench` `{model?, cold?}`, `models.bench_results` `{model?}`, `models.bench_cancel` `{run_id}` | `imperium models bench [<id>] [--results] [--warm]` | The [local model benchmark](#local-model-benchmark-implemented): starts a run (one run at a time), lists saved results and this session's runs, stops a run |
 | `models.add_endpoint` `{id, base_url, api_key?, model?, make_default}` | — | Writes `[endpoints.<id>]` with the key as a keychain reference (`<id>-api-key`), optionally making `<id>:<model>` the default |
 | `runtime.status` | `imperium runtime status` | See [runtime readiness](#runtime-readiness) |
 | `runtime.set_server` `{path}` | `imperium runtime use [<path>]` | Sets (or with null clears) `runtime.llamacpp.custom_path`; models loaded from then on use it |
@@ -1322,6 +1323,64 @@ Settings → API, `imperium api enable|disable|status|token [rotate]`, and `api.
   bad request or one the model's server rejects (such as a prompt that does not fit), `401`,
   `404` for an unknown or unexposed model or URL, `429` for budgets (or the endpoint's own rate
   limit), `502` when the model's endpoint fails, and `503` when a local model cannot be loaded.
+
+## Local model benchmark (implemented)
+
+How fast a local model is depends on the machine, the quantisation, and the runtime build, so
+Imperium can measure it. `models.bench` (Settings → Models, `imperium models bench [<id>]`) runs a
+small fixed prompt set against one installed local model, or against each model that can run
+here, and reports and saves the numbers. **It never runs unasked**: no schedule, startup, or
+agent starts it, and there is no setting that does (so there is nothing to add to
+[10](10-configuration.md); the results file is below). Speculative decoding with a draft model
+is a separate, later item ([12](12-roadmap.md)); the benchmark is how its gain will be judged.
+
+- **Through the normal path.** The benchmark is a caller of the supervisor like a session: it
+  takes a slot with `acquire_with` as a **background** call
+  ([residency controller](#residency-controller-implemented)), so the model is loaded, queued,
+  and swapped by the same rules and reported through `model.residency`, the call waits while
+  the machine is saturated and never evicts a model the user's own calls used recently
+  ([the quiet-machine rule](14-projects-and-automation.md#quiet-periods)), and it is bounded
+  by the model's `max_wait_s`. There is no second launcher. The load level at the start of each
+  model's turn (`quiet` or `busy`) is stored with its result, so a number taken while the
+  machine was busy can be told apart. While it waits, the run's step says why (loading, a busy
+  slot, another model in the way, memory being freed, or a busy machine).
+- **Cold start.** By default a model that is loaded and idle is unloaded first (through the
+  residency controller, which refuses while anything uses it), so its load time is measured. A
+  model in use is left alone and its load time is left out (`--warm` and the *Keep a loaded
+  model loaded* switch skip the unload on purpose).
+- **The prompt set.** Three prompts, fixed so results from different days compare: `short`
+  (a one-line question, up to 96 tokens of reply), `medium` (a few hundred tokens of prose to
+  summarise) and `long` (about five times that); the long one is left out for a model whose
+  context is too small for it. Each is sent once, streamed, with `temperature` 0, a fixed
+  `seed`, the prompt cache off (so every prompt is really processed) and thinking off for
+  llama.cpp; replies are capped by the slot's reservation like any call's.
+- **What is measured**, all from the arrival times of the real stream, not from the server's
+  own `timings`:
+
+| Metric | How |
+| ------ | --- |
+| Load time (`load_s`) | the seconds of the runtime's own `load` move made for the call; absent when the model was already loaded and in use |
+| Time to first token (`ttft_ms`) | request sent to the first text (a thinking model's reasoning counts); the result is the median of the prompts, each prompt has its own |
+| Prompt speed (`prompt_tok_s`) | the server's reported prompt tokens over the time to the first token, summed over the prompts (a lower bound on the true prefill rate, since the time includes the first token) |
+| Generation speed (`gen_tok_s`) | reply tokens after the first over the time from the first text to the last, summed over the prompts; without a usage report the number of streamed chunks stands in for the tokens |
+| Peak memory (`peak_ram_bytes`, `peak_vram_bytes`) | the highest resident memory, and GPU memory when `nvidia-smi` reports it for the process, of the model's server process, read every second while the prompts run; absent when the server is not a process Imperium can read (a stand-in in tests, an unsupported GPU), never estimated |
+
+- **Results are saved** to `<data>/local-benchmarks.json` (the newest 200), one entry per model
+  and run: the model, run id, date (UTC), the **hardware fingerprint** (a short hash of the
+  GPUs and their memory, system memory, cores and the llama.cpp runtime pack, so a different
+  GPU, memory or build counts as another machine, while free memory does not), the same in
+  words, the runtime, how it was placed (`gpu`, `partial`, `cpu`), the machine's load level,
+  every metric above and each prompt's own numbers. A model that fails to load or answer is
+  reported in the run with its reason, and not saved; the run goes on to the next model.
+- **Cancelling.** `models.bench_cancel` (Settings → *Cancel*, Ctrl+C in the CLI) stops the
+  run's task: the request in flight is dropped, which releases the slot and ends the generation
+  at once. Models measured before keep their saved results; the one being measured has none.
+  The model stays loaded until it idles out like any other.
+- **Protocol.** `models.bench` returns the run (`running`) at once; `models.bench_progress`
+  notifications (a `BenchRun` with its step, models done and results so far) follow every
+  step, and the last one has the state `done`, `cancelled` or `failed`. Only one run may run at
+  a time. `models.bench_results` returns the saved results newest first (optionally for one
+  model), this machine's fingerprint, and the runs since the daemon started.
 
 ## Cost accounting
 
