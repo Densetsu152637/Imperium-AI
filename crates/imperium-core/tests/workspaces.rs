@@ -176,8 +176,12 @@ async fn a_session_gets_a_scratch_folder_that_archiving_deletes_and_unarchiving_
         folder.display()
     );
     let layout = state.workspaces_where();
-    assert_eq!(layout.environments[0].session_folders, 1);
-    assert_eq!(layout.environments[0].environment_id, env);
+    let ours = layout
+        .environments
+        .iter()
+        .find(|found| found.environment_id == env)
+        .expect("the environment is listed");
+    assert_eq!(ours.session_folders, 1);
     assert!(layout.root.ends_with("workspaces"));
 
     // Another session of the environment keeps its own folder through all of this.
