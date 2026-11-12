@@ -28,7 +28,9 @@ Browser tools (`browser_open`, `browser_read`, `browser_click`, `browser_type`) 
 Chromium, or Edge over the DevTools Protocol, found in the usual install locations or set with
 `web.browser_path`. The browser runs with its own profile in `<data>/browser` (never the user's
 profile, so no saved logins), headless by default (`web.headless`), started on first use and
-shared by a session's agents. Opening a page follows the `web_fetch` domain rule; clicking and
+shared by a session's agents. Starting it waits for the browser's own start-up to finish (a
+fresh profile can take it 10 to 45 s on a slow machine; the wait is up to 90 s) so that the first
+page opens at normal speed. Opening a page follows the `web_fetch` domain rule; clicking and
 typing always ask unless allowed for the session. After every action the session emits a
 `browser_view` event with the page's URL, title, and a JPEG screenshot, which the desktop's
 Browser panel shows, so the user sees what the agent sees. The user can take the browser over
@@ -538,8 +540,12 @@ keep-alives) until Ctrl+C. The forwarded endpoint, with the remote daemon's per-
 is recorded in `<data>/remotes/<name>.json` (readable only by the user on Unix) and removed on
 disconnect; `imperium --remote <name> <command>` talks to the remote daemon, which owns the
 host's files, processes, models, and GPUs (its own `models.folders`, runtimes, and isolation
-apply). Not yet: installing `imperium-core` on the host, Unix-socket binding, `~/.ssh/config`
-discovery in the app, choosing a remote in the desktop app (its connection form accepts the
+apply). With `daemon.socket` on at the host (Unix hosts), `imperium remote connect
+<destination> --socket` forwards the host's Unix socket to a local socket instead of a TCP
+port (`ssh -N -L <local>.sock:<remote>/ipc/daemon.sock`, the local end mode 0600), and the
+recorded endpoint then has no URL, only that socket
+([02](02-architecture.md#protocol)). Not yet: installing `imperium-core` on the host,
+`~/.ssh/config` discovery in the app, choosing a remote in the desktop app (its connection form accepts the
 recorded URL and token), and cross-host routing.
 
 - Hosts are configured from `~/.ssh/config` entries or added manually; keys stay in the user's

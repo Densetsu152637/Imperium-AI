@@ -2325,6 +2325,7 @@ dependencies = [
  "imperium-client",
  "imperium-config",
  "imperium-core",
+ "imperium-ipc",
  "imperium-local",
  "imperium-memory",
  "imperium-protocol",
@@ -2343,6 +2344,7 @@ name = "imperium-client"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "imperium-ipc",
  "imperium-protocol",
  "serde_json",
  "thiserror 2.0.21",
@@ -2383,6 +2385,7 @@ dependencies = [
  "imperium-engine",
  "imperium-extensions",
  "imperium-github",
+ "imperium-ipc",
  "imperium-local",
  "imperium-mcp",
  "imperium-media",
@@ -2483,6 +2486,16 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "imperium-ipc"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2621,6 +2634,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "tracing",
  "url",
 ]
 

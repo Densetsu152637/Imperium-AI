@@ -33,18 +33,56 @@
 
 ## Protocol
 
-- JSON-RPC 2.0 requests and responses, plus server-pushed **event streams** (subscriptions,
-  planned).
+- JSON-RPC 2.0 requests and responses, plus server-pushed **event streams**
+  (`session.subscribe`, and the topic choice below).
 - **Transport (implemented):** a WebSocket at `ws://127.0.0.1:<port>/rpc`, text frames only.
   The port is `daemon.port` (default `0`: a free port chosen at each start). The upgrade must
   carry `Authorization: Bearer <token>`; anything else gets HTTP 401. The token is 32 random
   bytes generated at every launch. It is never bound to a public interface. Browser-based
   clients (the desktop webview), which cannot set headers, instead offer the subprotocols
-  `imperium.v0` and `imperium.token.<token>`; the daemon selects `imperium.v0`. Unix domain
-  sockets and Windows named pipes are planned for SSH forwarding.
+  `imperium.v0` and `imperium.token.<token>`; the daemon selects `imperium.v0`.
+- **Local socket (implemented, opt-in):** with `daemon.socket = true` the daemon also serves
+  the same HTTP and WebSocket server, with the same `/rpc` path and the same token check, on a
+  Unix domain socket or a Windows named pipe. A local connection is not trusted for being
+  local: without the token the upgrade gets 401 there too. It is off by default because most
+  people never forward the daemon, and a listener nobody uses should not exist. The address
+  goes in `daemon.json` as `socket`.
+  - Unix: `<data>/ipc/daemon.sock`. The `ipc` folder is created mode 0700 and the socket set to
+    0600, so only the current user can open it, even in the instant between creating and
+    changing the socket. At start a socket nobody answers on (left by a crash) is replaced; a
+    socket another process still answers on, or a file that is not a socket, stops the start
+    with an error rather than being removed. The socket is removed on a clean shutdown.
+  - Windows: a named pipe `\\.\pipe\imperium-core-<random>`, new at every start, created with
+    a protected DACL that grants only the current user's SID, local clients only, and as the
+    first instance of its name so another process cannot take the name before the daemon. The
+    daemon always holds an instance (it creates the replacement before handing over a connected
+    one, and keeps the old one if that fails), so the name is never vacant for another local
+    user to take. A pipe name is not a secret and `daemon.json` can outlive the daemon, so a
+    client that finds a pipe in it checks that the process serving the pipe is the `pid` in the
+    same file (`GetNamedPipeServerProcessId`) before sending the token, and refuses otherwise.
+    Pipes disappear with the process, so there is nothing stale to clean up.
+  - Remote use: forward the socket with OpenSSH, for example `ssh -N -L
+    /tmp/imperium.sock:<remote data>/ipc/daemon.sock host`, or let `imperium remote connect
+    <host> --socket` do it (with `StreamLocalBindMask=0177`, so the local end is also mode
+    0600). The remote token is in the host's `daemon.json`; the forwarded endpoint file the
+    command writes holds it. `-R` works the other way, to let a remote machine reach a daemon
+    behind your firewall. SSH cannot forward a Windows named pipe, so a Windows host is
+    reached through its TCP port as before; the pipe serves clients on the same machine.
+- **Event subscriptions (implemented):** a new connection receives every notification it may,
+  as before. `events.subscribe` with `topics` narrows it to those topics (a notification method
+  such as `session.event`, a prefix such as `session.*`, or `*` for everything again) and
+  later calls add to them; `events.unsubscribe` removes topics, or, on a connection still
+  receiving everything, mutes them. Both return the current choice (`topics`, which is `null`
+  while everything is received, and `muted`). The choice is applied after the existing rules
+  (a restricted connection's allowed list, benchmark progress withheld from a paired phone,
+  resource snapshots only for `system.resources_subscribe`), so it can only narrow: naming a
+  topic the connection could not receive changes nothing. A connection may name at most 128
+  topics; a malformed topic gets `-32602`. Paired phones may not call these methods. Replies
+  to calls are never filtered, and `session.subscribe` still returns a session's history.
 - **Discovery (implemented):** on start the daemon writes `<data>/daemon.json` (URL, token,
-  PID, protocol version), readable only by the user (mode 0600 on Unix; per-user directory ACL
-  on Windows), and removes it on shutdown. It holds a lock on `<data>/daemon.lock`, so only one
+  PID, protocol version, and the local socket's address when `daemon.socket` is on), readable
+  only by the user (mode 0600 on Unix; per-user directory ACL on Windows), and removes it on
+  shutdown. Clients that find a `socket` there try it before the URL. It holds a lock on `<data>/daemon.lock`, so only one
   daemon runs per user; a second start exits with "already running". A daemon killed without
   cleanup leaves a stale `daemon.json`, which the next start overwrites.
 - **OpenAI-compatible API (implemented):** a second, optional listener for other tools, off
@@ -90,7 +128,7 @@
   by CI) fails if the checked-in files differ. The pnpm package `@imperium/protocol`
   (`packages/protocol`) re-exports them; its `src/index.ts` is generated by
   `scripts/generate-index.mjs` on every typecheck and is not checked in.
-- Versioned: `ProtocolVersion { major, minor }` in the handshake (currently 0.25: 0.25 added the `access` argument of `spawn_agent` (`write` gives a subagent git worktrees of its own); 0.24 added the `draft_model`, `draft_max`, `draft_min` and `draft_gpu_layers` settings of local models (`LocalLaunchSettings` and `LocalLaunchEffective`), `draft_in_use` and `draft_notice` on `models.config` rows, and `draft_model` and `draft_notice` on the active local models of `system.resources`; 0.23 added the `builtin` field of environments (the Home environment, and `session.create` with neither environment nor project starting there); 0.22 added the `environments.agent_*` methods, `agents` on environments, and made `persistent_agent` and `agent_session_id` deprecated aliases that a later version removes; 0.21 added `models.bench`, `models.bench_results`, `models.bench_cancel` and the `models.bench_progress` notification for the local model benchmark; 0.20 added `workspaces.where`, `workspaces.move`, `workspaces.open`, and the `workspaces.progress` notification; 0.19 added `api.get`, `api.set`, `api.token` and the `source` budget scope for the OpenAI-compatible API; 0.18 added `session.browser_control`, `session.browser_act`, and the `browser_control` and `preview_changed` session events; 0.17 added `session.control` `set_permission_mode` and the `permission_mode` fields of session summaries and control results; 0.16 added `session.branch`, `session.compare` and `session.compare_pick` and the `branched_from` and `comparison_id` fields of session summaries; 0.15 added `session.export` and `kept_context` on `context_compacted`; 0.14 added `session.review`, `session.review_hunk`, `session.review_commit`, and `session.review_pull_request`; 0.13 added `personalities.list`; 0.12 added `session.checkpoints`, `session.rewind`, and the `session.checkpoint` notification; 0.11 added the `model.residency` notification; 0.9 added `session.control` `set_effort`, the `effort` and `reasoning` fields of session summaries and control results, `reasoning` on model rows, and `effort` on `spawn_agent`; 0.8 added `session.attach`, `attachments` on `session.send`, queued messages, `turn_started`, and `steered`, and `voice.transcribe`; 0.7 added the `local_model_waiting` session event and the local model rows' context, layer and memory fields; 0.6 added the `budgets.*` methods and notifications, `confirm_budget` on `session.send`, and the `-32008` budget error; 0.5 added the `permissions.*` methods, environment permissions, and suggested rules on approvals); additive
+- Versioned: `ProtocolVersion { major, minor }` in the handshake (currently 0.26: 0.26 added `events.subscribe` and `events.unsubscribe` and the optional `socket` field of the discovery file; 0.25 added the `access` argument of `spawn_agent` (`write` gives a subagent git worktrees of its own); 0.24 added the `draft_model`, `draft_max`, `draft_min` and `draft_gpu_layers` settings of local models (`LocalLaunchSettings` and `LocalLaunchEffective`), `draft_in_use` and `draft_notice` on `models.config` rows, and `draft_model` and `draft_notice` on the active local models of `system.resources`; 0.23 added the `builtin` field of environments (the Home environment, and `session.create` with neither environment nor project starting there); 0.22 added the `environments.agent_*` methods, `agents` on environments, and made `persistent_agent` and `agent_session_id` deprecated aliases that a later version removes; 0.21 added `models.bench`, `models.bench_results`, `models.bench_cancel` and the `models.bench_progress` notification for the local model benchmark; 0.20 added `workspaces.where`, `workspaces.move`, `workspaces.open`, and the `workspaces.progress` notification; 0.19 added `api.get`, `api.set`, `api.token` and the `source` budget scope for the OpenAI-compatible API; 0.18 added `session.browser_control`, `session.browser_act`, and the `browser_control` and `preview_changed` session events; 0.17 added `session.control` `set_permission_mode` and the `permission_mode` fields of session summaries and control results; 0.16 added `session.branch`, `session.compare` and `session.compare_pick` and the `branched_from` and `comparison_id` fields of session summaries; 0.15 added `session.export` and `kept_context` on `context_compacted`; 0.14 added `session.review`, `session.review_hunk`, `session.review_commit`, and `session.review_pull_request`; 0.13 added `personalities.list`; 0.12 added `session.checkpoints`, `session.rewind`, and the `session.checkpoint` notification; 0.11 added the `model.residency` notification; 0.9 added `session.control` `set_effort`, the `effort` and `reasoning` fields of session summaries and control results, `reasoning` on model rows, and `effort` on `spawn_agent`; 0.8 added `session.attach`, `attachments` on `session.send`, queued messages, `turn_started`, and `steered`, and `voice.transcribe`; 0.7 added the `local_model_waiting` session event and the local model rows' context, layer and memory fields; 0.6 added the `budgets.*` methods and notifications, `confirm_budget` on `session.send`, and the `-32008` budget error; 0.5 added the `permissions.*` methods, environment permissions, and suggested rules on approvals); additive
   changes bump minor, breaking changes bump major and keep the previous major for one release.
 
 Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `tool.*`,
@@ -101,6 +139,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | Crate                 | Responsibility                                                         |
 | --------------------- | ---------------------------------------------------------------------- |
 | `imperium-api`        | Shared types and traits: chat messages, tool specs, usage and pricing, the local-model and tool-provider interfaces, Markdown front matter (implemented) |
+| `imperium-ipc`        | Same-user local sockets: Unix domain socket, Windows named pipe (the one crate that allows `unsafe`, for the pipe's ACL) |
 | `imperium-protocol`   | Wire types, method/event definitions, TS export                        |
 | `imperium-engine`     | Agent engine library: sessions, agent loop, delegation, task graph, event bus |
 | `imperium-models`     | Endpoint clients behind `ChatClient`, model registry, router, cost accounting |
