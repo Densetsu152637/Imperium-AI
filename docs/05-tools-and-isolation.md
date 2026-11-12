@@ -374,6 +374,19 @@ aliases). Not yet: domain rules for `web_fetch`, an `auto` mode where a classifi
 routine actions, and logging decisions in the session journal beyond the events it already
 records.
 
+### Agent permission profiles (implemented)
+
+A persistent agent of an environment can be limited further than the environment: an allowlist
+of MCP servers, an allowlist of plugins, and a **local files only** lock that removes web,
+browser, search, media, MCP, plugin and command tools and confines the file tools to the
+environment's folders and the agent's scratch folder. A profile only narrows: it hides tools
+from the list the model gets and refuses calls to them, and the rules, permission modes and
+safety floor below still decide every call that remains. It binds the agent's subagents and the
+sessions it starts, and keeps the servers and plugins it forbids from starting. Only **local files
+only** is a boundary against the agent itself; allowlists are not, because an agent that can run
+commands can change its own profile through the daemon. See
+[agent permission profiles](14-projects-and-automation.md#agent-permission-profiles-implemented).
+
 ### Permission modes (implemented)
 
 Each session has a permission mode, which decides calls together with the rules. New sessions
@@ -433,6 +446,8 @@ answers:
   `powershell -Command -`); PowerShell running a string or another process (`iex`,
   `Invoke-Expression`, `Start-Process`, `saps`, `Invoke-Command`); and `git -c alias.<name>=…`
   with a `!` (shell) alias, quoted or not.
+- `imperium env agent add|set|rm`, which could loosen an agent's own
+  [permission profile](14-projects-and-automation.md#agent-permission-profiles-implemented).
 - Writing files that hold secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
   `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`) or anything with a `.git` folder
   in its absolute path, such as a linked worktree's main repository's hooks.

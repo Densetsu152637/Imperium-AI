@@ -847,3 +847,369 @@ async fn an_agent_that_cannot_start_is_added_and_says_why() {
     assert_eq!(started["started"], true);
     assert!(started.get("reason").is_none());
 }
+
+// --- agent permission profiles -------------------------------------------------------------
+
+/// The tools the model was offered on the request whose last user message is `said`.
+fn tools_offered_for(log: &Log, said: &str) -> Option<Vec<String>> {
+    log.lock().unwrap().iter().find_map(|body| {
+        let messages = body["messages"].as_array()?;
+        let last_user = messages.iter().rev().find(|m| m["role"] == "user")?;
+        if last_user["content"].as_str()? != said {
+            return None;
+        }
+        Some(
+            body["tools"]
+                .as_array()?
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+                .collect(),
+        )
+    })
+}
+
+async fn tools_offered_after(log: &Log, said: &str) -> Vec<String> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(tools) = tools_offered_for(log, said) {
+                return tools;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the model was asked {said:?} within 30 s"))
+}
+
+#[tokio::test]
+async fn an_agent_profile_is_stored_applied_live_and_inherited_by_the_sessions_it_starts() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let log: Log = Arc::default();
+    let state = daemon(home.path(), &fake_model(Arc::clone(&log)).await);
+    let mut connection = connect(&state);
+    let id = new_environment(&mut connection, folder.path());
+
+    // A refused profile adds no agent.
+    let refused = try_call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": id, "name": "Bad",
+               "permissions": {"mcp": "named", "mcp_servers": ["bad\u{0}name"]}}),
+    );
+    assert!(refused.unwrap_err().contains("not a valid name"));
+    let none = call(
+        &mut connection,
+        "environments.agent_list",
+        json!({"environment_id": id}),
+    );
+    assert_eq!(none["agents"], json!([]));
+
+    // No profile: no extra restriction. A profile is normalised and kept with the agent.
+    let open = call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": id, "name": "Open"}),
+    );
+    assert_eq!(
+        open["permissions"],
+        json!({"mcp": "all", "mcp_servers": [], "plugins": "all", "plugin_names": [],
+               "local_files_only": false})
+    );
+    let locked = call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": id, "name": "Locked",
+               "permissions": {"local_files_only": true, "mcp": "named",
+                               "mcp_servers": [" github ", "GitHub"]}}),
+    );
+    assert_eq!(locked["permissions"]["local_files_only"], true);
+    assert_eq!(locked["permissions"]["mcp_servers"], json!(["github"]));
+    let listed = call(
+        &mut connection,
+        "environments.agent_list",
+        json!({"environment_id": id}),
+    );
+    assert_eq!(listed["agents"][1]["permissions"], locked["permissions"]);
+
+    // Each agent's own session is offered what its profile allows.
+    let open_session = open["session_id"].as_str().unwrap().to_string();
+    let locked_session = locked["session_id"].as_str().unwrap().to_string();
+    say(&state, &open_session, "hello open").await;
+    say(&state, &locked_session, "hello locked").await;
+    let open_tools = tools_offered_for(&log, "hello open").unwrap();
+    assert!(open_tools.iter().any(|tool| tool == "run_command"));
+    let locked_tools = tools_offered_for(&log, "hello locked").unwrap();
+    assert!(locked_tools.iter().any(|tool| tool == "read_file"));
+    assert!(!locked_tools.iter().any(|tool| tool == "run_command"));
+
+    // The sessions an agent starts keep its profile: the locked agent's session has no
+    // commands, the open agent's has them.
+    say(&state, &locked_session, "please start a session probe").await;
+    say(&state, &open_session, "please start a session free").await;
+    let started = tools_offered_after(&log, "slow job probe").await;
+    assert!(started.iter().any(|tool| tool == "read_file"));
+    assert!(
+        !started.iter().any(|tool| tool == "run_command"),
+        "a session started by the locked agent has commands: {started:?}"
+    );
+    let free = tools_offered_after(&log, "slow job free").await;
+    assert!(free.iter().any(|tool| tool == "run_command"));
+    // The binding is recorded with the session, so it survives a restart.
+    let bound: Vec<String> = state
+        .sessions()
+        .iter()
+        // The agents' own sessions are not remembered; the ones they started are.
+        .filter(|session| session.id() != open_session && session.id() != locked_session)
+        .filter_map(|session| {
+            let meta = std::fs::read_to_string(find_file(
+                home.path(),
+                &format!("{}.meta.json", session.id()),
+            ))
+            .ok()?;
+            let meta: Value = serde_json::from_str(&meta).ok()?;
+            meta["agent_id"].as_str().map(str::to_string)
+        })
+        .collect();
+    assert_eq!(
+        bound
+            .iter()
+            .filter(|agent| **agent == locked["id"].as_str().unwrap())
+            .count(),
+        1,
+        "{bound:?}"
+    );
+
+    // A change applies at once, without restarting the agent.
+    let before = state.session(&locked_session).unwrap();
+    call(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": id, "agent_id": locked["id"],
+               "permissions": {"mcp": "all", "plugins": "all", "local_files_only": false}}),
+    );
+    assert!(Arc::ptr_eq(
+        &before,
+        &state.session(&locked_session).unwrap()
+    ));
+    say(&state, &locked_session, "hello again").await;
+    let widened = tools_offered_after(&log, "hello again").await;
+    assert!(widened.iter().any(|tool| tool == "run_command"));
+    call(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": id, "agent_id": open["id"],
+               "permissions": {"plugins": "none", "local_files_only": true}}),
+    );
+    say(&state, &open_session, "hello narrowed").await;
+    let narrowed = tools_offered_after(&log, "hello narrowed").await;
+    assert!(!narrowed.iter().any(|tool| tool == "run_command"));
+    assert!(narrowed.iter().any(|tool| tool == "read_file"));
+    // Leaving `permissions` out of an update keeps the profile.
+    let kept = call(
+        &mut connection,
+        "environments.agent_update",
+        json!({"environment_id": id, "agent_id": open["id"], "role": "Still locked."}),
+    );
+    assert_eq!(kept["permissions"]["local_files_only"], true);
+}
+
+/// An MCP server that counts how often a session starts it (`initialize`).
+async fn counting_mcp() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&starts);
+    let app = Router::new().route(
+        "/mcp",
+        post(move |axum::Json(request): axum::Json<Value>| {
+            let counted = Arc::clone(&counted);
+            async move {
+                let Some(id) = request.get("id").cloned() else {
+                    return axum::Json(json!({}));
+                };
+                let result = match request["method"].as_str() {
+                    Some("initialize") => {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        json!({"protocolVersion": "2025-06-18", "capabilities": {}})
+                    }
+                    Some("tools/list") => json!({"tools": [
+                        {"name": "lookup", "description": "Look up", "inputSchema": {"type": "object"}}]}),
+                    _ => json!({"content": [{"type": "text", "text": "ok"}]}),
+                };
+                axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    (url, starts)
+}
+
+fn daemon_with(home: &std::path::Path, base_url: &str, extra: &str) -> Arc<DaemonState> {
+    let config = format!(
+        "[models]\ndefault = \"fake:m\"\n[endpoints.fake]\nbase_url = \"{base_url}\"\n\
+         [workflow]\nenabled = false\n[memory]\nenabled = false\n{extra}"
+    );
+    let settings = imperium_config::Config::from_layers([
+        imperium_config::Layer::defaults(),
+        imperium_config::Layer::new(
+            imperium_config::Source::User("test".into()),
+            config.parse().unwrap(),
+        ),
+    ])
+    .settings()
+    .unwrap();
+    DaemonState::new(imperium_config::Paths::under(home), settings, None)
+}
+
+#[tokio::test]
+async fn a_profile_keeps_servers_from_starting_even_from_a_trusted_projects_mcp_json() {
+    use std::sync::atomic::Ordering;
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (configured_url, configured_starts) = counting_mcp().await;
+    let (project_url, project_starts) = counting_mcp().await;
+    // A project's own .mcp.json, which an agent that may write files could have written.
+    std::fs::write(
+        folder.path().join(".mcp.json"),
+        json!({"mcpServers": {"proj": {"type": "http", "url": project_url}}}).to_string(),
+    )
+    .unwrap();
+    let canonical = folder.path().canonicalize().unwrap();
+    let extra = format!(
+        "[mcp]\ntrusted_projects = [{:?}]\n[mcp.servers.words]\nurl = \"{configured_url}\"\n",
+        canonical.display().to_string()
+    );
+    let state = daemon_with(home.path(), &fake_model(Arc::default()).await, &extra);
+    let mut connection = connect(&state);
+    let id = new_environment(&mut connection, folder.path());
+    let make = |connection: &mut Connection, name: &str, permissions: Value| {
+        call(
+            connection,
+            "environments.agent_create",
+            json!({"environment_id": id, "name": name, "permissions": permissions}),
+        )["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // Local files only: no server starts, neither the configured one nor the project's.
+    let locked = make(&mut connection, "Locked", json!({"local_files_only": true}));
+    say(&state, &locked, "hello").await;
+    assert_eq!(configured_starts.load(Ordering::SeqCst), 0);
+    assert_eq!(project_starts.load(Ordering::SeqCst), 0);
+
+    // A named server: only that one.
+    let named = make(
+        &mut connection,
+        "Named",
+        json!({"mcp": "named", "mcp_servers": ["words"]}),
+    );
+    say(&state, &named, "hello").await;
+    assert_eq!(configured_starts.load(Ordering::SeqCst), 1);
+    assert_eq!(project_starts.load(Ordering::SeqCst), 0);
+
+    // Without a profile both start (so the checks above are not vacuous).
+    let open = make(&mut connection, "Open", json!({}));
+    say(&state, &open, "hello").await;
+    assert_eq!(configured_starts.load(Ordering::SeqCst), 2);
+    assert_eq!(project_starts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn sessions_an_agent_started_stay_restricted_after_the_agent_is_deleted_and_the_daemon_restarts()
+ {
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let log: Log = Arc::default();
+    let url = fake_model(Arc::clone(&log)).await;
+    let state = daemon_with(home.path(), &url, "");
+    let mut connection = connect(&state);
+    let id = new_environment(&mut connection, folder.path());
+    // A mild profile (no plugins): commands stay available, so a session is "looser" than the
+    // strictest profile, which is what a session with no record falls back to.
+    let mut agents = Vec::new();
+    for name in ["Mild", "Other"] {
+        agents.push(call(
+            &mut connection,
+            "environments.agent_create",
+            json!({"environment_id": id, "name": name, "permissions": {"plugins": "none"}}),
+        ));
+    }
+    let agent_sessions: Vec<String> = agents
+        .iter()
+        .map(|agent| agent["session_id"].as_str().unwrap().to_string())
+        .collect();
+    say(
+        &state,
+        &agent_sessions[0],
+        "please start a session recorded",
+    )
+    .await;
+    say(
+        &state,
+        &agent_sessions[1],
+        "please start a session unrecorded",
+    )
+    .await;
+    tools_offered_after(&log, "slow job recorded").await;
+    tools_offered_after(&log, "slow job unrecorded").await;
+    let started: Vec<String> = state
+        .sessions()
+        .iter()
+        .map(|session| session.id().to_string())
+        .filter(|session| !agent_sessions.contains(session))
+        .collect();
+    assert_eq!(started.len(), 2);
+    let meta_path = |session: &str| find_file(home.path(), &format!("{session}.meta.json"));
+    let mut recorded = None;
+    let mut stripped = None;
+    for session in &started {
+        let mut meta: Value =
+            serde_json::from_str(&std::fs::read_to_string(meta_path(session)).unwrap()).unwrap();
+        assert_eq!(meta["agent_permissions"]["plugins"], "none");
+        if meta["agent_id"] == agents[0]["id"] {
+            recorded = Some(session.clone());
+        } else {
+            // A session whose record is missing (an older one) has nothing but its agent's id
+            // to go by, and the agent is gone.
+            assert_eq!(meta["agent_id"], agents[1]["id"]);
+            meta.as_object_mut().unwrap().remove("agent_permissions");
+            std::fs::write(meta_path(session), meta.to_string()).unwrap();
+            stripped = Some(session.clone());
+        }
+    }
+    let (recorded, stripped) = (recorded.unwrap(), stripped.unwrap());
+
+    // The agent is deleted and the daemon restarts: nothing is left of the agent but the
+    // sessions' own records.
+    for agent in &agents {
+        call(
+            &mut connection,
+            "environments.agent_delete",
+            json!({"environment_id": id, "agent_id": agent["id"]}),
+        );
+    }
+    drop(connection);
+    drop(state);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let state = daemon_with(home.path(), &url, "");
+    state.resume_sessions();
+    say(&state, &recorded, "after restart recorded").await;
+    say(&state, &stripped, "after restart stripped").await;
+    let recorded_tools = tools_offered_for(&log, "after restart recorded").unwrap();
+    assert!(
+        recorded_tools.iter().any(|tool| tool == "run_command"),
+        "the recorded profile is used, not something stricter: {recorded_tools:?}"
+    );
+    let stripped_tools = tools_offered_for(&log, "after restart stripped").unwrap();
+    assert!(
+        stripped_tools.iter().any(|tool| tool == "read_file"),
+        "{stripped_tools:?}"
+    );
+    assert!(
+        !stripped_tools.iter().any(|tool| tool == "run_command"),
+        "with no record the strictest profile applies: {stripped_tools:?}"
+    );
+}

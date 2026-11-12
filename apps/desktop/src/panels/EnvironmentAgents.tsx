@@ -1,13 +1,23 @@
-// The persistent agents of an environment, in its window: list, add, rename or change the role of,
-// and delete. A new environment has none. Each action is its own daemon call and applies at once;
+// The persistent agents of an environment, in its window: list, add, rename or change the role or
+// permissions of, and delete. A new environment has none. An agent's permissions only narrow what
+// the environment allows: MCP servers and plugins (all, none or named) and a local-files-only lock. Each action is its own daemon call and applies at once;
 // the daemon announces the changed environment (`environments.changed`), which redraws the list.
 
 import { Pencil, Plus, Trash, X } from "lucide-react";
 import { useState } from "react";
 
-import type { EnvironmentAgent, EnvironmentAgentCreated, EnvironmentInfo } from "@imperium/protocol";
+import type { EnvironmentAgent, EnvironmentAgentCreated, EnvironmentInfo, ToolAccess } from "@imperium/protocol";
 
-import { nameProblem, nameTaken, notStartedNotice } from "../agents";
+import {
+  type PermissionDraft,
+  describePermissions,
+  draftOfPermissions,
+  nameProblem,
+  nameTaken,
+  notStartedNotice,
+  permissionsChanged,
+  permissionsOfDraft,
+} from "../agents";
 import type { DaemonClient } from "../daemon/client";
 import { AgentInitiative } from "./AgentInitiative";
 
@@ -22,7 +32,14 @@ type Props = {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-type Draft = { id: string | null; name: string; role: string };
+type Draft = {
+  id: string | null;
+  name: string;
+  role: string;
+  access: PermissionDraft;
+  /** The permissions the form opened with: they are sent only when the user changed them. */
+  initial: PermissionDraft;
+};
 
 export function EnvironmentAgents({ environment, client, disabled, onOpenSession }: Props) {
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -63,6 +80,7 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
       return;
     }
     setNotice(null);
+    const permissions = permissionsChanged(draft.initial, draft.access) ? permissionsOfDraft(draft.access) : undefined;
     const outcome: { created: EnvironmentAgentCreated | null; saved: boolean } = { created: null, saved: false };
     const done = await run(async (c, environment_id) => {
       if (draft.id === null) {
@@ -70,6 +88,7 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
           environment_id,
           name,
           role: draft.role.trim(),
+          permissions,
         });
       } else {
         outcome.created = await c.call<EnvironmentAgentCreated>("environments.agent_update", {
@@ -77,6 +96,7 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
           agent_id: draft.id,
           name,
           role: draft.role.trim(),
+          permissions,
         });
         outcome.saved = true;
       }
@@ -107,7 +127,13 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
           type="button"
           onClick={() => {
             setError(null);
-            setDraft({ id: null, name: "", role: "" });
+            setDraft({
+              id: null,
+              name: "",
+              role: "",
+              access: draftOfPermissions(undefined),
+              initial: draftOfPermissions(undefined),
+            });
           }}
           disabled={disabled || busy || !environment || draft !== null}
           title={environment ? "Add a persistent agent" : "Create the environment first"}
@@ -123,6 +149,14 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
             <span className="muted agent-role" title={agent.role}>
               {agent.role || "No role set"}
             </span>
+            {describePermissions(agent.permissions) && (
+              <span
+                className="agent-limits"
+                title="This agent can only use what its permissions allow, on top of the environment's own."
+              >
+                {describePermissions(agent.permissions)}
+              </span>
+            )}
             {!agent.session_id && (
               <span className="muted" title="The agent is not running yet; it starts once the environment can run it.">
                 not running
@@ -144,11 +178,17 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
                   type="button"
                   className="ghost icon-only row-tool"
                   aria-label={`Edit ${agent.name}`}
-                  title="Rename or change the role"
+                  title="Rename, or change the role or permissions"
                   disabled={disabled || busy}
                   onClick={() => {
                     setError(null);
-                    setDraft({ id: agent.id, name: agent.name, role: agent.role });
+                    setDraft({
+                      id: agent.id,
+                      name: agent.name,
+                      role: agent.role,
+                      access: draftOfPermissions(agent.permissions),
+                      initial: draftOfPermissions(agent.permissions),
+                    });
                   }}
                 >
                   <Pencil />
@@ -201,6 +241,44 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
               onChange={(event) => setDraft({ ...draft, role: event.target.value })}
             />
           </label>
+          <fieldset className="agent-access">
+            <legend className="environment-label">Permissions</legend>
+            <p className="muted">
+              These only narrow what this environment already allows; its permission mode and safety checks still
+              apply. They also bind the sessions this agent starts.
+            </p>
+            <label className="agent-access-lock">
+              <input
+                type="checkbox"
+                checked={draft.access.localOnly}
+                onChange={(event) => setDraft({ ...draft, access: { ...draft.access, localOnly: event.target.checked } })}
+              />
+              <span>
+                Local files only: no web, browser, search, MCP, plugin or command tools; files stay inside this
+                environment’s folders and the agent’s scratch folder.
+              </span>
+            </label>
+            <AccessRow
+              label="MCP servers"
+              namesLabel="MCP server names"
+              placeholder="github, slack"
+              access={draft.access.mcp}
+              names={draft.access.mcpNames}
+              disabled={draft.access.localOnly}
+              onAccess={(mcp) => setDraft({ ...draft, access: { ...draft.access, mcp } })}
+              onNames={(mcpNames) => setDraft({ ...draft, access: { ...draft.access, mcpNames } })}
+            />
+            <AccessRow
+              label="Plugins"
+              namesLabel="Plugin names"
+              placeholder="docs, search"
+              access={draft.access.plugins}
+              names={draft.access.pluginNames}
+              disabled={draft.access.localOnly}
+              onAccess={(plugins) => setDraft({ ...draft, access: { ...draft.access, plugins } })}
+              onNames={(pluginNames) => setDraft({ ...draft, access: { ...draft.access, pluginNames } })}
+            />
+          </fieldset>
           <div className="runtime-row">
             <button type="button" className="primary" disabled={busy || !draft.name.trim()} onClick={() => void save()}>
               {draft.id === null ? "Add" : "Save agent"}
@@ -222,5 +300,50 @@ export function EnvironmentAgents({ environment, client, disabled, onOpenSession
         </p>
       )}
     </section>
+  );
+}
+
+/** One allowlist: all, none, or only the named ones. */
+function AccessRow({
+  label,
+  namesLabel,
+  placeholder,
+  access,
+  names,
+  disabled,
+  onAccess,
+  onNames,
+}: {
+  label: string;
+  namesLabel: string;
+  placeholder: string;
+  access: ToolAccess;
+  names: string;
+  disabled: boolean;
+  onAccess: (access: ToolAccess) => void;
+  onNames: (names: string) => void;
+}) {
+  return (
+    <div className="agent-access-row">
+      <label className="environment-field">
+        <span className="environment-label">{label}</span>
+        <select value={access} disabled={disabled} onChange={(event) => onAccess(event.target.value as ToolAccess)}>
+          <option value="all">All the environment allows</option>
+          <option value="none">None</option>
+          <option value="named">Only these</option>
+        </select>
+      </label>
+      {access === "named" && !disabled && (
+        <label className="environment-field">
+          <span className="environment-label">{namesLabel}</span>
+          <input
+            value={names}
+            placeholder={placeholder}
+            aria-label={namesLabel}
+            onChange={(event) => onNames(event.target.value)}
+          />
+        </label>
+      )}
+    </div>
   );
 }

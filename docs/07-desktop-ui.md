@@ -833,8 +833,11 @@ tooltip in the list, and `initiative.notice` raises an OS notification (Settings
 The window's *Agents* section (`EnvironmentAgents`) lists the environment's
 [persistent agents](14-projects-and-automation.md#persistent-agents-implemented): a new
 environment has none, *Add agent* asks for a name and an optional role, and each row has edit
-(rename, change the role) and delete (with a confirmation: the agent's history is archived). Each
-action applies at once; the list follows `environments.changed`.
+(rename, change the role or the [permissions](14-projects-and-automation.md#agent-permission-profiles-implemented):
+a *Local files only* checkbox and an *All / None / Only these* choice, with names, for MCP
+servers and for plugins) and delete (with a confirmation: the agent's history is archived). A
+limited agent's row shows what it is limited to. Each action applies at once; the list follows
+`environments.changed`.
 
 **New session (implemented):** *New session* (the *+* in the Sessions panel's header; disabled while
 disconnected) opens the new-session composer in the middle panel, which is also what the middle

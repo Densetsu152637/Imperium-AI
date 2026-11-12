@@ -3999,6 +3999,44 @@ button.colour-choice[aria-checked="true"]::after {
   resize: vertical;
 }
 
+.environment-agents .agent-limits {
+  flex: none;
+  font-size: 0.7rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 0.35rem;
+}
+
+.agent-access {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  min-width: 0;
+}
+
+.agent-access p {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.agent-access-lock {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.agent-access-row {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
 .environment-folders button.icon-only {
   width: 1.7rem;
   height: 1.7rem;

@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use imperium_protocol::agents::EnvironmentAgent;
+use imperium_protocol::agents::{AgentPermissions, EnvironmentAgent};
 use imperium_protocol::initiative::Initiative;
 use imperium_protocol::methods::{
     EnvironmentCreateParams, EnvironmentInfo, EnvironmentRuntime, EnvironmentUpdateParams,
@@ -376,6 +376,7 @@ impl Environments {
                 role: role.clone(),
                 session_id: None,
                 initiative: Initiative::Off,
+                permissions: AgentPermissions::default(),
             });
             Ok(())
         })?;
@@ -433,6 +434,26 @@ impl Environments {
     ) -> Result<EnvironmentAgent, EnvironmentError> {
         let env = self.change_one(id, |env| {
             find_agent(env, agent_id)?.initiative = initiative;
+            Ok(())
+        })?;
+        Ok(env
+            .agents
+            .into_iter()
+            .find(|agent| agent.id == agent_id)
+            .expect("checked above"))
+    }
+
+    /// Replaces an agent's permission profile (checked and normalised first).
+    pub fn set_agent_permissions(
+        &self,
+        id: &str,
+        agent_id: &str,
+        permissions: &AgentPermissions,
+    ) -> Result<EnvironmentAgent, EnvironmentError> {
+        let permissions = crate::permissions::checked_agent_permissions(permissions)
+            .map_err(EnvironmentError::Invalid)?;
+        let env = self.change_one(id, |env| {
+            find_agent(env, agent_id)?.permissions = permissions.clone();
             Ok(())
         })?;
         Ok(env
@@ -765,6 +786,7 @@ fn default_agent(session_id: Option<String>) -> Result<EnvironmentAgent, getrand
         role: String::new(),
         session_id,
         initiative: Initiative::Off,
+        permissions: AgentPermissions::default(),
     })
 }
 

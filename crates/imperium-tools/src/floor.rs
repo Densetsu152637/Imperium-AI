@@ -445,8 +445,23 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
         | "sudo" | "su" | "doas" | "runas" | "format-volume" | "clear-disk" => true,
         name if name.starts_with("mkfs") => true,
         "git" => git_dangerous(args),
+        "imperium" => changes_agents(args),
         _ => false,
     }
+}
+
+/// `imperium env agent add|set|rm …`: an agent could loosen its own permission profile (or its
+/// limits) this way, so a person decides each time.
+fn changes_agents(args: &[String]) -> bool {
+    let Some(at) = args.iter().position(|word| word == "env") else {
+        return false;
+    };
+    let rest = &args[at + 1..];
+    rest.first().is_some_and(|word| word == "agent")
+        && rest
+            .iter()
+            .skip(1)
+            .any(|word| matches!(word.as_str(), "add" | "set" | "rm"))
 }
 
 /// `git` with its global options (`-C dir`, `-c k=v`, `--git-dir=…`) skipped.
@@ -564,8 +579,18 @@ mod tests {
             "ri -r build",
             "ri -Force x",
             "rm -Recurse build",
+            "imperium env agent set Work Planner --mcp all",
+            "/usr/bin/imperium env agent add work Bot --local-only",
+            "imperium.exe env agent rm work Bot",
         ] {
             assert!(dangerous_command(line), "{line}");
+        }
+        for line in [
+            "imperium env agent list work",
+            "imperium env list",
+            "imperium ping",
+        ] {
+            assert!(!dangerous_command(line), "{line}");
         }
     }
 

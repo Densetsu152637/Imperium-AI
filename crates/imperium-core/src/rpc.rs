@@ -1143,6 +1143,13 @@ impl Connection {
             }
             EnvironmentAgentCreate::NAME => {
                 call::<EnvironmentAgentCreate>(params, |p: EnvironmentAgentCreateParams| {
+                    // Checked before the agent is added, so a refused profile adds nothing.
+                    let permissions = p
+                        .permissions
+                        .as_ref()
+                        .map(crate::permissions::checked_agent_permissions)
+                        .transpose()
+                        .map_err(|message| failed(EnvironmentError::Invalid(message)))?;
                     let agent = envs
                         .add_agent(&p.environment_id, &p.name, p.role.as_deref())
                         .map_err(failed)?;
@@ -1155,6 +1162,12 @@ impl Connection {
                                 .postpone_review(&agent.id, crate::initiative::now_ms());
                         }
                     }
+                    let agent = match &permissions {
+                        Some(permissions) => envs
+                            .set_agent_permissions(&p.environment_id, &agent.id, permissions)
+                            .map_err(failed)?,
+                        None => agent,
+                    };
                     // Started at once; an environment without folders starts it when one is
                     // added. Whether it did, and if not why, goes back with it.
                     let failed = crate::project_agent::sync_environment_agent_report(
@@ -1175,6 +1188,12 @@ impl Connection {
             }
             EnvironmentAgentUpdate::NAME => {
                 call::<EnvironmentAgentUpdate>(params, |p: EnvironmentAgentUpdateParams| {
+                    let permissions = p
+                        .permissions
+                        .as_ref()
+                        .map(crate::permissions::checked_agent_permissions)
+                        .transpose()
+                        .map_err(|message| failed(EnvironmentError::Invalid(message)))?;
                     let before = self.agent_of(&p.environment_id, &p.agent_id);
                     let was_act = before.as_ref().is_some_and(|agent| {
                         agent.initiative == imperium_protocol::initiative::Initiative::Act
@@ -1187,6 +1206,22 @@ impl Connection {
                             p.role.as_deref(),
                         )
                         .map_err(failed)?;
+                    // A changed profile applies at once to the agent's running sessions and
+                    // to the ones it started, without a restart.
+                    let agent = match &permissions {
+                        Some(permissions) => {
+                            let agent = envs
+                                .set_agent_permissions(&p.environment_id, &agent.id, permissions)
+                                .map_err(failed)?;
+                            self.state
+                                .permissions()
+                                .set_agent(&agent.id, &agent.permissions);
+                            self.state
+                                .agent_permissions_changed(&agent.id, &agent.permissions);
+                            agent
+                        }
+                        None => agent,
+                    };
                     // Only a changed name or role restarts the agent (resuming its
                     // conversation); saving the same values leaves it running untouched.
                     let changed = before.is_none_or(|before| {

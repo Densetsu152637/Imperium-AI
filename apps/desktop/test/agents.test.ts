@@ -6,15 +6,21 @@ import { test } from "node:test";
 import type { EnvironmentAgent, EnvironmentInfo, InitiativeState } from "@imperium/protocol";
 
 import {
+  DEFAULT_PERMISSIONS,
   actLimits,
   agentOfSession,
   agentTitle,
+  describePermissions,
+  draftOfPermissions,
   initiativeHeadline,
   nameLength,
   nameProblem,
   nameTaken,
   notStartedNotice,
   openSuggestions,
+  parseNames,
+  permissionsChanged,
+  permissionsOfDraft,
   startedByNote,
 } from "../src/agents.ts";
 
@@ -67,7 +73,7 @@ test("a session an agent started carries a note naming the agent, why, and from 
 });
 
 test("an agent that did not start is explained, one that did is not", () => {
-  const base = { id: "a", name: "Planner", role: "", session_id: null };
+  const base = { id: "a", name: "Planner", role: "", session_id: null, permissions: DEFAULT_PERMISSIONS };
   assert.equal(notStartedNotice(null), null);
   assert.equal(notStartedNotice({ ...base, started: true }), null);
   const text = notStartedNotice({ ...base, started: false, reason: "the environment has no folders yet" });
@@ -104,7 +110,7 @@ test("a saved update that did not restart the agent says so in its own words", (
 });
 
 test("uniqueness folds Unicode case like the daemon", () => {
-  const agents = [{ id: "a", name: "Éditeur", role: "", session_id: null }];
+  const agents = [{ id: "a", name: "Éditeur", role: "", session_id: null, permissions: DEFAULT_PERMISSIONS }];
   assert.equal(nameTaken(agents, " éDITEUR "), true);
   assert.equal(nameTaken(agents, "Editeur"), false);
 });
@@ -114,6 +120,7 @@ const agent = (id: string, name: string, session_id: string | null = null): Envi
   name,
   role: "",
   session_id,
+  permissions: DEFAULT_PERMISSIONS,
 });
 
 test("an agent name is taken ignoring case and padding, except by the agent being edited", () => {
@@ -131,4 +138,50 @@ test("a persistent agent's session is found and titled by its agent", () => {
   assert.equal(agentOfSession(null, "s1"), null);
   assert.equal(agentTitle("Work", agent("a", "Planner")), "Work · Planner");
   assert.equal(agentTitle("Work", null), "Work agent");
+});
+
+test("typed server and plugin names are split, trimmed and deduplicated ignoring case", () => {
+  assert.deepEqual(parseNames(" github, Slack\n  GitHub ,, docs "), ["github", "Slack", "docs"]);
+  assert.deepEqual(parseNames("  "), []);
+});
+
+test("an agent with no profile is unrestricted and the editor round-trips a profile", () => {
+  assert.deepEqual(permissionsOfDraft(draftOfPermissions(undefined)), DEFAULT_PERMISSIONS);
+  assert.equal(describePermissions(undefined), null);
+  assert.equal(describePermissions(DEFAULT_PERMISSIONS), null);
+
+  const profile = {
+    mcp: "named" as const,
+    mcp_servers: ["github", "slack"],
+    plugins: "none" as const,
+    plugin_names: [],
+    local_files_only: false,
+  };
+  assert.deepEqual(permissionsOfDraft(draftOfPermissions(profile)), profile);
+  assert.equal(describePermissions(profile), "MCP: github, slack · Plugins: none");
+});
+
+test("names are sent only for a named list, and a named list with no name means none", () => {
+  const draft = { ...draftOfPermissions(undefined), mcp: "named" as const, mcpNames: " , ", pluginNames: "docs" };
+  const sent = permissionsOfDraft(draft);
+  assert.equal(sent.mcp, "none");
+  assert.deepEqual(sent.mcp_servers, []);
+  // Names typed before switching back to "all" are not kept.
+  assert.equal(sent.plugins, "all");
+  assert.deepEqual(sent.plugin_names, []);
+});
+
+test("local files only is shown as the whole limit, whatever the lists say", () => {
+  const locked = { ...DEFAULT_PERMISSIONS, local_files_only: true, mcp: "none" as const };
+  assert.equal(describePermissions(locked), "Local files only");
+  assert.equal(permissionsOfDraft(draftOfPermissions(locked)).local_files_only, true);
+});
+
+test("permissions are sent only when the form changed them", () => {
+  const opened = draftOfPermissions(undefined);
+  assert.equal(permissionsChanged(opened, { ...opened }), false);
+  // Typing names for a list that is not "named" changes nothing that would be sent.
+  assert.equal(permissionsChanged(opened, { ...opened, mcpNames: "slack" }), false);
+  assert.equal(permissionsChanged(opened, { ...opened, localOnly: true }), true);
+  assert.equal(permissionsChanged(opened, { ...opened, plugins: "none" }), true);
 });

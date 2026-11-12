@@ -108,6 +108,13 @@ pub struct SessionOptions {
     /// Home's session folder, made by [`DaemonState::create_in_environment`].
     #[doc(hidden)]
     pub home_dir: Option<String>,
+    /// The persistent agent of the session's environment whose permission profile binds it: the
+    /// agent's own session, and the sessions it starts (which keep the binding after a restart).
+    /// The profile only narrows the session.
+    pub agent_id: Option<String>,
+    /// The profile recorded with a resumed session of an agent, used when the agent is gone.
+    #[doc(hidden)]
+    pub agent_recorded: Option<imperium_protocol::agents::AgentPermissions>,
     /// Narrow the session to this folder inside its environment's folders (absolute, or
     /// relative to the first folder): its only folder and working directory. Environment
     /// sessions only; not with a worktree.
@@ -121,6 +128,8 @@ pub struct SessionOptions {
 #[derive(Debug, Clone, Default)]
 struct Placement {
     environment_id: Option<String>,
+    /// The persistent agent whose profile binds the session.
+    agent_id: Option<String>,
     folders: Vec<String>,
     persistent: bool,
     worktrees: Vec<SessionWorktree>,
@@ -569,6 +578,63 @@ impl DaemonState {
             .with_folders(folders)
             .map_err(|error| CreateError::Project(folders.join(", "), error))?
             .with_sandbox(sandbox))
+    }
+
+    /// The profile of the persistent agent `agent_id` of `environment_id`, as the agent has it
+    /// now, and the profile as the protocol carries it. An agent that is gone keeps the profile
+    /// its running sessions hold; after a restart the one recorded with the session, and with
+    /// no record the strictest profile there is: a session never gets looser than its agent.
+    fn agent_profile(
+        &self,
+        environment_id: Option<&str>,
+        agent_id: &str,
+        recorded: Option<&imperium_protocol::agents::AgentPermissions>,
+    ) -> (
+        imperium_tools::AgentProfile,
+        imperium_protocol::agents::AgentPermissions,
+    ) {
+        let live = environment_id
+            .and_then(|id| self.environments.get(id))
+            .and_then(|env| env.agents.into_iter().find(|agent| agent.id == agent_id))
+            .map(|agent| agent.permissions);
+        let permissions = match live {
+            Some(permissions) => permissions,
+            None => match self.permissions.known_agent(agent_id) {
+                Some(known) => return known,
+                None => recorded
+                    .cloned()
+                    .unwrap_or_else(crate::permissions::strictest_agent_permissions),
+            },
+        };
+        (
+            self.permissions.agent_profile(agent_id, &permissions),
+            permissions,
+        )
+    }
+
+    /// Records an agent's changed profile with the sessions it binds, so a session of an agent
+    /// deleted later is not looser than the agent was.
+    pub(crate) fn agent_permissions_changed(
+        &self,
+        agent_id: &str,
+        permissions: &imperium_protocol::agents::AgentPermissions,
+    ) {
+        let bound: Vec<String> = self
+            .placements
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(_, placement)| placement.agent_id.as_deref() == Some(agent_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in bound {
+            self.update_meta(&id, |meta| {
+                meta.insert(
+                    "agent_permissions".into(),
+                    serde_json::to_value(permissions).unwrap_or_default(),
+                );
+            });
+        }
     }
 
     /// What connector tests last learned about each MCP server.
@@ -1134,6 +1200,9 @@ impl DaemonState {
                 permission_mode: meta["permission_mode"]
                     .as_str()
                     .and_then(|mode| mode.parse().ok()),
+                // A session an agent started stays under that agent's profile.
+                agent_id: meta["agent_id"].as_str().map(str::to_string),
+                agent_recorded: serde_json::from_value(meta["agent_permissions"].clone()).ok(),
                 subfolder: meta["subfolder"].as_str().map(str::to_string),
                 read_only: meta["read_only"].as_bool().unwrap_or(false),
                 ..SessionOptions::default()
@@ -1595,6 +1664,19 @@ impl DaemonState {
             &settings.isolation,
             fixed_rules,
         )?;
+        // A session bound to an agent is limited by the agent's profile, and fails closed.
+        let bound = options.agent_id.as_deref().map(|agent_id| {
+            self.agent_profile(
+                options.environment_id.as_deref(),
+                agent_id,
+                options.agent_recorded.as_ref(),
+            )
+        });
+        if let Some((profile, _)) = &bound {
+            workspace = workspace
+                .with_profile(profile.clone())
+                .with_protected_folders([self.paths.config_dir(), self.paths.data_dir()]);
+        }
         if options.read_only {
             workspace = workspace.with_read_only();
         }
@@ -1619,6 +1701,7 @@ impl DaemonState {
         workspace.permissions().set_mode(permission_mode);
         let mut placement = Placement {
             environment_id: options.environment_id.clone(),
+            agent_id: options.agent_id.clone(),
             folders: workspace.folders_display(),
             persistent: options.persistent,
             worktrees: options.worktrees.clone(),
@@ -1664,13 +1747,26 @@ impl DaemonState {
                     .or_insert_with(|| server.clone());
             }
         }
-        let (mcp, mcp_notices) =
+        let (mut mcp, mcp_notices) =
             crate::mcp::session_servers(&mcp_settings, project_dir_path, |name| {
                 self.secrets.load(name)
             });
         notices.extend(mcp_notices);
         // Plugins' servers are not among `mcp`: they start when an agent activates the plugin.
-        let mut extensions = self.extensions(project_dir_path, settings);
+        let mut extensions = self.extensions(
+            project_dir_path,
+            settings,
+            bound.as_ref().map(|(profile, _)| profile),
+        );
+        // A profile also keeps servers from starting at all: a project's own `.mcp.json` names
+        // commands, and an agent that may write files must not get one run by starting a session.
+        if let Some((profile, _)) = &bound {
+            mcp.retain(|server| profile.allows_mcp(Some(&server.name)));
+            let profile = profile.clone();
+            extensions
+                .plugins
+                .set_filter(Arc::new(move |name| profile.allows_plugin(name)));
+        }
         let context = self.context(project_dir_path, &mut notices);
         let personality = self.personality(&settings.policy.personality, &mut notices);
         notices.append(&mut extensions.notices);
@@ -1913,6 +2009,8 @@ impl DaemonState {
                 "started_by": placement.started_by,
                 "effort": effort.as_str(),
                 "permission_mode": permission_mode.as_str(),
+                "agent_id": options.agent_id,
+                "agent_permissions": bound.as_ref().map(|(_, permissions)| permissions),
             });
             let path = self.meta_path(&id);
             if let Err(error) = std::fs::write(&path, meta.to_string()) {
@@ -2494,27 +2592,45 @@ impl DaemonState {
 
     /// Skills, hooks, slash commands, and plugins for a session in `project_dir`, with the
     /// plugin folders and disabled plugins of `settings` (the environment's narrowed ones).
-    fn extensions(&self, project_dir: &Path, settings: &Settings) -> Extensions {
-        imperium_extensions::load(&Sources {
-            config_dir: self.paths.config_dir().to_path_buf(),
-            project_dir: project_dir.to_path_buf(),
-            plugin_dirs: settings.extensions.plugin_dirs.clone(),
-            disabled_plugins: settings.extensions.disabled_plugins.clone(),
-            hooks: self
-                .settings()
-                .hooks
-                .iter()
-                .map(|hook| ConfiguredHook {
-                    event: hook.event.clone(),
-                    matcher: hook.matcher.clone(),
-                    command: hook.command.clone(),
-                    timeout_s: hook.timeout_s,
-                })
-                .collect(),
-            server_timeout: Duration::from_secs(60),
-            lazy: self.settings().extensions.lazy,
-            eager: self.settings().extensions.eager.clone(),
-        })
+    ///
+    /// A session bound to an agent whose profile is `profile`: plugins the profile refuses bring
+    /// no hooks, and under local files only the environment's own file cannot add plugin folders
+    /// or disable plugins (the daemon's settings decide those), since the agent may have written it.
+    fn extensions(
+        &self,
+        project_dir: &Path,
+        settings: &Settings,
+        profile: Option<&imperium_tools::AgentProfile>,
+    ) -> Extensions {
+        let settings = if profile.is_some_and(|profile| profile.local_files_only()) {
+            // Not the environment's narrowed settings.
+            std::borrow::Cow::Owned((*self.settings()).clone())
+        } else {
+            std::borrow::Cow::Borrowed(settings)
+        };
+        imperium_extensions::load_with(
+            &Sources {
+                config_dir: self.paths.config_dir().to_path_buf(),
+                project_dir: project_dir.to_path_buf(),
+                plugin_dirs: settings.extensions.plugin_dirs.clone(),
+                disabled_plugins: settings.extensions.disabled_plugins.clone(),
+                hooks: self
+                    .settings()
+                    .hooks
+                    .iter()
+                    .map(|hook| ConfiguredHook {
+                        event: hook.event.clone(),
+                        matcher: hook.matcher.clone(),
+                        command: hook.command.clone(),
+                        timeout_s: hook.timeout_s,
+                    })
+                    .collect(),
+                server_timeout: Duration::from_secs(60),
+                lazy: self.settings().extensions.lazy,
+                eager: self.settings().extensions.eager.clone(),
+            },
+            &|plugin| profile.is_none_or(|profile| profile.allows_plugin(plugin)),
+        )
     }
 
     /// Resolves a model a client asked a session to switch to: a model table id or an

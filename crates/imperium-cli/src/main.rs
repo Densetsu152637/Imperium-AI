@@ -389,8 +389,10 @@ enum AgentCommand {
         /// How much initiative it takes: off (the default), suggest, or act.
         #[arg(long, value_parser = ["off", "suggest", "act"])]
         initiative: Option<String>,
+        #[command(flatten)]
+        profile: env::ProfileArgs,
     },
-    /// Rename an agent or change its role.
+    /// Rename an agent or change its role or permission profile.
     Set {
         /// Environment name or id.
         env: String,
@@ -402,6 +404,8 @@ enum AgentCommand {
         role: Option<String>,
         #[arg(long, value_parser = ["off", "suggest", "act"])]
         initiative: Option<String>,
+        #[command(flatten)]
+        profile: env::ProfileArgs,
     },
     /// Delete an agent (its session is archived).
     Rm {
@@ -712,14 +716,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     name,
                     role,
                     initiative,
-                } => env::agent_add(id, name, role, initiative),
+                    profile,
+                } => env::agent_add(id, name, role, initiative, profile),
                 AgentCommand::Set {
                     env: id,
                     agent,
                     name,
                     role,
                     initiative,
-                } => env::agent_set(id, agent, name, role, initiative),
+                    profile,
+                } => env::agent_set(id, agent, name, role, initiative, profile),
                 AgentCommand::Rm { env: id, agent } => env::agent_remove(id, agent),
                 AgentCommand::Initiative { env: id, agent } => initiative::show(id, agent),
                 AgentCommand::Suggestions { env: id, agent } => initiative::suggestions(id, agent),
