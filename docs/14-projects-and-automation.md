@@ -325,7 +325,8 @@ The checkpoints are also what a session's changes are reviewed against
   `a.txt`. The commit message is prefilled with the session's title (written by its model) and
   the files. If the commit fails, or there turns out to be nothing to commit, the repository's
   index is put back byte for byte as it was before the files were staged, so changes you had
-  staged in those files are kept.
+  staged in those files are kept; if that restore itself fails, its error is appended to the
+  commit error.
 - `session.review_pull_request { repo, title, body, base? }` pushes the current branch (read
   in full from `HEAD`, so a tag of the same name does not confuse it) to `origin` with
   `git push --recurse-submodules=no -u -- origin refs/heads/<branch>` and runs `gh pr create`
