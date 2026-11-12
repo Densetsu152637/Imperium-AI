@@ -392,7 +392,7 @@ async fn a_writer_outside_git_shares_the_folder_with_a_notice() {
     assert!(
         notices
             .iter()
-            .any(|notice| notice.contains("is in a repository, so the writer shares")),
+            .any(|notice| notice.contains("can have a worktree")),
         "{notices:?}"
     );
     // Today's behaviour: the writer edited the shared folder.
