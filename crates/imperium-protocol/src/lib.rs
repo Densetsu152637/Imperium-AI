@@ -7,6 +7,7 @@
 pub mod agents;
 pub mod budgets;
 pub mod discovery;
+pub mod initiative;
 pub mod jsonrpc;
 pub mod methods;
 pub mod permissions;
@@ -20,7 +21,7 @@ use ts_rs::TS;
 /// The protocol version this build speaks.
 pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion {
     major: 0,
-    minor: 26,
+    minor: 27,
 };
 
 /// Protocol version exchanged in the handshake. Peers are compatible when majors match.

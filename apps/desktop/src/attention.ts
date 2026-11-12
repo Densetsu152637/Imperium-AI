@@ -2,12 +2,12 @@
 // system notification. Pure, so the rules are tested without a window (test/attention.test.ts);
 // notify.ts carries them out.
 
-import type { DownloadJob, SessionEvent } from "@imperium/protocol";
+import type { DownloadJob, InitiativeNotice, SessionEvent } from "@imperium/protocol";
 
 import type { AppSettings } from "./settings";
 
 /** What a notice is about; each kind has its own switch in Settings → Notifications. */
-export type Attention = "approval" | "finished" | "failed" | "budget" | "download" | "update";
+export type Attention = "approval" | "finished" | "failed" | "budget" | "download" | "update" | "initiative";
 
 /** One thing to tell the user about. */
 export type Notice = {
@@ -26,6 +26,7 @@ export const SYSTEM_SETTING: Record<Attention, keyof AppSettings> = {
   budget: "notifyBudget",
   download: "notifyDownload",
   update: "notifyUpdate",
+  initiative: "notifyInitiative",
 };
 
 /** Kinds that mean something waits for the user in a session, which the title badge marks. */
@@ -59,6 +60,12 @@ export function sessionNotice(sessionId: string, name: string, agentId: string, 
     default:
       return null;
   }
+}
+
+/** The notice a persistent agent's `initiative.notice` calls for: suggestions waiting, a work-left
+ * reminder, or a session the agent started (opened when clicked). */
+export function initiativeNotice(notice: InitiativeNotice): Notice {
+  return { kind: "initiative", title: notice.title, body: notice.body, sessionId: notice.session_id ?? null };
 }
 
 /** The notice a download progress report calls for: only a finished download. */

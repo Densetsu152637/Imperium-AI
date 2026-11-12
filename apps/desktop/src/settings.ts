@@ -61,6 +61,7 @@ export type AppSettings = {
   notifyBudget: boolean;
   notifyDownload: boolean;
   notifyUpdate: boolean;
+  notifyInitiative: boolean;
   // Startup
   restoreSession: boolean;
   autoStartDaemon: boolean;
@@ -101,6 +102,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifyBudget: true,
   notifyDownload: true,
   notifyUpdate: true,
+  notifyInitiative: true,
   restoreSession: true,
   autoStartDaemon: true,
   updateIntervalDays: 1,

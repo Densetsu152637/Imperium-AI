@@ -43,6 +43,8 @@ type Props = {
   onSaved: (env: EnvironmentInfo) => void;
   onDeleted: (id: string) => void;
   onClose: () => void;
+  /** Opens a session (one the user started from an agent's suggestion). */
+  onOpenSession?: (sessionId: string) => void;
 };
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -53,7 +55,15 @@ const cleaned = (set: PermissionSet): PermissionSet => ({
   rules: set.rules.filter((rule) => rule.tool.trim()),
 });
 
-export function EnvironmentWindow({ environment, client, confirmDelete = false, onSaved, onDeleted, onClose }: Props) {
+export function EnvironmentWindow({
+  environment,
+  client,
+  confirmDelete = false,
+  onSaved,
+  onDeleted,
+  onClose,
+  onOpenSession,
+}: Props) {
   const creating = environment === null;
   // A new environment's default icon comes from a fresh seed, as an existing one's does from its id.
   const seed = useMemo(() => environment?.id ?? `new-${Date.now()}`, [environment?.id]);
@@ -428,7 +438,15 @@ export function EnvironmentWindow({ environment, client, confirmDelete = false, 
             />
           </section>
 
-          <EnvironmentAgents environment={environment} client={client} disabled={busy} />
+          <EnvironmentAgents
+            environment={environment}
+            client={client}
+            disabled={busy}
+            onOpenSession={(sessionId) => {
+              onOpenSession?.(sessionId);
+              onClose();
+            }}
+          />
 
           <EnvironmentRuntimeFields
             draft={runtime}

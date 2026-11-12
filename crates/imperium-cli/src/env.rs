@@ -158,7 +158,13 @@ pub fn agent_list(env: String) -> anyhow::Result<()> {
 }
 
 /// Adds a persistent agent to an environment.
-pub fn agent_add(env: String, name: String, role: Option<String>) -> anyhow::Result<()> {
+pub fn agent_add(
+    env: String,
+    name: String,
+    role: Option<String>,
+    initiative: Option<String>,
+) -> anyhow::Result<()> {
+    let initiative = parse_initiative(initiative)?;
     block_on(async {
         let (mut client, _) = connect().await?;
         let environment_id = resolve(&mut client, &env).await?.id;
@@ -167,6 +173,7 @@ pub fn agent_add(env: String, name: String, role: Option<String>) -> anyhow::Res
                 environment_id,
                 name,
                 role,
+                initiative,
             })
             .await?;
         print!("{}", describe_agent(&agent.agent));
@@ -186,7 +193,9 @@ pub fn agent_set(
     agent: String,
     name: Option<String>,
     role: Option<String>,
+    initiative: Option<String>,
 ) -> anyhow::Result<()> {
+    let initiative = parse_initiative(initiative)?;
     block_on(async {
         let (mut client, _) = connect().await?;
         let environment_id = resolve(&mut client, &env).await?.id;
@@ -197,6 +206,7 @@ pub fn agent_set(
                 agent_id,
                 name,
                 role,
+                initiative,
             })
             .await?;
         print!("{}", describe_agent(&agent.agent));
@@ -227,7 +237,18 @@ pub fn agent_remove(env: String, agent: String) -> anyhow::Result<()> {
     })
 }
 
-async fn resolve_agent(
+/// `off`, `suggest` or `act`, if given.
+fn parse_initiative(
+    text: Option<String>,
+) -> anyhow::Result<Option<imperium_protocol::initiative::Initiative>> {
+    text.map(|text| {
+        imperium_protocol::initiative::Initiative::parse(&text)
+            .ok_or_else(|| anyhow::anyhow!("initiative is off, suggest or act"))
+    })
+    .transpose()
+}
+
+pub(crate) async fn resolve_agent(
     client: &mut Client,
     environment_id: &str,
     name_or_id: &str,
@@ -247,9 +268,17 @@ async fn resolve_agent(
 
 fn describe_agent(agent: &imperium_protocol::agents::EnvironmentAgent) -> String {
     let session = agent.session_id.as_deref().unwrap_or("not started");
-    let mut text = format!("{}  {}  (session: {session})\n", agent.id, agent.name);
+    let mut text = format!(
+        "{}  {}  (session: {session}, initiative: {})\n",
+        crate::initiative::plain(&agent.id),
+        crate::initiative::plain(&agent.name),
+        agent.initiative.as_str()
+    );
     if !agent.role.is_empty() {
-        text.push_str(&format!("    role: {}\n", agent.role));
+        text.push_str(&format!(
+            "    role: {}\n",
+            crate::initiative::plain(&agent.role)
+        ));
     }
     text
 }
@@ -445,6 +474,7 @@ mod tests {
                 name: "Planner".into(),
                 role: String::new(),
                 session_id: None,
+                initiative: Default::default(),
             });
         let shown = describe(&remote);
         assert!(shown.contains("runtime: wsl Ubuntu") && shown.contains("agent Planner"));

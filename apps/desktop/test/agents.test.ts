@@ -3,9 +3,68 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { EnvironmentAgent, EnvironmentInfo } from "@imperium/protocol";
+import type { EnvironmentAgent, EnvironmentInfo, InitiativeState } from "@imperium/protocol";
 
-import { agentOfSession, agentTitle, nameLength, nameProblem, nameTaken, notStartedNotice } from "../src/agents.ts";
+import {
+  actLimits,
+  agentOfSession,
+  agentTitle,
+  initiativeHeadline,
+  nameLength,
+  nameProblem,
+  nameTaken,
+  notStartedNotice,
+  openSuggestions,
+  startedByNote,
+} from "../src/agents.ts";
+
+const state = (change: Record<string, unknown>) =>
+  ({
+    environment_id: "e",
+    agent_id: "a",
+    mode: "suggest",
+    reviewing: false,
+    waiting: null,
+    last_review_at: null,
+    next_review_at: null,
+    last_error: null,
+    suggestions: [],
+    digest: null,
+    started_today: 0,
+    max_per_day: 2,
+    running: 0,
+    max_concurrent: 1,
+    ...change,
+  }) as unknown as InitiativeState;
+
+test("the initiative headline says what the agent is doing or why it waits", () => {
+  const now = Date.UTC(2026, 0, 1, 12);
+  assert.equal(initiativeHeadline(state({ mode: "off" }), now), "Initiative is off.");
+  assert.equal(initiativeHeadline(state({ reviewing: true }), now), "Reviewing now…");
+  assert.equal(initiativeHeadline(state({}), now), "No review yet.");
+  assert.equal(
+    initiativeHeadline(state({ last_review_at: now - 2 * 3_600_000, waiting: "the machine is busy" }), now),
+    "Last review 2 h ago. Waiting: the machine is busy.",
+  );
+  assert.match(initiativeHeadline(state({ last_error: "no model" }), now), /The last review failed: no model/);
+  assert.equal(actLimits(state({ started_today: 1 })), "Started today 1 of 2 · running 0 of 1");
+});
+
+test("only open suggestions are offered to start", () => {
+  const suggestion = (id: string, status: string) => ({ id, status, title: id });
+  const got = openSuggestions(state({ suggestions: [suggestion("a", "open"), suggestion("b", "started"), suggestion("c", "dismissed")] }));
+  assert.deepEqual(got.map((s) => s.id), ["a"]);
+  assert.deepEqual(openSuggestions(null), []);
+});
+
+test("a session an agent started carries a note naming the agent, why, and from what", () => {
+  const by = { environment_id: "e", environment_name: "Work", agent_id: "a", agent_name: "Planner", kind: "initiative", reason: "the roadmap lists it", source: "docs/12.md" };
+  assert.equal(
+    startedByNote(by),
+    "Started by Planner in Work on its own initiative: the roadmap lists it (from docs/12.md)",
+  );
+  assert.match(startedByNote({ ...by, kind: "suggestion", source: undefined }), /from its suggestion: the roadmap lists it$/);
+});
 
 test("an agent that did not start is explained, one that did is not", () => {
   const base = { id: "a", name: "Planner", role: "", session_id: null };

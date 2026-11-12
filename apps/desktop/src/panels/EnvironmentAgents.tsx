@@ -9,19 +9,22 @@ import type { EnvironmentAgent, EnvironmentAgentCreated, EnvironmentInfo } from 
 
 import { nameProblem, nameTaken, notStartedNotice } from "../agents";
 import type { DaemonClient } from "../daemon/client";
+import { AgentInitiative } from "./AgentInitiative";
 
 type Props = {
   /** The environment to manage the agents of; null while it is being created. */
   environment: EnvironmentInfo | null;
   client: DaemonClient | null;
   disabled?: boolean;
+  /** Opens a session the user started from an agent's suggestion. */
+  onOpenSession?: (sessionId: string) => void;
 };
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 type Draft = { id: string | null; name: string; role: string };
 
-export function EnvironmentAgents({ environment, client, disabled }: Props) {
+export function EnvironmentAgents({ environment, client, disabled, onOpenSession }: Props) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -115,6 +118,7 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
       <ul className="environment-agents" aria-label="Agents">
         {agents.map((agent) => (
           <li key={agent.id}>
+            <div className="agent-row">
             <span className="agent-name">{agent.name}</span>
             <span className="muted agent-role" title={agent.role}>
               {agent.role || "No role set"}
@@ -160,6 +164,16 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
                   <Trash />
                 </button>
               </>
+            )}
+            </div>
+            {environment && (
+              <AgentInitiative
+                environmentId={environment.id}
+                agent={agent}
+                client={client}
+                disabled={disabled}
+                onOpenSession={onOpenSession}
+              />
             )}
           </li>
         ))}

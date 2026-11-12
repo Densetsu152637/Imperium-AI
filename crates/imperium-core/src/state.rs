@@ -94,6 +94,11 @@ pub struct SessionOptions {
     /// start, and `default` for unattended ones (background or with pre-approved tools), which
     /// nobody is there to answer for.
     pub permission_mode: Option<imperium_api::PermissionMode>,
+    /// Who started the session besides the user (a persistent agent).
+    pub started_by: Option<imperium_protocol::initiative::StartedBy>,
+    /// A persistent agent: it is offered the initiative tools (`suggest_work`,
+    /// `work_digest`) under this agent id.
+    pub initiative_agent: Option<String>,
     /// The caller already holds the working-folders lock (a Home session made its folder under
     /// it), so the session must not take it again.
     #[doc(hidden)]
@@ -123,6 +128,8 @@ struct Placement {
     branched_from: Option<imperium_protocol::methods::BranchOrigin>,
     /// The comparison a branch belongs to (`session.compare`).
     comparison_id: Option<String>,
+    /// Started by a persistent agent (or from one of its suggestions).
+    started_by: Option<imperium_protocol::initiative::StartedBy>,
 }
 
 /// State shared by every connection: configuration and the running sessions.
@@ -163,6 +170,8 @@ pub struct DaemonState {
     scheduler: OnceLock<Arc<Scheduler>>,
     approvals: Approvals,
     project_agents: ProjectAgents,
+    /// Suggestions and sessions started on persistent agents' initiative.
+    initiative: crate::initiative::InitiativeBook,
     pets: OnceLock<Option<Arc<PetEngine>>>,
     devices: Devices,
     phone_address: OnceLock<std::net::SocketAddr>,
@@ -256,6 +265,8 @@ impl DaemonState {
             paths.data_dir().join("usage.json"),
             settings.budgets.clone(),
         );
+        let initiative =
+            crate::initiative::InitiativeBook::load(paths.data_dir().join("initiative.json"));
         let state = Arc::new_cyclic(|me| DaemonState {
             me: me.clone(),
             started: Instant::now(),
@@ -279,6 +290,7 @@ impl DaemonState {
             scheduler: OnceLock::new(),
             approvals: Approvals::default(),
             project_agents: ProjectAgents::default(),
+            initiative,
             pets: OnceLock::new(),
             devices,
             phone_address: OnceLock::new(),
@@ -672,6 +684,90 @@ impl DaemonState {
 
     pub fn project_agents(&self) -> &ProjectAgents {
         &self.project_agents
+    }
+
+    /// What persistent agents suggested and started on their own initiative.
+    pub fn initiative(&self) -> &crate::initiative::InitiativeBook {
+        &self.initiative
+    }
+
+    /// Starts the timetable on which persistent agents with initiative review their
+    /// environments.
+    pub fn start_initiative(self: &Arc<Self>) {
+        crate::initiative::start(self);
+    }
+
+    /// One look at every agent: reviews the ones that are due and may run now (the machine
+    /// quiet, the user idle in the environment). Returns the agents reviewed.
+    pub async fn initiative_tick(self: &Arc<Self>) -> Vec<String> {
+        crate::initiative::tick(self).await
+    }
+
+    /// Reviews with an agent now, as if the user asked: it does not wait for the interval, a
+    /// quiet machine, or an idle environment.
+    pub async fn initiative_review_now(
+        self: &Arc<Self>,
+        agent_id: &str,
+    ) -> Result<crate::initiative::Outcome, String> {
+        crate::initiative::run_review(self, agent_id, crate::initiative::Trigger::User).await
+    }
+
+    /// Whether a session of the user's own (not background, not a persistent agent) in the
+    /// environment has a turn running, waits on the user, or had activity within `idle`.
+    pub(crate) fn environment_user_active(&self, environment_id: &str, idle: Duration) -> bool {
+        for session in self.sessions() {
+            let placement = self
+                .placements
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(session.id())
+                .cloned()
+                .unwrap_or_default();
+            if placement.environment_id.as_deref() != Some(environment_id) {
+                continue;
+            }
+            // Talking to one of the environment's persistent agents is being active in it.
+            if placement.persistent {
+                let talked = self
+                    .project_agents
+                    .environment_agents()
+                    .into_iter()
+                    .find(|(_, _, session_id)| session_id == session.id())
+                    .is_some_and(|(_, agent_id, _)| {
+                        self.initiative.chatted_within(&agent_id, idle_ms(idle))
+                    });
+                if talked {
+                    return true;
+                }
+                continue;
+            }
+            if session.is_background() {
+                continue;
+            }
+            if matches!(
+                session.status().0,
+                SessionStatus::Working | SessionStatus::NeedsAttention
+            ) {
+                return true;
+            }
+            let recent = self
+                .session_activity_ms(session.id())
+                .is_some_and(|at| crate::initiative::now_ms().saturating_sub(at) < idle_ms(idle));
+            if recent {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// When a session's journal was last written, in milliseconds since the Unix epoch.
+    pub(crate) fn session_activity_ms(&self, id: &str) -> Option<u64> {
+        let modified = std::fs::metadata(self.journal_path(id))
+            .ok()?
+            .modified()
+            .ok()?;
+        let since = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+        u64::try_from(since.as_millis()).ok()
     }
 
     /// Starts the agents of projects with `agent = true`, and the persistent agents of
@@ -1375,6 +1471,7 @@ impl DaemonState {
             project_agent: options.launcher.is_some(),
             branched_from: None,
             comparison_id: None,
+            started_by: options.started_by.clone(),
         };
         // A remote runtime's folders are not on this machine: project files (instructions,
         // skills, project memory) are not read from them.
@@ -1459,6 +1556,7 @@ impl DaemonState {
                 placement.title.is_some() && meta["title_by_user"].as_bool() == Some(true);
             placement.branched_from = serde_json::from_value(meta["branched_from"].clone()).ok();
             placement.comparison_id = meta["comparison_id"].as_str().map(str::to_string);
+            placement.started_by = serde_json::from_value(meta["started_by"].clone()).ok();
         }
         // Tool providers in the order their tools are offered (MCP tools always come first).
         let mut tools: Vec<Arc<dyn ToolProvider>> = Vec::new();
@@ -1481,6 +1579,12 @@ impl DaemonState {
         // this machine offers one; it stops when the session's tools are dropped.
         if !remote {
             tools.push(Arc::new(PreviewTools::new(workspace.clone())));
+        }
+        if let Some(agent_id) = &options.initiative_agent {
+            tools.push(Arc::new(crate::initiative::InitiativeTools {
+                daemon: self.me.clone(),
+                agent_id: agent_id.clone(),
+            }));
         }
         if self.suggestions.enabled() {
             tools.push(Arc::new(SuggestTool {
@@ -1618,6 +1722,7 @@ impl DaemonState {
                 "title_by_user": placement.title_by_user,
                 "branched_from": placement.branched_from,
                 "comparison_id": placement.comparison_id,
+                "started_by": placement.started_by,
                 "effort": effort.as_str(),
                 "permission_mode": permission_mode.as_str(),
             });
@@ -2113,6 +2218,7 @@ impl DaemonState {
             pinned: placement.pinned,
             branched_from: placement.branched_from,
             comparison_id: placement.comparison_id,
+            started_by: placement.started_by,
             created_at: created_at(&self.journal_path(session.id())),
             title: placement
                 .title
@@ -2531,7 +2637,13 @@ fn summary(session: &Session) -> SessionSummary {
         created_at: None,
         branched_from: None,
         comparison_id: None,
+        started_by: None,
     }
+}
+
+/// The milliseconds in a duration.
+fn idle_ms(idle: Duration) -> u64 {
+    u64::try_from(idle.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// When a session was created: its journal is written when the session starts.
