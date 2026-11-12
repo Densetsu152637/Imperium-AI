@@ -5,6 +5,7 @@ mod bench;
 mod changes;
 mod chat;
 mod env;
+mod initiative;
 mod local;
 mod memory;
 mod phone;
@@ -375,6 +376,9 @@ enum AgentCommand {
         /// What the agent is for, added to its instructions.
         #[arg(long)]
         role: Option<String>,
+        /// How much initiative it takes: off (the default), suggest, or act.
+        #[arg(long, value_parser = ["off", "suggest", "act"])]
+        initiative: Option<String>,
     },
     /// Rename an agent or change its role.
     Set {
@@ -386,9 +390,50 @@ enum AgentCommand {
         name: Option<String>,
         #[arg(long)]
         role: Option<String>,
+        #[arg(long, value_parser = ["off", "suggest", "act"])]
+        initiative: Option<String>,
     },
     /// Delete an agent (its session is archived).
     Rm {
+        /// Environment name or id.
+        env: String,
+        /// The agent's name or id.
+        agent: String,
+    },
+    /// Show where an agent's initiative stands.
+    Initiative {
+        /// Environment name or id.
+        env: String,
+        /// The agent's name or id.
+        agent: String,
+    },
+    /// List the agent's suggested work and its latest reminder of what is left.
+    Suggestions {
+        /// Environment name or id.
+        env: String,
+        /// The agent's name or id.
+        agent: String,
+    },
+    /// Start one of the agent's suggestions as a session.
+    Start {
+        /// Environment name or id.
+        env: String,
+        /// The agent's name or id.
+        agent: String,
+        /// The suggestion's id.
+        suggestion: String,
+    },
+    /// Dismiss one of the agent's suggestions.
+    Dismiss {
+        /// Environment name or id.
+        env: String,
+        /// The agent's name or id.
+        agent: String,
+        /// The suggestion's id.
+        suggestion: String,
+    },
+    /// Ask the agent to review its environment now (it needs initiative turned on).
+    Review {
         /// Environment name or id.
         env: String,
         /// The agent's name or id.
@@ -645,14 +690,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     env: id,
                     name,
                     role,
-                } => env::agent_add(id, name, role),
+                    initiative,
+                } => env::agent_add(id, name, role, initiative),
                 AgentCommand::Set {
                     env: id,
                     agent,
                     name,
                     role,
-                } => env::agent_set(id, agent, name, role),
+                    initiative,
+                } => env::agent_set(id, agent, name, role, initiative),
                 AgentCommand::Rm { env: id, agent } => env::agent_remove(id, agent),
+                AgentCommand::Initiative { env: id, agent } => initiative::show(id, agent),
+                AgentCommand::Suggestions { env: id, agent } => initiative::suggestions(id, agent),
+                AgentCommand::Start {
+                    env: id,
+                    agent,
+                    suggestion,
+                } => initiative::start(id, agent, suggestion),
+                AgentCommand::Dismiss {
+                    env: id,
+                    agent,
+                    suggestion,
+                } => initiative::dismiss(id, agent, suggestion),
+                AgentCommand::Review { env: id, agent } => initiative::review(id, agent),
             },
         },
         Command::Config {

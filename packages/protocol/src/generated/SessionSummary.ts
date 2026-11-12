@@ -4,6 +4,7 @@ import type { ResumePolicy } from "./ResumePolicy";
 import type { SessionHold } from "./SessionHold";
 import type { SessionStatus } from "./SessionStatus";
 import type { SessionWorktree } from "./SessionWorktree";
+import type { StartedBy } from "./StartedBy";
 
 export type SessionSummary = { session_id: string, 
 /**
@@ -94,4 +95,9 @@ branched_from?: BranchOrigin,
 /**
  * Set on the branches of one `session.compare`: the same id on each.
  */
-comparison_id?: string, };
+comparison_id?: string, 
+/**
+ * Set when a persistent agent started the session (or the user started one of its
+ * suggestions): shown as "started by <agent>" with the reason.
+ */
+started_by?: StartedBy, };

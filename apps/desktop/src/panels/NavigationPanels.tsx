@@ -16,7 +16,7 @@ import { RowMenu } from "../components/RowMenu";
 import { Select } from "../components/Select";
 import { ProjectIcon, environmentIcon, projectName, sameFolder } from "../projectIcons";
 import type { SearchClient } from "../sessionSearch";
-import { agentOfSession, agentTitle } from "../agents";
+import { agentOfSession, agentTitle, startedByNote } from "../agents";
 import { formatAgo } from "../ago";
 import { branchNote, nestBranches } from "../branches";
 import { formatCost, sessionTitle, totals, type SessionState } from "../sessions";
@@ -245,6 +245,7 @@ export function SessionsPanel({
       place,
       `${session.summary.model ? modelName(modelAliases(), session.summary.model) : "No model"} · ${formatCost(totals(session.calls).costUsd)}`,
       persistent ? "Persistent: always available, keeps its conversation across restarts" : null,
+      session.summary.started_by ? startedByNote(session.summary.started_by) : null,
       branchNote(session.summary, (from) => {
         const source = sessions.find((s) => s.summary.session_id === from);
         return source ? sessionTitle(source) : null;

@@ -24,9 +24,10 @@ use chrono::{Local, NaiveDate};
 use imperium_automation::parse_duration;
 use imperium_config::ProjectSettings;
 use imperium_engine::{
-    LaunchFuture, Load, LoadView, Session, SessionLauncher, Waited, wait_for_quiet,
+    LaunchFuture, LaunchRequest, Load, LoadView, Session, SessionLauncher, Waited, wait_for_quiet,
 };
 use imperium_protocol::agents::EnvironmentAgent;
+use imperium_protocol::initiative::StartedBy;
 use imperium_protocol::session::{AgentEvent, SessionEvent};
 use tokio::sync::broadcast;
 
@@ -49,7 +50,10 @@ long-lived assistant for the folders of this environment. Your conversation cont
 days and daemon restarts; older turns are summarised when it grows, so keep important facts, \
 decisions, and an open-task list in memory (project-private) as well. Answer and act directly \
 for small things; for larger work call start_session with a self-contained brief (it runs in \
-this environment) and end your turn; its report arrives as a message.";
+this environment) and end your turn; its report arrives as a message. When the daemon sends an \
+Initiative review message, it is not from the user: follow it exactly. Report only work you \
+found in something you read, cite where, and never start sessions during it unless it says you \
+may. Otherwise start sessions only when the user asks or the work needs it.";
 
 /// Limits on the sessions an environment agent may start.
 const ENVIRONMENT_MAX_SESSIONS: usize = 2;
@@ -478,14 +482,21 @@ fn agent_instructions(agent: &EnvironmentAgent) -> String {
     text
 }
 
-fn new_environment_launcher(daemon: &Arc<DaemonState>, environment_id: &str) -> Arc<Launcher> {
+fn new_environment_launcher(
+    daemon: &Arc<DaemonState>,
+    environment_id: &str,
+    agent_id: &str,
+) -> Arc<Launcher> {
     Arc::new(Launcher {
         daemon: Arc::downgrade(daemon),
         // An environment has no settings for deferring: its agent's sessions wait for a quiet
         // machine, up to the default deferral.
         prefer_quiet: true,
         max_defer: DEFAULT_MAX_DEFER,
-        target: Target::Environment(environment_id.to_string()),
+        target: Target::Environment {
+            environment: environment_id.to_string(),
+            agent: agent_id.to_string(),
+        },
         agent: Arc::new(AgentSlot::default()),
         active: Arc::new(AtomicUsize::new(0)),
         today: Mutex::new((Local::now().date_naive(), 0)),
@@ -506,7 +517,7 @@ fn start_environment_agent(
             .project_agents()
             .launchers()
             .entry(agent.id.clone())
-            .or_insert_with(|| new_environment_launcher(daemon, &env.id)),
+            .or_insert_with(|| new_environment_launcher(daemon, &env.id, &agent.id)),
     );
     // The same session as before when its journal is still there and it is not running as an
     // ordinary session (unarchived by hand); archived when the agent was stopped, it comes
@@ -531,7 +542,7 @@ fn start_environment_agent(
                 .join(format!("{id}.jsonl")),
         )
     });
-    let (session, _events) = daemon
+    let (session, events) = daemon
         .create_in_environment(
             &env.id,
             model.as_deref(),
@@ -541,10 +552,12 @@ fn start_environment_agent(
                 instructions: Some(agent_instructions(agent)),
                 persistent: true,
                 auto_compact: true,
+                initiative_agent: Some(agent.id.clone()),
                 ..SessionOptions::default()
             },
         )
         .map_err(|error| error.to_string())?;
+    crate::initiative::watch_agent(daemon, agent.id.clone(), events);
     launcher.agent.set(&session);
     if !resumed {
         // A new agent is listed under its name until its first exchange is worth titling.
@@ -582,8 +595,8 @@ fn start_environment_agent(
 enum Target {
     /// A project folder (a `[[projects]]` agent).
     Folder(String),
-    /// An environment (its persistent agent).
-    Environment(String),
+    /// A persistent agent of an environment.
+    Environment { environment: String, agent: String },
 }
 
 /// Starts sessions for one project's (or environment's) agent and reports back to it.
@@ -630,32 +643,120 @@ impl Launcher {
     /// already allowed to start.
     fn claim(&self) -> Release {
         self.active.fetch_add(1, Ordering::SeqCst);
-        Release(Arc::clone(&self.active))
+        Release {
+            active: Arc::clone(&self.active),
+            initiative: None,
+        }
     }
 }
 
 impl SessionLauncher for Launcher {
     fn launch<'a>(&'a self, brief: &'a str, model: Option<&'a str>) -> LaunchFuture<'a> {
+        self.start(LaunchRequest {
+            brief,
+            model,
+            reason: None,
+            source: None,
+        })
+    }
+
+    fn launch_request<'a>(&'a self, request: LaunchRequest<'a>) -> LaunchFuture<'a> {
+        self.start(request)
+    }
+}
+
+impl Launcher {
+    /// Starts the session. A persistent agent's sessions are tagged with who started them and
+    /// why; during an initiative turn (a review, or the follow-up to a session it started on its
+    /// own) they must also be allowed by the agent's initiative and its limits.
+    fn start<'a>(&'a self, request: LaunchRequest<'a>) -> LaunchFuture<'a> {
         Box::pin(async move {
             let daemon = self.daemon.upgrade().ok_or("the daemon is stopping")?;
+            let mut brief = request.brief.to_string();
+            let mut ticket = None;
+            let mut started_by = None;
+            let mut announce = None;
+            if let Target::Environment { environment, agent } = &self.target {
+                let env = daemon
+                    .environments()
+                    .get(environment)
+                    .ok_or("the environment is gone")?;
+                let definition = env
+                    .agents
+                    .iter()
+                    .find(|candidate| candidate.id == *agent)
+                    .cloned()
+                    .ok_or("the agent is gone")?;
+                let initiative = daemon.initiative().initiative_turn(agent);
+                let reason = request
+                    .reason
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty());
+                if initiative {
+                    ticket = Some(crate::initiative::permit_start(
+                        &daemon,
+                        &env,
+                        &definition,
+                        request.reason,
+                        request.source,
+                    )?);
+                    brief = crate::initiative::with_source(&brief, request.source);
+                }
+                started_by = Some(StartedBy {
+                    environment_id: env.id.clone(),
+                    environment_name: env.name.clone(),
+                    agent_id: definition.id.clone(),
+                    agent_name: definition.name.clone(),
+                    kind: if initiative { "initiative" } else { "agent" }.into(),
+                    reason: reason.map_or_else(
+                        || "started while working for you".to_string(),
+                        str::to_string,
+                    ),
+                    source: request.source.map(str::to_string),
+                });
+                if initiative {
+                    announce = Some((env, definition));
+                }
+            }
             self.reserve()?;
-            let release = Release(Arc::clone(&self.active));
-            // What it starts is background work: it ranks below the user's sessions.
+            let mut release = Release {
+                active: Arc::clone(&self.active),
+                initiative: None,
+            };
+            // What it starts is background work: it ranks below the user's sessions, and runs in
+            // the default permission mode (the safety floor applies; nobody is there to answer
+            // more, so what asks goes to the approval queue).
             let options = SessionOptions {
                 background: true,
+                permission_mode: Some(imperium_api::PermissionMode::Default),
+                started_by,
                 ..SessionOptions::default()
             };
             let created = match &self.target {
-                Target::Folder(project) => daemon.create_session_with(project, model, options),
-                Target::Environment(env) => daemon.create_in_environment(env, model, options),
+                Target::Folder(project) => {
+                    daemon.create_session_with(project, request.model, options)
+                }
+                Target::Environment { environment, .. } => {
+                    daemon.create_in_environment(environment, request.model, options)
+                }
             };
             let (session, events) = created.map_err(|error| error.to_string())?;
             let id = session.id().to_string();
+            release.initiative = ticket.map(|ticket| ticket.commit(&id));
+            if let Some((env, agent)) = &announce {
+                crate::initiative::announce_started(
+                    &daemon,
+                    env,
+                    agent,
+                    &id,
+                    request.reason.unwrap_or_default().trim(),
+                );
+            }
             dispatch(
                 daemon,
                 session,
                 events,
-                brief.to_string(),
+                brief,
                 self.prefer_quiet,
                 self.max_defer,
                 Some(Arc::clone(&self.agent)),
@@ -728,11 +829,15 @@ fn dispatch(
     });
 }
 
-/// Frees a running-session slot when dropped, however the session ends.
-struct Release(Arc<AtomicUsize>);
+/// Frees a running-session slot when dropped, however the session ends (and the initiative
+/// slot too, for a session started on the agent's own initiative).
+struct Release {
+    active: Arc<AtomicUsize>,
+    initiative: Option<crate::initiative::RunningGuard>,
+}
 
 impl Drop for Release {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.active.fetch_sub(1, Ordering::SeqCst);
     }
 }
