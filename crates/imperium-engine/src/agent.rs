@@ -22,7 +22,7 @@ use imperium_tools::permissions::{
     CallKind, Decision, PermissionMode, PermissionRule, Refusal, RuleAction, Target, decide_call,
     safety_floor, suggest,
 };
-use imperium_tools::{Access, Invocation, Workspace, specs};
+use imperium_tools::{Access, Invocation, ToolError, Workspace, specs};
 use imperium_workflow::LoadManifest;
 use serde::Deserialize;
 use serde_json::json;
@@ -1968,6 +1968,14 @@ impl Agent {
             Access::Write => CallKind::Edit,
             Access::Execute => CallKind::Execute,
         };
+        // A write into a read-only mount fails whatever the user would answer, so it is not
+        // asked about.
+        if invocation.access() == Access::Write
+            && let Some(path) = invocation.path()
+            && let Err(error @ ToolError::ReadOnly(_)) = self.workspace.resolve_writable(path)
+        {
+            return finish(false, format!("error: {error}"));
+        }
         let mode = self.workspace.permissions().mode();
         let floored = safety_floor(kind, &target);
         let decision = decide_call(mode, kind, rule, floored);
@@ -2068,6 +2076,13 @@ impl Agent {
                 "the session is in plan mode, which only reads: a writer subagent edits files, \
                  so none was started. Start a read-only subagent, or ask the user to leave plan \
                  mode"
+                    .into(),
+            );
+        }
+        if writes && self.workspace.is_read_only() {
+            return Err(
+                "this session's folders are a read-only mount: a writer subagent edits files, \
+                 so none was started. Start a read-only subagent instead"
                     .into(),
             );
         }

@@ -304,11 +304,31 @@ impl Settings {
                 ));
             }
             let action = &schedule.action;
+            if action.project.as_os_str().is_empty() == action.environment.is_none() {
+                return Err(format!(
+                    "schedules.{}: set exactly one of action.project or action.environment",
+                    schedule.id
+                ));
+            }
+            if action.to_agent.is_some() && (action.agent.is_none() || action.environment.is_none())
+            {
+                return Err(format!(
+                    "schedules.{}: action.to_agent needs action.agent and action.environment",
+                    schedule.id
+                ));
+            }
             let kinds = [&action.prompt, &action.command, &action.agent];
             if kinds.iter().filter(|kind| kind.is_some()).count() != 1 {
                 return Err(format!(
                     "schedules.{}: set exactly one of action.prompt, action.command, or action.agent",
                     schedule.id
+                ));
+            }
+        }
+        for (index, project) in self.projects.iter().enumerate() {
+            if project.path.as_os_str().is_empty() == project.environment.is_none() {
+                return Err(format!(
+                    "projects[{index}]: set exactly one of path or environment"
                 ));
             }
         }
@@ -763,7 +783,14 @@ impl Default for InitiativeSettings {
 /// One `[[projects]]` entry.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ProjectSettings {
+    /// The project folder. Set this or `environment`.
+    #[serde(default)]
     pub path: PathBuf,
+    /// An environment, by id or name, to attach the project agent to instead of a folder: the
+    /// agent and the sessions it starts work in the environment (all its folders, its
+    /// permissions, its own configuration file).
+    #[serde(default)]
+    pub environment: Option<String>,
     /// Run a project agent for this project while the daemon runs (off by default).
     #[serde(default)]
     pub agent: bool,
@@ -846,7 +873,18 @@ pub struct TriggerSettings {
 /// A prompt for a new session in `project`, or a shell command run there.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ActionSettings {
+    /// The folder the action works in. Set this or `environment`.
+    #[serde(default)]
     pub project: PathBuf,
+    /// An environment, by id or name, to run the action in instead of a folder: a prompt starts
+    /// a session there (all its folders, its permissions, its own configuration file), a
+    /// command runs in its first folder, and an agent message wakes its agents.
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// With `environment` and `agent`: the one persistent agent of the environment (by name
+    /// or id) that gets the message; without it, all of the environment's agents do.
+    #[serde(default)]
+    pub to_agent: Option<String>,
     #[serde(default)]
     pub prompt: Option<String>,
     #[serde(default)]
@@ -1042,6 +1080,20 @@ pub struct McpSettings {
     /// but not run, since a cloned repository could otherwise run any command.
     #[serde(default)]
     pub trusted_projects: Vec<PathBuf>,
+}
+
+impl McpSettings {
+    /// Whether `folder` is one of the trusted projects (compared as the same folder, whatever
+    /// its spelling). Trust covers what a repository's own files would run: its `.mcp.json`
+    /// servers, and the servers and plugins of an environment's `.imperium/config.toml`.
+    pub fn trusts(&self, folder: &Path) -> bool {
+        self.trusted_projects.iter().any(|trusted| {
+            match (trusted.canonicalize(), folder.canonicalize()) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => trusted == folder,
+            }
+        })
+    }
 }
 
 /// One `[mcp.servers.<name>]` entry: a local command or a streamable-HTTP URL.

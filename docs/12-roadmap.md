@@ -287,10 +287,14 @@ profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent init
     merge report, and the worktrees go with the session
     ([14](14-projects-and-automation.md#worktrees)). The planned `[worktrees]` settings and the
     Worktrees pane are not built.
-27. **Environment configuration.** An environment's own `.imperium/config.toml` (instructions,
-    policy, plugins, MCP servers, routing, budgets), sessions narrowed to a subfolder or a
-    read-only mount, and schedules and project agents per environment
-    ([14](14-projects-and-automation.md)).
+27. **Environment configuration** (implemented). An environment's own `.imperium/config.toml`
+    in its first folder (instructions, policy, plugins, MCP servers, routing, budgets) that can
+    only narrow the user's settings and needs `mcp.trusted_projects` before it starts a server or
+    plugin ([14](14-projects-and-automation.md#environment-configuration-implemented)); sessions
+    narrowed to a subfolder or a read-only mount, enforced per isolation tier
+    ([14](14-projects-and-automation.md#narrowed-sessions-implemented)); and schedules and
+    project agents attached to an environment
+    ([14](14-projects-and-automation.md#schedules-and-project-agents-per-environment-implemented)).
 28. **Local runtimes and hardware.** vLLM as a supervised runtime, GPU probes for AMD, Intel,
     and Apple Silicon, and memory estimates calibrated against measured use
     ([04](04-models-and-routing.md)).

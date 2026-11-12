@@ -8,7 +8,7 @@
 //! rank below the user's sessions and pause while the machine is busy.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -174,6 +174,7 @@ impl Scheduler {
                         _ => "command".into(),
                     },
                     project: entry.settings.action.project.display().to_string(),
+                    environment: entry.settings.action.environment.clone(),
                     next_run: next.get(id).copied().flatten().map(|at| at.to_rfc3339()),
                     last_run: last.map(|record| record.at.to_rfc3339()),
                     last_ok: last.map(|record| record.ok),
@@ -355,9 +356,39 @@ async fn run(
     let timeout = action
         .timeout_s
         .map_or(DEFAULT_TIMEOUT, Duration::from_secs);
+    // An environment-bound schedule works in the environment, found by id or name when it runs,
+    // so renaming it or deleting it is noticed.
+    let environment = match &action.environment {
+        Some(reference) => match daemon.environments().find(reference) {
+            Ok(env) => Some(env),
+            Err(error) => return (false, error.to_string(), None),
+        },
+        None => None,
+    };
     let project = action.project.display().to_string();
     if let Some(message) = &action.agent {
         let text = format!("Schedule {} fired: {message}", settings.id);
+        if let Some(env) = &environment {
+            let delivered =
+                daemon.tell_environment_agents(&env.id, action.to_agent.as_deref(), &text);
+            return if delivered > 0 {
+                (
+                    true,
+                    format!("delivered to {delivered} agent(s) of {}", env.name),
+                    None,
+                )
+            } else {
+                (
+                    false,
+                    format!(
+                        "{} has no running agent to tell (add one with `imperium env agent add`, \
+                         or set agent = true on a [[projects]] entry with this environment)",
+                        env.name
+                    ),
+                    None,
+                )
+            };
+        }
         return if daemon.tell_project_agent(&action.project, text) {
             (true, "delivered to the project agent".into(), None)
         } else {
@@ -371,25 +402,51 @@ async fn run(
         };
     }
     if let Some(command) = &action.command {
-        return match run_command(command, &action.project, timeout).await {
+        let dir = match &environment {
+            Some(env) => match env.folders.first() {
+                Some(folder) if !env.runtime.is_remote() => PathBuf::from(folder),
+                _ => {
+                    return (
+                        false,
+                        format!(
+                            "{} has no folder on this machine to run a command in",
+                            env.name
+                        ),
+                        None,
+                    );
+                }
+            },
+            None => action.project.clone(),
+        };
+        return match run_command(command, &dir, timeout).await {
             Ok((ok, output)) => (ok, output, None),
             Err(error) => (false, error, None),
         };
     }
     let prompt = action.prompt.clone().unwrap_or_default();
-    let (ok, summary, session_id) = daemon
-        .run_prompt(
-            &project,
-            action.model.as_deref(),
-            prompt,
-            SessionOptions {
-                background: true,
-                run_now,
-                ..SessionOptions::default()
-            },
-            timeout,
-        )
-        .await;
+    let options = SessionOptions {
+        background: true,
+        run_now,
+        ..SessionOptions::default()
+    };
+    let (ok, summary, session_id) = match &environment {
+        Some(env) => {
+            daemon
+                .run_prompt_in_environment(
+                    &env.id,
+                    action.model.as_deref(),
+                    prompt,
+                    options,
+                    timeout,
+                )
+                .await
+        }
+        None => {
+            daemon
+                .run_prompt(&project, action.model.as_deref(), prompt, options, timeout)
+                .await
+        }
+    };
     (ok, truncate(&summary), session_id)
 }
 

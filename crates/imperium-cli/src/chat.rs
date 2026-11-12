@@ -32,6 +32,8 @@ pub fn run(
     model: Option<String>,
     context_summary: bool,
     worktree: Option<Option<String>>,
+    subfolder: Option<String>,
+    read_only: bool,
 ) -> anyhow::Result<()> {
     // With neither --env nor --project the session starts in the built-in Home environment,
     // which has no project folders to put on a worktree.
@@ -39,6 +41,12 @@ pub fn run(
         anyhow::bail!(
             "--worktree needs a project: give --project <dir> (or --env <name>); without one \
              the session starts in Home, which has no project folders"
+        );
+    }
+    if (subfolder.is_some() || read_only) && env.is_none() && project.is_none() {
+        anyhow::bail!(
+            "--subfolder and --read-only need a project: give --project <dir> (or --env \
+             <name>); without one the session starts in Home, which has no project folders"
         );
     }
     let project = match (&env, project) {
@@ -64,9 +72,17 @@ pub fn run(
                 model,
                 worktree: worktree.as_ref().map(|_| true),
                 worktree_branch: worktree.flatten(),
+                subfolder,
+                read_only: read_only.then_some(true),
             })
             .await?;
         let mut session_id = session.session_id.clone();
+        if read_only {
+            println!(
+                "The session's folders are a read-only mount: the agent can read them but not \
+                 change them."
+            );
+        }
         for tree in &session.worktrees {
             println!(
                 "Worktree {} on branch {} (for {})",

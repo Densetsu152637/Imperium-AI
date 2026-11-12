@@ -10,10 +10,11 @@ use imperium_protocol::agents::{
     EnvironmentAgentUpdateParams,
 };
 use imperium_protocol::methods::{
-    EnvironmentAddFolder, EnvironmentCreate, EnvironmentCreateParams, EnvironmentDelete,
-    EnvironmentFolderParams, EnvironmentInfo, EnvironmentList, EnvironmentListParams,
-    EnvironmentRef, EnvironmentRemoveFolder, EnvironmentRuntime, EnvironmentTestRuntime,
-    EnvironmentUpdate, EnvironmentUpdateParams, SessionDelete, SessionDeleteParams,
+    EnvironmentAddFolder, EnvironmentConfigGet, EnvironmentConfigResult, EnvironmentCreate,
+    EnvironmentCreateParams, EnvironmentDelete, EnvironmentFolderParams, EnvironmentInfo,
+    EnvironmentList, EnvironmentListParams, EnvironmentRef, EnvironmentRemoveFolder,
+    EnvironmentRuntime, EnvironmentTestRuntime, EnvironmentUpdate, EnvironmentUpdateParams,
+    SessionDelete, SessionDeleteParams,
 };
 
 use crate::{block_on, connect};
@@ -32,6 +33,46 @@ pub fn list() -> anyhow::Result<()> {
         }
         Ok(())
     })
+}
+
+pub fn config(env: String) -> anyhow::Result<()> {
+    block_on(async {
+        let (mut client, _) = connect().await?;
+        let env = resolve(&mut client, &env).await?;
+        let config = client
+            .call::<EnvironmentConfigGet>(EnvironmentRef { id: env.id })
+            .await?;
+        print!("{}", describe_config(&env.name, &config));
+        Ok(())
+    })
+}
+
+/// What `imperium env config` prints.
+fn describe_config(name: &str, config: &EnvironmentConfigResult) -> String {
+    let Some(folder) = &config.folder else {
+        return format!(
+            "{name} has no folder on this machine, so it has no .imperium/config.toml to read.\n"
+        );
+    };
+    let mut text = format!("{name}: {folder}/.imperium\n");
+    if config.files.is_empty() && config.refused.is_empty() {
+        text.push_str("  no config.toml or config.local.toml there\n");
+        return text;
+    }
+    for file in &config.files {
+        text.push_str(&format!("  read {file}\n"));
+    }
+    text.push_str(&format!(
+        "  folder trusted (mcp.trusted_projects): {}\n",
+        if config.trusted { "yes" } else { "no" }
+    ));
+    for line in &config.applied {
+        text.push_str(&format!("  applied: {line}\n"));
+    }
+    for line in &config.refused {
+        text.push_str(&format!("  refused: {line}\n"));
+    }
+    text
 }
 
 pub fn create(name: String, folders: Vec<PathBuf>) -> anyhow::Result<()> {

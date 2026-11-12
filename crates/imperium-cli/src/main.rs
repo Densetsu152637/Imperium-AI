@@ -70,6 +70,14 @@ enum Command {
         /// branch (`imperium/<session id>`, or the branch given).
         #[arg(long, value_name = "BRANCH", num_args = 0..=1, default_missing_value = "")]
         worktree: Option<String>,
+        /// Narrow the session to one folder inside the environment's folders (absolute, or
+        /// relative to its first folder): the only folder the agent can use.
+        #[arg(long, value_name = "FOLDER", conflicts_with = "worktree")]
+        subfolder: Option<String>,
+        /// Mount the session's folders read-only: the agent reads but never writes there, and
+        /// commands run only under isolation.tier = os or container.
+        #[arg(long, conflicts_with = "worktree")]
+        read_only: bool,
     },
     /// Manage sessions (also `sessions`).
     #[command(alias = "sessions")]
@@ -509,6 +517,12 @@ enum EnvCommand {
         /// Environment name or id.
         env: String,
     },
+    /// Show what the environment's own `.imperium/config.toml` changes for its sessions, and
+    /// what it asked for that was refused (it can only narrow your settings).
+    Config {
+        /// Environment name or id.
+        env: String,
+    },
     /// Manage an environment's persistent agents (none exist until added).
     Agent {
         #[command(subcommand)]
@@ -647,12 +661,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             model,
             context,
             worktree,
+            subfolder,
+            read_only,
         } => chat::run(
             env,
             project,
             model,
             context,
             worktree.map(|branch| (!branch.is_empty()).then_some(branch)),
+            subfolder,
+            read_only,
         ),
         Command::Session { command } => match command {
             SessionCommand::List { archived } => session::list(archived),
@@ -689,6 +707,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 host,
             } => env::set_runtime(id, env::runtime(&kind, image, container, distro, host)?),
             EnvCommand::Test { env: id } => env::test(id),
+            EnvCommand::Config { env: id } => env::config(id),
             EnvCommand::Agent { command } => match command {
                 AgentCommand::List { env: id } => env::agent_list(id),
                 AgentCommand::Add {
@@ -922,6 +941,20 @@ async fn connect() -> anyhow::Result<(Client, String)> {
 fn explain(key: &str, project: Option<PathBuf>) -> anyhow::Result<()> {
     let paths = Paths::from_env()?;
     let config = imperium_config::load(&paths, project.as_deref(), std::env::vars())?;
+    for warning in config.warnings() {
+        eprintln!("note: {warning}");
+    }
+    if let Some(project) = &project {
+        // The project's own file is not a layer; this is what it narrows.
+        let narrowed =
+            imperium_config::EnvironmentConfig::load(project, "project").apply(&config.settings()?);
+        for line in &narrowed.applied {
+            println!("project file applies: {line}");
+        }
+        for line in &narrowed.refused {
+            println!("project file refused: {line}");
+        }
+    }
     let Some(explained) = config.explain(key) else {
         bail!("{key} is not set");
     };

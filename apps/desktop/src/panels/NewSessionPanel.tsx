@@ -1,7 +1,8 @@
 // The middle panel while no session is open (and after New session): a composer for the first
 // message with the new session's options under it — its environment (the selected one), its
-// model (the configured default, or none), and, for an environment with a git folder, whether it
-// starts on worktrees. Sending creates the session with those options and sends the message.
+// model (the configured default, or none), whether it is narrowed to one subfolder or mounted
+// read-only, and, for an environment with a git folder, whether it starts on worktrees. Sending
+// creates the session with those options and sends the message.
 
 import { ArrowUp } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -20,6 +21,10 @@ export type NewSessionOptions = {
   /** A model spec, or null for none (the session waits for one). */
   model: string | null;
   worktree: boolean;
+  /** A folder inside the environment's folders to narrow the session to; empty for none. */
+  subfolder: string;
+  /** Mount the session's folders read-only. */
+  readOnly: boolean;
   text: string;
 };
 
@@ -81,6 +86,8 @@ export function NewSessionPanel({
   // Undefined until the user picks: then the configured default applies.
   const [chosenModel, setChosenModel] = useState<string | undefined>(undefined);
   const [worktree, setWorktree] = useState(false);
+  const [subfolder, setSubfolder] = useState("");
+  const [readOnly, setReadOnly] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const field = useRef<HTMLTextAreaElement>(null);
@@ -97,6 +104,9 @@ export function NewSessionPanel({
     environments[0] ??
     null;
   const hasGit = environment !== null && gitEnvironments.includes(environment.id);
+  // Narrowing needs project folders to narrow: Home has none until the user adds some.
+  const narrowable = environment !== null && environment.folders.length > 0;
+  const narrowed = narrowable && (subfolder.trim() !== "" || readOnly);
   // The daemon's live default wins: it changes at once when a model is made the default.
   const defaultSpec = asSpec(models, defaultModel !== undefined ? defaultModel : defaults.model);
   const usable = models.some((row) => row.endpoint_configured) || localModels.some((row) => !row.problem);
@@ -122,11 +132,17 @@ export function NewSessionPanel({
     if (!environment || blocker || creating) return;
     setCreating(true);
     setError(null);
-    onCreate({ environmentId: environment.id, model: model || null, worktree: hasGit && worktree, text })
-      .catch((reason: unknown) => {
-        setError(reason instanceof Error ? reason.message : String(reason));
-        setCreating(false);
-      });
+    onCreate({
+      environmentId: environment.id,
+      model: model || null,
+      worktree: hasGit && worktree && !narrowed,
+      subfolder: narrowable ? subfolder.trim() : "",
+      readOnly: narrowable && readOnly,
+      text,
+    }).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setCreating(false);
+    });
   };
   const enterSends = settings.sendKey === "enter";
 
@@ -211,9 +227,29 @@ export function NewSessionPanel({
             options={options}
           />
         </span>
+        {narrowable && (
+          <>
+            <input
+              type="text"
+              className="new-session-subfolder"
+              aria-label="Only this subfolder"
+              placeholder="Whole environment"
+              title="Narrow the session to one folder inside the environment: an absolute path, or relative to its first folder"
+              value={subfolder}
+              onChange={(event) => setSubfolder(event.target.value)}
+            />
+            <label
+              className="option-row new-session-worktree"
+              title="The agent can read the folders but never change them; commands need isolation.tier os or container"
+            >
+              <Switch checked={readOnly} onChange={setReadOnly} label="Read-only" />
+              Read-only
+            </label>
+          </>
+        )}
         {hasGit && (
           <label className="option-row new-session-worktree" title="Start on a new git worktree and branch">
-            <Switch checked={worktree} onChange={setWorktree} label="Start in a worktree" />
+            <Switch checked={worktree && !narrowed} onChange={setWorktree} label="Start in a worktree" disabled={narrowed} />
             Start in a worktree
           </label>
         )}

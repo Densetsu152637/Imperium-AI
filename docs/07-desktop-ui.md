@@ -776,6 +776,14 @@ it and when it resets.
 
 ## Environments and sessions (implemented)
 
+**Environment configuration and narrowed sessions (implemented).** The environment window's
+*Configuration file* section reports what the environment's own `.imperium/config.toml` changes
+(`environments.config`): the files read, whether the folder is in `mcp.trusted_projects`, what
+was applied, and what was refused. The new-session panel has an *Only this subfolder* field and a
+*Read-only* switch for an environment with a folder (both turn *Start in a worktree* off); a
+read-only session is marked `[read-only]` in `imperium session list`
+([14](14-projects-and-automation.md#narrowed-sessions-implemented)).
+
 The Environments panel lists the daemon's
 [environments](14-projects-and-automation.md#environments-implemented), one row each: the
 environment's icon and name, a pin mark when pinned, and a *⋯* menu on the right with *Edit*,

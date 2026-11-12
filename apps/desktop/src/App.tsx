@@ -618,13 +618,15 @@ export function App() {
     (localModels?.models ?? []).some((row) => `${row.runtime}:${row.id}` === spec && row.reasoning);
 
   /** Creates a session from the new-session composer and sends its first message; rejects with the daemon's reason. */
-  const createSession = async ({ environmentId, model, worktree, text }: NewSessionOptions) => {
+  const createSession = async ({ environmentId, model, worktree, subfolder, readOnly, text }: NewSessionOptions) => {
     const env = environments.find((e) => e.id === environmentId);
     if (!client || !env) throw new Error("Not connected to imperium-core.");
     const params: SessionCreateParams = {
       environment_id: env.id,
       ...(model ? { model } : {}),
       ...(worktree ? { worktree: true } : {}),
+      ...(subfolder ? { subfolder } : {}),
+      ...(readOnly ? { read_only: true } : {}),
     };
     const created = await client.call<SessionCreateResult>("session.create", params);
     known.current.add(created.session_id);
@@ -648,6 +650,7 @@ export function App() {
       created_at: Date.now(),
       worktrees: created.worktrees,
       pinned: false,
+      read_only: readOnly,
       // Until the daemon's summary arrives: what the model rows say about the model.
       reasoning: created.model !== null && modelReasons(created.model),
     };
