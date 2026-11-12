@@ -440,3 +440,70 @@ async fn an_approval_ends_when_the_budget_window_rolls_over() {
     };
     assert_ne!(key, next);
 }
+
+#[tokio::test]
+async fn a_turn_start_approval_ends_when_the_budget_window_rolls_over() {
+    use imperium_engine::{BudgetGate, BudgetVerdict};
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let url = fake_model().await;
+    let state = daemon(home.path(), &url);
+    let mut connection = Connection::new(Arc::clone(&state));
+    handshake(&mut connection);
+    call(
+        &mut connection,
+        2,
+        "budgets.set",
+        json!({
+            "week_start": "monday", "month_start_day": 1, "thresholds": [100],
+            "limits": [{"id": "", "name": "", "scope": "endpoint", "target": "fake",
+                        "window": "daily", "tokens": 100, "cost_usd": null,
+                        "thresholds": null, "action": "ask"}]
+        }),
+    );
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
+    let tomorrow = today.succ_opt().unwrap();
+    for day in [today, tomorrow] {
+        state.budgets().record(
+            day,
+            &imperium_core::CallUsage {
+                environment_id: None,
+                source: None,
+                spec: "fake:m".into(),
+                tokens: 500,
+                cost_usd: None,
+            },
+        );
+    }
+    let created = call(
+        &mut connection,
+        3,
+        "session.create",
+        json!({"project_dir": project.path()}),
+    );
+    let session_id = created["session_id"].as_str().unwrap().to_string();
+    let gate = imperium_core::CallGate::new(Arc::downgrade(&state), session_id.clone());
+
+    // Today's window: the turn asks first; confirming it also approves the turn's calls.
+    state.set_budget_today(Some(today));
+    let error = refused(
+        &mut connection,
+        4,
+        "session.send",
+        json!({"session_id": session_id, "text": "one"}),
+    );
+    assert_eq!(error.code, codes::BUDGET_EXCEEDED);
+    finish_turn(&state, &session_id, "one", &mut connection, 5, true).await;
+    assert_eq!(gate.check("fake:m"), BudgetVerdict::Go);
+
+    // The next window is used up too: the approval does not carry over, at turn start or per call.
+    state.set_budget_today(Some(tomorrow));
+    let error = refused(
+        &mut connection,
+        6,
+        "session.send",
+        json!({"session_id": session_id, "text": "two"}),
+    );
+    assert_eq!(error.code, codes::BUDGET_EXCEEDED);
+    assert!(matches!(gate.check("fake:m"), BudgetVerdict::Ask { .. }));
+}

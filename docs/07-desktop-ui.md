@@ -701,6 +701,26 @@ saved to `[api.openai_compatible]` in the user config and apply at once):
 - a note that the API's calls count toward budgets and that a budget with the scope *API calls*
   (Settings → Budgets) caps them alone.
 
+## Local model benchmark (implemented)
+
+**Settings → Models** ends with a **Local model benchmark** section
+([04](04-models-and-routing.md#local-model-benchmark-implemented); `models.bench`,
+`models.bench_results`, `models.bench_cancel`, followed live through `models.bench_progress`):
+
+- a model list (*All local models*, or one model by alias and id) with **Run benchmark**, which
+  becomes **Cancel** while a run is in progress; nothing runs until it is pressed;
+  a model is unloaded to time its load only when it has been idle past the interactive hold;
+- *Keep a loaded model loaded*, which skips the idle unload that lets the load time be measured;
+- while it runs, one status line: the model, what it is doing (*loading the model*,
+  *waiting while the machine is saturated*, *prompt 2 of 3*), and how many models are done; a model that failed is
+  listed with the reason under it;
+- a table of the **latest result of each model on this machine**: load time, first token,
+  prompt speed, generation speed, peak RAM and VRAM (a dash where the runtime did not report
+  it) and the date, headed by the machine's description; results from other machines or older
+  runs are in a collapsed *Earlier results and other machines* list.
+
+The section needs the daemon; it follows runs started from the CLI or another window.
+
 ## Budgets and usage (implemented)
 
 **Settings → Budgets** edits the daemon's [budgets](10-configuration.md#budgets)
@@ -755,18 +775,22 @@ becomes an environment of its own, keeping the icon it had.
 
 **Working folder (implemented):** an existing environment's window has a *Working folder* section showing where its [working folder](14-projects-and-automation.md#environment-working-folders-implemented) is (from `workspaces.where`) with *Open Memory.md* and *Open folder* (`workspaces.open`, which hands the file or folder to the computer's own editor or file manager and creates an empty `Memory.md` first if needed). Settings → *Working folders* holds `workspaces.root` as a path with *Choose folder…*; saving it moves the folders, shows the move's progress (`workspaces.progress`), and keeps the old value with the daemon's reason when the move is refused or fails.
 
-**Runtime and persistent agent (implemented):** the environment window (create and edit) has a
+**Runtime and agents (implemented):** the environment window (create and edit) has a
 *Runtime* section (`EnvironmentRuntimeFields`): a select for *This machine*, *Docker*, *WSL*,
 or *SSH* with that runtime's fields (the image and an optional running container, the
 distribution, or the host), *Test*, which calls `environments.test_runtime` for the saved
 runtime and shows its answer in green or red (for example *Docker is running but image rust:1
-is not present; get it with: docker pull rust:1*), and the *Persistent agent* switch for the
-environment's [persistent agent](14-projects-and-automation.md#persistent-agent-implemented),
-and the *Project worktrees* switch (on by default, disabled for a remote runtime), which opens the
+is not present; get it with: docker pull rust:1*), and the *Project worktrees* switch (on by default, disabled for a remote runtime), which opens the
 folders' [git worktrees](14-projects-and-automation.md#worktrees) to its sessions. They apply
 with *Create* or *Save*. For a remote runtime the folders are paths inside it
 ([runtimes](14-projects-and-automation.md#runtimes-implemented)), typed in with *Add path*
 instead of the folder picker.
+
+The window's *Agents* section (`EnvironmentAgents`) lists the environment's
+[persistent agents](14-projects-and-automation.md#persistent-agents-implemented): a new
+environment has none, *Add agent* asks for a name and an optional role, and each row has edit
+(rename, change the role) and delete (with a confirmation: the agent's history is archived). Each
+action applies at once; the list follows `environments.changed`.
 
 **New session (implemented):** *New session* (the *+* in the Sessions panel's header; disabled while
 disconnected) opens the new-session composer in the middle panel, which is also what the middle
@@ -817,8 +841,8 @@ choice is kept in the local layout. Pins on sessions and environments are kept b
 they survive restarts; the daemon announces a changed session as `session.updated`. Clicking an
 environment (or *Show* in a session's menu) opens that environment's view, which lists only its
 sessions, with *All sessions* to return; clicking the row opens the session and selects its
-environment. An environment's persistent agent is listed above everything else in its group,
-titled *<environment> agent* (not renamed) and marked persistent in its tooltip; a session on
+environment. An environment's persistent agents are listed above everything else in its group,
+titled *<environment> · <agent name>* (not renamed) and marked persistent in their tooltip; a session on
 worktrees has a tooltip line for each worktree and branch. Deleting a session is `session.delete` (`imperium session delete`), and a session
 deleted elsewhere (`session.deleted`) leaves the list. The session's top bar shows only its
 icon, title, and status badge (with *Resume now* while paused); everything else about the
@@ -1091,6 +1115,8 @@ to the running daemon at once ([04](04-models-and-routing.md#setting-up-models-f
   [model configuration dialog](#model-configuration-dialog-implemented) on that model. Models
   that cannot run here say why under the row. Items left out of the scan (image models,
   diffusers pipelines, unreadable files) are listed, with the reason, in a collapsed section.
+- **Benchmark.** [Settings → Models](#local-model-benchmark-implemented) can measure each local
+  model's load time and speed on this machine.
 - **Settings.** `models.default`, `models.folders`, and `runtime.llamacpp.custom_path` changed in
   Settings apply at once too; *Install llama.cpp automatically* (`runtime.llamacpp.auto_install`)
   and *Update a package-manager llama.cpp* (`runtime.llamacpp.update_external`) are there as

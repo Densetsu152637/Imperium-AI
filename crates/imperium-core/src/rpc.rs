@@ -6,6 +6,12 @@ use std::sync::Arc;
 
 use base64::Engine;
 use imperium_engine::{QueueError, Session, SwitchError};
+use imperium_protocol::agents::{
+    EnvironmentAgentCreate, EnvironmentAgentCreateParams, EnvironmentAgentCreated,
+    EnvironmentAgentDelete, EnvironmentAgentList, EnvironmentAgentListParams,
+    EnvironmentAgentListResult, EnvironmentAgentRef, EnvironmentAgentUpdate,
+    EnvironmentAgentUpdateParams,
+};
 use imperium_protocol::budgets::{BudgetsGet, BudgetsGetParams, BudgetsSet, BudgetsUsage};
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
 use imperium_protocol::methods::{
@@ -60,6 +66,10 @@ use imperium_protocol::methods::{
     ModelAddEndpoint, ModelAddEndpointParams, ModelFolderAdd, ModelFolderRemove, ModelTest,
     ModelUse, ModelUseParams, RuntimeInstall, RuntimeSetServer, RuntimeStatus,
     RuntimeUpdateExternal,
+};
+use imperium_protocol::methods::{
+    ModelBench, ModelBenchCancel, ModelBenchCancelParams, ModelBenchCancelResult,
+    ModelBenchResults, ModelBenchResultsParams,
 };
 use imperium_protocol::methods::{
     ModelConfig, ModelConfigParams, ModelSetConfig, ModelSetConfigParams,
@@ -188,6 +198,17 @@ impl Connection {
     /// Whether this connection wants `system.resources_changed` notifications.
     pub fn watches_resources(&self) -> bool {
         self.resources.is_some()
+    }
+
+    /// Whether a daemon-wide announcement goes to this connection: resource snapshots only to
+    /// connections that asked for them, and benchmark progress (model ids, error text) never to a
+    /// restricted connection such as a paired phone.
+    pub fn receives(&self, notification: &imperium_protocol::jsonrpc::Notification) -> bool {
+        match notification.method.as_str() {
+            imperium_protocol::methods::RESOURCES_CHANGED => self.watches_resources(),
+            imperium_protocol::methods::MODEL_BENCH_PROGRESS => self.allowed.is_none(),
+            _ => true,
+        }
     }
 
     /// Handles one text frame.
@@ -651,6 +672,21 @@ impl Connection {
                     })
                 })
             }
+            ModelBench::NAME => call::<ModelBench>(request.params, |params| {
+                crate::bench::start(Arc::clone(&self.state), params)
+            }),
+            ModelBenchResults::NAME => {
+                call::<ModelBenchResults>(request.params, |params: ModelBenchResultsParams| {
+                    Ok(crate::bench::results(&self.state, params))
+                })
+            }
+            ModelBenchCancel::NAME => {
+                call::<ModelBenchCancel>(request.params, |params: ModelBenchCancelParams| {
+                    Ok(ModelBenchCancelResult {
+                        found: self.state.bench().cancel(&self.state, &params.run_id),
+                    })
+                })
+            }
             SessionList::NAME => call::<SessionList>(request.params, |_: SessionListParams| {
                 // Running sessions, then archived ones (marked `archived`).
                 let mut sessions: Vec<_> = self
@@ -1028,6 +1064,7 @@ impl Connection {
             EnvironmentUpdate::NAME => {
                 call::<EnvironmentUpdate>(params, |p: EnvironmentUpdateParams| {
                     let id = p.id.clone();
+                    let renamed = p.name.is_some();
                     let runtime_changed = p.runtime.is_some();
                     let permissions_changed = p.permissions.is_some();
                     let env = envs.update(p).map_err(failed)?;
@@ -1038,11 +1075,84 @@ impl Connection {
                             .set_environment(&id, &env.permissions.rules);
                     }
                     if runtime_changed {
-                        // The agent's tools follow the new runtime from its next start.
-                        self.restart_environment_agent(&id);
+                        // The agents' tools follow the new runtime from their next start.
+                        crate::project_agent::restart_environment_agents(&self.state, &id, None);
+                    } else {
+                        self.state.sync_environment_agent(&id);
                     }
-                    self.state.sync_environment_agent(&id);
+                    if renamed {
+                        crate::project_agent::retitle_environment_agents(&self.state, &id);
+                    }
                     Ok(envs.get(&id).unwrap_or(env))
+                })
+            }
+            EnvironmentAgentList::NAME => {
+                return call::<EnvironmentAgentList>(params, |p: EnvironmentAgentListParams| {
+                    let env = envs.get(&p.environment_id).ok_or_else(|| {
+                        failed(EnvironmentError::NotFound(p.environment_id.clone()))
+                    })?;
+                    Ok(EnvironmentAgentListResult { agents: env.agents })
+                });
+            }
+            EnvironmentAgentCreate::NAME => {
+                call::<EnvironmentAgentCreate>(params, |p: EnvironmentAgentCreateParams| {
+                    let agent = envs
+                        .add_agent(&p.environment_id, &p.name, p.role.as_deref())
+                        .map_err(failed)?;
+                    // Started at once; an environment without folders starts it when one is
+                    // added. Whether it did, and if not why, goes back with it.
+                    let failed = crate::project_agent::sync_environment_agent_report(
+                        &self.state,
+                        &p.environment_id,
+                    );
+                    let agent = self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent);
+                    let reason = failed
+                        .into_iter()
+                        .find(|(id, _)| *id == agent.id)
+                        .map(|(_, reason)| reason);
+                    Ok(EnvironmentAgentCreated {
+                        started: self.state.project_agents().agent(&agent.id).is_some(),
+                        reason,
+                        agent,
+                    })
+                })
+            }
+            EnvironmentAgentUpdate::NAME => {
+                call::<EnvironmentAgentUpdate>(params, |p: EnvironmentAgentUpdateParams| {
+                    let before = self.agent_of(&p.environment_id, &p.agent_id);
+                    let agent = envs
+                        .update_agent(
+                            &p.environment_id,
+                            &p.agent_id,
+                            p.name.as_deref(),
+                            p.role.as_deref(),
+                        )
+                        .map_err(failed)?;
+                    // Only a changed name or role restarts the agent (resuming its
+                    // conversation); saving the same values leaves it running untouched.
+                    let changed = before.is_none_or(|before| {
+                        before.name != agent.name || before.role != agent.role
+                    });
+                    if changed {
+                        crate::project_agent::restart_environment_agents(
+                            &self.state,
+                            &p.environment_id,
+                            Some(&agent.id),
+                        );
+                        crate::project_agent::retitle_environment_agents(
+                            &self.state,
+                            &p.environment_id,
+                        );
+                    }
+                    Ok(self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent))
+                })
+            }
+            EnvironmentAgentDelete::NAME => {
+                call::<EnvironmentAgentDelete>(params, |p: EnvironmentAgentRef| {
+                    envs.remove_agent(&p.environment_id, &p.agent_id)
+                        .map_err(failed)?;
+                    self.state.sync_environment_agent(&p.environment_id);
+                    Ok(Accepted {})
                 })
             }
             EnvironmentDelete::NAME => call::<EnvironmentDelete>(params, |p: EnvironmentRef| {
@@ -1074,15 +1184,17 @@ impl Connection {
         result
     }
 
-    /// Stops an environment's persistent agent so the next sync starts it afresh (resuming its
-    /// conversation) with the environment as it is now.
-    fn restart_environment_agent(&self, environment_id: &str) {
-        if let Some(session) = self.state.project_agents().environment(environment_id) {
-            self.state
-                .project_agents()
-                .forget_environment(environment_id);
-            self.state.forget_session(session.id());
-        }
+    fn agent_of(
+        &self,
+        environment_id: &str,
+        agent_id: &str,
+    ) -> Option<imperium_protocol::agents::EnvironmentAgent> {
+        self.state
+            .environments()
+            .get(environment_id)?
+            .agents
+            .into_iter()
+            .find(|agent| agent.id == agent_id)
     }
 
     /// `session.control`. Most actions apply at once; switching models and compacting wait for

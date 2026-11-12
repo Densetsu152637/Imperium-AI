@@ -31,6 +31,7 @@ use imperium_workflow::{ContextIndex, Pack, personality};
 use tokio::sync::broadcast;
 
 use crate::approvals::Approvals;
+use crate::bench::Bench;
 use crate::downloads::Downloads;
 use crate::environments::{EnvironmentError, Environments};
 use crate::load::{self, LoadMonitor};
@@ -75,7 +76,7 @@ pub struct SessionOptions {
     pub may_wait_for_model: bool,
     /// Where the session's tools run (its environment's runtime).
     pub runtime: EnvironmentRuntime,
-    /// The environment's persistent agent session.
+    /// A persistent agent's session of an environment.
     pub persistent: bool,
     /// Compact the conversation when a turn starts over the model's budget.
     pub auto_compact: bool,
@@ -141,6 +142,7 @@ pub struct DaemonState {
     /// Set at start when there are model folders, or after the first download.
     local: OnceLock<LocalRuntime>,
     downloads: Downloads,
+    bench: Bench,
     /// The latest llama.cpp runtime pack installation (`runtime.install`).
     pub(crate) runtime_install: Mutex<Option<imperium_protocol::methods::RuntimeInstallJob>>,
     /// The latest package-manager update of an external `llama-server`.
@@ -195,7 +197,8 @@ pub struct DaemonState {
     checkpoints: Mutex<HashMap<String, Arc<crate::checkpoints::SessionCheckpoints>>>,
     /// Budget stops the person approved, by session, budget, and window.
     budget_confirmed: Mutex<HashSet<String>>,
-    /// Test hook: the day budgets count as today (`None`: the local date).
+    /// Test hook: the day session gates count as today (`None`: the local date).
+    #[cfg(any(test, feature = "testing"))]
     budget_day: Mutex<Option<chrono::NaiveDate>>,
     /// Each running session's browser, for the user to take over and drive.
     browsers: Mutex<HashMap<String, BrowserSetup>>,
@@ -260,6 +263,7 @@ impl DaemonState {
             environments,
             local: local.map(OnceLock::from).unwrap_or_default(),
             downloads: Downloads::default(),
+            bench: Bench::default(),
             runtime_install: Mutex::new(None),
             runtime_update: Mutex::new(None),
             hub: OnceLock::new(),
@@ -289,6 +293,7 @@ impl DaemonState {
             model_cards: imperium_memory::models::CardIndex::new(),
             checkpoints: Mutex::new(HashMap::new()),
             budget_confirmed: Mutex::new(HashSet::new()),
+            #[cfg(any(test, feature = "testing"))]
             budget_day: Mutex::new(None),
             browsers: Mutex::new(HashMap::new()),
             compare_fault: std::sync::atomic::AtomicUsize::new(0),
@@ -663,13 +668,14 @@ impl DaemonState {
     }
 
     /// Starts the agents of projects with `agent = true`, and the persistent agents of
-    /// environments that have one turned on.
+    /// environments that have been given any.
     pub fn start_project_agents(self: &Arc<Self>) {
         crate::project_agent::start(self);
         crate::project_agent::start_environment_agents(self);
     }
 
-    /// Starts or stops an environment's persistent agent to match its setting.
+    /// Starts an environment's persistent agents that are not running and stops the ones that
+    /// were deleted.
     pub fn sync_environment_agent(self: &Arc<Self>, environment_id: &str) {
         crate::project_agent::sync_environment_agent(self, environment_id);
     }
@@ -1159,6 +1165,11 @@ impl DaemonState {
 
     pub fn downloads(&self) -> &Downloads {
         &self.downloads
+    }
+
+    /// Local model benchmark runs ([`crate::bench`]).
+    pub fn bench(&self) -> &Bench {
+        &self.bench
     }
 
     /// The Hugging Face Hub: `HF_ENDPOINT` and a token from `HF_TOKEN` or the secret store,
@@ -1701,8 +1712,8 @@ impl DaemonState {
     }
 
     /// Stops and forgets a session so it does not continue after a restart, removing its
-    /// worktrees when asked (their branches stay). An environment's persistent agent is refused:
-    /// it is turned off in its environment instead.
+    /// worktrees when asked (their branches stay). A persistent agent's session is refused:
+    /// the agent is deleted in its environment instead.
     pub fn delete_session(
         &self,
         id: &str,
@@ -1731,7 +1742,7 @@ impl DaemonState {
         };
         if placement.persistent {
             return Err(
-                "this is its environment's persistent agent; turn it off in the environment".into(),
+                "this is a persistent agent of its environment; delete the agent in the environment".into(),
             );
         }
         self.forget_session(id);
@@ -1849,7 +1860,7 @@ impl DaemonState {
         imperium_protocol::methods::EnvironmentListResult { environments, git }
     }
 
-    /// The permission rules running sessions check calls against, and the global grants.
+    /// The budgets and the usage they count.
     pub fn budgets(&self) -> &crate::budgets::BudgetBook {
         &self.budgets
     }
@@ -1862,17 +1873,24 @@ impl DaemonState {
             .contains(key)
     }
 
-    /// The day budgets count as today.
+    /// The day session gates count as today ([`DaemonState::set_budget_today`] overrides it in
+    /// tests).
     pub(crate) fn budget_today(&self) -> chrono::NaiveDate {
-        (*self
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(day) = *self
             .budget_day
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner))
-        .unwrap_or_else(|| chrono::Local::now().date_naive())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return day;
+        }
+        chrono::Local::now().date_naive()
     }
 
-    /// Test hook: makes budgets count `day` as today for session gates (`None` undoes it).
-    #[doc(hidden)]
+    /// Test hook: session gates (`stops_for`, so turn-start checks and `CallGate`) count `day`
+    /// as today; recording usage, standings, and alerts keep using the real date. `None` undoes
+    /// it. Compiled only for this crate's tests or with the `testing` feature.
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_budget_today(&self, day: Option<chrono::NaiveDate>) {
         *self
             .budget_day
@@ -1887,6 +1905,7 @@ impl DaemonState {
             .insert(key.to_string());
     }
 
+    /// The permission rules running sessions check calls against, and the global grants.
     pub fn permissions(&self) -> &crate::permissions::PermissionStore {
         &self.permissions
     }

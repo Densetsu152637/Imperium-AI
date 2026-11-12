@@ -63,6 +63,14 @@ Next: shrinking a loaded pool after sustained low fill (today it shrinks on unlo
 squeezed pool once other models leave, fill read from llama-server's own metrics, and showing
 the wait reason in the desktop.
 
+Implemented: **multiple persistent agents per environment.** An environment holds zero or more
+persistent agents, each with its own name, role, session and limits, created explicitly (a new
+environment has none) with `environments.agent_create`, `imperium env agent add`, or *Add agent* in
+the environment window; the earlier single persistent session migrates to one agent with its
+history, and the old `persistent_agent` fields stay as aliases for protocol 0.22
+([14](14-projects-and-automation.md#persistent-agents-implemented)). Per-agent permission
+profiles (MCP and plugin allowlists, a local-files-only lock) and per-agent initiative follow.
+
 ## Next (in order)
 
 1. **OS notifications** (implemented). System notifications for approvals, finished and failed
@@ -148,8 +156,14 @@ the wait reason in the desktop.
     and count toward budgets as the `api` source, hosted models only by explicit per-model
     opt-in, Settings → API and `imperium api`
     ([04](04-models-and-routing.md#openai-compatible-local-api-implemented),
-    [07](07-desktop-ui.md#api-settings-implemented), [10](10-configuration.md)). Speculative
-    decoding and the benchmark are not.
+    [07](07-desktop-ui.md#api-settings-implemented), [10](10-configuration.md)). The local
+    model benchmark is implemented too: `models.bench` (Settings → Models, `imperium models
+    bench [<id>]`) loads each chosen model through the normal residency path as a background
+    call, never unasked and cancellable, and measures load time, time to first token, prompt and
+    generation speed and peak memory from the real stream, saved per model, hardware fingerprint
+    and date ([04](04-models-and-routing.md#local-model-benchmark-implemented),
+    [07](07-desktop-ui.md#local-model-benchmark-implemented)). Protocol 0.21. Speculative
+    decoding is not.
 11. **Sharing and sync (design)** (designed). Design plans for session sharing and export, and
     for team sync: a portable session bundle with shared redaction, a mandatory preview and
     read-only import with explicit forking, and team sync as a git-backed config layer that

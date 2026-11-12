@@ -1,6 +1,7 @@
 mod api;
 mod approvals;
 mod autostart;
+mod bench;
 mod changes;
 mod chat;
 mod env;
@@ -219,6 +220,20 @@ enum ModelsCommand {
         #[arg(long)]
         prompt: Option<String>,
     },
+    /// Benchmark local models: load time, time to first token, prompt and generation speed,
+    /// peak memory. Loads each model like any call does, waiting while the machine is saturated; saves
+    /// the numbers per model and machine. Ctrl+C cancels.
+    Bench {
+        /// A local model id (from `imperium models local`); every model that can run when
+        /// left out.
+        model: Option<String>,
+        /// List the saved results instead of running a benchmark.
+        #[arg(long)]
+        results: bool,
+        /// Do not unload an idle loaded model first (its load time is then not measured).
+        #[arg(long, conflicts_with = "results")]
+        warm: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -345,6 +360,43 @@ enum SessionCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum AgentCommand {
+    /// List the environment's persistent agents.
+    List {
+        /// Environment name or id.
+        env: String,
+    },
+    /// Add a persistent agent; it starts at once.
+    Add {
+        /// Environment name or id.
+        env: String,
+        /// The agent's name, unique in the environment.
+        name: String,
+        /// What the agent is for, added to its instructions.
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// Rename an agent or change its role.
+    Set {
+        /// Environment name or id.
+        env: String,
+        /// The agent's name or id.
+        agent: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// Delete an agent (its session is archived).
+    Rm {
+        /// Environment name or id.
+        env: String,
+        /// The agent's name or id.
+        agent: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum WorkspacesCommand {
     /// Show where the working folders are, and each environment's.
     Where,
@@ -407,13 +459,10 @@ enum EnvCommand {
         /// Environment name or id.
         env: String,
     },
-    /// Turn an environment's persistent agent session on or off.
+    /// Manage an environment's persistent agents (none exist until added).
     Agent {
-        /// Environment name or id.
-        env: String,
-        /// `on` or `off`.
-        #[arg(value_parser = ["on", "off"])]
-        state: String,
+        #[command(subcommand)]
+        command: AgentCommand,
     },
 }
 
@@ -590,7 +639,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 host,
             } => env::set_runtime(id, env::runtime(&kind, image, container, distro, host)?),
             EnvCommand::Test { env: id } => env::test(id),
-            EnvCommand::Agent { env: id, state } => env::set_agent(id, state == "on"),
+            EnvCommand::Agent { command } => match command {
+                AgentCommand::List { env: id } => env::agent_list(id),
+                AgentCommand::Add {
+                    env: id,
+                    name,
+                    role,
+                } => env::agent_add(id, name, role),
+                AgentCommand::Set {
+                    env: id,
+                    agent,
+                    name,
+                    role,
+                } => env::agent_set(id, agent, name, role),
+                AgentCommand::Rm { env: id, agent } => env::agent_remove(id, agent),
+            },
         },
         Command::Config {
             command: ConfigCommand::Explain { key, project },
@@ -638,6 +701,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             },
             ModelsCommand::Use { model } => local::use_model(model),
             ModelsCommand::Test { model, prompt } => local::test_model(model, prompt),
+            ModelsCommand::Bench {
+                model,
+                results,
+                warm,
+            } => {
+                if results {
+                    bench::results(model)
+                } else {
+                    bench::run(model, warm)
+                }
+            }
         },
         Command::Runtime {
             command: RuntimeCommand::Install { pack },
