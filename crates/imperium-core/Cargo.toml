@@ -44,11 +44,16 @@ toml = "1.2.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
+[features]
+# Hooks for the crate's integration tests (fault injection); never enabled in a release build.
+testing = []
+
 [lints]
 workspace = true
 
 [dev-dependencies]
 imperium-config = { path = "../imperium-config" }
+imperium-core = { path = ".", features = ["testing"] }
 imperium-github = { path = "../imperium-github" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "test-util"] }

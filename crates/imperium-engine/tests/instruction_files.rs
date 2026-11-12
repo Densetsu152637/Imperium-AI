@@ -296,6 +296,33 @@ async fn a_symlinked_instruction_file_leading_outside_is_not_loaded() {
 }
 
 #[tokio::test]
+async fn a_non_utf8_instruction_file_is_skipped_without_a_note() {
+    let dir = project();
+    std::fs::create_dir_all(dir.path().join("binary")).unwrap();
+    std::fs::write(
+        dir.path().join("binary/AGENTS.md"),
+        [0xff, 0xfe, 0x80, 0x00],
+    )
+    .unwrap();
+    // A legitimate sibling in the same directory is the positive control.
+    std::fs::write(dir.path().join("binary/CLAUDE.md"), "Sibling rules.\n").unwrap();
+    let workspace = Workspace::new(dir.path()).unwrap();
+    let script = vec![("list_dir", json!({"path": "binary"}))];
+    let (request, loaded) = explore_with(&dir, workspace, true, script).await;
+    let all = user_messages(&request).join("\n");
+    assert!(all.contains("Sibling rules."), "{all}");
+    assert!(!all.contains("binary/AGENTS.md"), "skipped: {all}");
+    assert!(!all.contains("not loaded"), "and no note: {all}");
+    assert!(
+        loaded
+            .iter()
+            .flatten()
+            .all(|reference| !reference.contains("AGENTS.md")),
+        "{loaded:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_worktree_root_file_is_skipped_only_when_the_manifest_serves_the_same_text() {
     // The project (what the manifest serves) and a worktree session rooted elsewhere.
     let project = tempfile::tempdir().unwrap();

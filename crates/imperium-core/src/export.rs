@@ -630,32 +630,48 @@ fn collect_text(agent: &Agent, out: &mut String) {
 /// and a long enough body, a private key header, a JWT). Anything else, a git commit hash
 /// included, does not count; a clean result is not a promise that nothing secret is there.
 fn credential_in(text: &str) -> Option<&'static str> {
-    const PREFIXES: [(&str, &str); 14] = [
-        ("sk-ant-", "an Anthropic API key"),
-        ("sk-", "an API key"),
-        ("ghp_", "a GitHub token"),
-        ("gho_", "a GitHub token"),
-        ("ghs_", "a GitHub token"),
-        ("github_pat_", "a GitHub token"),
-        ("glpat-", "a GitLab token"),
-        ("xoxb-", "a Slack token"),
-        ("xoxp-", "a Slack token"),
-        ("AKIA", "an AWS key"),
-        ("ASIA", "an AWS key"),
-        ("AIza", "a Google API key"),
-        ("hf_", "a Hugging Face token"),
-        ("npm_", "an npm token"),
+    /// Which bytes the body after the prefix may hold.
+    #[derive(Clone, Copy)]
+    enum Body {
+        /// Letters, digits, `_` and `-`.
+        Any,
+        /// Letters and digits only, so identifiers with underscores do not match.
+        Alnum,
+        /// Capital letters and digits only, as AWS key ids are.
+        Upper,
+    }
+    // (prefix, reason, shortest body, body shape, exact body length when the format has one)
+    const PREFIXES: [(&str, &str, usize, Body, Option<usize>); 16] = [
+        ("sk-ant-", "an Anthropic API key", 16, Body::Any, None),
+        ("sk-", "an API key", 16, Body::Any, None),
+        ("sk_live_", "a Stripe key", 16, Body::Alnum, None),
+        ("sk_test_", "a Stripe key", 16, Body::Alnum, None),
+        ("ghp_", "a GitHub token", 16, Body::Any, None),
+        ("gho_", "a GitHub token", 16, Body::Any, None),
+        ("ghs_", "a GitHub token", 16, Body::Any, None),
+        ("github_pat_", "a GitHub token", 16, Body::Any, None),
+        ("glpat-", "a GitLab token", 16, Body::Any, None),
+        ("xoxb-", "a Slack token", 16, Body::Any, None),
+        ("xoxp-", "a Slack token", 16, Body::Any, None),
+        ("AKIA", "an AWS key", 16, Body::Upper, Some(16)),
+        ("ASIA", "an AWS key", 16, Body::Upper, Some(16)),
+        ("AIza", "a Google API key", 16, Body::Any, None),
+        ("hf_", "a Hugging Face token", 30, Body::Alnum, None),
+        ("npm_", "an npm token", 36, Body::Alnum, Some(36)),
     ];
     if text.contains("-----BEGIN") && text.contains("PRIVATE KEY-----") {
         return Some("a private key");
     }
     for word in text.split(|c: char| c.is_whitespace() || "\"'`=:,;()[]{}<>".contains(c)) {
-        for (prefix, reason) in PREFIXES {
+        for (prefix, reason, shortest, shape, exact) in PREFIXES {
             if let Some(body) = word.strip_prefix(prefix)
-                && body.len() >= 16
-                && body
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                && body.len() >= shortest
+                && exact.is_none_or(|len| body.len() == len)
+                && body.bytes().all(|b| match shape {
+                    Body::Any => b.is_ascii_alphanumeric() || b == b'_' || b == b'-',
+                    Body::Alnum => b.is_ascii_alphanumeric(),
+                    Body::Upper => b.is_ascii_uppercase() || b.is_ascii_digit(),
+                })
             {
                 return Some(reason);
             }
@@ -893,6 +909,31 @@ mod tests {
             assert!(credential_in(text).unwrap().contains(reason), "{text}");
         }
         assert_eq!(credential_in("sk-short"), None);
+        // Ordinary identifiers that share a prefix are not credentials.
+        for text in [
+            "npm_config_registry_url_value_here",
+            "hf_hub_download_from_the_cache_dir",
+            "ASIA_PACIFIC_REGION_SETTINGS",
+            "AKIA_is_a_prefix_only",
+            "ASIAPACIFICREGION",
+        ] {
+            assert_eq!(credential_in(text), None, "{text}");
+        }
+        for (text, reason) in [
+            // Built from parts so secret scanners do not flag the test file.
+            (["sk_live_", "abcdefghijklmnop1234"].concat(), "Stripe"),
+            (["ASIA", "ABCDEFGHIJKLMNOP"].concat(), "AWS"),
+            (
+                ["npm_", "abcdefghijklmnopqrstuvwxyz0123456789"].concat(),
+                "npm",
+            ),
+            (
+                ["hf_", "abcdefghijklmnopqrstuvwxyzABCDEFGH"].concat(),
+                "Hugging Face",
+            ),
+        ] {
+            assert!(credential_in(&text).unwrap().contains(reason), "{text}");
+        }
     }
 
     #[test]

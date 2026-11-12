@@ -58,10 +58,16 @@ pub fn set(state: &DaemonState, params: ConfigSetParams) -> Result<ConfigSetResu
 
 /// `personalities.list`: what `policy.personality` may name, each id as the file that wins.
 pub fn personalities(state: &DaemonState) -> PersonalitiesListResult {
+    let mut warnings = Vec::new();
+    let listed = state
+        .personality_sources()
+        .list_with_warnings(&mut warnings);
+    // The list has nowhere to show these; the daemon log does.
+    for warning in warnings {
+        tracing::warn!("{warning}");
+    }
     PersonalitiesListResult {
-        personalities: state
-            .personality_sources()
-            .list()
+        personalities: listed
             .into_iter()
             .map(|info| PersonalitySummary {
                 source: info.origin.kind().into(),
