@@ -98,7 +98,7 @@ an agent twice.
 | Method | Params | Result |
 | --- | --- | --- |
 | `environments.agent_list` | `{ environment_id }` | `{ agents: EnvironmentAgent[] }` |
-| `environments.agent_create` | `{ environment_id, name, role? }` | `EnvironmentAgent` |
+| `environments.agent_create` | `{ environment_id, name, role? }` | `EnvironmentAgent` plus `started` and, when it could not start (no folder yet, no model), `reason`; the agent is added anyway and starts when the cause is fixed |
 | `environments.agent_update` | `{ environment_id, agent_id, name?, role? }` | `EnvironmentAgent` |
 | `environments.agent_delete` | `{ environment_id, agent_id }` | `{}` |
 

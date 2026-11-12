@@ -20,14 +20,21 @@ fn sse(chunk: Value) -> String {
     format!("data: {chunk}\n\ndata: [DONE]\n\n")
 }
 
+/// Opens (`send(true)`) the sessions the fake model holds back.
+type Gate = Arc<tokio::sync::watch::Sender<bool>>;
+
 /// Answers "Echo: <last user message>" and records every request. An agent asked to "please
-/// start a session" does (a session that takes eight seconds), and a session told "slow job"
-/// takes those eight seconds to answer.
+/// start a session" does, and a session told "slow job" answers only once the gate is open.
 async fn fake_model(log: Log) -> String {
+    fake_model_gated(log, Arc::new(tokio::sync::watch::channel(true).0)).await
+}
+
+async fn fake_model_gated(log: Log, gate: Gate) -> String {
     let app = Router::new().route(
         "/v1/chat/completions",
         post(move |axum::Json(body): axum::Json<Value>| {
             let log = Arc::clone(&log);
+            let gate = Arc::clone(&gate);
             async move {
                 let messages = body["messages"].as_array().cloned().unwrap_or_default();
                 let last_user = messages.iter().rposition(|m| m["role"] == "user");
@@ -41,7 +48,7 @@ async fn fake_model(log: Log) -> String {
                 let system = messages[0]["content"].as_str().unwrap_or_default().to_string();
                 log.lock().unwrap().push(body);
                 if said.starts_with("slow job") {
-                    tokio::time::sleep(Duration::from_secs(8)).await;
+                    let _ = gate.subscribe().wait_for(|open| *open).await;
                 }
                 let reply = if system.contains("persistent agents") && said.starts_with("please start a session") {
                     if tools_since == 0 {
@@ -424,7 +431,12 @@ async fn an_unchanged_agent_is_not_restarted_and_a_restart_keeps_its_limits_and_
     let home = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
     let log: Log = Arc::default();
-    let state = daemon(home.path(), &fake_model(Arc::clone(&log)).await);
+    // The sessions the agent starts stay running until the test lets them finish.
+    let gate: Gate = Arc::new(tokio::sync::watch::channel(false).0);
+    let state = daemon(
+        home.path(),
+        &fake_model_gated(Arc::clone(&log), Arc::clone(&gate)).await,
+    );
     let mut connection = connect(&state);
     let id = new_environment(&mut connection, folder.path());
     let agent = call(
@@ -480,6 +492,7 @@ async fn an_unchanged_agent_is_not_restarted_and_a_restart_keeps_its_limits_and_
     assert!(refused, "the third session is refused: two are running");
 
     // The first session finishes after the restart; its report reaches the restarted agent.
+    gate.send_replace(true);
     let delivered = async {
         loop {
             let seen = log.lock().unwrap().iter().any(|body| {
@@ -706,4 +719,101 @@ async fn renaming_the_environment_retitles_its_agents() {
         json!({"id": id, "name": "Studio"}),
     );
     assert_eq!(state.summary(&session).title, "Studio · Planner");
+}
+
+#[tokio::test]
+async fn the_last_agent_deleted_takes_its_conversation_with_it() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &fake_model(Arc::default()).await);
+    let mut connection = connect(&state);
+    let id = new_environment(&mut connection, folder.path());
+    let agent = call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": id, "name": "Planner", "role": "Plans."}),
+    );
+    let old_session = agent["session_id"].as_str().unwrap().to_string();
+    say(&state, &old_session, "remember the old plan").await;
+
+    call(
+        &mut connection,
+        "environments.agent_delete",
+        json!({"environment_id": id, "agent_id": agent["id"]}),
+    );
+    let env = state.environments().get(&id).unwrap();
+    assert!(env.agents.is_empty());
+    assert!(
+        env.agent_session_id.is_none(),
+        "no link to the deleted conversation"
+    );
+
+    // The deprecated switch makes a fresh agent with a fresh session, not the old conversation
+    // under new instructions.
+    let again = call(
+        &mut connection,
+        "environments.update",
+        json!({"id": id, "persistent_agent": true}),
+    );
+    let new_session = again["agents"][0]["session_id"].as_str().unwrap();
+    assert_ne!(new_session, old_session);
+    let fresh = state.session(new_session).unwrap();
+    assert_ne!(fresh.title(), "remember the old plan");
+    assert!(
+        state
+            .archived_sessions()
+            .iter()
+            .any(|s| s.session_id == old_session)
+    );
+}
+
+#[tokio::test]
+async fn an_agent_that_cannot_start_is_added_and_says_why() {
+    let home = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let state = daemon(home.path(), &fake_model(Arc::default()).await);
+    let mut connection = connect(&state);
+    // An environment without folders cannot run an agent yet.
+    let empty = call(
+        &mut connection,
+        "environments.create",
+        json!({"name": "Empty", "folders": []}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let created = call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": empty, "name": "Planner"}),
+    );
+    assert_eq!(created["started"], false);
+    assert!(
+        created["reason"].as_str().unwrap().contains("no folders"),
+        "{created}"
+    );
+    assert!(created["session_id"].is_null());
+    assert_eq!(created["name"], "Planner");
+    // Adding a folder starts it.
+    call(
+        &mut connection,
+        "environments.add_folder",
+        json!({"id": empty, "folder": folder.path()}),
+    );
+    let listed = call(
+        &mut connection,
+        "environments.agent_list",
+        json!({"environment_id": empty}),
+    );
+    assert!(listed["agents"][0]["session_id"].is_string(), "{listed}");
+
+    // One that starts says so.
+    let work = new_environment(&mut connection, folder.path());
+    let started = call(
+        &mut connection,
+        "environments.agent_create",
+        json!({"environment_id": work, "name": "Reviewer"}),
+    );
+    assert_eq!(started["started"], true);
+    assert!(started.get("reason").is_none());
 }

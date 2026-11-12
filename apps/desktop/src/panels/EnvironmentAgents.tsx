@@ -5,9 +5,9 @@
 import { Pencil, Plus, Trash, X } from "lucide-react";
 import { useState } from "react";
 
-import type { EnvironmentAgent, EnvironmentInfo } from "@imperium/protocol";
+import type { EnvironmentAgent, EnvironmentAgentCreated, EnvironmentInfo } from "@imperium/protocol";
 
-import { nameProblem, nameTaken } from "../agents";
+import { nameProblem, nameTaken, notStartedNotice } from "../agents";
 import type { DaemonClient } from "../daemon/client";
 
 type Props = {
@@ -26,6 +26,8 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** A note that is not an error: the agent was added but is not running yet. */
+  const [notice, setNotice] = useState<string | null>(null);
   const agents = environment?.agents ?? [];
 
   const run = async (work: (client: DaemonClient, environmentId: string) => Promise<unknown>) => {
@@ -55,12 +57,23 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
       setError(`This environment already has an agent named “${name}”.`);
       return;
     }
-    const done = await run((c, environment_id) =>
-      draft.id === null
-        ? c.call("environments.agent_create", { environment_id, name, role: draft.role.trim() })
-        : c.call("environments.agent_update", { environment_id, agent_id: draft.id, name, role: draft.role.trim() }),
-    );
-    if (done) setDraft(null);
+    setNotice(null);
+    const outcome: { created: EnvironmentAgentCreated | null } = { created: null };
+    const done = await run(async (c, environment_id) => {
+      if (draft.id === null) {
+        outcome.created = await c.call<EnvironmentAgentCreated>("environments.agent_create", {
+          environment_id,
+          name,
+          role: draft.role.trim(),
+        });
+      } else {
+        await c.call("environments.agent_update", { environment_id, agent_id: draft.id, name, role: draft.role.trim() });
+      }
+    });
+    if (done) {
+      setDraft(null);
+      setNotice(notStartedNotice(outcome.created));
+    }
   };
 
   const remove = async (agent: EnvironmentAgent) => {
@@ -98,6 +111,11 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
             <span className="muted agent-role" title={agent.role}>
               {agent.role || "No role set"}
             </span>
+            {!agent.session_id && (
+              <span className="muted" title="The agent is not running yet; it starts once the environment can run it.">
+                not running
+              </span>
+            )}
             {deleting === agent.id ? (
               <span className="environment-delete-confirm" role="group" aria-label={`Delete ${agent.name}`}>
                 <span>Delete? Its history is archived.</span>
@@ -170,6 +188,11 @@ export function EnvironmentAgents({ environment, client, disabled }: Props) {
             </button>
           </div>
         </div>
+      )}
+      {notice && (
+        <p className="muted" role="status">
+          {notice}
+        </p>
       )}
       {error && (
         <p className="error" role="alert">

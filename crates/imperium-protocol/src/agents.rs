@@ -54,7 +54,23 @@ pub struct EnvironmentAgentCreate;
 impl Method for EnvironmentAgentCreate {
     const NAME: &'static str = "environments.agent_create";
     type Params = EnvironmentAgentCreateParams;
-    type Result = EnvironmentAgent;
+    type Result = EnvironmentAgentCreated;
+}
+
+/// The agent that was added, and whether it is running. An agent that could not start (the
+/// environment has no folder yet, no model is configured) is still added and starts when the
+/// cause is fixed; `reason` says what is missing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvironmentAgentCreated {
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub agent: EnvironmentAgent,
+    pub started: bool,
+    /// Why it is not running, when `started` is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

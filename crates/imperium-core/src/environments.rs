@@ -307,6 +307,12 @@ impl Environments {
                 .position(|agent| agent.id == agent_id)
                 .ok_or_else(|| EnvironmentError::NotFound(agent_id.to_string()))?;
             removed = Some(env.agents.remove(at));
+            // The last agent's conversation goes with it: the deprecated switch must not bring
+            // it back under new instructions. (Only the switch itself and a legacy turned-off
+            // agent keep such a link.)
+            if env.agents.is_empty() {
+                env.agent_session_id = None;
+            }
             Ok(())
         })?;
         Ok(removed.expect("removed above"))

@@ -169,7 +169,13 @@ pub fn agent_add(env: String, name: String, role: Option<String>) -> anyhow::Res
                 role,
             })
             .await?;
-        print!("{}", describe_agent(&agent));
+        print!("{}", describe_agent(&agent.agent));
+        if !agent.started {
+            println!(
+                "Added, but not running yet: {}",
+                agent.reason.as_deref().unwrap_or("it has not started")
+            );
+        }
         Ok(())
     })
 }

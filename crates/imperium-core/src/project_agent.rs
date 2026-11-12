@@ -356,9 +356,17 @@ pub fn start_environment_agents(daemon: &Arc<DaemonState>) {
 /// One sync of an environment runs at a time, so agents added or changed from several places at
 /// once are started exactly once.
 pub fn sync_environment_agent(daemon: &Arc<DaemonState>, environment_id: &str) {
+    sync_environment_agent_report(daemon, environment_id);
+}
+
+/// Like [`sync_environment_agent`], saying which agents could not start and why, by agent id.
+pub fn sync_environment_agent_report(
+    daemon: &Arc<DaemonState>,
+    environment_id: &str,
+) -> Vec<(String, String)> {
     let lock = daemon.project_agents().sync_lock(environment_id);
     let _sync = lock.lock().unwrap_or_else(PoisonError::into_inner);
-    sync_locked(daemon, environment_id);
+    sync_locked(daemon, environment_id)
 }
 
 /// Stops an environment's running agents (all of them, or just `only`) and starts them again
@@ -383,7 +391,8 @@ pub fn restart_environment_agents(
     sync_locked(daemon, environment_id);
 }
 
-fn sync_locked(daemon: &Arc<DaemonState>, environment_id: &str) {
+fn sync_locked(daemon: &Arc<DaemonState>, environment_id: &str) -> Vec<(String, String)> {
+    let mut failed = Vec::new();
     let env = daemon.environments().get(environment_id);
     let wanted: Vec<String> = env
         .as_ref()
@@ -401,15 +410,17 @@ fn sync_locked(daemon: &Arc<DaemonState>, environment_id: &str) {
         }
         tracing::info!(environment = environment_id, agent = %agent_id, "environment agent stopped");
     }
-    let Some(env) = env else { return };
+    let Some(env) = env else { return failed };
     for agent in &env.agents {
         if daemon.project_agents().agent(&agent.id).is_some() {
             continue;
         }
         if let Err(error) = start_environment_agent(daemon, &env, agent) {
             tracing::warn!(environment = %env.name, agent = %agent.name, %error, "environment agent did not start");
+            failed.push((agent.id.clone(), error));
         }
     }
+    failed
 }
 
 /// The title an agent's session carries: `<environment> · <agent>`.

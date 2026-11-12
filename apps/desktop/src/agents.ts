@@ -1,6 +1,6 @@
 // Environment agents as the desktop names them (pure, so the rules are tested without a window).
 
-import type { EnvironmentAgent, EnvironmentInfo } from "@imperium/protocol";
+import type { EnvironmentAgent, EnvironmentAgentCreated, EnvironmentInfo } from "@imperium/protocol";
 
 /** The longest agent name, in characters (code points, as the daemon counts them). */
 export const MAX_AGENT_NAME = 60;
@@ -27,6 +27,12 @@ export function nameProblem(name: string): string | null {
   if (control) return "An agent's name cannot contain line breaks or control characters.";
   return null;
 }
+
+/** What to tell the user after adding an agent that did not start (it starts once the cause is fixed). */
+export const notStartedNotice = (created: EnvironmentAgentCreated | null): string | null =>
+  created && !created.started
+    ? `“${created.name}” was added but is not running yet: ${created.reason ?? "it has not started"}`
+    : null;
 
 /** The agent whose session is `sessionId` in `environment`, if any. */
 export const agentOfSession = (environment: EnvironmentInfo | null | undefined, sessionId: string) =>

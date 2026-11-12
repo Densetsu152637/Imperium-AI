@@ -7,9 +7,10 @@ use std::sync::Arc;
 use base64::Engine;
 use imperium_engine::{QueueError, Session, SwitchError};
 use imperium_protocol::agents::{
-    EnvironmentAgentCreate, EnvironmentAgentCreateParams, EnvironmentAgentDelete,
-    EnvironmentAgentList, EnvironmentAgentListParams, EnvironmentAgentListResult,
-    EnvironmentAgentRef, EnvironmentAgentUpdate, EnvironmentAgentUpdateParams,
+    EnvironmentAgentCreate, EnvironmentAgentCreateParams, EnvironmentAgentCreated,
+    EnvironmentAgentDelete, EnvironmentAgentList, EnvironmentAgentListParams,
+    EnvironmentAgentListResult, EnvironmentAgentRef, EnvironmentAgentUpdate,
+    EnvironmentAgentUpdateParams,
 };
 use imperium_protocol::budgets::{BudgetsGet, BudgetsGetParams, BudgetsSet, BudgetsUsage};
 use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, codes};
@@ -1068,9 +1069,22 @@ impl Connection {
                     let agent = envs
                         .add_agent(&p.environment_id, &p.name, p.role.as_deref())
                         .map_err(failed)?;
-                    // Started at once; an environment without folders starts it when one is added.
-                    self.state.sync_environment_agent(&p.environment_id);
-                    Ok(self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent))
+                    // Started at once; an environment without folders starts it when one is
+                    // added. Whether it did, and if not why, goes back with it.
+                    let failed = crate::project_agent::sync_environment_agent_report(
+                        &self.state,
+                        &p.environment_id,
+                    );
+                    let agent = self.agent_of(&p.environment_id, &agent.id).unwrap_or(agent);
+                    let reason = failed
+                        .into_iter()
+                        .find(|(id, _)| *id == agent.id)
+                        .map(|(_, reason)| reason);
+                    Ok(EnvironmentAgentCreated {
+                        started: self.state.project_agents().agent(&agent.id).is_some(),
+                        reason,
+                        agent,
+                    })
                 })
             }
             EnvironmentAgentUpdate::NAME => {

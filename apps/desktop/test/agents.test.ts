@@ -5,7 +5,15 @@ import { test } from "node:test";
 
 import type { EnvironmentAgent, EnvironmentInfo } from "@imperium/protocol";
 
-import { agentOfSession, agentTitle, nameLength, nameProblem, nameTaken } from "../src/agents.ts";
+import { agentOfSession, agentTitle, nameLength, nameProblem, nameTaken, notStartedNotice } from "../src/agents.ts";
+
+test("an agent that did not start is explained, one that did is not", () => {
+  const base = { id: "a", name: "Planner", role: "", session_id: null };
+  assert.equal(notStartedNotice(null), null);
+  assert.equal(notStartedNotice({ ...base, started: true }), null);
+  const text = notStartedNotice({ ...base, started: false, reason: "the environment has no folders yet" });
+  assert.match(text ?? "", /Planner.*not running yet: the environment has no folders yet/);
+});
 
 test("names are measured in characters and checked like the daemon does", () => {
   // 60 emoji are 120 UTF-16 units but 60 characters: allowed, as the daemon counts them.
