@@ -920,8 +920,9 @@ async fn run(
         let (message_id, text, attachments) = match next {
             Some(message) => (message.id, message.text, message.attachments),
             None => match tokio::select! {
-                // Resumed: the queue runs.
-                _ = stop.changed(), if stopped => continue,
+                // Stopped or resumed while waiting here: look again, so a message that arrives
+                // after a stop waits for the resume instead of starting a turn.
+                _ = stop.changed() => continue,
                 command = commands.recv() => command,
             } {
                 Some(Command::Message(message)) if stopped => {
