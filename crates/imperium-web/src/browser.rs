@@ -20,6 +20,11 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// Longest one request to the browser's debugger may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const LOAD_TIMEOUT: Duration = Duration::from_secs(20);
+/// Longest the browser may take to answer its first request. Chrome holds that request back
+/// until its own start-up work (a fresh profile registers dozens of components first) has
+/// finished, which took 10 to 45 seconds on a Windows CI runner; it is waited out once, in
+/// `launch`, so no later page load pays for it.
+const WARM_UP_TIMEOUT: Duration = Duration::from_secs(90);
 /// Longest page text returned by `read`.
 const MAX_TEXT: usize = 20_000;
 /// How much of the browser's output an error reports.
@@ -35,6 +40,7 @@ pub struct View {
 }
 
 pub struct Browser {
+    log_path: PathBuf,
     _process: Child,
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     next_id: AtomicU64,
@@ -143,16 +149,47 @@ impl Browser {
             .await
             .map_err(|error| format!("could not connect to the browser: {error}"))?;
         let mut browser = Browser {
+            log_path,
             _process: process,
             socket,
             next_id: AtomicU64::new(1),
         };
         browser.call("Page.enable", json!({})).await?;
+        browser.warm_up(port).await?;
         Ok(browser)
+    }
+
+    /// Waits until the browser answers a first request. A request made from the page to the
+    /// browser's own debugging port (nothing leaves the machine) is held back by Chrome's
+    /// start-up work in the same way as the first page load, so doing it here, with a long
+    /// limit, keeps that wait out of `Page.navigate`, whose limit is short. The reply is not
+    /// used: an error from the page only means the request ended, and it has by then.
+    async fn warm_up(&mut self, port: u16) -> Result<(), String> {
+        let expression = format!(
+            "fetch('http://127.0.0.1:{port}/json/version', {{mode: 'no-cors', cache: 'no-store'}}).then(() => 'ready', () => 'ready')"
+        );
+        self.call_within(
+            WARM_UP_TIMEOUT,
+            "Runtime.evaluate",
+            json!({"expression": expression, "returnByValue": true, "awaitPromise": true}),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("the browser did not finish starting: {error}"))
     }
 
     /// Sends a CDP command and waits for its result, skipping events in between.
     async fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.call_within(LOAD_TIMEOUT, method, params).await
+    }
+
+    /// `call`, giving up when the browser is silent for `limit`.
+    async fn call_within(
+        &mut self,
+        limit: Duration,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = json!({"id": id, "method": method, "params": params});
         self.socket
@@ -160,9 +197,14 @@ impl Browser {
             .await
             .map_err(|error| error.to_string())?;
         loop {
-            let reply = tokio::time::timeout(LOAD_TIMEOUT, self.socket.next())
+            let reply = tokio::time::timeout(limit, self.socket.next())
                 .await
-                .map_err(|_| format!("{method} timed out"))?
+                .map_err(|_| {
+                    format!(
+                        "{method} timed out; browser output: {}",
+                        log_tail(&self.log_path)
+                    )
+                })?
                 .ok_or("the browser closed")?
                 .map_err(|error| error.to_string())?;
             let Message::Text(text) = reply else { continue };
