@@ -68,7 +68,7 @@ import { exportSession } from "./exportSession";
 import { SessionPanel } from "./panels/SessionPanel";
 import { ComparePanel } from "./panels/ComparePanel";
 import { branchRun, comparisonMembers, comparisonOpen } from "./branches";
-import type { Effort } from "./panels/ModelSelect";
+import type { Effort, PermissionMode } from "./panels/ModelSelect";
 import { NewSessionPanel, type NewSessionOptions } from "./panels/NewSessionPanel";
 import { AgentsPanel } from "./panels/AgentsPanel";
 import { ReviewPanel } from "./panels/ReviewPanel";
@@ -944,6 +944,19 @@ export function App() {
     return result;
   };
 
+  /** Sets the selected session's permission mode from its agents' next calls on.
+   * Rejects with the daemon's reason, which the mode selector shows beside itself. */
+  const setPermissionMode = async (mode: PermissionMode): Promise<SessionControlResult> => {
+    if (!selected) throw new Error("No session is open.");
+    const id = selected;
+    const result = await control(id, { action: "set_permission_mode", permission_mode: mode });
+    const now = result.permission_mode ?? mode;
+    setSessions((all) =>
+      all[id] ? { ...all, [id]: { ...all[id], summary: { ...all[id].summary, permission_mode: now } } } : all,
+    );
+    return result;
+  };
+
   // The session search hit to scroll to, until another session is chosen.
   const [searchFocus, setSearchFocus] = useState<{ sessionId: string; index: number; nonce: number } | null>(null);
   const selectSession = (sessionId: string) => {
@@ -1137,6 +1150,7 @@ export function App() {
         onOpenLocalModels={() => togglePanel("local-models", true)}
         onSetModel={setModel}
         onSetEffort={setEffort}
+        onSetPermissionMode={setPermissionMode}
         client={client}
         onUnarchive={() => setSessionArchived(session.summary.session_id, false)}
         budgets={budgets?.status ?? []}

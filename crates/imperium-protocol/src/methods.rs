@@ -274,6 +274,14 @@ pub struct SessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "\"low\" | \"medium\" | \"high\" | \"max\"")]
     pub effort: Option<String>,
+    /// How the session's calls are approved beside the permission rules (`session.control`
+    /// `set_permission_mode`), kept across restarts; absent from daemons that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(
+        optional,
+        type = "\"ask\" | \"default\" | \"accept_edits\" | \"plan\" | \"full\""
+    )]
+    pub permission_mode: Option<String>,
     /// Whether the session's model can reason, so its effort applies (clients show the effort
     /// control only then).
     #[serde(default)]
@@ -1905,7 +1913,8 @@ pub struct RuntimeStatusResult {
     pub summary: String,
     pub llama_cpp_ref: String,
     /// Other `llama-server` executables found on this machine (on `PATH`, common build
-    /// folders), offered when none is set up.
+    /// folders, and unpacked downloads in the home and Downloads folders), offered to the
+    /// user. None is run or chosen automatically; `runtime.set_server` adopts one.
     pub candidates: Vec<String>,
     /// The latest runtime pack installation since the daemon started.
     pub install: Option<RuntimeInstallJob>,
@@ -3139,7 +3148,9 @@ pub struct SessionControlParams {
     /// `watch` (with `repo` and `pull_request`), `unwatch`, `set_model` (with `model`, or none
     /// for `models.default`; refused while a turn runs), `set_effort` (with `effort`; applies
     /// from every agent's next model call, also while a turn runs; kept across restarts),
-    /// `compact` (summarise older turns
+    /// `set_permission_mode` (with `permission_mode`: `ask`, `default`, `accept_edits`, `plan`,
+    /// or `full`; applies from every agent's next call, also while a turn runs; kept across
+    /// restarts), `compact` (summarise older turns
     /// now; refused while a turn runs), `set_pinned` (with `pinned`; kept across restarts),
     /// `rename` (with `title`; kept across restarts and never replaced by a generated title; an
     /// empty title lets the session be titled automatically again), `archive` (stop the session and keep its journal; announced with `session.updated`),
@@ -3148,7 +3159,7 @@ pub struct SessionControlParams {
     /// or `resume` (continue a stopped session; not to be confused with `resume_now`, which ends
     /// a usage-limit wait).
     #[ts(
-        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"set_effort\" | \"compact\" | \"set_pinned\" | \"rename\" | \"archive\" | \"unarchive\" | \"stop\" | \"resume\""
+        type = "\"set_resume_policy\" | \"resume_now\" | \"watch\" | \"unwatch\" | \"set_model\" | \"set_effort\" | \"set_permission_mode\" | \"compact\" | \"set_pinned\" | \"rename\" | \"archive\" | \"unarchive\" | \"stop\" | \"resume\""
     )]
     pub action: String,
     #[serde(default)]
@@ -3165,6 +3176,13 @@ pub struct SessionControlParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "\"low\" | \"medium\" | \"high\" | \"max\"")]
     pub effort: Option<String>,
+    /// For `set_permission_mode`: the session's new permission mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(
+        optional,
+        type = "\"ask\" | \"default\" | \"accept_edits\" | \"plan\" | \"full\""
+    )]
+    pub permission_mode: Option<String>,
     /// For `set_pinned`: whether the session is pinned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -3185,6 +3203,13 @@ pub struct SessionControlResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "\"low\" | \"medium\" | \"high\" | \"max\"")]
     pub effort: Option<String>,
+    /// For `set_permission_mode`: the session's permission mode afterwards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(
+        optional,
+        type = "\"ask\" | \"default\" | \"accept_edits\" | \"plan\" | \"full\""
+    )]
+    pub permission_mode: Option<String>,
     /// For `set_model` and `set_effort`: whether the session's model can reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

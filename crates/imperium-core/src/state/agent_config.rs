@@ -70,6 +70,20 @@ impl AgentConfigTools {
             .upgrade()
             .ok_or_else(|| "the daemon is stopping".to_string())
     }
+
+    /// Whether the session's mode treats these changes as needing approval: ask-every-time
+    /// mode asks, and plan mode (which refuses whatever would ask) refuses them.
+    fn mode_asks(&self) -> bool {
+        self.state()
+            .ok()
+            .and_then(|state| state.session(&self.session_id))
+            .is_some_and(|session| {
+                matches!(
+                    session.permission_mode(),
+                    imperium_api::PermissionMode::Ask | imperium_api::PermissionMode::Plan
+                )
+            })
+    }
 }
 
 /// How an install is described before it runs: the kind and exactly where it comes from.
@@ -130,7 +144,7 @@ impl ToolProvider for AgentConfigTools {
                         ),
                         _ => format!("clear the model card of {}", args.model.trim()),
                     },
-                    ask: false,
+                    ask: self.mode_asks(),
                     needs_context: false,
                 })
             }
@@ -142,7 +156,7 @@ impl ToolProvider for AgentConfigTools {
                 }
                 Ok(ToolCheck {
                     summary: install_summary(&args),
-                    ask: false,
+                    ask: self.mode_asks(),
                     needs_context: false,
                 })
             }
@@ -155,7 +169,7 @@ impl ToolProvider for AgentConfigTools {
                 Ok(ToolCheck {
                     summary: format!("remove the {} {}", kind.as_str(), args.name.trim()),
                     // Removing what the user installed asks; it is kept aside either way.
-                    ask: !by_agent,
+                    ask: !by_agent || self.mode_asks(),
                     needs_context: false,
                 })
             }

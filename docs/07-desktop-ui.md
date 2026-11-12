@@ -791,8 +791,8 @@ icon, title, and status badge (with *Resume now* while paused); everything else 
 session sits in the footer under the composer.
 
 **Session footer (implemented):** a compact row under the composer, as in chat apps: the model
-selector at the left (with the effort selector beside it for a model that can reason), then the
-session's cost once it has one, an options button, and the
+selector at the left (with the effort selector beside it for a model that can reason, then the
+permission mode), then the session's cost once it has one, an options button, and the
 context meter at the right. The options button opens *Display* (*Render Markdown*, and the
 project and isolation tier) and *Usage limits* (how to wait when usage runs out:
 `session.control` `set_resume_policy`) above the composer; the context meter opens the
@@ -807,6 +807,18 @@ updated when the model is switched). Choosing one sends `session.control` `set_e
 applies from the agents' next model call, during a turn too, and is kept across restarts; a
 refusal shows its error beside the list. New sessions start at `models.effort`, which the
 Settings window lists with the other model settings.
+
+**Permission mode selector (implemented):** after the effort, a list as quiet as the effort
+(muted text) of the session's [permission mode](05-tools-and-isolation.md#permission-modes-implemented):
+*Plan only*, *Ask every time*, *Ask by rules* (the default), *Accept edits*, and *Full access*,
+each with a one-line description. Choosing one sends `session.control` `set_permission_mode`,
+which applies from the agents' next call, during a turn too, and is kept across restarts; a
+refusal shows its error beside the list. New sessions start in `permissions.mode`, which the
+Settings window lists beside the isolation settings; deny rules and the
+[safety floor](05-tools-and-isolation.md#permission-modes-implemented) hold in every mode, and
+the floor also holds in unattended sessions (auto-fix, schedules, project agents), whose
+floored calls wait in the approval queue with a notification. The floor is a best-effort guard against an agent's mistakes, not a security boundary, so *Full
+access* is only as safe as the session's isolation tier.
 
 **Model selector (implemented):** the footer's model is a themed list of the model table
 (`models.list`; each row by id, with its spec, location, and tier; rows whose endpoint is not

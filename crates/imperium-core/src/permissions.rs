@@ -181,6 +181,8 @@ pub fn set(
     let settings = PermissionSettings {
         grants: set.grants.iter().map(grant_from_wire).collect(),
         rules: set.rules.iter().map(rule_from_wire).collect(),
+        // Saving writes only the grants and rules; the mode is `config.set` `permissions.mode`.
+        ..PermissionSettings::default()
     };
     let saved = imperium_config::save_permissions(state.paths(), &settings, std::env::vars())
         .map_err(|error| invalid(error.to_string()))?;
@@ -501,6 +503,7 @@ mod tests {
                 pattern: String::new(),
                 action: RuleAction::Deny,
             }],
+            ..PermissionSettings::default()
         });
         assert_eq!(
             session.evaluate("run_command", &target),
