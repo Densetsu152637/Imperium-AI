@@ -42,9 +42,16 @@ export const saveTarget = (agentFormOpen: boolean): "agent" | "environment" => (
 /** The footer Save waits while the agent form holds unsaved changes (saving would drop them). */
 export const footerSaveBlocked = (agentFormDirty: boolean): boolean => agentFormDirty;
 
-/** What a close request does: ask first when there are unsaved edits, close on the second request. */
-export const closeAction = (dirty: boolean, confirming: boolean): "close" | "confirm" =>
-  dirty && !confirming ? "confirm" : "close";
+/**
+ * What a close request does: close at once when nothing is unsaved; otherwise ask first. While
+ * asking, a click on the X or backdrop discards, but Esc (`fromKey`) only dismisses the question,
+ * so a double or held Esc never throws work away.
+ */
+export const closeAction = (dirty: boolean, confirming: boolean, fromKey = false): "close" | "confirm" | "dismiss" => {
+  if (!dirty) return "close";
+  if (!confirming) return "confirm";
+  return fromKey ? "dismiss" : "close";
+};
 
 /** Whether anything in the window is unsaved. */
 export const environmentDirty = (edits: Record<string, boolean>): boolean => Object.values(edits).some(Boolean);

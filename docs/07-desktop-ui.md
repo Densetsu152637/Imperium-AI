@@ -823,7 +823,8 @@ navigation stacks above the content like theirs:
 A new environment is created with all of it at once (it has no working folder, configuration file,
 agents to edit or delete yet); for an existing one, folder changes and agents apply at once and the
 rest with *Save*. Closing with unsaved edits (Esc, outside click, ×, Cancel) shows a *Discard changes?* notice;
-closing again, or *Discard*, drops them. A runtime that cannot be saved (a missing image or host)
+*Discard* (or clicking × or outside again) drops them, while Esc then only dismisses the notice
+(a held Esc is ignored), so a double Esc never loses work. A runtime that cannot be saved (a missing image or host)
 jumps to *Folders & runtime* with the error. Home has a fixed runtime and no Danger zone. *Delete environment* asks once more
 (folders on disk are untouched); *Delete* in a row's menu opens the window at that question, in the
 Danger zone. Icons and colours are stored with the

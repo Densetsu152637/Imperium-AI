@@ -288,8 +288,10 @@ export function EnvironmentWindow({
   });
 
   /** Esc, the backdrop, the X and Cancel: unsaved edits ask first; asking again discards them. */
-  const requestClose = () => {
-    if (closeAction(unsaved, discarding) === "confirm") setDiscarding(true);
+  const requestClose = (fromKey = false) => {
+    const action = closeAction(unsaved, discarding, fromKey);
+    if (action === "confirm") setDiscarding(true);
+    else if (action === "dismiss") setDiscarding(false);
     else onClose();
   };
 
@@ -315,7 +317,7 @@ export function EnvironmentWindow({
           {error}
         </span>
       )}
-      <button type="button" onClick={requestClose}>
+      <button type="button" onClick={() => requestClose()}>
         Cancel
       </button>
       <button
@@ -351,8 +353,15 @@ export function EnvironmentWindow({
           </div>
         )
       }
-      onClose={requestClose}
+      onClose={() => requestClose()}
       onKeyDown={(event) => {
+        // Esc is handled here (preventDefault stops the modal's own close): a held key's repeats
+        // are ignored, and while the discard question shows, Esc dismisses it.
+        if (event.key === "Escape") {
+          event.preventDefault();
+          if (!event.repeat) requestClose(true);
+          return;
+        }
         // Ctrl+S (Cmd+S on macOS) saves, like the model editor.
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
           event.preventDefault();

@@ -90,6 +90,10 @@ test("closing with unsaved edits asks first, and asking again discards", () => {
   assert.equal(closeAction(false, false), "close");
   assert.equal(closeAction(true, false), "confirm");
   assert.equal(closeAction(true, true), "close");
+  // Esc never discards: with nothing unsaved it closes, but while asking it only dismisses the question.
+  assert.equal(closeAction(false, false, true), "close");
+  assert.equal(closeAction(true, false, true), "confirm");
+  assert.equal(closeAction(true, true, true), "dismiss");
   assert.equal(environmentDirty({ name: false, agent: false }), false);
   assert.equal(environmentDirty({ name: false, agent: true }), true);
 });
@@ -144,4 +148,5 @@ test("the window is built on the shared modal and asks before discarding", () =>
   assert.ok(source.includes("<SettingsModal"));
   assert.ok(!source.includes("createPortal"));
   assert.ok(source.includes("Discard changes?"));
+  assert.ok(source.includes("if (!event.repeat) requestClose(true)"));
 });
