@@ -50,18 +50,25 @@ impl Draft {
         self.model.size_bytes + DRAFT_OVERHEAD_BYTES + guessed_kv
     }
 
-    /// Whether the draft is kept in RAM: the model is on the CPU lane (`--device none` reaches
-    /// the draft too) or `draft_gpu_layers` is 0.
-    pub fn on_cpu(&self, main_on_cpu: bool) -> bool {
-        main_on_cpu || self.gpu_layers == Some(0)
-    }
-
-    /// Memory the draft takes beside a model with a pool of `pool_tokens`.
+    /// Memory the draft takes beside a model with a pool of `pool_tokens`, and the part of it in
+    /// RAM: all of it when the model is on the CPU lane (`--device none` reaches the draft too)
+    /// or `draft_gpu_layers` is 0; with a smaller `draft_gpu_layers` than the draft has layers,
+    /// the share of its weights and KV cache for the layers left off the GPU (its buffers stay on
+    /// the GPU); otherwise none. Unset `draft_gpu_layers` is llama.cpp's `auto`: every layer.
     pub fn memory(&self, pool_tokens: u32, main_on_cpu: bool) -> DraftMemory {
-        DraftMemory {
-            bytes: self.fixed_bytes() + self.kv_bytes_per_token() * u64::from(pool_tokens),
-            on_cpu: self.on_cpu(main_on_cpu),
-        }
+        let bytes = self.fixed_bytes() + self.kv_bytes_per_token() * u64::from(pool_tokens);
+        let layered = bytes - DRAFT_OVERHEAD_BYTES;
+        let ram_bytes = if main_on_cpu || self.gpu_layers == Some(0) {
+            bytes
+        } else {
+            match (self.gpu_layers, self.model.info.block_count) {
+                (Some(on_gpu), Some(layers)) if layers > 0 && u64::from(on_gpu) < layers => {
+                    layered * (layers - u64::from(on_gpu)) / layers
+                }
+                _ => 0,
+            }
+        };
+        DraftMemory { bytes, ram_bytes }
     }
 }
 
@@ -283,15 +290,32 @@ mod tests {
             small.bytes,
             GIB + DRAFT_OVERHEAD_BYTES + 1_000 * 28 * 8 * 128 * 2
         );
-        assert!(!small.on_cpu);
-        assert!(
-            draft.memory(1_000, true).on_cpu,
+        assert_eq!(small.ram_bytes, 0, "unset layers: all on the GPU");
+        let lane = draft.memory(1_000, true);
+        assert_eq!(
+            lane.ram_bytes, lane.bytes,
             "a CPU-lane model drafts on the CPU"
         );
         let pinned = Draft {
             gpu_layers: Some(0),
+            ..draft.clone()
+        };
+        let memory = pinned.memory(1_000, false);
+        assert_eq!(memory.ram_bytes, memory.bytes);
+        // 7 of the draft's 28 layers on the GPU: three quarters of weights and KV in RAM.
+        let partial = Draft {
+            gpu_layers: Some(7),
+            ..draft.clone()
+        };
+        let memory = partial.memory(1_000, false);
+        assert_eq!(
+            memory.ram_bytes,
+            (memory.bytes - DRAFT_OVERHEAD_BYTES) * 21 / 28
+        );
+        let all = Draft {
+            gpu_layers: Some(99),
             ..draft
         };
-        assert!(pinned.memory(1_000, false).on_cpu);
+        assert_eq!(all.memory(1_000, false).ram_bytes, 0);
     }
 }

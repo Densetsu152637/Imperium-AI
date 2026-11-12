@@ -51,14 +51,15 @@ pub struct Placement {
     pub required_bytes: u64,
 }
 
-/// The memory of a draft model loaded beside a model for speculative decoding. It is not split
-/// between GPU and RAM by the planner: it sits wholly on one side.
+/// The memory of a draft model loaded beside a model for speculative decoding. The planner does
+/// not choose its split between GPU and RAM: `draft_gpu_layers` and the CPU lane do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DraftMemory {
     /// Weights, KV cache and compute buffers of the draft; 0 when there is no draft.
     pub bytes: u64,
-    /// The draft is kept in RAM (the model is on the CPU lane, or `draft_gpu_layers` is 0).
-    pub on_cpu: bool,
+    /// The part of `bytes` kept in RAM: all of it on the CPU lane or with `draft_gpu_layers = 0`,
+    /// the share of layers left off the GPU with a partial `draft_gpu_layers`, else 0.
+    pub ram_bytes: u64,
 }
 
 /// What loading a model needs at a given context and slot count.
@@ -189,11 +190,7 @@ pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
         _ => false,
     };
     // A draft kept in RAM leaves the GPU's share of the requirement and takes RAM instead.
-    let draft_in_ram = if footprint.draft.on_cpu {
-        footprint.draft.bytes
-    } else {
-        0
-    };
+    let draft_in_ram = footprint.draft.ram_bytes.min(footprint.draft.bytes);
     let gpu_required = required - draft_in_ram;
     if gpu_required <= budget.vram_bytes && draft_in_ram <= budget.ram_bytes && !capped {
         return Some(Placement {
@@ -228,7 +225,7 @@ pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
             0
         }
         + draft_in_ram;
-    (ram <= budget.ram_bytes).then_some(Placement {
+    (ram <= budget.ram_bytes && vram <= budget.vram_bytes).then_some(Placement {
         gpu_layers,
         all_layers_on_gpu: false,
         vram_bytes: vram,
@@ -567,7 +564,7 @@ mod tests {
     fn a_draft_model_counts_in_the_memory_a_model_needs() {
         let draft = DraftMemory {
             bytes: GIB,
-            on_cpu: false,
+            ram_bytes: 0,
         };
         let with = footprint().with_draft(draft);
         assert_eq!(with.required_bytes(), footprint().required_bytes() + GIB);
@@ -583,7 +580,7 @@ mod tests {
         // Kept in RAM it takes RAM and leaves the VRAM the model alone needs.
         let in_ram = place(
             footprint().with_draft(DraftMemory {
-                on_cpu: true,
+                ram_bytes: GIB,
                 ..draft
             }),
             roomy,
@@ -610,6 +607,46 @@ mod tests {
         };
         assert_eq!(place(with, short), None);
         assert!(place(footprint(), short).is_some());
+    }
+
+    #[test]
+    fn a_draft_larger_than_the_vram_left_is_not_placed_on_it() {
+        // 2 GiB of VRAM cannot hold a 3 GiB draft, whatever the model's layers do.
+        let budget = Budget {
+            vram_bytes: 2 * GIB,
+            ram_bytes: 64 * GIB,
+            unified: false,
+        };
+        let big_draft = DraftMemory {
+            bytes: 3 * GIB,
+            ram_bytes: 0,
+        };
+        assert_eq!(place(footprint().with_draft(big_draft), budget), None);
+        // The same draft held in RAM is fine, and the model's layers use the VRAM.
+        let in_ram = DraftMemory {
+            ram_bytes: 3 * GIB,
+            ..big_draft
+        };
+        let placement = place(footprint().with_draft(in_ram), budget).unwrap();
+        assert!(placement.vram_bytes <= budget.vram_bytes);
+        assert!(placement.ram_bytes >= 3 * GIB);
+    }
+
+    #[test]
+    fn a_draft_split_between_gpu_and_ram_takes_both() {
+        let budget = Budget {
+            vram_bytes: 24 * GIB,
+            ram_bytes: 16 * GIB,
+            unified: false,
+        };
+        let split = DraftMemory {
+            bytes: 2 * GIB,
+            ram_bytes: GIB,
+        };
+        let placement = place(footprint().with_draft(split), budget).unwrap();
+        assert!(placement.all_layers_on_gpu);
+        assert_eq!(placement.vram_bytes, 5 * GIB + RUNTIME_OVERHEAD_BYTES + GIB);
+        assert_eq!(placement.ram_bytes, GIB);
     }
 
     #[test]

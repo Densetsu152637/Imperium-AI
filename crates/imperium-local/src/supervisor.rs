@@ -206,6 +206,7 @@ pub struct SlotTransfer {
 
 pub type SlotFuture<'a> = Pin<Box<dyn Future<Output = Result<SlotTransfer, String>> + Send + 'a>>;
 pub type StopFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+pub type SpeculatingFuture<'a> = Pin<Box<dyn Future<Output = Option<bool>> + Send + 'a>>;
 
 /// A running model server; dropping it stops the server.
 pub trait Server: Send + Sync {
@@ -236,6 +237,12 @@ pub trait Server: Send + Sync {
     /// Frees `slot`'s KV cells (its prompt is gone from the server until restored).
     fn erase_slot(&self, _slot: u32) -> SlotFuture<'_> {
         Box::pin(async { Err("this runtime cannot erase slots".to_string()) })
+    }
+
+    /// Whether the running server does speculative decoding: `Some(false)` when it started
+    /// with a draft model but could not set it up and runs without. `None` when it cannot say.
+    fn speculating(&self) -> SpeculatingFuture<'_> {
+        Box::pin(async { None })
     }
 
     /// Stops the server and returns once it has exited, so its memory is free before the next
@@ -1152,6 +1159,14 @@ impl fmt::Debug for Supervisor {
             .field("launcher", &self.launcher)
             .finish_non_exhaustive()
     }
+}
+
+/// Takes the memory planned for a draft that is not in use out of `placement`.
+fn release_draft(placement: &mut Placement, draft: planner::DraftMemory) {
+    let in_ram = draft.ram_bytes.min(draft.bytes);
+    placement.vram_bytes = placement.vram_bytes.saturating_sub(draft.bytes - in_ram);
+    placement.ram_bytes = placement.ram_bytes.saturating_sub(in_ram);
+    placement.required_bytes = placement.required_bytes.saturating_sub(draft.bytes);
 }
 
 /// What `model` needs started with `launch`, with `draft`'s memory added when it drafts.
@@ -2763,31 +2778,38 @@ impl Supervisor {
         }
         let started = Instant::now();
         // A quick failure, such as the process exiting while it starts, is tried once more; one
-        // that ran out the launcher's time is not.
-        let launched = match self.launcher.launch(&spec).await {
-            Err(error) if !error.timed_out => {
-                if let Some(draft) = drafting.draft()
-                    && spec.draft.take().is_some()
-                {
-                    // The draft may be what the server refused (an incompatible vocabulary
-                    // the header did not show, or too little memory): try without it, and
-                    // keep loading without it until the settings or the models change.
-                    let reason = speculative::skipped(
-                        &draft.model.id,
-                        &format!("the server did not start with it ({})", error.message),
-                    );
-                    tracing::warn!(model = %model.id, %error, draft = %draft.model.id, "could not start the model with its draft; trying without it");
-                    lock(&self.draft_failed)
-                        .insert(model.id.clone(), (draft.model.id.clone(), reason.clone()));
-                    draft_notice = Some(reason);
-                } else {
-                    tracing::warn!(model = %model.id, %error, "could not start the model; trying once more");
-                }
-                self.launcher.launch(&spec).await
+        // that ran out the launcher's time is not. With a draft, a second quick failure is
+        // tried once without it (the draft may be what the server refused); only if that start
+        // works is the draft held to blame and left out until the settings or models change.
+        let mut launched = self.launcher.launch(&spec).await;
+        if let Err(error) = &launched
+            && !error.timed_out
+        {
+            tracing::warn!(model = %model.id, %error, "could not start the model; trying once more");
+            launched = self.launcher.launch(&spec).await;
+        }
+        let mut draft_dropped = false;
+        if let Err(error) = &launched
+            && !error.timed_out
+            && let Some(draft) = drafting.draft()
+            && spec.draft.is_some()
+        {
+            let message = error.message.clone();
+            tracing::warn!(model = %model.id, error = %message, draft = %draft.model.id, "could not start the model with its draft; trying without it");
+            spec.draft = None;
+            launched = self.launcher.launch(&spec).await;
+            if launched.is_ok() {
+                let reason = speculative::skipped(
+                    &draft.model.id,
+                    &format!("the server did not start with it ({message})"),
+                );
+                lock(&self.draft_failed)
+                    .insert(model.id.clone(), (draft.model.id.clone(), reason.clone()));
+                draft_notice = Some(reason);
+                draft_dropped = true;
             }
-            launched => launched,
-        };
-        let draft_used = spec
+        }
+        let mut draft_used = spec
             .draft
             .as_ref()
             .and(drafting.draft())
@@ -2807,6 +2829,29 @@ impl Supervisor {
                 return Err(error.message);
             }
         };
+        // llama-server survives a draft it cannot use (a vocabulary that does not match, a model
+        // that cannot roll its cache back): it logs the failure and runs without speculation.
+        // Ask the running server, and hold the draft to blame when it is not in use.
+        if draft_used.is_some()
+            && let Some(draft) = drafting.draft()
+            && server.speculating().await == Some(false)
+        {
+            let reason = speculative::skipped(
+                &draft.model.id,
+                "llama-server started without speculative decoding (the draft's vocabulary does \
+                 not match the model's, or the model cannot roll its cache back; see its log)",
+            );
+            tracing::warn!(model = %model.id, notice = %reason, "the draft model is not in use");
+            lock(&self.draft_failed)
+                .insert(model.id.clone(), (draft.model.id.clone(), reason.clone()));
+            draft_notice = Some(reason);
+            draft_used = None;
+            draft_dropped = true;
+        }
+        // A draft that is not loaded holds no memory: release what the plan reserved for it.
+        if draft_dropped && let Some(draft) = drafting.draft() {
+            release_draft(&mut placement, draft.memory(served.pool_tokens, cpu_pinned));
+        }
         let seconds = started.elapsed().as_secs_f64();
         self.record(
             Move::done(load_action, cause)
@@ -3650,16 +3695,30 @@ mod tests {
         launched: Mutex<Vec<(String, Vec<String>)>>,
         /// A server given a draft model refuses to start (an incompatible draft).
         refuse_drafts: std::sync::atomic::AtomicBool,
+        /// Every start fails.
+        fail_all: std::sync::atomic::AtomicBool,
+        /// The next this many starts fail (a transient failure).
+        fail_first: AtomicUsize,
+        /// Every start runs out of time.
+        time_out: std::sync::atomic::AtomicBool,
+        /// The server starts but reports that it does not speculate.
+        no_speculation: std::sync::atomic::AtomicBool,
     }
 
     struct FakeServer {
         url: String,
         running: Arc<AtomicUsize>,
+        speculating: Option<bool>,
     }
 
     impl Server for FakeServer {
         fn base_url(&self) -> &str {
             &self.url
+        }
+
+        fn speculating(&self) -> SpeculatingFuture<'_> {
+            let answer = self.speculating;
+            Box::pin(async move { answer })
         }
     }
 
@@ -3674,6 +3733,22 @@ mod tests {
             Box::pin(async move {
                 self.launches.fetch_add(1, Ordering::SeqCst);
                 lock(&self.launched).push((spec.backend.id().to_string(), spec.args()));
+                if self.time_out.load(Ordering::SeqCst) {
+                    return Err(LaunchError::timed_out(
+                        "the model did not load within 600 s".to_string(),
+                    ));
+                }
+                if self.fail_all.load(Ordering::SeqCst) {
+                    return Err(LaunchError::from("the server refused to start"));
+                }
+                let transient =
+                    self.fail_first
+                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                            left.checked_sub(1)
+                        });
+                if transient.is_ok() {
+                    return Err(LaunchError::from("the server exited while starting"));
+                }
                 if spec.draft.is_some() && self.refuse_drafts.load(Ordering::SeqCst) {
                     return Err(LaunchError::from("draft vocabulary does not match"));
                 }
@@ -3682,6 +3757,9 @@ mod tests {
                 Ok(Box::new(FakeServer {
                     url: format!("http://fake/{}/v1", spec.model_id),
                     running: Arc::clone(&self.running),
+                    speculating: (spec.draft.is_some()
+                        && self.no_speculation.load(Ordering::SeqCst))
+                    .then_some(false),
                 }) as Box<dyn Server>)
             })
         }
@@ -4689,15 +4767,67 @@ mod tests {
         }
     }
 
+    fn big_machine() -> Hardware {
+        Hardware {
+            ram_total_bytes: 64 * GIB,
+            ram_available_bytes: 64 * GIB,
+            ..hardware()
+        }
+    }
+
+    /// Like [`drafting_supervisor`], on `hardware`, with the draft settings changed by `tweak`.
+    fn drafting_on(
+        hardware: &Hardware,
+        launcher: Arc<FakeLauncher>,
+        models: Vec<LocalModel>,
+        draft_settings: LocalModelSettings,
+        context_auto: bool,
+    ) -> Arc<Supervisor> {
+        let mut settings = settings();
+        if context_auto {
+            settings.context = imperium_config::ContextLimit::Auto;
+        }
+        settings.models.insert("main".into(), draft_settings);
+        Supervisor::start(models, settings, Runtimes::default(), hardware, launcher)
+    }
+
+    fn draft_of(id: &str) -> LocalModelSettings {
+        LocalModelSettings {
+            draft_model: Some(id.into()),
+            ..LocalModelSettings::default()
+        }
+    }
+
+    fn pair() -> Vec<LocalModel> {
+        vec![model("main", 6), model("small", 1)]
+    }
+
+    fn plain_supervisor(hardware: &Hardware, models: Vec<LocalModel>) -> Arc<Supervisor> {
+        Supervisor::start(
+            models,
+            settings(),
+            Runtimes::default(),
+            hardware,
+            Arc::new(FakeLauncher::default()),
+        )
+    }
+
+    fn the_main(supervisor: &Supervisor) -> LocalModel {
+        supervisor
+            .models()
+            .into_iter()
+            .find(|m| m.id == "main")
+            .unwrap()
+    }
+
     #[tokio::test]
-    async fn a_draft_the_server_refuses_is_dropped_and_not_tried_again() {
+    async fn a_draft_the_server_refuses_twice_is_retried_without_and_then_left_out() {
         let launcher = Arc::new(FakeLauncher::default());
         launcher.refuse_drafts.store(true, Ordering::SeqCst);
-        let models = vec![model("main", 6), model("small", 1)];
-        let supervisor = drafting_supervisor(Arc::clone(&launcher), models, "small");
+        let supervisor = drafting_supervisor(Arc::clone(&launcher), pair(), "small");
         let lease = supervisor.acquire("main", "holder").await.unwrap();
-        // One launch with the draft, refused, then one without it.
-        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+        // The draft is tried twice (the first failure may be transient), then once without.
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 3);
         let args = last_args(&launcher);
         assert!(!args.contains("--spec-draft-model"), "{args}");
         let status = supervisor.loaded().remove(0);
@@ -4707,10 +4837,218 @@ mod tests {
             notice.contains("small") && notice.contains("did not start"),
             "{notice}"
         );
-        // The next load goes straight to the launch without the draft.
+        // The next load goes straight to the launch without the draft ...
         drop(lease);
         supervisor.unload("main").await.unwrap();
         let _again = supervisor.acquire("main", "holder").await.unwrap();
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 4);
+        drop(_again);
+        supervisor.unload("main").await.unwrap();
+        // ... until the settings change, which forgets the blame; so does a rescan.
+        let main = the_main(&supervisor);
+        let settings = |id: &str| BTreeMap::from([("main".to_string(), draft_of(id))]);
+        supervisor.set_model_settings(settings("small"));
+        let launch = supervisor.launch("main");
+        assert_eq!(
+            supervisor.draft_state(&main, &launch).0.as_deref(),
+            Some("small")
+        );
+        launcher.refuse_drafts.store(true, Ordering::SeqCst);
+        drop(supervisor.acquire("main", "holder").await.unwrap());
+        assert_eq!(supervisor.draft_state(&main, &launch).0, None);
+        supervisor.unload("main").await.unwrap();
+        supervisor.set_models(pair());
+        assert_eq!(
+            supervisor.draft_state(&main, &launch).0.as_deref(),
+            Some("small")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_with_a_draft_is_retried_with_the_draft() {
+        let launcher = Arc::new(FakeLauncher::default());
+        launcher.fail_first.store(1, Ordering::SeqCst);
+        let supervisor = drafting_supervisor(Arc::clone(&launcher), pair(), "small");
+        let lease = supervisor.acquire("main", "holder").await.unwrap();
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+        assert!(last_args(&launcher).contains("--spec-draft-model small.gguf"));
+        let status = supervisor.loaded().remove(0);
+        assert_eq!(status.draft.as_deref(), Some("small"));
+        assert_eq!(status.draft_notice, None);
+        // The draft was not blamed: the next load uses it again.
+        drop(lease);
+        supervisor.unload("main").await.unwrap();
+        drop(supervisor.acquire("main", "holder").await.unwrap());
+        assert!(last_args(&launcher).contains("--spec-draft-model small.gguf"));
+    }
+
+    #[tokio::test]
+    async fn a_model_that_fails_without_its_draft_too_does_not_blame_the_draft() {
+        let launcher = Arc::new(FakeLauncher::default());
+        launcher.fail_all.store(true, Ordering::SeqCst);
+        let supervisor = drafting_supervisor(Arc::clone(&launcher), pair(), "small");
+        let error = supervisor.acquire("main", "holder").await.unwrap_err();
+        assert!(error.contains("refused"), "{error}");
+        // The draft twice, then without it; all failed.
         assert_eq!(launcher.launches.load(Ordering::SeqCst), 3);
+        launcher.fail_all.store(false, Ordering::SeqCst);
+        drop(supervisor.acquire("main", "holder").await.unwrap());
+        assert!(last_args(&launcher).contains("--spec-draft-model small.gguf"));
+        assert_eq!(supervisor.loaded()[0].draft.as_deref(), Some("small"));
+    }
+
+    #[tokio::test]
+    async fn a_start_that_times_out_is_not_retried_and_does_not_blame_the_draft() {
+        let launcher = Arc::new(FakeLauncher::default());
+        launcher.time_out.store(true, Ordering::SeqCst);
+        let supervisor = drafting_supervisor(Arc::clone(&launcher), pair(), "small");
+        let error = supervisor.acquire("main", "holder").await.unwrap_err();
+        assert!(error.contains("did not load"), "{error}");
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
+        launcher.time_out.store(false, Ordering::SeqCst);
+        drop(supervisor.acquire("main", "holder").await.unwrap());
+        assert!(last_args(&launcher).contains("--spec-draft-model small.gguf"));
+    }
+
+    #[tokio::test]
+    async fn a_server_that_runs_without_its_draft_is_noticed_and_its_memory_released() {
+        let launcher = Arc::new(FakeLauncher::default());
+        launcher.no_speculation.store(true, Ordering::SeqCst);
+        let drafted = drafting_supervisor(Arc::clone(&launcher), pair(), "small");
+        let plain = plain_supervisor(&hardware(), pair());
+        let mut moves = drafted.moves();
+        let lease = drafted.acquire("main", "holder").await.unwrap();
+        // One start: llama-server came up, and said it does not speculate.
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
+        let status = drafted.loaded().remove(0);
+        assert_eq!(status.draft, None);
+        let notice = status.draft_notice.unwrap();
+        assert!(notice.contains("without speculative decoding"), "{notice}");
+        // What the plan reserved for the draft is given back.
+        drop(plain.acquire("main", "holder").await.unwrap());
+        let without = plain.loaded().remove(0);
+        assert_eq!(
+            (status.vram_bytes, status.ram_bytes),
+            (without.vram_bytes, without.ram_bytes)
+        );
+        // The load's entry in the residency log says so.
+        let load = moves.try_recv().unwrap();
+        assert_eq!(load.action.name(), "load");
+        assert!(
+            load.detail
+                .unwrap()
+                .contains("without speculative decoding"),
+            "the log says why"
+        );
+        // The next load leaves the draft out until the settings change.
+        drop(lease);
+        drafted.unload("main").await.unwrap();
+        drop(drafted.acquire("main", "holder").await.unwrap());
+        assert!(!last_args(&launcher).contains("--spec-draft-model"));
+    }
+
+    #[tokio::test]
+    async fn a_running_draft_is_named_in_the_residency_log() {
+        let launcher = Arc::new(FakeLauncher::default());
+        let supervisor = drafting_supervisor(Arc::clone(&launcher), pair(), "small");
+        let mut moves = supervisor.moves();
+        drop(supervisor.acquire("main", "holder").await.unwrap());
+        let load = moves.try_recv().unwrap();
+        assert!(load.detail.unwrap().contains("draft model small"));
+    }
+
+    #[test]
+    fn where_the_draft_sits_follows_its_gpu_layers_and_the_cpu_lane() {
+        let hardware = big_machine();
+        let plan = |settings: LocalModelSettings| {
+            let supervisor = drafting_on(
+                &hardware,
+                Arc::new(FakeLauncher::default()),
+                pair(),
+                settings,
+                false,
+            );
+            let main = the_main(&supervisor);
+            let footprint = supervisor.footprint(&main);
+            let (_, placement) = supervisor.plan_with(&main, &supervisor.launch("main"));
+            (footprint, placement.unwrap(), supervisor)
+        };
+        // Unset layers: llama.cpp's auto, the whole draft on the GPU.
+        let (footprint, placement, _) = plan(draft_of("small"));
+        assert!(footprint.draft.bytes > GIB);
+        assert_eq!(footprint.draft.ram_bytes, 0);
+        assert!(placement.all_layers_on_gpu);
+        let on_gpu = placement.vram_bytes;
+        // 0 layers: the draft is in RAM and the GPU holds only the model.
+        let (footprint, placement, _) = plan(LocalModelSettings {
+            draft_gpu_layers: Some(0),
+            ..draft_of("small")
+        });
+        assert_eq!(footprint.draft.ram_bytes, footprint.draft.bytes);
+        assert_eq!(placement.ram_bytes, footprint.draft.bytes);
+        assert_eq!(placement.vram_bytes, on_gpu - footprint.draft.bytes);
+        // 8 of the draft's 32 layers: a quarter on the GPU, the rest of its weights and KV in RAM.
+        let (footprint, placement, _) = plan(LocalModelSettings {
+            draft_gpu_layers: Some(8),
+            ..draft_of("small")
+        });
+        assert!(footprint.draft.ram_bytes > 0 && footprint.draft.ram_bytes < footprint.draft.bytes);
+        assert_eq!(placement.ram_bytes, footprint.draft.ram_bytes);
+        // On the CPU lane the draft follows the model into RAM.
+        let (_, _, supervisor) = plan(draft_of("small"));
+        supervisor.set_cpu_pinned(HashMap::from([("main".to_string(), CpuLane::default())]));
+        let main = the_main(&supervisor);
+        let footprint = supervisor.footprint(&main);
+        assert_eq!(footprint.draft.ram_bytes, footprint.draft.bytes);
+        let (_, placement) = supervisor.plan_with(&main, &supervisor.launch("main"));
+        let placement = placement.unwrap();
+        assert_eq!((placement.gpu_layers, placement.vram_bytes), (0, 0));
+        assert!(placement.ram_bytes >= footprint.draft.bytes);
+    }
+
+    #[test]
+    fn the_context_ceiling_leaves_room_for_the_draft() {
+        let drafted = drafting_on(
+            &hardware(),
+            Arc::new(FakeLauncher::default()),
+            pair(),
+            draft_of("small"),
+            true,
+        );
+        let mut settings = settings();
+        settings.context = imperium_config::ContextLimit::Auto;
+        let plain = Supervisor::start(
+            pair(),
+            settings,
+            Runtimes::default(),
+            &hardware(),
+            Arc::new(FakeLauncher::default()),
+        );
+        let (with, without) = (drafted.launch("main"), plain.launch("main"));
+        assert!(with.context < without.context, "{with:?} {without:?}");
+        assert!(with.context > 0);
+    }
+
+    #[test]
+    fn a_draft_that_would_push_the_models_layers_off_the_gpu_is_skipped() {
+        // 8 GiB of weights and a 1 GiB pool fit the 10 GiB GPU alone; a draft beside them does
+        // not, and there is RAM to spill to, so it would be the model's layers that move.
+        let supervisor = drafting_on(
+            &big_machine(),
+            Arc::new(FakeLauncher::default()),
+            vec![model("main", 8), model("small", 1)],
+            draft_of("small"),
+            false,
+        );
+        let main = the_main(&supervisor);
+        let (used, notice) = supervisor.draft_state(&main, &supervisor.launch("main"));
+        assert_eq!(used, None);
+        assert!(
+            notice.unwrap().contains("no longer fit on the GPU"),
+            "the reason names the layers"
+        );
+        // Without the draft the model is wholly on the GPU.
+        let (_, placement) = supervisor.plan_with(&main, &supervisor.launch("main"));
+        assert!(placement.unwrap().all_layers_on_gpu);
     }
 }

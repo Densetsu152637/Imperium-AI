@@ -13,7 +13,8 @@ use tokio::process::{Child, Command};
 
 use crate::backend::{LLAMA_CPP, VLLM};
 use crate::supervisor::{
-    LaunchError, LaunchFuture, LaunchSpec, Launcher, Server, SlotFuture, SlotTransfer, StopFuture,
+    LaunchError, LaunchFuture, LaunchSpec, Launcher, Server, SlotFuture, SlotTransfer,
+    SpeculatingFuture, StopFuture,
 };
 
 /// How long a model may take to load before the launch is abandoned.
@@ -133,6 +134,11 @@ impl ProcessLauncher {
             .stdout(log.try_clone().map_err(|error| error.to_string())?)
             .stderr(log)
             .kill_on_drop(true);
+        // The draft model is Imperium's to choose and to count in memory: llama-server must not
+        // pick one up from the environment the daemon runs in.
+        for variable in crate::backend::scrubbed_env(spec) {
+            command.env_remove(variable);
+        }
         library_path(&mut command, program);
         let mut child = command
             .spawn()
@@ -197,6 +203,24 @@ struct ProcessServer {
 }
 
 impl ProcessServer {
+    /// `GET /slots` (llama.cpp b12180): each slot's `speculative` flag is true when the server
+    /// has a speculative decoding context. `None` when the reply cannot be read (`--no-slots`,
+    /// an older server).
+    async fn slots_speculating(&self) -> Option<bool> {
+        let response = self
+            .http
+            .get(format!("{}/slots", self.root))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let slots: serde_json::Value = response.json().await.ok()?;
+        speculating_in(&slots)
+    }
+
     /// `POST /slots/{slot}?action=save|restore` with the file name (llama.cpp b12180); the
     /// reply counts tokens in `n_saved`/`n_restored` and bytes in `n_written`/`n_read`.
     async fn slot_action(
@@ -256,6 +280,10 @@ impl Server for ProcessServer {
         Box::pin(self.slot_action(slot, "erase", ""))
     }
 
+    fn speculating(&self) -> SpeculatingFuture<'_> {
+        Box::pin(self.slots_speculating())
+    }
+
     fn stop(&self) -> StopFuture<'_> {
         let child = self
             .child
@@ -287,6 +315,17 @@ impl Server for ProcessServer {
             Ok(None) | Err(_) => None,
         }
     }
+}
+
+/// Whether any slot in a `/slots` reply has a speculative decoding context; `None` when the
+/// reply has no slot with the field.
+fn speculating_in(slots: &serde_json::Value) -> Option<bool> {
+    let flags: Vec<bool> = slots
+        .as_array()?
+        .iter()
+        .filter_map(|slot| slot["speculative"].as_bool())
+        .collect();
+    (!flags.is_empty()).then(|| flags.contains(&true))
 }
 
 /// Asks the OS for a free port. Another process could take it before the server binds; the
@@ -338,6 +377,25 @@ mod tests {
     use crate::backend::LlamaCpp;
     use crate::scan::Format;
     use std::sync::Arc;
+
+    #[test]
+    fn the_slots_reply_says_whether_the_server_speculates() {
+        use serde_json::json;
+        assert_eq!(
+            speculating_in(
+                &json!([{"id": 0, "speculative": true}, {"id": 1, "speculative": true}])
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            speculating_in(&json!([{"id": 0, "speculative": false}])),
+            Some(false)
+        );
+        // No field, no slots, or not a list (an error body): nothing is known.
+        assert_eq!(speculating_in(&json!([{"id": 0}])), None);
+        assert_eq!(speculating_in(&json!([])), None);
+        assert_eq!(speculating_in(&json!({"error": {"code": 501}})), None);
+    }
 
     #[tokio::test]
     async fn a_missing_server_is_explained() {

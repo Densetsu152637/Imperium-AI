@@ -117,7 +117,7 @@ pub const CACHE_TYPES: [&str; 9] = [
 /// Cache types that keep full-precision values, so they need no flash attention.
 const FULL_PRECISION: [&str; 3] = ["f16", "bf16", "f32"];
 /// Flags Imperium sets itself, which a model's `extra_args` may not repeat.
-const OWNED_FLAGS: [&str; 42] = [
+const OWNED_FLAGS: &[&str] = &[
     "-m",
     "--model",
     "--host",
@@ -162,7 +162,20 @@ const OWNED_FLAGS: [&str; 42] = [
     "--gpu-layers-draft",
     "--n-gpu-layers-draft",
     "--spec-draft-ngl",
+    // Other ways to name or shape a draft model, which would bypass the memory plan.
+    "--spec-draft-hf",
+    "-hfd",
+    "-hfrd",
+    "--hf-repo-draft",
+    "--spec-draft-type-k",
+    "-ctkd",
+    "--cache-type-k-draft",
+    "--spec-draft-type-v",
+    "-ctvd",
+    "--cache-type-v-draft",
 ];
+/// llama-server's own default for `--spec-draft-n-max` (b12180), what `draft_max` replaces.
+pub const DEFAULT_DRAFT_MAX: u32 = 3;
 
 /// `[runtime.llamacpp.models."<local model id>"]`: settings of one local model. Unset keys take
 /// the defaults under `[runtime.llamacpp]`.
@@ -454,14 +467,26 @@ pub fn check_local_model(settings: &LocalModelSettings) -> Result<(), String> {
     check_cache_type("cache_type_v", settings.cache_type_v.as_deref())?;
     check_flash_attn(settings.flash_attn.as_deref())?;
     check_draft(settings)?;
-    for arg in settings.extra_args.iter().flatten() {
+    check_extra_args(
+        settings.extra_args.iter().flatten(),
+        settings.draft_model.is_some(),
+    )
+}
+
+/// Checks extra arguments for flags Imperium sets itself, and for `--spec-type` while a draft
+/// model is set (Imperium passes `--spec-type draft-simple` then).
+fn check_extra_args<'a>(
+    args: impl Iterator<Item = &'a String>,
+    drafting: bool,
+) -> Result<(), String> {
+    for arg in args {
         let flag = arg.split('=').next().unwrap_or(arg);
         if OWNED_FLAGS.contains(&flag) {
             return Err(format!(
                 "extra_args may not contain {flag}, which Imperium sets itself"
             ));
         }
-        if flag == "--spec-type" && settings.draft_model.is_some() {
+        if flag == "--spec-type" && drafting {
             return Err(
                 "extra_args may not contain --spec-type while draft_model is set, \
                  which has Imperium pass --spec-type draft-simple"
@@ -495,12 +520,19 @@ fn check_draft(settings: &LocalModelSettings) -> Result<(), String> {
     if settings.draft_max == Some(0) {
         return Err("draft_max needs a value of at least 1".into());
     }
-    if let (Some(max), Some(min)) = (settings.draft_max, settings.draft_min)
-        && min > max
-    {
-        return Err(format!(
-            "draft_min ({min}) may not exceed draft_max ({max})"
-        ));
+    // An unset `draft_max` is llama.cpp's default, which `draft_min` may not exceed either.
+    if let Some(min) = settings.draft_min {
+        let max = settings.draft_max.unwrap_or(DEFAULT_DRAFT_MAX);
+        if min > max {
+            return Err(format!(
+                "draft_min ({min}) may not exceed draft_max ({max}{})",
+                if settings.draft_max.is_none() {
+                    ", llama.cpp's default"
+                } else {
+                    ""
+                }
+            ));
+        }
     }
     Ok(())
 }
@@ -562,8 +594,14 @@ impl Settings {
         })
         .map_err(|e| format!("runtime.llamacpp: {e}"))?;
         check_launch(&llama.default_launch()).map_err(|e| format!("runtime.llamacpp: {e}"))?;
+        check_extra_args(llama.extra_args.iter(), false)
+            .map_err(|e| format!("runtime.llamacpp: {e}"))?;
         for (id, own) in &llama.models {
             check_local_model(own).map_err(|e| format!("runtime.llamacpp.models.{id:?}: {e}"))?;
+            if own.draft_model.is_some() {
+                check_extra_args(llama.extra_args.iter(), true)
+                    .map_err(|e| format!("runtime.llamacpp (with the draft of {id:?}): {e}"))?;
+            }
             if own.draft_model.as_deref() == Some(id.as_str()) {
                 return Err(format!(
                     "runtime.llamacpp.models.{id:?}: draft_model may not be the model itself"
@@ -1195,7 +1233,60 @@ draft_gpu_layers = 0
             refused("draft_model = \"Small\"\ndraft_max = 2\ndraft_min = 3")
                 .contains("may not exceed")
         );
+        assert!(refused("draft_model = \"Small\"\ndraft_min = 4").contains("llama.cpp's default"));
         assert!(refused("draft_model = \"Big\"").contains("the model itself"));
+        // Every way to name or shape a draft is Imperium's, with or without `=value`.
+        for flag in [
+            "-md",
+            "--model-draft",
+            "--spec-draft-model",
+            "--draft",
+            "--draft-max",
+            "--draft-n",
+            "--spec-draft-n-max",
+            "--draft-min",
+            "--draft-n-min",
+            "--spec-draft-n-min",
+            "-ngld",
+            "--gpu-layers-draft",
+            "--n-gpu-layers-draft",
+            "--spec-draft-ngl",
+            "-hfd",
+            "-hfrd",
+            "--hf-repo-draft",
+            "--spec-draft-hf",
+            "-ctkd",
+            "-ctvd",
+            "--spec-draft-type-k",
+            "--spec-draft-type-v",
+        ] {
+            let args = format!("extra_args = [\"{flag}=x\"]");
+            assert!(refused(&args).contains("Imperium sets itself"), "{flag}");
+        }
+        // ... also in the global arguments, which reach every model.
+        let global = config(&[(
+            user(),
+            "[runtime.llamacpp]\nextra_args = [\"-md\", \"x.gguf\"]\n",
+        )])
+        .settings()
+        .unwrap_err()
+        .to_string();
+        assert!(
+            global.contains("-md") && global.contains("runtime.llamacpp"),
+            "{global}"
+        );
+        // Without a draft, `--spec-type` is the user's (n-gram speculation, say); with one, in
+        // the global arguments too, it would override the draft's.
+        let ngram = "[runtime.llamacpp]\nextra_args = [\"--spec-type\", \"ngram-mod\"]\n";
+        assert!(config(&[(user(), ngram)]).settings().is_ok());
+        let both = config(&[(
+            user(),
+            &format!("{ngram}[runtime.llamacpp.models.\"Big\"]\ndraft_model = \"Small\"\n"),
+        )])
+        .settings()
+        .unwrap_err()
+        .to_string();
+        assert!(both.contains("--spec-type"), "{both}");
         assert!(refused("draft_model = \" \"").contains("blank"));
         assert!(
             refused("draft_model = \"Small\"\nextra_args = [\"-md=x.gguf\"]")
