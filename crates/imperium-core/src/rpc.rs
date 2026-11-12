@@ -62,6 +62,10 @@ use imperium_protocol::methods::{
     RuntimeUpdateExternal,
 };
 use imperium_protocol::methods::{
+    ModelBench, ModelBenchCancel, ModelBenchCancelParams, ModelBenchCancelResult,
+    ModelBenchResults, ModelBenchResultsParams,
+};
+use imperium_protocol::methods::{
     ModelConfig, ModelConfigParams, ModelSetConfig, ModelSetConfigParams,
 };
 use imperium_protocol::methods::{
@@ -572,6 +576,21 @@ impl Connection {
                 call::<ModelDownloadCancel>(request.params, |params: ModelDownloadCancelParams| {
                     Ok(ModelDownloadCancelResult {
                         found: self.state.downloads().cancel(&self.state, &params.job_id),
+                    })
+                })
+            }
+            ModelBench::NAME => call::<ModelBench>(request.params, |params| {
+                crate::bench::start(Arc::clone(&self.state), params)
+            }),
+            ModelBenchResults::NAME => {
+                call::<ModelBenchResults>(request.params, |params: ModelBenchResultsParams| {
+                    Ok(crate::bench::results(&self.state, params))
+                })
+            }
+            ModelBenchCancel::NAME => {
+                call::<ModelBenchCancel>(request.params, |params: ModelBenchCancelParams| {
+                    Ok(ModelBenchCancelResult {
+                        found: self.state.bench().cancel(&self.state, &params.run_id),
                     })
                 })
             }

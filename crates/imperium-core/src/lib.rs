@@ -4,6 +4,7 @@
 mod approvals;
 mod attachments;
 mod autofix;
+mod bench;
 mod browser_control;
 mod budgets;
 mod checkpoints;
@@ -42,6 +43,7 @@ mod worktrees;
 
 pub use approvals::Approvals;
 pub use autofix::{fix_ci, watch_pull_requests};
+pub use bench::Bench;
 pub use downloads::Downloads;
 pub use endpoint::EndpointFile;
 pub use environments::{EnvironmentError, Environments};
