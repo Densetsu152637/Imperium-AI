@@ -88,7 +88,7 @@ impl SystemProbe {
             primed: false,
             // Apple Silicon shares memory between GPU and CPU and has no nvidia-smi.
             nvidia: !cfg!(target_os = "macos"),
-            vendors: VendorProbe::default(),
+            vendors: VendorProbe,
         }
     }
 

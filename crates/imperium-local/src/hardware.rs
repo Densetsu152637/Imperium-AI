@@ -139,7 +139,7 @@ pub fn probe(overrides: &HardwareSettings) -> Hardware {
     };
     // AMD and Intel GPUs on Linux, and the Apple GPU that shares the machine's memory.
     gpus.extend(
-        VendorProbe::default()
+        VendorProbe
             .read(
                 system.total_memory(),
                 system
