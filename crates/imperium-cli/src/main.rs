@@ -8,6 +8,7 @@ mod env;
 mod initiative;
 mod local;
 mod memory;
+mod mods;
 mod phone;
 mod project;
 mod pull;
@@ -89,6 +90,11 @@ enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    /// Install and update UI mods, asking you to approve the permissions they request.
+    Mods {
+        #[command(subcommand)]
+        command: ModsCommand,
     },
     /// Manage secrets in the OS keychain.
     Secret {
@@ -635,6 +641,41 @@ enum ConfigCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum ModsCommand {
+    /// Install a mod from a git URL or a folder. Shows the permissions it requests and its
+    /// content hash and asks before installing; nothing in the mod runs. Mods appear in the
+    /// desktop app (Settings → Mods).
+    Install {
+        /// A git URL (`https://`, `ssh://`, `git@host:path`, `file://`) or a folder.
+        source: String,
+        /// The folder inside the source that holds the mod (its `mod.json`).
+        #[arg(long)]
+        path: Option<String>,
+        /// A branch, tag, or commit (git only).
+        #[arg(long)]
+        revision: Option<String>,
+        /// Install only if the mod's content has this SHA-256 (as shown by a previous run).
+        #[arg(long)]
+        sha256: Option<String>,
+        /// Approve without asking (for scripts).
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Update an installed mod from the source it was installed from. Shows how its requested
+    /// permissions differ from what you approved, and asks again if it wants more.
+    Update {
+        /// The mod's id.
+        id: String,
+        /// Update only if the new content has this SHA-256 (as shown by a previous run).
+        #[arg(long)]
+        sha256: Option<String>,
+        /// Approve new permissions without asking (for scripts).
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum SecretCommand {
     /// Store a secret. The value is read from standard input, or prompted for without echo.
     Set { name: SecretName },
@@ -757,6 +798,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Config {
             command: ConfigCommand::Undo { id },
         } => changes::undo(id),
+        Command::Mods { command } => match command {
+            ModsCommand::Install {
+                source,
+                path,
+                revision,
+                sha256,
+                yes,
+            } => mods::install(source, path, revision, sha256, yes),
+            ModsCommand::Update { id, sha256, yes } => mods::update(id, sha256, yes),
+        },
         Command::Secret {
             command: SecretCommand::Set { name },
         } => set_secret(&name),

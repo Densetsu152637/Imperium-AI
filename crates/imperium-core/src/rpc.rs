@@ -20,18 +20,18 @@ use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, code
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
     ApprovalRespondParams, ApprovalRespondResult, Handshake, HandshakeParams, HandshakeResult,
-    LocalModelList, LocalModelListParams, Method, ModList, ModListParams, ModelList,
-    ModelListParams, Peer, PetInteract, PetInteractParams, PetInteractResult, PetList,
-    PetListParams, PetListResult, PetStrip, PetStripParams, PetStripResult, PhoneDevices,
-    PhoneDevicesParams, PhoneDevicesResult, PhonePair, PhonePairParams, PhonePairResult,
-    PhoneRevoke, PhoneRevokeParams, PhoneRevokeResult, Ping, PingParams, PingResult,
-    ProjectAgentRow, ProjectList, ProjectListParams, ProjectListResult, ProjectMessage,
-    ProjectMessageParams, ProjectMessageResult, ScheduleList, ScheduleListParams,
-    ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionAnswer,
-    SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult, SessionDelete,
-    SessionDeleteParams, SessionExport, SessionExportParams, SessionList, SessionListParams,
-    SessionListResult, SessionRespond, SessionRespondParams, SessionSearch, SessionSearchParams,
-    SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
+    LocalModelList, LocalModelListParams, Method, ModInspect, ModInspectParams, ModInstall,
+    ModInstallParams, ModList, ModListParams, ModelList, ModelListParams, Peer, PetInteract,
+    PetInteractParams, PetInteractResult, PetList, PetListParams, PetListResult, PetStrip,
+    PetStripParams, PetStripResult, PhoneDevices, PhoneDevicesParams, PhoneDevicesResult,
+    PhonePair, PhonePairParams, PhonePairResult, PhoneRevoke, PhoneRevokeParams, PhoneRevokeResult,
+    Ping, PingParams, PingResult, ProjectAgentRow, ProjectList, ProjectListParams,
+    ProjectListResult, ProjectMessage, ProjectMessageParams, ProjectMessageResult, ScheduleList,
+    ScheduleListParams, ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult,
+    SessionAnswer, SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult,
+    SessionDelete, SessionDeleteParams, SessionExport, SessionExportParams, SessionList,
+    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSearch,
+    SessionSearchParams, SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
     SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::methods::{ApiGet, ApiGetParams, ApiSet, ApiToken};
@@ -618,11 +618,35 @@ impl Connection {
                 })
             }
             ModList::NAME => call::<ModList>(request.params, |_: ModListParams| {
-                Ok(crate::mods::list(
-                    &self.state.mods_dir(),
-                    &crate::mods::bundled_roots(),
-                ))
+                let mut listing =
+                    crate::mods::list(&self.state.mods_dir(), &crate::mods::bundled_roots());
+                crate::mod_install::apply_approvals(&self.state, &mut listing);
+                Ok(listing)
             }),
+            ModInspect::NAME => call_later::<ModInspect, _>(
+                request.params,
+                &mut later,
+                |params: ModInspectParams| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::mod_install::inspect(&state, params)
+                            .await
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                    }
+                },
+            ),
+            ModInstall::NAME => call_later::<ModInstall, _>(
+                request.params,
+                &mut later,
+                |params: ModInstallParams| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::mod_install::install(&state, params)
+                            .await
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                    }
+                },
+            ),
             ConfigChanges::NAME => {
                 call::<ConfigChanges>(request.params, |_: ConfigChangesParams| {
                     Ok(ConfigChangesResult {
@@ -1684,6 +1708,25 @@ mod tests {
         match &response.outcome {
             Outcome::Error(error) => Some(error.code),
             Outcome::Result(_) => None,
+        }
+    }
+
+    #[test]
+    fn a_paired_phone_cannot_inspect_or_install_mods() {
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        // A phone's scopes are an allowlist; mods.* is never in it.
+        let mut phone = Connection::restricted(state, vec![Handshake::NAME, "session.list"]);
+        let handled = phone.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        assert_eq!(error_code(&handled), None);
+        for method in ["mods.inspect", "mods.install"] {
+            let handled = phone.handle_text(&request(2, method, json!({"source": "x"})));
+            assert_eq!(error_code(&handled), Some(codes::FORBIDDEN), "{method}");
         }
     }
 

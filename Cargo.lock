@@ -2465,9 +2465,11 @@ dependencies = [
 name = "imperium-extensions"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "imperium-api",
  "imperium-mcp",
  "imperium-tools",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",

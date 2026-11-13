@@ -327,6 +327,15 @@ and `environments.agent_update` (protocol 0.28)
 30. **Hooks and mods.** More hook events, hooks that rewrite calls, HTTP hooks; more mod
     contribution points, install and update commands, a permission prompt at install, and
     trusted main-context mods ([06](06-extensibility.md)).
+    *First stage (implemented):* the hook events `session.end`, `turn.start`, `turn.end` and
+    `permission.requested`, and HTTP hooks (`https`, or `http` to this machine; a timeout; no
+    redirects; secrets only from the keychain), and `imperium mods install|update` from a git
+    URL or a folder with a permission prompt, a content hash that must match what was approved,
+    and a permission diff on update ([06](06-extensibility.md#hooks),
+    [06](06-extensibility.md#installing-and-updating-mods-implemented)). *Not built:* hooks
+    that rewrite calls and trusted main-context mods (both widen trust; a design is proposed in
+    [06](06-extensibility.md#later-stages-rewriting-hooks-and-trusted-mods)), more mod
+    contribution points, and the desktop's own install dialog.
 31. **Policy packs and MCP.** Fetching pack updates shown as a diff to accept, a policy crate
     that layers packs into the prompt; MCP resources, prompts, sampling, and OAuth for remote
     servers; and an MCP server bridge exposing Imperium itself

@@ -274,6 +274,8 @@ const FLOOR_PATHS: &[&str] = &[
     ".npmrc",
     ".pypirc",
     ".netrc",
+    // The daemon's record of which mod permissions the user approved.
+    "mod-approvals.json",
 ];
 
 /// Whether the built-in safety floor covers a call: a destructive command (see

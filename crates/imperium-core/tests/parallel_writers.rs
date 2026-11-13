@@ -1180,6 +1180,8 @@ async fn session_bound_tools_and_hooks_follow_the_writers_own_worktree() {
             event: "PostToolUse".into(),
             matcher: "Write".into(),
             command: marker.into(),
+            url: None,
+            headers: Default::default(),
             timeout_s: Some(20),
         }],
         server_timeout: Duration::from_secs(5),
