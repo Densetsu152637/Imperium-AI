@@ -108,9 +108,11 @@ pub struct HttpTarget {
     pub headers: BTreeMap<String, String>,
 }
 
+type SecretReader = dyn Fn(&str) -> Option<String> + Send + Sync;
+
 /// Reads a keychain secret by name; only HTTP hook headers use it.
 #[derive(Clone)]
-pub struct Secrets(Arc<dyn Fn(&str) -> Option<String> + Send + Sync>);
+pub struct Secrets(Arc<SecretReader>);
 
 impl Secrets {
     pub fn new(read: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> Self {
