@@ -269,10 +269,10 @@ export function EnvironmentWindow({
     if (!busy && client && name.trim() && !footerSaveBlocked(agentForm.dirty)) void save();
   };
 
-  /** Ctrl+S: the open agent form first, else the environment. */
+  /** Ctrl+S: the agent form while it holds changes, else the environment. */
   const saveNow = () => {
     if (busy || !client) return;
-    if (saveTarget(agentForm.open) === "agent") agentsRef.current?.save();
+    if (saveTarget(agentForm.open, agentForm.dirty) === "agent") agentsRef.current?.save();
     else saveEnvironment();
   };
 

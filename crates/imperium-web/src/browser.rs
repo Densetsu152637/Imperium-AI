@@ -45,6 +45,9 @@ pub struct Browser {
     _process: Option<Child>,
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     next_id: AtomicU64,
+    /// Whether the start-up warm-up opened its throwaway page. False when the browser would
+    /// not open one (the first navigation then pays for the start-up work, as it used to).
+    warmed: bool,
 }
 
 impl std::fmt::Debug for Browser {
@@ -160,10 +163,16 @@ impl Browser {
             _process: Some(process),
             socket,
             next_id: AtomicU64::new(1),
+            warmed: false,
         };
         browser.call("Page.enable", json!({})).await?;
         browser.warm_up(port).await?;
         Ok(browser)
+    }
+
+    /// Whether the start-up warm-up ran: the browser opened its throwaway page.
+    pub fn warmed(&self) -> bool {
+        self.warmed
     }
 
     /// Waits until the browser answers a first request, for at most `WARM_UP_TIMEOUT` in all.
@@ -183,6 +192,7 @@ impl Browser {
         let started = Instant::now();
         let outcome = tokio::time::timeout(limit, async {
             let opened = Self::warm_up_navigations(port, limit, self.log_path.clone()).await?;
+            self.warmed = opened;
             if opened {
                 // A page that was opened and closed can leave the one being driven in the
                 // background, where a screenshot waits for a frame that is never drawn.
@@ -301,6 +311,7 @@ impl Browser {
             _process: None,
             socket,
             next_id: AtomicU64::new(1),
+            warmed: false,
         };
         let url = format!("{base}/json/version");
         match page
@@ -811,6 +822,7 @@ mod tests {
             _process: None,
             socket,
             next_id: AtomicU64::new(1),
+            warmed: false,
         };
         (browser, dir, seen)
     }
@@ -992,6 +1004,7 @@ mod tests {
             .warm_up_within(debugger.port, Duration::from_secs(10))
             .await
             .unwrap();
+        assert!(browser.warmed());
         // The page being driven was navigated nowhere, so its history holds nothing of the
         // warm-up; it was only brought to the front.
         assert_eq!(*driven.lock().unwrap(), ["Page.bringToFront "]);
@@ -1022,6 +1035,7 @@ mod tests {
             .await
             .unwrap();
         assert!(driven.lock().unwrap().is_empty());
+        assert!(!browser.warmed());
     }
 
     #[tokio::test]
@@ -1099,6 +1113,8 @@ mod tests {
         let mut browser = Browser::launch(&program, profile.path(), true)
             .await
             .unwrap();
+        // A Chrome that stops opening pages at /json/new would quietly skip the warm-up.
+        assert!(browser.warmed(), "the start-up warm-up did not run");
         let text = browser.open(&url).await.unwrap();
         assert!(text.starts_with("Counter\nURL: http://127.0.0.1"), "{text}");
         assert!(text.contains("0 clicks"), "{text}");

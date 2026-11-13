@@ -56,8 +56,9 @@ test("the window opens on General, or on the Danger zone to confirm a delete", (
 });
 
 test("Ctrl+S saves the open agent form; the footer Save waits while it is dirty", () => {
-  assert.equal(saveTarget(true), "agent");
-  assert.equal(saveTarget(false), "environment");
+  assert.equal(saveTarget(true, true), "agent");
+  assert.equal(saveTarget(true, false), "environment", "an open but clean form leaves the shortcut to the environment");
+  assert.equal(saveTarget(false, false), "environment");
   assert.equal(footerSaveBlocked(true), true);
   assert.equal(footerSaveBlocked(false), false);
 });

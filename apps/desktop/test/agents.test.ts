@@ -10,6 +10,7 @@ import {
   actLimits,
   agentOfSession,
   agentTitle,
+  cleanName,
   describePermissions,
   draftOfPermissions,
   initiativeHeadline,
@@ -99,6 +100,12 @@ test("names are measured in characters and checked like the daemon does", () => 
     assert.match(nameProblem(bad) ?? "", /control characters/, JSON.stringify(bad));
   }
   assert.equal(nameProblem("Planner \u200D👩"), null, "joiners in emoji are fine");
+});
+
+test("a folder name with forbidden characters is cleaned into an environment name, not skipped", () => {
+  assert.equal(cleanName("my‮proj ect\n", "Project"), "myproject");
+  assert.equal(cleanName("  café 😀 ", "Project"), "café 😀");
+  assert.equal(cleanName("‮ ", "Project"), "Project");
 });
 
 test("a saved update that did not restart the agent says so in its own words", () => {

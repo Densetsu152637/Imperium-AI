@@ -26,26 +26,33 @@ export const nameTaken = (agents: EnvironmentAgent[], name: string, except?: str
 /** A name's length in characters as the daemon counts it (an emoji is one, not two). */
 export const nameLength = (name: string) => [...name.trim()].length;
 
+/** Whether a character has no place in a name (the daemon refuses it): a control character, a line or
+ * paragraph separator, or a bidirectional control or mark. */
+export function isHiddenInName(c: string): boolean {
+  const code = c.codePointAt(0) ?? 0;
+  return (
+    code < 0x20 ||
+    (code >= 0x7f && code <= 0x9f) ||
+    code === 0x2028 ||
+    code === 0x2029 ||
+    code === 0x200e ||
+    code === 0x200f ||
+    code === 0x061c ||
+    (code >= 0x202a && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069)
+  );
+}
+
+/** `name` without the characters the daemon refuses, trimmed; `fallback` when nothing is left. */
+export const cleanName = (name: string, fallback: string): string =>
+  [...name].filter((c) => !isHiddenInName(c)).join("").trim() || fallback;
+
 /** Why `name` cannot be an agent's name (before the daemon checks it too), or null. */
 export function nameProblem(name: string): string | null {
   const length = nameLength(name);
   if (length === 0) return "An agent needs a name.";
   if (length > MAX_AGENT_NAME) return `An agent's name is at most ${MAX_AGENT_NAME} characters.`;
-  const control = [...name].some((c) => {
-    const code = c.codePointAt(0) ?? 0;
-    return (
-      code < 0x20 ||
-      (code >= 0x7f && code <= 0x9f) ||
-      code === 0x2028 ||
-      code === 0x2029 ||
-      code === 0x200e ||
-      code === 0x200f ||
-      code === 0x061c ||
-      (code >= 0x202a && code <= 0x202e) ||
-      (code >= 0x2066 && code <= 0x2069)
-    );
-  });
-  if (control) return "An agent's name cannot contain line breaks, bidirectional controls or other control characters.";
+  if ([...name].some(isHiddenInName)) return "An agent's name cannot contain line breaks, bidirectional controls or other control characters.";
   return null;
 }
 

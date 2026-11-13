@@ -85,6 +85,7 @@ import { ModelsPanel } from "./panels/ModelsPanel";
 import { TelemetryPanel } from "./panels/TelemetryPanel";
 import { ResourcesPanel } from "./panels/ResourcesPanel";
 import { UsagePanel } from "./panels/UsagePanel";
+import { cleanName } from "./agents";
 import { environmentIcon, projectName, sameFolder, useProjectIcons, type ProjectIcons } from "./projectIcons";
 import {
   applyEvent,
@@ -156,7 +157,8 @@ function migrateProjects(client: DaemonClient, sessionFolders: string[], icons: 
       try {
         envs.push(
           await client.call<EnvironmentInfo>("environments.create", {
-            name: projectName(folder),
+            // A folder name with a character the daemon refuses is cleaned, not left behind.
+            name: cleanName(projectName(folder), "Project"),
             icon: choice.icon,
             color: choice.color,
             folders: [folder],

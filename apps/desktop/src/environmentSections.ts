@@ -36,8 +36,10 @@ export function initialSection(kind: Kind, confirmDelete: boolean): EnvironmentS
 /** Whether a section's pane is hidden. Panes stay mounted, so an agent draft survives a switch. */
 export const paneHidden = (selected: EnvironmentSectionId, pane: EnvironmentSectionId): boolean => selected !== pane;
 
-/** What Ctrl+S / Enter saves: the open agent form while one is shown, else the environment. */
-export const saveTarget = (agentFormOpen: boolean): "agent" | "environment" => (agentFormOpen ? "agent" : "environment");
+/** What Ctrl+S / Enter saves: the agent form while one is shown and holds unsaved changes, else the
+ * environment (an open form with nothing to save does not take the shortcut from it). */
+export const saveTarget = (agentFormOpen: boolean, agentFormDirty: boolean): "agent" | "environment" =>
+  agentFormOpen && agentFormDirty ? "agent" : "environment";
 
 /** The footer Save waits while the agent form holds unsaved changes (saving would drop them). */
 export const footerSaveBlocked = (agentFormDirty: boolean): boolean => agentFormDirty;

@@ -281,7 +281,7 @@ impl Environments {
         &self,
         params: EnvironmentUpdateParams,
     ) -> Result<EnvironmentInfo, EnvironmentError> {
-        let name = params.name.as_deref().map(valid_name).transpose()?;
+        let requested = params.name.clone();
         let runtime = params.runtime.map(valid_runtime).transpose()?;
         let permissions = params
             .permissions
@@ -290,8 +290,10 @@ impl Environments {
             .transpose()
             .map_err(EnvironmentError::Invalid)?;
         self.change_one(&params.id, |env| {
-            if let Some(name) = name {
-                env.name = name;
+            // Only a name that changes is checked: an environment saved before a character was
+            // forbidden can still be edited (and its name sent back as it is) without renaming it.
+            if let Some(name) = requested.filter(|name| *name != env.name) {
+                env.name = valid_name(&name)?;
             }
             if let Some(icon) = params.icon {
                 env.icon = (!icon.is_empty()).then_some(icon);
@@ -1628,6 +1630,42 @@ mod tests {
             "Planner"
         );
         assert_eq!(new(&envs, "  Home 2  ", None, &[]).unwrap().name, "Home 2");
+    }
+
+    #[test]
+    fn an_environment_named_before_a_character_was_forbidden_can_still_be_edited() {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let file = data.path().join("environments.json");
+        let env = new(&store(data.path()), "Zzyzx", None, &[path(&folder)]).unwrap();
+        // The stored name now holds a line separator, as an older version allowed.
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, text.replace("Zzyzx", "Zz\\u2028yzx")).unwrap();
+        let envs = store(data.path());
+        let stored = envs.find(&env.id).unwrap().name;
+        assert_eq!(stored, "Zz\u{2028}yzx");
+
+        // Saving it with its name unchanged goes through.
+        let saved = envs
+            .update(EnvironmentUpdateParams {
+                id: env.id.clone(),
+                name: Some(stored.clone()),
+                color: Some("blue".into()),
+                ..EnvironmentUpdateParams::default()
+            })
+            .unwrap();
+        assert_eq!(saved.name, stored);
+        assert_eq!(saved.color.as_deref(), Some("blue"));
+        // A name that changes is checked.
+        let renamed = |name: &str| {
+            envs.update(EnvironmentUpdateParams {
+                id: env.id.clone(),
+                name: Some(name.into()),
+                ..EnvironmentUpdateParams::default()
+            })
+        };
+        assert!(renamed("Other\u{2029}").is_err());
+        assert_eq!(renamed("Other").unwrap().name, "Other");
     }
 
     #[test]

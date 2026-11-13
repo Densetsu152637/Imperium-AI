@@ -126,6 +126,21 @@ fn session_worktrees(entries: &[Entry]) -> Vec<SessionWorktree> {
         .collect()
 }
 
+/// Whether the failure `<folder>: <why>` names `root`. The folder is the spelling git gave (a
+/// macOS `/private/var` path, a Windows verbatim or forward-slashed one), so the two are
+/// compared canonicalised, falling back to the text when a path cannot be resolved. A folder
+/// may itself hold `: `, so every split point is tried.
+fn failure_names_folder(failure: &str, root: &str) -> bool {
+    let wanted = Path::new(root).canonicalize().ok();
+    failure.match_indices(": ").any(|(at, _)| {
+        let folder = &failure[..at];
+        folder == root
+            || wanted.as_ref().is_some_and(|wanted| {
+                Path::new(folder).canonicalize().ok().as_ref() == Some(wanted)
+            })
+    })
+}
+
 /// Takes back worktrees made for a writer that could not be recorded: the worktrees go, and so
 /// does the branch (it was just made and holds nothing).
 fn undo(records: &[SessionWorktree], branch: &str) {
@@ -210,7 +225,7 @@ impl GitWriterTrees {
             entry.trees.iter().any(|tree| {
                 failed
                     .iter()
-                    .any(|failure| failure.starts_with(&format!("{}: ", tree.root)))
+                    .any(|failure| failure_names_folder(failure, &tree.root))
             })
         });
         if entries.is_empty() {

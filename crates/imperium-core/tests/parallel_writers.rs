@@ -699,6 +699,23 @@ fn the_record_of_a_deleted_session_keeps_only_the_writers_that_could_not_be_remo
 }
 
 #[test]
+fn a_failure_spelling_the_folder_differently_still_keeps_the_record() {
+    let repo = repository();
+    let journals = tempfile::tempdir().unwrap();
+    let journal = journals.path().join("s9.jsonl");
+    let writers = GitWriterTrees::new("s9", &journal, None);
+    writers.start("t1", &canonical(&repo)).unwrap().unwrap();
+    let record = journals.path().join("s9.writers.json");
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    let root = entries[0]["trees"][0]["root"].as_str().unwrap().to_string();
+    // The same folder as git might spell it: not the recorded text, but the same place.
+    let spelled = std::path::Path::new(&root).join(".");
+    GitWriterTrees::settle(&journal, true, &[format!("{}: in use", spelled.display())]);
+    assert!(record.exists(), "the writer whose worktree stayed is kept");
+}
+
+#[test]
 fn the_record_goes_when_worktrees_were_not_asked_to_be_removed() {
     let repo = repository();
     let journals = tempfile::tempdir().unwrap();
