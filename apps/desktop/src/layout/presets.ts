@@ -31,24 +31,31 @@ export type PresetResult = { ok: true; preset: LayoutPreset } | { ok: false; err
 
 const KEYS = ["format", "version", "name", "arrangement", "hidden", "modules", "mods"];
 
-/** The mod a panel id belongs to (`mod:<mod>:<panel>`), or null for a built-in panel. */
-export function modOf(panel: string): string | null {
+/**
+ * The mod a panel id belongs to (`mod:<mod>:<panel>`), or null for a built-in panel. Mod and panel
+ * ids may contain colons themselves, so when the installed mods' ids are known (`known`) the
+ * longest of them that prefixes the panel id wins; without them the first segment is taken.
+ */
+export function modOf(panel: string, known: string[] = []): string | null {
+  if (!panel.startsWith("mod:")) return null;
+  const match = known.filter((id) => panel.startsWith(`mod:${id}:`)).sort((a, b) => b.length - a.length)[0];
+  if (match !== undefined) return match;
   const parts = panel.split(":");
-  return parts[0] === "mod" && parts.length >= 3 && parts[1] ? parts[1] : null;
+  return parts.length >= 3 && parts[1] ? parts[1] : null;
 }
 
-/** The mods a shape places panels from, sorted. */
-export function modsUsed(shape: LayoutShape): string[] {
+/** The mods a shape places panels from, sorted (`known`: the installed mods' ids, see `modOf`). */
+export function modsUsed(shape: LayoutShape, known: string[] = []): string[] {
   const ids = [
     ...(shape.arrangement ?? []).flatMap((column) => column.panels),
     ...shape.hidden,
     ...Object.entries(shape.modules).flat(2),
   ];
-  return [...new Set(ids.map(modOf).filter((id): id is string => id !== null))].sort();
+  return [...new Set(ids.map((id) => modOf(id, known)).filter((id): id is string => id !== null))].sort();
 }
 
-/** A shape as a preset named `name` (blank names read as "Layout"). */
-export function makePreset(shape: LayoutShape, name: string): LayoutPreset {
+/** A shape as a preset named `name` (blank names read as "Layout"); `known` are the installed mods' ids. */
+export function makePreset(shape: LayoutShape, name: string, known: string[] = []): LayoutPreset {
   return {
     format: PRESET_FORMAT,
     version: PRESET_VERSION,
@@ -58,7 +65,7 @@ export function makePreset(shape: LayoutShape, name: string): LayoutPreset {
       hidden: [...shape.hidden],
       modules: Object.fromEntries(Object.entries(shape.modules).map(([host, list]) => [host, [...list]])),
     },
-    mods: modsUsed(shape),
+    mods: modsUsed(shape, known),
   };
 }
 
@@ -124,7 +131,7 @@ export function parsePreset(text: string): PresetResult {
   }
   const modules = readModules(data.modules);
   if (modules === undefined) return refuse("The preset's modules are malformed.");
-  if (!Array.isArray(data.mods) || data.mods.length > 64 || !data.mods.every((id) => typeof id === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(id))) {
+  if (!Array.isArray(data.mods) || data.mods.length > 64 || !data.mods.every(isPanelId)) {
     return refuse("The preset's list of mods is malformed.");
   }
   return {

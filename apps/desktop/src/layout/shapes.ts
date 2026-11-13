@@ -9,8 +9,8 @@
 // which are modules inside others. Sizes, folded panels, and detached windows are about the
 // screen the user has, not the project, so they stay global.
 
-import type { Arrangement } from "./arrangement";
-import type { Modules } from "./placement";
+import type { Arrangement } from "./arrangement.ts";
+import { canHost, isModulePanel, type Modules } from "./placement.ts";
 
 export type LayoutShape = {
   /** Which panels sit in which columns; null for the default arrangement. */
@@ -32,10 +32,15 @@ export const DEFAULT_SHAPE: LayoutShape = { arrangement: null, hidden: [], modul
 /** Ids that must never become object keys: they would reach the prototype. */
 const UNSAFE = new Set(["__proto__", "constructor", "prototype"]);
 
+/**
+ * Panel and environment ids are whatever the app and the mods make them (a mod's panel is
+ * `mod:<mod id>:<panel id>` and mods choose their ids), so the only limits are the ones that keep
+ * the data safe: some length, no control characters, and no name that would reach the prototype.
+ */
 export const isPanelId = (value: unknown): value is string =>
-  typeof value === "string" && /^[A-Za-z0-9:_.-]{1,128}$/.test(value) && !UNSAFE.has(value);
+  typeof value === "string" && value.length > 0 && value.length <= 256 && !UNSAFE.has(value) && !/[\u0000-\u001f\u007f]/.test(value);
 
-const isId = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 200 && !UNSAFE.has(value);
+const isId = isPanelId;
 
 /** A list of distinct panel ids, or null when it is not one. */
 function idList(value: unknown, max: number): string[] | null {
@@ -63,24 +68,30 @@ export function readArrangement(value: unknown): Arrangement | null | undefined 
   return columns.length === 0 ? undefined : columns;
 }
 
-/** Modules from untrusted data: hosts with distinct modules, no module in two hosts, none hosting; undefined when malformed. */
-export function readModules(value: unknown): Modules | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+/**
+ * Modules from untrusted data: hosts with distinct modules, no module in two hosts. Only mod
+ * panels are modules and only other panels host them (`canHost`), so a built-in panel is never
+ * "hosted" (it would be drawn twice). Strict (a preset): anything malformed or not allowed
+ * refuses it all (undefined). Lenient (saved layouts): each entry that is not sound is dropped and
+ * the rest kept.
+ */
+export function readModules(value: unknown, strict = true): Modules | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return strict ? undefined : {};
   const entries = Object.entries(value);
-  if (entries.length > 64) return undefined;
+  if (entries.length > 64) return strict ? undefined : {};
   const result: Modules = {};
   const hosted = new Set<string>();
   for (const [host, list] of entries) {
     const modules = idList(list, 32);
-    if (!isPanelId(host) || !modules || modules.length === 0) return undefined;
-    for (const module of modules) {
-      if (module === host || hosted.has(module)) return undefined;
-      hosted.add(module);
+    const sound =
+      isPanelId(host) && modules !== null && modules.length > 0 && modules.every((id) => canHost(host, id, isModulePanel) && !hosted.has(id));
+    if (!sound || modules === null) {
+      if (strict) return undefined;
+      continue;
     }
+    modules.forEach((id) => hosted.add(id));
     Object.defineProperty(result, host, { value: [...modules], enumerable: true, writable: true, configurable: true });
   }
-  // A host is never itself hosted.
-  if (Object.keys(result).some((host) => hosted.has(host))) return undefined;
   return result;
 }
 
@@ -95,7 +106,7 @@ export function sanitizeShape(value: unknown): LayoutShape {
   return {
     arrangement: arrangement ?? null,
     hidden: [...new Set(hidden)],
-    modules: readModules(raw.modules) ?? {},
+    modules: readModules(raw.modules, false) ?? {},
   };
 }
 

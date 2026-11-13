@@ -446,10 +446,14 @@ layout outside it. Roadmap item 35 adds, on the same pure rules (`layout/placeme
   where `mods` lists the mods whose panels it places. Import is strict and applies nothing on any
   failure, showing the reason: invalid JSON, a file over 64 KiB, another format, a version other
   than 1 (a newer one says to update), fields beyond these, or a malformed arrangement (distinct
-  panels, each in one column), closed list, or modules. Importing never installs or runs
-  anything: panels of a mod that is not installed stay out of sight until it is, and the notice
-  names the missing mods. It replaces the layout that applies (the environment's own when it has
-  one).
+  panels, each in one column), closed list, or modules (only a mod's panel can be a module, and
+  never in the session). Panel and mod ids are whatever mods choose: only a length limit,
+  control characters and prototype-like names are refused. Importing never installs or runs
+  anything: panels of a mod that is not installed stay out of sight until it is. A valid file
+  first asks *Replace the current layout with <name>?* (naming the layout it replaces and any
+  missing mods), and only *Replace* applies it, to the layout that applies (the environment's
+  own when it has one). Saved layouts with modules that cannot be hosted lose just those
+  entries.
 - Mods contribute new panels, modules, and slot content through [UI mods](06-extensibility.md#ui-mods).
 - **Agent tree** shows every agent with its model, status, tokens, cost, and budget; selecting
   one opens its transcript.

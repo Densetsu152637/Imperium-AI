@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { makePreset, missingMods, modsUsed, parsePreset, PRESET_MAX_CHARS, presetFileName, presetText } from "../src/layout/presets.ts";
+import { makePreset, missingMods, modOf, modsUsed, parsePreset, PRESET_MAX_CHARS, presetFileName, presetText } from "../src/layout/presets.ts";
 import type { LayoutShape } from "../src/layout/shapes.ts";
 
 const SHAPE: LayoutShape = {
@@ -75,7 +75,7 @@ test("malformed fields are refused", () => {
   assert.match(refused({ ...valid(), arrangement: [] }), /arrangement/);
   assert.match(refused({ ...valid(), arrangement: [{ id: "a", panels: ["x"] }, { id: "b", panels: ["x"] }] }), /arrangement/);
   assert.match(refused({ ...valid(), arrangement: [{ id: "a", panels: ["x"], run: "x" }] }), /arrangement/);
-  assert.match(refused({ ...valid(), arrangement: [{ id: "a b", panels: ["x"] }] }), /arrangement/);
+  assert.match(refused({ ...valid(), arrangement: [{ id: "a\u0007b", panels: ["x"] }] }), /arrangement/);
   assert.match(refused({ ...valid(), hidden: "usage" }), /closed panels/);
   assert.match(refused({ ...valid(), hidden: ["usage", "usage"] }), /closed panels/);
   assert.match(refused({ ...valid(), hidden: ["__proto__"] }), /closed panels/);
@@ -85,7 +85,7 @@ test("malformed fields are refused", () => {
   assert.match(refused({ ...valid(), modules: { a: ["m"], m: ["n"] } }), /modules/);
   assert.match(refused({ ...valid(), modules: { a: [] } }), /modules/);
   assert.match(refused({ ...valid(), mods: "nursery" }), /mods/);
-  assert.match(refused({ ...valid(), mods: ["../evil"] }), /mods/);
+  assert.match(refused({ ...valid(), mods: ["__proto__"] }), /mods/);
 });
 
 test("importing never changes what it reads: the parsed layout owns its data", () => {
@@ -103,4 +103,26 @@ test("a preset lists the mods it needs, and missing ones are found against the i
   const preset = makePreset(SHAPE, "A");
   assert.deepEqual(missingMods(preset, ["nursery"]), ["clock"]);
   assert.deepEqual(missingMods(preset, ["nursery", "clock"]), []);
+});
+
+test("modules must be mod panels in a host that can take them: the session or a built-in panel is never hosted", () => {
+  assert.match(refused({ ...valid(), modules: { agents: ["session"] } }), /modules/);
+  assert.match(refused({ ...valid(), modules: { agents: ["models"] } }), /modules/);
+  assert.match(refused({ ...valid(), modules: { session: ["mod:nursery:pets"] } }), /modules/);
+});
+
+test("odd mod and panel ids (spaces, slashes, colons, long) survive export and import", () => {
+  const odd = "mod:my mod/é@1:a:panel one";
+  const long = `mod:long:${"p".repeat(200)}`;
+  const shape: LayoutShape = {
+    arrangement: [{ id: "left", panels: ["projects", odd, long] }],
+    hidden: [],
+    modules: { agents: [odd] },
+  };
+  const preset = makePreset(shape, "Odd", ["my mod/é@1:a", "long"]);
+  assert.deepEqual(preset.mods, ["long", "my mod/é@1:a"], "a mod id with a colon is not truncated when the installed mods are known");
+  const result = parsePreset(presetText(preset));
+  assert.ok(result.ok);
+  assert.deepEqual(result.preset, preset);
+  assert.equal(modOf(odd, ["my mod/é@1:a"]), "my mod/é@1:a");
 });

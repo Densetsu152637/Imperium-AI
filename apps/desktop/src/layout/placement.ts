@@ -19,14 +19,17 @@ export type Placement = { arrangement: Arrangement; modules: Modules };
 /** The result of a drop: the new placement, and whether the panel should open in its own window. */
 export type Dropped = Placement & { openWindow: boolean };
 
+/** Whether a panel is a module: panels mods contribute (`mod:<mod>:<panel>`). Built-in panels, the session among them, never are. */
+export const isModulePanel = (id: string): boolean => id.startsWith("mod:");
+
 /** The host of `module`, if it is hosted. */
 export function hostOf(modules: Modules, module: string): string | null {
   return Object.keys(modules).find((host) => modules[host].includes(module)) ?? null;
 }
 
-/** Whether `host` can take `module`: a module is not its own host, and a module never hosts. */
+/** Whether `host` can take `module`: a module is not its own host, a module never hosts, and the session (the canvas) never hosts. */
 export function canHost(host: string, module: string, isModule: (id: string) => boolean): boolean {
-  return host !== module && isModule(module) && !isModule(host);
+  return host !== module && host !== "session" && isModule(module) && !isModule(host);
 }
 
 /** `modules` without `module`; hosts left with nothing are forgotten. */

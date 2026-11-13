@@ -55,9 +55,10 @@ import { Columns, type PanelSpec } from "./layout/Columns";
 import { PanelWindow } from "./layout/PanelWindow";
 import { getLayout, resetLayout, updateLayout, type DetachedPanel } from "./layout/state";
 import { applyMove, panelMoves } from "./layout/moves";
-import { activeModules, dropPanel, sameModules, type Modules } from "./layout/placement";
-import { makePreset, missingMods, parsePreset, presetFileName, presetText } from "./layout/presets";
-import { activeShape, clearOverride, DEFAULT_SHAPE, editShape, hasOverride, saveOverride, type Shapes } from "./layout/shapes";import { downloadNotice, initiativeNotice, sessionNotice, updateNotice } from "./attention";
+import { activeModules, canHost, dropPanel, sameModules, type Modules } from "./layout/placement";
+import { makePreset, missingMods, parsePreset, presetFileName, presetText, type LayoutPreset } from "./layout/presets";
+import { activeShape, clearOverride, DEFAULT_SHAPE, editShape, hasOverride, saveOverride, type Shapes } from "./layout/shapes";
+import { downloadNotice, initiativeNotice, sessionNotice, updateNotice } from "./attention";
 import { budgetNotice, budgetStop } from "./budgets";
 import { focusMainWindow, notify, onNoticeOpened } from "./notify";
 import {
@@ -234,6 +235,8 @@ export function App() {
   const [showConnectors, setShowConnectors] = useState(false);
   /** What the last preset export or import did, shown in Settings → Panels. */
   const [presetNotice, setPresetNotice] = useState<LayoutNotice | null>(null);
+  /** A preset file that was read and is valid, waiting for the user to confirm replacing the layout. */
+  const [pendingPreset, setPendingPreset] = useState<LayoutPreset | null>(null);
   const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
@@ -1286,7 +1289,11 @@ export function App() {
   const onScreen = (id: string) =>
     findPanel(id) !== undefined && !hidden.includes(id) && !detached[id] && (id !== approvalsPanel.id || approvals.length > 0);
   /** The modules drawn inside their hosts now: a module whose host is closed or in a window shows in its own column place instead. */
-  const hostedNow = activeModules(modules, onScreen, onScreen);
+  const hostedNow = activeModules(
+    modules,
+    (host) => onScreen(host) && canHost(host, "mod:", isModule),
+    (module) => onScreen(module) && isModule(module),
+  );
   const hostedIds = new Set(Object.values(hostedNow).flat());
 
   /** Keeps the placement a drop or a menu move produced; a panel sent to a window opens it. */
@@ -1454,28 +1461,38 @@ export function App() {
   const arrange = (next: Arrangement) => {
     if (!sameArrangement(next, layoutColumns)) setArrangement(next);
   };
+  const installedMods = (mods?.mods ?? []).map((mod) => mod.id);
   const environmentName = environments.find((env) => env.id === envId)?.name ?? null;
   /** *Export layout preset*: the layout that applies here, as a JSON file through the save dialog. */
   const exportPreset = () => {
-    const preset = makePreset(shape, projectLayout && environmentName ? `${environmentName} layout` : "Layout");
+    const preset = makePreset(shape, projectLayout && environmentName ? `${environmentName} layout` : "Layout", installedMods);
     saveTextFile(presetFileName(preset), presetText(preset)).then(
       (saved) => saved && setPresetNotice({ kind: "ok", text: `Saved “${preset.name}”.` }),
       (error: unknown) => setPresetNotice({ kind: "error", text: `Could not save the preset: ${error instanceof Error ? error.message : String(error)}` }),
     );
   };
-  /** *Import layout preset*: replaces the layout that applies here with the file's, or refuses it with a reason. */
+  /** *Import layout preset*: a valid file waits for the user's confirmation; an invalid one is refused with a reason. */
   const importPreset = (text: string) => {
     const result = parsePreset(text);
     if (!result.ok) {
+      setPendingPreset(null);
       setPresetNotice({ kind: "error", text: result.error });
       return;
     }
-    setShapes((all) => editShape(all, envIdRef.current, result.preset.shape));
-    const missing = missingMods(result.preset, (mods?.mods ?? []).map((mod) => mod.id));
+    setPresetNotice(null);
+    setPendingPreset(result.preset);
+  };
+  /** The confirmed preset replaces the layout that applies here (the environment's own when it has one). */
+  const applyPendingPreset = () => {
+    const preset = pendingPreset;
+    if (!preset) return;
+    setPendingPreset(null);
+    setShapes((all) => editShape(all, envIdRef.current, preset.shape));
+    const missing = missingMods(preset, installedMods);
     setPresetNotice({
       kind: "ok",
       text:
-        `Applied “${result.preset.name}”.` +
+        `Applied “${preset.name}”.` +
         (missing.length > 0 ? ` Its panels from ${missing.join(", ")} appear once ${missing.length === 1 ? "that mod is" : "those mods are"} installed and enabled.` : ""),
     });
   };
@@ -1566,6 +1583,13 @@ export function App() {
             environment: environmentName,
             projectLayout,
             notice: presetNotice,
+            pending: pendingPreset && {
+              name: pendingPreset.name,
+              replaces: projectLayout && environmentName ? `${environmentName}'s project layout` : "the global layout",
+              missingMods: missingMods(pendingPreset, installedMods),
+            },
+            onConfirmImport: applyPendingPreset,
+            onCancelImport: () => setPendingPreset(null),
             onSaveProjectLayout: () => setShapes((all) => saveOverride(all, envIdRef.current)),
             onUseGlobalLayout: () => setShapes((all) => clearOverride(all, envIdRef.current)),
             onExport: exportPreset,

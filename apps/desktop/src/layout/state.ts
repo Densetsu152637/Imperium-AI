@@ -4,8 +4,8 @@
 
 import { getDoc, setDoc, subscribeDoc } from "../store";
 import type { Arrangement } from "./arrangement";
-import type { Modules } from "./placement";
-import { readModules, sanitizeOverrides, type Overrides } from "./shapes";
+import type { Modules } from "./placement.ts";
+import { readModules, sanitizeOverrides, type Overrides } from "./shapes.ts";
 
 export type Layout = {
   /** Proportions per split, by key ("columns", "stack.left", ...). */
@@ -72,7 +72,7 @@ let layout: Layout | null = null;
 
 /** The saved document with the newer fields made sound: a damaged one falls back to its default. */
 function read(saved: Partial<Layout> | undefined): Layout {
-  return { ...EMPTY, ...saved, modules: readModules(saved?.modules) ?? {}, overrides: sanitizeOverrides(saved?.overrides) };
+  return { ...EMPTY, ...saved, modules: readModules(saved?.modules, false) ?? {}, overrides: sanitizeOverrides(saved?.overrides) };
 }
 
 export function getLayout(): Layout {

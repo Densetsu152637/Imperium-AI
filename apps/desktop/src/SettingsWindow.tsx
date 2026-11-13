@@ -91,6 +91,10 @@ export type LayoutControls = {
   /** Whether the selected environment uses a layout of its own. */
   projectLayout: boolean;
   notice: LayoutNotice | null;
+  /** A valid preset read from a file, waiting to replace the layout that applies. */
+  pending: { name: string; replaces: string; missingMods: string[] } | null;
+  onConfirmImport: () => void;
+  onCancelImport: () => void;
   onSaveProjectLayout: () => void;
   onUseGlobalLayout: () => void;
   onExport: () => void;
@@ -499,6 +503,20 @@ function LayoutRows({ controls }: { controls: LayoutControls }) {
           }}
         />
       </Row>
+      {controls.pending && (
+        <Row
+          label={`Replace the current layout with “${controls.pending.name}”?`}
+          description={
+            `This replaces ${controls.pending.replaces}.` +
+            (controls.pending.missingMods.length > 0 ? ` It places panels from mods that are not installed: ${controls.pending.missingMods.join(", ")}.` : "")
+          }
+        >
+          <button className="primary" onClick={controls.onConfirmImport}>
+            Replace
+          </button>
+          <button onClick={controls.onCancelImport}>Cancel</button>
+        </Row>
+      )}
       {controls.notice && (
         <div className={`settings-row-note${controls.notice.kind === "error" ? " error" : ""}`} role={controls.notice.kind === "error" ? "alert" : "status"}>
           {controls.notice.text}

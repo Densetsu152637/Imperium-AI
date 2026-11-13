@@ -2,7 +2,7 @@
 // choosing one does. Every drag in the panel editor has one: up or down within the column, another
 // column, a new column at either edge, into another panel as a module (for module panels) and back
 // out of a host by moving to a column, and into a window of its own (the menu's *Open in its own
-// window*). Pure (test/moves.test.ts); the moves reuse the drop rules (placement.ts), so a menu
+// window*). Pure (tested in test/placement.test.ts); the moves reuse the drop rules (placement.ts), so a menu
 // choice and a drag always land the same way.
 
 import type { DropTarget } from "./arrangement";

@@ -93,7 +93,6 @@ test("a stacked panel can move up, down, to other columns, to a new column and (
     "Move to a new column at the right",
     "Move into projects",
     "Move into sessions",
-    "Move into session",
     "Move into agents",
     "Move into models",
   ]);
@@ -132,4 +131,9 @@ test("a hosted module can be moved out through the menu, and has no up or down",
   const result = applyMove(hosted, "mod:nursery:pets", out, newId, isModule);
   assert.deepEqual(result.modules, {});
   assert.ok(result.arrangement[0].panels.includes("mod:nursery:pets"));
+});
+
+test("the session is not offered as a host, matching the drag", () => {
+  assert.ok(!canHost("session", "mod:nursery:pets", isModule));
+  assert.ok(!movesOf("mod:nursery:pets").includes("Move into session"));
 });

@@ -91,3 +91,15 @@ test("damaged saved data falls back field by field instead of losing the layout"
   assert.deepEqual(sanitizeOverrides({ ok: { hidden: ["usage"] }, bad: 7, __proto__: { hidden: [] } }), { ok: { arrangement: null, hidden: ["usage"], modules: {} } });
   assert.deepEqual(sanitizeOverrides([1, 2]), {});
 });
+
+test("saved modules that cannot be hosted are dropped one by one, not all together", () => {
+  const shape = sanitizeShape({ modules: { agents: ["session"], models: ["mod:a:b"], session: ["mod:c:d"], mod_odd: ["mod:e:f", "models"] } });
+  assert.deepEqual(shape.modules, { models: ["mod:a:b"] });
+  assert.deepEqual(sanitizeShape({ modules: { agents: ["session"] } }).modules, {});
+});
+
+test("saved panel ids with spaces, slashes or colons are kept", () => {
+  const shape = sanitizeShape({ hidden: ["mod:my mod/x@1:p q"], modules: { agents: ["mod:my mod/x@1:p q"] } });
+  assert.deepEqual(shape.hidden, ["mod:my mod/x@1:p q"]);
+  assert.deepEqual(shape.modules, { agents: ["mod:my mod/x@1:p q"] });
+});
