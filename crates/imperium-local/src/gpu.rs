@@ -90,22 +90,12 @@ pub(crate) fn run_tool_for(program: &str, args: &[&str], timeout: Duration) -> O
 
 /// Reads the AMD, Intel and Apple GPUs, remembering which tools are absent so that they are not
 /// spawned again every few seconds.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct VendorProbe {
-    rocm_smi: bool,
-    xpu_smi: bool,
+    rocm_smi_absent: bool,
+    xpu_smi_absent: bool,
     /// The chip's name, read once.
     apple: Option<Option<String>>,
-}
-
-impl Default for VendorProbe {
-    fn default() -> Self {
-        VendorProbe {
-            rocm_smi: cfg!(not(target_os = "macos")),
-            xpu_smi: cfg!(not(target_os = "macos")),
-            apple: None,
-        }
-    }
 }
 
 impl VendorProbe {
@@ -127,7 +117,7 @@ impl VendorProbe {
     }
 
     fn amd(&mut self) -> Vec<Reading> {
-        if self.rocm_smi {
+        if !self.rocm_smi_absent {
             match run_tool(
                 "rocm-smi",
                 &[
@@ -146,7 +136,7 @@ impl VendorProbe {
                         return gpus;
                     }
                 }
-                None => self.rocm_smi = false,
+                None => self.rocm_smi_absent = true,
             }
         }
         sysfs_gpus(Path::new(SYSFS_DRM))
@@ -156,7 +146,7 @@ impl VendorProbe {
     }
 
     fn intel(&mut self) -> Vec<Reading> {
-        if self.xpu_smi {
+        if !self.xpu_smi_absent {
             match run_tool("xpu-smi", &["discovery", "-j"]) {
                 Some(json) => {
                     let mut gpus = parse_xpu_smi_discovery(&json);
@@ -171,7 +161,7 @@ impl VendorProbe {
                         return gpus.into_iter().map(|(_, gpu)| gpu).collect();
                     }
                 }
-                None => self.xpu_smi = false,
+                None => self.xpu_smi_absent = true,
             }
         }
         sysfs_gpus(Path::new(SYSFS_DRM))
