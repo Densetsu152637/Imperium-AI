@@ -393,6 +393,14 @@ and `environments.agent_update` (protocol 0.28)
     0.31 only ([17](17-memory.md#migrating-older-project-memory), [10](10-configuration.md)).
     Protocol 0.31.
 
+40. **New-user tutorial.** An interactive first-run tutorial in the desktop app: a skippable guided
+    tour of the main areas (sessions and the composer, panels and layouts, environments including
+    Home, agents and permissions, models and settings, memory), contextual tips the first time a
+    feature is used, and a replayable *Tour* entry in the help and the command palette. Progress is
+    remembered per user, the tour works with the keyboard and screen readers, and it needs no
+    network ([07](07-desktop-ui.md), [14](14-projects-and-automation.md#home-implemented),
+    [17](17-memory.md)).
+
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
 
