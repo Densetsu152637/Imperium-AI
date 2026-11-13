@@ -12,6 +12,7 @@ use imperium_api::{
 use imperium_protocol::methods::BrowserAction;
 use serde::Deserialize;
 use serde_json::json;
+use url::Url;
 
 use crate::browser::{Browser, View};
 use crate::{CITATION_INSTRUCTIONS, Web, render_hits};
@@ -22,6 +23,11 @@ const BROWSER_TOOLS: [&str; 4] = [
     "browser_click",
     "browser_type",
 ];
+
+/// A host as compared with the allowed domains: lower case, no trailing dot.
+fn normal_host(host: &str) -> String {
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
 
 /// Web search and fetch for a session, with the domains `web_fetch` may read without asking.
 #[derive(Debug, Clone)]
@@ -137,32 +143,46 @@ struct BrowserArgs {
 }
 
 impl WebTools {
-    /// Whether `url`'s host is an allowed domain or a subdomain of one.
+    /// Whether `url`'s host is an allowed domain or a subdomain of one. The host is the one
+    /// `web_fetch` will connect to: it comes from the same URL parser (so a backslash, userinfo,
+    /// case, IDN and a trailing dot cannot disguise another host), and only http(s) URLs qualify.
     pub fn allows(&self, url: &str) -> bool {
-        let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-        let authority = after_scheme
-            .split(['/', '?', '#'])
-            .next()
-            .unwrap_or_default();
-        let host_port = authority
-            .rsplit_once('@')
-            .map_or(authority, |(_, host)| host);
-        let host = host_port
-            .split(':')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        let Ok(parsed) = Url::parse(url.trim()) else {
+            return false;
+        };
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return false;
+        }
+        let Some(host) = parsed.host_str().map(normal_host) else {
+            return false;
+        };
         self.allow_domains.iter().any(|domain| {
-            let domain = domain.to_ascii_lowercase();
-            host == domain || host.ends_with(&format!(".{domain}"))
+            let domain = Url::parse(&format!("http://{}/", domain.trim()))
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(normal_host))
+                .unwrap_or_else(|| normal_host(domain.trim()));
+            !domain.is_empty() && (host == domain || host.ends_with(&format!(".{domain}")))
         })
+    }
+
+    /// Whether a redirect to `target` is followed from a page at `origin`: within its scheme,
+    /// host and port, or to an allowed domain.
+    fn may_follow(&self, origin: Option<&url::Origin>, target: &Url) -> bool {
+        Some(&target.origin()) == origin || self.allows(target.as_str())
     }
 
     /// Runs `web_search` (through the configured provider) or `web_fetch`.
     async fn run_web(&self, name: &str, arguments: &str) -> Result<String, String> {
         let args: WebArgs = parse_arguments(arguments)?;
         let result = if name == "web_fetch" {
-            self.web.fetch(&args.url, args.offset, args.limit).await
+            // A redirect is followed only within the page's own scheme, host and port, or to an
+            // allowed domain (never from https to http): the user
+            // approved (or the allow list covers) the URL asked for, not wherever it leads.
+            let origin = Url::parse(&args.url).ok().map(|url| url.origin());
+            let follow = |target: &Url| self.may_follow(origin.as_ref(), target);
+            self.web
+                .fetch_with(&args.url, args.offset, args.limit, &follow)
+                .await
         } else {
             self.web
                 .search(&args.query, args.count.unwrap_or(8))
@@ -345,6 +365,43 @@ mod tests {
         assert!(tools.allows("https://user@docs.rs/"));
         assert!(!tools.allows("https://notdocs.rs/"));
         assert!(!tools.allows("https://docs.rs.evil.com/"));
+    }
+
+    #[test]
+    fn redirects_stay_within_scheme_host_and_port_or_an_allowed_domain() {
+        let tools = tools(false);
+        let url = |text: &str| Url::parse(text).unwrap();
+        let origin = url("https://other.org:8443/a").origin();
+        let follow = |target: &str| tools.may_follow(Some(&origin), &url(target));
+        assert!(follow("https://other.org:8443/b"));
+        assert!(!follow("https://other.org/b"), "another port");
+        assert!(!follow("http://other.org:8443/b"), "another scheme");
+        assert!(!follow("https://www.other.org:8443/b"), "another host");
+        assert!(follow("https://docs.rs/x"), "an allowed domain");
+        assert!(!tools.may_follow(None, &url("https://other.org/")));
+    }
+
+    #[test]
+    fn allowed_domains_use_the_hosts_the_fetch_parser_sees() {
+        let tools = tools(false);
+        // The URL parser reads a backslash as a path separator for http(s), so the host is
+        // evil.com, not docs.rs.
+        assert!(!tools.allows("https://evil.com\\@docs.rs/"));
+        assert!(!tools.allows("https://evil.com:80@evil.com/@docs.rs"));
+        assert!(!tools.allows("https://evil.com/?@docs.rs"));
+        assert!(tools.allows("https://user:pw@docs.rs/"));
+        assert!(tools.allows("HTTPS://DOCS.RS/"));
+        assert!(tools.allows("https://docs.rs./tokio"));
+        assert!(tools.allows("https://Sub.Example.com/"));
+        assert!(!tools.allows("ftp://docs.rs/"));
+        assert!(!tools.allows("docs.rs/tokio"));
+        assert!(!tools.allows("not a url"));
+        // An internationalised host is compared in its ASCII form.
+        let mut idn = tools;
+        idn.allow_domains = vec!["b\u{fc}cher.example".into()];
+        assert!(idn.allows("https://B\u{dc}CHER.example/x"));
+        assert!(idn.allows("https://xn--bcher-kva.example/x"));
+        assert!(!idn.allows("https://bucher.example/x"));
     }
 
     #[test]

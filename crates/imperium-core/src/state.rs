@@ -27,7 +27,9 @@ use imperium_protocol::session::{
     AgentEvent, PermissionDecision, ROOT_AGENT, ResumePolicy, SessionEvent, SessionStatus,
 };
 use imperium_tools::{ProcessRunner, Remote, Runner, Sandbox, Workspace};
-use imperium_web::{BrowserSetup, PreviewTools, SearchConfig, SearchProviders, Web, WebTools};
+use imperium_web::{
+    BrowserSetup, FetchOptions, PreviewTools, SearchConfig, SearchProviders, Web, WebTools,
+};
 use imperium_workflow::{ContextIndex, Pack, personality};
 use tokio::sync::broadcast;
 
@@ -1056,7 +1058,16 @@ impl DaemonState {
                 takeover: Arc::default(),
             });
         Some(WebTools {
-            web: Web::new(provider),
+            web: Web::with_options(
+                provider,
+                FetchOptions {
+                    cache_dir: Some(self.paths.cache_dir().join("web")),
+                    cache_ttl: Duration::from_secs(web.cache_ttl_s),
+                    cache_max_bytes: web.cache_max_mb.saturating_mul(1024 * 1024),
+                    respect_robots: web.robots == "respect",
+                    robots_fail_closed: web.robots_unreachable == "deny",
+                },
+            ),
             allow_domains: web.allow_domains.clone(),
             browser,
         })

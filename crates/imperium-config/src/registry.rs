@@ -186,10 +186,14 @@ pub static SETTINGS: &[SettingDef] = &[
     def("isolation.container_image", "Container image", STRING, "Image commands run in for the container tier."),
     def("isolation.network", "Network in sandbox", Bool, "Whether sandboxed and container commands may use the network."),
     def("web.enabled", "Web tools", Bool, "Offer web_fetch (and web_search with a provider) to agents."),
-    choice("web.search", "Web search provider", &["none", "searxng", "brave", "tavily"], "Provider behind web_search."),
+    choice("web.search", "Web search provider", &["none", "searxng", "brave", "tavily", "kagi", "exa"], "Provider behind web_search."),
     def("web.searxng_url", "SearXNG URL", STRING, "A SearXNG instance with the JSON format enabled."),
-    def("web.api_key", "Search API key", SecretRef, "Keychain secret holding the Brave or Tavily key."),
+    def("web.api_key", "Search API key", SecretRef, "Keychain secret holding the Brave, Tavily, Kagi, or Exa key."),
     def("web.allow_domains", "Allowed domains", StringList, "Domains web_fetch reads without asking (subdomains included)."),
+    def("web.cache_ttl_s", "Fetch cache lifetime (seconds)", Integer, "How long web_fetch reuses a page it has read; 0 turns the cache off. Pages with Cache-Control no-store, private or no-cache, cookies, or authentication are never cached."),
+    def("web.cache_max_mb", "Fetch cache size (MB)", Integer, "The most disk the web_fetch cache may use; the oldest pages go first. 0 turns the cache off."),
+    choice("web.robots", "robots.txt", &["respect", "off"], "respect: web_fetch refuses pages the host's robots.txt disallows for Imperium; off: it does not check."),
+    choice("web.robots_unreachable", "Unreadable robots.txt", &["allow", "deny"], "When a host's robots.txt cannot be read (a server error or no connection): allow fetching (fail open) or refuse it (fail closed). A missing file (404) always allows."),
     def("web.browser", "Browser tools", Bool, "Offer browser tools (Chrome, Chromium, or Edge over CDP)."),
     def("web.browser_path", "Browser path", PathKind, "The browser to drive; found automatically when empty."),
     def("web.headless", "Headless browser", Bool, "Run the browser without a window."),
@@ -643,7 +647,10 @@ mod tests {
         assert_eq!(search.default, Json::from("none"));
         assert_eq!(search.value, Json::from("brave"));
         assert_eq!(search.source.kind(), "user");
-        assert_eq!(search.def.options, ["none", "searxng", "brave", "tavily"]);
+        assert_eq!(
+            search.def.options,
+            ["none", "searxng", "brave", "tavily", "kagi", "exa"]
+        );
 
         let key = get("web.api_key");
         assert_eq!(key.def.kind, SettingKind::SecretRef);

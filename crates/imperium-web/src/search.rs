@@ -12,7 +12,8 @@ use crate::{Hit, WebError, html};
 
 pub type SearchFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<Hit>, WebError>> + Send + 'a>>;
 
-/// Where `web_search` sends queries; [`Searxng`], [`Brave`], and [`Tavily`] are built in.
+/// Where `web_search` sends queries; [`Searxng`], [`Brave`], [`Tavily`], [`Kagi`], and [`Exa`]
+/// are built in.
 pub trait SearchProvider: Send + Sync + fmt::Debug {
     /// Results for `query`, asking for `count` (1 to 20). Extra results are dropped by the caller.
     fn search<'a>(
@@ -35,7 +36,7 @@ pub struct SearchConfig<'a> {
 pub type SearchProviderBuilder =
     Box<dyn Fn(&SearchConfig<'_>) -> Option<Arc<dyn SearchProvider>> + Send + Sync>;
 
-/// Provider builders by `web.search` name. The default has `searxng`, `brave`, and `tavily`.
+/// Provider builders by `web.search` name. The default has `searxng`, `brave`, `tavily`, `kagi`, and `exa`.
 pub struct SearchProviders {
     builders: Vec<(String, SearchProviderBuilder)>,
 }
@@ -58,6 +59,13 @@ impl Default for SearchProviders {
         providers.register("tavily", |config| {
             (config.api_key)()
                 .map(|api_key| Arc::new(Tavily { api_key }) as Arc<dyn SearchProvider>)
+        });
+        providers.register("kagi", |config| {
+            (config.api_key)()
+                .map(|api_key| Arc::new(Kagi::new(api_key)) as Arc<dyn SearchProvider>)
+        });
+        providers.register("exa", |config| {
+            (config.api_key)().map(|api_key| Arc::new(Exa::new(api_key)) as Arc<dyn SearchProvider>)
         });
         providers
     }
@@ -113,6 +121,61 @@ pub struct Tavily {
 impl fmt::Debug for Tavily {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Tavily")
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
+}
+
+const KAGI_URL: &str = "https://kagi.com/api/v0";
+const EXA_URL: &str = "https://api.exa.ai";
+
+/// Kagi's Search API (an API token, billed per query).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Kagi {
+    pub api_key: String,
+    /// The API root; only tests change it.
+    pub base_url: String,
+}
+
+impl Kagi {
+    pub fn new(api_key: String) -> Self {
+        Kagi {
+            api_key,
+            base_url: KAGI_URL.into(),
+        }
+    }
+}
+
+// The key stays out of logs and error messages.
+impl fmt::Debug for Kagi {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Kagi")
+            .field("api_key", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Exa's search API, which returns each result with a text excerpt.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Exa {
+    pub api_key: String,
+    /// The API root; only tests change it.
+    pub base_url: String,
+}
+
+impl Exa {
+    pub fn new(api_key: String) -> Self {
+        Exa {
+            api_key,
+            base_url: EXA_URL.into(),
+        }
+    }
+}
+
+// The key stays out of logs and error messages.
+impl fmt::Debug for Exa {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Exa")
             .field("api_key", &"<redacted>")
             .finish()
     }
@@ -186,6 +249,54 @@ impl SearchProvider for Tavily {
     }
 }
 
+impl SearchProvider for Kagi {
+    fn search<'a>(
+        &'a self,
+        http: &'a reqwest::Client,
+        query: &'a str,
+        count: usize,
+    ) -> SearchFuture<'a> {
+        Box::pin(async move {
+            let request = http
+                .get(format!("{}/search", self.base_url.trim_end_matches('/')))
+                .query(&[("q", query), ("limit", &count.to_string())])
+                .header("Authorization", format!("Bot {}", self.api_key));
+            let body = json_body(request).await?;
+            // `t` is 0 for a search result and 1 for related searches, which are not results.
+            let results: Vec<Value> = body
+                .get("data")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|item| item.get("t").and_then(Value::as_i64) == Some(0))
+                .cloned()
+                .collect();
+            Ok(parse_hits(Some(&Value::Array(results))))
+        })
+    }
+}
+
+impl SearchProvider for Exa {
+    fn search<'a>(
+        &'a self,
+        http: &'a reqwest::Client,
+        query: &'a str,
+        count: usize,
+    ) -> SearchFuture<'a> {
+        Box::pin(async move {
+            let request = http
+                .post(format!("{}/search", self.base_url.trim_end_matches('/')))
+                .header("x-api-key", &self.api_key)
+                .json(&json!({
+                    "query": query,
+                    "numResults": count,
+                    "contents": {"text": {"maxCharacters": 400}}
+                }));
+            Ok(parse_hits(json_body(request).await?.get("results")))
+        })
+    }
+}
+
 /// Results from a provider's JSON result list; entries without a URL are skipped.
 pub(crate) fn parse_hits(list: Option<&Value>) -> Vec<Hit> {
     #[derive(Deserialize)]
@@ -194,7 +305,7 @@ pub(crate) fn parse_hits(list: Option<&Value>) -> Vec<Hit> {
         title: String,
         #[serde(default)]
         url: String,
-        #[serde(default, alias = "content", alias = "description")]
+        #[serde(default, alias = "content", alias = "description", alias = "text")]
         snippet: String,
     }
     list.and_then(Value::as_array)
