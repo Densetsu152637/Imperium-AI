@@ -865,7 +865,7 @@ async fn run(
         ),
         None => match wait_for_model(&shared, &mut commands, &model).await {
             Some(root) => root,
-            None => return,
+            None => return session_ended(&shared, &config.id, "closed").await,
         },
     };
     let messages_path = crate::journal::messages_path(&config.journal_path);
@@ -972,7 +972,7 @@ async fn run(
                     shared.questions.resolve(request_id, answers);
                     continue;
                 }
-                None => return,
+                None => return session_ended(&shared, &config.id, "closed").await,
             },
         };
         // From here until the message's turn ends (or is given up on), the message it answers can
@@ -982,6 +982,13 @@ async fn run(
             shared.controls.set_turn_message(None);
             continue;
         };
+        shared
+            .hook(
+                HookEvent::TurnStart,
+                None,
+                json!({"session_id": config.id, "prompt": text}),
+            )
+            .await;
         if root.fit_pending() {
             // The first turn on a model switched to: measure the conversation with it (loading
             // a local model) and compact it if it does not fit, before the message is added.
@@ -1063,7 +1070,9 @@ async fn run(
                         }
                         // Every handle is gone and the session is stopped: its agents would
                         // wait forever, so the turn is dropped (a restart reports it as cut off).
-                        None if shared.controls.is_stopped() => return,
+                        None if shared.controls.is_stopped() => {
+                            return session_ended(&shared, &config.id, "stopped").await;
+                        }
                         // Every handle is gone: nobody can answer, so deny what is pending.
                         None => {
                             handles_open = false;
@@ -1086,10 +1095,25 @@ async fn run(
         if let Some(checkpoints) = checkpoints.clone() {
             let _ = tokio::task::spawn_blocking(move || checkpoints.after_turn()).await;
         }
+        shared
+            .hook(HookEvent::TurnEnd, None, json!({"session_id": config.id}))
+            .await;
         if !handles_open {
-            return;
+            return session_ended(&shared, &config.id, "closed").await;
         }
     }
+}
+
+/// Runs the `session.end` hooks as the session's task finishes: `reason` is `closed` (every
+/// handle was dropped) or `stopped`. Observers only.
+async fn session_ended(shared: &Shared, session_id: &str, reason: &str) {
+    shared
+        .hook(
+            HookEvent::SessionEnd,
+            None,
+            json!({"session_id": session_id, "reason": reason}),
+        )
+        .await;
 }
 
 /// Holds a session that has no model until one is set: messages wait in the root's queue and
