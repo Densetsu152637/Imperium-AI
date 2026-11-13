@@ -23,6 +23,7 @@ mod llama_runtime;
 mod load;
 mod local;
 mod mcp;
+mod mod_install;
 mod model_config;
 mod mods;
 mod onboarding;

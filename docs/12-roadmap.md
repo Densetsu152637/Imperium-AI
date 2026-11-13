@@ -327,6 +327,15 @@ and `environments.agent_update` (protocol 0.28)
 30. **Hooks and mods.** More hook events, hooks that rewrite calls, HTTP hooks; more mod
     contribution points, install and update commands, a permission prompt at install, and
     trusted main-context mods ([06](06-extensibility.md)).
+    *First stage (implemented):* the hook events `session.end`, `turn.start`, `turn.end` and
+    `permission.requested`, and HTTP hooks (`https`, or `http` to this machine; a timeout; no
+    redirects; secrets only from the keychain), and `imperium mods install|update` from a git
+    URL or a folder with a permission prompt, a content hash that must match what was approved,
+    and a permission diff on update ([06](06-extensibility.md#hooks),
+    [06](06-extensibility.md#installing-and-updating-mods-implemented)). *Not built:* hooks
+    that rewrite calls and trusted main-context mods (both widen trust; a design is proposed in
+    [06](06-extensibility.md#later-stages-rewriting-hooks-and-trusted-mods)), more mod
+    contribution points, and the desktop's own install dialog.
 31. **Policy packs and MCP.** Fetching pack updates shown as a diff to accept, a policy crate
     that layers packs into the prompt; MCP resources, prompts, sampling, and OAuth for remote
     servers; and an MCP server bridge exposing Imperium itself
@@ -397,6 +406,14 @@ and `environments.agent_update` (protocol 0.28)
     them. `project` and `project-private` stay accepted as names for `environment` for protocol
     0.31 only ([17](17-memory.md#migrating-older-project-memory), [10](10-configuration.md)).
     Protocol 0.31.
+
+40. **New-user tutorial.** An interactive first-run tutorial in the desktop app: a skippable guided
+    tour of the main areas (sessions and the composer, panels and layouts, environments including
+    Home, agents and permissions, models and settings, memory), contextual tips the first time a
+    feature is used, and a replayable *Tour* entry in the help and the command palette. Progress is
+    remembered per user, the tour works with the keyboard and screen readers, and it needs no
+    network ([07](07-desktop-ui.md), [14](14-projects-and-automation.md#home-implemented),
+    [17](17-memory.md)).
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.

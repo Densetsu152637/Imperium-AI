@@ -195,7 +195,7 @@ listed; edit them in the file.
 | `github.autofix.enabled` | `false` | Fix the user's pull requests whose checks fail ([auto-fix](14-projects-and-automation.md#github-auto-fix)) |
 | `github.autofix.push` | `ask` | `ask` queues an approval before each push; `auto` pushes without asking |
 | `github.autofix.max_attempts_per_pr`, `poll_s`, `model` | `3`, `120`, default model | Stop after this many failing commits per pull request; polling interval; model for fix sessions |
-| `hooks` | none | `[[hooks]]` entries with `event`, optional `matcher`, `command`, and `timeout_s`; see [hooks](06-extensibility.md#hooks) |
+| `hooks` | none | `[[hooks]]` entries with `event`, optional `matcher`, `timeout_s`, and either `command` or `url` (an HTTP hook, with optional `headers` whose values may use `${secret:name}` from the keychain); see [hooks](06-extensibility.md#hooks) |
 
 Configuration is read when the daemon starts; restart it after editing.
 

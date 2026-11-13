@@ -1156,14 +1156,14 @@ function ModsSection({
         const panels = mod.panels.map((panel) => panel.title).join(", ") || "none";
         const permissions = mod.permissions.join(", ") || "none";
         const byAgent = installedByAgent(mod);
-        const optIn = (mod.bundled && !BUNDLED_ON_BY_DEFAULT.includes(mod.id)) || byAgent;
+        const optIn = (mod.bundled && !BUNDLED_ON_BY_DEFAULT.includes(mod.id)) || byAgent || mod.opt_in;
         const from = mod.installed_from ? ` From ${sourceLabel(mod.installed_from)}.` : "";
         return (
           <Row
             key={mod.id}
             label={`${mod.name}${mod.version ? ` ${mod.version}` : ""}`}
             badge={<span className="badge">{mod.bundled ? "bundled" : byAgent ? "installed by an agent" : "installed"}</span>}
-            description={`Panels: ${panels}. Permissions: ${permissions}.${from}${optIn ? " Off until you turn it on." : ""}`}
+            description={`Panels: ${panels}. Permissions: ${permissions}.${from}${mod.modified ? " Its files changed since you approved it (or the approvals could not be read), so it has no permissions and stays off." : ""}${optIn ? " Off until you turn it on." : ""}`}
           >
             <Toggle checked={modEnabled(settings, mod)} onChange={(on) => toggle(mod.id, on)} label={mod.name} />
           </Row>

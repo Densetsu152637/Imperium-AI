@@ -147,16 +147,18 @@ agents* and `imperium config changes` / `imperium config undo <id>` show and und
 
 ## Hooks
 
-Hook events: `session.start`, `session.end`, `prompt.submit`, `tool.before`, `tool.after`,
-`agent.spawn`, `agent.complete`, `model.before`, `model.after`, `compact.before`,
-`notification`.
+Hook events: `session.start`, `session.end`, `prompt.submit`, `turn.start`, `turn.end`,
+`tool.before`, `tool.after`, `agent.spawn`, `agent.complete`, `permission.requested`,
+`model.before`, `model.after`, `compact.before`, `notification`.
 
 - A hook is a command (any executable receiving JSON on stdin) or an HTTP endpoint.
-- `tool.before` and `prompt.submit` hooks can allow, deny, or rewrite; others observe.
+- `tool.before` and `prompt.submit` hooks can allow or deny (rewriting is later work, below);
+  others observe.
 - Hooks run with timeouts and inside the session's isolation tier.
 
-**Implemented (phase 5):** command hooks for `session.start`, `prompt.submit`, `tool.before`,
-`tool.after`, `agent.spawn`, and `agent.complete`, from `[[hooks]]` in the user configuration
+**Implemented:** hooks for `session.start`, `session.end`, `prompt.submit`, `turn.start`,
+`turn.end`, `tool.before`, `tool.after`, `agent.spawn`, `agent.complete`, and
+`permission.requested` (payloads [below](#hook-payloads)), from `[[hooks]]` in the user configuration
 and from installed plugins (a project's own hooks are not run, since opening a repository
 would run its commands). A hook runs through the shell in the project folder with
 `IMPERIUM_PROJECT_DIR` (and `CLAUDE_PROJECT_DIR`) set and receives the event as JSON on stdin
@@ -166,8 +168,8 @@ printing `{"decision": "block", "reason": "..."}`; a blocked tool call tells the
 and a blocked message is reported to the user. Other failures are logged and do not block.
 Matchers name tools, `|`-separated, and accept Claude Code's names (`Bash`, `Edit|Write`,
 `Read`); Claude Code event names (`PreToolUse`, `PostToolUse`, `UserPromptSubmit`,
-`SessionStart`, `SubagentStop`, `Stop`) map to the events above. Rewriting, HTTP hooks, and
-the other events are later work.
+`SessionStart`, `SessionEnd`, `SubagentStop`, `Stop`) map to the events above. Rewriting and
+the events not listed are later work.
 
 ```toml
 [[hooks]]
@@ -175,7 +177,74 @@ event = "tool.before"
 matcher = "run_command"
 command = "python D:/hooks/check_command.py"
 timeout_s = 10
+
+[[hooks]]                       # an HTTP hook
+event = "turn.end"
+url = "https://hooks.example.com/imperium"
+timeout_s = 5
+headers = { Authorization = "Bearer ${secret:hook-token}" }
 ```
+
+### Hook payloads
+
+Every hook gets a JSON object with `hook_event` (the Imperium name) and the fields below;
+tool events also get `tool_name`, and a hook's `matcher` filters tool events and
+`permission.requested` by tool.
+
+| Event | Fields |
+| --- | --- |
+| `session.start` | `session_id`, `project_dir` |
+| `session.end` | `session_id`, `reason` (`closed`: every handle was dropped, or `stopped`) |
+| `prompt.submit` | `prompt` (can block) |
+| `turn.start` | `session_id`, `prompt` (after commands and `prompt.submit` hooks) |
+| `turn.end` | `session_id` (after the turn's messages are saved) |
+| `tool.before` | `agent_id`, `tool_input` (can block) |
+| `tool.after` | `agent_id`, `tool_input`, `ok`, `tool_output` |
+| `permission.requested` | `agent_id`, `tool`, `summary` (the request is shown to the user at the same time) |
+| `agent.spawn` | the new subagent's task details |
+| `agent.complete` | `task_id`, `ok`, `report` |
+
+`session.end`, `turn.start`, `turn.end`, and `permission.requested` only observe, and a block
+decision from them is ignored. A hook cannot answer a permission request, so no hook can approve
+what a rule, a profile, or the safety floor leaves to the user
+([05](05-tools-and-isolation.md#rules)). They also run **detached**: the daemon starts them in
+their own task and does not wait, with five seconds for all of an event's hooks (a command's
+process is killed, an HTTP request dropped), so a slow hook or endpoint never holds up a turn, an
+approval prompt, or a stop. Their delivery is therefore not ordered with the session's other
+events, and one can be lost if the daemon exits first. The other events run inline and wait for
+their hooks, up to each hook's `timeout_s`.
+
+### HTTP hooks
+
+An HTTP hook has `url` instead of `command`: the payload is POSTed to it as JSON, and a 2xx
+answer may carry `{"decision": "block", "reason": "..."}` on the blocking events, exactly as a
+command's output does. Anything else (a refusal, a timeout, another status) is logged and does not
+block, as for commands. They are bounded and cannot reach beyond the URL the user configured:
+
+- The URL must be `https`, or `http` to an IP-literal loopback address (`127.0.0.0/8`, `::1`) or
+  `localhost`, and must not hold credentials. The check runs when the configuration loads and
+  again before each request. For plain `http://localhost` the name is resolved first, every
+  address must be loopback, and the request connects to exactly those addresses.
+- No proxy is used, whatever the environment sets (`HTTP_PROXY` and the like).
+- **No redirects** are followed (a 3xx answer is a failure), so a server cannot pass the payload,
+  or a header secret, on to another host.
+- `timeout_s` bounds the whole exchange, the body included (10 s by default); the answer is read
+  up to 64 KiB. Every configured hook, command or HTTP, is clamped to 300 s.
+- Header values may use `${secret:name}`, replaced by the keychain secret of that name
+  (`imperium secret set name`) when the hook runs; nothing else (not the environment, not a
+  project file) is expanded, and a missing secret, or one holding a control character (a line
+  break would split the header), fails the hook before anything is sent.
+- HTTP hooks come only from the user's configuration; a plugin's `hooks.json` entry of
+  `"type": "http"` is reported and skipped, and a repository's hooks are never run.
+- The payload holds prompts and tool output, so only configure an endpoint you trust with them.
+- **HTTP hooks are sent by the daemon, not by an agent's tools.** They ignore an environment's
+  `network = false`, an agent's local-files-only lock, and the isolation tier: those limit what an
+  agent's tools reach, and a hook is the user's own configuration. An `https` endpoint can be
+  anywhere on the internet, so configuring one sends session data there.
+
+Hooks do not widen anything: an agent's permission profile still decides which plugins' hooks
+load, and the safety floor, permission rules and approvals apply before and regardless of any
+hook.
 
 ## UI mods
 
@@ -231,8 +300,87 @@ until turned off, as installed mods are. That section also lists each mod's vers
 permissions, panels, and load problems. A panel's `slot` picks the column it docks in:
 `sidebar.left` or `sidebar.right` (the default).
 An example lives in
-`examples/mods/tokens-per-dollar/`. Other contribution points, install and update commands,
-permission prompts at install, and trusted main-context mods are later work.
+`examples/mods/tokens-per-dollar/`. Other contribution points and trusted main-context mods are
+later work.
+
+### Installing and updating mods (implemented)
+
+`imperium mods install <git-url-or-folder> [--path <folder>] [--revision <rev>] [--sha256 <hex>]
+[--yes]` and `imperium mods update <id> [--yes]` install a mod into `<config>/mods/<id>` and
+update it from the source it was installed from (recorded in `.imperium-source.json`). Nothing in
+the mod runs, and an install is a fetch (a shallow `git clone`, or a copy of a folder) like an
+agent's `install_extension` ([above](#agents-manage-the-app-config-implemented)); the difference
+is the user's approval:
+
+1. The CLI asks the daemon to **inspect** the source (`mods.inspect`): the manifest's id, name,
+   version, requested permissions and panels, the source and commit, and a **content hash**
+   (SHA-256 over every file's path and bytes, not `.git` or Imperium's own `.imperium-*.json`).
+2. It prints them, describing each permission, and asks `Install <name>? [y/N]`; without a
+   terminal it refuses unless `--yes` was given. `--sha256` pins the hash a previous run showed.
+3. It then calls `mods.install` with the hash and the approved permissions. The daemon fetches
+   again and installs only if the content still has that hash and the manifest asks for nothing
+   that was not approved, so a branch that moved in between, or a source that changes with the
+   prompt, is refused. It never writes into a folder that is not that mod, and its staging
+   folder has an unpredictable name made with `create_dir`.
+4. **The approval lives in the daemon, not in the mod.** `<data>/mod-approvals.json`, keyed by
+   mod id, holds the content hash, version, approved permissions, the approved source, and
+   whether the user answered a prompt at a terminal; the mod's folder holds no approval (a
+   `.imperium-approval.json` a mod writes is ignored). `mods.list` reports a mod with the
+   permissions that are both in its manifest and approved. If its files no longer hash to the
+   approved content (it was edited, or its manifest now asks for more) it is marked `modified`,
+   has **no** permissions, and is off until the user turns it on; installing it again (after
+   uninstalling) approves what is there. If the approvals file exists but cannot be read, every
+   installed mod is treated that way (an absent file just means nothing was approved through
+   this command). A mod approved with `--yes` and no terminal prompt is installed but **off**
+   until the user turns it on in Settings → Mods; so is an update that adds permissions without
+   a prompt (only an update that asks for nothing new keeps an earlier prompt's standing), and a
+   `modified` mod stays off even if the app had saved it as on. Whether the answer came from a
+   prompt (`interactive`) is stated by the caller of `mods.install`, the CLI: it has the same
+   trust root as the safety floor, which is what stops an agent's shell from running the command
+   unasked, and neither a paired phone (not allowed `mods.*`) nor a mod frame can reach it.
+   Residual: an agent with an unisolated shell (tier 0) that the person lets run commands can
+   still write the daemon's files or call its socket directly; the floor guards
+   `mod-approvals.json` against file edits, but it reads command lines and is not a security
+   boundary ([05](05-tools-and-isolation.md#permissions)). A mod without an
+   approval record (copied in by hand, or installed by an agent) behaves as before.
+5. **Update** reads the source from the approval record, not from the folder's
+   `.imperium-source.json` (which a mod could rewrite), and refuses a source, folder or revision
+   other than the approved one: to change where a mod comes from, uninstall it and install it
+   afresh. It compares what the new version requests with what was approved for the installed
+   one and prints the difference (`+` new, `-` no longer requested); when the hash changed it
+   also says so, so new code under the same permissions is not silent. It asks again only when
+   something was added, and installs nothing wider than what was approved; `--sha256` pins the
+   hash to install; the previous folder is kept in `<data>/config-trash/`. A mod whose source
+   gives the same hash is reported up to date. A mod without an approval record, or a bundled
+   one, is not updated this way.
+6. **The safety floor asks about `imperium mods install|update`**: an agent running it in a shell
+   (with its own `--yes`) would approve its own code, so the person decides each time
+   ([05](05-tools-and-isolation.md#permissions)). Paired phones cannot call `mods.*`.
+
+A mod's permissions only decide which data its frame may ask the desktop app for (above). They
+are not agent tool permissions: a mod cannot call tools, widen a permission profile, or lower
+the safety floor, and the user's approval at install does not change either. A mod installed this
+way is on at once when the user approved it at a terminal prompt, like any installed mod; one
+approved with `--yes`, or installed by an agent, stays opt-in in Settings → Mods.
+
+### Later stages: rewriting hooks and trusted mods
+
+These two widen trust, so they are designed here and not built yet.
+
+- **Rewriting hooks.** A `tool.before` hook could answer `{"decision": "allow", "updated_input":
+  {...}}` to replace a call's arguments (and a `prompt.submit` hook the prompt). Rules: the
+  rewritten call is checked **again** by the tool's own validation, the user's permission rules,
+  the agent's permission profile and the safety floor, exactly as if the model had made it, so a
+  rewrite can narrow or change a call but never gets it past a check; rewriting is off for
+  hooks from plugins an agent installed; the original and rewritten arguments are both shown in
+  the tool's notice; several hooks rewrite in order, each seeing the last output, and a hook that
+  fails leaves the call as it was.
+- **Trusted main-context mods.** A mod could ask to run in the app's own webview. Rules: only
+  from a mod the user installed from the CLI or the app (never an agent's install), only after an
+  install prompt that says so in plain words and names the content hash; the approval is bound to
+  that hash, so any update asks again; it is revocable per mod in Settings → Mods; and it is
+  not offered at all for a mod a plugin or agent brought. Until that is built, every mod stays in
+  its sandboxed frame.
 
 Contribution points: new panels, modules placeable inside any panel
 ([layout](07-desktop-ui.md#modules-inside-panels)), extensions to any panel's slots, panel wrappers and
@@ -260,4 +408,5 @@ Available to mods (`telemetry:read`), the CLI (`imperium telemetry`), and extern
 Manifests declare permissions (`fs:read:<glob>`, `exec`, `net:<domain>`, `telemetry:read`,
 `session:write`, `secrets:<name>`, ...). Users approve them at install and on change; the
 daemon enforces them. Extensions are pinned by version and content hash; updates show a diff of
-requested permissions.
+requested permissions. For UI mods the approval, the hash check and the update diff are built
+([above](#installing-and-updating-mods-implemented)); the plugin manifest's permissions are not.

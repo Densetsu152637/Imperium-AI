@@ -2619,7 +2619,7 @@ impl DaemonState {
         } else {
             std::borrow::Cow::Borrowed(settings)
         };
-        imperium_extensions::load_with(
+        let mut extensions = imperium_extensions::load_with(
             &Sources {
                 config_dir: self.paths.config_dir().to_path_buf(),
                 project_dir: project_dir.to_path_buf(),
@@ -2633,6 +2633,8 @@ impl DaemonState {
                         event: hook.event.clone(),
                         matcher: hook.matcher.clone(),
                         command: hook.command.clone(),
+                        url: hook.url.clone(),
+                        headers: hook.headers.clone(),
                         timeout_s: hook.timeout_s,
                     })
                     .collect(),
@@ -2641,7 +2643,16 @@ impl DaemonState {
                 eager: self.settings().extensions.eager.clone(),
             },
             &|plugin| profile.is_none_or(|profile| profile.allows_plugin(plugin)),
-        )
+        );
+        // HTTP hooks' `${secret:name}` headers read the keychain, nothing else.
+        let secrets = Arc::clone(&self.secrets);
+        extensions.hooks = std::mem::take(&mut extensions.hooks).with_secrets(
+            imperium_extensions::hooks::Secrets::new(move |name| {
+                let name: imperium_config::SecretName = name.parse().ok()?;
+                secrets.load(&name).ok().flatten()
+            }),
+        );
+        extensions
     }
 
     /// Resolves a model a client asked a session to switch to: a model table id or an

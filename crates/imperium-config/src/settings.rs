@@ -1085,13 +1085,22 @@ impl Default for ExtensionSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct HookSettings {
-    /// `session.start`, `prompt.submit`, `tool.before`, `tool.after`, `agent.spawn`, or
-    /// `agent.complete` (Claude Code names such as `PreToolUse` also work).
+    /// `session.start`, `session.end`, `prompt.submit`, `turn.start`, `turn.end`,
+    /// `tool.before`, `tool.after`, `agent.spawn`, `agent.complete`, or `permission.requested`
+    /// (Claude Code names such as `PreToolUse` also work).
     pub event: String,
     /// Tool names, `|`-separated; empty matches every tool.
     #[serde(default)]
     pub matcher: String,
+    /// The command to run; or `url`, not both.
+    #[serde(default)]
     pub command: String,
+    /// An HTTP hook: the payload is POSTed here (`https`, or `http` to this machine).
+    #[serde(default)]
+    pub url: Option<String>,
+    /// An HTTP hook's extra headers; a value may use `${secret:name}` (the keychain).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
     #[serde(default)]
     pub timeout_s: Option<u64>,
 }

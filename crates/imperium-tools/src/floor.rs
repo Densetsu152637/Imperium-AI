@@ -451,8 +451,17 @@ fn dangerous_program(name: &str, args: &[String]) -> bool {
 }
 
 /// `imperium env agent add|set|rm …`: an agent could loosen its own permission profile (or its
-/// limits) this way, so a person decides each time.
+/// limits) this way, so a person decides each time. `imperium mods install|update …` installs
+/// and approves code for the desktop app (an agent could `--yes` its own prompt), so a person
+/// decides that too.
 fn changes_agents(args: &[String]) -> bool {
+    if let Some(at) = args.iter().position(|word| word == "mods")
+        && args
+            .get(at + 1)
+            .is_some_and(|word| matches!(word.as_str(), "install" | "update"))
+    {
+        return true;
+    }
     let Some(at) = args.iter().position(|word| word == "env") else {
         return false;
     };
@@ -582,6 +591,9 @@ mod tests {
             "imperium env agent set Work Planner --mcp all",
             "/usr/bin/imperium env agent add work Bot --local-only",
             "imperium.exe env agent rm work Bot",
+            "imperium mods install https://example.com/x.git --yes",
+            "imperium mods update demo",
+            "/usr/bin/imperium.exe mods install ./demo",
         ] {
             assert!(dangerous_command(line), "{line}");
         }
@@ -589,6 +601,8 @@ mod tests {
             "imperium env agent list work",
             "imperium env list",
             "imperium ping",
+            "imperium mods",
+            "imperium config changes",
         ] {
             assert!(!dangerous_command(line), "{line}");
         }
