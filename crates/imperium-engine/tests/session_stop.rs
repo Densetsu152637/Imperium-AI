@@ -321,3 +321,33 @@ async fn a_stop_survives_a_restart_and_keeps_the_queue_waiting() {
     assert_eq!(started, ["later", "another"]);
     assert!(resumed.queue(None).unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_message_sent_right_after_stopping_an_idle_session_waits() {
+    let fake = Arc::new(Fake::default());
+    let url = serve(Arc::clone(&fake)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(&url, dir.path(), false);
+    let mut events = session.subscribe();
+
+    // Stop and send back to back, with nothing running: the loop may see the message in the same
+    // wake-up as the stop, and must still hold it for the resume.
+    session.stop();
+    session.send("right after".into()).unwrap();
+    let quiet = drain(&mut events, Duration::from_millis(800)).await;
+    assert!(
+        !quiet
+            .iter()
+            .any(|event| matches!(event.event, SessionEvent::TurnStarted { .. })),
+        "no turn starts while stopped"
+    );
+    assert!(fake.requests().is_empty(), "nothing ran while stopped");
+
+    session.resume_work();
+    let turn = until(&mut events, "root", root_turn_ended).await;
+    assert!(turn.iter().any(|event| matches!(
+        &event.event,
+        SessionEvent::TurnStarted { text, .. } if text == "right after"
+    )));
+    assert_eq!(fake.requests().len(), 1);
+}
