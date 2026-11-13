@@ -53,6 +53,23 @@ export async function saveExport(result: SessionExportResult): Promise<boolean> 
   return true;
 }
 
+/**
+ * Saves a small JSON file the app made itself (a layout preset, src/layout/presets.ts) through the
+ * same save dialog or download as an export, with no warning to confirm. False when cancelled.
+ */
+export async function saveTextFile(filename: string, contents: string): Promise<boolean> {
+  if (isTauri()) return invoke<boolean>("save_export", { filename, contents, warning: null });
+  const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  return true;
+}
+
 /** Exports a session and saves it; false when the user cancelled the save. */
 export async function exportSession(
   client: ExportClient,

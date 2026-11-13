@@ -256,8 +256,7 @@ when it is done the card offers **Switch to it** (`session.control` `set_model`)
 downloaded until Download is clicked. The answers go through `session.suggestion_respond`
 ([04](04-models-and-routing.md#model-download-suggestions)).
 
-Not yet: dragging modules between panels, project layout overrides, and themes beyond light
-and dark.
+Not yet: themes beyond light and dark.
 
 ## Shell
 
@@ -405,23 +404,56 @@ presets; see [scaling and wide displays](#scaling-and-wide-displays).
   room. Settings → *Reset layout* restores the default arrangement. The rules are pure
   functions (`layout/arrangement.ts`) with tests (`test/arrangement.test.ts`).
 
-### Rearranging (planned beyond the panel editor)
+### Moving panels and modules (implemented)
 
-The [panel editor](#panel-editor-implemented) covers moving panels between and into columns and
-locking the layout outside it. Still planned:
+The [panel editor](#panel-editor-implemented) moves panels between and into columns and locks the
+layout outside it. Roadmap item 35 adds, on the same pure rules (`layout/placement.ts`,
+`layout/moves.ts`, `layout/shapes.ts`, `layout/presets.ts`, each with node tests):
 
-- Dragging a panel out into a new window and a module between panels, and showing hidden
-  modules in the editor.
-- **Layouts are global.** One layout applies to every project, and changes to it apply
-  everywhere.
-- **Project overrides are explicit.** A project uses its own layout only after the user
-  chooses *Save as project layout* for it; nothing creates one automatically. While an override
-  is active the Projects panel and window title show a marker, and *Use global layout*
-  removes it. Overrides are stored in user config, keyed by project (or in
-  `.imperium/layout.json` when the user chooses to share it with the project).
-- Layouts can be exported and shared as presets (a preset includes panel instances, module
-  placement, and settings, and lists the mods it needs). "Reset layout" restores the default
-  view.
+- **Out into a window, and back.** In the editor, dragging a panel past the window's edge (the
+  pointer is captured, so it keeps reporting there) or onto the *Drop a panel here… to open it in
+  its own window* zone under the editor bar opens it in its own window, the same detached window
+  as *Open in its own window*. Panels already in windows appear as chips
+  in that strip: drag one into a column to dock it there (its window closes), or press it to dock
+  it where it was.
+- **Modules between panels.** A mod's panel is a *module*: dragged onto the middle of another
+  panel it is shown inside that panel as a titled section below the panel's own content, with
+  its own ⋯ menu; the host's editor header lists its modules as chips to drag back out. Built-in
+  panels host modules but are not modules, and a module never hosts another. The arrangement
+  keeps listing a hosted module in its column, so taking it out puts it back where it was; if
+  its host is closed or in a window it shows in that column place meanwhile. Placement is saved
+  as `modules` (host → module ids) in the local `layout` document. The built-in sections inside
+  panels are not yet modules of their own; only panels that mods contribute move this way.
+- **Keyboard alternatives.** Every drag has a menu entry in the panel's ⋯ menu, which works with
+  the editor on or off: *Move up*, *Move down*, *Move to column N*, *Move to a new column at the
+  left / right*, *Move into <panel>* (module panels), and *Open in its own window*; a hosted
+  module's *Move to column N* takes it out. Entries list only panels and columns that are on
+  screen. A menu choice and the matching drag land the same way, since both go through
+  `dropPanel`.
+- **Project layouts.** The layout is global until the user chooses *Save as project layout*
+  (Settings → Panels, or the editor bar) for the selected environment, which copies what it
+  shows; from then on that environment's panel edits (arrangement, closed panels, modules) go to
+  its own copy and other environments are untouched. While one is active the title bar shows a
+  *Project layout* marker, and *Use global layout* removes it. Overrides are stored in the local
+  `layout` document as `overrides`, keyed by environment id; an environment without one, or
+  whose id is gone, uses the global layout. Sizes, folded panels and detached windows are about
+  the screen and stay global. Settings → *Reset layout* resets the layout that applies. A
+  project layout file in the repository (`.imperium/layout.json`) is not built.
+- **Layout presets.** Settings → Panels has *Export…* (the layout that applies now, saved as
+  `imperium-layout-<name>.json` through the save dialog) and *Import…* (a file picker). A preset
+  is data only:
+  `{ format: "imperium-layout-preset", version: 1, name, arrangement, hidden, modules, mods }`,
+  where `mods` lists the mods whose panels it places. Import is strict and applies nothing on any
+  failure, showing the reason: invalid JSON, a file over 64 KiB, another format, a version other
+  than 1 (a newer one says to update), fields beyond these, or a malformed arrangement (distinct
+  panels, each in one column), closed list, or modules (only a mod's panel can be a module, and
+  never in the session). Panel and mod ids are whatever mods choose: only a length limit,
+  control characters and prototype-like names are refused. Importing never installs or runs
+  anything: panels of a mod that is not installed stay out of sight until it is. A valid file
+  first asks *Replace the current layout with <name>?* (naming the layout it replaces and any
+  missing mods), and only *Replace* applies it, to the layout that applies (the environment's
+  own when it has one). Saved layouts with modules that cannot be hosted lose just those
+  entries.
 - Mods contribute new panels, modules, and slot content through [UI mods](06-extensibility.md#ui-mods).
 - **Agent tree** shows every agent with its model, status, tokens, cost, and budget; selecting
   one opens its transcript.
@@ -508,7 +540,9 @@ click away, never removed.
   (`RowMenu`, the same menu button session rows use) that stays invisible until the header is
   hovered or holds focus (always shown on touch screens). The menu lists the panel's own
   secondary actions (`PanelSpec.menu`) first, then *Collapse all / Expand all in this column* on
-  a stack's first panel, *Open in its own window*, and *Close panel* (`layout/panelMenu.ts`).
+  a stack's first panel, the *Move…* entries (the keyboard alternatives to dragging, see
+  [moving panels and modules](#moving-panels-and-modules-implemented)), *Open in its own window*,
+  and *Close panel* (`layout/panelMenu.ts`).
   Header actions are small icon-only buttons with an `aria-label` and tooltip: *+* for New
   environment and New session (beside the Sessions sort), the sliders for *Configure models*.
 - **Title bar:** Connectors, the panel editor toggle, and Settings are one group of icon buttons.

@@ -50,10 +50,14 @@ import type {
 
 import { DaemonClient, type DaemonConnection } from "./daemon/client";
 import { findDaemon, insideTauri, rememberDevConnection } from "./daemon/connection";
-import { addColumn, applyDrop, reconcile, removeColumn, sameArrangement, visibleColumns, type Arrangement, type DropTarget } from "./layout/arrangement";
+import { addColumn, reconcile, removeColumn, sameArrangement, visibleColumns, type Arrangement, type DropTarget } from "./layout/arrangement";
 import { Columns, type PanelSpec } from "./layout/Columns";
 import { PanelWindow } from "./layout/PanelWindow";
 import { getLayout, resetLayout, updateLayout, type DetachedPanel } from "./layout/state";
+import { applyMove, panelMoves } from "./layout/moves";
+import { activeModules, canHost, dropPanel, sameModules, type Modules } from "./layout/placement";
+import { makePreset, missingMods, parsePreset, presetFileName, presetText, type LayoutPreset } from "./layout/presets";
+import { activeShape, clearOverride, DEFAULT_SHAPE, editShape, hasOverride, saveOverride, type Shapes } from "./layout/shapes";
 import { downloadNotice, initiativeNotice, sessionNotice, updateNotice } from "./attention";
 import { budgetNotice, budgetStop } from "./budgets";
 import { focusMainWindow, notify, onNoticeOpened } from "./notify";
@@ -65,7 +69,7 @@ import {
   type EnvironmentActions,
   type SessionSort,
 } from "./panels/NavigationPanels";
-import { exportSession } from "./exportSession";
+import { exportSession, saveTextFile } from "./exportSession";
 import { SessionPanel } from "./panels/SessionPanel";
 import { ComparePanel } from "./panels/ComparePanel";
 import { branchRun, comparisonMembers, comparisonOpen } from "./branches";
@@ -110,7 +114,7 @@ import {
   type AppSettings,
   type ChangeSettings,
 } from "./settings";
-import { PANELS_ICON, SETTINGS_SECTIONS, SettingsWindow } from "./SettingsWindow";
+import { PANELS_ICON, SETTINGS_SECTIONS, SettingsWindow, type LayoutNotice } from "./SettingsWindow";
 import { appCommands } from "./commands/appCommands";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
 import { splashDone } from "./boot";
@@ -190,6 +194,9 @@ export function App() {
   const [environments, setEnvironments] = useState<EnvironmentInfo[]>(cachedEnvironments);
   // The environment new sessions start in, and whether the Sessions list shows only its sessions.
   const [envId, setEnvId] = useState<string | null>(restore ? saved.environment : null);
+  /** The selected environment for state updates that run later, so a layout edit lands on the environment it was made in. */
+  const envIdRef = useRef(envId);
+  envIdRef.current = envId;
   const [envView, setEnvView] = useState(restore && saved.projectView);
   /** The environment window: which environment it edits (null id: a new one). */
   const [envWindow, setEnvWindow] = useState<{ id: string | null; confirmDelete?: boolean } | null>(null);
@@ -203,10 +210,20 @@ export function App() {
   const [compareView, setCompareView] = useState<string | null>(null);
   /** A message branched from, handed to the new session's composer to edit. */
   const [prefill, setPrefill] = useState<{ sessionId: string; text: string; nonce: number } | null>(null);
-  const [hidden, setHidden] = useState<string[]>(saved.hidden);
+  /** The global layout (which panels sit where, which are closed, which are modules) and the environments' own (shapes.ts). */
+  const [shapes, setShapes] = useState<Shapes>({
+    global: { arrangement: saved.arrangement, hidden: saved.hidden, modules: saved.modules },
+    overrides: saved.overrides,
+  });
+  // What applies to the selected environment: its own layout when it has one, else the global one.
+  const shape = activeShape(shapes, envId);
+  const { arrangement, hidden, modules } = shape;
+  const projectLayout = hasOverride(shapes, envId);
+  /** Panel edits go to the selected environment's own layout when it has one, else the global layout. */
+  const setArrangement = (next: Arrangement | null) => setShapes((all) => editShape(all, envIdRef.current, { arrangement: next }));
+  const setHidden = (update: (all: string[]) => string[]) =>
+    setShapes((all) => editShape(all, envIdRef.current, { hidden: update(activeShape(all, envIdRef.current).hidden) }));
   const [detached, setDetached] = useState<Record<string, DetachedPanel>>(saved.detached);
-  /** Which panels sit in which columns, as the panel editor left them (null: the default). */
-  const [arrangement, setArrangement] = useState<Arrangement | null>(saved.arrangement);
   /** The panel editor: panels are moved only while it is on. */
   const [editingLayout, setEditingLayout] = useState(false);
   // Panels whose windows this session has opened, so each opens once.
@@ -216,6 +233,10 @@ export function App() {
   const [settingsRequest, setSettingsRequest] = useState<{ section: string } | null>(null);
   const [modelDialog, setModelDialog] = useState<ModelDialogTarget | null>(null);
   const [showConnectors, setShowConnectors] = useState(false);
+  /** What the last preset export or import did, shown in Settings → Panels. */
+  const [presetNotice, setPresetNotice] = useState<LayoutNotice | null>(null);
+  /** A preset file that was read and is valid, waiting for the user to confirm replacing the layout. */
+  const [pendingPreset, setPendingPreset] = useState<LayoutPreset | null>(null);
   const updates = useUpdates();
   const [modelTable, setModelTable] = useState<ModelListResult | null>(null);
   const [localModels, setLocalModels] = useState<LocalModelListResult | null>(null);
@@ -462,8 +483,18 @@ export function App() {
   // window writes the layout.
   useEffect(() => {
     if (isDetached) return;
-    updateLayout({ environment: envId, session: selected, projectView: envView, arrangement, hidden, detached, sessionSort });
-  }, [isDetached, envId, selected, envView, arrangement, hidden, detached, sessionSort]);
+    updateLayout({
+      environment: envId,
+      session: selected,
+      projectView: envView,
+      arrangement: shapes.global.arrangement,
+      hidden: shapes.global.hidden,
+      modules: shapes.global.modules,
+      overrides: shapes.overrides,
+      detached,
+      sessionSort,
+    });
+  }, [isDetached, envId, selected, envView, shapes, detached, sessionSort]);
 
   // Esc leaves the panel editor, unless a dialog is open (it closes that instead).
   useEffect(() => {
@@ -1239,14 +1270,64 @@ export function App() {
   const everyPanel = [...leftPanels, approvalsPanel, sessionPanel, ...rightPanels];
   const findPanel = (id: string) => everyPanel.find((panel) => panel.id === id);
 
+  const newColumnId = () => `column-${Date.now().toString(36)}`;
   const closePanel = (id: string) => setHidden((all) => (all.includes(id) ? all : [...all, id]));
   const togglePanel = (id: string, open: boolean) =>
     setHidden((all) => (open ? all.filter((panel) => panel !== id) : all.includes(id) ? all : [...all, id]));
-  /** Leaves out closed and detached panels and lets the rest be closed or detached. */
-  const visible = (panels: PanelSpec[]) =>
-    panels
-      .filter((panel) => !hidden.includes(panel.id) && !detached[panel.id])
-      .map((panel) => ({ ...panel, onClose: () => closePanel(panel.id), onDetach: () => detach(panel.id) }));
+
+  // The default arrangement: environments and sessions on the left, the session in the middle,
+  // the rest on the right. The saved one (from the panel editor) wins, with new panels added.
+  const defaultArrangement: Arrangement = [
+    { id: "left", panels: [...leftPanels.map((panel) => panel.id), approvalsPanel.id] },
+    { id: "main", panels: [sessionPanel.id] },
+    { id: "right", panels: rightPanels.map((panel) => panel.id) },
+  ];
+  const layoutColumns = reconcile(arrangement, defaultArrangement);
+  /** Modules are the panels mods contribute; built-in panels host them and are never modules themselves. */
+  const isModule = (id: string) => id.startsWith("mod:");
+  /** Whether a panel is on screen in the main window: it exists, is not closed or in a window, and approvals have something to show. */
+  const onScreen = (id: string) =>
+    findPanel(id) !== undefined && !hidden.includes(id) && !detached[id] && (id !== approvalsPanel.id || approvals.length > 0);
+  /** The modules drawn inside their hosts now: a module whose host is closed or in a window shows in its own column place instead. */
+  const hostedNow = activeModules(
+    modules,
+    (host) => onScreen(host) && canHost(host, "mod:", isModule),
+    (module) => onScreen(module) && isModule(module),
+  );
+  const hostedIds = new Set(Object.values(hostedNow).flat());
+
+  /** Keeps the placement a drop or a menu move produced; a panel sent to a window opens it. */
+  const commitPlacement = (result: { arrangement: Arrangement; modules: Modules; openWindow: boolean }, panel: string) => {
+    const changedArrangement = !sameArrangement(result.arrangement, layoutColumns);
+    const changedModules = !sameModules(result.modules, modules);
+    if (changedArrangement || changedModules) {
+      setShapes((all) => editShape(all, envIdRef.current, { arrangement: result.arrangement, modules: result.modules }));
+    }
+    if (result.openWindow) detach(panel);
+  };
+  /** The keyboard alternatives to dragging `id`: its ⋯ menu's *Move…* entries (layout/moves.ts). */
+  const movesOf = (id: string) =>
+    panelMoves({ placement: { arrangement: layoutColumns, modules: hostedNow }, panel: id, shown: onScreen, title: (other) => findPanel(other)?.title ?? other, isModule }).map(
+      (move) => ({
+        label: move.label,
+        onSelect: () => commitPlacement(applyMove({ arrangement: layoutColumns, modules }, id, move, newColumnId, isModule), id),
+      }),
+    );
+  /** A panel as the workspace draws it: it can be moved, closed (not the session) and detached. */
+  const decorate = (panel: PanelSpec): PanelSpec => ({
+    ...panel,
+    onClose: panel.id === sessionPanel.id ? undefined : () => closePanel(panel.id),
+    onDetach: () => detach(panel.id),
+    moves: movesOf(panel.id),
+    module: isModule(panel.id),
+    host: !isModule(panel.id) && panel.id !== sessionPanel.id,
+    hosted: (hostedNow[panel.id] ?? []).flatMap((id) => {
+      const spec = findPanel(id);
+      return spec ? [{ ...spec, onClose: () => closePanel(id), onDetach: () => detach(id), moves: movesOf(id) }] : [];
+    }),
+  });
+  /** Leaves out closed, detached and hosted panels and lets the rest be moved, closed or detached. */
+  const visible = (panels: PanelSpec[]) => panels.filter((panel) => onScreen(panel.id) && !hostedIds.has(panel.id)).map(decorate);
 
   /** Moves a panel to its own window (the effect above opens it). */
   const detach = (id: string) => setDetached((all) => (all[id] ? all : { ...all, [id]: { pinned: false } }));
@@ -1369,26 +1450,57 @@ export function App() {
     );
   }
 
-  // The default arrangement: environments and sessions on the left, the session in the middle,
-  // the rest on the right. The saved one (from the panel editor) wins, with new panels added.
-  const defaultArrangement: Arrangement = [
-    { id: "left", panels: [...leftPanels.map((panel) => panel.id), approvalsPanel.id] },
-    { id: "main", panels: [sessionPanel.id] },
-    { id: "right", panels: rightPanels.map((panel) => panel.id) },
-  ];
-  const layoutColumns = reconcile(arrangement, defaultArrangement);
   const shownPanels = new Map<string, PanelSpec>(
     visible([...leftPanels, ...(approvals.length > 0 ? [approvalsPanel] : []), ...rightPanels]).map((panel) => [panel.id, panel]),
   );
   if (!detached[sessionPanel.id]) {
-    shownPanels.set(sessionPanel.id, { ...sessionPanel, span: true, onDetach: () => detach(sessionPanel.id) });
+    shownPanels.set(sessionPanel.id, { ...decorate(sessionPanel), span: true });
   }
   const columns = visibleColumns(layoutColumns, (id) => shownPanels.get(id), editingLayout);
   /** Keeps an arrangement the editor changed; an unchanged one is not written. */
   const arrange = (next: Arrangement) => {
     if (!sameArrangement(next, layoutColumns)) setArrangement(next);
   };
-  const newColumnId = () => `column-${Date.now().toString(36)}`;
+  const installedMods = (mods?.mods ?? []).map((mod) => mod.id);
+  const environmentName = environments.find((env) => env.id === envId)?.name ?? null;
+  /** *Export layout preset*: the layout that applies here, as a JSON file through the save dialog. */
+  const exportPreset = () => {
+    const preset = makePreset(shape, projectLayout && environmentName ? `${environmentName} layout` : "Layout", installedMods);
+    saveTextFile(presetFileName(preset), presetText(preset)).then(
+      (saved) => saved && setPresetNotice({ kind: "ok", text: `Saved “${preset.name}”.` }),
+      (error: unknown) => setPresetNotice({ kind: "error", text: `Could not save the preset: ${error instanceof Error ? error.message : String(error)}` }),
+    );
+  };
+  /** *Import layout preset*: a valid file waits for the user's confirmation; an invalid one is refused with a reason. */
+  const importPreset = (text: string) => {
+    const result = parsePreset(text);
+    if (!result.ok) {
+      setPendingPreset(null);
+      setPresetNotice({ kind: "error", text: result.error });
+      return;
+    }
+    setPresetNotice(null);
+    setPendingPreset(result.preset);
+  };
+  /** The confirmed preset replaces the layout that applies here (the environment's own when it has one). */
+  const applyPendingPreset = () => {
+    const preset = pendingPreset;
+    if (!preset) return;
+    setPendingPreset(null);
+    setShapes((all) => editShape(all, envIdRef.current, preset.shape));
+    const missing = missingMods(preset, installedMods);
+    setPresetNotice({
+      kind: "ok",
+      text:
+        `Applied “${preset.name}”.` +
+        (missing.length > 0 ? ` Its panels from ${missing.join(", ")} appear once ${missing.length === 1 ? "that mod is" : "those mods are"} installed and enabled.` : ""),
+    });
+  };
+  /** A panel dropped in the editor: from a column or from its own window (which docks it first). */
+  const dropInEditor = (panel: string, target: DropTarget) => {
+    if (detached[panel]) dock(panel);
+    commitPlacement(dropPanel({ arrangement: layoutColumns, modules }, panel, target, editingLayout, newColumnId, isModule), panel);
+  };
 
   return (
     <SettingsContext.Provider value={settings}>
@@ -1396,6 +1508,11 @@ export function App() {
     <div className="app">
       <header className="titlebar">
         <strong className="brand">Imperium</strong>
+        {projectLayout && (
+          <span className="layout-marker" title={`${environmentName ?? "This environment"} uses its own layout; Settings → Panels switches back to the global one`}>
+            Project layout
+          </span>
+        )}
         <span className="muted connection" data-state={status.kind}>
           {status.kind === "connected"
             ? `${status.client.daemon?.daemon.name} ${status.client.daemon?.daemon.version}`
@@ -1457,9 +1574,26 @@ export function App() {
           }}
           onModelsChanged={refreshModels}
           onResetLayout={() => {
-            setArrangement(null);
-            resetLayout();
+            // The layout that applies here goes back to the default: the global one, or this environment's own.
+            const next = editShape(shapes, envId, DEFAULT_SHAPE);
+            resetLayout({ arrangement: next.global.arrangement, hidden: next.global.hidden, modules: next.global.modules, overrides: next.overrides });
             window.location.reload();
+          }}
+          layoutControls={{
+            environment: environmentName,
+            projectLayout,
+            notice: presetNotice,
+            pending: pendingPreset && {
+              name: pendingPreset.name,
+              replaces: projectLayout && environmentName ? `${environmentName}'s project layout` : "the global layout",
+              missingMods: missingMods(pendingPreset, installedMods),
+            },
+            onConfirmImport: applyPendingPreset,
+            onCancelImport: () => setPendingPreset(null),
+            onSaveProjectLayout: () => setShapes((all) => saveOverride(all, envIdRef.current)),
+            onUseGlobalLayout: () => setShapes((all) => clearOverride(all, envIdRef.current)),
+            onExport: exportPreset,
+            onImport: importPreset,
           }}
           onClose={() => setShowSettings(false)}
           request={settingsRequest}
@@ -1491,7 +1625,20 @@ export function App() {
       {status.kind !== "connected" && <ConnectionBanner status={status} onConnect={connect} daemon={daemon} />}
       {editingLayout && (
         <div className="layout-editor-bar" role="region" aria-label="Layout editor">
-          <span className="muted">Drag a panel by its header to move it; drop it at a column's edge to start a new column.</span>
+          <span className="muted">
+            Drag a panel by its header to move it: to a column's edge for a new column, onto the middle of another panel to show a mod's panel inside it, or
+            out to a window. The ⋯ menu's Move entries do the same from the keyboard.
+          </span>
+          {envId && !projectLayout && (
+            <button className="ghost small" onClick={() => setShapes((all) => saveOverride(all, envIdRef.current))}>
+              Save as project layout
+            </button>
+          )}
+          {projectLayout && (
+            <button className="ghost small" onClick={() => setShapes((all) => clearOverride(all, envIdRef.current))}>
+              Use global layout
+            </button>
+          )}
           <button className="ghost small" onClick={() => arrange(addColumn(layoutColumns, editingLayout, newColumnId))}>
             <Plus aria-hidden="true" /> Column
           </button>
@@ -1505,7 +1652,12 @@ export function App() {
           initial={arrangement === null && columns.length === 3 ? [0.2, 0.55, 0.25] : undefined}
           columns={columns}
           editing={editingLayout}
-          onDrop={(panel: string, target: DropTarget) => arrange(applyDrop(layoutColumns, panel, target, editingLayout, newColumnId))}
+          windows={Object.keys(detached).flatMap((id) => {
+            const spec = findPanel(id);
+            return spec ? [{ id, title: spec.title }] : [];
+          })}
+          onDrop={dropInEditor}
+          onDock={dock}
           onRemoveColumn={(column) => arrange(removeColumn(layoutColumns, column, (id) => shownPanels.has(id), editingLayout))}
         />
       </main>
