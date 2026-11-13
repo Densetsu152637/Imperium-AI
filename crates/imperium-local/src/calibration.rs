@@ -5,13 +5,21 @@
 //! buffers grow with batch size, a runtime pack may allocate more or less than another, a driver
 //! reserves its own share. A benchmark run reads the model's server process while it loads and
 //! answers prompts and reports its peak memory; [`Calibration`] compares that peak with what was
-//! planned for the same placement and keeps the ratio, per model and placement, in a file for one
-//! hardware fingerprint (the machine, its GPUs and the runtime pack).
+//! statically planned for the same placement and keeps the ratio, per model and lane, in a file
+//! for one hardware fingerprint (the machine, its GPUs and the runtime pack).
+//!
+//! What is compared is the part the planner corrects: the model's fixed memory (weights plus
+//! runtime overhead, as the static estimate has it), against the measured peak less the KV cache
+//! the static estimate computed for the pool the model ran with. Both are static figures, never
+//! the already-corrected plan, so repeated measurements converge on the true ratio instead of
+//! compounding.
 //!
 //! The planner then moves the footprint's overhead by the ratio ([`factor_permille`]), bounded
 //! so a stale or noisy measurement cannot do much harm: the estimate never goes below
 //! [`MIN_FACTOR_PERMILLE`] of the static one (a measured saving is taken only in part) nor above
-//! [`MAX_FACTOR_PERMILLE`] of it. Nothing measured: no change.
+//! [`MAX_FACTOR_PERMILLE`] of it. A ratio outside [`ACCEPT_MIN_PERMILLE`] to
+//! [`ACCEPT_MAX_PERMILLE`] is a bad measurement (the wrong process, a failed load) and is
+//! discarded, not clamped. Nothing measured: no change.
 //!
 //! [`factor_permille`]: Calibration::factor_permille
 
@@ -29,6 +37,10 @@ pub const NEUTRAL_PERMILLE: u32 = 1000;
 pub const MIN_FACTOR_PERMILLE: u32 = 950;
 /// The highest factor ever applied: planning at most 50% over the static estimate.
 pub const MAX_FACTOR_PERMILLE: u32 = 1500;
+/// The lowest measured ratio believed; below it the reading is discarded.
+pub const ACCEPT_MIN_PERMILLE: u32 = 700;
+/// The highest measured ratio believed; above it the reading is discarded.
+pub const ACCEPT_MAX_PERMILLE: u32 = 2000;
 /// Entries kept per hardware fingerprint; the least recently measured go first.
 const MAX_ENTRIES: usize = 256;
 const VERSION: u32 = 1;
@@ -38,8 +50,6 @@ const VERSION: u32 = 1;
 pub enum Lane {
     /// Every layer in GPU memory (or in the shared memory of a unified-memory machine).
     Gpu,
-    /// Some layers on the GPU, the rest in RAM.
-    Partial,
     /// All in RAM.
     Cpu,
 }
@@ -48,7 +58,6 @@ impl Lane {
     pub fn as_str(self) -> &'static str {
         match self {
             Lane::Gpu => "gpu",
-            Lane::Partial => "partial",
             Lane::Cpu => "cpu",
         }
     }
@@ -142,22 +151,14 @@ impl Calibration {
         &self.fingerprint
     }
 
-    /// The factor to plan `model_id` with, in thousandths: 1000 when nothing was measured. Off
-    /// the CPU lane the larger of the GPU and partial entries counts, since the planner does
-    /// not know which of the two the model will get.
+    /// The factor to plan `model_id` with, in thousandths: 1000 when nothing was measured.
     pub fn factor_permille(&self, model_id: &str, cpu: bool) -> u32 {
-        let entries = lock(&self.entries);
-        let lanes: &[Lane] = if cpu {
-            &[Lane::Cpu]
-        } else {
-            &[Lane::Gpu, Lane::Partial]
-        };
-        lanes
-            .iter()
-            .filter_map(|lane| entries.get(&key(model_id, *lane)))
-            .map(|entry| entry.factor_permille)
-            .max()
-            .map_or(NEUTRAL_PERMILLE, clamp_factor)
+        let lane = if cpu { Lane::Cpu } else { Lane::Gpu };
+        lock(&self.entries)
+            .get(&key(model_id, lane))
+            .map_or(NEUTRAL_PERMILLE, |entry| {
+                clamp_factor(entry.factor_permille)
+            })
     }
 
     /// The entry for `model_id` in `lane`, for display and tests.
@@ -165,8 +166,10 @@ impl Calibration {
         lock(&self.entries).get(&key(model_id, lane)).cloned()
     }
 
-    /// Records a measured peak against the memory planned for it, and saves. Ignored when either
-    /// is zero. Returns the factor now in force for the model and lane.
+    /// Records the memory measured for a model's fixed part against the memory the static
+    /// estimate gave it, and saves. Ignored when either is zero or the ratio is outside what is
+    /// believed ([`ACCEPT_MIN_PERMILLE`], [`ACCEPT_MAX_PERMILLE`]). Returns the factor now in
+    /// force for the model and lane.
     pub fn record(
         &self,
         model_id: &str,
@@ -184,6 +187,9 @@ impl Calibration {
                 .checked_div(u128::from(planned_bytes))?,
         )
         .unwrap_or(u32::MAX);
+        if !(ACCEPT_MIN_PERMILLE..=ACCEPT_MAX_PERMILLE).contains(&ratio) {
+            return None;
+        }
         let ratio = clamp_factor(ratio);
         let (factor, snapshot) = {
             let mut entries = lock(&self.entries);
@@ -269,17 +275,51 @@ mod tests {
         assert_eq!(calibration.factor_permille("m", false), 1100);
         // The CPU lane has its own entry.
         assert_eq!(calibration.factor_permille("m", true), NEUTRAL_PERMILLE);
-        // A wild reading is capped; a tiny one is raised to the floor.
-        calibration.record("big", Lane::Gpu, GIB, 40 * GIB, 1);
+        // A ratio that is believable but past what is applied is capped; one under is floored.
+        calibration.record("big", Lane::Gpu, 10 * GIB, 19 * GIB, 1);
         assert_eq!(
             calibration.factor_permille("big", false),
             MAX_FACTOR_PERMILLE
         );
-        calibration.record("small", Lane::Cpu, 10 * GIB, GIB, 1);
+        calibration.record("small", Lane::Cpu, 10 * GIB, 8 * GIB, 1);
         assert_eq!(
             calibration.factor_permille("small", true),
             MIN_FACTOR_PERMILLE
         );
+    }
+
+    #[test]
+    fn a_ratio_that_cannot_be_right_is_discarded_not_clamped() {
+        let calibration = Calibration::in_memory("abc");
+        // Forty times over (the wrong process), a tenth (a load that failed).
+        assert_eq!(calibration.record("m", Lane::Gpu, GIB, 40 * GIB, 1), None);
+        assert_eq!(calibration.record("m", Lane::Gpu, 10 * GIB, GIB, 1), None);
+        assert!(calibration.entry("m", Lane::Gpu).is_none());
+        // And one does not disturb what was learned.
+        calibration.record("m", Lane::Gpu, 10 * GIB, 12 * GIB, 2);
+        assert_eq!(calibration.record("m", Lane::Gpu, GIB, 40 * GIB, 3), None);
+        assert_eq!(calibration.factor_permille("m", false), 1200);
+    }
+
+    #[test]
+    fn measuring_against_the_static_plan_converges() {
+        use crate::planner::Footprint;
+        // The true fixed memory is 1.2 times the static estimate. Each round plans with the
+        // factor in force, measures, and records against the static plan, as the supervisor does.
+        let calibration = Calibration::in_memory("abc");
+        let fixed = Footprint::estimate(10 * GIB);
+        let static_base = fixed.weights_bytes + fixed.overhead_bytes;
+        let true_fixed = static_base / 10 * 12;
+        let mut seen = Vec::new();
+        for round in 0..4 {
+            let planned = fixed.calibrated(calibration.factor_permille("m", false));
+            // What the planner reserves for the fixed part now.
+            assert!(planned.weights_bytes + planned.overhead_bytes >= static_base);
+            seen.push(calibration.record("m", Lane::Gpu, static_base, true_fixed, round));
+        }
+        // The same every round (1.2, less integer rounding), not compounding.
+        assert!(seen.iter().all(|factor| *factor == seen[0]), "{seen:?}");
+        assert!(matches!(seen[0], Some(1199 | 1200)), "{seen:?}");
     }
 
     #[test]
@@ -305,14 +345,6 @@ mod tests {
             calibration.entry("m", Lane::Gpu).map(|e| e.samples),
             Some(3)
         );
-    }
-
-    #[test]
-    fn off_the_cpu_lane_the_larger_of_gpu_and_partial_counts() {
-        let calibration = Calibration::in_memory("abc");
-        calibration.record("m", Lane::Gpu, 10 * GIB, 10 * GIB, 1);
-        calibration.record("m", Lane::Partial, 10 * GIB, 12 * GIB, 1);
-        assert_eq!(calibration.factor_permille("m", false), 1200);
     }
 
     #[test]

@@ -1665,10 +1665,13 @@ impl Supervisor {
             })
     }
 
-    /// Records the peak memory a loaded model's server was measured at (by a benchmark run)
-    /// against what was planned for it, so later plans follow what it really takes. Nothing
-    /// happens when no calibration is set, the model is not loaded, or the peak is not known for
-    /// where it runs (GPU memory per process is not reported on every driver).
+    /// Records the peak memory a loaded model's server was measured at (by a benchmark run), so
+    /// later plans follow what it really takes. What is compared is the fixed memory the static
+    /// estimate gives the model (weights plus overhead) against the peak less the static KV
+    /// cache of the pool it ran with, whatever correction the placement was planned with.
+    /// Nothing happens when no calibration is set, the model is not loaded, it is not served by
+    /// llama.cpp, runs with a draft model, is split between GPU and RAM, or the peak is not
+    /// known for where it runs (GPU memory per process is not reported on every driver).
     pub fn record_measured_memory(
         &self,
         id: &str,
@@ -1680,26 +1683,33 @@ impl Supervisor {
             .loaded()
             .into_iter()
             .find(|loaded| loaded.model_id == id)?;
+        if loaded.runtime != backend::LLAMA_CPP || loaded.draft.is_some() {
+            return None;
+        }
+        let model = self.model(id)?;
         let unified = self.start_budget.unified;
-        let (lane, planned, measured) = if loaded.cpu_pinned || (!unified && loaded.gpu_layers == 0)
-        {
-            (Lane::Cpu, loaded.ram_bytes, peak_ram_bytes?)
+        let (lane, measured) = if loaded.cpu_pinned || (!unified && loaded.gpu_layers == 0) {
+            (Lane::Cpu, peak_ram_bytes?)
         } else if unified {
             // One pool of memory: the process's resident memory is all there is to read.
-            (Lane::Gpu, loaded.ram_bytes, peak_ram_bytes?)
+            (Lane::Gpu, peak_ram_bytes?)
         } else if loaded.all_layers_on_gpu {
-            (Lane::Gpu, loaded.vram_bytes, peak_vram_bytes?)
+            (Lane::Gpu, peak_vram_bytes?)
         } else {
-            (
-                Lane::Partial,
-                loaded.vram_bytes + loaded.ram_bytes,
-                peak_vram_bytes?.saturating_add(peak_ram_bytes?),
-            )
+            // A split between GPU and RAM cannot be told apart from either side.
+            return None;
         };
+        let launch = ModelLaunch {
+            pool_tokens: loaded.pool_tokens,
+            ..self.launch(id)
+        };
+        let static_plan = Footprint::of(&model, &launch);
+        let fixed = static_plan.weights_bytes + static_plan.overhead_bytes;
+        let measured_fixed = measured.checked_sub(static_plan.kv_bytes)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
-        calibration.record(id, lane, planned, measured, now)
+        calibration.record(id, lane, fixed, measured_fixed, now)
     }
 
     /// What `model`'s draft setting comes to when it loads with a KV pool of `pool_tokens`: the
@@ -3968,17 +3978,30 @@ mod tests {
         let model = supervisor.model("a").unwrap();
         let before = supervisor.footprint(&model).required_bytes();
         let loaded = supervisor.loaded().remove(0);
-        // Wherever it runs, 20% over what was planned for it.
-        let over = |planned: u64| planned / 10 * 12;
+        // The fixed memory (weights plus overhead) 20% over the static estimate, beside the
+        // static KV cache, whichever lane the model runs in.
+        let launch = ModelLaunch {
+            pool_tokens: loaded.pool_tokens,
+            ..supervisor.launch("a")
+        };
+        let plan = Footprint::of(&model, &launch);
+        let peak = (plan.weights_bytes + plan.overhead_bytes) / 10 * 12 + plan.kv_bytes;
         let factor = supervisor
-            .record_measured_memory(
-                "a",
-                Some(over(loaded.ram_bytes)),
-                Some(over(loaded.vram_bytes)),
-            )
+            .record_measured_memory("a", Some(peak), Some(peak))
             .expect("a load with memory planned is calibrated");
         assert!((1190..=1200).contains(&factor), "{factor}");
         assert!(supervisor.footprint(&model).required_bytes() > before);
+        // Recorded again against the static plan, the factor stays where it was.
+        let again = supervisor
+            .record_measured_memory("a", Some(peak), Some(peak))
+            .expect("calibrated again");
+        assert_eq!(again, factor);
+        // A reading that cannot be this model's is thrown away.
+        assert_eq!(
+            supervisor.record_measured_memory("a", Some(peak * 40), Some(peak * 40)),
+            None
+        );
+        assert_eq!(supervisor.record_measured_memory("a", None, None), None);
         // A model that is not loaded has no peak to compare.
         assert_eq!(
             supervisor.record_measured_memory("b", Some(1), Some(1)),

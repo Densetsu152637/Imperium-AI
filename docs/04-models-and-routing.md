@@ -939,15 +939,23 @@ and passing it to `Supervisor::with_backends`.
 ## Hardware awareness
 
 **Implemented (phase 4):** at start the daemon probes system memory and cores (`sysinfo`) and
-GPUs: NVIDIA through `nvidia-smi`; AMD through `rocm-smi --json`, else the kernel's `sysfs`
-(`amdgpu`'s `mem_info_vram_*`); Intel through `xpu-smi` (JSON), else `sysfs` (`lmem_*` of a card
-with local memory, so an integrated GPU, which has none of its own, is not listed); Apple
-Silicon through `sysctl` (the chip's name and `hw.memsize`: the GPU shares the machine's memory,
-so models are planned against RAM). Each tool is spawned without a shell, killed after 10 s,
-and not tried again once it is missing; with none present the machine has no GPU and models run
-on the CPU. The AMD and Intel probes read Linux (`rocm-smi` and `xpu-smi` also exist for
-Windows, but only the Linux layouts are read so far), and their output formats were taken from
-the vendors' documentation and are tested on captured samples, not yet on hardware.
+GPUs: NVIDIA through `nvidia-smi`; on Linux AMD through `rocm-smi --json`, else the kernel's
+`sysfs` (`amdgpu`'s `mem_info_vram_*`), and Intel through `xpu-smi` (JSON), else `sysfs` (`lmem_*`
+of a card with local memory, so an integrated GPU, which has none of its own, is not listed);
+Apple Silicon through `sysctl` (the chip's name and `hw.memsize`: the GPU shares the machine's
+memory, so models are planned against RAM and the GPU is listed, labelled *unified memory*, but
+adds no VRAM to the budget). Each tool is spawned without a shell and killed after 10 s. A tool
+that is not installed is remembered for the life of the daemon; one that fails is given up on
+after three failures in a row, so a broken driver cannot slow every refresh. Every figure is
+range-checked, and a GPU whose memory in use is not reported counts as half free for planning
+(neither all of it nor none). The AMD and Intel formats were written from the vendors'
+documentation and are tested on sample output, not yet on hardware; Windows AMD and Intel GPUs
+are not read. A runtime build drives one vendor's GPUs, so the budget counts NVIDIA's when there
+are any, else the first AMD or Intel GPU's vendor, and only a GPU with at least 4 GiB (an
+integrated GPU's carve-out is not worth offloading to); the others are shown in the monitor, not
+planned on, and with no usable GPU models run on the CPU. Because the GPU names are part of the
+[benchmark fingerprint](#local-model-benchmark-implemented), results recorded before an AMD,
+Intel or Apple GPU was listed no longer match this machine once.
 `[hardware] vram_mb` and `ram_mb` override the probe for GPUs it cannot read, or to plan as if
 memory were smaller.
 The budget is the free VRAM and the available RAM less `runtime.llamacpp.ram_headroom_mb`,
@@ -963,20 +971,26 @@ Apple Silicon, and `cpu` otherwise; set `rocm` explicitly.
 The planner's estimate is static, and real servers differ from it (compute buffers, driver
 reservations, the pack's own allocations). A benchmark run
 ([peak memory](#local-model-benchmark-implemented)) reads the model's server from before it loads until its
-prompts end; the highest reading is compared with what was planned for the placement it ran in
-(VRAM for a model wholly on the GPU, RAM on the CPU lane or a unified-memory machine, both for a
-split; a lane whose figure is unknown, such as per-process VRAM under WDDM, is not
-calibrated). The ratio is kept per model and lane in `<data>/calibration/<fingerprint>.json`,
-one file per hardware fingerprint (the benchmark's: machine, GPUs and runtime pack), so a new GPU
-or pack starts from the static estimate. A later run is averaged with the earlier ones, except
-that a higher ratio counts in full: a quiet run does not lower what a busy one showed.
+prompts end; the highest reading is compared with what the static estimate gave the model.
+The ratio is kept per model and lane in `<data>/calibration/<fingerprint>.json`, one file per
+hardware fingerprint (the benchmark's: machine, GPUs and runtime pack), so a new GPU or pack
+starts from the static estimate. What is compared is the model's fixed memory as the static
+estimate has it (weights plus the 512 MiB overhead) against the peak less the static KV cache of
+the pool it ran with, never against the already-corrected plan, so repeated runs converge on the
+true ratio instead of compounding. A later run is averaged with the earlier ones, except that a
+higher ratio counts in full: a quiet run does not lower what a busy one showed.
 
-The planner moves its runtime overhead by that ratio of the model's weights plus overhead; the KV
-cache is still computed from the model's shape. The factor is bounded to 0.95 to 1.5 of the
-static estimate, the overhead never falls below half of 512 MiB, and a model off the CPU lane
-uses the larger of its GPU and partial entries, so a measurement can add up to half again but can
-take away at most 5%. A missing, unreadable or foreign file is ignored. vLLM models are
-calibrated by the same runs where the driver reports their GPU memory.
+A reading is used only when a benchmark run answered all its prompts, from the server process
+that loaded the model (a restart resets the peak), for a llama.cpp model without a draft that is
+wholly on the GPU, wholly in RAM, or in unified memory. Split placements and vLLM models are not
+calibrated, and a lane whose figure is unknown (per-process VRAM under WDDM) is skipped. A ratio
+outside 0.7 to 2.0 is a bad measurement (the wrong process, a failed load) and is discarded, not
+clamped.
+
+The planner moves its runtime overhead by the ratio of the model's weights plus overhead; the KV
+cache is still computed from the model's shape. The factor applied is bounded to 0.95 to 1.5 of
+the static estimate and the overhead never falls below half of 512 MiB, so a measurement can add
+up to half again but can take away at most 5%. A missing, unreadable or foreign file is ignored.
 
 ## Active models and resource monitor
 

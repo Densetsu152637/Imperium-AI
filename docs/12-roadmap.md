@@ -308,7 +308,7 @@ and `environments.agent_update` (protocol 0.28)
 28. **Local runtimes and hardware** (implemented, in part). GPU probes for AMD (`rocm-smi`,
     `sysfs`), Intel (`xpu-smi`, `sysfs`) and Apple Silicon (`sysctl`, unified memory) feed the
     hardware view, the resource monitor and the llama.cpp backend choice, and memory estimates
-    are calibrated against the peak memory benchmark runs measure, bounded and kept per model
+    are calibrated against the peak memory benchmark runs measure (llama.cpp models wholly on one side, not vLLM or split placements), bounded and kept per model
     and hardware fingerprint ([04](04-models-and-routing.md#hardware-awareness)). vLLM was
     already a supervised runtime (item 7); not built: a managed `uv` environment or the Docker
     image for it, per-process GPU memory for AMD and Intel, and probes on Windows for AMD and

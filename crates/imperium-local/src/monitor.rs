@@ -116,7 +116,8 @@ impl SystemProbe {
                     name: gpu.name,
                     vendor: gpu.vendor.to_string(),
                     utilization_percent: gpu.utilization_percent,
-                    vram_used_bytes: gpu.vram_used_bytes,
+                    // The protocol has no "unknown"; planning treats it as half-used ([`Reading::vram_free_bytes`]).
+                    vram_used_bytes: gpu.vram_used_bytes.unwrap_or(0),
                     vram_total_bytes: gpu.vram_total_bytes,
                     temperature_c: gpu.temperature_c,
                 }),

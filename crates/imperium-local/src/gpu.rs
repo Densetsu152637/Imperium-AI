@@ -1,27 +1,43 @@
 //! GPUs other than NVIDIA's: AMD, Intel and Apple Silicon.
 //!
-//! Each vendor's tool is spawned without a shell and given a few seconds ([`run_tool`]); a tool
-//! that is missing, fails or hangs gives no GPUs, never an error, and is not tried again by the
-//! same [`VendorProbe`]. On Linux the kernel's `sysfs` is read when the vendor tool is not
-//! installed. Parsing is separate from reading so tests run on captured output:
+//! Each vendor's tool is spawned without a shell and given a few seconds ([`run_tool_for`]).
+//! A tool that is not installed ([`Tool::Missing`]) is remembered for the life of the process so
+//! no refresh spawns it again; one that fails or hangs is retried, but given up on after
+//! [`MAX_FAILURES`] failures in a row, so a broken driver cannot add its timeout to every
+//! refresh. Either way the probe gives no GPUs, never an error. On Linux the kernel's `sysfs`
+//! is read when the vendor tool gives nothing. Parsing is separate from reading so tests run on
+//! sample output:
 //!
-//! - AMD: `rocm-smi --json`, else `sysfs` (`amdgpu`'s `mem_info_vram_*`).
-//! - Intel: `xpu-smi` (JSON), else `sysfs` (`lmem_*` or `mem_info_vram_*` of a card with local
-//!   memory; an integrated GPU has none of its own and is not listed).
+//! - AMD (Linux): `rocm-smi --json`, else `sysfs` (`amdgpu`'s `mem_info_vram_*`).
+//! - Intel (Linux): `xpu-smi` (JSON), else `sysfs` (`lmem_*` of a card with local memory; an
+//!   integrated GPU has none of its own and is not listed).
 //! - Apple Silicon: `sysctl` for the chip's name and the unified memory, which the GPU shares
 //!   with the CPU.
 //!
+//! The formats are written from the vendors' documentation, not captured from hardware. Every
+//! number is range-checked, and a GPU whose memory in use is not reported has it unknown
+//! ([`Reading::vram_used_bytes`] is `None`), never zero.
+//!
 //! NVIDIA stays with `nvidia-smi` in [`crate::monitor`] and [`crate::hardware`].
 
+use std::io::ErrorKind;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 const MIB: u64 = 1024 * 1024;
+/// The most memory a GPU is believed to have; a larger figure is a parsing error.
+const MAX_MEMORY_BYTES: f64 = 8.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0;
+/// Most output read from a tool.
+const MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
 /// Longest a vendor tool may take before it is given up on and killed.
 pub const TOOL_TIMEOUT: Duration = Duration::from_secs(10);
+/// Failures in a row (not counting "not installed") after which a tool is not run again.
+pub const MAX_FAILURES: u32 = 3;
 const SYSFS_DRM: &str = "/sys/class/drm";
 
 /// One GPU as a vendor tool or the kernel reports it.
@@ -31,25 +47,45 @@ pub struct Reading {
     /// `amd`, `intel` or `apple`.
     pub vendor: &'static str,
     pub vram_total_bytes: u64,
-    pub vram_used_bytes: u64,
+    /// `None` when the tool does not say.
+    pub vram_used_bytes: Option<u64>,
     pub utilization_percent: Option<f32>,
     pub temperature_c: Option<f32>,
     pub driver: Option<String>,
 }
 
 impl Reading {
+    /// Memory free for planning. When the memory in use is unknown, half the total: neither all
+    /// of it nor none.
     pub fn vram_free_bytes(&self) -> u64 {
-        self.vram_total_bytes.saturating_sub(self.vram_used_bytes)
+        match self.vram_used_bytes {
+            Some(used) => self.vram_total_bytes.saturating_sub(used),
+            None => self.vram_total_bytes / 2,
+        }
     }
+}
+
+/// How a tool run ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tool {
+    /// It exited successfully; this is what it printed (at most [`MAX_OUTPUT_BYTES`]).
+    Ran(String),
+    /// The program is not installed.
+    Missing,
+    /// It could not start for another reason, failed, or took too long.
+    Failed,
 }
 
 /// Runs `program` with `args`, without a shell; `None` when it is missing, fails, or takes longer
 /// than [`TOOL_TIMEOUT`] (it is then killed).
 pub fn run_tool(program: &str, args: &[&str]) -> Option<String> {
-    run_tool_for(program, args, TOOL_TIMEOUT)
+    match run_tool_for(program, args, TOOL_TIMEOUT) {
+        Tool::Ran(text) => Some(text),
+        Tool::Missing | Tool::Failed => None,
+    }
 }
 
-pub(crate) fn run_tool_for(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+pub(crate) fn run_tool_for(program: &str, args: &[&str], timeout: Duration) -> Tool {
     let mut command = Command::new(program);
     command.args(args);
     #[cfg(windows)]
@@ -62,12 +98,21 @@ pub(crate) fn run_tool_for(program: &str, args: &[&str], timeout: Duration) -> O
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let mut child = command.spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Tool::Missing,
+        Err(_) => return Tool::Failed,
+    };
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Tool::Failed;
+    };
     // Read on a thread so a full pipe cannot stop the child, and give up on a hung driver.
     let reader = std::thread::spawn(move || {
         let mut text = String::new();
-        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+        let mut limited = std::io::Read::take(stdout, MAX_OUTPUT_BYTES);
+        let _ = std::io::Read::read_to_string(&mut limited, &mut text);
         text
     });
     let deadline = Instant::now() + timeout;
@@ -80,135 +125,182 @@ pub(crate) fn run_tool_for(program: &str, args: &[&str], timeout: Duration) -> O
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return Tool::Failed;
             }
         }
     };
-    let text = reader.join().ok()?;
-    status.success().then_some(text)
+    match reader.join() {
+        Ok(text) if status.success() => Tool::Ran(text),
+        _ => Tool::Failed,
+    }
 }
 
-/// Reads the AMD, Intel and Apple GPUs, remembering which tools are absent so that they are not
-/// spawned again every few seconds.
-#[derive(Debug, Default)]
-pub struct VendorProbe {
-    rocm_smi_absent: bool,
-    xpu_smi_absent: bool,
-    /// The chip's name, read once.
-    apple: Option<Option<String>>,
+/// What the process has learned about one vendor tool.
+struct ToolState {
+    missing: AtomicBool,
+    failures: AtomicU32,
 }
+
+impl ToolState {
+    const fn new() -> Self {
+        ToolState {
+            missing: AtomicBool::new(false),
+            failures: AtomicU32::new(0),
+        }
+    }
+
+    /// Runs the tool unless it is known to be missing or has failed too often.
+    fn run(&self, program: &str, args: &[&str]) -> Option<String> {
+        if self.missing.load(Ordering::Relaxed)
+            || self.failures.load(Ordering::Relaxed) >= MAX_FAILURES
+        {
+            return None;
+        }
+        match run_tool_for(program, args, TOOL_TIMEOUT) {
+            Tool::Ran(text) => {
+                self.failures.store(0, Ordering::Relaxed);
+                Some(text)
+            }
+            Tool::Missing => {
+                self.missing.store(true, Ordering::Relaxed);
+                None
+            }
+            Tool::Failed => {
+                self.failures.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+    }
+}
+
+// Process-wide, so the probes made on every refresh do not spawn an absent tool again.
+static ROCM_SMI: ToolState = ToolState::new();
+static XPU_SMI: ToolState = ToolState::new();
+/// The Apple chip's name and the machine's memory, which do not change while running.
+static APPLE: OnceLock<(Option<String>, Option<u64>)> = OnceLock::new();
+
+/// Reads the AMD, Intel and Apple GPUs.
+#[derive(Debug, Default)]
+pub struct VendorProbe;
 
 impl VendorProbe {
     /// Every AMD, Intel and Apple GPU now. `ram_total_bytes` and `ram_used_bytes` are the
-    /// machine's, which Apple Silicon's GPU shares.
+    /// machine's, which Apple Silicon's GPU shares. AMD and Intel GPUs are read on Linux only.
     pub fn read(&mut self, ram_total_bytes: u64, ram_used_bytes: u64) -> Vec<Reading> {
         if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            return self
-                .apple_gpu(ram_total_bytes, ram_used_bytes)
+            return apple_gpu(ram_total_bytes, ram_used_bytes)
                 .into_iter()
                 .collect();
         }
-        if cfg!(target_os = "macos") {
+        if !cfg!(target_os = "linux") {
             return Vec::new();
         }
-        let mut gpus = self.amd();
-        gpus.extend(self.intel());
+        let mut gpus = amd();
+        gpus.extend(intel());
         gpus
     }
+}
 
-    fn amd(&mut self) -> Vec<Reading> {
-        if !self.rocm_smi_absent {
-            match run_tool(
-                "rocm-smi",
-                &[
-                    "--showproductname",
-                    "--showmeminfo",
-                    "vram",
-                    "--showuse",
-                    "--showtemp",
-                    "--showdriverversion",
-                    "--json",
-                ],
-            ) {
-                Some(json) => {
-                    let gpus = parse_rocm_smi(&json);
-                    if !gpus.is_empty() {
-                        return gpus;
-                    }
-                }
-                None => self.rocm_smi_absent = true,
-            }
+fn amd() -> Vec<Reading> {
+    if let Some(json) = ROCM_SMI.run(
+        "rocm-smi",
+        &[
+            "--showproductname",
+            "--showmeminfo",
+            "vram",
+            "--showuse",
+            "--showtemp",
+            "--showdriverversion",
+            "--json",
+        ],
+    ) {
+        let gpus = parse_rocm_smi(&json);
+        if !gpus.is_empty() {
+            return gpus;
         }
-        sysfs_gpus(Path::new(SYSFS_DRM))
-            .into_iter()
-            .filter(|gpu| gpu.vendor == "amd")
-            .collect()
     }
+    sysfs_gpus(Path::new(SYSFS_DRM))
+        .into_iter()
+        .filter(|gpu| gpu.vendor == "amd")
+        .collect()
+}
 
-    fn intel(&mut self) -> Vec<Reading> {
-        if !self.xpu_smi_absent {
-            match run_tool("xpu-smi", &["discovery", "-j"]) {
-                Some(json) => {
-                    let mut gpus = parse_xpu_smi_discovery(&json);
-                    if !gpus.is_empty() {
-                        for (id, gpu) in &mut gpus {
-                            if let Some(stats) =
-                                run_tool("xpu-smi", &["stats", "-d", &id.to_string(), "-j"])
-                            {
-                                apply_xpu_smi_stats(gpu, &stats);
-                            }
-                        }
-                        return gpus.into_iter().map(|(_, gpu)| gpu).collect();
-                    }
+fn intel() -> Vec<Reading> {
+    if let Some(json) = XPU_SMI.run("xpu-smi", &["discovery", "-j"]) {
+        let mut gpus = parse_xpu_smi_discovery(&json);
+        if !gpus.is_empty() {
+            for (id, gpu) in &mut gpus {
+                if let Some(stats) = XPU_SMI.run("xpu-smi", &["stats", "-d", &id.to_string(), "-j"])
+                {
+                    apply_xpu_smi_stats(gpu, &stats);
                 }
-                None => self.xpu_smi_absent = true,
             }
+            return gpus.into_iter().map(|(_, gpu)| gpu).collect();
         }
-        sysfs_gpus(Path::new(SYSFS_DRM))
-            .into_iter()
-            .filter(|gpu| gpu.vendor == "intel")
-            .collect()
     }
+    sysfs_gpus(Path::new(SYSFS_DRM))
+        .into_iter()
+        .filter(|gpu| gpu.vendor == "intel")
+        .collect()
+}
 
-    fn apple_gpu(&mut self, ram_total_bytes: u64, ram_used_bytes: u64) -> Option<Reading> {
-        let name = self
-            .apple
-            .get_or_insert_with(|| {
-                run_tool("sysctl", &["-n", "machdep.cpu.brand_string"])
-                    .map(|text| text.trim().to_string())
-                    .filter(|name| !name.is_empty())
-            })
-            .clone()
-            .unwrap_or_else(|| "Apple GPU".into());
-        let total = run_tool("sysctl", &["-n", "hw.memsize"])
-            .and_then(|text| parse_memsize(&text))
-            .unwrap_or(ram_total_bytes);
-        Some(Reading {
-            name,
-            vendor: "apple",
-            vram_total_bytes: total,
-            vram_used_bytes: ram_used_bytes.min(total),
-            ..Reading::default()
-        })
-    }
+fn apple_gpu(ram_total_bytes: u64, ram_used_bytes: u64) -> Option<Reading> {
+    let (name, memsize) = APPLE.get_or_init(|| {
+        (
+            run_tool("sysctl", &["-n", "machdep.cpu.brand_string"])
+                .map(|text| text.trim().to_string())
+                .filter(|name| !name.is_empty()),
+            run_tool("sysctl", &["-n", "hw.memsize"]).and_then(|text| parse_memsize(&text)),
+        )
+    });
+    let total = memsize.unwrap_or(ram_total_bytes);
+    Some(Reading {
+        name: format!(
+            "{} (unified memory)",
+            name.as_deref().unwrap_or("Apple GPU")
+        ),
+        vendor: "apple",
+        vram_total_bytes: total,
+        vram_used_bytes: Some(ram_used_bytes.min(total)),
+        ..Reading::default()
+    })
 }
 
 /// `sysctl -n hw.memsize`: the machine's memory in bytes.
 pub fn parse_memsize(text: &str) -> Option<u64> {
-    text.trim().parse::<u64>().ok().filter(|bytes| *bytes > 0)
+    text.trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|bytes| *bytes > 0 && (*bytes as f64) <= MAX_MEMORY_BYTES)
 }
 
-/// A JSON value that is a number or a string holding one.
+/// A JSON value that is a finite number or a string holding one.
 fn number(value: &Value) -> Option<f64> {
-    match value {
+    let parsed = match value {
         Value::Number(number) => number.as_f64(),
         Value::String(text) => text.trim().parse().ok(),
         _ => None,
-    }
+    };
+    parsed.filter(|n| n.is_finite())
 }
 
+/// A memory size: a finite, non-negative number no larger than [`MAX_MEMORY_BYTES`].
 fn bytes(value: &Value) -> Option<u64> {
-    number(value).filter(|n| *n >= 0.0).map(|n| n as u64)
+    number(value)
+        .filter(|n| (0.0..=MAX_MEMORY_BYTES).contains(n))
+        .map(|n| n as u64)
+}
+
+/// A share of 0 to 100.
+fn percent(value: &Value) -> Option<f32> {
+    number(value)
+        .filter(|n| (0.0..=100.0).contains(n))
+        .map(|n| n as f32)
+}
+
+/// A temperature in degrees Celsius a GPU could plausibly report.
+fn celsius(value: f64) -> Option<f32> {
+    (-50.0..=200.0).contains(&value).then_some(value as f32)
 }
 
 /// `rocm-smi --json`: an object with one entry per card (`card0`, ...) and a `system` entry.
@@ -247,24 +339,27 @@ pub fn parse_rocm_smi(json: &str) -> Vec<Reading> {
             let temperature = ["edge", "junction", "mem"].iter().find_map(|sensor| {
                 card.get(format!("Temperature (Sensor {sensor}) (C)"))
                     .and_then(number)
+                    .and_then(celsius)
             });
             Some(Reading {
                 name: name.to_string(),
                 vendor: "amd",
                 vram_total_bytes: total,
+                // A figure past the total is no figure.
                 vram_used_bytes: card
                     .get("VRAM Total Used Memory (B)")
                     .and_then(bytes)
-                    .unwrap_or(0),
-                utilization_percent: card.get("GPU use (%)").and_then(number).map(|n| n as f32),
-                temperature_c: temperature.map(|n| n as f32),
+                    .filter(|used| *used <= total),
+                utilization_percent: card.get("GPU use (%)").and_then(percent),
+                temperature_c: temperature,
                 driver: driver.clone(),
             })
         })
         .collect()
 }
 
-/// `xpu-smi discovery -j`: `(device id, GPU)` for each device with memory of its own.
+/// `xpu-smi discovery -j`: `(device id, GPU)` for each device with memory of its own. The memory
+/// in use is unknown until [`apply_xpu_smi_stats`].
 pub fn parse_xpu_smi_discovery(json: &str) -> Vec<(u32, Reading)> {
     let Ok(root) = serde_json::from_str::<Value>(json) else {
         return Vec::new();
@@ -278,7 +373,8 @@ pub fn parse_xpu_smi_discovery(json: &str) -> Vec<(u32, Reading)> {
             let id = device
                 .get("device_id")
                 .and_then(number)
-                .and_then(|id| u32::try_from(id as u64).ok())?;
+                .filter(|id| (0.0..=f64::from(u32::MAX)).contains(id))
+                .map(|id| id as u32)?;
             let total = device.get("memory_physical_size_byte").and_then(bytes)?;
             if total == 0 {
                 return None;
@@ -321,9 +417,16 @@ pub fn apply_xpu_smi_stats(gpu: &mut Reading, json: &str) {
             continue;
         };
         match kind {
-            "XPUM_STATS_MEMORY_USED" => gpu.vram_used_bytes = (value.max(0.0) as u64) * MIB,
-            "XPUM_STATS_GPU_UTILIZATION" => gpu.utilization_percent = Some(value as f32),
-            "XPUM_STATS_GPU_CORE_TEMPERATURE" => gpu.temperature_c = Some(value as f32),
+            "XPUM_STATS_MEMORY_USED" => {
+                let used = value.max(0.0) * MIB as f64;
+                if used <= gpu.vram_total_bytes as f64 {
+                    gpu.vram_used_bytes = Some(used as u64);
+                }
+            }
+            "XPUM_STATS_GPU_UTILIZATION" if (0.0..=100.0).contains(&value) => {
+                gpu.utilization_percent = Some(value as f32);
+            }
+            "XPUM_STATS_GPU_CORE_TEMPERATURE" => gpu.temperature_c = celsius(value),
             _ => {}
         }
     }
@@ -361,6 +464,10 @@ fn read_number(path: &Path) -> Option<u64> {
     read_text(path)?.parse().ok()
 }
 
+fn read_memory(path: &Path) -> Option<u64> {
+    read_number(path).filter(|n| (*n as f64) <= MAX_MEMORY_BYTES)
+}
+
 fn sysfs_card(card: &Path) -> Option<Reading> {
     let device = card.join("device");
     let vendor = match read_text(&device.join("vendor"))?
@@ -373,15 +480,15 @@ fn sysfs_card(card: &Path) -> Option<Reading> {
     };
     // amdgpu and the kernel drivers that follow its names; i915 exposes local memory on the
     // card itself.
-    let (total, used) = if let Some(total) = read_number(&device.join("mem_info_vram_total")) {
+    let (total, used) = if let Some(total) = read_memory(&device.join("mem_info_vram_total")) {
+        (total, read_memory(&device.join("mem_info_vram_used")))
+    } else {
+        let total = read_memory(&card.join("lmem_total_bytes"))?;
+        let available = read_memory(&card.join("lmem_avail_bytes"));
         (
             total,
-            read_number(&device.join("mem_info_vram_used")).unwrap_or(0),
+            available.map(|available| total.saturating_sub(available)),
         )
-    } else {
-        let total = read_number(&card.join("lmem_total_bytes"))?;
-        let available = read_number(&card.join("lmem_avail_bytes")).unwrap_or(total);
-        (total, total.saturating_sub(available))
     };
     if total == 0 {
         return None;
@@ -403,13 +510,15 @@ fn sysfs_card(card: &Path) -> Option<Reading> {
             dirs.filter_map(Result::ok)
                 .find_map(|dir| read_number(&dir.path().join("temp1_input")))
         })
-        .map(|milli| milli as f32 / 1000.0);
+        .and_then(|milli| celsius(milli as f64 / 1000.0));
     Some(Reading {
         name,
         vendor,
         vram_total_bytes: total,
-        vram_used_bytes: used.min(total),
-        utilization_percent: read_number(&device.join("gpu_busy_percent")).map(|n| n as f32),
+        vram_used_bytes: used.filter(|used| *used <= total),
+        utilization_percent: read_number(&device.join("gpu_busy_percent"))
+            .filter(|n| *n <= 100)
+            .map(|n| n as f32),
         temperature_c: temperature,
         driver: None,
     })
@@ -451,7 +560,7 @@ mod tests {
         assert_eq!(gpus[0].name, "Radeon RX 7900 XTX");
         assert_eq!(gpus[0].vendor, "amd");
         assert_eq!(gpus[0].vram_total_bytes, 25_753_026_560);
-        assert_eq!(gpus[0].vram_used_bytes, GIB);
+        assert_eq!(gpus[0].vram_used_bytes, Some(GIB));
         assert_eq!(gpus[0].vram_free_bytes(), 25_753_026_560 - GIB);
         assert_eq!(gpus[0].utilization_percent, Some(12.0));
         assert_eq!(gpus[0].temperature_c, Some(41.0));
@@ -492,14 +601,16 @@ mod tests {
         assert_eq!(gpu.name, "Intel(R) Arc(TM) A770 Graphics");
         assert_eq!(gpu.vendor, "intel");
         assert_eq!(gpu.vram_total_bytes, 17_071_734_784);
-        assert_eq!(gpu.vram_free_bytes(), 17_071_734_784);
+        // Until the stats say what is in use, half is taken as free: not all, not none.
+        assert_eq!(gpu.vram_used_bytes, None);
+        assert_eq!(gpu.vram_free_bytes(), 17_071_734_784 / 2);
         apply_xpu_smi_stats(gpu, XPU_STATS);
-        assert_eq!(gpu.vram_used_bytes, 2048 * MIB);
+        assert_eq!(gpu.vram_used_bytes, Some(2048 * MIB));
         assert_eq!(gpu.utilization_percent, Some(7.0));
         assert_eq!(gpu.temperature_c, Some(55.5));
         // Stats that do not parse leave the discovery as it was.
         apply_xpu_smi_stats(gpu, "garbage");
-        assert_eq!(gpu.vram_used_bytes, 2048 * MIB);
+        assert_eq!(gpu.vram_used_bytes, Some(2048 * MIB));
         assert!(parse_xpu_smi_discovery("{}").is_empty());
     }
 
@@ -563,7 +674,7 @@ mod tests {
         assert_eq!(gpus[0].vendor, "amd");
         assert_eq!(gpus[0].name, "AMD GPU 0x744c");
         assert_eq!(gpus[0].vram_total_bytes, 25_753_026_560);
-        assert_eq!(gpus[0].vram_used_bytes, 2 * GIB);
+        assert_eq!(gpus[0].vram_used_bytes, Some(2 * GIB));
         assert_eq!(gpus[0].utilization_percent, Some(33.0));
         assert_eq!(gpus[0].temperature_c, Some(47.0));
         assert_eq!(gpus[1].vendor, "intel");
@@ -579,7 +690,46 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_tool_gives_nothing() {
+    fn a_missing_tool_is_told_from_one_that_failed() {
         assert_eq!(run_tool("imperium-no-such-gpu-tool", &[]), None);
+        assert_eq!(
+            run_tool_for("imperium-no-such-gpu-tool", &[], Duration::from_secs(1)),
+            Tool::Missing
+        );
+    }
+
+    #[test]
+    fn absurd_numbers_are_not_believed() {
+        let json = r#"{"card0": {
+            "Card Series": "Odd",
+            "VRAM Total Memory (B)": "25753026560",
+            "VRAM Total Used Memory (B)": "99999999999999999",
+            "GPU use (%)": "400",
+            "Temperature (Sensor edge) (C)": "99999"
+        }, "card1": {"VRAM Total Memory (B)": "1e30"}, "card2": {"VRAM Total Memory (B)": "NaN"}}"#;
+        let gpus = parse_rocm_smi(json);
+        assert_eq!(gpus.len(), 1, "{gpus:?}");
+        // Unknown, so only half counts as free.
+        assert_eq!(gpus[0].vram_used_bytes, None);
+        assert_eq!(gpus[0].vram_free_bytes(), 25_753_026_560 / 2);
+        assert_eq!(gpus[0].utilization_percent, None);
+        assert_eq!(gpus[0].temperature_c, None);
+        assert_eq!(parse_memsize("99999999999999999999"), None);
+    }
+
+    #[test]
+    fn sysfs_without_a_used_figure_has_it_unknown() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        card(
+            dir.path(),
+            "card0",
+            &[
+                ("device/vendor", "0x1002\n"),
+                ("device/mem_info_vram_total", "8589934592\n"),
+            ],
+        );
+        let gpus = sysfs_gpus(dir.path());
+        assert_eq!(gpus[0].vram_used_bytes, None);
+        assert_eq!(gpus[0].vram_free_bytes(), 4 * GIB);
     }
 }
