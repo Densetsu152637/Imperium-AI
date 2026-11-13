@@ -814,7 +814,8 @@ navigation stacks above the content like theirs:
   permissions, and for an existing agent its initiative, which applies at once) with *Back to
   agents*; a row shows an *N suggestions* badge while its initiative has suggestions waiting. The
   Agents pane stays mounted when another section is selected, so an open form is kept. While the
-  form has unsaved changes the footer *Save* is disabled and Ctrl+S saves the agent.
+  form has unsaved changes the footer *Save* is disabled and Ctrl+S saves the agent; an open
+  form with no changes leaves Ctrl+S to the environment, which it saves.
 - **Memory & working folder** and **Configuration file** (existing environments only): see
   below.
 - **Permissions:** the environment's path grants and rules ([permissions](#permissions-implemented)).
