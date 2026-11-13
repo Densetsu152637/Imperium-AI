@@ -165,18 +165,21 @@ impl WebTools {
         })
     }
 
+    /// Whether a redirect to `target` is followed from a page at `origin`: within its scheme,
+    /// host and port, or to an allowed domain.
+    fn may_follow(&self, origin: Option<&url::Origin>, target: &Url) -> bool {
+        Some(&target.origin()) == origin || self.allows(target.as_str())
+    }
+
     /// Runs `web_search` (through the configured provider) or `web_fetch`.
     async fn run_web(&self, name: &str, arguments: &str) -> Result<String, String> {
         let args: WebArgs = parse_arguments(arguments)?;
         let result = if name == "web_fetch" {
-            // A redirect is followed only to the page's own host or an allowed domain: the user
+            // A redirect is followed only within the page's own scheme, host and port, or to an
+            // allowed domain (never from https to http): the user
             // approved (or the allow list covers) the URL asked for, not wherever it leads.
-            let origin = Url::parse(&args.url)
-                .ok()
-                .and_then(|url| url.host_str().map(normal_host));
-            let follow = |target: &Url| {
-                self.allows(target.as_str()) || target.host_str().map(normal_host) == origin
-            };
+            let origin = Url::parse(&args.url).ok().map(|url| url.origin());
+            let follow = |target: &Url| self.may_follow(origin.as_ref(), target);
             self.web
                 .fetch_with(&args.url, args.offset, args.limit, &follow)
                 .await
@@ -362,6 +365,20 @@ mod tests {
         assert!(tools.allows("https://user@docs.rs/"));
         assert!(!tools.allows("https://notdocs.rs/"));
         assert!(!tools.allows("https://docs.rs.evil.com/"));
+    }
+
+    #[test]
+    fn redirects_stay_within_scheme_host_and_port_or_an_allowed_domain() {
+        let tools = tools(false);
+        let url = |text: &str| Url::parse(text).unwrap();
+        let origin = url("https://other.org:8443/a").origin();
+        let follow = |target: &str| tools.may_follow(Some(&origin), &url(target));
+        assert!(follow("https://other.org:8443/b"));
+        assert!(!follow("https://other.org/b"), "another port");
+        assert!(!follow("http://other.org:8443/b"), "another scheme");
+        assert!(!follow("https://www.other.org:8443/b"), "another host");
+        assert!(follow("https://docs.rs/x"), "an allowed domain");
+        assert!(!tools.may_follow(None, &url("https://other.org/")));
     }
 
     #[test]

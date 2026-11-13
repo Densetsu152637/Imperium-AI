@@ -185,13 +185,16 @@ impl Web {
 
     /// Requests `start`, following up to [`MAX_REDIRECTS`] redirects by hand: the client never
     /// follows one itself, so every hop (full URL) is checked against `robots.txt` and `follow`
-    /// before it is requested.
+    /// before it is requested. An https page never redirects to http. Returns the response and
+    /// whether every hop stayed on the first URL's scheme, host and port (only such a chain is
+    /// cached: another origin's content is not stored under this URL).
     async fn get_following(
         &self,
         start: &Url,
         follow: &(dyn Fn(&Url) -> bool + Sync),
-    ) -> Result<reqwest::Response, WebError> {
+    ) -> Result<(reqwest::Response, bool), WebError> {
         let mut url = start.clone();
+        let mut same_origin = true;
         for _ in 0..=MAX_REDIRECTS {
             if self.respect_robots && !self.robots.allowed(&self.http, &url).await {
                 return Err(WebError::Robots(url.to_string()));
@@ -212,14 +215,19 @@ impl Web {
             let Some(target) = target else {
                 return response
                     .error_for_status()
+                    .map(|response| (response, same_origin))
                     .map_err(|error| WebError::Http(error.to_string()));
             };
-            if !matches!(target.scheme(), "http" | "https") || !follow(&target) {
+            if !matches!(target.scheme(), "http" | "https")
+                || is_downgrade(&url, &target)
+                || !follow(&target)
+            {
                 return Err(WebError::Http(format!(
                     "the page redirects to {target}, which is not followed: ask for that URL \
                      directly so the user can approve it"
                 )));
             }
+            same_origin &= target.origin() == start.origin();
             url = target;
         }
         Err(WebError::Http(format!("too many redirects from {start}")))
@@ -232,7 +240,7 @@ impl Web {
         key: Option<&str>,
         follow: &(dyn Fn(&Url) -> bool + Sync),
     ) -> Result<Page, WebError> {
-        let response = self.get_following(url, follow).await?;
+        let (response, same_origin) = self.get_following(url, follow).await?;
         let final_url = response.url().to_string();
         let content_type = response
             .headers()
@@ -264,6 +272,7 @@ impl Web {
             final_url,
             text: text.chars().take(MAX_PAGE_CHARS).collect(),
         };
+        let key = key.filter(|_| same_origin);
         if let (Some(cache), Some(key), Some(lifetime)) = (&self.cache, key, lifetime) {
             cache.put(key, &page, lifetime);
         }
@@ -278,6 +287,11 @@ impl Web {
         hits.truncate(count);
         Ok(hits)
     }
+}
+
+/// Whether a redirect from `from` to `to` drops from https to a weaker scheme.
+fn is_downgrade(from: &Url, to: &Url) -> bool {
+    from.scheme() == "https" && to.scheme() != "https"
 }
 
 /// One chunk of a page, headed by its title, final URL, and position.
@@ -945,6 +959,76 @@ mod tests {
         assert_eq!(count(&pages), 0);
         assert!(off.fetch(&format!("{origin}/go"), 0, 0).await.is_ok());
         assert_eq!(count(&pages), 1);
+    }
+
+    #[tokio::test]
+    async fn a_page_reached_through_a_redirect_to_another_origin_is_not_cached() {
+        let pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let other = serve(Router::new().route("/page", counted(&pages, &[]))).await;
+        let destination = format!("{other}/page");
+        let origin = serve(Router::new().route(
+            "/go",
+            get(move || {
+                let destination = destination.clone();
+                async move { axum::response::Redirect::temporary(&destination) }
+            }),
+        ))
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("{origin}/go");
+        // Session one may follow the redirect; its page is not stored under /go.
+        cached_web(dir.path())
+            .fetch_with(&url, 0, 0, &|_| true)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).map_or(0, Iterator::count), 0);
+        // Session two does not allow that host: it fails instead of reading session one's page.
+        let refused = cached_web(dir.path())
+            .fetch_with(&url, 0, 0, &|_| false)
+            .await
+            .unwrap_err();
+        assert!(matches!(refused, WebError::Http(_)), "{refused}");
+        assert_eq!(
+            count(&pages),
+            1,
+            "the second session did not reach the page"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_same_origin_redirect_is_cached_and_https_never_downgrades() {
+        let pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let base = serve(
+            Router::new()
+                .route(
+                    "/go",
+                    get(|| async { axum::response::Redirect::temporary("/page") }),
+                )
+                .route("/page", counted(&pages, &[])),
+        )
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("{base}/go");
+        cached_web(dir.path()).fetch(&url, 0, 0).await.unwrap();
+        cached_web(dir.path()).fetch(&url, 0, 0).await.unwrap();
+        assert_eq!(count(&pages), 1, "served from the cache the second time");
+    }
+
+    #[test]
+    fn https_never_redirects_to_http() {
+        let url = |text: &str| Url::parse(text).unwrap();
+        assert!(is_downgrade(
+            &url("https://a.example/"),
+            &url("http://a.example/")
+        ));
+        assert!(!is_downgrade(
+            &url("http://a.example/"),
+            &url("https://a.example/")
+        ));
+        assert!(!is_downgrade(
+            &url("https://a.example/"),
+            &url("https://b.example/")
+        ));
     }
 
     #[tokio::test]

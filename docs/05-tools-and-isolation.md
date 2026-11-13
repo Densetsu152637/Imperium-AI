@@ -52,11 +52,13 @@ pages and search results are not cached.
 
 **Redirects.** The HTTP client never follows a redirect itself. `web_fetch` follows up to ten by
 hand and checks every hop, by its full URL, before requesting it: against the host's
-`robots.txt`, and against the approval rule (a redirect is followed only to the host that was
-asked for or to a host in `web.allow_domains`, otherwise the call fails and names the target so
-the user can approve that URL). Search providers get no redirects, so an API key is never
-replayed to another host (a SearXNG instance that redirects must be configured with its final
-URL).
+`robots.txt`, and against the approval rule (a redirect is followed only within the scheme, host
+and port that were asked for, or to a host in `web.allow_domains`; never from https to http;
+otherwise the call fails and names the target so the user can approve that URL). A page is
+cached only when every hop stayed on the original scheme, host and port, so one session never
+gets another origin's content from the cache under a URL it was not allowed to follow. Search
+providers get no redirects, so an API key is never replayed to another host (a SearXNG instance
+that redirects must be configured with its final URL).
 
 **robots.txt.** With `web.robots = "respect"` (the default), `web_fetch` reads the host's
 `/robots.txt` (up to five redirects, 512 KiB, a leading byte-order mark ignored) before the cache
