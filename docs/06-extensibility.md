@@ -329,8 +329,19 @@ is the user's approval:
    permissions that are both in its manifest and approved. If its files no longer hash to the
    approved content (it was edited, or its manifest now asks for more) it is marked `modified`,
    has **no** permissions, and is off until the user turns it on; installing it again (after
-   uninstalling) approves what is there. A mod approved with `--yes` and no terminal prompt is
-   installed but **off** until the user turns it on in Settings → Mods. A mod without an
+   uninstalling) approves what is there. If the approvals file exists but cannot be read, every
+   installed mod is treated that way (an absent file just means nothing was approved through
+   this command). A mod approved with `--yes` and no terminal prompt is installed but **off**
+   until the user turns it on in Settings → Mods; so is an update that adds permissions without
+   a prompt (only an update that asks for nothing new keeps an earlier prompt's standing), and a
+   `modified` mod stays off even if the app had saved it as on. Whether the answer came from a
+   prompt (`interactive`) is stated by the caller of `mods.install`, the CLI: it has the same
+   trust root as the safety floor, which is what stops an agent's shell from running the command
+   unasked, and neither a paired phone (not allowed `mods.*`) nor a mod frame can reach it.
+   Residual: an agent with an unisolated shell (tier 0) that the person lets run commands can
+   still write the daemon's files or call its socket directly; the floor guards
+   `mod-approvals.json` against file edits, but it reads command lines and is not a security
+   boundary ([05](05-tools-and-isolation.md#permissions)). A mod without an
    approval record (copied in by hand, or installed by an agent) behaves as before.
 5. **Update** reads the source from the approval record, not from the folder's
    `.imperium-source.json` (which a mod could rewrite), and refuses a source, folder or revision

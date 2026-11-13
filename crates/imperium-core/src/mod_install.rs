@@ -62,24 +62,38 @@ fn store_path(state: &DaemonState) -> std::path::PathBuf {
     state.paths().data_dir().join("mod-approvals.json")
 }
 
-fn read_store(state: &DaemonState) -> Store {
+/// The approvals: empty when there is no file yet, `None` when there is one that cannot be
+/// read (corrupt, or unreadable), which is not the same as nothing being approved.
+fn load_store(state: &DaemonState) -> Option<Store> {
     match std::fs::read_to_string(store_path(state)) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
-            tracing::warn!(%error, "the mod approvals file is unreadable; no mod is approved");
-            Store::new()
-        }),
-        Err(_) => Store::new(),
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(store) => Some(store),
+            Err(error) => {
+                tracing::warn!(%error, "the mod approvals file is corrupt");
+                None
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(Store::new()),
+        Err(error) => {
+            tracing::warn!(%error, "the mod approvals file cannot be read");
+            None
+        }
     }
 }
 
 fn approval(state: &DaemonState, id: &str) -> Option<Approval> {
-    read_store(state).remove(id)
+    load_store(state)?.remove(id)
 }
 
 /// Records (or, with `None`, forgets) the approval of `id`.
 fn set_approval(state: &DaemonState, id: &str, approval: Option<Approval>) -> Result<(), String> {
     let _lock = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut store = read_store(state);
+    let mut store = load_store(state).ok_or_else(|| {
+        format!(
+            "{} cannot be read, so no approval can be recorded; fix or remove it",
+            store_path(state).display()
+        )
+    })?;
     match approval {
         Some(approval) => store.insert(id.to_string(), approval),
         None => store.remove(id),
@@ -101,9 +115,17 @@ fn set_approval(state: &DaemonState, id: &str, approval: Option<Approval>) -> Re
 /// longer hashes to the approved content, it shows none, is marked `modified`, and is off until
 /// the user turns it on; one approved without a terminal prompt is off until turned on. Its
 /// source is the approved one. A mod without a record (copied in by hand, or installed by an
-/// agent) is left as it is.
+/// agent) is left as it is. If the approvals file exists but cannot be read, nothing can be
+/// vouched for: every installed mod is treated as modified (no permissions, off).
 pub(crate) fn apply_approvals(state: &DaemonState, listing: &mut ModListResult) {
-    let store = read_store(state);
+    let Some(store) = load_store(state) else {
+        for info in listing.mods.iter_mut().filter(|info| !info.bundled) {
+            info.permissions.clear();
+            info.modified = true;
+            info.opt_in = true;
+        }
+        return;
+    };
     if store.is_empty() {
         return;
     }
@@ -338,7 +360,15 @@ pub(crate) async fn install(
                     approved.location
                 ));
             }
-            interactive |= record.interactive;
+            // A prompt at a terminal can be inherited only by an update that asks for nothing
+            // new; one that widens is off unless it was itself approved at a prompt.
+            let (added, _) = permission_diff(
+                Some(record.permissions.as_slice()),
+                &staged.info.permissions,
+            );
+            if added.is_empty() {
+                interactive |= record.interactive;
+            }
         }
         (None, false) => {}
     }
@@ -552,7 +582,7 @@ mod tests {
         assert!(preview.installed.is_none());
         assert_eq!(preview.sha256.len(), 64);
         assert!(!state.mods_dir().exists());
-        assert!(read_store(&state).is_empty());
+        assert!(load_store(&state).unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -577,7 +607,7 @@ mod tests {
         let error = install(&state, narrow).await.unwrap_err();
         assert!(error.contains("storage"), "{error}");
         assert!(!state.mods_dir().join("demo").exists());
-        assert!(read_store(&state).is_empty());
+        assert!(load_store(&state).unwrap().is_empty());
 
         let done = install(&state, install_params(&preview, source.path(), false))
             .await
@@ -812,6 +842,106 @@ mod tests {
         install(&state, params).await.unwrap();
         let listing = listed(&state);
         assert!(listing.mods[0].opt_in);
+        assert!(!listing.mods[0].modified);
+        assert_eq!(listing.mods[0].permissions, vec!["storage"]);
+    }
+
+    #[tokio::test]
+    async fn only_a_prompted_update_may_widen_a_prompted_install() {
+        let home = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_mod(source.path(), "1.0.0", &["storage"], "export default 1;");
+        let state = state(home.path());
+        let first = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        install(&state, install_params(&first, source.path(), false))
+            .await
+            .unwrap();
+        assert!(!listed(&state).mods[0].opt_in);
+
+        // A widening update approved with --yes (no prompt) turns the mod off.
+        write_mod(
+            source.path(),
+            "1.1.0",
+            &["storage", "pets:read"],
+            "export default 2;",
+        );
+        let wider = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        let mut flag = install_params(&wider, source.path(), true);
+        flag.interactive = false;
+        install(&state, flag).await.unwrap();
+        let listing = listed(&state);
+        assert!(listing.mods[0].opt_in);
+        assert_eq!(listing.mods[0].permissions, vec!["storage", "pets:read"]);
+
+        // A prompted widening update is on; a later update that asks for nothing new keeps it so.
+        write_mod(
+            source.path(),
+            "1.2.0",
+            &["storage", "pets:read", "sessions:read"],
+            "export default 3;",
+        );
+        let wider = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        install(&state, install_params(&wider, source.path(), true))
+            .await
+            .unwrap();
+        assert!(!listed(&state).mods[0].opt_in);
+        write_mod(
+            source.path(),
+            "1.2.1",
+            &["storage", "pets:read", "sessions:read"],
+            "export default 4;",
+        );
+        let same = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        let mut flag = install_params(&same, source.path(), true);
+        flag.interactive = false;
+        install(&state, flag).await.unwrap();
+        assert!(!listed(&state).mods[0].opt_in);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_approvals_file_vouches_for_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_mod(source.path(), "1.0.0", &["storage"], "export default 1;");
+        let state = state(home.path());
+        let preview = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        install(&state, install_params(&preview, source.path(), false))
+            .await
+            .unwrap();
+        assert_eq!(listed(&state).mods[0].permissions, vec!["storage"]);
+
+        // Corrupt, as opposed to absent: the mod keeps no permissions and is off.
+        std::fs::write(store_path(&state), "{ not json").unwrap();
+        let listing = listed(&state);
+        assert!(listing.mods[0].modified);
+        assert!(listing.mods[0].opt_in);
+        assert!(listing.mods[0].permissions.is_empty());
+        // Nothing is recorded over it either.
+        let error = install(&state, install_params(&preview, source.path(), true))
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("cannot be read") || error.contains("no approved"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(store_path(&state)).unwrap(),
+            "{ not json"
+        );
+
+        // Absent is the documented case: a mod without a record behaves as before.
+        std::fs::remove_file(store_path(&state)).unwrap();
+        let listing = listed(&state);
         assert!(!listing.mods[0].modified);
         assert_eq!(listing.mods[0].permissions, vec!["storage"]);
     }

@@ -451,7 +451,7 @@ answers:
   `imperium mods install|update`, which approve code for the desktop app (an agent could pass
   `--yes` to its own prompt; [06](06-extensibility.md#installing-and-updating-mods-implemented)).
 - Writing files that hold secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
-  `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`) or anything with a `.git` folder
+  `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`, `mod-approvals.json`) or anything with a `.git` folder
   in its absolute path, such as a linked worktree's main repository's hooks.
 
 The floor is a **best-effort guard against an agent's mistakes, not a security boundary**: it

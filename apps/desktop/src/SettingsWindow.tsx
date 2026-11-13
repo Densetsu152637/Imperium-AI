@@ -1163,7 +1163,7 @@ function ModsSection({
             key={mod.id}
             label={`${mod.name}${mod.version ? ` ${mod.version}` : ""}`}
             badge={<span className="badge">{mod.bundled ? "bundled" : byAgent ? "installed by an agent" : "installed"}</span>}
-            description={`Panels: ${panels}. Permissions: ${permissions}.${from}${mod.modified ? " Its files changed since you approved it, so it has no permissions." : ""}${optIn ? " Off until you turn it on." : ""}`}
+            description={`Panels: ${panels}. Permissions: ${permissions}.${from}${mod.modified ? " Its files changed since you approved it (or the approvals could not be read), so it has no permissions and stays off." : ""}${optIn ? " Off until you turn it on." : ""}`}
           >
             <Toggle checked={modEnabled(settings, mod)} onChange={(on) => toggle(mod.id, on)} label={mod.name} />
           </Row>

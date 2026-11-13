@@ -141,8 +141,16 @@ export const BUNDLED_ON_BY_DEFAULT = ["imperium-nursery"];
  */
 export function modEnabled(
   settings: AppSettings,
-  mod: { id: string; bundled: boolean; installed_from?: { session_id: string | null } | null; opt_in?: boolean },
+  mod: {
+    id: string;
+    bundled: boolean;
+    installed_from?: { session_id: string | null } | null;
+    opt_in?: boolean;
+    modified?: boolean;
+  },
 ): boolean {
+  // A mod whose files changed since the user approved it stays off, whatever was saved.
+  if (mod.modified) return false;
   const byAgent = Boolean(mod.installed_from?.session_id) || Boolean(mod.opt_in);
   return settings.enabledMods[mod.id] ?? (mod.bundled ? BUNDLED_ON_BY_DEFAULT.includes(mod.id) : !byAgent);
 }
