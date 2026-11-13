@@ -1231,8 +1231,8 @@ permissions as before.
   (default `120`; `0` turns it off) is skipped for the next eligible route, and the task's
   notice says which model was skipped and the wait. The next route is a hosted model only when
   the call's `location` and your rules leave one: a task confined to a location (the call's, or
-  a rule's) stays in it, and when every row there is backed up it takes the least bad one
-  without the limit, with a notice, rather than the session's model. Only otherwise, when no
+  a rule's) stays in it, and when every row there is backed up it takes the row the normal
+  ranking picks with the queue limit off, with a notice, rather than the session's model. Only otherwise, when no
   row fits, the session's model carries on. A table row named in the call is skipped like any
   other when backed up; only rows the ranking never reaches (CPU-lane rows, and local models
   outside the table, which are reached only by a rule or a name) are never skipped for their
@@ -1253,9 +1253,11 @@ permissions as before.
   again with its report appended to the brief on a stronger route, up to that many times. The
   route comes from the first matching rule's `escalate = ["id", ...]` (one id per attempt, in
   order), else the router runs again from the tier above the model that ran last, never
-  choosing a model that already ran for the task. Only a table row qualifies: never the
-  session's model, never a row outside the task's location (the call's, or a rule's), never one
-  below the requested tier; at the top tier, or with no such row, the failure is reported. An
+  choosing a model that already ran for the task (the failed one is left out of the table for
+  each retry, and the tier is that of the model that ran last). Only a table row qualifies:
+  never the session's model that routing falls back to when nothing fits (a real row that
+  happens to be the session's model does qualify), never a row outside the task's location (the
+  call's, or a rule's), never one below the requested tier; at the top tier, or with no such row, the failure is reported. An
   unsure (not failed) local model is never retried on a hosted one, so a task kept on the
   machine stays there. A model whose budget blocks is not tried; a budget that is waiting for
   your approval at the model that just ran stops the escalation instead of asking again, and

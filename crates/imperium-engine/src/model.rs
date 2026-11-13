@@ -166,6 +166,9 @@ pub struct Routed {
     /// were skipped, with the reason (a missing capability, a backed-up queue). Empty when
     /// routing had nothing out of the ordinary to say.
     pub notes: Vec<String>,
+    /// Nothing fit, so `model` is the session's model that routing falls back to. False when
+    /// `model` is a table row or a named model, even one that is also the session's model.
+    pub fell_back: bool,
 }
 
 /// Picks a subagent's model, as [`route_noted`] does, and drops the notes.
@@ -344,9 +347,10 @@ pub fn route_noted(
             .collect();
         (!passed_over.is_empty()).then(|| format!("routing skipped {}", passed_over.join("; ")))
     };
-    let finish = |model: ResolvedModel, note: Option<String>| Routed {
+    let finish = |model: ResolvedModel, note: Option<String>, fell_back: bool| Routed {
         model,
         notes: note.into_iter().chain(skipped()).collect(),
+        fell_back,
     };
     if let Some(named) = request.named
         && let Some(chosen) = catalog
@@ -354,7 +358,7 @@ pub fn route_noted(
             .filter(usable)
             .find(|c| c.id == named || c.model.spec == named)
     {
-        return finish(chosen.model.clone(), None);
+        return finish(chosen.model.clone(), None, false);
     }
     let mut note = None;
     if let Some(rule) = rule {
@@ -365,7 +369,7 @@ pub fn route_noted(
             .filter(usable)
             .find(|c| in_location(c));
         if let Some(chosen) = preferred {
-            return finish(chosen.model.clone(), None);
+            return finish(chosen.model.clone(), None, false);
         }
         if rule.cpu_lane {
             // Work that can wait prefers the slow lane, but only a row that can take it now:
@@ -383,6 +387,7 @@ pub fn route_noted(
                         "{tag} tasks prefer the CPU lane: sent to {}",
                         chosen.id
                     )),
+                    false,
                 );
             }
             if catalog.iter().any(|c| c.cpu_lane) {
@@ -427,7 +432,7 @@ pub fn route_noted(
         .or_else(|| best(None, preferred_tier))
         .or_else(|| best(None, tier));
     if let Some(chosen) = chosen {
-        return finish(chosen.model.clone(), note);
+        return finish(chosen.model.clone(), note, false);
     }
     // A task confined to one location (an explicit `location`, or a rule's) stays there: when
     // only the queue limit left nothing in it, take the least bad row in that location rather
@@ -438,7 +443,7 @@ pub fn route_noted(
             ..routing.clone()
         };
         let mut routed = route_noted(catalog, &relaxed, fallback, request, local);
-        if routed.model.spec != fallback.spec {
+        if !routed.fell_back {
             routed.notes.insert(
                 0,
                 "every model in the task's location was backed up, so the queue limit was not applied"
@@ -447,7 +452,7 @@ pub fn route_noted(
             return routed;
         }
     }
-    finish(fallback.clone(), note)
+    finish(fallback.clone(), note, true)
 }
 
 /// The location a task is confined to: the call's, else the first matching rule of the user's.
@@ -500,10 +505,11 @@ pub fn escalate(
         .filter(|c| c.model.spec != failed)
         .cloned()
         .collect();
-    // A route is acceptable only when it is a table row (never the session's model, which the
-    // router falls back to when nothing fits), in the task's location, at or above `floor`.
+    // A route is acceptable only when it is a table row (never what the router falls back to
+    // when nothing fits; a real row that happens to be the session's model is fine), in the
+    // task's location, at or above `floor`.
     let acceptable = |routed: &Routed, floor: Tier| {
-        routed.model.spec != fallback.spec
+        !routed.fell_back
             && rest
                 .iter()
                 .find(|c| c.model.spec == routed.model.spec)
@@ -1372,6 +1378,57 @@ tier = "basic"
         );
         assert_eq!(routed.model.model, "small");
         assert!(routed.model.local);
+    }
+
+    #[test]
+    fn escalation_accepts_a_real_row_that_is_also_the_session_model_but_not_the_fallback() {
+        let routing = RoutingSettings::default();
+        let request = TaskRequest {
+            tier: Tier::Basic,
+            ..TaskRequest::default()
+        };
+        // The table's strong row is the session's own model: a real row, so a fine target.
+        let mut rows = catalog();
+        let strong = rows.iter_mut().find(|c| c.id == "big").unwrap();
+        strong.model.spec = fallback().spec;
+        let routed = escalate(
+            &rows,
+            &routing,
+            &fallback(),
+            request,
+            "endpoint:mid",
+            1,
+            None,
+        )
+        .unwrap();
+        assert!(!routed.fell_back);
+        assert_eq!(routed.model.model, "big");
+        // With no row above the failed one, routing falls back to the session model: not a target.
+        let mut rest = catalog();
+        rest.retain(|c| c.id == "mid");
+        let fell = route_noted(
+            &rest,
+            &routing,
+            &fallback(),
+            TaskRequest {
+                tier: Tier::Strong,
+                ..request
+            },
+            None,
+        );
+        assert!(fell.fell_back);
+        assert!(
+            escalate(
+                &rest,
+                &routing,
+                &fallback(),
+                request,
+                "endpoint:mid",
+                1,
+                None
+            )
+            .is_none()
+        );
     }
 
     #[test]
