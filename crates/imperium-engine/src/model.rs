@@ -1336,6 +1336,45 @@ tier = "basic"
     }
 
     #[test]
+    fn a_user_rule_confining_a_tag_to_local_wins_over_a_repo_rule_naming_an_unusable_local_row() {
+        // The user's rule comes first: `private` work stays local. The repository's rule for the
+        // same tag names a local row that cannot run; it never gets a say, and the task still
+        // lands on a local row that can (not the hosted row the ranking would otherwise prefer).
+        let routing = RoutingSettings {
+            prefer: Preference::Cloud,
+            rules: vec![
+                RoutingRule {
+                    when_tag: Some("private".into()),
+                    location: Some(Location::Local),
+                    ..RoutingRule::default()
+                },
+                RoutingRule {
+                    when_tag: Some("private".into()),
+                    use_models: vec!["large".into()],
+                    ..RoutingRule::default()
+                },
+            ],
+            ..RoutingSettings::default()
+        };
+        // `large` is not in the supervisor's list, so it cannot run; `small` is loaded.
+        let local = BusyLocal(vec![("small", Availability::Loaded, 0)]);
+        let tags = ["private".to_string()];
+        let request = TaskRequest {
+            tags: &tags,
+            ..TaskRequest::default()
+        };
+        let routed = route_noted(
+            &local_catalog(),
+            &routing,
+            &fallback(),
+            request,
+            Some(&local),
+        );
+        assert_eq!(routed.model.model, "small");
+        assert!(routed.model.local);
+    }
+
+    #[test]
     fn escalation_stays_in_the_tasks_location_and_never_falls_back_to_the_session_model() {
         let routing = RoutingSettings::default();
         let request = TaskRequest {
