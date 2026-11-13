@@ -1,23 +1,31 @@
-//! Web tools for agents: `web_search` through a configured provider (SearXNG, Brave, or
-//! Tavily) and `web_fetch`, which reads a page as text. Results carry their URLs so agents can
+//! Web tools for agents: `web_search` through a configured provider (SearXNG, Brave, Tavily,
+//! Kagi, or Exa) and `web_fetch`, which reads a page as text, from a bounded on-disk cache when
+//! it can and only where `robots.txt` allows. Results carry their URLs so agents can
 //! cite sources.
 
 pub mod browser;
+pub mod cache;
 pub mod html;
 pub mod preview;
+pub mod robots;
 pub mod search;
 mod tools;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use imperium_api::ToolSpec;
 use imperium_protocol::tools as contract;
+use url::Url;
+
+use cache::{FetchCache, Page};
+use robots::Robots;
 
 pub use preview::{PreviewTools, loopback_url};
 pub use search::{
-    Brave, SearchConfig, SearchFuture, SearchProvider, SearchProviderBuilder, SearchProviders,
-    Searxng, Tavily,
+    Brave, Exa, Kagi, SearchConfig, SearchFuture, SearchProvider, SearchProviderBuilder,
+    SearchProviders, Searxng, Tavily,
 };
 pub use tools::{BrowserSetup, Takeover, USER_DRIVING, WebTools};
 
@@ -44,10 +52,42 @@ pub struct Hit {
     pub snippet: String,
 }
 
+/// How `web_fetch` caches pages and treats `robots.txt` (`[web]` in settings).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchOptions {
+    /// Where cached pages are kept; `None` turns the cache off.
+    pub cache_dir: Option<PathBuf>,
+    /// The longest a page is reused. Zero turns the cache off.
+    pub cache_ttl: Duration,
+    /// The most the cache folder holds. Zero turns the cache off.
+    pub cache_max_bytes: u64,
+    /// Refuse pages the host's `robots.txt` disallows for the `Imperium` agent.
+    pub respect_robots: bool,
+    /// Treat an unreadable `robots.txt` (a server error, no connection) as disallowing
+    /// everything; otherwise it allows everything.
+    pub robots_fail_closed: bool,
+}
+
+impl Default for FetchOptions {
+    /// No cache; `robots.txt` respected, an unreadable one allowing.
+    fn default() -> Self {
+        FetchOptions {
+            cache_dir: None,
+            cache_ttl: Duration::from_secs(900),
+            cache_max_bytes: 50 * 1024 * 1024,
+            respect_robots: true,
+            robots_fail_closed: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Web {
     http: reqwest::Client,
     search: Option<Arc<dyn SearchProvider>>,
+    cache: Option<FetchCache>,
+    robots: Arc<Robots>,
+    respect_robots: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -60,11 +100,22 @@ pub enum WebError {
     Http(String),
     #[error("{0} is not a text page ({1})")]
     NotText(String, String),
+    #[error("robots.txt disallows fetching {0} (set web.robots to off to ignore robots.txt)")]
+    Robots(String),
 }
 
 impl Web {
     pub fn new(search: Option<Arc<dyn SearchProvider>>) -> Self {
+        Self::with_options(search, FetchOptions::default())
+    }
+
+    pub fn with_options(search: Option<Arc<dyn SearchProvider>>, options: FetchOptions) -> Self {
         Web {
+            cache: options
+                .cache_dir
+                .and_then(|dir| FetchCache::new(dir, options.cache_ttl, options.cache_max_bytes)),
+            robots: Arc::new(Robots::new(options.robots_fail_closed)),
+            respect_robots: options.respect_robots,
             http: reqwest::Client::builder()
                 .timeout(TIMEOUT)
                 .user_agent(concat!("Imperium/", env!("CARGO_PKG_VERSION")))
@@ -88,19 +139,49 @@ impl Web {
     }
 
     /// Fetches `url` and returns `limit` characters of its text from `offset`, headed by the
-    /// title, the final URL, and the total length.
+    /// title, the final URL, and the total length. A page read recently comes from the
+    /// [cache](cache); a host whose `robots.txt` disallows the URL is refused.
     pub async fn fetch(&self, url: &str, offset: usize, limit: usize) -> Result<String, WebError> {
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err(WebError::BadUrl(url.into()));
+        let parsed = Url::parse(url)
+            .ok()
+            .filter(|parsed| matches!(parsed.scheme(), "http" | "https") && parsed.has_host())
+            .ok_or_else(|| WebError::BadUrl(url.into()))?;
+        let key = self
+            .cache
+            .as_ref()
+            .and_then(|_| cache::FetchCache::key(&parsed));
+        let held = self
+            .cache
+            .as_ref()
+            .zip(key.as_deref())
+            .and_then(|(cache, key)| cache.get(key));
+        let page = match held {
+            Some(page) => page,
+            None => self.load_page(&parsed, key.as_deref()).await?,
+        };
+        Ok(render_page(&page, offset, limit))
+    }
+
+    /// Reads a page over the network, storing it in the cache when the response may be shared.
+    async fn load_page(&self, url: &Url, key: Option<&str>) -> Result<Page, WebError> {
+        if self.respect_robots && !self.robots.allowed(&self.http, url).await {
+            return Err(WebError::Robots(url.to_string()));
         }
         let response = self
             .http
-            .get(url)
+            .get(url.clone())
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
             .map_err(|error| WebError::Http(error.to_string()))?;
         let final_url = response.url().to_string();
+        // A redirect to another origin is held to that origin's `robots.txt` too.
+        if self.respect_robots
+            && response.url().origin() != url.origin()
+            && !self.robots.allowed(&self.http, response.url()).await
+        {
+            return Err(WebError::Robots(final_url));
+        }
         let content_type = response
             .headers()
             .get("content-type")
@@ -114,6 +195,9 @@ impl Web {
         if !is_text {
             return Err(WebError::NotText(final_url, content_type));
         }
+        let lifetime = self.cache.as_ref().and_then(|cache| {
+            cache::cacheable_lifetime(response.status(), response.headers(), cache.ttl())
+        });
         let body = response
             .text()
             .await
@@ -123,24 +207,15 @@ impl Web {
         } else {
             (None, body)
         };
-        let text: String = text.chars().take(MAX_PAGE_CHARS).collect();
-        let total = text.chars().count();
-        let limit = if limit == 0 { DEFAULT_CHUNK } else { limit };
-        let chunk: String = text.chars().skip(offset).take(limit).collect();
-        let shown_end = (offset + chunk.chars().count()).min(total);
-        let mut out = String::new();
-        if let Some(title) = title {
-            out.push_str(&format!("# {title}\n"));
+        let page = Page {
+            title,
+            final_url,
+            text: text.chars().take(MAX_PAGE_CHARS).collect(),
+        };
+        if let (Some(cache), Some(key), Some(lifetime)) = (&self.cache, key, lifetime) {
+            cache.put(key, &page, lifetime);
         }
-        out.push_str(&format!(
-            "URL: {final_url}\nCharacters {offset}-{shown_end} of {total}{}\n\n{chunk}",
-            if shown_end < total {
-                format!("; continue with offset {shown_end}")
-            } else {
-                String::new()
-            }
-        ));
-        Ok(out)
+        Ok(page)
     }
 
     /// Searches with the configured provider.
@@ -151,6 +226,28 @@ impl Web {
         hits.truncate(count);
         Ok(hits)
     }
+}
+
+/// One chunk of a page, headed by its title, final URL, and position.
+fn render_page(page: &Page, offset: usize, limit: usize) -> String {
+    let total = page.text.chars().count();
+    let limit = if limit == 0 { DEFAULT_CHUNK } else { limit };
+    let chunk: String = page.text.chars().skip(offset).take(limit).collect();
+    let shown_end = (offset + chunk.chars().count()).min(total);
+    let mut out = String::new();
+    if let Some(title) = &page.title {
+        out.push_str(&format!("# {title}\n"));
+    }
+    out.push_str(&format!(
+        "URL: {}\nCharacters {offset}-{shown_end} of {total}{}\n\n{chunk}",
+        page.final_url,
+        if shown_end < total {
+            format!("; continue with offset {shown_end}")
+        } else {
+            String::new()
+        }
+    ));
+    out
 }
 
 /// Search results as the model sees them, numbered for citation.
@@ -360,20 +457,404 @@ mod tests {
             searxng_url: "",
             api_key: &no_key,
         };
-        for name in ["searxng", "brave", "tavily", "none", "kagi"] {
+        for name in ["searxng", "brave", "tavily", "kagi", "exa", "none"] {
             assert!(providers.build(name, &empty).is_none(), "{name}");
         }
         assert_eq!(
             loaded.load(std::sync::atomic::Ordering::SeqCst),
-            2,
-            "only brave and tavily load the key"
+            4,
+            "only the key providers load the key"
         );
         let configured = SearchConfig {
             searxng_url: "http://127.0.0.1:8080",
             api_key: &|| Some("key".to_string()),
         };
-        for name in ["searxng", "brave", "tavily"] {
+        for name in ["searxng", "brave", "tavily", "kagi", "exa"] {
             assert!(providers.build(name, &configured).is_some(), "{name}");
         }
+    }
+
+    #[tokio::test]
+    async fn kagi_sends_its_bot_token_and_skips_related_searches() {
+        let base = serve(Router::new().route(
+            "/search",
+            get(|headers: axum::http::HeaderMap, uri: axum::http::Uri| async move {
+                let authorized = headers
+                    .get("authorization")
+                    .is_some_and(|value| value == "Bot kagi-key");
+                if !authorized {
+                    return (axum::http::StatusCode::UNAUTHORIZED, axum::Json(json!({})));
+                }
+                assert!(uri.query().unwrap().contains("limit=3"), "{uri}");
+                (
+                    axum::http::StatusCode::OK,
+                    axum::Json(json!({"meta": {}, "data": [
+                        {"t": 0, "rank": 1, "url": "https://kagi.example/a", "title": "A &amp; B", "snippet": "First"},
+                        {"t": 1, "list": ["related query"]},
+                        {"t": 0, "rank": 2, "url": "https://kagi.example/b", "title": "B", "snippet": "Second"}
+                    ]})),
+                )
+            }),
+        ))
+        .await;
+        let kagi = Kagi {
+            api_key: "kagi-key".into(),
+            base_url: base.clone(),
+        };
+        let hits = Web::new(Some(Arc::new(kagi)))
+            .search("rust", 3)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].title, "A & B");
+        assert_eq!(hits[1].snippet, "Second");
+        let wrong = Kagi {
+            api_key: "secret-wrong-key".into(),
+            base_url: base,
+        };
+        let error = Web::new(Some(Arc::new(wrong)))
+            .search("rust", 3)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("secret-wrong-key"), "{error}");
+        let debug = format!("{:?}", Kagi::new("hunter2".into()));
+        assert!(!debug.contains("hunter2"), "{debug}");
+    }
+
+    #[tokio::test]
+    async fn exa_posts_the_query_with_its_key_and_reads_text_excerpts() {
+        let base = serve(Router::new().route(
+            "/search",
+            axum::routing::post(
+                |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    assert_eq!(headers.get("x-api-key").unwrap(), "exa-key");
+                    assert_eq!(body["query"], "tokio");
+                    assert_eq!(body["numResults"], 2);
+                    axum::Json(json!({"results": [
+                        {"title": "Tokio", "url": "https://exa.example/t", "text": "An async runtime"},
+                        {"title": "No url"}
+                    ]}))
+                },
+            ),
+        ))
+        .await;
+        let exa = Exa {
+            api_key: "exa-key".into(),
+            base_url: base,
+        };
+        let hits = Web::new(Some(Arc::new(exa)))
+            .search("tokio", 2)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].snippet, "An async runtime");
+        assert!(!format!("{:?}", Exa::new("hunter2".into())).contains("hunter2"));
+    }
+
+    /// A page route that counts its requests and sends the given extra headers.
+    fn counted(
+        hits: &Arc<std::sync::atomic::AtomicUsize>,
+        extra: &'static [(&'static str, &'static str)],
+    ) -> axum::routing::MethodRouter {
+        let hits = hits.clone();
+        get(move || {
+            let hits = hits.clone();
+            async move {
+                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut response =
+                    axum::response::Response::builder().header("content-type", "text/html");
+                for (name, value) in extra {
+                    response = response.header(*name, *value);
+                }
+                response
+                    .body(axum::body::Body::from(
+                        "<html><head><title>Cached</title></head><body>0123456789</body></html>",
+                    ))
+                    .unwrap()
+            }
+        })
+    }
+
+    fn count(hits: &Arc<std::sync::atomic::AtomicUsize>) -> usize {
+        hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn cached_web(dir: &std::path::Path) -> Web {
+        Web::with_options(
+            None,
+            FetchOptions {
+                cache_dir: Some(dir.to_path_buf()),
+                ..FetchOptions::default()
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn fetched_pages_are_cached_on_disk_and_served_in_chunks() {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let base = serve(Router::new().route("/page", counted(&hits, &[]))).await;
+        let url = format!("{base}/page");
+        let dir = tempfile::tempdir().unwrap();
+        let first = cached_web(dir.path()).fetch(&url, 0, 4).await.unwrap();
+        assert!(first.contains("Characters 0-4 of 10"), "{first}");
+        // Another Web over the same folder (such as another session) reads the file.
+        let second = cached_web(dir.path()).fetch(&url, 4, 4).await.unwrap();
+        assert!(second.starts_with("# Cached\nURL: "), "{second}");
+        assert!(second.contains("Characters 4-8 of 10"), "{second}");
+        assert!(second.ends_with("4567"), "{second}");
+        assert_eq!(count(&hits), 1, "one request for two reads");
+        // The fragment is not part of the key.
+        cached_web(dir.path())
+            .fetch(&format!("{url}#part"), 0, 0)
+            .await
+            .unwrap();
+        assert_eq!(count(&hits), 1);
+        // With no cache folder every read goes to the network.
+        let plain = Web::new(None);
+        plain.fetch(&url, 0, 0).await.unwrap();
+        plain.fetch(&url, 0, 0).await.unwrap();
+        assert_eq!(count(&hits), 3);
+    }
+
+    #[tokio::test]
+    async fn responses_that_must_not_be_shared_are_never_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases: [(&str, &'static [(&'static str, &'static str)]); 5] = [
+            ("/store", &[("cache-control", "no-store")]),
+            ("/private", &[("cache-control", "private, max-age=600")]),
+            ("/cookie", &[("set-cookie", "session=abc; HttpOnly")]),
+            ("/vary", &[("vary", "Cookie")]),
+            ("/auth", &[("www-authenticate", "Bearer")]),
+        ];
+        for (path, headers) in cases {
+            let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let base = serve(Router::new().route(path, counted(&hits, headers))).await;
+            let web = cached_web(dir.path());
+            web.fetch(&format!("{base}{path}"), 0, 0).await.unwrap();
+            web.fetch(&format!("{base}{path}"), 0, 0).await.unwrap();
+            assert_eq!(count(&hits), 2, "{path} must be fetched each time");
+        }
+        let stored = std::fs::read_dir(dir.path()).map_or(0, Iterator::count);
+        assert_eq!(stored, 0, "nothing was written to the cache folder");
+        // Credentials in the URL are never cached either.
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let base = serve(Router::new().route("/page", counted(&hits, &[]))).await;
+        let with_login = base.replacen("http://", "http://user:pw@", 1);
+        let web = cached_web(dir.path());
+        web.fetch(&format!("{with_login}/page"), 0, 0)
+            .await
+            .unwrap();
+        web.fetch(&format!("{with_login}/page"), 0, 0)
+            .await
+            .unwrap();
+        assert_eq!(count(&hits), 2);
+    }
+
+    #[tokio::test]
+    async fn a_short_max_age_expires_an_entry_and_the_cache_is_bounded() {
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let base = serve(Router::new().route(
+            "/short",
+            counted(&hits, &[("cache-control", "public, max-age=1")]),
+        ))
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let web = cached_web(dir.path());
+        web.fetch(&format!("{base}/short"), 0, 0).await.unwrap();
+        web.fetch(&format!("{base}/short"), 0, 0).await.unwrap();
+        assert_eq!(count(&hits), 1);
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        web.fetch(&format!("{base}/short"), 0, 0).await.unwrap();
+        assert_eq!(count(&hits), 2, "expired after max-age");
+        // A tiny cap keeps the folder small however many pages are read.
+        let bounded = tempfile::tempdir().unwrap();
+        let web = Web::with_options(
+            None,
+            FetchOptions {
+                cache_dir: Some(bounded.path().to_path_buf()),
+                cache_max_bytes: 1500,
+                ..FetchOptions::default()
+            },
+        );
+        let many = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let base = serve(Router::new().route("/p/{n}", {
+            let many = many.clone();
+            get(move || {
+                let many = many.clone();
+                async move {
+                    many.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    ([("content-type", "text/plain")], "z".repeat(500))
+                }
+            })
+        }))
+        .await;
+        for number in 0..10 {
+            web.fetch(&format!("{base}/p/{number}"), 0, 0)
+                .await
+                .unwrap();
+        }
+        let size: u64 = std::fs::read_dir(bounded.path())
+            .unwrap()
+            .flatten()
+            .map(|item| item.metadata().unwrap().len())
+            .sum();
+        assert!(size <= 1500, "{size} bytes on disk");
+    }
+
+    fn robots_route(
+        hits: &Arc<std::sync::atomic::AtomicUsize>,
+        status: axum::http::StatusCode,
+        body: &'static str,
+    ) -> axum::routing::MethodRouter {
+        let hits = hits.clone();
+        get(move || {
+            let hits = hits.clone();
+            async move {
+                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (status, body)
+            }
+        })
+    }
+
+    const OK: axum::http::StatusCode = axum::http::StatusCode::OK;
+
+    #[tokio::test]
+    async fn robots_txt_disallowed_pages_are_refused_and_rules_are_held_per_host() {
+        let robots = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let base = serve(
+            Router::new()
+                .route(
+                    "/robots.txt",
+                    robots_route(
+                        &robots,
+                        OK,
+                        "User-agent: *\nDisallow: /secret\nCrawl-delay: 60\n\nUser-agent: Imperium\nDisallow: /named\n",
+                    ),
+                )
+                .route("/secret", counted(&pages, &[]))
+                .route("/named", counted(&pages, &[]))
+                .route("/open", counted(&pages, &[])),
+        )
+        .await;
+        let web = Web::new(None);
+        // The Imperium group replaces the `*` group, so /secret is allowed here.
+        assert!(web.fetch(&format!("{base}/secret"), 0, 0).await.is_ok());
+        let refused = web.fetch(&format!("{base}/named"), 0, 0).await.unwrap_err();
+        assert!(matches!(refused, WebError::Robots(_)), "{refused}");
+        assert!(refused.to_string().contains("web.robots"), "{refused}");
+        assert!(web.fetch(&format!("{base}/open"), 0, 0).await.is_ok());
+        assert_eq!(count(&pages), 2, "the disallowed page was never requested");
+        assert_eq!(count(&robots), 1, "robots.txt is fetched once per host");
+        // Turned off, nothing is checked.
+        let off = Web::with_options(
+            None,
+            FetchOptions {
+                respect_robots: false,
+                ..FetchOptions::default()
+            },
+        );
+        assert!(off.fetch(&format!("{base}/named"), 0, 0).await.is_ok());
+        assert_eq!(count(&robots), 1);
+    }
+
+    #[tokio::test]
+    async fn the_star_group_applies_without_a_named_group() {
+        let robots = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let base = serve(
+            Router::new()
+                .route(
+                    "/robots.txt",
+                    robots_route(
+                        &robots,
+                        OK,
+                        "User-agent: *\nDisallow: /secret\nAllow: /secret/ok\n",
+                    ),
+                )
+                .route("/secret", counted(&pages, &[]))
+                .route("/secret/ok", counted(&pages, &[])),
+        )
+        .await;
+        let web = Web::new(None);
+        assert!(matches!(
+            web.fetch(&format!("{base}/secret"), 0, 0).await,
+            Err(WebError::Robots(_))
+        ));
+        assert!(web.fetch(&format!("{base}/secret/ok"), 0, 0).await.is_ok());
+        assert_eq!(count(&pages), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_robots_txt_follows_the_fail_open_or_closed_choice() {
+        let robots = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let broken = serve(
+            Router::new()
+                .route(
+                    "/robots.txt",
+                    robots_route(
+                        &robots,
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "boom",
+                    ),
+                )
+                .route("/page", counted(&pages, &[])),
+        )
+        .await;
+        let missing = serve(
+            Router::new()
+                .route(
+                    "/robots.txt",
+                    robots_route(&robots, axum::http::StatusCode::NOT_FOUND, "no"),
+                )
+                .route("/page", counted(&pages, &[])),
+        )
+        .await;
+        let open = Web::new(None);
+        assert!(open.fetch(&format!("{broken}/page"), 0, 0).await.is_ok());
+        let closed = Web::with_options(
+            None,
+            FetchOptions {
+                robots_fail_closed: true,
+                ..FetchOptions::default()
+            },
+        );
+        assert!(matches!(
+            closed.fetch(&format!("{broken}/page"), 0, 0).await,
+            Err(WebError::Robots(_))
+        ));
+        // A 4xx answer means there is no robots.txt, whatever the choice.
+        assert!(closed.fetch(&format!("{missing}/page"), 0, 0).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_redirect_to_a_disallowing_host_is_refused() {
+        let robots = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let target = serve(
+            Router::new()
+                .route(
+                    "/robots.txt",
+                    robots_route(&robots, OK, "User-agent: *\nDisallow: /\n"),
+                )
+                .route("/page", counted(&pages, &[])),
+        )
+        .await;
+        let destination = format!("{target}/page");
+        let origin = serve(Router::new().route(
+            "/go",
+            get(move || {
+                let destination = destination.clone();
+                async move { axum::response::Redirect::temporary(&destination) }
+            }),
+        ))
+        .await;
+        let error = Web::new(None)
+            .fetch(&format!("{origin}/go"), 0, 0)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, WebError::Robots(_)), "{error}");
     }
 }

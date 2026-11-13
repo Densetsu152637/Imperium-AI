@@ -331,9 +331,14 @@ and `environments.agent_update` (protocol 0.28)
     that layers packs into the prompt; MCP resources, prompts, sampling, and OAuth for remote
     servers; and an MCP server bridge exposing Imperium itself
     ([08](08-agent-policy.md), [05](05-tools-and-isolation.md#mcp), [02](02-architecture.md)).
-32. **Web and browser.** More search providers (Kagi and others), caching and robots handling,
-    browser tabs and downloads, and a browser pane the user can take over
-    ([05](05-tools-and-isolation.md)).
+32. **Web and browser** (partly implemented). The browser pane the user can take over exists.
+    Kagi and Exa join SearXNG, Brave and Tavily as search providers (keys only from the keychain);
+    `web_fetch` keeps a bounded on-disk cache of shareable pages (`web.cache_ttl_s`,
+    `web.cache_max_mb`) and honours `robots.txt` per host (`web.robots`,
+    `web.robots_unreachable`), with no protocol change
+    ([05](05-tools-and-isolation.md#fetch-cache-and-robotstxt-implemented),
+    [10](10-configuration.md)). Not built: browser tabs and downloads (a design is in 05, and
+    needs a protocol minor), caching search results, and a per-call "fetch fresh" option.
 33. **Protocol transport** (implemented). `events.subscribe` and `events.unsubscribe` let a
     connection choose which notification topics it receives, only ever narrowing what it may
     receive anyway; and `daemon.socket` (off by default) also serves the same protocol, with

@@ -348,9 +348,15 @@ impl Settings {
         }
         if !matches!(
             self.web.search.as_str(),
-            "none" | "searxng" | "brave" | "tavily"
+            "none" | "searxng" | "brave" | "tavily" | "kagi" | "exa"
         ) {
-            return Err("web.search must be none, searxng, brave, or tavily".into());
+            return Err("web.search must be none, searxng, brave, tavily, kagi, or exa".into());
+        }
+        if !matches!(self.web.robots.as_str(), "respect" | "off") {
+            return Err("web.robots must be respect or off".into());
+        }
+        if !matches!(self.web.robots_unreachable.as_str(), "allow" | "deny") {
+            return Err("web.robots_unreachable must be allow or deny".into());
         }
         if !matches!(self.isolation.tier.as_str(), "policy" | "os" | "container") {
             return Err("isolation.tier must be policy, os, or container".into());
@@ -648,14 +654,23 @@ impl Default for PetSettings {
 pub struct WebSettings {
     /// Offer `web_fetch` (and `web_search` with a provider) to agents.
     pub enabled: bool,
-    /// `none`, `searxng`, `brave`, or `tavily`.
+    /// `none`, `searxng`, `brave`, `tavily`, `kagi`, or `exa`.
     pub search: String,
     /// A SearXNG instance with the JSON format enabled.
     pub searxng_url: String,
-    /// The Brave or Tavily key, from the keychain.
+    /// The key for Brave, Tavily, Kagi, or Exa, from the keychain.
     pub api_key: Option<SecretRef>,
     /// Domains `web_fetch` may read without asking (subdomains included).
     pub allow_domains: Vec<String>,
+    /// How long `web_fetch` reuses a page it has read, in seconds; 0 turns the cache off.
+    pub cache_ttl_s: u64,
+    /// The most disk the `web_fetch` cache may use, in MB; 0 turns the cache off.
+    pub cache_max_mb: u64,
+    /// `respect` (refuse pages `robots.txt` disallows) or `off`.
+    pub robots: String,
+    /// With `respect`, what an unreadable `robots.txt` (a server error, no connection) means:
+    /// `allow` (fail open) or `deny` (fail closed).
+    pub robots_unreachable: String,
     /// Offer browser tools (Chrome, Chromium, or Edge over CDP).
     pub browser: bool,
     /// The browser to drive; found automatically when empty.
@@ -672,6 +687,10 @@ impl Default for WebSettings {
             searxng_url: String::new(),
             api_key: None,
             allow_domains: Vec::new(),
+            cache_ttl_s: 900,
+            cache_max_mb: 50,
+            robots: "respect".into(),
+            robots_unreachable: "allow".into(),
             browser: true,
             browser_path: None,
             headless: true,

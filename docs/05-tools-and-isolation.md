@@ -6,7 +6,7 @@
 | ----------- | --------------------------------------------------------- | ------------------------------------------------ |
 | Files       | `read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep` (implemented) | Exact-match unique edits; reads numbered and paged with `offset`/`limit`; [searches](#glob-and-grep-implemented) honour `.gitignore` and page with `offset` |
 | Execution   | `run_command`, `command_output`, `command_stop` (implemented) | Runs in the project root via `cmd /C` (the line passed verbatim) or `sh -c`; default timeout 120 s; returns exit code, stdout, stderr; `background: true` [returns a process id at once](#background-commands-implemented) |
-| Web         | `web.search`, `web.fetch`                                 | Search providers: SearXNG (self-hosted), Brave, Tavily, Kagi; pluggable |
+| Web         | `web.search`, `web.fetch`                                 | Search providers: SearXNG (self-hosted), Brave, Tavily, Kagi, Exa; pluggable. Pages are [cached](#fetch-cache-and-robotstxt-implemented) and `robots.txt` is honoured |
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
 | Agents      | `spawn_agent`, `await_tasks`, `send_to_task`, `cancel_task` | See [agent engine](03-agent-engine.md)        |
 | Media       | `media.generate`, `media.transcribe`                      | See [media](09-media-generation.md)              |
@@ -16,13 +16,63 @@
 Implemented in phase 8 (`imperium-web`): `web_fetch` reads an http(s) page as text (title,
 final URL, scripts and markup removed, long pages in chunks via `offset` and `limit`; non-text
 content is refused) and `web_search` queries the configured provider (`web.search` =
-`searxng` with `web.searxng_url`, or `brave` or `tavily` with `web.api_key` from the keychain)
+`searxng` with `web.searxng_url`, or `brave`, `tavily`, `kagi` or `exa` with `web.api_key` from the
+keychain, never from the settings file)
 and returns numbered results. Each provider implements the `SearchProvider` trait and is built
 from its `web.search` name by `SearchProviders`, so adding one is an implementation and a
 `register` call; unknown names leave search off. Agents are told to cite the sources they use
 with their URLs and to treat web content as data. Searching runs without asking; `web_fetch` asks unless the host
 is in `web.allow_domains` (subdomains included) or the user allowed fetching for the session.
-Kagi and other providers, caching, and robots handling are later work.
+
+### Fetch cache and robots.txt (implemented)
+
+**Search providers.** `kagi` (the Kagi Search API, `Authorization: Bot <token>`; its related-search
+entries are not results) and `exa` (`x-api-key`, with a short text excerpt per result) join
+`searxng`, `brave` and `tavily`. A key provider is built only when `web.api_key` names a keychain
+secret that exists; otherwise search stays off with a warning. Keys are sent only as request
+headers, are redacted from `Debug` output, and never appear in error messages.
+
+**Cache.** `web_fetch` keeps the text of pages it reads in `<cache>/web`, one file per URL
+(fragment removed), so a page read again, or read in later `offset` chunks, is not requested
+again, including by another session. `web.cache_ttl_s` (default 900; `0` turns the cache off) is
+the longest an entry lives, and a response's `max-age` or `s-maxage` can only shorten it.
+`web.cache_max_mb` (default 50; `0` turns the cache off) caps the folder: after every write the
+oldest files are deleted until it fits, and a page larger than the cap is not stored. Only
+sharable responses are stored: a `200` that has no `Set-Cookie` or `WWW-Authenticate`, no
+`Cache-Control` of `no-store`, `private` or `no-cache` (or a zero or unreadable `max-age`), no
+`Vary` of `*`, `Cookie` or `Authorization`, and a URL without credentials. `web_fetch` sends no
+cookies and no credentials of its own, so a cached page is what any visitor sees; the rules above
+keep a page that was personalised anyway out of the cache that other sessions share. Browser
+pages and search results are not cached.
+
+**robots.txt.** With `web.robots = "respect"` (the default), `web_fetch` reads the host's
+`/robots.txt` before the first fetch and refuses a URL it disallows for the `Imperium` agent
+(RFC 9309: the group naming `Imperium` wins over `*`; the longest matching `Allow` or `Disallow`
+decides, `Allow` on a tie; `*` and a trailing `$` work in patterns). The refusal names the URL
+and the setting. Rules are held per host in memory for an hour. A redirect to
+another origin is held to that origin's file too. A missing file (any 4xx) allows everything.
+When the file cannot be read (a 5xx answer or no connection), `web.robots_unreachable` decides:
+`allow` (the default, fail open: a flaky server does not stop the user's work) or `deny` (fail
+closed, as RFC 9309 suggests); the failure is remembered for a minute. `Crawl-delay` is ignored:
+`web_fetch` reads one page per call at the agent's request and never crawls, so there is nothing
+to pace. `web.robots = "off"` skips the check. The check covers `web_fetch` only: browser tools
+show the user a real page and follow the domain rule, and the user can always open a page
+themselves.
+
+None of this changes the permission model: `web_fetch` still asks unless the host is in
+`web.allow_domains` or fetching is allowed for the session, the safety floor and permission modes
+apply as before, and an agent profile that locks an agent to local files still removes the web
+tools.
+
+**Browser tabs and downloads (not built, design).** The browser is one page. Next stage: the
+`browser` module tracks targets (`Target.getTargets`, `Target.attachToTarget` with flattened
+sessions) so `browser_open` takes a `new_tab` flag, `browser_tabs` lists tabs (id, URL, title)
+and `browser_switch` and `browser_close` act on one, each tab keeping its own `browser_view`
+mirror and the user's takeover applying to the active tab. Downloads are denied by default
+(`Browser.setDownloadBehavior` with `behavior: deny`); when a click starts one the agent is told,
+and `browser_download` fetches the file into the session's scratch folder through the same
+approval as a write, size-capped and never executed. Both need protocol additions (tab fields on
+`browser_view` and `session.browser_act`), so they are a separate protocol minor.
 
 Browser tools (`browser_open`, `browser_read`, `browser_click`, `browser_type`) drive Chrome,
 Chromium, or Edge over the DevTools Protocol, found in the usual install locations or set with
