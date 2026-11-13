@@ -372,6 +372,7 @@ mod tests {
                 layers: Some(32),
                 max_gpu_layers: None,
                 draft: crate::planner::DraftMemory::default(),
+                overhead_bytes: crate::planner::RUNTIME_OVERHEAD_BYTES,
             },
             budget,
         )
@@ -551,6 +552,7 @@ mod tests {
                     layers: Some(32),
                     max_gpu_layers: None,
                     draft: crate::planner::DraftMemory::default(),
+                    overhead_bytes: crate::planner::RUNTIME_OVERHEAD_BYTES,
                 },
                 budget,
             )
@@ -697,6 +699,7 @@ mod tests {
                     layers: Some(48),
                     max_gpu_layers: None,
                     draft: crate::planner::DraftMemory::default(),
+                    overhead_bytes: crate::planner::RUNTIME_OVERHEAD_BYTES,
                 },
                 budget,
             )

@@ -1,12 +1,10 @@
 //! Live machine usage for the resource monitor: CPU, memory, GPUs, and chosen processes.
 //!
 //! [`SystemProbe`] reads CPU, memory, and processes through `sysinfo` and NVIDIA GPUs through
-//! `nvidia-smi` (which reports NVML's counters); without an NVIDIA driver the GPU list is
-//! empty. Callers depend on the [`Probe`] trait so tests can use fakes.
+//! `nvidia-smi` (which reports NVML's counters); AMD, Intel and Apple Silicon GPUs come from
+//! [`crate::gpu`]. Without any of them the GPU list is empty. Callers depend on the [`Probe`] trait so tests can use fakes.
 
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
-
+use crate::gpu::{VendorProbe, run_tool};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 const MIB: u64 = 1024 * 1024;
@@ -64,6 +62,8 @@ pub struct SystemProbe {
     primed: bool,
     /// Cleared once `nvidia-smi` cannot be started, so it is not tried every few seconds.
     nvidia: bool,
+    /// AMD, Intel and Apple Silicon GPUs.
+    vendors: VendorProbe,
 }
 
 impl std::fmt::Debug for SystemProbe {
@@ -88,6 +88,7 @@ impl SystemProbe {
             primed: false,
             // Apple Silicon shares memory between GPU and CPU and has no nvidia-smi.
             nvidia: !cfg!(target_os = "macos"),
+            vendors: VendorProbe,
         }
     }
 
@@ -101,6 +102,30 @@ impl SystemProbe {
     }
 
     fn gpus(&mut self) -> (Vec<GpuSample>, Vec<(u32, u64)>) {
+        let (mut gpus, apps) = self.nvidia_gpus();
+        let first = u32::try_from(gpus.len()).unwrap_or(u32::MAX);
+        let others = self
+            .vendors
+            .read(self.system.total_memory(), self.system.used_memory());
+        gpus.extend(
+            others
+                .into_iter()
+                .zip(first..)
+                .map(|(gpu, index)| GpuSample {
+                    index,
+                    name: gpu.name,
+                    vendor: gpu.vendor.to_string(),
+                    utilization_percent: gpu.utilization_percent,
+                    // The protocol has no "unknown"; planning treats it as half-used ([`Reading::vram_free_bytes`]).
+                    vram_used_bytes: gpu.vram_used_bytes.unwrap_or(0),
+                    vram_total_bytes: gpu.vram_total_bytes,
+                    temperature_c: gpu.temperature_c,
+                }),
+        );
+        (gpus, apps)
+    }
+
+    fn nvidia_gpus(&mut self) -> (Vec<GpuSample>, Vec<(u32, u64)>) {
         if !self.nvidia {
             return (Vec::new(), Vec::new());
         }
@@ -176,46 +201,8 @@ impl Probe for SystemProbe {
 
 /// Runs `nvidia-smi` with `args`; `None` when it is missing or fails.
 fn nvidia_smi(args: &[&str]) -> Option<String> {
-    let mut command = Command::new("nvidia-smi");
-    command.args(args);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW: the daemon has no console, so a child would otherwise open one.
-        command.creation_flags(0x0800_0000);
-    }
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = command.spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
-    // Read on a thread so a full pipe cannot stop the child, and give up on a hung driver.
-    let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
-        text
-    });
-    let deadline = Instant::now() + NVIDIA_SMI_TIMEOUT;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    };
-    let text = reader.join().ok()?;
-    status.success().then_some(text)
+    run_tool("nvidia-smi", args)
 }
-
-/// Longest `nvidia-smi` may take before it is given up on and killed.
-const NVIDIA_SMI_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A number field, or `None` for `[N/A]` and the like.
 fn number(field: &str) -> Option<f32> {

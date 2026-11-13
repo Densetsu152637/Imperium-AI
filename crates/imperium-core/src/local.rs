@@ -143,6 +143,12 @@ impl LocalRuntime {
             Arc::clone(&launcher) as Arc<dyn imperium_local::supervisor::Launcher>,
         );
         supervisor.set_cpu_pinned(cpu_pins(settings));
+        // Memory estimates corrected by what benchmark runs measured on this hardware.
+        let (fingerprint, _) = crate::bench::fingerprint(&hardware, "llamacpp", &pack, &server);
+        supervisor.set_calibration(Arc::new(imperium_local::calibration::Calibration::open(
+            &paths.data_dir().join("calibration"),
+            &fingerprint,
+        )));
         let probe: Arc<dyn MemoryProbe> = Arc::new(MachineProbe {
             overrides: settings.hardware.clone(),
         });
@@ -579,6 +585,7 @@ mod tests {
             cpu_cores: 16,
             unified_memory: false,
             overridden: true,
+            vram_overridden: false,
         };
         let settings = settings("");
         let supervisor = Supervisor::start(

@@ -150,6 +150,7 @@ fn hardware(vram_gib: u64, ram_gib: u64) -> Hardware {
         cpu_cores: 16,
         unified_memory: false,
         overridden: true,
+        vram_overridden: false,
     }
 }
 

@@ -72,6 +72,9 @@ pub struct Footprint {
     pub max_gpu_layers: Option<u32>,
     /// The draft model that runs beside it, if one is used.
     pub draft: DraftMemory,
+    /// Compute buffers and runtime state beyond weights and KV cache: [`RUNTIME_OVERHEAD_BYTES`],
+    /// moved by [`Footprint::calibrated`] when measured memory has shown the estimate off.
+    pub overhead_bytes: u64,
 }
 
 impl Footprint {
@@ -97,6 +100,7 @@ impl Footprint {
                 .and_then(|layers| u32::try_from(layers).ok()),
             max_gpu_layers: launch.max_gpu_layers,
             draft: DraftMemory::default(),
+            overhead_bytes: RUNTIME_OVERHEAD_BYTES,
         }
     }
 
@@ -114,11 +118,34 @@ impl Footprint {
             layers: Some(ASSUMED_LAYERS),
             max_gpu_layers: None,
             draft: DraftMemory::default(),
+            overhead_bytes: RUNTIME_OVERHEAD_BYTES,
+        }
+    }
+
+    /// The same footprint with its runtime overhead moved by `factor_permille` of the model's
+    /// fixed memory (weights plus overhead; 1000 is the static estimate). The KV cache and the
+    /// draft are left as computed, so the correction does not move with the pool the model is
+    /// sized to. The factor is bounded by [`crate::calibration::clamp_factor`] and the overhead
+    /// never falls below half the static one, so a model is not planned much tighter than the
+    /// static estimate whatever was measured.
+    pub fn calibrated(self, factor_permille: u32) -> Self {
+        let factor = u128::from(crate::calibration::clamp_factor(factor_permille));
+        let base = u128::from(self.weights_bytes) + u128::from(self.overhead_bytes);
+        let target = base * factor / 1000;
+        let overhead = if target >= base {
+            u128::from(self.overhead_bytes) + (target - base)
+        } else {
+            (u128::from(self.overhead_bytes) - (base - target).min(u128::from(self.overhead_bytes)))
+                .max(u128::from(RUNTIME_OVERHEAD_BYTES / 2))
+        };
+        Footprint {
+            overhead_bytes: u64::try_from(overhead).unwrap_or(u64::MAX),
+            ..self
         }
     }
 
     pub fn required_bytes(&self) -> u64 {
-        self.weights_bytes + self.kv_bytes + RUNTIME_OVERHEAD_BYTES + self.draft.bytes
+        self.weights_bytes + self.kv_bytes + self.overhead_bytes + self.draft.bytes
     }
 }
 
@@ -208,7 +235,7 @@ pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
     let draft_on_gpu = footprint.draft.bytes - draft_in_ram;
     let gpu_room = budget
         .vram_bytes
-        .saturating_sub(RUNTIME_OVERHEAD_BYTES + draft_on_gpu);
+        .saturating_sub(footprint.overhead_bytes + draft_on_gpu);
     let gpu_layers = u32::try_from(gpu_room / per_layer.max(1))
         .unwrap_or(u32::MAX)
         .min(layers - 1)
@@ -216,11 +243,11 @@ pub fn place(footprint: Footprint, budget: Budget) -> Option<Placement> {
     let vram = if gpu_layers == 0 {
         draft_on_gpu
     } else {
-        u64::from(gpu_layers) * per_layer + RUNTIME_OVERHEAD_BYTES + draft_on_gpu
+        u64::from(gpu_layers) * per_layer + footprint.overhead_bytes + draft_on_gpu
     };
     let ram = u64::from(layers - gpu_layers) * per_layer
         + if gpu_layers == 0 {
-            RUNTIME_OVERHEAD_BYTES
+            footprint.overhead_bytes
         } else {
             0
         }
@@ -360,7 +387,44 @@ mod tests {
             layers: Some(32),
             max_gpu_layers: None,
             draft: DraftMemory::default(),
+            overhead_bytes: RUNTIME_OVERHEAD_BYTES,
         }
+    }
+
+    #[test]
+    fn calibration_moves_only_the_overhead_and_within_bounds() {
+        let base = footprint();
+        assert_eq!(base.calibrated(1000), base);
+        // 10% over on 4 GiB of weights and 512 MiB of overhead.
+        let over = base.calibrated(1100);
+        assert_eq!(over.weights_bytes, base.weights_bytes);
+        assert_eq!(over.kv_bytes, base.kv_bytes);
+        assert_eq!(
+            over.overhead_bytes,
+            RUNTIME_OVERHEAD_BYTES + (4 * GIB + RUNTIME_OVERHEAD_BYTES) / 10
+        );
+        // Wild factors are held to the bounds.
+        let capped = base.calibrated(100_000);
+        assert_eq!(capped.overhead_bytes, base.calibrated(1500).overhead_bytes);
+        let floored = base.calibrated(1);
+        assert_eq!(floored.overhead_bytes, base.calibrated(950).overhead_bytes);
+        // Planning never goes much below the static estimate: the overhead keeps half at least.
+        assert!(floored.overhead_bytes >= RUNTIME_OVERHEAD_BYTES / 2);
+        assert!(floored.required_bytes() * 100 >= base.required_bytes() * 93);
+    }
+
+    #[test]
+    fn a_calibrated_footprint_reserves_more_room() {
+        let budget = Budget {
+            vram_bytes: 5 * GIB + RUNTIME_OVERHEAD_BYTES + 100 * 1024 * 1024,
+            ram_bytes: 32 * GIB,
+            unified: false,
+        };
+        let plain = place(footprint(), budget).expect("fits");
+        assert!(plain.all_layers_on_gpu);
+        // Measured 30% over: the same model no longer fits entirely on this GPU.
+        let tight = place(footprint().calibrated(1300), budget).expect("fits partly");
+        assert!(!tight.all_layers_on_gpu);
     }
 
     #[test]

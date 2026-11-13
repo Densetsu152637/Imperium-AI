@@ -305,9 +305,14 @@ and `environments.agent_update` (protocol 0.28)
     ([14](14-projects-and-automation.md#narrowed-sessions-implemented)); and schedules and
     project agents attached to an environment
     ([14](14-projects-and-automation.md#schedules-and-project-agents-per-environment-implemented)).
-28. **Local runtimes and hardware.** vLLM as a supervised runtime, GPU probes for AMD, Intel,
-    and Apple Silicon, and memory estimates calibrated against measured use
-    ([04](04-models-and-routing.md)).
+28. **Local runtimes and hardware** (implemented, in part). GPU probes for AMD (`rocm-smi`,
+    `sysfs`), Intel (`xpu-smi`, `sysfs`) and Apple Silicon (`sysctl`, unified memory) feed the
+    hardware view, the resource monitor and the llama.cpp backend choice, and memory estimates
+    are calibrated against the peak memory benchmark runs measure (llama.cpp models wholly on one side, not vLLM or split placements), bounded and kept per model
+    and hardware fingerprint ([04](04-models-and-routing.md#hardware-awareness)). vLLM was
+    already a supervised runtime (item 7); not built: a managed `uv` environment or the Docker
+    image for it, per-process GPU memory for AMD and Intel, and probes on Windows for AMD and
+    Intel.
 29. **Routing extras** (implemented). Queue-delay handling, capability filters, escalation, and built-in
     rules sending critique, review, and verify tasks to the CPU lane. A local model whose
     expected queue wait is over `routing.max_queue_wait_s` is skipped for the next eligible

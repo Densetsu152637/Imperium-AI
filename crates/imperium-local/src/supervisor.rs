@@ -61,6 +61,7 @@ use tokio::sync::{Notify, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore, broa
 
 use crate::arbiter::{self, Decision, Outlook, Policy, Resident, Swaps, Use};
 use crate::backend::{self, RuntimeBackend};
+use crate::calibration::{self, Calibration, Lane};
 use crate::context;
 use crate::hardware::Hardware;
 use crate::planner::{self, Budget, Footprint, Placement, prompt_cache_mb};
@@ -1121,6 +1122,8 @@ pub struct Supervisor {
     /// two agents asking for the same model load it once. A swap-out holds it until its
     /// servers have exited, even when the call that started it was cancelled.
     swapping: Arc<tokio::sync::Mutex<()>>,
+    /// Measured corrections to the planner's memory estimates ([`Supervisor::set_calibration`]).
+    calibration: Mutex<Option<Arc<Calibration>>>,
     /// Saved slots; `None` when slots are not saved.
     slot_files: Option<Mutex<SlotFiles>>,
     /// Models pinned to the CPU lane, with their slots.
@@ -1187,8 +1190,9 @@ fn drafted_footprint(
     launch: &ModelLaunch,
     draft: Option<&Draft>,
     on_cpu: bool,
+    factor_permille: u32,
 ) -> Footprint {
-    let footprint = Footprint::of(model, launch);
+    let footprint = Footprint::of(model, launch).calibrated(factor_permille);
     match draft {
         Some(draft) => footprint.with_draft(draft.memory(launch.pool_tokens, on_cpu)),
         None => footprint,
@@ -1250,6 +1254,7 @@ impl Supervisor {
             presence: Arc::default(),
             changed: Arc::new(Notify::new()),
             swapping: Arc::default(),
+            calibration: Mutex::new(None),
             slot_files,
             cpu_pinned: Mutex::default(),
             grown: Mutex::default(),
@@ -1569,6 +1574,7 @@ impl Supervisor {
         trained: Option<u64>,
     ) -> u32 {
         let cpu = self.cpu_slots(&model.id).is_some();
+        let factor = self.memory_factor(&model.id, cpu);
         // A draft that fits beside the model at the least working pool counts in what the
         // pool must leave room for.
         let drafting = self.drafting(model, launch, context::MIN_FIT_TOKENS);
@@ -1581,6 +1587,7 @@ impl Supervisor {
                 },
                 drafting.draft(),
                 cpu,
+                factor,
             );
             if cpu {
                 backend.place_on_cpu(footprint, self.start_budget)
@@ -1633,12 +1640,76 @@ impl Supervisor {
     pub fn footprint(&self, model: &LocalModel) -> Footprint {
         let launch = self.launch(&model.id);
         let drafting = self.drafting(model, &launch, launch.pool_tokens);
+        let cpu = self.cpu_slots(&model.id).is_some();
         drafted_footprint(
             model,
             &launch,
             drafting.draft(),
-            self.cpu_slots(&model.id).is_some(),
+            cpu,
+            self.memory_factor(&model.id, cpu),
         )
+    }
+
+    /// Plans memory with the corrections `calibration` holds from now on: measured peaks move
+    /// the planner's runtime overhead for the models and lanes they were measured on.
+    pub fn set_calibration(&self, calibration: Arc<Calibration>) {
+        *lock(&self.calibration) = Some(calibration);
+    }
+
+    /// The factor (in thousandths of the static estimate) `id` is planned with.
+    fn memory_factor(&self, id: &str, cpu: bool) -> u32 {
+        lock(&self.calibration)
+            .as_ref()
+            .map_or(calibration::NEUTRAL_PERMILLE, |calibration| {
+                calibration.factor_permille(id, cpu)
+            })
+    }
+
+    /// Records the peak memory a loaded model's server was measured at (by a benchmark run), so
+    /// later plans follow what it really takes. What is compared is the fixed memory the static
+    /// estimate gives the model (weights plus overhead) against the peak less the static KV
+    /// cache of the pool it ran with, whatever correction the placement was planned with.
+    /// Nothing happens when no calibration is set, the model is not loaded, it is not served by
+    /// llama.cpp, runs with a draft model, is split between GPU and RAM, or the peak is not
+    /// known for where it runs (GPU memory per process is not reported on every driver).
+    pub fn record_measured_memory(
+        &self,
+        id: &str,
+        peak_ram_bytes: Option<u64>,
+        peak_vram_bytes: Option<u64>,
+    ) -> Option<u32> {
+        let calibration = lock(&self.calibration).clone()?;
+        let loaded = self
+            .loaded()
+            .into_iter()
+            .find(|loaded| loaded.model_id == id)?;
+        if loaded.runtime != backend::LLAMA_CPP || loaded.draft.is_some() {
+            return None;
+        }
+        let model = self.model(id)?;
+        let unified = self.start_budget.unified;
+        let (lane, measured) = if loaded.cpu_pinned || (!unified && loaded.gpu_layers == 0) {
+            (Lane::Cpu, peak_ram_bytes?)
+        } else if unified {
+            // One pool of memory: the process's resident memory is all there is to read.
+            (Lane::Gpu, peak_ram_bytes?)
+        } else if loaded.all_layers_on_gpu {
+            (Lane::Gpu, peak_vram_bytes?)
+        } else {
+            // A split between GPU and RAM cannot be told apart from either side.
+            return None;
+        };
+        let launch = ModelLaunch {
+            pool_tokens: loaded.pool_tokens,
+            ..self.launch(id)
+        };
+        let static_plan = Footprint::of(&model, &launch);
+        let fixed = static_plan.weights_bytes + static_plan.overhead_bytes;
+        let measured_fixed = measured.checked_sub(static_plan.kv_bytes)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        calibration.record(id, lane, fixed, measured_fixed, now)
     }
 
     /// What `model`'s draft setting comes to when it loads with a KV pool of `pool_tokens`: the
@@ -1682,8 +1753,15 @@ impl Supervisor {
                 backend.place(footprint, self.start_budget)
             }
         };
-        let alone = place(Footprint::of(model, &sized));
-        let with = place(drafted_footprint(model, &sized, Some(draft.as_ref()), cpu));
+        let factor = self.memory_factor(&model.id, cpu);
+        let alone = place(Footprint::of(model, &sized).calibrated(factor));
+        let with = place(drafted_footprint(
+            model,
+            &sized,
+            Some(draft.as_ref()),
+            cpu,
+            factor,
+        ));
         let fits = match (&alone, &with) {
             (_, None) => Err("it does not fit in memory beside the model"),
             (Some(alone), Some(with)) if alone.all_layers_on_gpu && !with.all_layers_on_gpu => {
@@ -1741,6 +1819,7 @@ impl Supervisor {
         let launch = self.launch(&model.id);
         let drafting = self.drafting(model, &launch, launch.pool_tokens);
         let draft = drafting.draft().cloned();
+        let factor = self.memory_factor(&model.id, cpu);
         let model = model.clone();
         // The pool may give way down to a working context (or what the launch starts with, if
         // less); the weights never give way for it.
@@ -1759,6 +1838,7 @@ impl Supervisor {
                     },
                     draft.as_ref(),
                     cpu,
+                    factor,
                 );
                 if cpu {
                     backend.place_on_cpu(footprint, budget)
@@ -1814,7 +1894,7 @@ impl Supervisor {
         let drafting = self.drafting(model, &launch, launch.pool_tokens);
         Some((
             placement,
-            Self::placed_pool(model, &launch, drafting.draft(), &placement),
+            self.placed_pool(model, &launch, drafting.draft(), &placement),
         ))
     }
 
@@ -1848,6 +1928,7 @@ impl Supervisor {
     /// The KV pool `placement` (from [`Supervisor::placer`]) was made with: the launch's pool,
     /// or less when it was cut to keep the layers on the GPU.
     fn placed_pool(
+        &self,
         model: &LocalModel,
         launch: &ModelLaunch,
         draft: Option<&Draft>,
@@ -1861,9 +1942,12 @@ impl Supervisor {
                 planner::cache_element_bytes(&launch.cache_type_v),
             )
             .map(|per_token| per_token + draft.map_or(0, Draft::kv_bytes_per_token));
-        let weights = model.size_bytes
-            + planner::RUNTIME_OVERHEAD_BYTES
-            + draft.map_or(0, Draft::fixed_bytes);
+        // The overhead as planned, calibrated or not.
+        let cpu = self.cpu_slots(&model.id).is_some();
+        let overhead = Footprint::of(model, launch)
+            .calibrated(self.memory_factor(&model.id, cpu))
+            .overhead_bytes;
+        let weights = model.size_bytes + overhead + draft.map_or(0, Draft::fixed_bytes);
         match per_token {
             Some(per_token) if per_token > 0 => {
                 let kv = placement.required_bytes.saturating_sub(weights);
@@ -1883,7 +1967,13 @@ impl Supervisor {
     ) -> (Footprint, Option<Placement>) {
         let cpu = self.cpu_slots(&model.id).is_some();
         let drafting = self.drafting(model, launch, launch.pool_tokens);
-        let footprint = drafted_footprint(model, launch, drafting.draft(), cpu);
+        let footprint = drafted_footprint(
+            model,
+            launch,
+            drafting.draft(),
+            cpu,
+            self.memory_factor(&model.id, cpu),
+        );
         let placement = self.backend(model.format).and_then(|backend| {
             if cpu {
                 backend.place_on_cpu(footprint, self.budget())
@@ -2559,11 +2649,13 @@ impl Supervisor {
     ) -> Result<Plan, String> {
         let launch = self.launch(&model.id);
         let drafting = self.drafting(model, &launch, launch.pool_tokens);
+        let cpu = self.cpu_slots(&model.id).is_some();
         let footprint = drafted_footprint(
             model,
             &launch,
             drafting.draft(),
-            self.cpu_slots(&model.id).is_some(),
+            cpu,
+            self.memory_factor(&model.id, cpu),
         );
         let no_room = || {
             format!(
@@ -2678,7 +2770,7 @@ impl Supervisor {
             victims,
             call: ticket.seq,
             priority,
-            served_pool: Self::placed_pool(model, &launch, drafting.draft(), &placement),
+            served_pool: self.placed_pool(model, &launch, drafting.draft(), &placement),
             launch,
             cpu_pinned: on_cpu,
             drafting,
@@ -3858,6 +3950,7 @@ mod tests {
             cpu_cores: 8,
             unified_memory: false,
             overridden: true,
+            vram_overridden: false,
         }
     }
 
@@ -3870,6 +3963,52 @@ mod tests {
             &hardware(),
             launcher,
         )
+    }
+
+    #[tokio::test]
+    async fn a_measured_peak_raises_what_the_model_is_planned_with() {
+        let supervisor = supervisor(Arc::new(FakeLauncher::default()));
+        let calibration = Arc::new(Calibration::in_memory("test"));
+        // Nothing is recorded before a calibration is set.
+        assert_eq!(
+            supervisor.record_measured_memory("a", Some(1), Some(1)),
+            None
+        );
+        supervisor.set_calibration(Arc::clone(&calibration));
+        let lease = supervisor.acquire("a", "holder").await.unwrap();
+        let model = supervisor.model("a").unwrap();
+        let before = supervisor.footprint(&model).required_bytes();
+        let loaded = supervisor.loaded().remove(0);
+        // The fixed memory (weights plus overhead) 20% over the static estimate, beside the
+        // static KV cache, whichever lane the model runs in.
+        let launch = ModelLaunch {
+            pool_tokens: loaded.pool_tokens,
+            ..supervisor.launch("a")
+        };
+        let plan = Footprint::of(&model, &launch);
+        let peak = (plan.weights_bytes + plan.overhead_bytes) / 10 * 12 + plan.kv_bytes;
+        let factor = supervisor
+            .record_measured_memory("a", Some(peak), Some(peak))
+            .expect("a load with memory planned is calibrated");
+        assert!((1190..=1200).contains(&factor), "{factor}");
+        assert!(supervisor.footprint(&model).required_bytes() > before);
+        // Recorded again against the static plan, the factor stays where it was.
+        let again = supervisor
+            .record_measured_memory("a", Some(peak), Some(peak))
+            .expect("calibrated again");
+        assert_eq!(again, factor);
+        // A reading that cannot be this model's is thrown away.
+        assert_eq!(
+            supervisor.record_measured_memory("a", Some(peak * 40), Some(peak * 40)),
+            None
+        );
+        assert_eq!(supervisor.record_measured_memory("a", None, None), None);
+        // A model that is not loaded has no peak to compare.
+        assert_eq!(
+            supervisor.record_measured_memory("b", Some(1), Some(1)),
+            None
+        );
+        drop(lease);
     }
 
     #[tokio::test]

@@ -142,6 +142,7 @@ fn supervisor(launcher: Arc<FakeLlama>, vram_gib: u64) -> Arc<Supervisor> {
         cpu_cores: 4,
         unified_memory: false,
         overridden: true,
+        vram_overridden: false,
     };
     let settings = LlamaCppSettings {
         backend: "auto".into(),

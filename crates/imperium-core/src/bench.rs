@@ -760,8 +760,18 @@ async fn measure_model(
     level = level.max(state.load_view().level());
     drop(lease);
     let peak = memory.finish();
+    // The peak refines the planner's memory estimate for this model on this machine.
     if measured.is_empty() {
         return Err("no prompt was measured".into());
+    }
+    // Only a run that answered its prompts refines the planner's memory estimate for this
+    // model on this machine.
+    if let Some(factor) = supervisor.record_measured_memory(id, peak.ram, peak.vram) {
+        tracing::info!(
+            model = id,
+            factor_permille = factor,
+            "memory estimate calibrated"
+        );
     }
     let (ttft_ms, prompt_tok_s, gen_tok_s) = summarise(&measured);
     let (fingerprint, hardware) = current_fingerprints(state, &row.runtime);
@@ -969,6 +979,8 @@ impl MemoryWatch {
         let shared = Arc::clone(&peak);
         let task = tokio::spawn(async move {
             let mut probe = SystemProbe::new();
+            // A restarted server is a different process: its peak is its own.
+            let mut watched: Option<u32> = None;
             loop {
                 let pid = supervisor
                     .loaded()
@@ -976,6 +988,10 @@ impl MemoryWatch {
                     .find(|loaded| loaded.model_id == model)
                     .and_then(|loaded| loaded.pid);
                 if let Some(pid) = pid {
+                    if watched != Some(pid) {
+                        *shared.lock().unwrap_or_else(PoisonError::into_inner) = Peak::default();
+                        watched = Some(pid);
+                    }
                     let Ok((returned, sample)) = tokio::task::spawn_blocking(move || {
                         let sample = probe.sample(&[pid]);
                         (probe, sample)
@@ -1059,6 +1075,7 @@ mod tests {
             cpu_cores: 16,
             unified_memory: false,
             overridden: false,
+            vram_overridden: false,
         }
     }
 
@@ -1145,6 +1162,7 @@ mod tests {
             cpu_cores: 16,
             unified_memory: false,
             overridden: false,
+            vram_overridden: false,
         };
         let (first, label) = fingerprint(&hardware, "llamacpp", "cuda12", Path::new("missing"));
         assert_eq!(

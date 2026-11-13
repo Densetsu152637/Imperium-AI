@@ -1113,6 +1113,7 @@ mod tests {
             cpu_cores: 16,
             unified_memory: false,
             overridden: false,
+            vram_overridden: false,
         }
     }
 
@@ -1248,6 +1249,7 @@ echo 'version: 6000 (abc)'
             cpu_cores: 4,
             unified_memory: false,
             overridden: false,
+            vram_overridden: false,
         };
         let listed = runtime_check::find_unverified(Some(home.path()));
         assert_eq!(listed, std::slice::from_ref(&server));

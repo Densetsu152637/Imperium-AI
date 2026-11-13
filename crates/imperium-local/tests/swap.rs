@@ -318,6 +318,7 @@ fn start_with_ram(settings: LlamaCppSettings, ram_gib: u64) -> (Arc<Supervisor>,
         cpu_cores: 8,
         unified_memory: false,
         overridden: true,
+        vram_overridden: false,
     };
     let supervisor = Supervisor::start(
         vec![model("emperor"), model("worker"), model("helper")],
