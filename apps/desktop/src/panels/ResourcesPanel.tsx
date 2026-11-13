@@ -120,7 +120,7 @@ export function ResourcesPanel({ client }: { client: DaemonClient | null }) {
             />
           </div>
         ))}
-        {snapshot.gpus.length === 0 && <p className="muted">No GPU reported (NVIDIA GPUs are read through their driver).</p>}
+        {snapshot.gpus.length === 0 && <p className="muted">No GPU reported (NVIDIA, AMD, Intel and Apple Silicon GPUs are read through their tools or drivers).</p>}
       </section>
 
       <Section icon={Server} title="Local models">

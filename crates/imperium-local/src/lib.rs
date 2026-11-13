@@ -3,9 +3,11 @@
 
 pub mod arbiter;
 pub mod backend;
+pub mod calibration;
 pub mod card;
 pub mod context;
 pub mod gguf;
+pub mod gpu;
 pub mod hardware;
 pub mod hf;
 pub mod monitor;

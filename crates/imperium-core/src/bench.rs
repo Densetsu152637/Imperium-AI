@@ -760,6 +760,14 @@ async fn measure_model(
     level = level.max(state.load_view().level());
     drop(lease);
     let peak = memory.finish();
+    // The peak refines the planner's memory estimate for this model on this machine.
+    if let Some(factor) = supervisor.record_measured_memory(id, peak.ram, peak.vram) {
+        tracing::info!(
+            model = id,
+            factor_permille = factor,
+            "memory estimate calibrated"
+        );
+    }
     if measured.is_empty() {
         return Err("no prompt was measured".into());
     }

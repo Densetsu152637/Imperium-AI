@@ -4,6 +4,8 @@ use std::process::Command;
 
 use imperium_config::HardwareSettings;
 
+use crate::gpu::VendorProbe;
+
 const MIB: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +42,8 @@ impl Hardware {
 
     /// The llama.cpp backends to try on this machine, best first, for
     /// `runtime.llamacpp.backend = "auto"`: on an NVIDIA GPU the newest CUDA its driver
-    /// supports, then Vulkan (which needs no CUDA runtime), then the CPU; Metal on Apple Silicon.
+    /// supports, then Vulkan (which needs no CUDA runtime), then the CPU; Vulkan then the CPU on
+    /// an AMD or Intel GPU; Metal on Apple Silicon.
     pub fn backend_chain(&self) -> Vec<&'static str> {
         let platform = platform();
         if self.unified_memory {
@@ -50,7 +53,12 @@ impl Hardware {
             return vec!["cpu"];
         }
         let Some(gpu) = self.gpus.iter().find(|gpu| gpu.vendor == "nvidia") else {
-            return vec!["cpu"];
+            // AMD and Intel GPUs: Vulkan runs on their open drivers without a vendor runtime.
+            return if self.gpus.is_empty() {
+                vec!["cpu"]
+            } else {
+                vec!["vulkan", "cpu"]
+            };
         };
         let major = gpu
             .driver
@@ -90,12 +98,31 @@ pub fn probe(overrides: &HardwareSettings) -> Hardware {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
     let unified_memory = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let mut gpus = if unified_memory {
+        Vec::new()
+    } else {
+        nvidia_gpus()
+    };
+    // AMD and Intel GPUs on Linux, and the Apple GPU that shares the machine's memory.
+    gpus.extend(
+        VendorProbe::default()
+            .read(
+                system.total_memory(),
+                system
+                    .total_memory()
+                    .saturating_sub(system.available_memory()),
+            )
+            .into_iter()
+            .map(|reading| Gpu {
+                vram_free_bytes: reading.vram_free_bytes(),
+                name: reading.name,
+                vendor: reading.vendor.to_string(),
+                vram_total_bytes: reading.vram_total_bytes,
+                driver: reading.driver,
+            }),
+    );
     let mut hardware = Hardware {
-        gpus: if unified_memory {
-            Vec::new()
-        } else {
-            nvidia_gpus()
-        },
+        gpus,
         ram_total_bytes: system.total_memory(),
         ram_available_bytes: system.available_memory(),
         cpu_cores: std::thread::available_parallelism().map_or(1, usize::from),
@@ -243,6 +270,15 @@ mod tests {
         assert_eq!(hardware.backend_chain(), ["vulkan", "cpu"]);
         hardware.gpus.clear();
         assert_eq!(hardware.backend_chain(), ["cpu"]);
+        hardware.gpus.push(Gpu {
+            name: "Radeon RX 7900 XTX".into(),
+            vendor: "amd".into(),
+            vram_total_bytes: 24 * 1024 * MIB,
+            vram_free_bytes: 20 * 1024 * MIB,
+            driver: None,
+        });
+        assert_eq!(hardware.backend_chain(), ["vulkan", "cpu"]);
+        hardware.gpus.clear();
         hardware.unified_memory = true;
         assert_eq!(hardware.backend_chain(), ["metal", "cpu"]);
     }

@@ -303,7 +303,8 @@ llama.cpp has no updater of its own, so llama.cpp updates with Imperium:
 The daemon starts one `llama-server` per loaded model on a free
 loopback port with `--parallel` slots over one shared KV pool, waits for `/health`, logs its output to
 `<data>/logs/llama-<id>.log`, and stops it when it has been idle for `idle_unload_s` or the
-daemon exits. vLLM is later work.
+daemon exits. vLLM models are supervised the same way by `vllm serve` (see the vLLM paragraph under the runtime backends); they
+are planned GPU-only.
 
 ### Runtime readiness
 
@@ -775,7 +776,7 @@ unloaded as `crashed` and reloaded with a backoff (race 3), as described above. 
 wait line words `local_model_waiting` and `model.residency` ([07](07-desktop-ui.md#waiting-status-line-implemented)),
 and `imperium chat` prints each `model.residency` move as a dim line.
 
-Not done yet: reading free VRAM through NVML instead of `nvidia-smi`, and other vendors;
+Not done yet: reading free VRAM through NVML instead of `nvidia-smi`;
 saved-slot cache evictions and prompt-cache sizing as reported moves; noticing a crash between
 calls sooner than the controller's 15 s look; and measuring all of it on a 16 GB GPU (swap and
 restore times, the budget refresh beside another GPU process).
@@ -938,15 +939,44 @@ and passing it to `Supervisor::with_backends`.
 ## Hardware awareness
 
 **Implemented (phase 4):** at start the daemon probes system memory and cores (`sysinfo`) and
-NVIDIA GPUs (`nvidia-smi`); Apple Silicon is planned as unified memory. `[hardware] vram_mb`
-and `ram_mb` override the probe for GPUs it cannot read, or to plan as if memory were smaller.
+GPUs: NVIDIA through `nvidia-smi`; AMD through `rocm-smi --json`, else the kernel's `sysfs`
+(`amdgpu`'s `mem_info_vram_*`); Intel through `xpu-smi` (JSON), else `sysfs` (`lmem_*` of a card
+with local memory, so an integrated GPU, which has none of its own, is not listed); Apple
+Silicon through `sysctl` (the chip's name and `hw.memsize`: the GPU shares the machine's memory,
+so models are planned against RAM). Each tool is spawned without a shell, killed after 10 s,
+and not tried again once it is missing; with none present the machine has no GPU and models run
+on the CPU. The AMD and Intel probes read Linux (`rocm-smi` and `xpu-smi` also exist for
+Windows, but only the Linux layouts are read so far), and their output formats were taken from
+the vendors' documentation and are tested on captured samples, not yet on hardware.
+`[hardware] vram_mb` and `ram_mb` override the probe for GPUs it cannot read, or to plan as if
+memory were smaller.
 The budget is the free VRAM and the available RAM less `runtime.llamacpp.ram_headroom_mb`,
 measured at start and again every 30 s by the [residency
 controller](#residency-controller-implemented) (VRAM always, RAM while no model is loaded);
-loaded models reserve what the planner estimated (the runtime overhead is a fixed 512 MiB).
-AMD/Intel/Metal probes and calibration against measured usage are later work. `backend = "auto"` picks `cuda13` for an NVIDIA driver of the
-580 series or newer, `cuda12` for older drivers, `metal` on Apple Silicon, and `cpu`
-otherwise; set `vulkan` or `rocm` explicitly.
+loaded models reserve what the planner estimated (the runtime overhead starts at 512 MiB and
+is [calibrated](#memory-estimate-calibration-implemented)). `backend = "auto"` picks `cuda13` for an NVIDIA driver of the
+580 series or newer, `cuda12` for older drivers, `vulkan` for an AMD or Intel GPU, `metal` on
+Apple Silicon, and `cpu` otherwise; set `rocm` explicitly.
+
+### Memory estimate calibration (implemented)
+
+The planner's estimate is static, and real servers differ from it (compute buffers, driver
+reservations, the pack's own allocations). A benchmark run
+([peak memory](#local-model-benchmark-implemented)) reads the model's server from before it loads until its
+prompts end; the highest reading is compared with what was planned for the placement it ran in
+(VRAM for a model wholly on the GPU, RAM on the CPU lane or a unified-memory machine, both for a
+split; a lane whose figure is unknown, such as per-process VRAM under WDDM, is not
+calibrated). The ratio is kept per model and lane in `<data>/calibration/<fingerprint>.json`,
+one file per hardware fingerprint (the benchmark's: machine, GPUs and runtime pack), so a new GPU
+or pack starts from the static estimate. A later run is averaged with the earlier ones, except
+that a higher ratio counts in full: a quiet run does not lower what a busy one showed.
+
+The planner moves its runtime overhead by that ratio of the model's weights plus overhead; the KV
+cache is still computed from the model's shape. The factor is bounded to 0.95 to 1.5 of the
+static estimate, the overhead never falls below half of 512 MiB, and a model off the CPU lane
+uses the larger of its GPU and partial entries, so a measurement can add up to half again but can
+take away at most 5%. A missing, unreadable or foreign file is ignored. vLLM models are
+calibrated by the same runs where the driver reports their GPU memory.
 
 ## Active models and resource monitor
 
@@ -958,7 +988,10 @@ unsubscribes it), so an idle daemon reads nothing. A snapshot holds:
 
 - **Machine:** CPU total and per core, RAM and swap used and total (`sysinfo`), and per NVIDIA
   GPU its utilisation, VRAM used and total, and temperature, read through `nvidia-smi` (NVML's
-  counters). Without an NVIDIA driver the GPU list is empty; other vendors are later work.
+  counters); AMD, Intel and Apple Silicon GPUs are listed after the NVIDIA ones with the
+  figures their tools give (`rocm-smi`, `xpu-smi` or `sysfs`; Apple's GPU shows the machine's
+  memory in use and no utilisation) and `vendor` `amd`, `intel` or `apple`. Without any
+  supported GPU the list is empty.
 - **Processes:** `imperium-core` itself and each model server (`llama-server`, `vllm`) with
   its pid, CPU share of the whole machine, RAM, and VRAM when the driver reports it per
   process (it does not on Windows under WDDM).
@@ -1003,7 +1036,8 @@ fit (after the overhead) are offloaded and the rest must fit in the RAM budget; 
 model does not fit.
 
 KV bytes per token come from GGUF metadata (layers × KV heads × head dim × 2 × cache-type
-bytes). Estimates are calibrated against measured usage after each load and stored per model.
+bytes). Estimates are calibrated against the peak memory benchmark runs measure and stored per
+model, lane and hardware fingerprint ([calibration](#memory-estimate-calibration-implemented)).
 A [draft model](#speculative-decoding-implemented) adds its own weights, KV cache and buffers
 to `required`.
 
