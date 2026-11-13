@@ -74,7 +74,7 @@ either). A new environment has
 none: nothing is created until you add one, and turning the deprecated switch off or deleting an
 agent never brings one back by itself.
 
-Each agent has its own **name** (1 to 60 characters on one line, no control characters, line or paragraph separators (U+2028, U+2029) or bidirectional controls and marks (U+200E, U+200F, U+061C, U+202A to U+202E, U+2066 to U+2069), anywhere including the edges where only spaces are trimmed; an environment's name is checked the same way, unique in
+Each agent has its own **name** (1 to 60 characters on one line, no control characters, line or paragraph separators (U+2028, U+2029) or bidirectional controls and marks (U+200E, U+200F, U+061C, U+202A to U+202E, U+2066 to U+2069), anywhere including the edges where only spaces are trimmed; an environment's name is checked the same way when it is set or changed (an existing name saved unchanged is not rechecked, so an environment named before a character was forbidden stays editable; the desktop's folder migration drops forbidden characters from a folder's name), unique in
 the environment ignoring case with Unicode case folding), an
 optional **role** (what it is for, up to 4000 characters, added to its instructions after "Your
 name is …"), its own session, and its own session limits (at most 2 sessions it started at once and
