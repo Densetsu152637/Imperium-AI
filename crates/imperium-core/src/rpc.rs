@@ -20,18 +20,18 @@ use imperium_protocol::jsonrpc::{ErrorObject, Request, RequestId, Response, code
 use imperium_protocol::methods::{
     Accepted, ApprovalList, ApprovalListParams, ApprovalListResult, ApprovalRespond,
     ApprovalRespondParams, ApprovalRespondResult, Handshake, HandshakeParams, HandshakeResult,
-    LocalModelList, LocalModelListParams, Method, ModList, ModListParams, ModelList,
-    ModelListParams, Peer, PetInteract, PetInteractParams, PetInteractResult, PetList,
-    PetListParams, PetListResult, PetStrip, PetStripParams, PetStripResult, PhoneDevices,
-    PhoneDevicesParams, PhoneDevicesResult, PhonePair, PhonePairParams, PhonePairResult,
-    PhoneRevoke, PhoneRevokeParams, PhoneRevokeResult, Ping, PingParams, PingResult,
-    ProjectAgentRow, ProjectList, ProjectListParams, ProjectListResult, ProjectMessage,
-    ProjectMessageParams, ProjectMessageResult, ScheduleList, ScheduleListParams,
-    ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult, SessionAnswer,
-    SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult, SessionDelete,
-    SessionDeleteParams, SessionExport, SessionExportParams, SessionList, SessionListParams,
-    SessionListResult, SessionRespond, SessionRespondParams, SessionSearch, SessionSearchParams,
-    SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
+    LocalModelList, LocalModelListParams, Method, ModInspect, ModInspectParams, ModInstall,
+    ModInstallParams, ModList, ModListParams, ModelList, ModelListParams, Peer, PetInteract,
+    PetInteractParams, PetInteractResult, PetList, PetListParams, PetListResult, PetStrip,
+    PetStripParams, PetStripResult, PhoneDevices, PhoneDevicesParams, PhoneDevicesResult,
+    PhonePair, PhonePairParams, PhonePairResult, PhoneRevoke, PhoneRevokeParams, PhoneRevokeResult,
+    Ping, PingParams, PingResult, ProjectAgentRow, ProjectList, ProjectListParams,
+    ProjectListResult, ProjectMessage, ProjectMessageParams, ProjectMessageResult, ScheduleList,
+    ScheduleListParams, ScheduleListResult, ScheduleRun, ScheduleRunParams, ScheduleRunResult,
+    SessionAnswer, SessionAnswerParams, SessionCreate, SessionCreateParams, SessionCreateResult,
+    SessionDelete, SessionDeleteParams, SessionExport, SessionExportParams, SessionList,
+    SessionListParams, SessionListResult, SessionRespond, SessionRespondParams, SessionSearch,
+    SessionSearchParams, SessionSend, SessionSendParams, SessionSubscribe, SessionSubscribeParams,
     SessionSubscribeResult, Shutdown, ShutdownParams, ShutdownResult,
 };
 use imperium_protocol::methods::{ApiGet, ApiGetParams, ApiSet, ApiToken};
@@ -623,6 +623,30 @@ impl Connection {
                     &crate::mods::bundled_roots(),
                 ))
             }),
+            ModInspect::NAME => call_later::<ModInspect, _>(
+                request.params,
+                &mut later,
+                |params: ModInspectParams| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::mod_install::inspect(&state, params)
+                            .await
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                    }
+                },
+            ),
+            ModInstall::NAME => call_later::<ModInstall, _>(
+                request.params,
+                &mut later,
+                |params: ModInstallParams| {
+                    let state = Arc::clone(&self.state);
+                    async move {
+                        crate::mod_install::install(&state, params)
+                            .await
+                            .map_err(|message| ErrorObject::new(codes::INVALID_PARAMS, message))
+                    }
+                },
+            ),
             ConfigChanges::NAME => {
                 call::<ConfigChanges>(request.params, |_: ConfigChangesParams| {
                     Ok(ConfigChangesResult {

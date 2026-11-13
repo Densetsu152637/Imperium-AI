@@ -197,44 +197,11 @@ async fn install_in(
     request: &InstallRequest,
     subdir: Option<&str>,
 ) -> Result<Installed, String> {
-    let fetched = staging.join("fetched");
-    let (location, revision) = match &request.source {
-        Source::Git(url) => {
-            let commit = git_fetch(url, request.revision.as_deref(), &fetched).await?;
-            (url.clone(), Some(commit))
-        }
-        Source::Path(path) => {
-            let path = path
-                .canonicalize()
-                .map_err(|error| format!("{}: {error}", path.display()))?;
-            if path.starts_with(
-                config_dir
-                    .canonicalize()
-                    .unwrap_or(config_dir.to_path_buf()),
-            ) {
-                return Err("the folder is already inside Imperium's config folder".into());
-            }
-            (display_path(&path), None)
-        }
-    };
-    let top = match &request.source {
-        Source::Git(_) => fetched.clone(),
-        Source::Path(path) => path.clone(),
-    };
-    let root = match subdir {
-        Some(subdir) => top.join(subdir),
-        None => top.clone(),
-    };
-    if !root.is_dir() {
-        return Err(format!(
-            "{} has no folder {}",
-            location,
-            subdir.unwrap_or(".")
-        ));
-    }
-    let out = staging.join("out");
-    let mut budget = MAX_BYTES;
-    copy_tree(&root, &out, &mut budget)?;
+    let Fetched {
+        out,
+        location,
+        revision,
+    } = fetch(config_dir, staging, request, subdir).await?;
     let fallback = default_name(&request.source, subdir);
     let (name, mut notes, Runs { hooks, servers }) = inspect(request.kind, &out, &fallback)?;
     let dest = request.kind.dir(config_dir).join(&name);
@@ -320,8 +287,98 @@ async fn install_in(
     })
 }
 
+/// What [`fetch`] left in the staging folder.
+pub(crate) struct Fetched {
+    /// The copy of the source (without `.git` or symbolic links), ready to inspect.
+    pub out: PathBuf,
+    /// The git URL, or the folder, as resolved.
+    pub location: String,
+    /// The commit fetched, for git.
+    pub revision: Option<String>,
+}
+
+/// Fetches `request`'s source (a clone, or a copy of a folder) and copies the folder to install
+/// into `staging/out`. Nothing in it runs.
+pub(crate) async fn fetch(
+    config_dir: &Path,
+    staging: &Path,
+    request: &InstallRequest,
+    subdir: Option<&str>,
+) -> Result<Fetched, String> {
+    let fetched = staging.join("fetched");
+    let (location, revision) = match &request.source {
+        Source::Git(url) => {
+            let commit = git_fetch(url, request.revision.as_deref(), &fetched).await?;
+            (url.clone(), Some(commit))
+        }
+        Source::Path(path) => {
+            let path = path
+                .canonicalize()
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            if path.starts_with(
+                config_dir
+                    .canonicalize()
+                    .unwrap_or(config_dir.to_path_buf()),
+            ) {
+                return Err("the folder is already inside Imperium's config folder".into());
+            }
+            (display_path(&path), None)
+        }
+    };
+    let top = match &request.source {
+        Source::Git(_) => fetched.clone(),
+        Source::Path(path) => path.clone(),
+    };
+    let root = match subdir {
+        Some(subdir) => top.join(subdir),
+        None => top.clone(),
+    };
+    if !root.is_dir() {
+        return Err(format!(
+            "{} has no folder {}",
+            location,
+            subdir.unwrap_or(".")
+        ));
+    }
+    let out = staging.join("out");
+    let mut budget = MAX_BYTES;
+    copy_tree(&root, &out, &mut budget)?;
+    Ok(Fetched {
+        out,
+        location,
+        revision,
+    })
+}
+
+/// A staging folder in the config folder, removed (with its parent, when empty) on drop.
+pub(crate) struct Staging {
+    dir: PathBuf,
+    root: PathBuf,
+}
+
+impl Staging {
+    pub(crate) fn new(config_dir: &Path) -> Result<Staging, String> {
+        let root = config_dir.join(".staging");
+        let dir = root.join(format!("install-{}-{}", std::process::id(), unix_ms()));
+        std::fs::create_dir_all(&dir)
+            .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
+        Ok(Staging { dir, root })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        remove_tree(&self.dir);
+        let _ = std::fs::remove_dir(&self.root);
+    }
+}
+
 /// A relative folder inside the source, without `..` or a root.
-fn check_subdir(subdir: &str) -> Result<String, String> {
+pub(crate) fn check_subdir(subdir: &str) -> Result<String, String> {
     let path = Path::new(subdir);
     if path
         .components()
@@ -424,7 +481,7 @@ fn default_name(source: &Source, subdir: Option<&str>) -> String {
 }
 
 /// A name that is safe as a folder name: letters, digits, `.`, `_`, `-`, not starting with a dot.
-fn check_name(name: &str) -> Result<String, String> {
+pub(crate) fn check_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     let ok = !name.is_empty()
         && name.len() <= 64
@@ -590,7 +647,7 @@ fn clear_readonly(dir: &Path) {
     }
 }
 
-fn write_source(dir: &Path, source: &InstallSource) -> Result<(), String> {
+pub(crate) fn write_source(dir: &Path, source: &InstallSource) -> Result<(), String> {
     let text = serde_json::to_string_pretty(source).map_err(|error| error.to_string())?;
     std::fs::write(dir.join(SOURCE_FILE), text)
         .map_err(|error| format!("could not record the source: {error}"))
