@@ -5,32 +5,73 @@ local runtimes (llama.cpp, vLLM) and any hosted endpoint, delegates work across 
 models in parallel, and exposes everything — tokens, throughput, cost, hardware — to a
 React interface that users can restyle, extend, or replace.
 
-> **Status:** planning. No application code exists yet; the design lives in [`docs/`](docs/README.md).
+> **Status:** under active development on the `experimental` branch (about 150 merged pull
+> requests). The core, CLI, and desktop app run today; installers ship on the experimental
+> release channel. Features still being built are listed under [In progress](#in-progress).
+> The full design lives in [`docs/`](docs/README.md).
 
-## Highlights (planned)
+## What makes it different
 
-- **Rust core, React shell.** A headless daemon (`imperium-core`) owns sessions, agents, tools,
-  and models. The CLI (`imperium`), the Tauri desktop app, and remote hosts are all clients of
-  the same protocol.
-- **Any model, anywhere.** OpenAI-compatible endpoints, local llama.cpp and vLLM, multiple
-  model folders, keys stored in the OS keychain.
-- **Reactive delegation.** Subagents run as tasks; parents sleep at zero token cost until a
-  completion event arrives.
-- **Cost- and hardware-aware routing.** Each subagent goes to the cheapest model that meets the
-  task's requirements and fits the machine's free memory — otherwise it reuses a loaded model or
-  falls back to a hosted endpoint.
-- **Open ecosystem.** MCP servers, Agent Skills (`SKILL.md`), and Claude Code–style plugin and
-  hook manifests.
-- **Layered policy.** Ships with the [Agent-Custom-Workflow](https://github.com/Densetsu152637/Agent-Custom-Workflow)
-  policy by default; override, fork, or disable it.
-- **Isolation tiers.** Folder policy, container, or SSH remote — always visible in the UI.
-- **Projects and automation.** Per-project persistent agents and cron/event schedules that run
-  while the computer is on.
-- **Phone app.** Pair a phone with each computer to follow, steer, and approve remote sessions.
-- **Pets.** Moddable pixel companions that act out what the agents are doing.
-- **Media generation.** Image, video, and audio models through ComfyUI and a Python sidecar.
-- **Built for ultrawide.** Independent font and density scaling, tiling panes, readable line lengths.
-- **Linux, Windows, and macOS** from the first release.
+- **An explicit agentic workflow instead of an ever-growing context.** Agents follow a
+  versioned [workflow contract](docs/18-workflow-contract.md): for each message or delegated
+  brief, a deterministic resolver builds a *context manifest* of the instruction files that
+  apply, and the agent loads each one with a visible tool call (optionally enforced before any
+  write or command). Work is split into subagents that start with a fresh context and a precise
+  brief, large inputs are chunked into artefacts the model pages through, and parents sleep at
+  zero token cost until a subagent reports. The result is that long sessions stay sharp rather
+  than degrading under context bloat. When compaction is unavoidable, the system prompt, loaded
+  workflow files, and skills are carried over verbatim; only conversation is summarised.
+- **Hybrid local and cloud agents.** A root agent on a hosted frontier model can delegate to
+  subagents on local llama.cpp or vLLM models (or the other way round). The router sends each
+  task to the cheapest model that meets its requirements and fits the machine's free memory,
+  with queue-delay handling, capability filters, and escalation to a stronger model when needed.
+- **Persistent agents.** Each environment can run several long-lived agents that survive
+  restarts, keep their own memory (`Memory.md`), run on schedules, and can look for work on their
+  own (agent initiative). This area is still being fleshed out.
+- **Local models without the hassle.** Imperium finds or installs the right llama.cpp build for
+  your GPU (NVIDIA, AMD, Intel, Apple Silicon), downloads GGUF models from Hugging Face, shares
+  runtime slots and KV cache across agents, gives each agent the most context that fits, and
+  supports speculative decoding and a local benchmark. It can also serve your local models as an
+  OpenAI-compatible API.
+- **Everything is visible.** Tokens, throughput, cost, CPU/GPU/RAM/VRAM, and an exact per-model
+  context breakdown are shown live, with budgets and alerts per environment, endpoint, and model.
+
+## Implemented today
+
+- **Core:** a Rust daemon (`imperium-core`) serving token-protected JSON-RPC over a local
+  WebSocket or socket; the `imperium` CLI and the Tauri + React desktop app are both clients.
+  Sessions survive restarts, can be stopped and resumed, branched from any message, and compared
+  across models.
+- **Models:** any OpenAI-compatible endpoint (OpenRouter, LM Studio, Ollama, ...), local
+  llama.cpp and vLLM, keys in the OS keychain, per-session reasoning effort, mid-session model
+  hot-swap.
+- **Agents and tools:** planning and delegation, worktrees for parallel writer subagents, file,
+  glob/grep, shell and background-command tools, web search and fetch with citations, a CDP
+  browser the user can take over, live preview, image, speech, and transcription tools, and
+  `ask_user` questions.
+- **Safety:** allow/ask/deny permission rules, path grants, per-agent permission profiles,
+  OS-sandbox, container, WSL, and SSH isolation, git checkpoints with rewind, a review pane with
+  per-hunk accept/reject, and undoable, journalled config changes made by agents.
+- **Ecosystem:** MCP servers, Agent Skills (`SKILL.md`), Claude Code-style plugins, hooks and
+  slash commands, workflow packs (Agent-Custom-Workflow is bundled as the default), and a UI mod
+  SDK with sandboxed panels.
+- **Automation:** daemon-run schedules, event subscriptions, and GitHub "Fix CI" with an approval
+  queue.
+- **Desktop:** tiling, detachable panels and saved layouts, command palette, session search,
+  attachments and push-to-talk, native notifications, self-update on main and experimental
+  channels, and the Nursery: moddable pixel pets that act out what agents are doing.
+- **Phone:** pair a phone to follow, steer, and approve sessions through a scoped web app.
+- **Platforms:** installers for Windows, macOS, and Linux built in CI.
+
+## In progress
+
+- Training the default root agent ("Emperor") towards the working style of frontier agents.
+- Richer persistent-agent behaviour and project automation.
+- Hook and mod extras, policy-pack updates, and an Imperium MCP server.
+- Session sharing and sync (designed, not built), more web and browser tooling, and desktop gaps
+  such as rebindable shortcuts.
+
+See the [roadmap](docs/12-roadmap.md) for the full list.
 
 ## Install
 
@@ -41,9 +82,6 @@ together with the `imperium-core` daemon and the `imperium` CLI; the app starts 
 opens and keeps itself up to date (Settings → Updates chooses the main or experimental channel).
 
 ## Development
-
-Phase 0 provides the Rust core (daemon, CLI, protocol, configuration) and the TypeScript
-protocol package.
 
 ```bash
 cargo build
