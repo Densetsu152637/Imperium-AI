@@ -3,7 +3,11 @@
 // the saved layout (state.ts). Which panels sit in which column is the arrangement
 // (arrangement.ts): it changes only in the panel editor, where panels are dragged by their
 // headers to another place, another column, or a new column at a column's edge, and empty
-// columns can be removed. Outside the editor panels cannot be moved. Panels with `onClose` can be closed; Settings → Panels reopens them.
+// columns can be removed. Outside the editor panels cannot be dragged, but every drag has a keyboard
+// alternative in the panel's ⋯ menu (*Move…*, moves.ts). Dragging a mod's panel onto the middle of
+// another panel shows it there as a module (placement.ts); letting a panel go beyond the window's
+// edge or on the editor's window zone opens it in a window of its own, and the chips of panels
+// already in windows can be dragged back into a column. Panels with `onClose` can be closed; Settings → Panels reopens them.
 // Panels with `onDetach` can move to a window of their own (panelWindows.ts).
 // A stacked panel folds to its header with the chevron before its title (or a double-click on
 // the header); the others in its column take its room. The first header of a stack also offers
@@ -12,7 +16,7 @@
 // actions, collapse all, detach and close sit in one ⋯ menu (panelMenu.ts) that stays quiet until
 // the header is hovered or focused.
 
-import { ChevronDown, ChevronsDownUp, ChevronsUpDown, ExternalLink, GripVertical, X } from "lucide-react";
+import { ChevronDown, ChevronsDownUp, ChevronsUpDown, ExternalLink, GripVertical, MoveRight, X } from "lucide-react";
 import { useState, useRef, type MouseEvent, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
 
 import { RowMenu, type RowMenuItem } from "../components/RowMenu";
@@ -30,8 +34,16 @@ export type PanelSpec = {
   menu?: RowMenuItem[];
   onClose?: () => void;
   onDetach?: () => void;
+  /** The keyboard alternatives to dragging the panel (layout/moves.ts), listed as *Move…* in its ⋯ menu. */
+  moves?: RowMenuItem[];
   /** The canvas (the session): spans its column when alone there, and never folds. */
   span?: boolean;
+  /** A mod's panel: it can be dragged into another panel and shown there as a module. */
+  module?: boolean;
+  /** The panel can host modules: dropping a module on its middle shows it as a section under the panel's own content. */
+  host?: boolean;
+  /** The modules shown inside this panel, below its own content. */
+  hosted?: PanelSpec[];
 };
 /** A column and the panels shown in it, top to bottom; empty only in the editor. */
 export type ColumnSpec = { id: string; panels: PanelSpec[] };
@@ -158,6 +170,10 @@ type Edit = {
   dropBefore: boolean;
   /** This panel is the one being dragged. */
   dragging: boolean;
+  /** A dragged module would land inside this panel. */
+  dropInto: boolean;
+  /** Starts dragging one of the modules shown inside this panel, by its chip in the editor. */
+  onGrabModule: (module: PanelSpec) => (event: ReactPointerEvent<HTMLElement>) => void;
 };
 
 /** The header's ⋯ menu: the panel's own secondary actions, then collapse all, detach and close. */
@@ -167,12 +183,15 @@ function PanelMenu({ panel, fold, collapsed }: { panel: PanelSpec; fold?: Fold; 
   const items: RowMenuItem[] = panelMenuEntries({
     own: own.length,
     column,
+    moves: panel.moves?.length ?? 0,
     canDetach: !!panel.onDetach,
     canClose: !!panel.onClose,
   }).map((entry) => {
     switch (entry.kind) {
       case "panel":
         return own[entry.index];
+      case "move":
+        return { ...(panel.moves as RowMenuItem[])[entry.index], icon: MoveRight };
       case "fold-all":
         return { label: entry.label, icon: column?.allCollapsed ? ChevronsUpDown : ChevronsDownUp, onSelect: () => column?.onToggleAll() };
       case "detach":
@@ -194,9 +213,15 @@ function Panel({ panel, fold, edit }: { panel: PanelSpec; fold?: Fold; edit?: Ed
     window.getSelection()?.removeAllRanges();
     fold.onToggle();
   };
-  const classes = ["panel", collapsed && "collapsed", edit?.dropBefore && "drop-before", edit?.dragging && "drag-source"];
+  const classes = ["panel", collapsed && "collapsed", edit?.dropBefore && "drop-before", edit?.dropInto && "drop-into", edit?.dragging && "drag-source"];
+  const hosted = panel.hosted ?? [];
   return (
-    <section className={classes.filter(Boolean).join(" ")} data-panel={panel.id} aria-labelledby={`panel-${panel.id}`}>
+    <section
+      className={classes.filter(Boolean).join(" ")}
+      data-panel={panel.id}
+      data-host={panel.host ? "" : undefined}
+      aria-labelledby={`panel-${panel.id}`}
+    >
       <header className="panel-header" onDoubleClick={onDoubleClick} onPointerDown={edit?.onGrab}>
         {edit && <GripVertical className="panel-grip" aria-hidden="true" />}
         {!edit && fold && (
@@ -215,10 +240,29 @@ function Panel({ panel, fold, edit }: { panel: PanelSpec; fold?: Fold; edit?: Ed
         {!edit && !collapsed && panel.actions}
         {!edit && <PanelMenu panel={panel} fold={fold} collapsed={collapsed} />}
       </header>
+      {/* In the editor the modules inside the panel are listed here, outside the inert body, so each can be dragged out. */}
+      {edit && hosted.length > 0 && (
+        <ul className="panel-module-chips" aria-label={`Modules in ${panel.title}`}>
+          {hosted.map((module) => (
+            <li key={module.id} className="panel-module-chip" onPointerDown={edit.onGrabModule(module)}>
+              <GripVertical className="panel-grip" aria-hidden="true" /> {module.title}
+            </li>
+          ))}
+        </ul>
+      )}
       {/* Folded bodies stay mounted (mod frames keep their state), just out of view and reach.
           In the editor they are inert, so a drag over a mod's frame or a text field still lands. */}
       <div className="panel-body" id={bodyId} hidden={collapsed} inert={edit ? true : undefined}>
         {panel.body}
+        {hosted.map((module) => (
+          <section key={module.id} className="panel-module" data-module={module.id} aria-labelledby={`panel-${module.id}`}>
+            <header className="panel-module-header">
+              <h3 id={`panel-${module.id}`}>{module.title}</h3>
+              <PanelMenu panel={module} collapsed={false} />
+            </header>
+            <div className="panel-module-body">{module.body}</div>
+          </section>
+        ))}
       </div>
     </section>
   );
@@ -230,9 +274,24 @@ type Drag = { panel: string; title: string; x: number; y: number; target: DropTa
 /** Pointer travel before a press on a header becomes a drag, in pixels. */
 const DRAG_THRESHOLD = 4;
 
-/** What lies under the pointer: a column edge (a new column) or a place in a column. */
-function dropTargetAt(x: number, y: number): DropTarget | null {
-  const element = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-drop-edge], [data-column]");
+/**
+ * What lies under the pointer: outside the window or on the editor's window zone (a window of its
+ * own), the middle of a panel that hosts modules when a module is dragged (into it), a column
+ * edge (a new column), or a place in a column.
+ */
+function dropTargetAt(x: number, y: number, dragged: { id: string; module: boolean; detachable: boolean }): DropTarget | null {
+  if (dragged.detachable && (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight)) return { kind: "window" };
+  const under = document.elementFromPoint(x, y);
+  if (dragged.detachable && under?.closest("[data-drop-window]")) return { kind: "window" };
+  if (dragged.module) {
+    const host = under?.closest<HTMLElement>("[data-host]");
+    if (host && host.dataset.panel !== dragged.id) {
+      const box = host.getBoundingClientRect();
+      const along = box.height > 0 ? (y - box.top) / box.height : 0;
+      if (along > 0.25 && along < 0.75) return { kind: "module", host: host.dataset.panel ?? "" };
+    }
+  }
+  const element = under?.closest<HTMLElement>("[data-drop-edge], [data-column]");
   if (!element) return null;
   if (element.dataset.dropEdge !== undefined) return { kind: "new-column", at: Number(element.dataset.dropEdge) };
   const column = element.dataset.column ?? "";
@@ -249,15 +308,21 @@ export function Columns({
   columns,
   initial,
   editing = false,
+  windows = [],
   onDrop,
+  onDock,
   onRemoveColumn,
 }: {
   columns: ColumnSpec[];
   initial?: number[];
   /** The panel editor: panels are dragged by their headers between and into columns. */
   editing?: boolean;
+  /** Panels in windows of their own, shown in the editor as chips to drag back into a column (or press to dock). */
+  windows?: { id: string; title: string }[];
   /** A panel dropped in the editor. */
   onDrop?: (panel: string, target: DropTarget) => void;
+  /** A panel's window chip pressed: dock it where it was. */
+  onDock?: (panel: string) => void;
   /** The editor's *Remove column* on an empty column. */
   onRemoveColumn?: (column: string) => void;
 }) {
@@ -275,16 +340,24 @@ export function Columns({
   if (!editing && drag) setDrag(null);
 
   /** Starts dragging `panel` by its header; only in the editor. Esc cancels. */
-  const grab = (panel: PanelSpec) => (event: ReactPointerEvent<HTMLElement>) => {
+  const grab = (panel: PanelSpec, detached = false) => (event: ReactPointerEvent<HTMLElement>) => {
     if (!editing || event.button !== 0) return;
+    event.stopPropagation();
     event.preventDefault();
+    // Captured, the pointer keeps reporting beyond the window's edge: letting go there opens a window.
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Without capture, the editor's window zone still works.
+    }
     const origin = { x: event.clientX, y: event.clientY };
+    const dragged = { id: panel.id, module: !!panel.module && !detached, detachable: !detached && !!panel.onDetach };
     let started = false;
     let target: DropTarget | null = null;
     const move = (moveEvent: PointerEvent) => {
       if (!started && Math.hypot(moveEvent.clientX - origin.x, moveEvent.clientY - origin.y) < DRAG_THRESHOLD) return;
       started = true;
-      target = dropTargetAt(moveEvent.clientX, moveEvent.clientY);
+      target = dropTargetAt(moveEvent.clientX, moveEvent.clientY, dragged);
       setDrag({ panel: panel.id, title: panel.title, x: moveEvent.clientX, y: moveEvent.clientY, target });
     };
     const end = (drop: boolean) => {
@@ -316,6 +389,8 @@ export function Columns({
           onGrab: grab(panel),
           dropBefore: target?.kind === "panel" && target.column === column && target.before === panel.id,
           dragging: drag?.panel === panel.id,
+          dropInto: target?.kind === "module" && target.host === panel.id,
+          onGrabModule: (module) => grab(module),
         }
       : undefined;
 
@@ -333,7 +408,25 @@ export function Columns({
   const startSizes = defaultSet && initial ? initial : weights.map((weight) => weight / total);
 
   return (
-    <>
+    <div className="columns-root">
+      {editing && (
+        <div className="layout-window-strip" role="group" aria-label="Windows">
+          <div className={`layout-window-zone${target?.kind === "window" ? " active" : ""}`} data-drop-window>
+            <ExternalLink aria-hidden="true" /> Drop a panel here, or beyond the window's edge, to open it in its own window
+          </div>
+          {windows.map((entry) => (
+            <button
+              key={entry.id}
+              className="ghost small layout-window-chip"
+              onPointerDown={grab({ id: entry.id, title: entry.title, body: null }, true)}
+              onClick={() => onDock?.(entry.id)}
+              title={`${entry.title} is in its own window: press to dock it, or drag it into a column`}
+            >
+              <GripVertical aria-hidden="true" /> {entry.title}
+            </button>
+          ))}
+        </div>
+      )}
       <Split key={sizesKey} storageKey={sizesKey} axis="row" initial={startSizes} className={editing ? "editing" : undefined}>
         {columns.map((column, index) => {
           const ids = column.panels.map((panel) => panel.id);
@@ -409,6 +502,6 @@ export function Columns({
           <GripVertical aria-hidden="true" /> {drag.title}
         </div>
       )}
-    </>
+    </div>
   );
 }

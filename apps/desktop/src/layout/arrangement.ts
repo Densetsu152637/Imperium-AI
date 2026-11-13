@@ -13,10 +13,16 @@ export type LayoutColumn = { id: string; panels: string[] };
 /** The columns left to right. */
 export type Arrangement = LayoutColumn[];
 
-/** Where a dragged panel lands: in a column before a panel (or at its end), or in a new column. */
+/**
+ * Where a dragged panel lands: in a column before a panel (or at its end), in a new column, inside
+ * another panel as a module, or out of the window into one of its own. The last two are not
+ * column placements: placement.ts handles them, and `applyDrop` leaves the arrangement alone.
+ */
 export type DropTarget =
   | { kind: "panel"; column: string; before: string | null }
-  | { kind: "new-column"; at: number };
+  | { kind: "new-column"; at: number }
+  | { kind: "module"; host: string }
+  | { kind: "window" };
 
 const copy = (arrangement: Arrangement): Arrangement => arrangement.map((column) => ({ id: column.id, panels: [...column.panels] }));
 
@@ -64,7 +70,7 @@ export function applyDrop(
   editing: boolean,
   newColumnId: () => string,
 ): Arrangement {
-  if (!editing) return arrangement;
+  if (!editing || target.kind === "module" || target.kind === "window") return arrangement;
   if (target.kind === "new-column") {
     const next = without(arrangement, panel);
     const at = Math.max(0, Math.min(target.at, next.length));

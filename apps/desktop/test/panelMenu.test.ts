@@ -23,6 +23,16 @@ test("fold-all reads as expand when the whole column is folded, and only on a st
   assert.deepEqual(panelMenuEntries({ own: 0, canDetach: true, canClose: false }), [{ kind: "detach", label: "Open in its own window" }]);
 });
 
+test("the Move entries sit between fold-all and detach, so dragging has a keyboard alternative", () => {
+  assert.deepEqual(panelMenuEntries({ own: 0, column: { allCollapsed: false }, moves: 2, canDetach: true, canClose: true }).map((entry) => entry.kind), [
+    "fold-all",
+    "move",
+    "move",
+    "detach",
+    "close",
+  ]);
+});
+
 test("a panel that cannot be folded, detached or closed and adds nothing has no menu", () => {
   assert.deepEqual(panelMenuEntries({ own: 0, canDetach: false, canClose: false }), []);
 });
