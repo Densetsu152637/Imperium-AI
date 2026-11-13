@@ -346,8 +346,12 @@ and `environments.agent_update` (protocol 0.28)
     vision (image descriptions), drawn PDF pages, and a supervised local whisper; an encrypted
     secret store where no keychain exists; WASM pet behaviours
     ([07](07-desktop-ui.md), [10](10-configuration.md), [16](16-pets.md)).
-35. **Layouts.** Dragging panels out into windows and modules between panels, project layout
-    overrides, and exportable layout presets ([07](07-desktop-ui.md)).
+35. **Layouts** (implemented). Dragging a panel out into its own window and back, and a mod's
+    panel into another panel as a module, each with a keyboard alternative in the panel's menu;
+    per-environment layouts that fall back to the global one; and exportable, validated,
+    versioned layout presets. Not built: a project layout file in the repository, and the
+    built-in sections inside panels as movable modules
+    ([07](07-desktop-ui.md#moving-panels-and-modules-implemented)).
 
 36. **Environment working folders** (implemented). Every environment gets a working folder under
     `workspaces.root` (default `<data>/workspaces`): a `Memory.md` of notes for that environment

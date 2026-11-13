@@ -4,6 +4,8 @@
 
 import { getDoc, setDoc, subscribeDoc } from "../store";
 import type { Arrangement } from "./arrangement";
+import type { Modules } from "./placement.ts";
+import { readModules, sanitizeOverrides, type Overrides } from "./shapes.ts";
 
 export type Layout = {
   /** Proportions per split, by key ("columns", "stack.left", ...). */
@@ -12,6 +14,10 @@ export type Layout = {
   arrangement: Arrangement | null;
   /** Panels the user closed. */
   hidden: string[];
+  /** Module panels placed inside other panels, by host (placement.ts). */
+  modules: Modules;
+  /** Environments' own arrangement, closed panels and modules, by environment id; they fall back to the global ones (shapes.ts). */
+  overrides: Overrides;
   /** Stacked panels folded to their header; the others in the column take their room. */
   collapsed: string[];
   /** The selected environment's id: new sessions start there. */
@@ -44,6 +50,8 @@ const EMPTY: Layout = {
   sizes: {},
   arrangement: null,
   hidden: [],
+  modules: {},
+  overrides: {},
   collapsed: [],
   environment: null,
   session: null,
@@ -62,10 +70,15 @@ const LEGACY_PREFIX = "imperium.layout.";
 
 let layout: Layout | null = null;
 
+/** The saved document with the newer fields made sound: a damaged one falls back to its default. */
+function read(saved: Partial<Layout> | undefined): Layout {
+  return { ...EMPTY, ...saved, modules: readModules(saved?.modules, false) ?? {}, overrides: sanitizeOverrides(saved?.overrides) };
+}
+
 export function getLayout(): Layout {
   if (!layout) {
     const saved = getDoc<Partial<Layout>>("layout");
-    layout = { ...EMPTY, ...saved };
+    layout = read(saved);
     if (layout.hidden.some((id) => REMOVED_PANELS.includes(id)) || REMOVED_PANELS.some((id) => id in layout!.detached)) {
       layout.hidden = layout.hidden.filter((id) => !REMOVED_PANELS.includes(id));
       layout.detached = Object.fromEntries(Object.entries(layout.detached).filter(([id]) => !REMOVED_PANELS.includes(id)));
@@ -91,7 +104,7 @@ export function getLayout(): Layout {
 
 // Only the main window writes the layout; the others read the copy it broadcasts.
 subscribeDoc("layout", () => {
-  layout = { ...EMPTY, ...getDoc<Partial<Layout>>("layout") };
+  layout = read(getDoc<Partial<Layout>>("layout"));
 });
 
 export function updateLayout(patch: Partial<Layout>): void {
@@ -99,7 +112,12 @@ export function updateLayout(patch: Partial<Layout>): void {
   setDoc("layout", layout);
 }
 
-/** Forgets the arrangement, sizes, closed and collapsed panels, and detached windows (back to the defaults); the selection and folders stay. */
-export function resetLayout(): void {
-  updateLayout({ sizes: {}, arrangement: null, hidden: [], collapsed: [], detached: {} });
+/**
+ * Forgets the arrangement, sizes, closed and collapsed panels, modules, and detached windows (back
+ * to the defaults); the selection, folders and environments' own layouts stay. `keep` replaces
+ * what the reset writes for some fields, for the caller that resets an environment's layout
+ * instead of the global one.
+ */
+export function resetLayout(keep: Partial<Layout> = {}): void {
+  updateLayout({ sizes: {}, arrangement: null, hidden: [], modules: {}, collapsed: [], detached: {}, ...keep });
 }

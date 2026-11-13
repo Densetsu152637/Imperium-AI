@@ -6186,6 +6186,18 @@ button.select.open .select-chevron {
 }
 
 /* ---- Panel editor (the layout toggle beside Settings): quiet handles, drop lines, Done. ---- */
+.layout-marker {
+  padding: 0.1rem 0.5rem;
+  font-size: 0.7rem;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.settings-row-note.error {
+  color: var(--danger, #e5484d);
+}
+
 .titlebar-button.layout-toggle.active {
   color: var(--accent);
   background: var(--accent-soft);
@@ -6824,4 +6836,112 @@ button.select.open .select-chevron {
   .review button.icon-only.row-tool {
     opacity: 1;
   }
+}
+
+/* Modules inside panels, the editor's window strip, and where a dragged module lands. */
+.columns-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.columns-root > .split {
+  flex: 1;
+  height: auto;
+}
+
+.layout-window-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: calc(var(--space) * 0.5);
+  padding: 0.3rem 1rem;
+  font-size: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.layout-window-zone {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.6rem;
+  margin-right: auto;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.layout-window-zone.active {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.layout-window-zone .lucide,
+.layout-window-chip .lucide {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.layout-window-chip {
+  cursor: grab;
+  touch-action: none;
+}
+
+.panel.drop-into {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+
+.panel-module {
+  margin-top: var(--space);
+  border-top: 1px solid var(--border);
+}
+
+.panel-module-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--space) * 0.5);
+  padding: calc(var(--space) * 0.5) 0;
+}
+
+.panel-module-header h3 {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.panel-module-body {
+  min-height: 12rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-module-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0.3rem var(--space);
+  list-style: none;
+}
+
+.panel-module-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.72rem;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
