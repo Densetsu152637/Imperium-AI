@@ -1480,7 +1480,8 @@ tier = "basic"
             )
             .is_none()
         );
-        // A row that is the session's own model is not a stronger route.
+        // A row that happens to be the session's own model is still a real row, so a stronger
+        // route (only the result routing falls back to is refused).
         let mut same = catalog();
         same.retain(|c| c.id == "cheap" || c.id == "mid");
         same.iter_mut().find(|c| c.id == "mid").unwrap().model.spec = fallback().spec;
@@ -1488,18 +1489,18 @@ tier = "basic"
             tier: Tier::Basic,
             ..TaskRequest::default()
         };
-        assert!(
-            escalate(
-                &same,
-                &routing,
-                &fallback(),
-                anywhere,
-                "endpoint:cheap",
-                1,
-                None
-            )
-            .is_none()
-        );
+        let same_row = escalate(
+            &same,
+            &routing,
+            &fallback(),
+            anywhere,
+            "endpoint:cheap",
+            1,
+            None,
+        )
+        .unwrap();
+        assert_eq!(same_row.model.model, "mid");
+        assert!(!same_row.fell_back);
         // The retry is at least the tier above the failed model's.
         let low = TaskRequest {
             tier: Tier::Strong,
