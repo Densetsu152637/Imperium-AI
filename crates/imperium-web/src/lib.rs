@@ -42,6 +42,8 @@ fn tool_spec(definition: contract::ToolDefinition) -> ToolSpec {
 
 /// Text returned per `web_fetch` call unless the agent asks for less.
 const DEFAULT_CHUNK: usize = 20_000;
+/// Redirects `web_fetch` follows.
+const MAX_REDIRECTS: usize = 10;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One search result.
@@ -116,7 +118,10 @@ impl Web {
                 .and_then(|dir| FetchCache::new(dir, options.cache_ttl, options.cache_max_bytes)),
             robots: Arc::new(Robots::new(options.robots_fail_closed)),
             respect_robots: options.respect_robots,
+            // Never follows a redirect itself: pages and robots.txt files are followed by hand,
+            // and a search provider that redirects fails rather than replaying its API key.
             http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(TIMEOUT)
                 .user_agent(concat!("Imperium/", env!("CARGO_PKG_VERSION")))
                 .build()
@@ -140,12 +145,28 @@ impl Web {
 
     /// Fetches `url` and returns `limit` characters of its text from `offset`, headed by the
     /// title, the final URL, and the total length. A page read recently comes from the
-    /// [cache](cache); a host whose `robots.txt` disallows the URL is refused.
+    /// [cache](cache); a URL whose host's `robots.txt` disallows it is refused, before the
+    /// cache is read and at every redirect.
     pub async fn fetch(&self, url: &str, offset: usize, limit: usize) -> Result<String, WebError> {
+        self.fetch_with(url, offset, limit, &|_| true).await
+    }
+
+    /// [`fetch`](Self::fetch) where each redirect target must also pass `follow` (the caller's
+    /// own rules, such as the domains the user approved); a refused redirect is not requested.
+    pub async fn fetch_with(
+        &self,
+        url: &str,
+        offset: usize,
+        limit: usize,
+        follow: &(dyn Fn(&Url) -> bool + Sync),
+    ) -> Result<String, WebError> {
         let parsed = Url::parse(url)
             .ok()
             .filter(|parsed| matches!(parsed.scheme(), "http" | "https") && parsed.has_host())
             .ok_or_else(|| WebError::BadUrl(url.into()))?;
+        if self.respect_robots && !self.robots.allowed(&self.http, &parsed).await {
+            return Err(WebError::Robots(parsed.to_string()));
+        }
         let key = self
             .cache
             .as_ref()
@@ -157,31 +178,62 @@ impl Web {
             .and_then(|(cache, key)| cache.get(key));
         let page = match held {
             Some(page) => page,
-            None => self.load_page(&parsed, key.as_deref()).await?,
+            None => self.load_page(&parsed, key.as_deref(), follow).await?,
         };
         Ok(render_page(&page, offset, limit))
     }
 
+    /// Requests `start`, following up to [`MAX_REDIRECTS`] redirects by hand: the client never
+    /// follows one itself, so every hop (full URL) is checked against `robots.txt` and `follow`
+    /// before it is requested.
+    async fn get_following(
+        &self,
+        start: &Url,
+        follow: &(dyn Fn(&Url) -> bool + Sync),
+    ) -> Result<reqwest::Response, WebError> {
+        let mut url = start.clone();
+        for _ in 0..=MAX_REDIRECTS {
+            if self.respect_robots && !self.robots.allowed(&self.http, &url).await {
+                return Err(WebError::Robots(url.to_string()));
+            }
+            let response = self
+                .http
+                .get(url.clone())
+                .send()
+                .await
+                .map_err(|error| WebError::Http(error.to_string()))?;
+            let target = response
+                .status()
+                .is_redirection()
+                .then(|| response.headers().get(reqwest::header::LOCATION))
+                .flatten()
+                .and_then(|value| value.to_str().ok())
+                .and_then(|location| url.join(location).ok());
+            let Some(target) = target else {
+                return response
+                    .error_for_status()
+                    .map_err(|error| WebError::Http(error.to_string()));
+            };
+            if !matches!(target.scheme(), "http" | "https") || !follow(&target) {
+                return Err(WebError::Http(format!(
+                    "the page redirects to {target}, which is not followed: ask for that URL \
+                     directly so the user can approve it"
+                )));
+            }
+            url = target;
+        }
+        Err(WebError::Http(format!("too many redirects from {start}")))
+    }
+
     /// Reads a page over the network, storing it in the cache when the response may be shared.
-    async fn load_page(&self, url: &Url, key: Option<&str>) -> Result<Page, WebError> {
-        if self.respect_robots && !self.robots.allowed(&self.http, url).await {
-            return Err(WebError::Robots(url.to_string()));
-        }
-        let response = self
-            .http
-            .get(url.clone())
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(|error| WebError::Http(error.to_string()))?;
+    async fn load_page(
+        &self,
+        url: &Url,
+        key: Option<&str>,
+        follow: &(dyn Fn(&Url) -> bool + Sync),
+    ) -> Result<Page, WebError> {
+        let response = self.get_following(url, follow).await?;
         let final_url = response.url().to_string();
-        // A redirect to another origin is held to that origin's `robots.txt` too.
-        if self.respect_robots
-            && response.url().origin() != url.origin()
-            && !self.robots.allowed(&self.http, response.url()).await
-        {
-            return Err(WebError::Robots(final_url));
-        }
         let content_type = response
             .headers()
             .get("content-type")
@@ -830,7 +882,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_redirect_to_a_disallowing_host_is_refused() {
+    async fn every_redirect_hop_is_checked_before_it_is_requested() {
         let robots = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let target = serve(
@@ -843,18 +895,116 @@ mod tests {
         )
         .await;
         let destination = format!("{target}/page");
-        let origin = serve(Router::new().route(
-            "/go",
-            get(move || {
-                let destination = destination.clone();
-                async move { axum::response::Redirect::temporary(&destination) }
-            }),
-        ))
+        let same_site = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let site_hits = same_site.clone();
+        let origin = serve(
+            Router::new()
+                .route(
+                    "/robots.txt",
+                    get(|| async { "User-agent: *\nDisallow: /private\n" }),
+                )
+                .route(
+                    "/go",
+                    get(move || {
+                        let destination = destination.clone();
+                        async move { axum::response::Redirect::temporary(&destination) }
+                    }),
+                )
+                .route(
+                    "/inside",
+                    get(|| async { axum::response::Redirect::temporary("/private/page") }),
+                )
+                .route("/private/page", counted(&site_hits, &[])),
+        )
         .await;
-        let error = Web::new(None)
-            .fetch(&format!("{origin}/go"), 0, 0)
+        let web = Web::new(None);
+        // Another origin that disallows the page: it is never requested.
+        let error = web.fetch(&format!("{origin}/go"), 0, 0).await.unwrap_err();
+        assert!(matches!(error, WebError::Robots(_)), "{error}");
+        assert_eq!(count(&pages), 0, "the disallowed target got no request");
+        // The same origin: a hop into a disallowed path is refused too.
+        let error = web
+            .fetch(&format!("{origin}/inside"), 0, 0)
             .await
             .unwrap_err();
         assert!(matches!(error, WebError::Robots(_)), "{error}");
+        assert_eq!(count(&same_site), 0);
+        // The caller's own rule can refuse a hop that robots.txt allows.
+        let off = Web::with_options(
+            None,
+            FetchOptions {
+                respect_robots: false,
+                ..FetchOptions::default()
+            },
+        );
+        let refused = off
+            .fetch_with(&format!("{origin}/go"), 0, 0, &|_| false)
+            .await
+            .unwrap_err();
+        assert!(matches!(refused, WebError::Http(_)), "{refused}");
+        assert_eq!(count(&pages), 0);
+        assert!(off.fetch(&format!("{origin}/go"), 0, 0).await.is_ok());
+        assert_eq!(count(&pages), 1);
+    }
+
+    #[tokio::test]
+    async fn robots_is_checked_before_the_cache_is_read() {
+        let robots_text = Arc::new(std::sync::Mutex::new("User-agent: *\n"));
+        let pages = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let current = robots_text.clone();
+        let base = serve(
+            Router::new()
+                .route(
+                    "/robots.txt",
+                    get(move || {
+                        let current = current.clone();
+                        async move { *current.lock().unwrap() }
+                    }),
+                )
+                .route("/page", counted(&pages, &[])),
+        )
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("{base}/page");
+        cached_web(dir.path()).fetch(&url, 0, 0).await.unwrap();
+        // A new Web (so a fresh robots table) now sees a disallow: the cached page is refused.
+        *robots_text.lock().unwrap() = "User-agent: *\nDisallow: /page\n";
+        let error = cached_web(dir.path()).fetch(&url, 0, 0).await.unwrap_err();
+        assert!(matches!(error, WebError::Robots(_)), "{error}");
+        assert_eq!(count(&pages), 1);
+    }
+
+    #[tokio::test]
+    async fn a_search_provider_that_redirects_does_not_get_its_key_replayed() {
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits = seen.clone();
+        let elsewhere = serve(Router::new().route(
+            "/search",
+            axum::routing::post(move |headers: axum::http::HeaderMap| {
+                let hits = hits.clone();
+                async move {
+                    if headers.contains_key("x-api-key") {
+                        hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    axum::Json(json!({"results": []}))
+                }
+            }),
+        ))
+        .await;
+        let target = format!("{elsewhere}/search");
+        let base = serve(Router::new().route(
+            "/search",
+            axum::routing::post(move || {
+                let target = target.clone();
+                async move { axum::response::Redirect::temporary(&target) }
+            }),
+        ))
+        .await;
+        let exa = Exa {
+            api_key: "exa-key".into(),
+            base_url: base,
+        };
+        assert!(Web::new(Some(Arc::new(exa))).search("q", 1).await.is_err());
+        assert_eq!(count(&seen), 0, "the redirect was not followed");
     }
 }

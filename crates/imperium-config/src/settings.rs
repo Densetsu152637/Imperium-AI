@@ -352,6 +352,9 @@ impl Settings {
         ) {
             return Err("web.search must be none, searxng, brave, tavily, kagi, or exa".into());
         }
+        if self.web.cache_ttl_s > 30 * 24 * 3600 {
+            return Err("web.cache_ttl_s must be at most 2592000 (30 days)".into());
+        }
         if !matches!(self.web.robots.as_str(), "respect" | "off") {
             return Err("web.robots must be respect or off".into());
         }

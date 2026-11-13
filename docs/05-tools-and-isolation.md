@@ -33,31 +33,49 @@ secret that exists; otherwise search stays off with a warning. Keys are sent onl
 headers, are redacted from `Debug` output, and never appear in error messages.
 
 **Cache.** `web_fetch` keeps the text of pages it reads in `<cache>/web`, one file per URL
-(fragment removed), so a page read again, or read in later `offset` chunks, is not requested
-again, including by another session. `web.cache_ttl_s` (default 900; `0` turns the cache off) is
-the longest an entry lives, and a response's `max-age` or `s-maxage` can only shorten it.
-`web.cache_max_mb` (default 50; `0` turns the cache off) caps the folder: after every write the
-oldest files are deleted until it fits, and a page larger than the cap is not stored. Only
-sharable responses are stored: a `200` that has no `Set-Cookie` or `WWW-Authenticate`, no
-`Cache-Control` of `no-store`, `private` or `no-cache` (or a zero or unreadable `max-age`), no
-`Vary` of `*`, `Cookie` or `Authorization`, and a URL without credentials. `web_fetch` sends no
+(fragment removed; readable by the owner only on Unix), so a page read again, or read in later
+`offset` chunks, is not requested again, including by another session. `web.cache_ttl_s`
+(default 900; `0` turns the cache off; at most 30 days, larger values are refused) is the longest
+an entry lives, and a response's `max-age` or `s-maxage` can only shorten it. `web.cache_max_mb`
+(default 50; `0` turns the cache off) caps the folder: after every write, and when a session
+opens the cache, expired files and then the oldest files are deleted until it fits, and a page
+larger than the cap is not stored. The cap is *eventually* enforced: sessions writing at the same
+moment can leave the folder slightly over it until the next write trims it, and a temporary file
+of a write in flight is left alone until it is ten minutes old. Only sharable responses are
+stored: a `200` that has no `Set-Cookie` or `WWW-Authenticate`, no `Cache-Control` of `no-store`,
+`private` or `no-cache` (or a zero or unreadable `max-age`), no `Vary` of `*`, `Cookie` or
+`Authorization`, and a URL with no credentials and no query parameter whose name looks like one
+(`token`, `key`, `sig`, `auth`, `secret`, `pass`, `session`, `code`, ...). `web_fetch` sends no
 cookies and no credentials of its own, so a cached page is what any visitor sees; the rules above
 keep a page that was personalised anyway out of the cache that other sessions share. Browser
 pages and search results are not cached.
 
+**Redirects.** The HTTP client never follows a redirect itself. `web_fetch` follows up to ten by
+hand and checks every hop, by its full URL, before requesting it: against the host's
+`robots.txt`, and against the approval rule (a redirect is followed only to the host that was
+asked for or to a host in `web.allow_domains`, otherwise the call fails and names the target so
+the user can approve that URL). Search providers get no redirects, so an API key is never
+replayed to another host (a SearXNG instance that redirects must be configured with its final
+URL).
+
 **robots.txt.** With `web.robots = "respect"` (the default), `web_fetch` reads the host's
-`/robots.txt` before the first fetch and refuses a URL it disallows for the `Imperium` agent
-(RFC 9309: the group naming `Imperium` wins over `*`; the longest matching `Allow` or `Disallow`
-decides, `Allow` on a tie; `*` and a trailing `$` work in patterns). The refusal names the URL
-and the setting. Rules are held per host in memory for an hour. A redirect to
-another origin is held to that origin's file too. A missing file (any 4xx) allows everything.
-When the file cannot be read (a 5xx answer or no connection), `web.robots_unreachable` decides:
-`allow` (the default, fail open: a flaky server does not stop the user's work) or `deny` (fail
-closed, as RFC 9309 suggests); the failure is remembered for a minute. `Crawl-delay` is ignored:
-`web_fetch` reads one page per call at the agent's request and never crawls, so there is nothing
-to pace. `web.robots = "off"` skips the check. The check covers `web_fetch` only: browser tools
-show the user a real page and follow the domain rule, and the user can always open a page
-themselves.
+`/robots.txt` (up to five redirects, 512 KiB, a leading byte-order mark ignored) before the cache
+is read and before every request, and refuses a URL it disallows for the `Imperium` agent
+(RFC 9309: a group whose `User-agent` equals the product token `imperium`, or is a prefix of
+it, ignoring case, wins over `*`; the longest matching `Allow` or `Disallow` decides, `Allow` on
+a tie; `*` and a trailing `$` work in patterns; percent-escapes are normalised on both sides). The
+refusal names the URL and the setting. Rules are held per host in memory for an hour. A missing
+file (any 4xx) allows everything. When the file cannot be read (a 5xx answer or no connection),
+`web.robots_unreachable` decides: `allow` (the default, fail open: a flaky server does not stop
+the user's work) or `deny` (fail closed, as RFC 9309 suggests); the failure is remembered for a
+minute. `Crawl-delay` is ignored: `web_fetch` reads one page per call at the agent's request
+and never crawls, so there is nothing to pace. `web.robots = "off"` skips the check. The check
+covers `web_fetch` only: browser tools show the user a real page and follow the domain rule, and
+the user can always open a page themselves.
+
+The domain rule compares the host the URL parser reads (the same parser `web_fetch` connects
+with), lower-cased, in ASCII form, without a trailing dot, so a backslash, userinfo, case or an
+internationalised name cannot make one host look like an allowed one; only http(s) URLs qualify.
 
 None of this changes the permission model: `web_fetch` still asks unless the host is in
 `web.allow_domains` or fetching is allowed for the session, the safety floor and permission modes

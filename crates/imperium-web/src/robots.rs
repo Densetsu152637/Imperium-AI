@@ -22,6 +22,8 @@ const RULES_TTL: Duration = Duration::from_secs(3600);
 const UNREACHABLE_TTL: Duration = Duration::from_secs(60);
 /// Hosts remembered at once; the table is cleared when it fills.
 const MAX_HOSTS: usize = 256;
+/// Redirects followed to a `robots.txt`.
+const MAX_REDIRECTS: usize = 5;
 
 /// What a host's `robots.txt` says about this agent.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -48,9 +50,17 @@ impl Rules {
         }
     }
 
-    /// The rules in `text` that apply to the `agent` product token.
+    /// The rules in `text` that apply to the `agent` product token (a version after a `/` is
+    /// ignored). A group applies when one of its `User-agent` values equals the token or is a
+    /// prefix of it, ignoring case; `*` is the fallback.
     pub fn parse(text: &str, agent: &str) -> Self {
-        let agent = agent.to_ascii_lowercase();
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+        let agent = agent
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
         let mut groups: Vec<Group> = Vec::new();
         let mut collecting_agents = false;
         for line in text.lines() {
@@ -79,7 +89,7 @@ impl Rules {
                     if let Some(group) = groups.last_mut()
                         && !value.is_empty()
                     {
-                        group.rules.push((name == "allow", value.to_string()));
+                        group.rules.push((name == "allow", normalize(value)));
                     }
                 }
                 _ => {}
@@ -89,7 +99,7 @@ impl Rules {
             group
                 .agents
                 .iter()
-                .any(|name| name != "*" && !name.is_empty() && agent.contains(name.as_str()))
+                .any(|name| name != "*" && !name.is_empty() && agent.starts_with(name.as_str()))
         };
         let star = |group: &&Group| group.agents.iter().any(|name| name == "*");
         let mut chosen: Vec<&Group> = groups.iter().filter(named).collect();
@@ -106,6 +116,8 @@ impl Rules {
 
     /// Whether `path` (with its query, as in a request line) may be fetched.
     pub fn allows(&self, path: &str) -> bool {
+        let path = normalize(path);
+        let path = path.as_str();
         let mut best: Option<(usize, bool)> = None;
         for (allow, pattern) in &self.rules {
             if !pattern_matches(pattern, path) {
@@ -120,6 +132,44 @@ impl Rules {
         }
         best.is_none_or(|(_, allow)| allow)
     }
+}
+
+/// The form RFC 9309 compares in: percent-escapes of unreserved characters are decoded, other
+/// escapes use upper-case hex, and characters outside ASCII are escaped as UTF-8 octets. `*` and
+/// `$` are left as they are (an escaped `%2A` stays a literal asterisk).
+fn normalize(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let escaped = (byte == b'%' && index + 2 < bytes.len())
+            .then(|| {
+                let high = (bytes[index + 1] as char).to_digit(16)?;
+                let low = (bytes[index + 2] as char).to_digit(16)?;
+                u8::try_from(high * 16 + low).ok()
+            })
+            .flatten();
+        match escaped {
+            Some(decoded) => {
+                if decoded.is_ascii_alphanumeric() || matches!(decoded, b'-' | b'.' | b'_' | b'~') {
+                    out.push(decoded as char);
+                } else {
+                    out.push_str(&format!("%{decoded:02X}"));
+                }
+                index += 3;
+            }
+            None if byte.is_ascii() => {
+                out.push(byte as char);
+                index += 1;
+            }
+            None => {
+                out.push_str(&format!("%{byte:02X}"));
+                index += 1;
+            }
+        }
+    }
+    out
 }
 
 /// `*` matches any run of characters; a trailing `$` anchors the end; otherwise a prefix match.
@@ -217,19 +267,48 @@ impl Robots {
             };
             (rules, UNREACHABLE_TTL)
         };
-        let Ok(response) = http.get(format!("{origin}/robots.txt")).send().await else {
+        let Ok(mut url) = Url::parse(&format!("{origin}/robots.txt")) else {
+            return unreachable();
+        };
+        // The client does not follow redirects; up to five are followed here (RFC 9309).
+        let mut response = None;
+        for _ in 0..=MAX_REDIRECTS {
+            let Ok(next) = http.get(url.clone()).send().await else {
+                return unreachable();
+            };
+            if !next.status().is_redirection() {
+                response = Some(next);
+                break;
+            }
+            let target = next
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|location| url.join(location).ok())
+                .filter(|target| matches!(target.scheme(), "http" | "https"));
+            match target {
+                Some(target) => url = target,
+                None => return unreachable(),
+            }
+        }
+        // Redirects past the limit count as unavailable.
+        let Some(mut response) = response else {
             return unreachable();
         };
         let status = response.status();
         if status.is_success() {
-            return match response.bytes().await {
-                Ok(bytes) => {
-                    let bytes = &bytes[..bytes.len().min(MAX_BYTES)];
-                    let text = String::from_utf8_lossy(bytes);
-                    (Rules::parse(&text, PRODUCT_TOKEN), RULES_TTL)
+            // Read no more than MAX_BYTES; the rest of a larger file is ignored.
+            let mut body = Vec::new();
+            while body.len() < MAX_BYTES {
+                match response.chunk().await {
+                    Ok(Some(chunk)) => body.extend_from_slice(&chunk),
+                    Ok(None) => break,
+                    Err(_) => return unreachable(),
                 }
-                Err(_) => unreachable(),
-            };
+            }
+            body.truncate(MAX_BYTES);
+            let text = String::from_utf8_lossy(&body);
+            return (Rules::parse(&text, PRODUCT_TOKEN), RULES_TTL);
         }
         if status.is_client_error() {
             (Rules::allow_all(), RULES_TTL)
@@ -244,7 +323,7 @@ mod tests {
     use super::*;
 
     fn rules(text: &str) -> Rules {
-        Rules::parse(text, "Imperium/0.34.0")
+        Rules::parse(text, PRODUCT_TOKEN)
     }
 
     #[test]
@@ -268,7 +347,7 @@ mod tests {
         let ours = rules(text);
         assert!(ours.allows("/anything"), "the star group does not apply");
         assert!(ours.allows("/named"), "an equal-length Allow wins");
-        let other = Rules::parse(text, "OtherBot");
+        let other = Rules::parse(text, "OtherBot/1.0");
         assert!(!other.allows("/other"));
         assert!(other.allows("/elsewhere"));
         let unknown = Rules::parse(text, "Somebody");
@@ -294,6 +373,45 @@ mod tests {
             "a rule outside a group"
         );
         assert!(rules("").allows("/x"));
+    }
+
+    #[test]
+    fn user_agent_groups_match_the_product_token_not_substrings() {
+        let text = "User-agent: imp\nDisallow: /prefix\n\nUser-agent: notimperium\nDisallow: /sub\n\n\
+                    User-agent: *\nDisallow: /star\n";
+        let ours = Rules::parse(text, PRODUCT_TOKEN);
+        assert!(!ours.allows("/prefix"), "a prefix of the token applies");
+        assert!(ours.allows("/sub"), "a longer name is a different agent");
+        assert!(
+            ours.allows("/star"),
+            "a named group replaces the star group"
+        );
+        let uppercase = Rules::parse("USER-AGENT: IMPERIUM\nDISALLOW: /x\n", PRODUCT_TOKEN);
+        assert!(!uppercase.allows("/x"));
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_hide_the_first_group() {
+        let rules = rules("\u{feff}User-agent: *\nDisallow: /blocked\n");
+        assert!(!rules.allows("/blocked"));
+    }
+
+    #[test]
+    fn percent_encoding_is_normalised_on_paths_and_patterns() {
+        let rules =
+            rules("User-agent: *\nDisallow: /a%2fb\nDisallow: /%7euser\nDisallow: /caf\u{e9}\n");
+        assert!(!rules.allows("/a%2Fb"), "hex case does not matter");
+        assert!(
+            !rules.allows("/~user/page"),
+            "an escaped unreserved character is decoded"
+        );
+        assert!(!rules.allows("/%7Euser"));
+        assert!(
+            !rules.allows("/caf%C3%A9"),
+            "non-ASCII patterns are escaped"
+        );
+        assert!(rules.allows("/a/b"), "%2F is not a slash");
+        assert!(normalize("/a%2Ab") == "/a%2Ab");
     }
 
     #[test]

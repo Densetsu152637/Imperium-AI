@@ -1,21 +1,48 @@
 //! A bounded on-disk cache of pages `web_fetch` has read, keyed by URL.
 //!
-//! One JSON file per page in one folder. The cache never exceeds its size cap (the oldest
-//! files go first) and entries expire after their lifetime. `web_fetch` sends no cookies and no
+//! One JSON file per page in one folder, readable by the owner only on Unix. The folder is
+//! trimmed to its size cap (the oldest files go first) after every write and when a cache is
+//! opened, so it is only briefly over the cap while sessions write at the same moment; entries
+//! expire after their lifetime, at most [`MAX_TTL`]. `web_fetch` sends no cookies and no
 //! credentials, so a cached page is what any visitor sees; even so, a response is stored only
 //! when [`cacheable_lifetime`] says it may be shared: no `Set-Cookie`, no `Cache-Control:
 //! no-store`, `private` or `no-cache`, no `WWW-Authenticate`, no `Vary` on a cookie or an
-//! authorization header, and no credentials in the URL.
+//! authorization header, and no credentials in the URL or in a query parameter that looks like
+//! one (`token`, `key`, `sig`, `auth`, ...).
 
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::header::{CACHE_CONTROL, HeaderMap, SET_COOKIE, VARY, WWW_AUTHENTICATE};
 use serde::{Deserialize, Serialize};
 use url::Url;
+
+/// The longest any entry lives, whatever the setting.
+pub const MAX_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
+/// A temporary file older than this is left over from an interrupted write.
+const STALE_TEMP: Duration = Duration::from_secs(600);
+static WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// Query parameter names (parts of names) that usually carry a credential.
+const SECRET_PARAMS: &[&str] = &[
+    "token",
+    "key",
+    "sig",
+    "auth",
+    "secret",
+    "pass",
+    "pwd",
+    "session",
+    "credential",
+    "jwt",
+    "bearer",
+    "code",
+    "signature",
+];
 
 /// A fetched page as `web_fetch` keeps it: the text is whole (not one chunk) so later
 /// `offset` calls are answered from the cache.
@@ -51,11 +78,14 @@ pub struct FetchCache {
 impl FetchCache {
     /// A cache in `dir`, or `None` when `ttl` or `max_bytes` is zero (caching off).
     pub fn new(dir: PathBuf, ttl: Duration, max_bytes: u64) -> Option<Self> {
-        (!ttl.is_zero() && max_bytes > 0).then_some(FetchCache {
+        let cache = (!ttl.is_zero() && max_bytes > 0).then_some(FetchCache {
             dir,
-            ttl,
+            ttl: ttl.min(MAX_TTL),
             max_bytes,
-        })
+        })?;
+        // Expired files and files over a lowered cap go when the cache is opened.
+        cache.trim();
+        Some(cache)
     }
 
     /// The configured lifetime, the longest any entry lives.
@@ -67,6 +97,13 @@ impl FetchCache {
     /// URL that does not parse, are never cached (`None`).
     pub fn key(url: &Url) -> Option<String> {
         if !url.username().is_empty() || url.password().is_some() {
+            return None;
+        }
+        let secret_query = url.query_pairs().any(|(name, _)| {
+            let name = name.to_ascii_lowercase();
+            SECRET_PARAMS.iter().any(|secret| name.contains(secret))
+        });
+        if secret_query {
             return None;
         }
         let mut url = url.clone();
@@ -110,12 +147,17 @@ impl FetchCache {
         let Ok(bytes) = serde_json::to_vec(&entry) else {
             return;
         };
-        if bytes.len() as u64 > self.max_bytes || fs::create_dir_all(&self.dir).is_err() {
+        if bytes.len() as u64 > self.max_bytes || create_private_dir(&self.dir).is_err() {
             return;
         }
         let file = self.file(key);
-        let temporary = file.with_extension("tmp");
-        if fs::write(&temporary, &bytes).is_ok() && fs::rename(&temporary, &file).is_err() {
+        // A name of its own per write, so concurrent writers never share a temporary file.
+        let temporary = file.with_extension(format!(
+            "{}-{}.tmp",
+            std::process::id(),
+            WRITES.fetch_add(1, Ordering::Relaxed)
+        ));
+        if write_private(&temporary, &bytes).is_ok() && fs::rename(&temporary, &file).is_err() {
             let _ = fs::remove_file(&temporary);
         }
         self.trim();
@@ -134,14 +176,19 @@ impl FetchCache {
             if !meta.is_file() {
                 continue;
             }
+            let modified = meta.modified().unwrap_or(UNIX_EPOCH);
+            let age = SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or(Duration::ZERO);
             if path.extension().is_none_or(|extension| extension != "json") {
-                // A leftover temporary file from an interrupted write.
-                let _ = fs::remove_file(&path);
+                // A temporary file is a write in flight unless it is old.
+                if age >= STALE_TEMP {
+                    let _ = fs::remove_file(&path);
+                }
                 continue;
             }
             // No entry lives longer than the configured lifetime from when it was written.
-            let modified = meta.modified().unwrap_or(UNIX_EPOCH);
-            if modified + self.ttl <= SystemTime::now() {
+            if age >= self.ttl {
                 let _ = fs::remove_file(&path);
                 continue;
             }
@@ -158,6 +205,37 @@ impl FetchCache {
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir)
+}
+
+#[cfg(unix)]
+fn write_private(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(file)?;
+    file.write_all(bytes)
+}
+
+#[cfg(not(unix))]
+fn write_private(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    fs::write(file, bytes)
 }
 
 /// How long a response may be reused, or `None` when it must not be stored at all. The
@@ -283,6 +361,58 @@ mod tests {
             Duration::from_secs(60),
         );
         assert!(cache.get("https://a/big").is_none());
+    }
+
+    #[test]
+    fn a_huge_lifetime_is_clamped_and_old_files_go_when_the_cache_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = FetchCache::new(dir.path().to_path_buf(), Duration::MAX, 1 << 20).unwrap();
+        assert_eq!(cache.ttl(), MAX_TTL);
+        cache.put("https://a/", &page("x"), Duration::MAX);
+        assert!(cache.get("https://a/").is_some());
+        // A leftover temporary file from a long-gone writer is removed; a fresh one is kept.
+        let stale = dir.path().join("old.1-1.tmp");
+        let fresh = dir.path().join("new.1-2.tmp");
+        fs::write(&stale, b"x").unwrap();
+        fs::write(&fresh, b"x").unwrap();
+        let old = SystemTime::now() - STALE_TEMP - Duration::from_secs(5);
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        cache.trim();
+        assert!(!stale.exists());
+        assert!(fresh.exists(), "an in-flight write is left alone");
+        // An entry older than the lifetime goes when the cache is opened again.
+        let short =
+            FetchCache::new(dir.path().to_path_buf(), Duration::from_secs(60), 1 << 20).unwrap();
+        let entry = short.file("https://a/");
+        let past = SystemTime::now() - Duration::from_secs(120);
+        fs::File::options()
+            .write(true)
+            .open(&entry)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        FetchCache::new(dir.path().to_path_buf(), Duration::from_secs(60), 1 << 20).unwrap();
+        assert!(!entry.exists());
+    }
+
+    #[test]
+    fn urls_with_credential_like_queries_are_not_cached() {
+        let key = |url: &str| FetchCache::key(&Url::parse(url).unwrap());
+        assert!(key("https://example.com/a?page=2&sort=asc").is_some());
+        for url in [
+            "https://example.com/a?api_key=1",
+            "https://example.com/a?X-Amz-Signature=abc",
+            "https://example.com/a?access_token=1",
+            "https://example.com/a?Auth=1",
+            "https://example.com/a?sig=1",
+        ] {
+            assert_eq!(key(url), None, "{url}");
+        }
     }
 
     #[test]

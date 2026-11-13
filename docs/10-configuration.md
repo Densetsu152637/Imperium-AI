@@ -171,7 +171,7 @@ listed; edit them in the file.
 | `web.enabled` | `true` | Offer `web_fetch` (and `web_search` with a provider) to agents |
 | `web.search` | `none` | `searxng` (with `web.searxng_url`), `brave`, `tavily`, `kagi`, or `exa` (with `web.api_key = { secret = "<name>" }`, a keychain secret) |
 | `web.allow_domains` | none | Domains `web_fetch` reads without asking (subdomains included) |
-| `web.cache_ttl_s`, `web.cache_max_mb` | `900`, `50` | The longest `web_fetch` reuses a page and the most disk its cache uses; `0` for either turns the cache off. Pages with cookies, authentication or `no-store`, `private` or `no-cache` are never cached ([05](05-tools-and-isolation.md#fetch-cache-and-robotstxt-implemented)) |
+| `web.cache_ttl_s`, `web.cache_max_mb` | `900`, `50` | The longest `web_fetch` reuses a page and the most disk its cache uses; `0` for either turns the cache off, and the lifetime is at most 2592000 (30 days). Pages with cookies, authentication or `no-store`, `private` or `no-cache` are never cached ([05](05-tools-and-isolation.md#fetch-cache-and-robotstxt-implemented)) |
 | `web.robots`, `web.robots_unreachable` | `respect`, `allow` | `respect` refuses pages the host's `robots.txt` disallows for Imperium (`off` does not check); `allow` or `deny` what an unreadable file (5xx or no connection) means |
 | `web.browser`, `web.browser_path`, `web.headless` | `true`, found automatically, `true` | Browser tools over CDP (Chrome, Chromium, or Edge) with their own profile |
 | `media.image` | none | `backend = "openai"` with `endpoint` and `model`, or `backend = "comfyui"` with `comfyui_url` and `workflow`; see [media](09-media-generation.md) |
