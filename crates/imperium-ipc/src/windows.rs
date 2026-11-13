@@ -17,7 +17,9 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
 };
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_BUSY, HANDLE, LocalFree};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_NO_DATA, ERROR_PIPE_BUSY, HANDLE, LocalFree,
+};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
@@ -122,9 +124,21 @@ impl Listener {
     pub async fn accept(&mut self) -> io::Result<Stream> {
         // The name must never be vacant, or another local user could create the pipe and
         // collect the token from the next client. So the held instance is only given up after
-        // its replacement exists, and a failure leaves it in place (disconnected, for reuse).
+        // its replacement exists. A client that went away before connecting (`ERROR_NO_DATA`)
+        // leaves the instance fine: it is disconnected and reused. Any other failure may mean
+        // the instance itself is broken, so it is swapped for a new one (made while it is still
+        // held, so the name is never vacant) and dropped; if no new one can be made it stays.
         if let Err(error) = self.current.connect().await {
-            let _ = self.current.disconnect();
+            if error.raw_os_error() == Some(ERROR_NO_DATA as i32) {
+                let _ = self.current.disconnect();
+            } else {
+                match create_instance(&self.name, &self.sddl, false) {
+                    Ok(replacement) => drop(std::mem::replace(&mut self.current, replacement)),
+                    Err(_) => {
+                        let _ = self.current.disconnect();
+                    }
+                }
+            }
             return Err(error);
         }
         let replacement = match create_instance(&self.name, &self.sddl, false) {
