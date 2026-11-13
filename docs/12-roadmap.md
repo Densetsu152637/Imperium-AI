@@ -33,6 +33,7 @@ the most, since their effective context is the tightest.
 
 Planned: **specialised retrieval lanes for small local models.** Each lane covers one weakness of
 a small root or critic:
+
 - **code intelligence:** repo map, LSP symbols, grep, discovered build and test commands, using
   exact lookups instead of similarity search;
 - **versioned library docs** from the project's lockfiles;
@@ -45,6 +46,6 @@ a small root or critic:
 A router applies deterministic triggers first, then a small CPU reranker, a relevance threshold
 and per-lane token budgets, so it stays laptop-friendly. Escalation to a large model after
 repeated critic rejections, or on low confidence, covers what retrieval cannot. See the Emperor
-[plan](https://github.com/Densetsu152637/emperor/blob/main/docs/plan.md).
+[plan](https://github.com/Densetsu152637/Imperium-Models/blob/main/models/emperor/docs/plan.md).
 
 Later candidates: fine-tuning plugin (Unsloth), shared team projects, a plugin registry.
