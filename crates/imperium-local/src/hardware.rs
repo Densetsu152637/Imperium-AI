@@ -47,7 +47,7 @@ impl Hardware {
             matches!(gpu.vendor.as_str(), "amd" | "intel")
                 && (self.overridden || gpu.vram_total_bytes >= MIN_VULKAN_VRAM_BYTES)
         }) {
-            return Some(&gpu.vendor);
+            return Some(gpu.vendor.as_str());
         }
         self.gpus
             .iter()
