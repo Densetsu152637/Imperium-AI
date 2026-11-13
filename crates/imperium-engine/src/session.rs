@@ -865,7 +865,7 @@ async fn run(
         ),
         None => match wait_for_model(&shared, &mut commands, &model).await {
             Some(root) => root,
-            None => return session_ended(&shared, &config.id, "closed").await,
+            None => return session_ended(&shared, &config.id, "closed"),
         },
     };
     let messages_path = crate::journal::messages_path(&config.journal_path);
@@ -972,7 +972,7 @@ async fn run(
                     shared.questions.resolve(request_id, answers);
                     continue;
                 }
-                None => return session_ended(&shared, &config.id, "closed").await,
+                None => return session_ended(&shared, &config.id, "closed"),
             },
         };
         // From here until the message's turn ends (or is given up on), the message it answers can
@@ -982,13 +982,12 @@ async fn run(
             shared.controls.set_turn_message(None);
             continue;
         };
-        shared
-            .hook(
-                HookEvent::TurnStart,
-                None,
-                json!({"session_id": config.id, "prompt": text}),
-            )
-            .await;
+        shared.observe_in(
+            &shared.workspace,
+            HookEvent::TurnStart,
+            None,
+            json!({"session_id": config.id, "prompt": text}),
+        );
         if root.fit_pending() {
             // The first turn on a model switched to: measure the conversation with it (loading
             // a local model) and compact it if it does not fit, before the message is added.
@@ -1071,7 +1070,7 @@ async fn run(
                         // Every handle is gone and the session is stopped: its agents would
                         // wait forever, so the turn is dropped (a restart reports it as cut off).
                         None if shared.controls.is_stopped() => {
-                            return session_ended(&shared, &config.id, "stopped").await;
+                            return session_ended(&shared, &config.id, "stopped");
                         }
                         // Every handle is gone: nobody can answer, so deny what is pending.
                         None => {
@@ -1095,26 +1094,31 @@ async fn run(
         if let Some(checkpoints) = checkpoints.clone() {
             let _ = tokio::task::spawn_blocking(move || checkpoints.after_turn()).await;
         }
-        shared
-            .hook(HookEvent::TurnEnd, None, json!({"session_id": config.id}))
-            .await;
+        shared.observe_in(
+            &shared.workspace,
+            HookEvent::TurnEnd,
+            None,
+            json!({"session_id": config.id}),
+        );
         if !handles_open {
-            return session_ended(&shared, &config.id, "closed").await;
+            return session_ended(&shared, &config.id, "closed");
         }
     }
 }
 
-/// Runs the `session.end` hooks as the session's task finishes: `reason` is `closed` (every
-/// handle was dropped) or `stopped`. Observers only.
-async fn session_ended(shared: &Shared, session_id: &str, reason: &str) {
-    shared
-        .hook(
-            HookEvent::SessionEnd,
-            None,
-            json!({"session_id": session_id, "reason": reason}),
-        )
-        .await;
+/// Starts the `session.end` hooks as the session's task finishes: `reason` is `closed` (every
+/// handle was dropped) or `stopped`. They run detached, so ending never waits for them.
+fn session_ended(shared: &Shared, session_id: &str, reason: &str) {
+    shared.observe_in(
+        &shared.workspace,
+        HookEvent::SessionEnd,
+        None,
+        json!({"session_id": session_id, "reason": reason}),
+    );
 }
+
+/// The longest observer-only hooks (see [`Shared::observe_in`]) may run in all.
+const OBSERVER_CAP: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Holds a session that has no model until one is set: messages wait in the root's queue and
 /// the status says a model is needed. Returns the root agent on the model it was given, or
@@ -1347,6 +1351,30 @@ impl Shared {
             .hooks
             .run(event, tool, &payload, &workspace.local_dir())
             .await
+    }
+
+    /// Starts the hooks of an observer-only event (`turn.start`, `turn.end`, `session.end`,
+    /// `permission.requested`) without waiting for them: they run in their own task, capped at
+    /// [`OBSERVER_CAP`] in all, so a slow hook or endpoint never holds up a turn, an approval
+    /// prompt, or a stop. Delivery is not ordered with the session, and a hook still running at
+    /// the cap is dropped (a command's process is killed).
+    pub(crate) fn observe_in(
+        &self,
+        workspace: &Workspace,
+        event: HookEvent,
+        tool: Option<&str>,
+        payload: serde_json::Value,
+    ) {
+        if self.extensions.hooks.is_empty() {
+            return;
+        }
+        let hooks = self.extensions.hooks.clone();
+        let dir = workspace.local_dir();
+        let tool = tool.map(str::to_string);
+        tokio::spawn(async move {
+            let run = hooks.run(event, tool.as_deref(), &payload, &dir);
+            let _ = tokio::time::timeout(OBSERVER_CAP, run).await;
+        });
     }
 
     /// Expands a slash command and runs `prompt.submit` hooks. `None` when the message should

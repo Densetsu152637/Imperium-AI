@@ -67,7 +67,8 @@ pub fn install(
             );
         }
         print!("{}", render(&preview));
-        if !approve(&format!("Install {}?", preview.name), yes)? {
+        let answer = approve(&format!("Install {}?", preview.name), yes)?;
+        if answer == Answer::No {
             println!("Nothing was installed.");
             return Ok(());
         }
@@ -79,17 +80,26 @@ pub fn install(
                 sha256: preview.sha256.clone(),
                 permissions: preview.permissions.clone(),
                 replace: false,
+                interactive: answer == Answer::Prompted,
             })
             .await?;
         println!(
-            "Installed {} {} into {}. Its panels show in the desktop app (Settings → Mods).",
-            done.id, done.version, done.path
+            "Installed {} {} into {}.{}",
+            done.id,
+            done.version,
+            done.path,
+            if answer == Answer::Prompted {
+                " Its panels show in the desktop app."
+            } else {
+                " It was not approved at a terminal prompt, so it stays off until you turn it on \
+                 in the desktop app (Settings → Mods)."
+            }
         );
         Ok(())
     })
 }
 
-pub fn update(id: String, yes: bool) -> anyhow::Result<()> {
+pub fn update(id: String, sha256: Option<String>, yes: bool) -> anyhow::Result<()> {
     block_on(async {
         let (mut client, _) = connect().await?;
         let listed = client.call::<ModList>(ModListParams {}).await?;
@@ -118,6 +128,9 @@ pub fn update(id: String, yes: bool) -> anyhow::Result<()> {
                 preview.id
             );
         }
+        if let Some(pin) = &sha256 {
+            check_pin(&preview, pin)?;
+        }
         let unchanged = preview
             .installed
             .as_ref()
@@ -130,14 +143,17 @@ pub fn update(id: String, yes: bool) -> anyhow::Result<()> {
         print!("{}", render(&preview));
         // Asking again is only for more than the user approved before.
         let widens = !preview.added_permissions.is_empty();
-        if widens
-            && !approve(
+        let mut interactive = false;
+        if widens {
+            let answer = approve(
                 &format!("Update {} with these new permissions?", preview.name),
                 yes,
-            )?
-        {
-            println!("Not updated.");
-            return Ok(());
+            )?;
+            if answer == Answer::No {
+                println!("Not updated.");
+                return Ok(());
+            }
+            interactive = answer == Answer::Prompted;
         }
         let done = client
             .call::<ModInstall>(ModInstallParams {
@@ -147,6 +163,7 @@ pub fn update(id: String, yes: bool) -> anyhow::Result<()> {
                 sha256: preview.sha256.clone(),
                 permissions: preview.permissions.clone(),
                 replace: true,
+                interactive,
             })
             .await?;
         println!(
@@ -186,9 +203,19 @@ fn check_pin(preview: &ModPreview, pin: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn approve(question: &str, yes: bool) -> anyhow::Result<bool> {
+/// How the user answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    No,
+    /// By `--yes`.
+    Flag,
+    /// By typing yes at a prompt in a terminal.
+    Prompted,
+}
+
+fn approve(question: &str, yes: bool) -> anyhow::Result<Answer> {
     if yes {
-        return Ok(true);
+        return Ok(Answer::Flag);
     }
     if !std::io::stdin().is_terminal() {
         bail!(
@@ -199,10 +226,13 @@ fn approve(question: &str, yes: bool) -> anyhow::Result<bool> {
     std::io::stdout().flush()?;
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    Ok(
+        if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            Answer::Prompted
+        } else {
+            Answer::No
+        },
+    )
 }
 
 /// What the user is asked to approve: the mod, where it is from, its content hash, and its
@@ -235,6 +265,19 @@ fn render(preview: &ModPreview) -> String {
         }),
     }
     let update = preview.installed.is_some();
+    // New code under the same permissions is still new code: say so.
+    if let Some(old) = preview
+        .installed
+        .as_ref()
+        .and_then(|installed| installed.sha256.as_deref())
+        .filter(|old| *old != preview.sha256)
+    {
+        text.push_str(&format!(
+            "  The code changed: sha256:{} -> sha256:{}\n",
+            old.chars().take(16).collect::<String>(),
+            preview.sha256.chars().take(16).collect::<String>()
+        ));
+    }
     for permission in &preview.permissions {
         let mark = if update && preview.added_permissions.contains(permission) {
             "+ "
@@ -320,6 +363,29 @@ mod tests {
     }
 
     #[test]
+    fn an_update_says_when_the_code_changed_even_if_the_permissions_did_not() {
+        let update = ModPreview {
+            installed: Some(ModInstalled {
+                version: "1.0.0".into(),
+                permissions: vec!["storage".into(), "sessions:read".into()],
+                sha256: Some("cd".repeat(32)),
+            }),
+            added_permissions: Vec::new(),
+            removed_permissions: Vec::new(),
+            ..preview()
+        };
+        let text = render(&update);
+        assert!(
+            text.contains("The code changed: sha256:cdcdcdcdcdcdcdcd -> sha256:abababababababab"),
+            "{text}"
+        );
+        assert!(
+            text.contains("the permissions are the same as before"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn every_permission_the_daemon_accepts_is_described() {
         for permission in ["telemetry:read", "sessions:read", "pets:read", "storage"] {
             assert_ne!(describe(permission), "(unknown to this version)");
@@ -337,7 +403,7 @@ mod tests {
     #[test]
     fn approval_without_a_terminal_needs_yes() {
         // `--yes` approves; without it a non-interactive run is refused rather than assumed.
-        assert!(approve("Install?", true).unwrap());
+        assert_eq!(approve("Install?", true).unwrap(), Answer::Flag);
         if !std::io::stdin().is_terminal() {
             assert!(approve("Install?", false).is_err());
         }

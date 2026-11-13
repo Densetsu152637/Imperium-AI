@@ -1589,15 +1589,14 @@ impl Agent {
             summary: summary.to_string(),
             suggested_rule: suggested.map(wire_rule),
         });
-        // Observers only: a hook cannot answer the request, so it cannot widen what is allowed.
-        self.shared
-            .hook_in(
-                &self.workspace,
-                HookEvent::PermissionRequested,
-                Some(tool),
-                json!({"agent_id": self.id, "tool": tool, "summary": summary}),
-            )
-            .await;
+        // Observers only, started detached: a hook cannot answer the request, so it cannot widen
+        // what is allowed, and it never delays the prompt.
+        self.shared.observe_in(
+            &self.workspace,
+            HookEvent::PermissionRequested,
+            Some(tool),
+            json!({"agent_id": self.id, "tool": tool, "summary": summary}),
+        );
         // Asleep until the person answers: the local runtime may swap the model out meanwhile.
         let waiting = self
             .local_models()

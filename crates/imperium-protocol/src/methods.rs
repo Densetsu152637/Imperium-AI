@@ -2872,6 +2872,12 @@ pub struct ModInfo {
     /// Where it was installed from, when an agent installed it (`install_extension`).
     #[serde(default)]
     pub installed_from: Option<InstallSource>,
+    /// Off until the user turns it on: approved without a terminal prompt, or modified since.
+    #[serde(default)]
+    pub opt_in: bool,
+    /// Its files no longer match what the user approved, so it has no permissions.
+    #[serde(default)]
+    pub modified: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -2972,8 +2978,13 @@ pub struct ModInstallParams {
     /// The permissions the user approved; the install is refused if the mod requests another.
     pub permissions: Vec<String>,
     /// Replace the installed mod of that id (an update) rather than refusing to overwrite it.
+    /// Only a mod installed from the same source it was approved from can be replaced.
     #[serde(default)]
     pub replace: bool,
+    /// The user answered a prompt at a terminal. Otherwise the mod stays off until the user
+    /// turns it on in the desktop app.
+    #[serde(default)]
+    pub interactive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

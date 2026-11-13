@@ -330,11 +330,21 @@ fn expand_secrets(value: &str, secrets: Option<&Secrets>) -> Result<String, Stri
         let name = &after[..end];
         let read = secrets.ok_or("a header uses ${secret:...} but no keychain is available")?;
         let secret = (read.0)(name).ok_or_else(|| format!("no keychain secret named {name}"))?;
+        if secret.chars().any(char::is_control) {
+            return Err(format!(
+                "the keychain secret {name} has a control character, which a header cannot hold"
+            ));
+        }
         out.push_str(&secret);
         rest = &after[end + 1..];
     }
     out.push_str(rest);
     Ok(out)
+}
+
+/// Whether there is at least one address and every one is loopback.
+fn all_loopback(addrs: &[std::net::SocketAddr]) -> bool {
+    !addrs.is_empty() && addrs.iter().all(|addr| addr.ip().is_loopback())
 }
 
 /// POSTs the payload to an HTTP hook. The request goes to the configured URL only: redirects
@@ -347,11 +357,28 @@ async fn run_http(
     secrets: Option<&Secrets>,
 ) -> Result<Verdict, String> {
     let url = check_url(&target.url)?;
-    let client = reqwest::Client::builder()
+    // No proxy, whatever the environment says: the payload goes straight to the URL.
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(hook.timeout)
-        .build()
-        .map_err(|error| error.to_string())?;
+        .timeout(hook.timeout);
+    if url.scheme() == "http"
+        && let Some(host) = url.host_str()
+        && host.eq_ignore_ascii_case("localhost")
+    {
+        // Plain http goes only to this machine: resolve the name now, require every address
+        // to be loopback, and connect to exactly those (a second lookup could answer otherwise).
+        let port = url.port_or_known_default().unwrap_or(80);
+        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|error| format!("could not resolve {host}: {error}"))?
+            .collect();
+        if !all_loopback(&addrs) {
+            return Err(format!("{host} does not resolve only to this machine"));
+        }
+        builder = builder.resolve_to_addrs(host, &addrs);
+    }
+    let client = builder.build().map_err(|error| error.to_string())?;
     let mut request = client
         .post(url)
         .header("content-type", "application/json")
@@ -772,6 +799,9 @@ mod tests {
         async fn elsewhere(State(seen): State<Seen>, headers: HeaderMap, body: String) {
             note(&seen, "/elsewhere", &headers, body);
         }
+        async fn big() -> axum::Json<Value> {
+            axum::Json(json!({"decision": "block", "reason": "x".repeat(70_000)}))
+        }
         async fn slow() {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
@@ -782,6 +812,7 @@ mod tests {
             .route("/redirect", post(redirect))
             .route("/elsewhere", post(elsewhere))
             .route("/slow", post(slow))
+            .route("/big", post(big))
             .with_state(std::sync::Arc::clone(&seen));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -901,5 +932,62 @@ mod tests {
             assert_eq!(verdict, Verdict::Allow);
         }
         assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn plain_http_needs_only_loopback_addresses() {
+        let addr = |text: &str| text.parse::<std::net::SocketAddr>().unwrap();
+        assert!(all_loopback(&[addr("127.0.0.1:1"), addr("[::1]:1")]));
+        assert!(!all_loopback(&[addr("127.0.0.1:1"), addr("10.0.0.1:1")]));
+        assert!(!all_loopback(&[]));
+    }
+
+    #[tokio::test]
+    async fn a_secret_with_a_line_break_sends_nothing() {
+        let (base, seen) = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let hooks = Hooks::new(vec![http_hook(
+            "turn.end",
+            format!("{base}/observe"),
+            Some("Bearer ${secret:t}"),
+            5,
+        )])
+        .with_secrets(Secrets::new(|_| {
+            Some(
+                "abc
+X-Injected: 1"
+                    .to_string(),
+            )
+        }));
+        let verdict = hooks
+            .run(HookEvent::TurnEnd, None, &json!({}), dir.path())
+            .await;
+        assert_eq!(verdict, Verdict::Allow);
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_answer_over_64_kib_is_not_obeyed_and_observers_cannot_block() {
+        let (base, _seen) = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let hooks = Hooks::new(vec![
+            http_hook("tool.before", format!("{base}/big"), None, 5),
+            http_hook("permission.requested", format!("{base}/deny"), None, 5),
+        ]);
+        // The block is valid JSON, but past the cap the whole answer is refused.
+        let verdict = hooks
+            .run(HookEvent::ToolBefore, Some("x"), &json!({}), dir.path())
+            .await;
+        assert_eq!(verdict, Verdict::Allow);
+        // An observer's block decision is ignored.
+        let verdict = hooks
+            .run(
+                HookEvent::PermissionRequested,
+                Some("run_command"),
+                &json!({}),
+                dir.path(),
+            )
+            .await;
+        assert_eq!(verdict, Verdict::Allow);
     }
 }

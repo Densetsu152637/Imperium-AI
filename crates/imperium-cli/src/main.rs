@@ -666,6 +666,9 @@ enum ModsCommand {
     Update {
         /// The mod's id.
         id: String,
+        /// Update only if the new content has this SHA-256 (as shown by a previous run).
+        #[arg(long)]
+        sha256: Option<String>,
         /// Approve new permissions without asking (for scripts).
         #[arg(short, long)]
         yes: bool,
@@ -803,7 +806,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 sha256,
                 yes,
             } => mods::install(source, path, revision, sha256, yes),
-            ModsCommand::Update { id, yes } => mods::update(id, yes),
+            ModsCommand::Update { id, sha256, yes } => mods::update(id, sha256, yes),
         },
         Command::Secret {
             command: SecretCommand::Set { name },

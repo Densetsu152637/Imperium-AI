@@ -204,9 +204,15 @@ tool events also get `tool_name`, and a hook's `matcher` filters tool events and
 | `agent.spawn` | the new subagent's task details |
 | `agent.complete` | `task_id`, `ok`, `report` |
 
-`session.end`, `turn.start`, `turn.end`, and `permission.requested` only observe. A hook
-cannot answer a permission request, so no hook can approve what a rule, a profile, or the safety
-floor leaves to the user ([05](05-tools-and-isolation.md#rules)).
+`session.end`, `turn.start`, `turn.end`, and `permission.requested` only observe, and a block
+decision from them is ignored. A hook cannot answer a permission request, so no hook can approve
+what a rule, a profile, or the safety floor leaves to the user
+([05](05-tools-and-isolation.md#rules)). They also run **detached**: the daemon starts them in
+their own task and does not wait, with five seconds for all of an event's hooks (a command's
+process is killed, an HTTP request dropped), so a slow hook or endpoint never holds up a turn, an
+approval prompt, or a stop. Their delivery is therefore not ordered with the session's other
+events, and one can be lost if the daemon exits first. The other events run inline and wait for
+their hooks, up to each hook's `timeout_s`.
 
 ### HTTP hooks
 
@@ -215,18 +221,26 @@ answer may carry `{"decision": "block", "reason": "..."}` on the blocking events
 command's output does. Anything else (a refusal, a timeout, another status) is logged and does not
 block, as for commands. They are bounded and cannot reach beyond the URL the user configured:
 
-- The URL must be `https`, or `http` to `localhost`, `127.0.0.0/8` or `::1`, and must not hold
-  credentials. The check runs when the configuration loads and again before each request.
+- The URL must be `https`, or `http` to an IP-literal loopback address (`127.0.0.0/8`, `::1`) or
+  `localhost`, and must not hold credentials. The check runs when the configuration loads and
+  again before each request. For plain `http://localhost` the name is resolved first, every
+  address must be loopback, and the request connects to exactly those addresses.
+- No proxy is used, whatever the environment sets (`HTTP_PROXY` and the like).
 - **No redirects** are followed (a 3xx answer is a failure), so a server cannot pass the payload,
   or a header secret, on to another host.
-- `timeout_s` bounds the whole exchange, the body included (10 s by default, at most 300 s); the
-  answer is read up to 64 KiB.
+- `timeout_s` bounds the whole exchange, the body included (10 s by default); the answer is read
+  up to 64 KiB. Every configured hook, command or HTTP, is clamped to 300 s.
 - Header values may use `${secret:name}`, replaced by the keychain secret of that name
   (`imperium secret set name`) when the hook runs; nothing else (not the environment, not a
-  project file) is expanded, and a missing secret fails the hook before anything is sent.
+  project file) is expanded, and a missing secret, or one holding a control character (a line
+  break would split the header), fails the hook before anything is sent.
 - HTTP hooks come only from the user's configuration; a plugin's `hooks.json` entry of
   `"type": "http"` is reported and skipped, and a repository's hooks are never run.
 - The payload holds prompts and tool output, so only configure an endpoint you trust with them.
+- **HTTP hooks are sent by the daemon, not by an agent's tools.** They ignore an environment's
+  `network = false`, an agent's local-files-only lock, and the isolation tier: those limit what an
+  agent's tools reach, and a hook is the user's own configuration. An `https` endpoint can be
+  anywhere on the internet, so configuring one sends session data there.
 
 Hooks do not widen anything: an agent's permission profile still decides which plugins' hooks
 load, and the safety floor, permission rules and approvals apply before and regardless of any
@@ -306,19 +320,37 @@ is the user's approval:
 3. It then calls `mods.install` with the hash and the approved permissions. The daemon fetches
    again and installs only if the content still has that hash and the manifest asks for nothing
    that was not approved, so a branch that moved in between, or a source that changes with the
-   prompt, is refused. The approval (hash, version, permissions) is kept in the mod's folder as
-   `.imperium-approval.json`.
-4. **Update** compares what the new version requests with what was approved for the installed
-   one and prints the difference (`+` new, `-` no longer requested). It asks again only when
-   something was added, and installs nothing wider than what was approved; the previous folder is
-   kept in `<data>/config-trash/`. A mod whose source gives the same hash is reported up to date.
-   A mod without a recorded source, or a bundled one, is not updated this way.
+   prompt, is refused. It never writes into a folder that is not that mod, and its staging
+   folder has an unpredictable name made with `create_dir`.
+4. **The approval lives in the daemon, not in the mod.** `<data>/mod-approvals.json`, keyed by
+   mod id, holds the content hash, version, approved permissions, the approved source, and
+   whether the user answered a prompt at a terminal; the mod's folder holds no approval (a
+   `.imperium-approval.json` a mod writes is ignored). `mods.list` reports a mod with the
+   permissions that are both in its manifest and approved. If its files no longer hash to the
+   approved content (it was edited, or its manifest now asks for more) it is marked `modified`,
+   has **no** permissions, and is off until the user turns it on; installing it again (after
+   uninstalling) approves what is there. A mod approved with `--yes` and no terminal prompt is
+   installed but **off** until the user turns it on in Settings → Mods. A mod without an
+   approval record (copied in by hand, or installed by an agent) behaves as before.
+5. **Update** reads the source from the approval record, not from the folder's
+   `.imperium-source.json` (which a mod could rewrite), and refuses a source, folder or revision
+   other than the approved one: to change where a mod comes from, uninstall it and install it
+   afresh. It compares what the new version requests with what was approved for the installed
+   one and prints the difference (`+` new, `-` no longer requested); when the hash changed it
+   also says so, so new code under the same permissions is not silent. It asks again only when
+   something was added, and installs nothing wider than what was approved; `--sha256` pins the
+   hash to install; the previous folder is kept in `<data>/config-trash/`. A mod whose source
+   gives the same hash is reported up to date. A mod without an approval record, or a bundled
+   one, is not updated this way.
+6. **The safety floor asks about `imperium mods install|update`**: an agent running it in a shell
+   (with its own `--yes`) would approve its own code, so the person decides each time
+   ([05](05-tools-and-isolation.md#permissions)). Paired phones cannot call `mods.*`.
 
 A mod's permissions only decide which data its frame may ask the desktop app for (above). They
 are not agent tool permissions: a mod cannot call tools, widen a permission profile, or lower
 the safety floor, and the user's approval at install does not change either. A mod installed this
-way is on at once, like any installed mod, since the user approved it; one an agent installed
-stays opt-in in Settings → Mods.
+way is on at once when the user approved it at a terminal prompt, like any installed mod; one
+approved with `--yes`, or installed by an agent, stays opt-in in Settings → Mods.
 
 ### Later stages: rewriting hooks and trusted mods
 

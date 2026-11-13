@@ -140,6 +140,8 @@ pub(crate) fn load(dir: &Path, bundled: bool) -> Result<ModInfo, String> {
         installed_from: (!bundled)
             .then(|| crate::extension_install::read_source(dir))
             .flatten(),
+        opt_in: false,
+        modified: false,
         bundled,
         source,
     })

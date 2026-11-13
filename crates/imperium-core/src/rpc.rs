@@ -618,10 +618,10 @@ impl Connection {
                 })
             }
             ModList::NAME => call::<ModList>(request.params, |_: ModListParams| {
-                Ok(crate::mods::list(
-                    &self.state.mods_dir(),
-                    &crate::mods::bundled_roots(),
-                ))
+                let mut listing =
+                    crate::mods::list(&self.state.mods_dir(), &crate::mods::bundled_roots());
+                crate::mod_install::apply_approvals(&self.state, &mut listing);
+                Ok(listing)
             }),
             ModInspect::NAME => call_later::<ModInspect, _>(
                 request.params,
@@ -1708,6 +1708,25 @@ mod tests {
         match &response.outcome {
             Outcome::Error(error) => Some(error.code),
             Outcome::Result(_) => None,
+        }
+    }
+
+    #[test]
+    fn a_paired_phone_cannot_inspect_or_install_mods() {
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        // A phone's scopes are an allowlist; mods.* is never in it.
+        let mut phone = Connection::restricted(state, vec![Handshake::NAME, "session.list"]);
+        let handled = phone.handle_text(&request(
+            1,
+            Handshake::NAME,
+            handshake_params(PROTOCOL_VERSION.major),
+        ));
+        assert_eq!(error_code(&handled), None);
+        for method in ["mods.inspect", "mods.install"] {
+            let handled = phone.handle_text(&request(2, method, json!({"source": "x"})));
+            assert_eq!(error_code(&handled), Some(codes::FORBIDDEN), "{method}");
         }
     }
 

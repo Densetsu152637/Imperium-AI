@@ -359,8 +359,16 @@ pub(crate) struct Staging {
 impl Staging {
     pub(crate) fn new(config_dir: &Path) -> Result<Staging, String> {
         let root = config_dir.join(".staging");
-        let dir = root.join(format!("install-{}-{}", std::process::id(), unix_ms()));
-        std::fs::create_dir_all(&dir)
+        std::fs::create_dir_all(&root)
+            .map_err(|error| format!("could not create {}: {error}", root.display()))?;
+        // A name nobody can predict, made with create_dir so an existing folder (or a link a
+        // mod or agent planted there) is an error, not something installed into.
+        let mut random = [0u8; 8];
+        getrandom::fill(&mut random)
+            .map_err(|error| format!("no random source for a staging folder: {error}"))?;
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let dir = root.join(format!("install-{}-{suffix}", std::process::id()));
+        std::fs::create_dir(&dir)
             .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
         Ok(Staging { dir, root })
     }

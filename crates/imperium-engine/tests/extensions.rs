@@ -312,11 +312,22 @@ async fn lifecycle_events_reach_http_hooks_with_their_payloads() {
     drop(session);
     // session.end runs as the session's task finishes.
     for _ in 0..100 {
-        if seen
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|body| body["hook_event"] == "session.end")
+        // The hooks run detached, so wait for all four.
+        let count = |event: &str| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|body| body["hook_event"] == event)
+                .count()
+        };
+        if [
+            "turn.start",
+            "turn.end",
+            "permission.requested",
+            "session.end",
+        ]
+        .iter()
+        .all(|event| count(event) > 0)
         {
             break;
         }
