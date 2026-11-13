@@ -18,11 +18,11 @@ source: string,
 /**
  * Where it was installed from, when an agent installed it (`install_extension`).
  */
-installed_from: InstallSource | null,
+installed_from: InstallSource | null, 
 /**
  * Off until the user turns it on: approved without a terminal prompt, or modified since.
  */
-opt_in: boolean,
+opt_in: boolean, 
 /**
  * Its files no longer match what the user approved, so it has no permissions.
  */
