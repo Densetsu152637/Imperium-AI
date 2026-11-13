@@ -585,6 +585,7 @@ mod tests {
             cpu_cores: 16,
             unified_memory: false,
             overridden: true,
+            vram_overridden: false,
         };
         let settings = settings("");
         let supervisor = Supervisor::start(

@@ -176,6 +176,7 @@ async fn fixture(home: &Path, extra: &str) -> Fixture {
         cpu_cores: 16,
         unified_memory: false,
         overridden: true,
+        vram_overridden: false,
     };
     let supervisor = Supervisor::start(
         vec![tiny_model()],

@@ -1075,6 +1075,7 @@ mod tests {
             cpu_cores: 16,
             unified_memory: false,
             overridden: false,
+            vram_overridden: false,
         }
     }
 
@@ -1161,6 +1162,7 @@ mod tests {
             cpu_cores: 16,
             unified_memory: false,
             overridden: false,
+            vram_overridden: false,
         };
         let (first, label) = fingerprint(&hardware, "llamacpp", "cuda12", Path::new("missing"));
         assert_eq!(

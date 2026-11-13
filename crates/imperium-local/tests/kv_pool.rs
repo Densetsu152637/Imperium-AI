@@ -197,6 +197,7 @@ fn start_with(
         cpu_cores: 8,
         unified_memory: false,
         overridden: true,
+        vram_overridden: false,
     };
     let launcher = Arc::new(FakeLauncher {
         log: Arc::clone(&log),
@@ -878,6 +879,7 @@ fn half_used_16gb_card(
         cpu_cores: 16,
         unified_memory: false,
         overridden: true,
+        vram_overridden: false,
     };
     let launcher = Arc::new(FakeLauncher {
         log: Arc::clone(&log),

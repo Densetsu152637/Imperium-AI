@@ -30,13 +30,15 @@ pub struct Hardware {
     pub unified_memory: bool,
     /// Values replaced by `[hardware]` settings.
     pub overridden: bool,
+    /// `[hardware] vram_mb` replaced the GPU: its figure is believed whatever its size.
+    pub vram_overridden: bool,
 }
 
 impl Hardware {
     /// The vendor whose GPUs models are planned on, since a runtime build drives one vendor's
     /// GPUs: NVIDIA when there is one, else the first AMD or Intel GPU with at least
     /// [`MIN_VULKAN_VRAM_BYTES`] (an integrated GPU's small carve-out is not worth offloading
-    /// to; a `[hardware]` override lifts that minimum), else a GPU of a vendor the probe does
+    /// to; a `[hardware] vram_mb` override lifts that minimum), else a GPU of a vendor the probe does
     /// not know (a `[hardware] vram_mb` override). Apple Silicon is planned as unified memory,
     /// not as VRAM. The GPUs of other vendors are shown, not planned on.
     fn planned_vendor(&self) -> Option<&str> {
@@ -45,7 +47,7 @@ impl Hardware {
         }
         if let Some(gpu) = self.gpus.iter().find(|gpu| {
             matches!(gpu.vendor.as_str(), "amd" | "intel")
-                && (self.overridden || gpu.vram_total_bytes >= MIN_VULKAN_VRAM_BYTES)
+                && (self.vram_overridden || gpu.vram_total_bytes >= MIN_VULKAN_VRAM_BYTES)
         }) {
             return Some(gpu.vendor.as_str());
         }
@@ -162,6 +164,7 @@ pub fn probe(overrides: &HardwareSettings) -> Hardware {
         cpu_cores: std::thread::available_parallelism().map_or(1, usize::from),
         unified_memory,
         overridden: false,
+        vram_overridden: false,
     };
     apply(&mut hardware, overrides);
     hardware
@@ -188,6 +191,7 @@ fn apply(hardware: &mut Hardware, overrides: &HardwareSettings) {
             driver: basis.and_then(|gpu| gpu.driver),
         }];
         hardware.overridden = true;
+        hardware.vram_overridden = true;
     }
     if let Some(ram) = overrides.ram_mb {
         hardware.ram_total_bytes = ram * MIB;
@@ -263,6 +267,7 @@ mod tests {
             cpu_cores: 8,
             unified_memory: false,
             overridden: false,
+            vram_overridden: false,
         }
     }
 
@@ -291,6 +296,20 @@ mod tests {
             },
         );
         assert_eq!(small.vram_free_bytes(), 2048 * MIB);
+        // Overriding only the RAM does not make an integrated GPU worth using.
+        let mut ram_only = machine(vec![gpu("amd", 1, 1)]);
+        apply(
+            &mut ram_only,
+            &HardwareSettings {
+                vram_mb: None,
+                ram_mb: Some(16384),
+            },
+        );
+        assert!(ram_only.overridden);
+        assert_eq!(ram_only.vram_free_bytes(), 0);
+        if !cfg!(target_os = "macos") {
+            assert_eq!(ram_only.backend_chain(), ["cpu"]);
+        }
         // An override on a machine with no GPU is still a budget, planned on the CPU build.
         let mut none = machine(Vec::new());
         apply(
@@ -316,6 +335,7 @@ mod tests {
             cpu_cores: 8,
             unified_memory: false,
             overridden: false,
+            vram_overridden: false,
         };
         if platform().ends_with("x64") {
             assert!(hardware.suggested_pack().ends_with("-cuda12"));
@@ -348,6 +368,7 @@ mod tests {
             cpu_cores: 8,
             unified_memory: false,
             overridden: false,
+            vram_overridden: false,
         };
         let x64 = platform().ends_with("x64");
         let expect = |chain: &[&'static str]| -> Vec<&'static str> {

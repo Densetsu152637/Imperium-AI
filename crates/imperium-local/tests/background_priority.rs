@@ -138,6 +138,7 @@ fn start_with(settings: LlamaCppSettings) -> (Arc<Supervisor>, Arc<Log>) {
         cpu_cores: 8,
         unified_memory: false,
         overridden: true,
+        vram_overridden: false,
     };
     let supervisor = Supervisor::start(
         vec![model("worker"), model("helper")],

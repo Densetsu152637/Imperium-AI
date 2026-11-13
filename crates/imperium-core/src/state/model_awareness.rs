@@ -734,6 +734,7 @@ card = "Good at: creative writing, stories and essays."
                 cpu_cores: 16,
                 unified_memory: false,
                 overridden: true,
+                vram_overridden: false,
             };
             let supervisor = Supervisor::start(
                 vec![

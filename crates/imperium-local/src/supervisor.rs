@@ -3950,6 +3950,7 @@ mod tests {
             cpu_cores: 8,
             unified_memory: false,
             overridden: true,
+            vram_overridden: false,
         }
     }
 
