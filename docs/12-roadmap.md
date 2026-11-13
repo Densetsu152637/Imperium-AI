@@ -31,4 +31,20 @@ journal so it can be recalled if a later task needs it. Context the user pins, o
 plan step depends on, is kept. Small local models (such as the Emperor and Consul roots) gain
 the most, since their effective context is the tightest.
 
+Planned: **specialised retrieval lanes for small local models.** Each lane covers one weakness of
+a small root or critic:
+- **code intelligence:** repo map, LSP symbols, grep, discovered build and test commands, using
+  exact lookups instead of similarity search;
+- **versioned library docs** from the project's lockfiles;
+- **workflow rule cards:** single trigger-tagged rules instead of whole files, refining
+  [D18](13-decisions.md) for small-context models;
+- a **pattern library** of strategy cards;
+- **experience** distilled from past runs, failures and escalations;
+- **research precedents.**
+
+A router applies deterministic triggers first, then a small CPU reranker, a relevance threshold
+and per-lane token budgets, so it stays laptop-friendly. Escalation to a large model after
+repeated critic rejections, or on low confidence, covers what retrieval cannot. See the Emperor
+[plan](https://github.com/Densetsu152637/emperor/blob/main/docs/plan.md).
+
 Later candidates: fine-tuning plugin (Unsloth), shared team projects, a plugin registry.
