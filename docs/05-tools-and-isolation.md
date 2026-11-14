@@ -566,7 +566,19 @@ Repositories\Imperium-AI`), and the file tools read the looser spellings models 
 quotes or with surrounding whitespace, a `file://` URL, a JSON argument whose Windows backslashes
 are left unescaped (a `read_file` or `list_dir` path that would decode to a newline or tab, as
 `D:\new\tools` does, is read with literal backslashes), and on Windows a Git Bash (`/d/...`),
-WSL (`/mnt/d/...`), or `/D:/...` spelling of a drive path. Each reading is checked like any
+WSL (`/mnt/d/...`), or `/D:/...` spelling of a drive path, or a drive path with stray
+separators or colons after the drive (`D:\://x`, `D://x`). The drive-path tidy applies to every
+tool that resolves a path (`read_file`, `write_file`, `edit_file`, `list_dir`, `glob`, `grep`).
+`read_file` and `list_dir` also take the path as `file_path`, `filepath`, `filename`, `file_name`,
+or `file` (giving it twice is an error), and `read_file`'s `offset` and `limit` as numbers, whole
+floats, or numbers in quotes (null, empty, zero, or negative means not given). `read_file` reads
+a UTF-16 file that starts with a byte order mark as text (a lone trailing byte is left out, with a
+note); a UTF-8 file with invalid bytes and no NUL bytes is read with U+FFFD for them and a note,
+a file with NUL bytes is refused as binary, and a folder is refused with a pointer to `list_dir`.
+One read returns at most 100,000 characters (line numbers and notes included); a longer line is
+cut where that ends, with a note to page by `offset` and `limit`. Edits stay UTF-8. `tool.before`
+and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names
+(`path`, `offset`, `limit`) whatever spelling the model used. Each reading is checked like any
 other path, and the first that lands inside a folder or grant is used. The OS tier makes every
 folder writable (one
 `--bind` per folder for bubblewrap, one `subpath` per folder for Seatbelt); the container tier

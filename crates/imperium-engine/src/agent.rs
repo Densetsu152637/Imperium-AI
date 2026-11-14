@@ -2175,6 +2175,10 @@ impl Agent {
         };
         let tool = invocation.tool_name();
         let summary = invocation.summary();
+        // Hooks see the arguments under the schema's names (`path`), whatever the model wrote.
+        let hook_arguments = invocation
+            .hook_arguments()
+            .unwrap_or_else(|| call.function.arguments.clone());
         let target = match (&invocation, invocation.path()) {
             (Invocation::RunCommand { command, .. }, _) => Target::Command(command.clone()),
             (_, Some(path)) => self.workspace.rule_target(path),
@@ -2200,7 +2204,7 @@ impl Agent {
         if let Decision::Refuse(why) = decision {
             return finish(false, refused(why, &summary));
         }
-        if let Some(blocked) = self.before_tool(tool, &call.function.arguments).await {
+        if let Some(blocked) = self.before_tool(tool, &hook_arguments).await {
             return finish(false, blocked);
         }
         if invocation.access() != Access::Read
@@ -2220,8 +2224,7 @@ impl Agent {
             Ok(output) => (true, output),
             Err(error) => (false, format!("error: {error}")),
         };
-        self.after_tool(tool, &call.function.arguments, ok, &output)
-            .await;
+        self.after_tool(tool, &hook_arguments, ok, &output).await;
         self.tool_finished(call, tool, ok, output, Some(started))
     }
 
