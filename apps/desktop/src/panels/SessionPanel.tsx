@@ -70,8 +70,10 @@ import {
   type PermissionMode,
 } from "./ModelSelect";
 import { StatusBadge } from "./StatusBadge";
+import { formatShortcut } from "../commands/registry";
 import { useSettings } from "../settings";
-import { canStop, isStopShortcut, isStopped } from "../stop";
+import { bindingFor, isCapturing, triggers } from "../shortcuts";
+import { canStop, isStopped } from "../stop";
 import { editStillValid, queueActions, queueLabel, steeredLabel, type QueueChange } from "../queue";
 import { ModelName } from "../components/ModelName";
 import { startedByNote } from "../agents";
@@ -243,11 +245,12 @@ export function SessionPanel({
         residency,
         name: (id) => modelName(aliases, id),
       });
+  const stopKeys = formatShortcut(bindingFor(settings.shortcuts, "session.stop"));
   const wait = stopped && described?.action !== "budget" ? null : described;
-  // Ctrl+. (Cmd+. on macOS) stops a running session or resumes a stopped one.
+  // The stop shortcut (Ctrl+. by default; Settings → Keyboard) stops a running session or resumes a stopped one.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!isStopShortcut(event) || archived) return;
+      if (isCapturing() || !triggers(event, settings.shortcuts, "session.stop") || archived) return;
       if (stopped || stoppable) {
         event.preventDefault();
         onStop(!stopped);
@@ -255,7 +258,7 @@ export function SessionPanel({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stopped, stoppable, archived, onStop]);
+  }, [stopped, stoppable, archived, onStop, settings.shortcuts]);
 
   return (
     <div className="session">
@@ -270,13 +273,13 @@ export function SessionPanel({
             <button
               className="stop-session ghost danger"
               onClick={() => onStop(true)}
-              title="Stop: pause the agent and its subagents at their next safe point (Ctrl+.)"
+              title={`Stop: pause the agent and its subagents at their next safe point (${stopKeys})`}
             >
               <Square aria-hidden="true" /> Stop
             </button>
           )}
           {stopped ? (
-            <button className="resume-now primary" onClick={() => onStop(false)} title="Resume all work (Ctrl+.)">
+            <button className="resume-now primary" onClick={() => onStop(false)} title={`Resume all work (${stopKeys})`}>
               <Play aria-hidden="true" /> Resume
             </button>
           ) : (

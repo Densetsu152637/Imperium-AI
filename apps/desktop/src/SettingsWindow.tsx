@@ -44,7 +44,7 @@ import {
   Volume2,
   type LucideIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import type {
   ConfigChange,
@@ -71,12 +71,14 @@ import { RowMenu } from "./components/RowMenu";
 import { Select } from "./components/Select";
 import { matches, ModalNavGroup, ModalNavItem, SettingsModal } from "./components/SettingsModal";
 import { Row } from "./components/SettingsRow";
+import { ShortcutsSection } from "./components/ShortcutsSection";
 import { Switch as Toggle } from "./components/Switch";
 import type { DaemonClient } from "./daemon/client";
 import { type Daemon, DaemonSettings } from "./DaemonControl";
 import { addModelFolder } from "./panels/ModelSetup";
 import { preview, testNotification } from "./notify";
-import { ACCENTS, DEFAULT_SETTINGS, BUNDLED_ON_BY_DEFAULT, modEnabled, type AppSettings } from "./settings";
+import { ACCENTS, DEFAULT_SETTINGS, BUNDLED_ON_BY_DEFAULT, modEnabled, reservedChords, type AppSettings } from "./settings";
+import { shortcutHolding } from "./shortcuts";
 import { pickFolder } from "./daemon/connection";
 import { storeFolder } from "./store";
 import { type Updates, UpdateSettings } from "./UpdateControl";
@@ -450,15 +452,6 @@ export const SETTINGS_SECTIONS: { id: string; label: string }[] = [
   ...TAIL_SECTIONS,
 ];
 
-const SHORTCUTS: [string, string][] = [
-  ["Ctrl+K (Cmd+K on macOS)", "Open or close the command palette, in the main window and panel windows"],
-  ["↑ / ↓, Enter, Tab, Esc", "In the palette: move, run the command, jump to the next group (Shift+Tab: previous), close"],
-  ["Ctrl+,", "Open or close Settings"],
-  ["Esc", "Close Settings"],
-  ["Enter / Ctrl+Enter", "Send a message (see Chat)"],
-  ["Shift+Enter", "New line in a message"],
-];
-
 /** The project layout and preset rows of Settings → Panels. */
 function LayoutRows({ controls }: { controls: LayoutControls }) {
   const picker = useRef<HTMLInputElement>(null);
@@ -572,7 +565,19 @@ export function SettingsWindow(props: Props) {
   }, [config]);
   const sections = [...APP_SECTIONS, ...configSections, PERMISSIONS_SECTION, BUDGETS_SECTION, API_SECTION, AGENT_CHANGES_SECTION, ...TAIL_SECTIONS];
 
-  const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => onChange({ ...settings, [key]: value });
+  // A push-to-talk key that a shortcut binding already uses is refused, so no binding is dropped later.
+  const [pttNotice, setPttNotice] = useState<string | null>(null);
+  const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
+    if (key === "pushToTalkKey") {
+      const taken = shortcutHolding(settings.shortcuts, reservedChords({ pushToTalkKey: value as AppSettings["pushToTalkKey"] }));
+      if (taken) {
+        setPttNotice(`${value as string} is used by the ${taken.label} shortcut. Change that shortcut in Keyboard first.`);
+        return;
+      }
+      setPttNotice(null);
+    }
+    onChange({ ...settings, [key]: value });
+  };
 
   const setConfigValue = async (key: string, value: unknown): Promise<void> => {
     if (!client) return;
@@ -592,7 +597,17 @@ export function SettingsWindow(props: Props) {
     }
   };
 
-  const fieldRows = (fields: Field[]) => fields.map((field) => <FieldRow key={field.key} field={field} value={settings[field.key]} onChange={set} />);
+  const fieldRows = (fields: Field[]) =>
+    fields.map((field) => (
+      <Fragment key={field.key}>
+        <FieldRow field={field} value={settings[field.key]} onChange={set} />
+        {field.key === "pushToTalkKey" && pttNotice && (
+          <p className="muted" role="status">
+            {pttNotice}
+          </p>
+        )}
+      </Fragment>
+    ));
   const configRows = (entries: ConfigEntry[]) =>
     entries.map((entry) =>
       entry.key === "policy.personality" && client ? (
@@ -677,20 +692,7 @@ export function SettingsWindow(props: Props) {
       case "mods":
         return <ModsSection mods={props.mods} settings={settings} onChange={onChange} />;
       case "shortcuts":
-        return (
-          <table className="shortcuts">
-            <tbody>
-              {SHORTCUTS.map(([keys, action]) => (
-                <tr key={keys}>
-                  <td>
-                    <kbd>{keys}</kbd>
-                  </td>
-                  <td>{action}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        );
+        return <ShortcutsSection settings={settings} onChange={onChange} />;
       case "daemon":
         return props.daemon ? (
           <DaemonSettings daemon={props.daemon} />

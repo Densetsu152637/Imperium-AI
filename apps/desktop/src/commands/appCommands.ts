@@ -159,7 +159,7 @@ export function appCommands(app: AppCommandContext): Command[] {
       run: () => app.setPinned(id, !current.pinned),
     });
   }
-  add({ id: "settings.open", group: "actions", title: "Open Settings", keywords: ["preferences", "options"], icon: Settings, shortcut: "Mod+,", run: () => app.openSettings() });
+  add({ id: "settings.open", group: "actions", title: "Open Settings", keywords: ["preferences", "options"], icon: Settings, shortcutAction: "settings.toggle", run: () => app.openSettings() });
   add({ id: "connectors.open", group: "actions", title: "Open Connectors", keywords: ["mcp", "plugins", "skills", "servers"], icon: Plug, run: app.openConnectors });
   add({ id: "models.configure", group: "actions", title: "Configure models", keywords: ["local models", "model table", "endpoints"], icon: Boxes, run: app.configureModels });
   add({

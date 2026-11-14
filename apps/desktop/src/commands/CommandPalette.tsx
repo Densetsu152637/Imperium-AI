@@ -1,4 +1,4 @@
-// The command palette: Ctrl+K (Cmd+K on macOS) opens a search over every registered command
+// The command palette: Ctrl+K (Cmd+K on macOS; rebindable) opens a search over every registered command
 // (registry.ts) in the main window and in panel windows. Arrow keys move, Enter runs, Tab and
 // Shift+Tab jump between groups, Escape closes; the mouse works too. Recently run commands
 // lead the list. A panel window sends the chosen command to the main window, which runs it,
@@ -7,6 +7,8 @@
 import { Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
+import { useSettings } from "../settings";
+import { bindingFor, isCapturing, triggers } from "../shortcuts";
 import { getLayout, updateLayout } from "../layout/state";
 import { focusMainWindow } from "../notify";
 import { emitPanelEvent, listenPanelEvents } from "../panelWindows";
@@ -35,10 +37,11 @@ function execute(command: Command): void {
 /** Mount once per window. `detached`: this is a panel window, which hands commands to the main window. */
 export function CommandPalette({ detached }: { detached: boolean }) {
   const [open, setOpen] = useState(false);
+  const shortcuts = useSettings().shortcuts;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
+      if (!isCapturing() && triggers(event, shortcuts, "palette.toggle")) {
         event.preventDefault();
         event.stopPropagation();
         setOpen((now) => !now);
@@ -47,7 +50,7 @@ export function CommandPalette({ detached }: { detached: boolean }) {
     // Capture, so a text box that handles its own keys cannot swallow the shortcut.
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, []);
+  }, [shortcuts]);
 
   // The main window runs what panel windows' palettes chose.
   useEffect(() => {
@@ -71,6 +74,8 @@ export function CommandPalette({ detached }: { detached: boolean }) {
 }
 
 function PaletteDialog({ onClose, onChoose }: { onClose: () => void; onChoose: (command: Command) => void }) {
+  const shortcuts = useSettings().shortcuts;
+  const shown = (command: Command) => (command.shortcutAction ? bindingFor(shortcuts, command.shortcutAction) : command.shortcut);
   const dialog = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -193,7 +198,7 @@ function PaletteDialog({ onClose, onChoose }: { onClose: () => void; onChoose: (
                     <span className="command-palette-title">{command.title}</span>
                     {command.subtitle && <span className="command-palette-subtitle">{command.subtitle}</span>}
                   </span>
-                  {command.shortcut && <kbd>{formatShortcut(command.shortcut)}</kbd>}
+                  {shown(command) && <kbd>{formatShortcut(shown(command)!)}</kbd>}
                 </div>
               );
             })}
@@ -212,7 +217,7 @@ function PaletteDialog({ onClose, onChoose }: { onClose: () => void; onChoose: (
           <kbd>Tab</kbd> next group
         </span>
         <span>
-          <kbd>{formatShortcut("Mod+K")}</kbd> open or close
+          <kbd>{formatShortcut(bindingFor(shortcuts, "palette.toggle"))}</kbd> open or close
         </span>
       </footer>
     </dialog>

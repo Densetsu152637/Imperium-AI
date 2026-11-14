@@ -367,10 +367,16 @@ and `environments.agent_update` (protocol 0.28)
     names one, and `imperium remote connect --socket` forwards the host's socket over SSH
     ([02](02-architecture.md#protocol), [05](05-tools-and-isolation.md#ssh-hosts),
     [10](10-configuration.md)). Protocol 0.26.
-34. **Desktop and platform gaps.** Rebindable shortcuts; attachments for models without
-    vision (image descriptions), drawn PDF pages, and a supervised local whisper; an encrypted
-    secret store where no keychain exists; WASM pet behaviours
-    ([07](07-desktop-ui.md), [10](10-configuration.md), [16](16-pets.md)).
+34. **Desktop and platform gaps** (stage 1 implemented: rebindable shortcuts). A declarative
+    shortcut registry; Settings → Keyboard rebinds the palette, Settings and stop shortcuts with
+    conflict detection (against each other, sending and the push-to-talk key); changed bindings
+    are saved in the app settings and the palette shows the current ones
+    ([07](07-desktop-ui.md#rebindable-shortcuts-implemented)). Not built: attachments for
+    models without vision (image descriptions) and drawn PDF pages, a supervised local whisper,
+    an encrypted secret store where no keychain exists, and WASM pet behaviours
+    ([10](10-configuration.md), [16](16-pets.md)); rebinding the push-to-talk key to an
+    arbitrary combination, and making more actions (panel toggles, session switching)
+    rebindable, are also not built.
 35. **Layouts** (implemented). Dragging a panel out into its own window and back, and a mod's
     panel into another panel as a module, each with a keyboard alternative in the panel's menu;
     per-environment layouts that fall back to the global one; and exportable, validated,
