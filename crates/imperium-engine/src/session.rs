@@ -93,6 +93,8 @@ pub struct SessionConfig {
     pub auto_compact_at: Option<f64>,
     /// The harness aids for small models: de-referencing, state, hints, asking (`[harness]`).
     pub harness: imperium_config::HarnessSettings,
+    /// Describing images for models that cannot see them (`[attachments]`).
+    pub attachments: imperium_config::AttachmentSettings,
     /// Whether a person reads the session's turns. False for background sessions, ones with
     /// pre-approved tools, and project or persistent agents: the aids that talk to a person
     /// (the rewrite, hints, `request_clarification`) stay off there.
@@ -697,6 +699,11 @@ pub(crate) struct Shared {
     pub auto_compact_at: Option<f64>,
     /// The harness aids for small models (`[harness]`).
     pub harness: imperium_config::HarnessSettings,
+    /// Describing images for models that cannot see them (`[attachments]`).
+    pub attachments: imperium_config::AttachmentSettings,
+    /// Image descriptions by describing model and file hash, so a file attached again (or to
+    /// another message) is not described again.
+    pub descriptions: Mutex<std::collections::HashMap<String, String>>,
     /// Whether a person reads the session's turns; see [`SessionConfig::attended`].
     pub attended: bool,
     /// Tools the user allowed for the rest of the session, for every agent.
@@ -833,6 +840,8 @@ async fn run(
         max_steps: config.max_steps,
         auto_compact_at: config.auto_compact_at,
         harness: config.harness,
+        attachments: config.attachments,
+        descriptions: Mutex::new(std::collections::HashMap::new()),
         attended: config.attended,
         allowed_tools: Mutex::new(config.pre_approved.iter().cloned().collect()),
         pre_approved: config.pre_approved.into_iter().collect(),
@@ -1365,6 +1374,28 @@ impl Shared {
             .await
     }
 
+    /// [`Shared::hook_in`] for `tool.before` and `prompt.submit`, which may rewrite what they
+    /// see ([`imperium_extensions::Hooks::run_rewriting`]). The caller checks a rewrite again.
+    pub(crate) async fn hook_rewriting_in(
+        &self,
+        workspace: &Workspace,
+        event: HookEvent,
+        tool: Option<&str>,
+        payload: serde_json::Value,
+    ) -> imperium_extensions::Rewriting {
+        if self.extensions.hooks.is_empty() {
+            return imperium_extensions::Rewriting {
+                verdict: Verdict::Allow,
+                updated_input: None,
+                updated_prompt: None,
+            };
+        }
+        self.extensions
+            .hooks
+            .run_rewriting(event, tool, &payload, &workspace.local_dir())
+            .await
+    }
+
     /// Starts the hooks of an observer-only event (`turn.start`, `turn.end`, `session.end`,
     /// `permission.requested`) without waiting for them: they run in their own task, capped at
     /// [`OBSERVER_CAP`] in all, so a slow hook or endpoint never holds up a turn, an approval
@@ -1404,11 +1435,27 @@ impl Shared {
             }
             None => text,
         };
-        match self
-            .hook(HookEvent::PromptSubmit, None, json!({"prompt": text}))
-            .await
-        {
-            Verdict::Allow => Some(text),
+        let outcome = self
+            .hook_rewriting_in(
+                &self.workspace,
+                HookEvent::PromptSubmit,
+                None,
+                json!({"prompt": text}),
+            )
+            .await;
+        match outcome.verdict {
+            Verdict::Allow => match outcome.updated_prompt {
+                Some(new) if new != text => {
+                    // The user sees both: what they wrote, and what the model will read.
+                    notice(format!(
+                        "A hook rewrote your message.\nBefore: {}\nAfter: {}",
+                        crate::agent::shown(&text),
+                        crate::agent::shown(&new)
+                    ));
+                    Some(new)
+                }
+                _ => Some(text),
+            },
             Verdict::Block(reason) => {
                 notice(format!("A hook blocked this message: {reason}"));
                 None

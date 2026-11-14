@@ -630,6 +630,10 @@ answers:
   [permission profile](14-projects-and-automation.md#agent-permission-profiles-implemented), and
   `imperium mods install|update`, which approve code for the desktop app (an agent could pass
   `--yes` to its own prompt; [06](06-extensibility.md#installing-and-updating-mods-implemented)).
+  The CLI makes those approvals' terminal check, not the daemon, so they hold only against an
+  agent that cannot reach the daemon's token or socket.
+- Writing into the installed mods (`<config>/mods`) and the daemon's approvals file
+  (`mod-approvals.json`), which a mod approval vouches for.
 - Writing files that hold secrets (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
   `id_ed25519*`, `id_ecdsa*`, `.npmrc`, `.pypirc`, `.netrc`, `mod-approvals.json`) or anything with a `.git` folder
   in its absolute path, such as a linked worktree's main repository's hooks.

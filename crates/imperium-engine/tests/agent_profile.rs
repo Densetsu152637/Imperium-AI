@@ -208,6 +208,17 @@ async fn start(
     rules: Vec<PermissionRule>,
     initial: ProfileRules,
 ) -> Setup {
+    start_with(root, sub, rules, initial, Vec::new()).await
+}
+
+/// [`start`] with these `[[hooks]]` from the user's configuration.
+async fn start_with(
+    root: Vec<Step>,
+    sub: Vec<Step>,
+    rules: Vec<PermissionRule>,
+    initial: ProfileRules,
+    hooks: Vec<imperium_extensions::ConfiguredHook>,
+) -> Setup {
     let config = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     write_plugin(config.path(), &mcp_server("words").await);
@@ -215,8 +226,9 @@ async fn start(
         config_dir: config.path().to_path_buf(),
         project_dir: project.path().to_path_buf(),
         plugin_dirs: Vec::new(),
+        user_plugin_dirs: Vec::new(),
         disabled_plugins: Vec::new(),
-        hooks: Vec::new(),
+        hooks,
         server_timeout: Duration::from_secs(5),
         lazy: true,
         eager: Vec::new(),
@@ -274,6 +286,7 @@ async fn start(
         auto_compact: false,
         auto_compact_at: None,
         attended: true,
+        attachments: Default::default(),
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
@@ -573,4 +586,116 @@ async fn subagents_are_held_to_the_profile_of_the_agent_that_started_them() {
             "{result}"
         );
     }
+}
+
+/// A `tool.before` hook on `matcher` that rewrites every call to `input`, and how often it ran.
+async fn rewriting_hook(
+    matcher: &str,
+    input: Value,
+) -> (imperium_extensions::ConfiguredHook, Arc<AtomicUsize>) {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&hits);
+    let app = Router::new().route(
+        "/hook",
+        post(move |_: axum::Json<Value>| {
+            let counted = Arc::clone(&counted);
+            let input = input.clone();
+            async move {
+                counted.fetch_add(1, Ordering::SeqCst);
+                axum::Json(json!({"updated_input": input}))
+            }
+        }),
+    );
+    let url = format!("{}/hook", serve(app).await);
+    (
+        imperium_extensions::ConfiguredHook {
+            event: "tool.before".into(),
+            matcher: matcher.into(),
+            command: String::new(),
+            url: Some(url),
+            headers: Default::default(),
+            timeout_s: Some(5),
+        },
+        hits,
+    )
+}
+
+#[tokio::test]
+async fn a_rewrite_cannot_get_a_call_past_a_deny_rule() {
+    let (hook, hits) = rewriting_hook("run_command", json!({"command": "rm -rf build"})).await;
+    let deny = PermissionRule {
+        tool: "run_command".into(),
+        pattern: "rm".into(),
+        action: RuleAction::Deny,
+    };
+    let setup = start_with(
+        vec![Some(("run_command", json!({"command": "echo hi"}))), None],
+        Vec::new(),
+        vec![deny],
+        rules(Allowlist::All, Allowlist::All, false),
+        vec![hook],
+    )
+    .await;
+    let results = turn(&setup.session, "run it").await;
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert!(
+        !results[0].0 && results[0].1.contains("permission rule denies"),
+        "{results:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_rewrite_cannot_leave_the_folders_of_a_local_files_only_agent() {
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+    let secret = outside
+        .path()
+        .join("secret.txt")
+        .to_string_lossy()
+        .to_string();
+    let (hook, hits) = rewriting_hook("read_file", json!({"path": secret})).await;
+    let setup = start_with(
+        vec![Some(("read_file", json!({"path": "inside.txt"}))), None],
+        Vec::new(),
+        Vec::new(),
+        rules(Allowlist::All, Allowlist::All, true),
+        vec![hook],
+    )
+    .await;
+    let results = turn(&setup.session, "read it").await;
+    // The hook ran on the call and once more on the rewritten call, which it cannot rewrite again.
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    assert!(
+        !results[0].0 && results[0].1.contains("outside the workspace"),
+        "{results:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_mcp_allowlist_decides_before_a_hook_sees_the_call() {
+    let (hook, hits) =
+        rewriting_hook("mcp__alpha__lookup|mcp__beta__lookup", json!({"q": "x"})).await;
+    let root = vec![
+        // A server the profile does not allow: refused before any hook runs.
+        Some((ALPHA, json!({}))),
+        // One it allows: the hook rewrites the arguments and the call runs.
+        Some((BETA, json!({}))),
+        None,
+    ];
+    let setup = start_with(
+        root,
+        Vec::new(),
+        Vec::new(),
+        rules(Allowlist::Named(vec!["beta".into()]), Allowlist::All, false),
+        vec![hook],
+    )
+    .await;
+    let results = turn(&setup.session, "look both up").await;
+    assert!(refused_by_profile(&results[0]), "{results:?}");
+    assert!(
+        results[1].0 && results[1].1.contains("beta ok"),
+        "{results:?}"
+    );
+    // The allowed call: once as made and once as rewritten; the refused call never reached a hook.
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
 }

@@ -50,6 +50,10 @@ pub(crate) struct Approval {
     /// Approved by answering a prompt at a terminal. Otherwise the mod stays off until the user
     /// turns it on in the desktop app.
     pub interactive: bool,
+    /// The user confirmed, at a terminal, that this exact content may run in the app's own
+    /// window. Set only for a mod whose manifest asks for it; not carried to an update.
+    #[serde(default)]
+    pub trusted: bool,
     pub approved_at_unix_ms: u64,
 }
 
@@ -123,6 +127,7 @@ pub(crate) fn apply_approvals(state: &DaemonState, listing: &mut ModListResult) 
             info.permissions.clear();
             info.modified = true;
             info.opt_in = true;
+            info.trusted = false;
         }
         return;
     };
@@ -137,13 +142,19 @@ pub(crate) fn apply_approvals(state: &DaemonState, listing: &mut ModListResult) 
         info.installed_from = Some(record.source.clone());
         info.permissions
             .retain(|permission| record.permissions.contains(permission));
-        let intact = tree_sha256(&mods_dir.join(&info.id))
-            .is_ok_and(|hash| hash.eq_ignore_ascii_case(&record.sha256));
+        // One read of the folder `mods/<id>` gives both the hash and what the listing must
+        // match: the listed entry belongs to that folder (not another folder that claims the
+        // id) and has not changed since the list read it.
+        let intact = digest_mod(&mods_dir.join(&info.id)).is_ok_and(|digest| {
+            digest.hash.eq_ignore_ascii_case(&record.sha256) && matches_listing(&digest.kept, info)
+        });
         if !intact {
             info.permissions.clear();
             info.modified = true;
         }
         info.opt_in = !record.interactive || !intact;
+        // Trust is for the content that was confirmed, and only for a mod that asks for it.
+        info.trusted = info.main_context && record.trusted && intact;
     }
 }
 
@@ -220,12 +231,15 @@ fn installed(state: &DaemonState, id: &str) -> Option<ModInstalled> {
         Some(record) => ModInstalled {
             version: record.version,
             permissions: record.permissions,
+            trusted: record.trusted
+                && tree_sha256(&dir).is_ok_and(|hash| hash.eq_ignore_ascii_case(&record.sha256)),
             sha256: Some(record.sha256),
         },
         None => ModInstalled {
             version: info.version,
             permissions: info.permissions,
             sha256: None,
+            trusted: false,
         },
     })
 }
@@ -256,6 +270,7 @@ pub(crate) async fn inspect(
         version: staged.info.version,
         permissions: staged.info.permissions,
         panels: staged.info.panels,
+        main_context: staged.info.main_context,
         sha256: staged.sha256,
         location: staged.source.location,
         revision: staged.source.revision,
@@ -316,6 +331,12 @@ pub(crate) async fn install(
         return Err(format!(
             "the mod requests {extra}, which was not approved; nothing was installed"
         ));
+    }
+    if params.trusted && !staged.info.main_context {
+        return Err(
+            "the mod does not ask to run in the app's own window, so it cannot be trusted to"
+                .into(),
+        );
     }
     let id = staged.info.id.clone();
     let mods_dir = ExtensionKind::Mod.dir(&config_dir);
@@ -388,6 +409,8 @@ pub(crate) async fn install(
             permissions: staged.info.permissions.clone(),
             source: staged.source.clone(),
             interactive,
+            // Only what was confirmed for this content: an update never inherits it.
+            trusted: params.trusted,
             approved_at_unix_ms: unix_ms(),
         }),
     )?;
@@ -432,23 +455,128 @@ pub(crate) async fn install(
 /// its length, and its bytes, in path order. Leaves out `.git` and the source file an install
 /// writes, so a copy hashes the same as the source it came from.
 pub(crate) fn tree_sha256(dir: &Path) -> Result<String, String> {
-    let mut files = Vec::new();
-    collect(dir, "", &mut files)?;
-    files.sort();
+    Ok(digest_tree(dir, &[])?.hash)
+}
+
+/// A folder's hash, and the bytes of the files that were asked to be kept (path relative to
+/// the folder with `/`, and bytes).
+struct TreeDigest {
+    hash: String,
+    kept: Files,
+}
+
+type Files = Vec<(String, Vec<u8>)>;
+
+/// [`tree_sha256`] that also keeps the bytes of `keep`'s files. Each file is read once, in
+/// chunks, so a big mod is never held in memory; a file whose length changed while it was read
+/// is an error.
+fn digest_tree(dir: &Path, keep: &[String]) -> Result<TreeDigest, String> {
+    use std::io::Read;
+
+    let mut paths = Vec::new();
+    collect(dir, "", &mut paths)?;
+    paths.sort();
     let mut digest = Sha256::new();
-    for relative in files {
-        let bytes =
-            std::fs::read(dir.join(&relative)).map_err(|error| format!("{relative}: {error}"))?;
+    let mut kept = Vec::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    for relative in paths {
+        let fail = |error: std::io::Error| format!("{relative}: {error}");
+        let mut file = std::fs::File::open(dir.join(&relative)).map_err(fail)?;
+        let length = file
+            .metadata()
+            .map_err(|error| format!("{relative}: {error}"))?
+            .len();
         digest.update(relative.as_bytes());
         digest.update([0u8]);
-        digest.update(u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes());
-        digest.update(&bytes);
+        digest.update(length.to_le_bytes());
+        let keeping = keep.contains(&relative);
+        let mut bytes = Vec::new();
+        let mut seen = 0u64;
+        loop {
+            let count = file
+                .read(&mut buffer)
+                .map_err(|error| format!("{relative}: {error}"))?;
+            if count == 0 {
+                break;
+            }
+            seen += u64::try_from(count).unwrap_or(u64::MAX);
+            digest.update(&buffer[..count]);
+            if keeping {
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+        }
+        if seen != length {
+            return Err(format!("{relative} changed while it was read"));
+        }
+        if keeping {
+            kept.push((relative, bytes));
+        }
     }
-    Ok(digest
-        .finalize()
+    Ok(TreeDigest {
+        hash: digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+        kept,
+    })
+}
+
+/// The hash of a mod's folder with its `mod.json` and entry file's bytes, from one pass: the
+/// manifest is read first to learn the entry, and must be the same bytes when the pass reaches
+/// it.
+fn digest_mod(dir: &Path) -> Result<TreeDigest, String> {
+    let manifest =
+        std::fs::read(dir.join("mod.json")).map_err(|error| format!("mod.json: {error}"))?;
+    let entry = manifest_entry(&manifest).ok_or("mod.json is not a manifest")?;
+    let digest = digest_tree(dir, &["mod.json".to_string(), entry])?;
+    let same = digest
+        .kept
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+        .any(|(name, bytes)| name == "mod.json" && *bytes == manifest);
+    if same {
+        Ok(digest)
+    } else {
+        Err("mod.json changed while it was read".into())
+    }
+}
+
+/// The entry file named by a manifest (`index.js` when it names none), as a relative path.
+fn manifest_entry(manifest: &[u8]) -> Option<String> {
+    let manifest: serde_json::Value = serde_json::from_slice(manifest).ok()?;
+    Some(
+        manifest
+            .get("entry")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("index.js")
+            .replace('\\', "/"),
+    )
+}
+
+/// Whether the kept `mod.json` has the id the listing gave and the kept entry file holds the
+/// source the listing carries.
+fn matches_listing(files: &Files, info: &imperium_protocol::methods::ModInfo) -> bool {
+    let file = |name: &str| {
+        files
+            .iter()
+            .find(|(relative, _)| relative == name)
+            .map(|(_, bytes)| bytes)
+    };
+    let Some(manifest) = file("mod.json") else {
+        return false;
+    };
+    let Some(entry) = manifest_entry(manifest) else {
+        return false;
+    };
+    let id_matches = serde_json::from_slice::<serde_json::Value>(manifest)
+        .ok()
+        .is_some_and(|manifest| {
+            manifest.get("id").and_then(serde_json::Value::as_str) == Some(info.id.as_str())
+        });
+    id_matches
+        && file(&entry)
+            .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
+            .is_some_and(|source| source == info.source)
 }
 
 fn collect(root: &Path, prefix: &str, files: &mut Vec<String>) -> Result<(), String> {
@@ -528,6 +656,7 @@ mod tests {
             permissions: preview.permissions.clone(),
             replace,
             interactive: true,
+            trusted: false,
         }
     }
 
@@ -944,6 +1073,131 @@ mod tests {
         let listing = listed(&state);
         assert!(!listing.mods[0].modified);
         assert_eq!(listing.mods[0].permissions, vec!["storage"]);
+    }
+
+    fn write_main_context_mod(dir: &Path, version: &str, body: &str) {
+        write_mod(dir, version, &["storage"], body);
+        std::fs::write(
+            dir.join("mod.json"),
+            serde_json::json!({
+                "id": "demo", "name": "Demo", "version": version,
+                "permissions": ["storage"], "main_context": true,
+                "contributes": {"panels": [{"id": "p", "title": "Demo"}]},
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn trust_is_for_a_mod_that_asks_for_this_content_and_this_confirmation() {
+        let home = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        let state = state(home.path());
+
+        // A mod that does not ask for the main window cannot be trusted with it.
+        write_mod(source.path(), "1.0.0", &["storage"], "export default 1;");
+        let plain = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        assert!(!plain.main_context);
+        let mut asked = install_params(&plain, source.path(), false);
+        asked.trusted = true;
+        let error = install(&state, asked).await.unwrap_err();
+        assert!(error.contains("does not ask"), "{error}");
+        assert!(!state.mods_dir().join("demo").exists());
+
+        // One that asks is sandboxed unless the user confirmed.
+        write_main_context_mod(source.path(), "1.0.0", "export default 1;");
+        let preview = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        assert!(preview.main_context);
+        install(&state, install_params(&preview, source.path(), false))
+            .await
+            .unwrap();
+        let listing = listed(&state);
+        assert!(listing.mods[0].main_context);
+        assert!(!listing.mods[0].trusted);
+        std::fs::remove_dir_all(state.mods_dir().join("demo")).unwrap();
+        set_approval(&state, "demo", None).unwrap();
+
+        // Trusted at install: for this content only.
+        let mut yes = install_params(&preview, source.path(), false);
+        yes.trusted = true;
+        install(&state, yes).await.unwrap();
+        assert!(listed(&state).mods[0].trusted);
+        assert!(approval(&state, "demo").unwrap().trusted);
+
+        // Edited since: not trusted, and no permissions.
+        let folder = state.mods_dir().join("demo");
+        std::fs::write(folder.join("index.js"), "export default 'evil';").unwrap();
+        let listing = listed(&state);
+        assert!(listing.mods[0].modified);
+        assert!(!listing.mods[0].trusted);
+        std::fs::write(folder.join("index.js"), "export default 1;").unwrap();
+        assert!(listed(&state).mods[0].trusted);
+
+        // An update asks again: without the confirmation it is sandboxed, with it it is trusted.
+        write_main_context_mod(source.path(), "1.1.0", "export default 2;");
+        let update = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        assert!(update.installed.as_ref().unwrap().trusted);
+        install(&state, install_params(&update, source.path(), true))
+            .await
+            .unwrap();
+        assert!(!listed(&state).mods[0].trusted);
+        write_main_context_mod(source.path(), "1.2.0", "export default 3;");
+        let again = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        let mut confirmed = install_params(&again, source.path(), true);
+        confirmed.trusted = true;
+        install(&state, confirmed).await.unwrap();
+        assert!(listed(&state).mods[0].trusted);
+
+        // A forged approval in the folder, or a manifest that newly asks, grants nothing.
+        std::fs::write(
+            folder.join(".imperium-approval.json"),
+            r#"{"trusted": true}"#,
+        )
+        .unwrap();
+        assert!(listed(&state).mods[0].modified);
+        assert!(!listed(&state).mods[0].trusted);
+    }
+
+    #[tokio::test]
+    async fn a_mod_in_another_folder_does_not_inherit_the_trust_of_its_id() {
+        let home = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_main_context_mod(source.path(), "1.0.0", "export default 1;");
+        let state = state(home.path());
+        let preview = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        let mut trusted = install_params(&preview, source.path(), false);
+        trusted.trusted = true;
+        install(&state, trusted).await.unwrap();
+        assert!(listed(&state).mods[0].trusted);
+
+        // Another folder, listed first, claims the same id with other code: it is the one the
+        // list shows, and nothing the id earned goes to it.
+        let other = state.mods_dir().join("aaa-other");
+        write_main_context_mod(&other, "9.9.9", "export default 'evil';");
+        let listing = listed(&state);
+        let shown = &listing.mods[0];
+        assert_eq!(shown.source, "export default 'evil';");
+        assert!(!shown.trusted, "an id is not a folder");
+        assert!(shown.modified);
+        assert!(shown.permissions.is_empty());
+        assert!(shown.opt_in);
+
+        // A mod whose folder name is not its id is never approved by the id's record either.
+        std::fs::remove_dir_all(state.mods_dir().join("demo")).unwrap();
+        let listing = listed(&state);
+        assert!(!listing.mods[0].trusted);
+        assert!(listing.mods[0].modified);
     }
 
     #[tokio::test]

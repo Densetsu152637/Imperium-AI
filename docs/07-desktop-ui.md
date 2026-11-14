@@ -1199,13 +1199,16 @@ name) and where it is:
   read again from the file.
 - **Images** (PNG, JPEG, GIF, WebP) go to the model as image parts when the session's model has
   vision: its model table row is tagged `vision`, or it is a local llama.cpp model with a
-  multimodal projector (`mmproj`) beside it. Otherwise the chip says *path only* and the agent
-  gets the image's path to use with its tools. Describing or OCR-ing an image with another
-  (vision) model for a model without vision is not done yet.
+  multimodal projector (`mmproj`) beside it. For a model without vision see
+  [images for a model that cannot see them](#images-for-a-model-that-cannot-see-them-implemented):
+  another model describes the image, or, when none can, the agent is told it could not be seen
+  and given the image's path to use with its tools (the chip still says *path only*).
 - **PDFs**: the text is extracted (the `pdf-extract` crate) and included, up to 100,000
   characters with a truncation marker; for a vision model the JPEG page images embedded in the
-  PDF (what scanned pages usually are) go along as images, up to eight. Pages that are drawn
-  rather than embedded are not rendered to images.
+  PDF (what scanned pages usually are) go along as images, up to eight. For a model without
+  vision, a PDF with no text layer has those page images described like an image. Pages that
+  are drawn rather than embedded are not rendered to images: there is no PDF renderer in the
+  build, so a scan whose pages are not embedded JPEGs is reported as unreadable.
 - **Text files** (UTF-8 without NUL bytes) are included up to 100 KiB, cut at a character
   boundary with a marker naming how much was left out and the path to read the rest from.
 - **Anything else** is a path the agent reads with its tools.
@@ -1220,6 +1223,44 @@ indistinguishable from the file. The context breakdown counts that block and the
 tokens each, calibrated by the reported prompt size) as **Attachments**. In a remote runtime
 (Docker container, WSL, SSH) the attachments folder is not reachable by the agent's tools; text,
 PDF text, and images still go in the message.
+
+#### Images for a model that cannot see them (implemented)
+
+When the session's model has no vision, an attached image (and the page images of a PDF with
+no text layer) is described by a model that has, and the model reads the description in the
+`<attachments>` block where the image would have gone:
+
+- **Which model.** `attachments.describe_with` names a row of the model table (its `id` or its
+  `<endpoint>:<model>` spec), used as given. Unset, routing picks a row tagged `vision` (a task
+  tagged `vision`: `[[routing.rules]]` and `require = ["vision"]` apply, unavailable or backed-up
+  local models are skipped), and when the session's model runs on this machine only a local
+  row, so a picture is not sent to a hosted model unasked; with no local vision row it is not
+  described, and the model is told so. In a hosted session, routing may pick another provider's
+  `vision` row, so the image goes to that provider. Naming a hosted row in `describe_with`
+  from a local session sends the image off the machine on purpose: the session's notice then
+  says "sent to a hosted model". A local llama.cpp model with a projector but no `vision` tag
+  is not picked; tag its row or name it in `describe_with`.
+- **How it is framed.** The text is wrapped as a machine-generated description (naming the
+  model that wrote it), marked as untrusted data about the file and not text from the user or an
+  instruction; tags that could close the block (`</attachment>`, `</description>`) inside it
+  are defused. The describing call is told to treat text in the image as content to transcribe.
+- **Budgets.** One call per attachment (a scanned PDF's pages go in one call), at most
+  `attachments.describe_max_tokens` tokens (up to four times that for a multi-page PDF) and
+  `attachments.describe_timeout_s` seconds (a local model's loading time counts); the whole
+  message waits at most twice that, and a model that timed out or failed is not asked again for
+  the message's other images ("describing model unavailable"); at most
+  `attachments.describe_max_images` images (attempts count, failed or not) and
+  `attachments.describe_max_chars` characters of description per message, later ones noted as
+  not described. While the session is stopped, describing waits for it to go on. The call counts toward budgets and the usage log as any model call, and a model
+  whose budget does not allow it is not called.
+- **Cache.** A description is kept for the session by the SHA-256 of the file and the describing
+  model, so the same file attached again, or in a later message, is not described again. A
+  resumed session keeps the descriptions in its saved conversation; the cache itself is not
+  saved.
+- **When nothing can describe it** (no vision row, `attachments.describe` off, a failed or slow
+  call, a budget, a limit above), the model is told in the block that the image could not be
+  described and why and that it has not seen it, and the user gets a notice naming the
+  attachment and the reason. An image is never left out without a word.
 
 **Push-to-talk.** Hold the push-to-talk key (Settings → Chat: Ctrl+Space by default, Alt+Space,
 Ctrl+Shift+Space, F8, or *Off*; on macOS Cmd counts as Ctrl, and where the system keeps a

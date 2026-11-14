@@ -114,7 +114,8 @@ and `environments.agent_update` (protocol 0.28)
    in the context breakdown. Push-to-talk (a held key or the mic button) transcribes into the
    composer through `[media.transcription]`
    ([07](07-desktop-ui.md#attachments-and-voice-input-implemented)). Describing images for models
-   without vision, rendering drawn PDF pages, and a supervised local whisper remain to do.
+   without vision is done under item 34; rendering drawn PDF pages and a supervised local
+   whisper remain to do.
 6. **Review pane and checkpoints** (implemented). Diffs of an agent's changes with
    accept or reject per hunk, then commit or open a pull request; git-based checkpoints to
    rewind a session's files and conversation. Checkpoints: before each root turn that changes
@@ -332,10 +333,19 @@ and `environments.agent_update` (protocol 0.28)
     redirects; secrets only from the keychain), and `imperium mods install|update` from a git
     URL or a folder with a permission prompt, a content hash that must match what was approved,
     and a permission diff on update ([06](06-extensibility.md#hooks),
-    [06](06-extensibility.md#installing-and-updating-mods-implemented)). *Not built:* hooks
-    that rewrite calls and trusted main-context mods (both widen trust; a design is proposed in
-    [06](06-extensibility.md#later-stages-rewriting-hooks-and-trusted-mods)), more mod
-    contribution points, and the desktop's own install dialog.
+    [06](06-extensibility.md#installing-and-updating-mods-implemented)).
+    *Second stage (implemented):* hooks that rewrite a tool call (`tool.before`) or the prompt
+    (`prompt.submit`), with the rewritten call run through every check again and both versions
+    shown ([06](06-extensibility.md#rewriting-hooks-implemented)); and the trust half of
+    trusted main-context mods: a manifest's `main_context`, a typed confirmation at a terminal
+    bound to the content hash, and `trusted` on `mods.list`
+    ([06](06-extensibility.md#trusted-main-context-mods-trust-implemented-loader-not-built)).
+    *Still not built:* the desktop loader that runs a trusted mod in the app's own window (it
+    needs the app's content security policy changed and can only be checked in a running app, and
+    it must not ship before a daemon-side check of the trust grant, the peer's process or a
+    prompt the daemon itself puts to the user: today the CLI's terminal check holds only against
+    an agent that cannot reach the daemon's token or socket),
+    more mod contribution points, and the desktop's own install dialog.
 31. **Policy packs and MCP.** Fetching pack updates shown as a diff to accept, a policy crate
     that layers packs into the prompt; MCP resources, prompts, sampling, and OAuth for remote
     servers; and an MCP server bridge exposing Imperium itself
@@ -375,16 +385,22 @@ and `environments.agent_update` (protocol 0.28)
     names one, and `imperium remote connect --socket` forwards the host's socket over SSH
     ([02](02-architecture.md#protocol), [05](05-tools-and-isolation.md#ssh-hosts),
     [10](10-configuration.md)). Protocol 0.26.
-34. **Desktop and platform gaps** (stage 1 implemented: rebindable shortcuts). A declarative
+34. **Desktop and platform gaps** (stages 1 and 2a implemented: rebindable shortcuts; image
+    descriptions for models without vision). A declarative
     shortcut registry; Settings → Keyboard rebinds the palette, Settings and stop shortcuts with
     conflict detection (against each other, sending and the push-to-talk key); changed bindings
     are saved in the app settings and the palette shows the current ones
-    ([07](07-desktop-ui.md#rebindable-shortcuts-implemented)). Not built: attachments for
-    models without vision (image descriptions) and drawn PDF pages, a supervised local whisper,
-    an encrypted secret store where no keychain exists, and WASM pet behaviours
-    ([10](10-configuration.md), [16](16-pets.md)); rebinding the push-to-talk key to an
-    arbitrary combination, and making more actions (panel toggles, session switching)
-    rebindable, are also not built.
+    ([07](07-desktop-ui.md#rebindable-shortcuts-implemented)). Attachments for models without
+    vision: `[attachments]`, a vision-tagged or named model describes an attached image or a
+    scanned PDF's embedded JPEG pages, framed as machine-generated data, budgeted and cached per
+    file hash, with a plain note to the model and the user when nothing can
+    ([07](07-desktop-ui.md#images-for-a-model-that-cannot-see-them-implemented)). Not built:
+    drawn PDF pages (no renderer in the build; scans whose pages are not embedded JPEGs are
+    reported as unreadable), the composer chip saying a description will be made instead of
+    *path only*, a supervised local whisper, an encrypted secret store where no keychain exists,
+    and WASM pet behaviours ([10](10-configuration.md), [16](16-pets.md)); rebinding the
+    push-to-talk key to an arbitrary combination, and making more actions (panel toggles,
+    session switching) rebindable, are also not built.
 35. **Layouts** (implemented). Dragging a panel out into its own window and back, and a mod's
     panel into another panel as a module, each with a keyboard alternative in the panel's menu;
     per-environment layouts that fall back to the global one; and exportable, validated,

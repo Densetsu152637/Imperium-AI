@@ -26,4 +26,12 @@ opt_in: boolean,
 /**
  * Its files no longer match what the user approved, so it has no permissions.
  */
-modified: boolean, };
+modified: boolean, 
+/**
+ * The manifest asks to run in the app's own window instead of a sandboxed frame.
+ */
+main_context: boolean, 
+/**
+ * The user trusted it at install, for this exact content, so it may run in the app's own window.
+ */
+trusted: boolean, };

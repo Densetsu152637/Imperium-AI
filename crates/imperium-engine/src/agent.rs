@@ -37,6 +37,8 @@ use imperium_memory::{NewEntry, Scope};
 
 use imperium_protocol::methods::{Compaction, ContextFit};
 
+mod attachments;
+
 use crate::agents::task_number;
 use crate::artefacts::{self, handle_message};
 use crate::breakdown::{
@@ -223,6 +225,13 @@ pub struct Agent {
     /// Whether the latest tool call succeeded (only successful file calls load instruction
     /// files).
     last_tool_ok: std::sync::atomic::AtomicBool,
+    /// Set by a `tool.before` hook that rewrote the call in flight: the new arguments, for
+    /// `run_tool` to check as a new call.
+    pending_rewrite: Mutex<Option<String>>,
+    /// While a rewritten call runs: the arguments the model gave, as the user is shown them.
+    rewritten_from: Mutex<Option<String>>,
+    /// The arguments the latest call ran with when a hook rewrote them.
+    ran_rewritten: Mutex<Option<String>>,
     /// The root agent's structured state (see [`harness`]); read back from the conversation
     /// when it is restored.
     state: SessionState,
@@ -393,6 +402,9 @@ impl Agent {
             compact_skip_noticed: false,
             instructions: None,
             last_tool_ok: std::sync::atomic::AtomicBool::new(false),
+            pending_rewrite: Mutex::new(None),
+            rewritten_from: Mutex::new(None),
+            ran_rewritten: Mutex::new(None),
             state: SessionState::default(),
             harness_text,
         }
@@ -459,7 +471,7 @@ impl Agent {
                 text.push_str(&status);
                 listed = paused.clone();
             }
-            let rendered = render_attachments(&message.attachments).await;
+            let rendered = self.render_attachments(&message.attachments).await;
             self.emit(SessionEvent::Steered {
                 id: message.id,
                 text: message.text,
@@ -821,7 +833,7 @@ impl Agent {
             text
         };
         let shown = self.shown.take().unwrap_or_else(|| text.clone());
-        let rendered = render_attachments(&attachments).await;
+        let rendered = self.render_attachments(&attachments).await;
         self.emit(SessionEvent::TurnStarted {
             text: shown,
             attachments,
@@ -1147,12 +1159,13 @@ impl Agent {
                 let output = self.guard_input(output, window);
                 // Only a call that worked counts as opening the directory: not one that was
                 // denied, refused by a hook, or failed.
+                // The arguments the call ran with: a hook may have rewritten them.
+                let ran_with = lock(&self.ran_rewritten)
+                    .clone()
+                    .unwrap_or_else(|| call.function.arguments.clone());
                 if self.last_tool_ok.load(Ordering::SeqCst)
-                    && let Some(dir) = instructions::touched_dir(
-                        &self.workspace,
-                        &call.function.name,
-                        &call.function.arguments,
-                    )
+                    && let Some(dir) =
+                        instructions::touched_dir(&self.workspace, &call.function.name, &ran_with)
                     && !touched.contains(&dir)
                 {
                     touched.push(dir);
@@ -1209,16 +1222,47 @@ impl Agent {
         });
     }
 
-    /// Runs `tool.before` hooks; returns the message for the model when one blocks the call.
-    async fn before_tool(&self, tool: &str, arguments: &str) -> Option<String> {
-        let payload = json!({"agent_id": self.id, "tool_input": tool_input(arguments)});
-        match self
+    /// Runs `tool.before` hooks: the call may run, be blocked (with the message for the model),
+    /// or be rewritten. A call a hook already rewrote is not rewritten again, so hooks cannot
+    /// loop; they can still block it.
+    async fn before_tool(&self, tool: &str, arguments: &str) -> Hooked {
+        let original = tool_input(arguments);
+        let payload = json!({"agent_id": self.id, "tool_input": original});
+        let rewritten = lock(&self.rewritten_from).is_some();
+        if rewritten {
+            return match self
+                .shared
+                .hook_in(&self.workspace, HookEvent::ToolBefore, Some(tool), payload)
+                .await
+            {
+                Verdict::Allow => Hooked::Run,
+                Verdict::Block(reason) => {
+                    Hooked::Blocked(format!("A hook blocked this call: {reason}"))
+                }
+            };
+        }
+        let outcome = self
             .shared
-            .hook_in(&self.workspace, HookEvent::ToolBefore, Some(tool), payload)
-            .await
-        {
-            Verdict::Allow => None,
-            Verdict::Block(reason) => Some(format!("A hook blocked this call: {reason}")),
+            .hook_rewriting_in(&self.workspace, HookEvent::ToolBefore, Some(tool), payload)
+            .await;
+        match outcome.verdict {
+            Verdict::Block(reason) => {
+                Hooked::Blocked(format!("A hook blocked this call: {reason}"))
+            }
+            Verdict::Allow => match outcome.updated_input {
+                Some(new) if new != original => Hooked::Rewrite(new.to_string()),
+                _ => Hooked::Run,
+            },
+        }
+    }
+
+    /// The summary of a call, with what the model asked when a hook rewrote the call.
+    fn annotate(&self, summary: String) -> String {
+        match lock(&self.rewritten_from).as_deref() {
+            Some(original) => {
+                format!("{summary} [rewritten by a hook; the model asked with {original}]")
+            }
+            None => summary,
         }
     }
 
@@ -1703,6 +1747,7 @@ impl Agent {
             Ok(check) => check,
             Err(error) => return finish(false, format!("error: {error}")),
         };
+        let summary = self.annotate(check.summary.clone());
         // A call that runs a command is judged as `run_command` on that command.
         let (rule_tool, target, kind, floored) = match &check.command {
             Some(command) => {
@@ -1721,10 +1766,15 @@ impl Agent {
         let mode = self.workspace.permissions().mode();
         let decision = decide_call(mode, kind, rule, floored);
         if let Decision::Refuse(why) = decision {
-            return finish(false, refused(why, &check.summary));
+            return finish(false, refused(why, &summary));
         }
-        if let Some(blocked) = self.before_tool(name, arguments).await {
-            return finish(false, blocked);
+        match self.before_tool(name, arguments).await {
+            Hooked::Run => {}
+            Hooked::Blocked(blocked) => return finish(false, blocked),
+            Hooked::Rewrite(new) => {
+                *lock(&self.pending_rewrite) = Some(new);
+                return String::new();
+            }
         }
         if check.needs_context
             && let Some(missing) = self.missing_context()
@@ -1735,7 +1785,7 @@ impl Agent {
             && !self
                 .approve_with(
                     rule_tool,
-                    &check.summary,
+                    &summary,
                     suggest(rule_tool, &target),
                     sticky,
                     floored,
@@ -1744,7 +1794,7 @@ impl Agent {
         {
             return finish(false, "The user denied this action.".into());
         }
-        let started = self.tool_started(call, name, check.summary);
+        let started = self.tool_started(call, name, summary);
         let emit = |event: ToolEvent| {
             if let Some(event) = tool_event(event) {
                 self.emit(event);
@@ -2068,7 +2118,37 @@ impl Agent {
     }
 
     /// Runs one tool call and returns the text the model sees.
+    /// Runs one tool call. When a `tool.before` hook rewrites it, the rewritten call is run
+    /// again from the start, through every check the model's own call goes through (the
+    /// launcher's tool limits, the agent's permission profile, the tool's own validation, the
+    /// permission rules and the safety floor, then approval), and the user is shown both
+    /// versions. It stays the same tool: a hook cannot turn a call into another tool's.
     async fn run_tool(&mut self, call: &ToolCall) -> String {
+        *lock(&self.pending_rewrite) = None;
+        *lock(&self.ran_rewritten) = None;
+        let output = self.run_tool_once(call).await;
+        let Some(arguments) = lock(&self.pending_rewrite).take() else {
+            return output;
+        };
+        let original = shown(&call.function.arguments);
+        self.emit(SessionEvent::Notice {
+            message: format!(
+                "A hook rewrote the {} call.\nBefore: {original}\nAfter: {}",
+                call.function.name,
+                shown(&arguments)
+            ),
+        });
+        let mut rewritten = call.clone();
+        rewritten.function.arguments = arguments;
+        *lock(&self.rewritten_from) = Some(original);
+        *lock(&self.ran_rewritten) = Some(rewritten.function.arguments.clone());
+        let output = self.run_tool_once(&rewritten).await;
+        *lock(&self.rewritten_from) = None;
+        *lock(&self.pending_rewrite) = None;
+        format!("(A hook rewrote this call's arguments before it ran.)\n{output}")
+    }
+
+    async fn run_tool_once(&mut self, call: &ToolCall) -> String {
         let name = call.function.name.as_str();
         let arguments = call.function.arguments.as_str();
         // A turn the daemon limits (an initiative review) may use only the tools it lists.
@@ -2201,7 +2281,7 @@ impl Agent {
             Err(error) => return finish(false, format!("error: {error}")),
         };
         let tool = invocation.tool_name();
-        let summary = invocation.summary();
+        let summary = self.annotate(invocation.summary());
         // Hooks see the arguments under the schema's names (`path`), whatever the model wrote.
         let hook_arguments = invocation
             .hook_arguments()
@@ -2231,8 +2311,13 @@ impl Agent {
         if let Decision::Refuse(why) = decision {
             return finish(false, refused(why, &summary));
         }
-        if let Some(blocked) = self.before_tool(tool, &hook_arguments).await {
-            return finish(false, blocked);
+        match self.before_tool(tool, &hook_arguments).await {
+            Hooked::Run => {}
+            Hooked::Blocked(blocked) => return finish(false, blocked),
+            Hooked::Rewrite(new) => {
+                *lock(&self.pending_rewrite) = Some(new);
+                return String::new();
+            }
         }
         if invocation.access() != Access::Read
             && let Some(missing) = self.missing_context()
@@ -4045,6 +4130,20 @@ fn search_scopes(scope: Option<&str>) -> Result<(Vec<Scope>, bool), String> {
     }
 }
 
+/// What a `tool.before` hook decided about a call.
+enum Hooked {
+    Run,
+    /// Blocked; the message for the model.
+    Blocked(String),
+    /// Rewritten: the new arguments, to be checked as a new call.
+    Rewrite(String),
+}
+
+/// Arguments or a message as shown to the user when a hook rewrote it.
+pub(crate) fn shown(text: &str) -> String {
+    truncate(text, 1_000)
+}
+
 fn tool_input(arguments: &str) -> serde_json::Value {
     serde_json::from_str(arguments).unwrap_or_else(|_| arguments.into())
 }
@@ -4832,18 +4931,6 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
         ToolEvent::PreviewChanged { url, command } => SessionEvent::PreviewChanged { url, command },
         _ => return None,
     })
-}
-
-/// A message's attachments read for the model, off the async runtime (PDF extraction and
-/// large files take a while). Nothing attached reads nothing.
-async fn render_attachments(attachments: &[Attachment]) -> imperium_media::attachments::Rendered {
-    if attachments.is_empty() {
-        return Default::default();
-    }
-    let owned = attachments.to_vec();
-    tokio::task::spawn_blocking(move || imperium_media::attachments::render(&owned))
-        .await
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

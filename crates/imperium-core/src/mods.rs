@@ -23,6 +23,10 @@ struct Manifest {
     entry: String,
     #[serde(default)]
     permissions: Vec<String>,
+    /// Asks to run in the app's own window; honoured only for a mod the user trusted at
+    /// install (`imperium mods install`).
+    #[serde(default)]
+    main_context: bool,
     #[serde(default)]
     contributes: Contributes,
 }
@@ -142,6 +146,8 @@ pub(crate) fn load(dir: &Path, bundled: bool) -> Result<ModInfo, String> {
             .flatten(),
         opt_in: false,
         modified: false,
+        main_context: manifest.main_context,
+        trusted: false,
         bundled,
         source,
     })

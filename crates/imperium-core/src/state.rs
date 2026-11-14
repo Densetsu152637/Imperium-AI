@@ -158,6 +158,20 @@ struct Placement {
     started_by: Option<imperium_protocol::initiative::StartedBy>,
 }
 
+/// Asks the safety floor to guard the folders whose files the daemon runs or vouches for: the
+/// installed mods (an approval vouches for their files) and the plugin folders (the user's own
+/// can carry hooks that rewrite calls), `<config>/plugins` and `extensions.plugin_dirs` of the
+/// user's settings. A writer agent that can reach one of those folders could otherwise plant a
+/// plugin, so a write there is always asked about.
+fn protect_extension_dirs(paths: &Paths, settings: &Settings) {
+    use imperium_tools::permissions::protect_dir;
+    protect_dir(&paths.config_dir().join("mods"));
+    protect_dir(&paths.config_dir().join("plugins"));
+    for dir in &settings.extensions.plugin_dirs {
+        protect_dir(dir);
+    }
+}
+
 /// State shared by every connection: configuration and the running sessions.
 #[derive(Debug)]
 pub struct DaemonState {
@@ -282,6 +296,7 @@ impl DaemonState {
         local: Option<LocalRuntime>,
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
+        protect_extension_dirs(&paths, &settings);
         let devices = Devices::load(paths.data_dir().join("devices.json"));
         let monitor = Arc::new(LoadMonitor::new(settings.load.clone()));
         let environments = Environments::load(paths.data_dir().join("environments.json"));
@@ -960,6 +975,7 @@ impl DaemonState {
 
     /// Replaces the settings snapshot, such as after the app saved model settings.
     pub(crate) fn replace_settings(&self, settings: Settings) {
+        protect_extension_dirs(&self.paths, &settings);
         *self
             .settings
             .write()
@@ -2027,6 +2043,7 @@ impl DaemonState {
             auto_compact: options.auto_compact,
             auto_compact_at: Some(self.settings().context.auto_compact_at),
             harness: self.settings().harness.clone(),
+            attachments: self.settings().attachments.clone(),
             keep_agent_state: remember && self.settings().sessions.agent_state_keep,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;
@@ -2656,6 +2673,8 @@ impl DaemonState {
                 config_dir: self.paths.config_dir().to_path_buf(),
                 project_dir: project_dir.to_path_buf(),
                 plugin_dirs: settings.extensions.plugin_dirs.clone(),
+                // The user's own folders, never what an environment's configuration merged in.
+                user_plugin_dirs: self.settings().extensions.plugin_dirs.clone(),
                 disabled_plugins: settings.extensions.disabled_plugins.clone(),
                 hooks: self
                     .settings()

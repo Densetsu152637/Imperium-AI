@@ -125,6 +125,12 @@ fn load(root: &Path, server_timeout: Duration) -> Result<(Plugin, Vec<String>), 
     if let Ok(text) = std::fs::read_to_string(root.join("hooks/hooks.json")) {
         let (loaded, mut skipped) = parse_hooks_json(&text, root, &origin)?;
         hooks = loaded;
+        // A plugin an agent installed may block with its hooks but never rewrite a call or a
+        // prompt: downloaded code does not get to change what the model asked for.
+        let rewrites = !installed_by_agent(root);
+        for hook in &mut hooks {
+            hook.may_rewrite = rewrites;
+        }
         notes.append(&mut skipped);
     }
     let mut servers = Vec::new();

@@ -4,6 +4,10 @@
 //! exit 0 with `{"decision": "block" | "deny", "reason": "..."}` on stdout. Other events only
 //! observe. A hook that fails or times out is logged and does not block.
 //!
+//! A `tool.before` hook may also rewrite the call, and a `prompt.submit` hook the prompt, by
+//! answering with `"updated_input"` (the tool's arguments, an object) or `"updated_prompt"`; see
+//! [`Hooks::run_rewriting`]. The caller checks a rewritten call again as if the model had made it.
+//!
 //! A hook is a command or an HTTP endpoint (`url`): the same JSON is POSTed to it, a 2xx answer
 //! may carry the same `decision`, and anything else is a failure. HTTP hooks come only from the
 //! user's configuration, go to `https` URLs (or `http` on this machine), never follow a
@@ -96,6 +100,9 @@ pub struct Hook {
     /// Working directory; the project folder when unset.
     pub cwd: Option<PathBuf>,
     pub origin: String,
+    /// Whether the hook's rewrites are honoured: true for the user's own configuration, false
+    /// for a plugin an agent installed.
+    pub may_rewrite: bool,
 }
 
 /// An HTTP hook's endpoint.
@@ -131,6 +138,35 @@ impl fmt::Debug for Secrets {
 pub enum Verdict {
     Allow,
     Block(String),
+}
+
+/// What one hook answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Answer {
+    verdict: Verdict,
+    updated_input: Option<Value>,
+    updated_prompt: Option<String>,
+}
+
+impl Answer {
+    fn block(reason: String) -> Self {
+        Answer {
+            verdict: Verdict::Block(reason),
+            updated_input: None,
+            updated_prompt: None,
+        }
+    }
+}
+
+/// The hooks' decision on an event that may be rewritten, with any rewrite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rewriting {
+    pub verdict: Verdict,
+    /// For `tool.before`: the tool's new arguments (an object), after every hook that rewrote
+    /// them, each seeing the last one's result. Never set with a block.
+    pub updated_input: Option<Value>,
+    /// For `prompt.submit`: the new prompt. Never set with a block.
+    pub updated_prompt: Option<String>,
 }
 
 /// Claude Code's names for Imperium's built-in tools, so matchers written for it work.
@@ -205,8 +241,13 @@ impl Hooks {
         self.hooks.len()
     }
 
+    /// The hooks, in the order they run.
+    pub fn list(&self) -> &[Hook] {
+        &self.hooks
+    }
+
     /// Runs the hooks for `event` (and `tool`, for tool events) in order. For blocking events
-    /// the first block wins and later hooks do not run.
+    /// the first block wins and later hooks do not run. Rewrites are ignored.
     pub async fn run(
         &self,
         event: HookEvent,
@@ -214,6 +255,37 @@ impl Hooks {
         payload: &Value,
         project_dir: &std::path::Path,
     ) -> Verdict {
+        self.run_inner(event, tool, payload, project_dir, false)
+            .await
+            .verdict
+    }
+
+    /// [`Hooks::run`] for `tool.before` and `prompt.submit`, honouring rewrites: a hook that
+    /// answers with `"updated_input"` (an object, for a tool call) or `"updated_prompt"` (a
+    /// string) replaces them, and the hooks after it see the new value. Only hooks that
+    /// `may_rewrite` count; a block anywhere wins and drops every rewrite. The caller must treat
+    /// the result as a new call or message and check it again.
+    pub async fn run_rewriting(
+        &self,
+        event: HookEvent,
+        tool: Option<&str>,
+        payload: &Value,
+        project_dir: &std::path::Path,
+    ) -> Rewriting {
+        self.run_inner(event, tool, payload, project_dir, true)
+            .await
+    }
+
+    async fn run_inner(
+        &self,
+        event: HookEvent,
+        tool: Option<&str>,
+        payload: &Value,
+        project_dir: &std::path::Path,
+        rewriting: bool,
+    ) -> Rewriting {
+        let mut updated_input = None;
+        let mut updated_prompt = None;
         let mut input = payload.clone();
         if let Some(object) = input.as_object_mut() {
             object.insert("hook_event".into(), event.as_str().into());
@@ -232,18 +304,70 @@ impl Hooks {
                 None => run_one(hook, &input, cwd).await,
             };
             match ran {
-                Ok(Verdict::Block(reason)) if event.can_block() => return Verdict::Block(reason),
-                Ok(_) => {}
+                Ok(Answer {
+                    verdict: Verdict::Block(reason),
+                    ..
+                }) if event.can_block() => {
+                    return Rewriting {
+                        verdict: Verdict::Block(reason),
+                        updated_input: None,
+                        updated_prompt: None,
+                    };
+                }
+                Ok(answer) => {
+                    // A hook that answers again with what is already in place (the second look at
+                    // a call it rewrote) asks for nothing.
+                    let again_input = answer
+                        .updated_input
+                        .as_ref()
+                        .is_some_and(|new| Some(new) == input.get("tool_input"));
+                    let again_prompt = answer.updated_prompt.as_deref().is_some_and(|new| {
+                        Some(new) == input.get("prompt").and_then(Value::as_str)
+                    });
+                    let again = again_input || again_prompt;
+                    let wants = (answer.updated_input.is_some() || answer.updated_prompt.is_some())
+                        && !again;
+                    let allowed = rewriting && hook.may_rewrite;
+                    if wants && !allowed {
+                        tracing::warn!(
+                            hook = %hook.describe(),
+                            event = event.as_str(),
+                            "a rewrite was ignored: not offered here, or not allowed for this hook"
+                        );
+                    }
+                    if allowed
+                        && event == HookEvent::ToolBefore
+                        && let Some(new) = answer.updated_input
+                    {
+                        if let Some(object) = input.as_object_mut() {
+                            object.insert("tool_input".into(), new.clone());
+                        }
+                        updated_input = Some(new);
+                    }
+                    if allowed
+                        && event == HookEvent::PromptSubmit
+                        && let Some(new) = answer.updated_prompt
+                    {
+                        if let Some(object) = input.as_object_mut() {
+                            object.insert("prompt".into(), new.clone().into());
+                        }
+                        updated_prompt = Some(new);
+                    }
+                }
                 Err(error) => {
                     tracing::warn!(hook = %hook.describe(), event = event.as_str(), %error, "hook failed");
                 }
             }
         }
-        Verdict::Allow
+        Rewriting {
+            verdict: Verdict::Allow,
+            updated_input,
+            updated_prompt,
+        }
     }
 }
 
-async fn run_one(hook: &Hook, input: &Value, cwd: &std::path::Path) -> Result<Verdict, String> {
+async fn run_one(hook: &Hook, input: &Value, cwd: &std::path::Path) -> Result<Answer, String> {
     let mut child = imperium_tools::shell(&hook.command)
         .current_dir(cwd)
         .env("IMPERIUM_PROJECT_DIR", cwd)
@@ -264,8 +388,8 @@ async fn run_one(hook: &Hook, input: &Value, cwd: &std::path::Path) -> Result<Ve
         .map_err(|error| error.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     match output.status.code() {
-        Some(0) => Ok(decision(&String::from_utf8_lossy(&output.stdout))),
-        Some(2) => Ok(Verdict::Block(if stderr.is_empty() {
+        Some(0) => Ok(answer(&String::from_utf8_lossy(&output.stdout))),
+        Some(2) => Ok(Answer::block(if stderr.is_empty() {
             "blocked by a hook".into()
         } else {
             stderr
@@ -274,23 +398,43 @@ async fn run_one(hook: &Hook, input: &Value, cwd: &std::path::Path) -> Result<Ve
     }
 }
 
-/// A hook's answer: `{"decision": "block" | "deny", "reason": "..."}` blocks; anything else allows.
-fn decision(text: &str) -> Verdict {
+/// Largest rewritten tool input or prompt that is taken.
+const MAX_REWRITE_BYTES: usize = 1024 * 1024;
+
+/// A hook's answer: `{"decision": "block" | "deny", "reason": "..."}` blocks; anything else
+/// allows, and may carry `"updated_input"` (an object) or `"updated_prompt"` (a string), which a
+/// block never does.
+fn answer(text: &str) -> Answer {
     let decision: Option<Value> = serde_json::from_str(text.trim()).ok();
     let blocked = decision
         .as_ref()
         .and_then(|d| d.get("decision"))
         .and_then(Value::as_str)
         .is_some_and(|d| d == "block" || d == "deny");
-    if !blocked {
-        return Verdict::Allow;
+    if blocked {
+        let reason = decision
+            .as_ref()
+            .and_then(|d| d.get("reason"))
+            .and_then(Value::as_str)
+            .unwrap_or("blocked by a hook");
+        return Answer::block(reason.to_string());
     }
-    let reason = decision
+    let updated_input = decision
         .as_ref()
-        .and_then(|d| d.get("reason"))
+        .and_then(|d| d.get("updated_input"))
+        .filter(|input| input.is_object() && input.to_string().len() <= MAX_REWRITE_BYTES)
+        .cloned();
+    let updated_prompt = decision
+        .as_ref()
+        .and_then(|d| d.get("updated_prompt"))
         .and_then(Value::as_str)
-        .unwrap_or("blocked by a hook");
-    Verdict::Block(reason.to_string())
+        .filter(|prompt| !prompt.trim().is_empty() && prompt.len() <= MAX_REWRITE_BYTES)
+        .map(str::to_string);
+    Answer {
+        verdict: Verdict::Allow,
+        updated_input,
+        updated_prompt,
+    }
 }
 
 /// Checks an HTTP hook's URL: `https`, or `http` to this machine, and no credentials in it.
@@ -355,7 +499,7 @@ async fn run_http(
     target: &HttpTarget,
     input: &Value,
     secrets: Option<&Secrets>,
-) -> Result<Verdict, String> {
+) -> Result<Answer, String> {
     let url = check_url(&target.url)?;
     // No proxy, whatever the environment says: the payload goes straight to the URL.
     let mut builder = reqwest::Client::builder()
@@ -409,7 +553,7 @@ async fn run_http(
             return Err("the answer is larger than 64 KiB".into());
         }
     }
-    Ok(decision(&String::from_utf8_lossy(&body)))
+    Ok(answer(&String::from_utf8_lossy(&body)))
 }
 
 /// `[[hooks]]` entries in Imperium configuration.
@@ -470,6 +614,7 @@ impl ConfiguredHook {
                 .map_or(default, |s| Duration::from_secs(s).min(MAX_TIMEOUT)),
             cwd: None,
             origin: origin.to_string(),
+            may_rewrite: true,
         })
     }
 }
@@ -528,6 +673,7 @@ pub fn parse_hooks_json(
                     matcher: group.matcher.clone(),
                     command: entry.command.replace("${CLAUDE_PLUGIN_ROOT}", &root),
                     http: None,
+                    may_rewrite: false,
                     timeout: entry.timeout.map_or(DEFAULT_TIMEOUT, Duration::from_secs),
                     cwd: None,
                     origin: origin.to_string(),
@@ -549,6 +695,7 @@ mod tests {
             matcher: matcher.into(),
             command: command.into(),
             http: None,
+            may_rewrite: true,
             timeout: Duration::from_secs(10),
             cwd: None,
             origin: "test".into(),
@@ -802,6 +949,20 @@ mod tests {
         async fn big() -> axum::Json<Value> {
             axum::Json(json!({"decision": "block", "reason": "x".repeat(70_000)}))
         }
+        async fn rewrite() -> axum::Json<Value> {
+            axum::Json(json!({"updated_input": {"command": "B"}}))
+        }
+        async fn chain(body: String) -> axum::Json<Value> {
+            let seen: Value = serde_json::from_str(&body).unwrap();
+            let command = seen["tool_input"]["command"].as_str().unwrap_or_default();
+            axum::Json(json!({"updated_input": {"command": format!("{command}+2")}}))
+        }
+        async fn not_an_object() -> axum::Json<Value> {
+            axum::Json(json!({"updated_input": "rm -rf /"}))
+        }
+        async fn prompt() -> axum::Json<Value> {
+            axum::Json(json!({"updated_prompt": "a new prompt"}))
+        }
         async fn slow() {
             tokio::time::sleep(Duration::from_secs(30)).await;
         }
@@ -811,6 +972,10 @@ mod tests {
             .route("/deny", post(deny))
             .route("/redirect", post(redirect))
             .route("/elsewhere", post(elsewhere))
+            .route("/rewrite", post(rewrite))
+            .route("/chain", post(chain))
+            .route("/not-an-object", post(not_an_object))
+            .route("/prompt", post(prompt))
             .route("/slow", post(slow))
             .route("/big", post(big))
             .with_state(std::sync::Arc::clone(&seen));
@@ -989,5 +1154,117 @@ X-Injected: 1"
             )
             .await;
         assert_eq!(verdict, Verdict::Allow);
+    }
+
+    fn before(url: String) -> Hook {
+        http_hook("tool.before", url, None, 5)
+    }
+
+    #[tokio::test]
+    async fn tool_input_rewrites_chain_and_a_block_drops_them() {
+        let (base, _seen) = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let payload = json!({"tool_input": {"command": "A"}});
+        let hooks = Hooks::new(vec![
+            before(format!("{base}/rewrite")),
+            before(format!("{base}/chain")),
+        ]);
+        // The second hook saw the first one's result.
+        let rewritten = hooks
+            .run_rewriting(
+                HookEvent::ToolBefore,
+                Some("run_command"),
+                &payload,
+                dir.path(),
+            )
+            .await;
+        assert_eq!(rewritten.verdict, Verdict::Allow);
+        assert_eq!(rewritten.updated_input, Some(json!({"command": "B+2"})));
+        // `run` never rewrites.
+        assert_eq!(
+            hooks
+                .run(
+                    HookEvent::ToolBefore,
+                    Some("run_command"),
+                    &payload,
+                    dir.path()
+                )
+                .await,
+            Verdict::Allow
+        );
+        // A block after a rewrite wins and takes the rewrite with it.
+        let hooks = Hooks::new(vec![
+            before(format!("{base}/rewrite")),
+            before(format!("{base}/deny")),
+        ]);
+        let blocked = hooks
+            .run_rewriting(
+                HookEvent::ToolBefore,
+                Some("run_command"),
+                &payload,
+                dir.path(),
+            )
+            .await;
+        assert_eq!(blocked.verdict, Verdict::Block("the server said no".into()));
+        assert_eq!(blocked.updated_input, None);
+    }
+
+    #[tokio::test]
+    async fn only_trusted_hooks_rewrite_and_only_objects_are_taken() {
+        let (base, _seen) = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let payload = json!({"tool_input": {"command": "A"}});
+        // A plugin an agent installed: its hooks are loaded with `may_rewrite` false.
+        let mut untrusted = before(format!("{base}/rewrite"));
+        untrusted.may_rewrite = false;
+        let outcome = Hooks::new(vec![untrusted])
+            .run_rewriting(HookEvent::ToolBefore, Some("x"), &payload, dir.path())
+            .await;
+        assert_eq!(outcome.updated_input, None);
+        // An input that is not an object is not a rewrite.
+        let outcome = Hooks::new(vec![before(format!("{base}/not-an-object"))])
+            .run_rewriting(HookEvent::ToolBefore, Some("x"), &payload, dir.path())
+            .await;
+        assert_eq!(outcome.updated_input, None);
+        // Rewrites belong to their event: a tool.after hook cannot rewrite anything.
+        let outcome = Hooks::new(vec![http_hook(
+            "tool.after",
+            format!("{base}/rewrite"),
+            None,
+            5,
+        )])
+        .run_rewriting(HookEvent::ToolAfter, Some("x"), &payload, dir.path())
+        .await;
+        assert_eq!(outcome.updated_input, None);
+        // Plugin hooks load as non-rewriting.
+        let (hooks, _) = parse_hooks_json(
+            r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "x"}]}]}}"#,
+            std::path::Path::new("/p"),
+            "plugin:p",
+        )
+        .unwrap();
+        assert!(!hooks[0].may_rewrite);
+    }
+
+    #[tokio::test]
+    async fn a_prompt_can_be_rewritten_by_its_hook() {
+        let (base, _seen) = serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let hooks = Hooks::new(vec![http_hook(
+            "prompt.submit",
+            format!("{base}/prompt"),
+            None,
+            5,
+        )]);
+        let outcome = hooks
+            .run_rewriting(
+                HookEvent::PromptSubmit,
+                None,
+                &json!({"prompt": "old"}),
+                dir.path(),
+            )
+            .await;
+        assert_eq!(outcome.updated_prompt.as_deref(), Some("a new prompt"));
+        assert_eq!(outcome.updated_input, None);
     }
 }
