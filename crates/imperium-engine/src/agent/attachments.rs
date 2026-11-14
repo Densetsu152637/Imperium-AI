@@ -106,9 +106,13 @@ impl Agent {
         let per_call = std::time::Duration::from_secs(
             settings.describe_timeout_s.clamp(1, MAX_DESCRIBE_SECONDS),
         );
-        let deadline = Instant::now() + per_call * 2;
+        let mut deadline = Instant::now() + per_call * 2;
         let mut unavailable = false;
         for one in pending {
+            // A stopped session waits here, holding nothing (a call takes its own slot, and
+            // the turn keeps the presence it already has), and the time it waited is not
+            // charged to the message's deadline.
+            deadline += self.wait_out_stop().await;
             let reason = if attempts + one.images.len() > max_images {
                 Some(format!(
                     "only {max_images} images of a message are described \
@@ -245,6 +249,18 @@ impl Agent {
         Ok(routed.model)
     }
 
+    /// While the user has the session stopped, waits for it to go on and returns how long it
+    /// waited.
+    async fn wait_out_stop(&self) -> std::time::Duration {
+        let mut stop = self.shared.controls.stop_signal();
+        if !*stop.borrow_and_update() {
+            return std::time::Duration::ZERO;
+        }
+        let waited = Instant::now();
+        let _ = stop.wait_for(|stopped| !*stopped).await;
+        waited.elapsed()
+    }
+
     /// One attachment's description, from the session's cache when the same file was described
     /// by the same model before.
     async fn describe_one(
@@ -253,6 +269,12 @@ impl Agent {
         one: &Undescribed,
         limit: std::time::Duration,
     ) -> Result<String, Failure> {
+        let configured = std::time::Duration::from_secs(
+            self.shared
+                .attachments
+                .describe_timeout_s
+                .clamp(1, MAX_DESCRIBE_SECONDS),
+        );
         let key = format!("{}\n{}", model.spec, one.hash);
         if let Some(text) = lock(&self.shared.descriptions).get(&key) {
             return Ok(text.clone());
@@ -263,11 +285,7 @@ impl Agent {
                 model.spec
             )));
         }
-        // Images sent while the session is stopped are described when it goes on, not given
-        // up on: the stop is a pause, and the turn waits with it.
         let holder = self.holder();
-        let mut attached = None;
-        self.hold_while_stopped(&mut attached, &holder).await;
         let settings = &self.shared.attachments;
         let prompt = describe_prompt(one);
         let request = vec![
@@ -293,7 +311,8 @@ impl Agent {
         let call = async {
             let (client, lease) = self
                 .client_for(model, &holder, prompt_tokens, false)
-                .await?;
+                .await
+                .map_err(CallError::Unreachable)?;
             let mut ignore = |_: &str| {};
             let result = client
                 .stream(
@@ -314,7 +333,7 @@ impl Agent {
                     &mut ignore,
                 )
                 .await
-                .map_err(|error| error.to_string());
+                .map_err(CallError::Model);
             drop(lease);
             result
         };
@@ -329,19 +348,21 @@ impl Agent {
             result = tokio::time::timeout(limit, call) => match result {
                 Ok(Ok(completion)) => completion,
                 Ok(Err(error)) => {
-                    return Err(Failure::fatal(format!("{} failed: {error}", model.spec)));
+                    return Err(Failure {
+                        reason: format!("{} failed: {error}", model.spec),
+                        fatal: error.model_unavailable(),
+                    });
                 }
                 Err(_) => {
                     return Err(Failure::fatal(format!(
                         "{} took longer than {} s (attachments.describe_timeout_s; a local \
                          model's loading counts)",
                         model.spec,
-                        limit.as_secs()
+                        configured.as_secs()
                     )));
                 }
             },
         };
-        drop(attached);
         // The description was a model call: it counts toward budgets like any other.
         if let Some(usage) = &completion.usage {
             self.emit(SessionEvent::ModelCallCompleted {
@@ -370,6 +391,37 @@ impl Agent {
         }
         cache.insert(key, text.clone());
         Ok(text)
+    }
+}
+
+/// Why a describing call failed.
+enum CallError {
+    /// No client or slot could be had for the model.
+    Unreachable(String),
+    Model(imperium_models::ModelError),
+}
+
+impl CallError {
+    /// Whether the failure is the model's (not reachable, loading failed, rate-limited, a
+    /// server error) and not one image's: an HTTP 4xx other than a rate limit or a request
+    /// timeout means this image was refused and the others may still be taken.
+    fn model_unavailable(&self) -> bool {
+        match self {
+            CallError::Unreachable(_) => true,
+            CallError::Model(imperium_models::ModelError::Status { status, .. }) => {
+                !(400..500).contains(status) || matches!(status, 408 | 429)
+            }
+            CallError::Model(_) => true,
+        }
+    }
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CallError::Unreachable(message) => f.write_str(message),
+            CallError::Model(error) => std::fmt::Display::fmt(error, f),
+        }
     }
 }
 

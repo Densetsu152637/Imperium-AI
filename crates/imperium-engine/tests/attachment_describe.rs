@@ -572,3 +572,138 @@ async fn a_budget_that_refuses_the_describer_leaves_the_image_unseen_with_a_reas
             .contains("the budget for cloud:eyes does not allow the call")
     );
 }
+
+/// Rejects the first request with HTTP 400 and answers the rest with `reply`.
+async fn fake_rejecting_first(reply: &'static str) -> (String, Log) {
+    use axum::response::IntoResponse;
+    let log: Log = Arc::default();
+    let seen = Arc::clone(&log);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |axum::Json(body): axum::Json<Value>| {
+            let seen = Arc::clone(&seen);
+            async move {
+                let first = {
+                    let mut seen = seen.lock().unwrap();
+                    seen.push(body);
+                    seen.len() == 1
+                };
+                if first {
+                    return (axum::http::StatusCode::BAD_REQUEST, "bad image").into_response();
+                }
+                let body = format!(
+                    "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                    json!({"choices":[{"delta":{"content":reply}}]}),
+                    json!({"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5}})
+                );
+                ([("content-type", "text/event-stream")], body).into_response()
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    (url, log)
+}
+
+#[tokio::test]
+async fn a_stop_while_describing_waits_and_is_not_charged_to_the_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let (main, main_log) = fake("seen").await;
+    let (eyes, eyes_log) = fake("a description").await;
+    let session = start(
+        dir.path(),
+        &main,
+        vec![row("eyes", "cloud:eyes", &eyes, &["vision"])],
+        // Two seconds in all for the message: a stop of 2.5 s would use it up if it counted.
+        AttachmentSettings {
+            describe_timeout_s: 1,
+            ..Default::default()
+        },
+    );
+    let mut events = session.subscribe();
+    session.stop();
+    let attached = vec![
+        image(dir.path(), "one.png", 1),
+        image(dir.path(), "two.png", 2),
+    ];
+    let resume = async {
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        session.resume_work();
+    };
+    let (_, _) = tokio::join!(turn(&session, &mut events, attached), resume);
+    assert_eq!(
+        eyes_log.lock().unwrap().len(),
+        2,
+        "both described after the resume"
+    );
+    let (text, _) = last_user(&main_log);
+    assert_eq!(text.matches("a description").count(), 2, "{text}");
+}
+
+#[tokio::test]
+async fn a_refused_image_does_not_make_the_model_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let (main, main_log) = fake("seen").await;
+    let (eyes, eyes_log) = fake_rejecting_first("the second image").await;
+    let session = start(
+        dir.path(),
+        &main,
+        vec![row("eyes", "cloud:eyes", &eyes, &["vision"])],
+        AttachmentSettings::default(),
+    );
+    let mut events = session.subscribe();
+    turn(
+        &session,
+        &mut events,
+        vec![
+            image(dir.path(), "one.png", 1),
+            image(dir.path(), "two.png", 2),
+        ],
+    )
+    .await;
+    assert_eq!(
+        eyes_log.lock().unwrap().len(),
+        2,
+        "the second was still sent"
+    );
+    let (text, _) = last_user(&main_log);
+    assert!(text.contains("HTTP 400"), "{text}");
+    assert!(text.contains("the second image"), "{text}");
+    assert!(!text.contains("describing model unavailable"), "{text}");
+}
+
+#[tokio::test]
+async fn descriptions_are_cached_by_content_and_by_describing_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let (main, _) = fake("seen").await;
+    let (first, first_log) = fake("from the first row").await;
+    let (second, second_log) = fake("from the second row").await;
+    let catalog = vec![
+        row("first", "cloud:first", &first, &[]),
+        row("second", "cloud:second", &second, &[]),
+    ];
+    // The same bytes under two names are one file to the cache.
+    let same = vec![image(dir.path(), "a.png", 7), image(dir.path(), "b.png", 7)];
+    for (named, log) in [("first", &first_log), ("second", &second_log)] {
+        let session = start(
+            dir.path(),
+            &main,
+            catalog.clone(),
+            AttachmentSettings {
+                describe_with: Some(named.into()),
+                ..Default::default()
+            },
+        );
+        let mut events = session.subscribe();
+        turn(&session, &mut events, same.clone()).await;
+        assert_eq!(
+            log.lock().unwrap().len(),
+            1,
+            "{named}: one call for one file"
+        );
+    }
+    // Each row described the file once: the file is not shared across describers.
+    assert_eq!(first_log.lock().unwrap().len(), 1);
+    assert_eq!(second_log.lock().unwrap().len(), 1);
+}
