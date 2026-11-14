@@ -14,10 +14,6 @@ export const isStopped = ({ status, statusDetail }: Status): boolean => status =
 export const canStop = (session: Status & { busy: boolean }, runningTasks: number): boolean =>
   !isStopped(session) && (session.busy || runningTasks > 0);
 
-/** The shortcut that stops a running session or resumes a stopped one: Ctrl+. (⌘. on macOS). */
-export const isStopShortcut = (event: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }): boolean =>
-  event.key === "." && (event.ctrlKey || event.metaKey) && !event.altKey;
-
 /** A subagent's status as the Agents panel shows it: a running one is paused while the session is stopped. */
 export function shownTaskStatus<T extends string>(status: T, stopped: boolean): T | "paused" {
   return stopped && status === "running" ? "paused" : status;

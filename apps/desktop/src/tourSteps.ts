@@ -54,7 +54,7 @@ export const TOUR_STEPS: TourStep[] = [
   {
     id: "palette",
     title: "The command palette",
-    body: "Press Ctrl+K (Cmd+K on macOS) to search every action, session, environment, model, panel, and settings section from the keyboard.",
+    body: "Press Ctrl+K (Cmd+K on macOS, or the key you chose in Settings → Keyboard) to search every action, session, environment, model, panel, and settings section from the keyboard.",
   },
   {
     id: "approvals",

@@ -4,6 +4,7 @@
 
 import type { LucideIcon } from "lucide-react";
 
+import { formatChord, type ShortcutId } from "../shortcuts";
 import type { Rankable } from "./rank";
 
 export type Command = Rankable & {
@@ -12,6 +13,8 @@ export type Command = Rankable & {
   icon?: LucideIcon;
   /** A shortcut that does the same, as "Mod+," (Mod: Ctrl, or Cmd on macOS). */
   shortcut?: string;
+  /** The rebindable shortcut that does the same; the palette shows its current binding instead of `shortcut`. */
+  shortcutAction?: ShortcutId;
   /**
    * From a panel window, every command runs in the main window, which comes forward; set this
    * for ones whose effect shows everywhere (the theme), so the panel window stays in front.
@@ -51,5 +54,5 @@ const MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator
 
 /** A shortcut as this platform writes it: "Mod+," is "Ctrl+," here and "⌘," on macOS. */
 export function formatShortcut(shortcut: string): string {
-  return MAC ? shortcut.replace(/Mod\+/g, "⌘").replace(/Shift\+/g, "⇧").replace(/Alt\+/g, "⌥") : shortcut.replace(/Mod\+/g, "Ctrl+");
+  return formatChord(shortcut, MAC);
 }

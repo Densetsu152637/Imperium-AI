@@ -116,6 +116,8 @@ import {
 } from "./settings";
 import { PANELS_ICON, SETTINGS_SECTIONS, SettingsWindow, type LayoutNotice } from "./SettingsWindow";
 import { appCommands } from "./commands/appCommands";
+import { formatShortcut } from "./commands/registry";
+import { bindingFor, isCapturing, triggers } from "./shortcuts";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
 import { splashDone } from "./boot";
 import { Tour } from "./Tour";
@@ -523,18 +525,18 @@ export function App() {
     setDoc<Cache>("cache", { sessions: summaries, environments, savedAt: Date.now() });
   }, [sessions, environments, status.kind, isDetached]);
 
-  // Ctrl+, (Cmd+, on macOS) opens Settings, as in most desktop apps.
+  // The Settings shortcut (Ctrl+, by default; Cmd+, on macOS) opens it, as in most desktop apps.
   useEffect(() => {
     if (isDetached) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "," && (event.ctrlKey || event.metaKey)) {
+      if (!isCapturing() && triggers(event, settings.shortcuts, "settings.toggle")) {
         event.preventDefault();
         setShowSettings((open) => !open);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isDetached]);
+  }, [isDetached, settings.shortcuts]);
 
   useEffect(() => {
     void connect();
@@ -1601,7 +1603,7 @@ export function App() {
           aria-expanded={showSettings}
           data-tour="settings"
           aria-label="Settings"
-          title="Settings (Ctrl+,)"
+          title={`Settings (${formatShortcut(bindingFor(settings.shortcuts, "settings.toggle"))})`}
         >
           <Settings aria-hidden="true" />
         </button>

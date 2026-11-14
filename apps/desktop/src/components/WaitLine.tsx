@@ -5,6 +5,9 @@
 import { LoaderCircle, Play, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { formatShortcut } from "../commands/registry";
+import { useSettings } from "../settings";
+import { bindingFor } from "../shortcuts";
 import { formatElapsed, type WaitView } from "../waits";
 import { modelAliases } from "../modelNames";
 
@@ -39,6 +42,7 @@ function modelLabel(model: string): string {
 
 export function WaitLine({ view, compact = false, ...handlers }: { view: WaitView; compact?: boolean } & WaitHandlers) {
   const now = useNow(true);
+  const stopKeys = formatShortcut(bindingFor(useSettings().shortcuts, "session.stop"));
   const elapsed = formatElapsed(now - view.since);
   return (
     <div className={`wait-line${compact ? " compact" : ""}`} role="status" title={view.model ? modelLabel(view.model) : undefined}>
@@ -48,7 +52,7 @@ export function WaitLine({ view, compact = false, ...handlers }: { view: WaitVie
         {elapsed}
       </span>
       {view.action === "stop" && handlers.onStop && (
-        <button type="button" className="ghost danger" onClick={handlers.onStop} title="Stop: pause the agent and its subagents at their next safe point (Ctrl+.)">
+        <button type="button" className="ghost danger" onClick={handlers.onStop} title={`Stop: pause the agent and its subagents at their next safe point (${stopKeys})`}>
           <Square aria-hidden="true" /> Stop
         </button>
       )}
