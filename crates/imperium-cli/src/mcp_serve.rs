@@ -72,8 +72,11 @@ struct Hub {
     /// Requests answered through this harness, per session: `true` for a permission request,
     /// `false` for a batch of questions. The daemon only queues an answer, so the event
     /// history keeps showing the request as open until the agent moves on.
-    answered: Arc<Mutex<HashMap<String, HashSet<(bool, u64)>>>>,
+    answered: Arc<Mutex<Answered>>,
 }
+
+/// Per session, the requests answered through the harness.
+type Answered = HashMap<String, HashSet<(bool, u64)>>;
 
 impl Hub {
     fn start(client: Client) -> (Hub, tokio::task::JoinHandle<()>) {
