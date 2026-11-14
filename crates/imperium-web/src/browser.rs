@@ -91,6 +91,8 @@ pub struct Browser {
     next_tab: u32,
     /// Tabs the pages opened themselves, not yet reported to the agent.
     opened_by_pages: Vec<String>,
+    /// Pages the browser lists that are not tabs: the throwaway page of the start-up warm-up.
+    ignored: Vec<String>,
     /// The browser-level connection that reports downloads (and refuses them).
     downloads: Option<Socket>,
     pending_downloads: Vec<PendingDownload>,
@@ -241,6 +243,7 @@ impl Browser {
             active: 1,
             next_tab: 2,
             opened_by_pages: Vec::new(),
+            ignored: Vec::new(),
             downloads: None,
             pending_downloads: Vec::new(),
         }
@@ -268,8 +271,10 @@ impl Browser {
         let started = Instant::now();
         let outcome = tokio::time::timeout(limit, async {
             let opened = Self::warm_up_navigations(port, limit, self.log_path.clone()).await?;
-            self.warmed = opened;
-            if opened {
+            self.warmed = opened.is_some();
+            if let Some(throwaway) = opened {
+                // The browser can keep listing it for a while; it is never a tab of ours.
+                self.ignored.push(throwaway);
                 // A page that was opened and closed can leave the one being driven in the
                 // background, where a screenshot waits for a frame that is never drawn.
                 self.bring_to_front(limit).await?;
@@ -315,12 +320,12 @@ impl Browser {
         }
     }
 
-    /// Opens, loads and closes the throwaway page; true when it was opened.
+    /// Opens, loads and closes the throwaway page; its target id when it was opened.
     async fn warm_up_navigations(
         port: u16,
         limit: Duration,
         log_path: PathBuf,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<String>, String> {
         let base = format!("http://127.0.0.1:{port}");
         let client = reqwest::Client::new();
         let created = match client
@@ -340,12 +345,12 @@ impl Browser {
             Ok(target) => target,
             Err(error) => {
                 tracing::warn!(%error, "could not open a page to warm the browser up");
-                return Ok(false);
+                return Ok(None);
             }
         };
         let Some(id) = target["id"].as_str().map(str::to_string) else {
             tracing::warn!("the browser opened a page without an id");
-            return Ok(false);
+            return Ok(None);
         };
         let outcome = match page_socket(&json!([target]), port) {
             Ok(Some(socket_url)) => {
@@ -370,7 +375,7 @@ impl Browser {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        outcome.map(|()| true)
+        outcome.map(|()| Some(id))
     }
 
     async fn navigate_throwaway(
@@ -518,7 +523,9 @@ impl Browser {
             .json()
             .await
             .map_err(|error| redact(&error.to_string()))?;
-        Ok(tabs::listed(&pages))
+        let mut listed = tabs::listed(&pages);
+        listed.retain(|tab| !self.ignored.contains(&tab.id));
+        Ok(listed)
     }
 
     /// Brings the tab list in line with what the browser has: tabs a page closed are dropped,
