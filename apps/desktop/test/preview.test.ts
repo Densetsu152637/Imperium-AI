@@ -3,7 +3,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { applyPreviewEvent, browserAddress, clickFraction, keyAction, previewUrl } from "../src/preview.ts";
+import {
+  applyBrowserView,
+  applyPreviewEvent,
+  browserAddress,
+  clickFraction,
+  keyAction,
+  previewUrl,
+  shownTab,
+} from "../src/preview.ts";
 
 test("loopback http(s) addresses are previewed", () => {
   for (const input of [
@@ -67,6 +75,50 @@ test("takeover and preview events update the session's state", () => {
   assert.equal(state.driver, "agent");
   state = applyPreviewEvent(state, { type: "preview_changed", url: null, command: null });
   assert.equal(state.preview, null);
+});
+
+test("the browser mirror keeps one page per tab and drops tabs that closed", () => {
+  const tab = (id: string, active: boolean) => ({ id, url: `http://x/${id}`, title: `T${id}`, active });
+  const page = (id: string, shot: string, tabs: ReturnType<typeof tab>[]) => ({
+    url: `http://x/${id}`,
+    title: `T${id}`,
+    screenshot: shot,
+    tab: id,
+    tabs,
+  });
+  let mirror = applyBrowserView(null, page("1", "a", [tab("1", true)]));
+  assert.equal(mirror.active, "1");
+  mirror = applyBrowserView(mirror, page("2", "b", [tab("1", false), tab("2", true)]));
+  assert.deepEqual(Object.keys(mirror.pages).sort(), ["1", "2"]);
+  assert.equal(mirror.pages["1"]?.screenshot, "a", "the first tab keeps its own screenshot");
+  assert.equal(mirror.pages["2"]?.screenshot, "b");
+  mirror = applyBrowserView(mirror, page("2", "c", [tab("1", false), tab("2", true)]));
+  assert.equal(mirror.pages["2"]?.screenshot, "c");
+  mirror = applyBrowserView(mirror, page("1", "d", [tab("1", true)]));
+  assert.deepEqual(Object.keys(mirror.pages), ["1"], "a closed tab's page is dropped");
+  assert.equal(mirror.pages["1"]?.screenshot, "d");
+});
+
+test("a daemon that names no tabs gives one unnamed tab", () => {
+  const mirror = applyBrowserView(null, { url: "http://x/", title: "X", screenshot: "s" });
+  assert.equal(mirror.active, null);
+  assert.deepEqual(mirror.tabs, []);
+  assert.equal(shownTab(mirror, null), "0");
+  assert.equal(mirror.pages["0"]?.screenshot, "s");
+});
+
+test("the tab shown is the chosen one while it is open, else the active one", () => {
+  const mirror = applyBrowserView(null, {
+    url: "http://x/1",
+    title: "T1",
+    screenshot: "a",
+    tab: "1",
+    tabs: [{ id: "1", url: "http://x/1", title: "T1", active: true }],
+  });
+  assert.equal(shownTab(null, "1"), null);
+  assert.equal(shownTab(mirror, null), "1");
+  assert.equal(shownTab(mirror, "1"), "1");
+  assert.equal(shownTab(mirror, "7"), "1", "a tab that closed falls back to the active one");
 });
 
 test("a click on the screenshot becomes fractions of the page, kept inside it", () => {

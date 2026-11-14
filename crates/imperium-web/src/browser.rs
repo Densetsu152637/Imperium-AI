@@ -15,6 +15,10 @@ use tokio::process::{Child, Command};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
+use crate::tabs::{self, Listed, TabRec};
+
+type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
 /// From starting the browser to having a page to drive; cold starts on CI runners are slow.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// Longest one request to the browser's debugger may take.
@@ -30,6 +34,16 @@ const MAX_TEXT: usize = 20_000;
 /// How much of the browser's output an error reports, in bytes and in lines.
 const LOG_TAIL: usize = 2_000;
 const LOG_LINES: usize = 10;
+/// The most tabs open at once, the pages a page opens by itself included; further ones are
+/// closed again.
+pub const MAX_TABS: usize = 8;
+/// How long, after an action, to wait for the browser to report a download the action started.
+const DOWNLOAD_POLL: Duration = Duration::from_millis(150);
+/// Downloads remembered so the agent can save one without naming its URL.
+const MAX_PENDING_DOWNLOADS: usize = 10;
+/// The most time, and the most events, one look at the download connection may take.
+const DOWNLOAD_READ_LIMIT: Duration = Duration::from_secs(1);
+const DOWNLOAD_EVENTS: usize = 200;
 
 /// What the page looks like after an action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,16 +52,58 @@ pub struct View {
     pub title: String,
     /// A JPEG screenshot, base64-encoded.
     pub screenshot: String,
+    /// The tab this is (the active one), as `browser_tabs` names it.
+    pub tab: String,
+    /// Every open tab, in the order they were opened.
+    pub tabs: Vec<TabInfo>,
+}
+
+/// One open tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabInfo {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub active: bool,
+}
+
+/// A download a page started, which the browser refused (downloads are denied; the agent saves
+/// one deliberately with `browser_download`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingDownload {
+    pub url: String,
+    /// The name the page suggested; page-controlled, so not trusted as a file name.
+    pub filename: String,
 }
 
 pub struct Browser {
     log_path: PathBuf,
     _process: Option<Child>,
-    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    /// The debugger connection of the active tab.
+    socket: Socket,
     next_id: AtomicU64,
     /// Whether the start-up warm-up opened its throwaway page. False when the browser would
     /// not open one (the first navigation then pays for the start-up work, as it used to).
     warmed: bool,
+    /// The debugging port, on loopback.
+    port: u16,
+    http: reqwest::Client,
+    /// Open tabs in the order they were opened; `socket` talks to the one labelled `active`.
+    tabs: Vec<TabRec>,
+    active: u32,
+    next_tab: u32,
+    /// Tabs the pages opened themselves, not yet reported to the agent.
+    opened_by_pages: Vec<String>,
+    /// Pages the browser lists that are not tabs: the throwaway page of the start-up warm-up.
+    ignored: Vec<String>,
+    /// The last URL the browser listed for each open tab (by label), for the approval rules.
+    tab_urls: Vec<(u32, String)>,
+    /// The browser-level connection that reports downloads (and refuses them).
+    downloads: Option<Socket>,
+    /// The connection that refuses downloads closed or failed: the browser may save files
+    /// by itself now, so it must not be used any more.
+    refusal_lost: bool,
+    pending_downloads: Vec<PendingDownload>,
 }
 
 impl std::fmt::Debug for Browser {
@@ -102,6 +158,11 @@ impl Browser {
         headless: bool,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(profile_dir).map_err(|error| error.to_string())?;
+        // Defence in depth next to the debugger's refusal: should a download ever get through,
+        // it lands in an empty folder of the browser's own profile, after a prompt nobody sees.
+        if let Err(error) = set_download_prefs(profile_dir) {
+            tracing::warn!(%error, "could not point the browser's downloads at an empty folder");
+        }
         let log_path = profile_dir.join("imperium-browser.log");
         let mut command = Command::new(program);
         let deadline = Instant::now() + START_TIMEOUT;
@@ -158,16 +219,49 @@ impl Browser {
                     redact(&error.to_string())
                 )
             })?;
-        let mut browser = Browser {
+        let target = socket_url
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let mut browser = Browser::assemble(log_path, Some(process), socket, port, target);
+        browser.call("Page.enable", json!({})).await?;
+        browser.warm_up(port).await?;
+        // After the warm-up, so the browser has finished starting. Failing to refuse downloads
+        // fails the start: a browser that might save files by itself is not offered.
+        browser.refuse_downloads().await?;
+        Ok(browser)
+    }
+
+    /// A browser whose one tab, `target`, `socket` is connected to.
+    fn assemble(
+        log_path: PathBuf,
+        process: Option<Child>,
+        socket: Socket,
+        port: u16,
+        target: String,
+    ) -> Self {
+        Browser {
             log_path,
-            _process: Some(process),
+            _process: process,
             socket,
             next_id: AtomicU64::new(1),
             warmed: false,
-        };
-        browser.call("Page.enable", json!({})).await?;
-        browser.warm_up(port).await?;
-        Ok(browser)
+            port,
+            http: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .unwrap_or_default(),
+            tabs: vec![TabRec { label: 1, target }],
+            active: 1,
+            next_tab: 2,
+            opened_by_pages: Vec::new(),
+            ignored: Vec::new(),
+            tab_urls: Vec::new(),
+            downloads: None,
+            refusal_lost: false,
+            pending_downloads: Vec::new(),
+        }
     }
 
     /// Whether the start-up warm-up ran: the browser opened its throwaway page.
@@ -192,8 +286,10 @@ impl Browser {
         let started = Instant::now();
         let outcome = tokio::time::timeout(limit, async {
             let opened = Self::warm_up_navigations(port, limit, self.log_path.clone()).await?;
-            self.warmed = opened;
-            if opened {
+            self.warmed = opened.is_some();
+            if let Some(throwaway) = opened {
+                // The browser can keep listing it for a while; it is never a tab of ours.
+                self.ignored.push(throwaway);
                 // A page that was opened and closed can leave the one being driven in the
                 // background, where a screenshot waits for a frame that is never drawn.
                 self.bring_to_front(limit).await?;
@@ -239,12 +335,12 @@ impl Browser {
         }
     }
 
-    /// Opens, loads and closes the throwaway page; true when it was opened.
+    /// Opens, loads and closes the throwaway page; its target id when it was opened.
     async fn warm_up_navigations(
         port: u16,
         limit: Duration,
         log_path: PathBuf,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<String>, String> {
         let base = format!("http://127.0.0.1:{port}");
         let client = reqwest::Client::new();
         let created = match client
@@ -264,12 +360,12 @@ impl Browser {
             Ok(target) => target,
             Err(error) => {
                 tracing::warn!(%error, "could not open a page to warm the browser up");
-                return Ok(false);
+                return Ok(None);
             }
         };
         let Some(id) = target["id"].as_str().map(str::to_string) else {
             tracing::warn!("the browser opened a page without an id");
-            return Ok(false);
+            return Ok(None);
         };
         let outcome = match page_socket(&json!([target]), port) {
             Ok(Some(socket_url)) => {
@@ -294,7 +390,7 @@ impl Browser {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        outcome.map(|()| true)
+        outcome.map(|()| Some(id))
     }
 
     async fn navigate_throwaway(
@@ -306,13 +402,7 @@ impl Browser {
         let (socket, _) = tokio_tungstenite::connect_async(socket_url)
             .await
             .map_err(|error| format!("could not connect to the browser: {error}"))?;
-        let mut page = Browser {
-            log_path,
-            _process: None,
-            socket,
-            next_id: AtomicU64::new(1),
-            warmed: false,
-        };
+        let mut page = Browser::assemble(log_path, None, socket, 0, String::new());
         let url = format!("{base}/json/version");
         match page
             .call_within(limit, "Page.navigate", json!({"url": url}))
@@ -340,44 +430,27 @@ impl Browser {
         params: Value,
     ) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let message = json!({"id": id, "method": method, "params": params});
-        self.socket
-            .send(Message::Text(message.to_string().into()))
-            .await
-            .map_err(|error| error.to_string())?;
-        loop {
-            let reply = tokio::time::timeout(limit, self.socket.next())
-                .await
-                .map_err(|_| {
-                    format!(
-                        "{method} timed out; browser output: {}",
-                        log_tail(&self.log_path)
-                    )
-                })?
-                .ok_or("the browser closed")?
-                .map_err(|error| error.to_string())?;
-            let Message::Text(text) = reply else { continue };
-            let value: Value =
-                serde_json::from_str(text.as_str()).map_err(|error| error.to_string())?;
-            if value["id"].as_u64() != Some(id) {
-                continue;
-            }
-            if let Some(error) = value.get("error") {
-                return Err(format!(
-                    "{method}: {}",
-                    error["message"].as_str().unwrap_or("failed")
-                ));
-            }
-            return Ok(value["result"].clone());
-        }
+        cdp_call(&mut self.socket, &self.log_path, id, limit, method, params).await
     }
 
     /// Evaluates a JavaScript expression and returns its value.
     async fn evaluate(&mut self, expression: &str) -> Result<Value, String> {
+        self.evaluate_as(expression, false).await
+    }
+
+    /// `evaluate`, where `gesture` makes the script count as something the user did, as a click
+    /// does: a link that opens a new window is then allowed to, where a script alone would be
+    /// blocked as a pop-up. The number of tabs stays bounded either way.
+    async fn evaluate_as(&mut self, expression: &str, gesture: bool) -> Result<Value, String> {
         let result = self
             .call(
                 "Runtime.evaluate",
-                json!({"expression": expression, "returnByValue": true, "awaitPromise": true}),
+                json!({
+                    "expression": expression,
+                    "returnByValue": true,
+                    "awaitPromise": true,
+                    "userGesture": gesture,
+                }),
             )
             .await?;
         if let Some(exception) = result.get("exceptionDetails") {
@@ -416,23 +489,430 @@ impl Browser {
                 json!({"format": "jpeg", "quality": 60}),
             )
             .await?;
+        // Best effort: the tab list is a courtesy next to the page itself.
+        let listed = self.sync_tabs().await.unwrap_or_default();
+        let tabs = self.tab_infos(&listed, &url, &title);
         Ok(View {
             url,
             title,
             screenshot: shot["data"].as_str().unwrap_or_default().to_string(),
+            tab: self.active.to_string(),
+            tabs,
         })
     }
 
-    pub async fn open(&mut self, url: &str) -> Result<String, String> {
+    /// Opens `url` in the active tab, or in a new tab (which becomes the active one) with
+    /// `new_tab`; returns the page's text.
+    pub async fn open(&mut self, url: &str, new_tab: bool) -> Result<String, String> {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err(format!("{url} is not an http or https URL"));
         }
+        if new_tab {
+            // Pages that opened tabs of their own count towards the limit.
+            self.sync_tabs().await?;
+            self.create_tab().await?;
+        }
+        self.navigate(url).await?;
+        self.wait_until_loaded().await?;
+        self.read().await
+    }
+
+    async fn navigate(&mut self, url: &str) -> Result<(), String> {
         let result = self.call("Page.navigate", json!({"url": url})).await?;
         if let Some(error) = result["errorText"].as_str() {
             return Err(format!("could not open {url}: {error}"));
         }
-        self.wait_until_loaded().await?;
-        self.read().await
+        Ok(())
+    }
+
+    // ---- Tabs ----
+
+    /// The page targets the browser lists, in its order.
+    async fn list_targets(&self) -> Result<Vec<Listed>, String> {
+        let pages: Value = self
+            .http
+            .get(format!("http://127.0.0.1:{}/json/list", self.port))
+            .send()
+            .await
+            .map_err(|error| redact(&error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| redact(&error.to_string()))?;
+        let mut listed = tabs::listed(&pages);
+        listed.retain(|tab| !self.ignored.contains(&tab.id));
+        Ok(listed)
+    }
+
+    /// Brings the tab list in line with what the browser has: tabs a page closed are dropped,
+    /// tabs a page opened (a link to a new window) are added up to [`MAX_TABS`] and the rest
+    /// closed, and if the active tab is gone another becomes the active one (a blank one if
+    /// none is left). Returns what the browser listed.
+    async fn sync_tabs(&mut self) -> Result<Vec<Listed>, String> {
+        let listed = self.list_targets().await?;
+        let changes = tabs::reconcile(&mut self.tabs, &mut self.next_tab, &listed, MAX_TABS);
+        self.tab_urls = self
+            .tabs
+            .iter()
+            .filter_map(|rec| {
+                let page = listed.iter().find(|page| page.id == rec.target)?;
+                Some((rec.label, page.url.clone()))
+            })
+            .collect();
+        for target in &changes.excess {
+            self.close_target(target).await;
+        }
+        for (label, target) in &changes.opened {
+            let url = listed
+                .iter()
+                .find(|tab| tab.id == *target)
+                .map(|tab| tab.url.as_str())
+                .unwrap_or_default();
+            self.opened_by_pages.push(format!(
+                "a page opened tab {label} ({}); switch to it with browser_switch to see it",
+                tabs::one_line(url, 120)
+            ));
+            if self.opened_by_pages.len() > 10 {
+                self.opened_by_pages.remove(0);
+            }
+        }
+        if !self.tabs.iter().any(|tab| tab.label == self.active) {
+            match self.tabs.first().map(|tab| tab.label) {
+                Some(label) => self.attach(label).await?,
+                None => {
+                    self.create_tab().await?;
+                }
+            }
+        }
+        Ok(listed)
+    }
+
+    fn tab_infos(&self, listed: &[Listed], url: &str, title: &str) -> Vec<TabInfo> {
+        self.tabs
+            .iter()
+            .map(|rec| {
+                let active = rec.label == self.active;
+                let found = listed.iter().find(|tab| tab.id == rec.target);
+                TabInfo {
+                    id: rec.label.to_string(),
+                    url: if active {
+                        url.to_string()
+                    } else {
+                        found.map(|tab| tab.url.clone()).unwrap_or_default()
+                    },
+                    title: if active {
+                        title.to_string()
+                    } else {
+                        found.map(|tab| tab.title.clone()).unwrap_or_default()
+                    },
+                    active,
+                }
+            })
+            .collect()
+    }
+
+    /// Every open tab with its URL and title.
+    pub async fn tabs(&mut self) -> Result<Vec<TabInfo>, String> {
+        let listed = self.sync_tabs().await?;
+        let (url, title) = listed
+            .iter()
+            .find(|tab| {
+                self.tabs
+                    .iter()
+                    .any(|rec| rec.label == self.active && rec.target == tab.id)
+            })
+            .map(|tab| (tab.url.clone(), tab.title.clone()))
+            .unwrap_or_default();
+        Ok(self.tab_infos(&listed, &url, &title))
+    }
+
+    /// The label a tab id names, if such a tab is open.
+    fn label_of(&self, id: &str) -> Result<u32, String> {
+        id.trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|label| self.tabs.iter().any(|tab| tab.label == *label))
+            .ok_or_else(|| {
+                let open: Vec<String> = self.tabs.iter().map(|tab| tab.label.to_string()).collect();
+                format!(
+                    "there is no tab {id:?}; the open tabs are {}",
+                    open.join(", ")
+                )
+            })
+    }
+
+    /// Opens a blank tab and makes it the active one.
+    async fn create_tab(&mut self) -> Result<u32, String> {
+        if self.tabs.len() >= MAX_TABS {
+            return Err(format!(
+                "{MAX_TABS} tabs are open, the most allowed; close one first"
+            ));
+        }
+        let target: Value = self
+            .http
+            .put(format!(
+                "http://127.0.0.1:{}/json/new?about:blank",
+                self.port
+            ))
+            .send()
+            .await
+            .map_err(|error| redact(&error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| redact(&error.to_string()))?;
+        page_socket(&json!([target]), self.port)?
+            .ok_or_else(|| "the browser opened a tab without a page to drive".to_string())?;
+        let id = target["id"]
+            .as_str()
+            .filter(|id| tabs::is_target_id(id))
+            .ok_or("the browser opened a tab without a usable id")?
+            .to_string();
+        let label = self.next_tab;
+        self.next_tab += 1;
+        self.tabs.push(TabRec { label, target: id });
+        self.attach(label).await?;
+        Ok(label)
+    }
+
+    /// Connects to a tab and makes it the active one.
+    async fn attach(&mut self, label: u32) -> Result<(), String> {
+        let target = self
+            .tabs
+            .iter()
+            .find(|tab| tab.label == label)
+            .map(|tab| tab.target.clone())
+            .ok_or("that tab is not open")?;
+        let url = format!("ws://127.0.0.1:{}/devtools/page/{target}", self.port);
+        let (socket, _) = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .map_err(|error| {
+                format!(
+                    "could not connect to the tab: {}",
+                    redact(&error.to_string())
+                )
+            })?;
+        self.socket = socket;
+        self.active = label;
+        self.call("Page.enable", json!({})).await?;
+        // A tab in the background draws no frames, so a screenshot of it would wait forever.
+        self.bring_to_front(Duration::from_secs(5)).await
+    }
+
+    /// Makes an open tab the active one.
+    pub async fn switch_tab(&mut self, id: &str) -> Result<(), String> {
+        self.sync_tabs().await?;
+        let label = self.label_of(id)?;
+        if label != self.active {
+            self.attach(label).await?;
+            // A page still loading (a window a page just opened) is waited for, within limits.
+            let _ = self.wait_until_loaded().await;
+        }
+        Ok(())
+    }
+
+    /// Closes a tab; the last one cannot be closed. If it was the active one, the tab before it
+    /// (or the first) becomes the active one.
+    pub async fn close_tab(&mut self, id: &str) -> Result<(), String> {
+        self.sync_tabs().await?;
+        let label = self.label_of(id)?;
+        if self.tabs.len() == 1 {
+            return Err("the last tab cannot be closed; open another page in it instead".into());
+        }
+        let position = self
+            .tabs
+            .iter()
+            .position(|tab| tab.label == label)
+            .ok_or("that tab is not open")?;
+        let rec = self.tabs.remove(position);
+        self.close_target(&rec.target).await;
+        if label == self.active {
+            let next = self.tabs[position.saturating_sub(1).min(self.tabs.len() - 1)].label;
+            self.attach(next).await?;
+        }
+        // Wait until the browser has let go of it, so a list right after does not show it.
+        for _ in 0..30 {
+            let gone = self
+                .list_targets()
+                .await
+                .map(|listed| listed.iter().all(|tab| tab.id != rec.target))
+                .unwrap_or(true);
+            if gone {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok(())
+    }
+
+    /// Asks the browser to close a page (failing to is harmless).
+    async fn close_target(&self, target: &str) {
+        if tabs::is_target_id(target) {
+            let _ = self
+                .http
+                .get(format!(
+                    "http://127.0.0.1:{}/json/close/{target}",
+                    self.port
+                ))
+                .send()
+                .await;
+        }
+    }
+
+    // ---- Downloads ----
+
+    /// Connects to the browser itself, tells it to refuse every download and to report each
+    /// one it refuses.
+    async fn refuse_downloads(&mut self) -> Result<(), String> {
+        let version: Value = self
+            .http
+            .get(format!("http://127.0.0.1:{}/json/version", self.port))
+            .send()
+            .await
+            .map_err(|error| redact(&error.to_string()))?
+            .json()
+            .await
+            .map_err(|error| redact(&error.to_string()))?;
+        let url = version["webSocketDebuggerUrl"]
+            .as_str()
+            .ok_or("the browser gave no debugger URL to refuse downloads with")?;
+        let url = loopback_socket(url, self.port)?;
+        let (mut socket, _) = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .map_err(|error| {
+                format!(
+                    "could not connect to the browser: {}",
+                    redact(&error.to_string())
+                )
+            })?;
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        cdp_call(
+            &mut socket,
+            &self.log_path,
+            id,
+            LOAD_TIMEOUT,
+            "Browser.setDownloadBehavior",
+            json!({"behavior": "deny", "eventsEnabled": true}),
+        )
+        .await
+        .map_err(|error| format!("could not make the browser refuse downloads: {error}"))?;
+        self.downloads = Some(socket);
+        Ok(())
+    }
+
+    /// Reads the downloads the browser refused since the last look, and returns the new ones.
+    /// Reading stops after `DOWNLOAD_READ_LIMIT` in all, or `DOWNLOAD_EVENTS` events, so a page
+    /// that floods the connection cannot hold a call up. A connection that closes or fails is
+    /// remembered (`refusal_lost`): the browser is no longer made to refuse downloads.
+    async fn collect_downloads(&mut self) -> Vec<PendingDownload> {
+        let mut fresh = Vec::new();
+        let Some(mut socket) = self.downloads.take() else {
+            return fresh;
+        };
+        let mut lost = false;
+        let deadline = Instant::now() + DOWNLOAD_READ_LIMIT;
+        let mut events = 0;
+        while events < DOWNLOAD_EVENTS {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let message = match tokio::time::timeout(DOWNLOAD_POLL.min(left), socket.next()).await {
+                Err(_) => break,
+                Ok(None) | Ok(Some(Err(_))) => {
+                    tracing::warn!("the browser's download-refusing connection ended");
+                    lost = true;
+                    break;
+                }
+                Ok(Some(Ok(message))) => message,
+            };
+            events += 1;
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let Ok(event) = serde_json::from_str::<Value>(text.as_str()) else {
+                continue;
+            };
+            if event["method"] != "Browser.downloadWillBegin" {
+                continue;
+            }
+            let params = &event["params"];
+            let url = params["url"].as_str().unwrap_or_default().to_string();
+            if url.is_empty() {
+                continue;
+            }
+            let download = PendingDownload {
+                url,
+                filename: params["suggestedFilename"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            };
+            fresh.push(download.clone());
+            self.pending_downloads.push(download);
+            if self.pending_downloads.len() > MAX_PENDING_DOWNLOADS {
+                self.pending_downloads.remove(0);
+            }
+        }
+        if lost {
+            self.refusal_lost = true;
+        } else {
+            self.downloads = Some(socket);
+        }
+        fresh
+    }
+
+    /// Whether the browser may no longer be trusted not to save files by itself: its
+    /// download-refusing connection ended. The owner drops it and starts a new browser.
+    pub fn refusal_lost(&self) -> bool {
+        self.refusal_lost
+    }
+
+    /// The last URL the browser listed for tab `id`, if that tab is known.
+    pub fn tab_url(&self, id: &str) -> Option<String> {
+        let label = id.trim().parse::<u32>().ok()?;
+        self.tab_urls
+            .iter()
+            .find(|(known, _)| *known == label)
+            .map(|(_, url)| url.clone())
+    }
+
+    /// What happened in the browser that the agent did not ask for since the last look, as
+    /// lines for the agent: downloads the browser refused and tabs pages opened. Page-controlled
+    /// text in them is flattened to one line and capped.
+    pub async fn notices(&mut self) -> Vec<String> {
+        let fresh = self.collect_downloads().await;
+        // Pages may have opened tabs since the last look.
+        let _ = self.sync_tabs().await;
+        let mut lines = std::mem::take(&mut self.opened_by_pages);
+        for download in &fresh {
+            lines.push(format!(
+                "the page tried to download a file and the browser refused it: {} (suggested name {:?}); \
+                 save it with browser_download if the user wants it",
+                tabs::one_line(&download.url, 200),
+                tabs::one_line(&download.filename, 80)
+            ));
+        }
+        lines
+    }
+
+    /// The download the page started most recently, if any is waiting.
+    pub fn last_download(&self) -> Option<PendingDownload> {
+        self.pending_downloads.last().cloned()
+    }
+
+    /// Takes a download off the waiting list once it is saved.
+    pub fn forget_download(&mut self, url: &str) {
+        self.pending_downloads
+            .retain(|download| download.url != url);
+    }
+
+    /// The name the page suggested for a download of `url`, if it started one.
+    pub fn suggested_name(&self, url: &str) -> Option<String> {
+        self.pending_downloads
+            .iter()
+            .rev()
+            .find(|download| download.url == url)
+            .map(|download| download.filename.clone())
+            .filter(|name| !name.is_empty())
     }
 
     /// The page's title, URL, and visible text.
@@ -452,10 +932,13 @@ impl Browser {
     pub async fn click(&mut self, selector: &str) -> Result<String, String> {
         let selector = serde_json::to_string(selector).map_err(|error| error.to_string())?;
         let outcome = self
-            .evaluate(&format!(
-                "(() => {{ const el = document.querySelector({selector}); if (!el) return 'no element matches'; \
-                 el.scrollIntoView({{block: 'center'}}); el.click(); return 'clicked'; }})()"
-            ))
+            .evaluate_as(
+                &format!(
+                    "(() => {{ const el = document.querySelector({selector}); if (!el) return 'no element matches'; \
+                     el.scrollIntoView({{block: 'center'}}); el.click(); return 'clicked'; }})()"
+                ),
+                true,
+            )
             .await?;
         let outcome = outcome.as_str().unwrap_or_default().to_string();
         if outcome != "clicked" {
@@ -499,11 +982,22 @@ impl Browser {
         match action {
             BrowserAction::Navigate { url } => {
                 let url = http_url(url)?;
-                let result = self.call("Page.navigate", json!({"url": url})).await?;
-                if let Some(error) = result["errorText"].as_str() {
-                    return Err(format!("could not open {url}: {error}"));
+                self.navigate(&url).await?;
+            }
+            BrowserAction::NewTab { url } => {
+                let url = url
+                    .as_deref()
+                    .filter(|url| !url.trim().is_empty())
+                    .map(http_url)
+                    .transpose()?;
+                self.sync_tabs().await?;
+                self.create_tab().await?;
+                if let Some(url) = url {
+                    self.navigate(&url).await?;
                 }
             }
+            BrowserAction::SwitchTab { tab } => self.switch_tab(tab).await?,
+            BrowserAction::CloseTab { tab } => self.close_tab(tab).await?,
             BrowserAction::Back => self.go_in_history(-1).await?,
             BrowserAction::Forward => self.go_in_history(1).await?,
             BrowserAction::Reload => {
@@ -565,6 +1059,85 @@ impl Browser {
                 .await?;
         }
         Ok(())
+    }
+}
+
+/// Sets the profile's download preferences (`Default/Preferences`) so that a download the
+/// debugger's refusal missed would go to an empty folder under the profile, and only after a
+/// prompt. Existing preferences are kept.
+fn set_download_prefs(profile_dir: &Path) -> Result<(), String> {
+    let folder = profile_dir.join("blocked-downloads");
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    let default = profile_dir.join("Default");
+    std::fs::create_dir_all(&default).map_err(|error| error.to_string())?;
+    let path = default.join("Preferences");
+    let mut prefs: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    for section in ["download", "savefile"] {
+        if !prefs[section].is_object() {
+            prefs[section] = json!({});
+        }
+    }
+    let folder = folder.display().to_string();
+    prefs["download"]["default_directory"] = json!(folder);
+    prefs["download"]["prompt_for_download"] = json!(true);
+    prefs["download"]["directory_upgrade"] = json!(true);
+    prefs["savefile"]["default_directory"] = json!(folder);
+    std::fs::write(&path, prefs.to_string()).map_err(|error| error.to_string())
+}
+
+/// The browser for a test that needs one: where it is installed; where it is not, a skip with a
+/// note, except on CI (the `CI` variable is set), where the runners have one and its absence
+/// means the test would otherwise pass without testing anything.
+#[doc(hidden)]
+pub fn browser_for_tests() -> Option<PathBuf> {
+    let found = find_browser();
+    if found.is_none() {
+        if std::env::var_os("CI").is_some() {
+            panic!("no Chrome, Chromium, or Edge found on CI; the browser tests would not run");
+        }
+        eprintln!("no Chrome, Chromium, or Edge found; skipping");
+    }
+    found
+}
+
+/// Sends a CDP command on `socket` and waits for its result, skipping events in between; gives
+/// up when the browser is silent for `limit`.
+async fn cdp_call(
+    socket: &mut Socket,
+    log_path: &Path,
+    id: u64,
+    limit: Duration,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let message = json!({"id": id, "method": method, "params": params});
+    socket
+        .send(Message::Text(message.to_string().into()))
+        .await
+        .map_err(|error| error.to_string())?;
+    loop {
+        let reply = tokio::time::timeout(limit, socket.next())
+            .await
+            .map_err(|_| format!("{method} timed out; browser output: {}", log_tail(log_path)))?
+            .ok_or("the browser closed")?
+            .map_err(|error| error.to_string())?;
+        let Message::Text(text) = reply else { continue };
+        let value: Value =
+            serde_json::from_str(text.as_str()).map_err(|error| error.to_string())?;
+        if value["id"].as_u64() != Some(id) {
+            continue;
+        }
+        if let Some(error) = value.get("error") {
+            return Err(format!(
+                "{method}: {}",
+                error["message"].as_str().unwrap_or("failed")
+            ));
+        }
+        return Ok(value["result"].clone());
     }
 }
 
@@ -672,6 +1245,11 @@ fn page_socket(pages: &Value, port: u16) -> Result<Option<String>, String> {
     else {
         return Ok(None);
     };
+    loopback_socket(url, port).map(Some)
+}
+
+/// `url` when it is a debugger URL on the loopback port of the browser we started.
+fn loopback_socket(url: &str, port: u16) -> Result<String, String> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|error| format!("the browser gave an unusable debugger URL: {error}"))?;
     let local = matches!(
@@ -683,7 +1261,7 @@ fn page_socket(pages: &Value, port: u16) -> Result<Option<String>, String> {
             "the debugger URL is not on the loopback port of the browser we started".to_string(),
         );
     }
-    Ok(Some(url.to_string()))
+    Ok(url.to_string())
 }
 
 /// Waits for the browser to list its first page and returns that page's debugger socket. The
@@ -758,6 +1336,8 @@ mod tests {
         Refusing,
         /// Answers every command with a result.
         Answering,
+        /// Answers one command, then closes the connection.
+        AnswerOnce,
     }
 
     type Seen = Arc<Mutex<Vec<String>>>;
@@ -765,6 +1345,7 @@ mod tests {
     /// Serves one debugger socket as `mock` says, noting each command as "method url".
     async fn serve_ws(mut ws: WebSocketStream<TcpStream>, mock: Mock, seen: Seen) {
         let refusing = matches!(mock, Mock::Refusing);
+        let once = matches!(mock, Mock::AnswerOnce);
         match mock {
             Mock::Silent => std::future::pending::<()>().await,
             Mock::Chatty => loop {
@@ -774,7 +1355,7 @@ mod tests {
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             },
-            Mock::Refusing | Mock::Answering => {
+            Mock::Refusing | Mock::Answering | Mock::AnswerOnce => {
                 while let Some(Ok(Message::Text(text))) = ws.next().await {
                     let command: Value = serde_json::from_str(text.as_str()).unwrap();
                     seen.lock().unwrap().push(format!(
@@ -791,6 +1372,7 @@ mod tests {
                         .send(Message::Text(reply.to_string().into()))
                         .await
                         .is_err()
+                        || once
                     {
                         break;
                     }
@@ -817,13 +1399,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("imperium-browser.log");
         std::fs::write(&log_path, log).unwrap();
-        let browser = Browser {
-            log_path,
-            _process: None,
-            socket,
-            next_id: AtomicU64::new(1),
-            warmed: false,
-        };
+        let browser = Browser::assemble(log_path, None, socket, port, "T0".into());
         (browser, dir, seen)
     }
 
@@ -870,6 +1446,7 @@ mod tests {
                 if head.starts_with(b"PUT /json/new")
                     || head.starts_with(b"GET /json/close")
                     || head.starts_with(b"GET /json/list")
+                    || head.starts_with(b"GET /json/vers")
                 {
                     let request = read_request(&mut stream).await;
                     let body = if request.starts_with("PUT") {
@@ -877,6 +1454,11 @@ mod tests {
                             "id": "T1",
                             "type": "page",
                             "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/page/T1"),
+                        })
+                        .to_string()
+                    } else if request.starts_with("GET /json/vers") {
+                        json!({
+                            "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/browser/B1"),
                         })
                         .to_string()
                     } else if request.starts_with("GET /json/list") {
@@ -1095,8 +1677,7 @@ mod tests {
     /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
     #[tokio::test]
     async fn the_browser_opens_reads_clicks_types_and_screenshots() {
-        let Some(program) = find_browser() else {
-            eprintln!("no Chrome, Chromium, or Edge found; skipping");
+        let Some(program) = browser_for_tests() else {
             return;
         };
         let page = r#"<html><head><title>Counter</title></head><body>
@@ -1115,7 +1696,7 @@ mod tests {
             .unwrap();
         // A Chrome that stops opening pages at /json/new would quietly skip the warm-up.
         assert!(browser.warmed(), "the start-up warm-up did not run");
-        let text = browser.open(&url).await.unwrap();
+        let text = browser.open(&url, false).await.unwrap();
         assert!(text.starts_with("Counter\nURL: http://127.0.0.1"), "{text}");
         assert!(text.contains("0 clicks"), "{text}");
         browser.click("#add").await.unwrap();
@@ -1131,14 +1712,13 @@ mod tests {
                 .unwrap_err()
                 .contains("no element matches")
         );
-        assert!(browser.open("file:///etc/passwd").await.is_err());
+        assert!(browser.open("file:///etc/passwd", false).await.is_err());
     }
 
     /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
     #[tokio::test]
     async fn the_user_clicks_types_presses_keys_and_navigates() {
-        let Some(program) = find_browser() else {
-            eprintln!("no Chrome, Chromium, or Edge found; skipping");
+        let Some(program) = browser_for_tests() else {
             return;
         };
         // A page that is one big button, then a field to type in, then a second page.
@@ -1208,5 +1788,210 @@ mod tests {
         assert!(browser.act(&file).await.is_err());
         let bad_key = BrowserAction::Key { key: "F13".into() };
         assert!(browser.act(&bad_key).await.is_err());
+    }
+
+    /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
+    #[tokio::test]
+    async fn tabs_open_switch_list_close_and_are_bounded() {
+        let Some(program) = browser_for_tests() else {
+            return;
+        };
+        let page = |title: &'static str, body: &'static str| {
+            get(move || async move {
+                axum::response::Html(format!(
+                    "<html><head><title>{title}</title></head><body>{body}</body></html>"
+                ))
+            })
+        };
+        let app = Router::new()
+            .route(
+                "/a",
+                page("Page A", r#"<a id="pop" target="_blank" href="/c">pop</a>"#),
+            )
+            .route("/b", page("Page B", "second"))
+            .route("/c", page("Page C", "popup"));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let profile = tempfile::tempdir().unwrap();
+        let mut browser = Browser::launch(&program, profile.path(), true)
+            .await
+            .unwrap();
+        browser.open(&format!("{base}/a"), false).await.unwrap();
+        let text = browser.open(&format!("{base}/b"), true).await.unwrap();
+        assert!(text.starts_with("Page B\nURL:"), "{text}");
+
+        let tabs = browser.tabs().await.unwrap();
+        assert_eq!(tabs.len(), 2, "{tabs:?}");
+        assert_eq!(
+            (tabs[0].id.as_str(), tabs[0].title.as_str()),
+            ("1", "Page A")
+        );
+        assert_eq!(
+            (tabs[1].id.as_str(), tabs[1].title.as_str()),
+            ("2", "Page B")
+        );
+        assert!(!tabs[0].active && tabs[1].active);
+
+        // Each tab keeps its own page; the browser's own view follows the active one.
+        browser.switch_tab("1").await.unwrap();
+        let view = browser.view().await.unwrap();
+        assert_eq!((view.tab.as_str(), view.title.as_str()), ("1", "Page A"));
+        assert!(view.screenshot.len() > 100);
+        assert_eq!(view.tabs.iter().filter(|tab| tab.active).count(), 1);
+        assert!(browser.read().await.unwrap().contains("Page A"));
+        assert!(
+            browser
+                .switch_tab("9")
+                .await
+                .unwrap_err()
+                .contains("there is no tab")
+        );
+
+        // A page that opens a window gets a tab of its own, which the agent is told about but
+        // is not switched to.
+        browser.click("#pop").await.unwrap();
+        let notices = browser.notices().await;
+        assert!(
+            notices.iter().any(|line| line.contains("opened tab 3")),
+            "{notices:?}"
+        );
+        assert_eq!(browser.tabs().await.unwrap().len(), 3);
+        assert_eq!(browser.view().await.unwrap().tab, "1");
+        browser.switch_tab("3").await.unwrap();
+        // The window the page opened may still be loading its page.
+        let mut text = String::new();
+        for _ in 0..100 {
+            text = browser.read().await.unwrap();
+            if text.contains("Page C") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(text.contains("Page C"), "{text}");
+
+        // Closing the active tab hands over to a neighbour; the last tab stays.
+        browser.close_tab("3").await.unwrap();
+        let tabs = browser.tabs().await.unwrap();
+        assert_eq!(tabs.len(), 2, "{tabs:?}");
+        assert!(tabs.iter().any(|tab| tab.active));
+        assert!(browser.read().await.is_ok());
+        browser.close_tab("2").await.unwrap();
+        assert!(
+            browser
+                .close_tab("1")
+                .await
+                .unwrap_err()
+                .contains("last tab")
+        );
+
+        // The most tabs open at once is bounded.
+        for _ in 1..MAX_TABS {
+            browser.open(&format!("{base}/b"), true).await.unwrap();
+        }
+        assert_eq!(browser.tabs().await.unwrap().len(), MAX_TABS);
+        let error = browser.open(&format!("{base}/b"), true).await.unwrap_err();
+        assert!(error.contains("the most allowed"), "{error}");
+    }
+
+    /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
+    #[tokio::test]
+    async fn the_browser_refuses_downloads_and_reports_them() {
+        let Some(program) = browser_for_tests() else {
+            return;
+        };
+        let page = r#"<html><head><title>Files</title></head><body>
+            <a id="dl" href="/file.bin" download="report.bin">get</a></body></html>"#;
+        let app = Router::new()
+            .route("/", get(move || async move { axum::response::Html(page) }))
+            .route(
+                "/file.bin",
+                get(|| async {
+                    (
+                        [
+                            ("content-type", "application/octet-stream"),
+                            ("content-disposition", "attachment; filename=\"report.bin\""),
+                        ],
+                        vec![1u8; 64],
+                    )
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let profile = tempfile::tempdir().unwrap();
+        let mut browser = Browser::launch(&program, profile.path(), true)
+            .await
+            .unwrap();
+        browser.open(&format!("{base}/"), false).await.unwrap();
+        assert!(browser.last_download().is_none());
+        browser.click("#dl").await.unwrap();
+        let notices = browser.notices().await;
+        assert!(
+            notices
+                .iter()
+                .any(|line| line.contains("refused it") && line.contains("/file.bin")),
+            "{notices:?}"
+        );
+        let pending = browser.last_download().expect("the download is remembered");
+        assert_eq!(pending.url, format!("{base}/file.bin"));
+        assert_eq!(pending.filename, "report.bin");
+        assert_eq!(
+            browser.suggested_name(&pending.url).as_deref(),
+            Some("report.bin")
+        );
+        // The page is still there and the browser wrote nothing into its profile's downloads.
+        assert!(browser.read().await.unwrap().contains("Files"));
+        browser.forget_download(&pending.url);
+        assert!(browser.last_download().is_none());
+        // Told once.
+        assert!(browser.notices().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_browser_that_will_not_refuse_downloads_does_not_start() {
+        let debugger = mock_debugger(Mock::Refusing).await;
+        let (mut browser, _dir, _) = mock_browser(Mock::Answering, "").await;
+        browser.port = debugger.port;
+        let error = browser.refuse_downloads().await.unwrap_err();
+        assert!(
+            error.contains("could not make the browser refuse downloads"),
+            "{error}"
+        );
+        assert!(browser.downloads.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_lost_download_refusal_is_remembered_so_the_browser_is_replaced() {
+        let debugger = mock_debugger(Mock::AnswerOnce).await;
+        let (mut browser, _dir, _) = mock_browser(Mock::Answering, "").await;
+        browser.port = debugger.port;
+        browser.refuse_downloads().await.unwrap();
+        assert!(!browser.refusal_lost());
+        // The stand-in closed the connection after its one answer.
+        browser.collect_downloads().await;
+        assert!(browser.refusal_lost());
+        assert!(browser.downloads.is_none());
+    }
+
+    #[test]
+    fn the_profile_sends_stray_downloads_to_an_empty_folder() {
+        let profile = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(profile.path().join("Default")).unwrap();
+        let path = profile.path().join("Default").join("Preferences");
+        std::fs::write(&path, r#"{"keep":1,"download":{"other":true}}"#).unwrap();
+        set_download_prefs(profile.path()).unwrap();
+        let prefs: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(prefs["keep"], 1);
+        assert_eq!(prefs["download"]["other"], true);
+        assert_eq!(prefs["download"]["prompt_for_download"], true);
+        let folder = prefs["download"]["default_directory"].as_str().unwrap();
+        assert!(folder.ends_with("blocked-downloads"), "{folder}");
+        assert_eq!(std::fs::read_dir(folder).unwrap().count(), 0);
+        // A damaged file is replaced, not fatal.
+        std::fs::write(&path, "not json").unwrap();
+        set_download_prefs(profile.path()).unwrap();
     }
 }

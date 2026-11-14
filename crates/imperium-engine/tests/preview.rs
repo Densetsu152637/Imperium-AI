@@ -298,6 +298,7 @@ async fn browser_tools_are_refused_while_the_user_drives_and_return_when_given_b
         web: Web::new(None),
         allow_domains: vec!["127.0.0.1".into()],
         browser: Some(setup.clone()),
+        downloads: None,
     });
     let session = session(
         dir.path(),

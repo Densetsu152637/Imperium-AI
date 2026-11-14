@@ -361,14 +361,23 @@ and `environments.agent_update` (protocol 0.28)
     the full server bridge (`imperium mcp-serve` already bridges sessions,
     [20](20-claude-harness.md); exposing Imperium's own tools is not built), and inserting MCP
     prompts as slash commands in the desktop and CLI.
-32. **Web and browser** (partly implemented). The browser pane the user can take over exists.
+32. **Web and browser** (implemented, stage 2: tabs and downloads). The browser pane the user
+    can take over exists.
     Kagi and Exa join SearXNG, Brave and Tavily as search providers (keys only from the keychain);
     `web_fetch` keeps a bounded on-disk cache of shareable pages (`web.cache_ttl_s`,
     `web.cache_max_mb`) and honours `robots.txt` per host (`web.robots`,
     `web.robots_unreachable`), with no protocol change
     ([05](05-tools-and-isolation.md#fetch-cache-and-robotstxt-implemented),
-    [10](10-configuration.md)). Not built: browser tabs and downloads (a design is in 05, and
-    needs a protocol minor), caching search results, and a per-call "fetch fresh" option.
+    [10](10-configuration.md)). Stage 2 (protocol 0.35): the browser has up to eight tabs
+    (`browser_open` with `new_tab`, `browser_tabs`, `browser_switch`, `browser_close`; the desktop
+    mirrors one page per tab and the user can open, switch and close tabs while driving), and
+    downloads are refused by the browser and saved only on request by `browser_download` into the
+    session's scratch folder or `web.download_dir`, size-capped (`web.download_max_mb`), never
+    run, approved afresh on every call (not sticky, not covered by full mode), checked against
+    links in the folder, the safety floor, an inert-extension allowlist, the web domain and
+    `robots.txt` rules and the per-agent local-files lock. Not built: downloading through the browser's own session
+    (cookies), a download list in the desktop panel, scripted `blob:` downloads, caching search
+    results, and a per-call "fetch fresh" option.
 33. **Protocol transport** (implemented). `events.subscribe` and `events.unsubscribe` let a
     connection choose which notification topics it receives, only ever narrowing what it may
     receive anyway; and `daemon.socket` (off by default) also serves the same protocol, with

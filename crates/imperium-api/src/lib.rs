@@ -24,7 +24,7 @@ pub use permissions::{
 };
 pub use pricing::Pricing;
 pub use tools::{
-    Sampler, SamplingFuture, SamplingMessage, SamplingReply, SamplingRequest, StartFuture,
-    ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider, parse_arguments,
-    truncate_chars,
+    BrowserTabView, Sampler, SamplingFuture, SamplingMessage, SamplingReply, SamplingRequest,
+    StartFuture, ToolCheck, ToolContext, ToolEvent, ToolFuture, ToolGroup, ToolProvider,
+    parse_arguments, truncate_chars,
 };
