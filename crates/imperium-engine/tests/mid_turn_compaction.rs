@@ -134,6 +134,8 @@ fn start_gated(
         max_steps: 12,
         auto_compact: false,
         auto_compact_at,
+        attended: true,
+        harness: Default::default(),
         background: None,
         checkpoints: None,
         budget_gate,

@@ -428,7 +428,7 @@ and `environments.agent_update` (protocol 0.28)
     own permission checks and without exposing the token. No protocol change. *Not built:*
     exposing Imperium's own tools over MCP, streamed turn text, and automatic reconnection
     ([20](20-claude-harness.md), [02](02-architecture.md), [03](03-agent-engine.md)).
-43. **Harness-level engineering.** One change to the harness around the model, in four parts.
+43. **Harness-level engineering** (implemented). One change to the harness around the model, in four parts.
     (a) A de-reference step before the planner. The small (4B) model reads the latest user message
     and the compacted history, then writes a standalone prompt. Pronouns and references such as
     "it", "that file" and "the previous step" become concrete names. (b) A structured state object,
@@ -438,7 +438,13 @@ and `environments.agent_update` (protocol 0.28)
     below a threshold, and evaluation rewards the call. (d) Ambiguity patterns in the
     reasoning-pattern retrieval store. For a request such as "fix the issue from earlier", the agent
     checks the error log state first, and asks only if that does not settle it
-    ([03](03-agent-engine.md), [17](17-memory.md)).
+    ([03](03-agent-engine.md#harness-aids-for-small-models), [05](05-tools-and-isolation.md#request_clarification), [17](17-memory.md)).
+    Built as described, on by default only for local root models in attended sessions (`[harness]`):
+    the rewrite adds entities to the state, which lives in the conversation and is also updated by
+    `update_state`; `request_clarification` reuses the `ask_user` prompt, the ambiguity patterns are a new table
+    (no retrieval store existed) with a training document, and `schemas/eval` scores asking against
+    guessing. Not built: automatic state updates from tool calls, a separate small model for the
+    rewrite, and showing the state in the desktop.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
