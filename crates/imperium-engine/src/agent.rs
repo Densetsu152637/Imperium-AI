@@ -37,6 +37,8 @@ use imperium_memory::{NewEntry, Scope};
 
 use imperium_protocol::methods::{Compaction, ContextFit};
 
+mod attachments;
+
 use crate::agents::task_number;
 use crate::artefacts::{self, handle_message};
 use crate::breakdown::{
@@ -459,7 +461,7 @@ impl Agent {
                 text.push_str(&status);
                 listed = paused.clone();
             }
-            let rendered = render_attachments(&message.attachments).await;
+            let rendered = self.render_attachments(&message.attachments).await;
             self.emit(SessionEvent::Steered {
                 id: message.id,
                 text: message.text,
@@ -821,7 +823,7 @@ impl Agent {
             text
         };
         let shown = self.shown.take().unwrap_or_else(|| text.clone());
-        let rendered = render_attachments(&attachments).await;
+        let rendered = self.render_attachments(&attachments).await;
         self.emit(SessionEvent::TurnStarted {
             text: shown,
             attachments,
@@ -4820,18 +4822,6 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
         ToolEvent::PreviewChanged { url, command } => SessionEvent::PreviewChanged { url, command },
         _ => return None,
     })
-}
-
-/// A message's attachments read for the model, off the async runtime (PDF extraction and
-/// large files take a while). Nothing attached reads nothing.
-async fn render_attachments(attachments: &[Attachment]) -> imperium_media::attachments::Rendered {
-    if attachments.is_empty() {
-        return Default::default();
-    }
-    let owned = attachments.to_vec();
-    tokio::task::spawn_blocking(move || imperium_media::attachments::render(&owned))
-        .await
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

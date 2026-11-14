@@ -255,6 +255,7 @@ async fn run(scenario: Scenario) -> (usize, usize, Vec<String>) {
         auto_compact: false,
         auto_compact_at: None,
         attended: true,
+        attachments: Default::default(),
         harness: imperium_config::HarnessSettings {
             dereference: imperium_config::HarnessMode::Off,
             state: imperium_config::HarnessMode::Off,

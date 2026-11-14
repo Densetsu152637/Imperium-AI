@@ -183,6 +183,7 @@ fn start(local: Arc<OneSlot>, load: Arc<Manual>, dir: &std::path::Path) -> Sessi
         auto_compact: false,
         auto_compact_at: None,
         attended: true,
+        attachments: Default::default(),
         harness: imperium_config::HarnessSettings {
             dereference: imperium_config::HarnessMode::Off,
             state: imperium_config::HarnessMode::Off,

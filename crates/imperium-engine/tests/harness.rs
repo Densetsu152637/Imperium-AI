@@ -180,6 +180,7 @@ fn start_with(endpoint: Endpoint, dir: &std::path::Path, options: Options) -> Se
         auto_compact: false,
         auto_compact_at: None,
         attended: options.attended,
+        attachments: Default::default(),
         harness: options.harness,
         keep_agent_state: true,
         effort: Default::default(),

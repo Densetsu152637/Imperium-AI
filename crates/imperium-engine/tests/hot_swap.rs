@@ -143,6 +143,7 @@ fn start_with(
         auto_compact,
         auto_compact_at: None,
         attended: true,
+        attachments: Default::default(),
         harness: Default::default(),
         background: None,
         checkpoints: None,

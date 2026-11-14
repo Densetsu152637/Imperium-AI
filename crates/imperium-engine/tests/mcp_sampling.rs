@@ -220,6 +220,7 @@ async fn run(options: Options) -> Outcome {
         auto_compact_at: None,
         keep_agent_state: true,
         attended,
+        attachments: Default::default(),
         harness: Default::default(),
         effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),

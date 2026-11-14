@@ -151,6 +151,7 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         auto_compact: false,
         auto_compact_at: None,
         attended: true,
+        attachments: Default::default(),
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
