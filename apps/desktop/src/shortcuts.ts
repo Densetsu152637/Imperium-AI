@@ -27,12 +27,43 @@ export type ShortcutOverrides = Partial<Record<ShortcutId, string>>;
  * Chords that mean something fixed and cannot be given to an action: sending a message. The
  * push-to-talk key is reserved too, but it is a setting, so callers pass it in.
  */
-export const RESERVED_CHORDS: readonly string[] = ["Mod+Enter", "Mod+Shift+Enter"];
+export const RESERVED_CHORDS: readonly string[] = [
+  "Mod+Enter",
+  "Mod+Shift+Enter",
+  // Editing chords every text box relies on.
+  "Mod+C",
+  "Mod+V",
+  "Mod+X",
+  "Mod+A",
+  "Mod+Z",
+  "Mod+Y",
+  "Mod+Backspace",
+];
+
+let capturing = false;
+/** Set while Settings waits for a new binding, so no shortcut handler runs for that keypress. */
+export const setCapturing = (on: boolean): void => {
+  capturing = on;
+};
+export const isCapturing = (): boolean => capturing;
 
 export type Chord = { mod: boolean; alt: boolean; shift: boolean; key: string };
 
 /** The parts of a keyboard event the registry reads. */
-export type KeyLike = { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean };
+export type KeyLike = {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  getModifierState?: (key: string) => boolean;
+};
+
+/** AltGr (Ctrl+Alt on Windows layouts) types characters; it is never a shortcut. */
+const altGraph = (event: KeyLike): boolean => event.getModifierState?.("AltGraph") === true;
+
+/** Keys that are not a key press of their own: dead keys, input-method composition, lock keys. */
+const UNBINDABLE_KEYS = new Set(["Dead", "Process", "Unidentified", "CapsLock", "NumLock", "ScrollLock"]);
 
 const MODIFIER_KEYS = new Set(["Control", "Meta", "Alt", "Shift", "AltGraph", "OS"]);
 
@@ -72,7 +103,7 @@ export function normalizeChord(text: string): string | null {
  * Cmd both count as Mod, so a binding made on one platform works on another.
  */
 export function chordFromEvent(event: KeyLike): string | null {
-  if (MODIFIER_KEYS.has(event.key)) return null;
+  if (MODIFIER_KEYS.has(event.key) || altGraph(event)) return null;
   return chordText({ mod: event.ctrlKey || event.metaKey, alt: event.altKey, shift: event.shiftKey, key: normalKey(event.key) });
 }
 
@@ -81,6 +112,7 @@ export function matchesChord(event: KeyLike, text: string): boolean {
   const chord = parseChord(text);
   return (
     chord !== null &&
+    !altGraph(event) &&
     chord.mod === (event.ctrlKey || event.metaKey) &&
     chord.alt === event.altKey &&
     chord.shift === event.shiftKey &&
@@ -96,6 +128,11 @@ export function chordProblem(text: string): string | null {
   const chord = parseChord(text);
   if (!chord) return "That is not a key combination.";
   if (chord.key === "Escape") return "Escape is kept for closing things.";
+  if (UNBINDABLE_KEYS.has(chord.key)) return "That key cannot be used in a shortcut.";
+  // Ctrl+Alt is how AltGr types characters on many layouts; a shortcut there would block typing them.
+  if (chord.mod && chord.alt && chord.key.length === 1 && !/^[a-z]$/.test(chord.key)) {
+    return "Ctrl+Alt with that key types a character on some keyboard layouts.";
+  }
   if (/^F\d{1,2}$/.test(chord.key)) return null;
   if (!chord.mod && !chord.alt) return "Hold Ctrl (Cmd on macOS) or Alt as well, so typing is not caught.";
   return null;

@@ -8,7 +8,7 @@ import { Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { useSettings } from "../settings";
-import { bindingFor, triggers } from "../shortcuts";
+import { bindingFor, isCapturing, triggers } from "../shortcuts";
 import { getLayout, updateLayout } from "../layout/state";
 import { focusMainWindow } from "../notify";
 import { emitPanelEvent, listenPanelEvents } from "../panelWindows";
@@ -41,7 +41,7 @@ export function CommandPalette({ detached }: { detached: boolean }) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (triggers(event, shortcuts, "palette.toggle")) {
+      if (!isCapturing() && triggers(event, shortcuts, "palette.toggle")) {
         event.preventDefault();
         event.stopPropagation();
         setOpen((now) => !now);

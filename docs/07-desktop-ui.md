@@ -611,7 +611,12 @@ Ctrl, and a chord is stored as "Mod+Shift+K" so a binding means the same everywh
 key keeps its own setting under Chat.
 
 A binding must hold Ctrl (Cmd) or Alt unless it is a function key, so it cannot fire while
-typing; Escape cannot be bound. A combination another action holds, or a fixed use (sending, the
+typing; Escape, dead and lock keys, and the editing chords (Ctrl+C, V, X, A, Z, Y, Backspace)
+cannot be bound. Bindings follow the keyboard layout (they match the character the key types,
+not its position), so one made on a layout may sit elsewhere on another. AltGr (Ctrl+Alt on
+many Windows layouts) is never read as a shortcut, and Ctrl+Alt with a typed character is
+refused, so characters like @ and € keep typing. While Change waits for keys, no other shortcut
+runs; Esc, leaving the button or switching windows cancels. A combination another action holds, or a fixed use (sending, the
 push-to-talk key), is refused with the holder named, so no two shortcuts ever share a key. Only
 the bindings the user changed are saved (`shortcuts` in the app settings document), so a later
 version's new default reaches everyone who has not rebound that action; on load, saved bindings

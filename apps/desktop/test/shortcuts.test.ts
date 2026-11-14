@@ -121,6 +121,38 @@ test("saved bindings are cleaned: unknown, malformed, unbindable and clashing on
   assert.deepEqual(sanitizeOverrides({ "palette.toggle": "Mod+Space" }, ["Mod+Space"]), {});
 });
 
+test("AltGr never matches or records, and Ctrl+Alt on a typed character is refused", () => {
+  const altGr = { ...key("@", { ctrlKey: true, altKey: true }), getModifierState: (k: string) => k === "AltGraph" };
+  assert.equal(chordFromEvent(altGr), null);
+  assert.equal(matchesChord(altGr, "Mod+Alt+@"), false);
+  assert.notEqual(chordProblem("Mod+Alt+@"), null);
+  assert.notEqual(chordProblem("Mod+Alt+,"), null);
+  assert.equal(chordProblem("Mod+Alt+K"), null, "a letter is fine");
+  assert.equal(chordProblem("Mod+Alt+F5"), null);
+});
+
+test("dead, composing and lock keys cannot be bound", () => {
+  for (const k of ["Dead", "Process", "Unidentified", "CapsLock"]) {
+    assert.equal(chordProblem(`Mod+${k}`), "That key cannot be used in a shortcut.", k);
+  }
+});
+
+test("editing chords are reserved", () => {
+  for (const k of ["C", "V", "X", "A", "Z", "Y", "Backspace"]) {
+    assert.equal(findConflict({}, "palette.toggle", `Mod+${k}`)?.with, "reserved", k);
+  }
+  assert.deepEqual(sanitizeOverrides({ "palette.toggle": "Mod+C" }), {});
+});
+
+test("an extra Alt does not trigger the stop shortcut", () => {
+  assert.equal(triggers(key(".", { ctrlKey: true }), {}, "session.stop"), true);
+  assert.equal(triggers(key(".", { ctrlKey: true, altKey: true }), {}, "session.stop"), false);
+});
+
+test("a bare Shift chord is refused with the reason", () => {
+  assert.equal(chordProblem("Shift+K"), "Hold Ctrl (Cmd on macOS) or Alt as well, so typing is not caught.");
+});
+
 test("shortcuts are written for the platform", () => {
   assert.equal(formatChord("Mod+Shift+K", false), "Ctrl+Shift+K");
   assert.equal(formatChord("Mod+Alt+K", true), "⌘⌥K");

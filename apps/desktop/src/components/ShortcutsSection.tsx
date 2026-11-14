@@ -12,6 +12,7 @@ import {
   chordFromEvent,
   chordProblem,
   findConflict,
+  setCapturing as setCapturingFlag,
   withBinding,
   withoutBinding,
   type ShortcutId,
@@ -32,9 +33,18 @@ export function ShortcutsSection({ settings, onChange }: { settings: AppSettings
 
   useEffect(() => {
     if (!capturing) return;
+    // The other shortcut handlers stand down while a binding is being chosen.
+    setCapturingFlag(true);
+    const cancel = () => {
+      setCapturing(null);
+      setMessage(null);
+    };
     const onKey = (event: KeyboardEvent) => {
+      // Tab moves on (leaving the button cancels); a key held down from before does not count.
+      if (event.key === "Tab" && !event.ctrlKey && !event.metaKey && !event.altKey) return;
       event.preventDefault();
       event.stopPropagation();
+      if (event.repeat) return;
       if (event.key === "Escape" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
         setCapturing(null);
         setMessage(null);
@@ -54,7 +64,12 @@ export function ShortcutsSection({ settings, onChange }: { settings: AppSettings
     };
     // Capture, so the shortcut being replaced does not also run.
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    window.addEventListener("blur", cancel);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", cancel);
+      setCapturingFlag(false);
+    };
   }, [capturing, settings, onChange]);
 
   return (
@@ -63,9 +78,13 @@ export function ShortcutsSection({ settings, onChange }: { settings: AppSettings
         const changed = settings.shortcuts[action.id] !== undefined;
         const waiting = capturing === action.id;
         return (
-          <Row key={action.id} label={action.label} description={waiting && message ? message : action.description}>
+          <Row key={action.id} label={action.label} description={action.description}>
             <kbd>{waiting ? "Press the new keys…" : formatShortcut(bindingFor(settings.shortcuts, action.id))}</kbd>
+            <span role="status" className="muted">
+              {waiting && message ? message : ""}
+            </span>
             <button
+              onBlur={() => waiting && setCapturing(null)}
               onClick={() => {
                 setCapturing(waiting ? null : action.id);
                 setMessage(null);

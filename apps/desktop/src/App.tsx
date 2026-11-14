@@ -117,7 +117,7 @@ import {
 import { PANELS_ICON, SETTINGS_SECTIONS, SettingsWindow, type LayoutNotice } from "./SettingsWindow";
 import { appCommands } from "./commands/appCommands";
 import { formatShortcut } from "./commands/registry";
-import { bindingFor, triggers } from "./shortcuts";
+import { bindingFor, isCapturing, triggers } from "./shortcuts";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
 import { splashDone } from "./boot";
 import { Tour } from "./Tour";
@@ -529,7 +529,7 @@ export function App() {
   useEffect(() => {
     if (isDetached) return;
     const onKey = (event: KeyboardEvent) => {
-      if (triggers(event, settings.shortcuts, "settings.toggle")) {
+      if (!isCapturing() && triggers(event, settings.shortcuts, "settings.toggle")) {
         event.preventDefault();
         setShowSettings((open) => !open);
       }
