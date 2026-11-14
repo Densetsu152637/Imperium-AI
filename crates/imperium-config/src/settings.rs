@@ -165,6 +165,9 @@ pub struct Settings {
     /// `[context]`: when agents compact their conversations (see docs/03).
     #[serde(default)]
     pub context: ContextSettings,
+    /// `[harness]`: aids for small models (see docs/03-agent-engine.md#harness-aids-for-small-models).
+    #[serde(default)]
+    pub harness: HarnessSettings,
     /// `[permissions]`: path grants and rules for every environment (see docs/05).
     #[serde(default)]
     pub permissions: crate::PermissionSettings,
@@ -447,6 +450,66 @@ impl Default for ContextSettings {
     fn default() -> Self {
         ContextSettings {
             auto_compact_at: 0.85,
+        }
+    }
+}
+
+/// Whether a harness aid is on: `auto` turns it on for a root agent whose model runs on this
+/// machine, which is the small model the aids are for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessMode {
+    /// On when the root agent's model runs on this machine; off for hosted models.
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+/// `[harness]`: aids that let a small model handle references and ambiguity (see
+/// docs/03-agent-engine.md#harness-aids-for-small-models).
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct HarnessSettings {
+    /// Whether a small preprocessing call rewrites each message into a standalone prompt.
+    pub dereference: HarnessMode,
+    /// Most tokens the rewriting call may write.
+    pub dereference_max_tokens: u32,
+    /// Seconds the rewriting call may take before the original message is used.
+    pub dereference_timeout_s: u64,
+    /// Characters of earlier conversation the rewriting call reads.
+    pub dereference_history_chars: u32,
+    /// Keep the structured state (entities, goals, constraints) outside the free-text history
+    /// and put it at the top of each turn; offers the root `update_state`.
+    pub state: HarnessMode,
+    /// Most characters the state may take when rendered; the oldest entries go first.
+    pub state_max_chars: u32,
+    /// Repeat the state at the top of a turn when its newest copy is this many user turns back,
+    /// so a small model reads it near the end of its context; 0 repeats it only when it changes.
+    pub state_reemit_turns: u32,
+    /// Put the guidance of the ambiguity patterns that match a message at the top of its turn
+    /// (see `imperium_protocol::patterns`).
+    pub hints: HarnessMode,
+    /// Offer the root `request_clarification` and tell it when to ask instead of guessing.
+    pub clarify: HarnessMode,
+    /// Confidence (0 to 1) below which the root agent is told to ask with
+    /// `request_clarification` rather than guess.
+    pub clarify_below: f64,
+}
+
+impl Default for HarnessSettings {
+    fn default() -> Self {
+        HarnessSettings {
+            dereference: HarnessMode::Auto,
+            dereference_max_tokens: 400,
+            dereference_timeout_s: 20,
+            dereference_history_chars: 6000,
+            state: HarnessMode::Auto,
+            state_max_chars: 1200,
+            state_reemit_turns: 8,
+            hints: HarnessMode::Auto,
+            clarify: HarnessMode::Auto,
+            clarify_below: 0.7,
         }
     }
 }

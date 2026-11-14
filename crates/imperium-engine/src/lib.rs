@@ -13,6 +13,7 @@ mod breakdown;
 mod budget_gate;
 mod checkpoints;
 mod compact;
+mod harness;
 mod instructions;
 mod journal;
 mod launcher;

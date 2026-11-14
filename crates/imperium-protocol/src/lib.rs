@@ -6,10 +6,12 @@
 
 pub mod agents;
 pub mod budgets;
+pub mod clarification;
 pub mod discovery;
 pub mod initiative;
 pub mod jsonrpc;
 pub mod methods;
+pub mod patterns;
 pub mod permissions;
 pub mod session;
 pub mod tools;

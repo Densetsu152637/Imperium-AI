@@ -150,6 +150,8 @@ async fn agents_call_mcp_tools_with_approval_rules() {
         budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
+        attended: true,
+        harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),

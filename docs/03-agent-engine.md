@@ -85,6 +85,112 @@ The selected [personality](08-agent-policy.md#personalities) (Marcus Aurelius by
 follows these rules in the root prompt, framed as tone only, so the rules still hold; subagents
 never get it.
 
+## Harness aids for small models
+
+**Implemented:** four aids that let a small (about 4B) local root agent handle references and
+ambiguity. They live in the harness, not in the model, and apply to the root agent only
+(subagents get self-contained briefs). They are set under `[harness]`
+([10](10-configuration.md)).
+
+**Following the model.** `auto` follows the root's model, which can change in a session
+(escalating to a hosted model, or switching to a local one): the tools offered are chosen each
+turn, and the harness paragraph of the system prompt is rewritten when the model is switched,
+so the prompt never describes tools that are not offered (the labelled parts of the system
+prompt, and with them the context breakdown, move with the edit).
+
+**When they are on.** Each of `dereference`, `state`, `hints` and `clarify` is `auto`, `on` or
+`off`. `auto` (the default) turns the aid on only when the root agent's model runs on this
+machine, so a hosted root gets the same prompts, tools and messages as before unless an aid is
+set to `on`. They are always off in an unattended session, whatever the setting: a background
+session (schedules), one with pre-approved tools (auto-fix), and project and persistent agents
+(`SessionConfig::attended`, set by the daemon and kept in the session's meta as
+`unattended`, so an auto-fix session, whose pre-approved tools are not restored, is still
+unattended after a restart). The aids add a fixed cost when on: about 600 to
+900 tokens of tool schemas (`update_state`, `request_clarification`) and root prompt, and a few
+hundred more on a turn that carries a state block.
+
+- **De-reference step.** Before the root agent's turn, one small call (the root's own model, no
+  tools, no reasoning control) takes the latest message, the tail of the conversation
+  (`harness.dereference_history_chars`, newest lines kept; what the user wrote, not earlier
+  rewrites; tool results marked as data) and the state, and answers a JSON object: a standalone
+  `prompt` (pronouns and "that file" or "the previous step" replaced by the files, sessions,
+  tasks and errors they refer to, nothing added) and the entities the message names. The turn's
+  user message then carries a `<resolved-request>` block with the rewrite followed by an
+  `<original-message>` block. The root's prompt calls the rewrite a helper's guess that can be
+  wrong, and says the original wins where they differ. The journal and the transcript keep what
+  the user typed (`turn_started` has the original); a notice, "understood as: ...", shows the
+  rewrite. Text from tool results is untrusted: the step is told it is data and never an
+  instruction, the harness's tag names are defused in everything it reads and writes, a rewrite
+  more than 120 characters longer than the message is refused, and the step may only add entity
+  names to the state (no notes, goals, constraints or removals). The call is bounded:
+  `dereference_max_tokens` of output (at most 2000), `dereference_timeout_s` seconds (at most 120)
+  and `dereference_history_chars` of history (at most 20000), and it is not pinned to the root's
+  llama.cpp slot, so it does not overwrite the root's cached prompt (the cost of the extra
+  prompt processing on a local model has not been measured). It stops when the session is
+  stopped, and it never raises a budget prompt: a budget that would ask skips the rewrite. A
+  failed call, an unreadable or overlong reply or a timeout leaves the message as it was; a
+  call that fails or times out reports no usage, so it is not counted, and one that answers is
+  (`model_call_completed`, budgets). It is skipped when there is nothing to resolve against.
+- **Session state.** A strict JSON object kept outside the free-text history:
+  `{"entities": [{"kind", "name", "note"}], "goals": [...], "constraints": [...]}`.
+  Entities are the files, sessions, tasks, branches and errors in play; goals are what the user
+  wants now; constraints are what is settled. Unknown fields are refused, and `<` and `>` are
+  taken out of every field, so a value cannot make a tag. It is bounded: at most 16 entities, 5
+  goals and 10 constraints, 160 characters a field and `harness.state_max_chars` of JSON
+  (default 1200); the oldest entities go first, then the oldest constraints. It is updated by
+  the root's `update_state` tool (entities added or updated by kind and name, `forget` by name,
+  `goals` replacing the list, `constraints` added or dropped) and by the entities the rewrite
+  names. The root's prompt calls it notes that can come from tool output, not the user's
+  instructions. It is injected as a `<session-state>` block at the top of a turn's user
+  message when it is not empty and differs from the newest copy in the conversation, so thirty
+  turns with an unchanged state carry one block, not thirty, and again when the newest copy
+  is `harness.state_reemit_turns` (default 8) user turns back, so it sits near the end of a
+  small model's context. Persistence is the conversation,
+  append-only: such a block and the result of each `update_state` call (matched to the call by
+  its id, so text in another tool's output that looks like one is ignored) are copies, the
+  newest is the state, and earlier messages are never rewritten, so the prompt prefix a local
+  model has cached does not change. A resumed session reads the newest copy back, a session branched at an earlier
+  turn has the copies up to that turn, and a compaction that summarises the newest copy away
+  puts the state back at the top of the first kept user message. There is no file beside
+  `<id>.messages.json`. It counts under `memories` in context breakdowns.
+- **Ambiguity as a tool.** `request_clarification(missing_parameter, options, question?,
+  confidence?)` pauses the root for the user's answer and returns it
+  ([05](05-tools-and-isolation.md#request_clarification)). It reuses the `ask_user` prompt
+  (`questions_asked`, `session.answer`, the CLI and desktop forms), so no protocol change was
+  needed. It recommends nothing, and it is offered only to attended sessions, because the runners
+  of unattended ones answer questions with the recommendation. The root's prompt says to call it
+  when its confidence is below `harness.clarify_below` (default 0.7) instead of guessing, after
+  checking the state, the conversation and the files.
+- **Ambiguity patterns.** The reasoning-pattern store is `imperium_protocol::patterns`: nine
+  edge-case patterns ("fix the issue from earlier", "open that file", "undo the last step",
+  "same as last time", "the second option", "delete the old logs", "send it to the team",
+  "make it faster", "not that one"), each with trigger phrases (matched as whole words, kept
+  narrow so routine requests match nothing) and guidance of what to do in order: look in the
+  state and the latest failed tool results first, then search, then ask with the candidates as
+  options. When a message contains a pattern's trigger phrases, the guidance of the best two
+  matches goes in an `<ambiguity-hints>` block at the top of that turn (`harness.hints`). The
+  same patterns are written out in `schemas/prompts/ambiguity.md`, which the Emperor training
+  repository vendors; a test keeps the two in step. No retrieval store existed before this
+  (memory search finds notes, not behaviour), so the table is small and keyword-matched; it can
+  move behind `memory` embeddings later.
+
+**Evaluation.** `imperium_protocol::clarification` and `schemas/eval/clarification-cases.json`
+score how well a model asks instead of guessing: 15 messages, some ambiguous (nothing in the
+stated context settles them) and some resolvable. `Observed::from_events` reads whether the
+turn called `request_clarification` (or `ask_user`, which counts as asking), with which
+parameter and options, and `score` gives a reward: 0.6 to 1.0 for asking on an ambiguous case
+(more when it names the missing parameter and lists an expected option), -1 for guessing, 1 for
+acting on a resolvable case, -0.5 for asking anyway. `report` adds ask recall and precision. The
+repository's only benchmark (`models.bench`) measures speed, not behaviour, so it was not
+extended. Training should use that reward as it stands (see `schemas/prompts/ambiguity.md`), but
+the 15 cases are a hold-out and must not be training data.
+
+**Not built.** Files and failures are not added to the state automatically from tool calls;
+the model or the rewrite records them. The rewrite uses the root's own model, not a separate
+small one. The state is not shown in the desktop. The tool schema export
+(`schemas/tools/index.json`) lists `update_state` and `request_clarification` as available
+because it is static; the engine offers them only as described above.
+
 ## Planning
 
 **Implemented (phase 3):** the `update_plan` tool (a goal and steps with `pending`,
@@ -256,6 +362,7 @@ providers, are outside the contract.
 | `suggest_local_model` ([model download suggestions](04-models-and-routing.md#model-download-suggestions)) | implemented; daemon sessions |
 | `delegate_chunks(artefact_id, chunk_tokens, brief, reduce?)` | implemented, root only ([large inputs](#large-inputs-and-delegate_chunks)) |
 | `ask_user(questions[])`: each question has text, optional options, and a recommended answer | implemented, root only ([05](05-tools-and-isolation.md#ask_user)) |
+| `request_clarification(missing_parameter, options)`, `update_state(...)` | implemented, root only ([harness aids](#harness-aids-for-small-models), [05](05-tools-and-isolation.md#request_clarification)) |
 
 **Single-call tasks (implemented):** `spawn_agent` with `single_call: true` (default false) starts
 a subagent that is given the brief and no tools (no files, commands, web, memory or workflow
@@ -325,7 +432,7 @@ restart recognise the manifest, instruction files, and memories by the tags they
 | `skills_loaded` | Skill instructions: eager skills' in the system prompt and `load_skill` results |
 | `tools_builtin`, `tools_mcp`, `tools_plugins` | Tool definitions (`tools_plugins`: activated plugins' tools) |
 | `summary` | A [compacted](#switching-models-and-compaction) conversation's summary of its older turns |
-| `manifest`, `memories` | Workflow context (the manifest and instruction files) and recalled memories, from user-message preambles |
+| `manifest`, `memories` | Workflow context (the manifest and instruction files) and recalled memories, from user-message preambles; the [harness](#harness-aids-for-small-models)'s state and ambiguity-hint blocks count under `memories` |
 | `user`, `assistant`, `tool_results` | The conversation |
 | `overhead` | Chat template and formatting: roles, call ids, separators, template markup |
 

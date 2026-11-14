@@ -167,6 +167,14 @@ pub(crate) fn restored_spans(content: &str) -> Spans {
     let mut spans = Vec::new();
     let mut start = 0;
     for (category, open, close) in [
+        // The harness's session state and ambiguity hints lead a turn's message; they count as
+        // recalled context.
+        (Category::Memories, "<session-state>", "</session-state>"),
+        (
+            Category::Memories,
+            "<ambiguity-hints>",
+            "</ambiguity-hints>",
+        ),
         (
             Category::Summary,
             "<conversation-summary>",

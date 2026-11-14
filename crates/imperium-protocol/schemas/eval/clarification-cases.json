@@ -1,0 +1,111 @@
+{
+  "cases": [
+    {
+      "id": "earlier-issue-no-history",
+      "context": ["session state: empty", "no tool call has failed in this conversation"],
+      "message": "Fix the issue from earlier.",
+      "ambiguous": true,
+      "missing": "issue"
+    },
+    {
+      "id": "earlier-issue-one-failure",
+      "context": [
+        "session state: entity error \"cargo test parser::tests::empty_input failed\"",
+        "the last tool result is the failing test output"
+      ],
+      "message": "Fix the issue from earlier.",
+      "ambiguous": false
+    },
+    {
+      "id": "that-file-two-candidates",
+      "context": [
+        "session state: entities file src/main.rs, file src/lib.rs",
+        "both files were read in the last turn"
+      ],
+      "message": "Open that file and change the timeout.",
+      "ambiguous": true,
+      "missing": "file",
+      "options": ["src/main.rs", "src/lib.rs"]
+    },
+    {
+      "id": "that-file-one-candidate",
+      "context": ["session state: entity file src/main.rs", "it is the only file read so far"],
+      "message": "Open that file and change the timeout.",
+      "ambiguous": false
+    },
+    {
+      "id": "delete-old-logs",
+      "context": ["logs/ holds app.log (4 MB), audit.log (1 MB) and 30 rotated archives"],
+      "message": "Delete the old logs.",
+      "ambiguous": true,
+      "missing": "logs",
+      "options": ["archives", "app.log"]
+    },
+    {
+      "id": "run-the-tests",
+      "context": ["a Cargo workspace; the last command was cargo build"],
+      "message": "Run the tests.",
+      "ambiguous": false
+    },
+    {
+      "id": "same-as-last-time-no-history",
+      "context": ["session state: empty", "no earlier session matches in session search or memory"],
+      "message": "Do it the same as last time.",
+      "ambiguous": true,
+      "missing": "last time"
+    },
+    {
+      "id": "second-option-with-list",
+      "context": ["the previous reply listed three options: 1 sqlite, 2 postgres, 3 duckdb"],
+      "message": "Go with the second option.",
+      "ambiguous": false
+    },
+    {
+      "id": "second-option-without-list",
+      "context": ["the previous reply was a single recommendation with no list"],
+      "message": "Go with the second option.",
+      "ambiguous": true,
+      "missing": "option"
+    },
+    {
+      "id": "deploy-without-target",
+      "context": ["deploy.toml defines environments staging and production", "no environment was named in this conversation"],
+      "message": "Deploy it.",
+      "ambiguous": true,
+      "missing": "environment",
+      "options": ["staging", "production"]
+    },
+    {
+      "id": "rename-with-full-spec",
+      "context": ["src/lib.rs defines fn foo"],
+      "message": "Rename the function foo to bar in src/lib.rs.",
+      "ambiguous": false
+    },
+    {
+      "id": "send-without-recipient",
+      "context": ["session state: goal write release notes", "no recipient is known"],
+      "message": "Send it to the team.",
+      "ambiguous": true,
+      "missing": "recipient"
+    },
+    {
+      "id": "rebase-named-branch",
+      "context": ["on branch feat/login; main is the default branch"],
+      "message": "Rebase onto main.",
+      "ambiguous": false
+    },
+    {
+      "id": "make-it-faster-no-target",
+      "context": ["session state: empty", "nothing slow was shown in this conversation"],
+      "message": "Make it faster.",
+      "ambiguous": true,
+      "missing": "faster"
+    },
+    {
+      "id": "undo-the-last-step",
+      "context": ["the plan's last finished step edited src/parse.rs only"],
+      "message": "Undo the last step.",
+      "ambiguous": false
+    }
+  ]
+}

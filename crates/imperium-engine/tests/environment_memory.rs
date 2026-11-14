@@ -116,6 +116,8 @@ fn start(
         max_steps: 14,
         auto_compact: false,
         auto_compact_at,
+        attended: true,
+        harness: Default::default(),
         background: None,
         checkpoints: None,
         budget_gate: None,
