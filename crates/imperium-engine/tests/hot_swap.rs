@@ -142,6 +142,7 @@ fn start_with(
         max_steps: 5,
         auto_compact,
         auto_compact_at: None,
+        harness: Default::default(),
         background: None,
         checkpoints: None,
         budget_gate: None,

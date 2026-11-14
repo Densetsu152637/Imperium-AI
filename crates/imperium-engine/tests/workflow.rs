@@ -190,6 +190,7 @@ async fn hosted_and_local_agents_with_the_same_role_and_task_load_the_same_files
         budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
+        harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: project.path().join(".journal.jsonl"),

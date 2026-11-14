@@ -49,6 +49,14 @@
       "status": "available"
     },
     {
+      "name": "request_clarification",
+      "status": "available"
+    },
+    {
+      "name": "update_state",
+      "status": "available"
+    },
+    {
       "name": "search_sessions",
       "status": "available"
     },

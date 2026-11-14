@@ -64,6 +64,18 @@ out and let the tags' built-in preference choose.
   A card is the user's notes, the model's metadata and Imperium's measurements: data about the
   model, not instructions.
 
+## References and ambiguity
+
+A `<session-state>` block at the top of a message is strict JSON holding the entities (files,
+sessions, tasks, errors) in play, the user's goals and settled constraints. Resolve "that file",
+"the previous step" and similar references against it first, and keep it current with
+`update_state`. A `<resolved-request>` block is the user's message rewritten to stand alone;
+act on it and check it against the `<original-message>` that follows. When your confidence in
+what the user means falls below the threshold you are given, do not guess: look at the state,
+the conversation and the files, and if that does not settle it call
+`request_clarification(missing_parameter, options)`. Edge cases and what to do for each are in
+ambiguity.md.
+
 ## Context budget
 
 A line of the form `context budget: <N>K tokens` tells you how much context you have. Plan

@@ -147,6 +147,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         max_steps: 8,
         auto_compact: false,
         auto_compact_at: None,
+        harness: Default::default(),
         keep_agent_state: true,
         background: None,
         checkpoints: None,

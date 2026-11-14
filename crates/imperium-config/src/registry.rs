@@ -119,6 +119,7 @@ const STRING: SettingKind = SettingKind::String;
 const WRITE_POLICY: &[&str] = &["auto", "ask", "off"];
 const SESSION_SEARCH_SCOPE: &[&str] = &["environment", "all"];
 const LIST_MODELS: &[&str] = &["root", "all", "off"];
+const DEREFERENCE: &[&str] = &["auto", "on", "off"];
 
 /// Every setting an app may show and change, in display order.
 #[rustfmt::skip]
@@ -219,6 +220,14 @@ pub static SETTINGS: &[SettingDef] = &[
     def("resume.retry_every_minutes", "Retry every (minutes)", Integer, "Retry interval, for retry_every."),
     def("resume.max_wait_hours", "Longest wait (hours)", Integer, "Longest a session waits in one turn."),
     live(def("context.auto_compact_at", "Compact at", Number, "Compact an agent's conversation mid-turn when the next model call would use this share of its model's context window (0.85 is 85%); 0 never does. Needs a known context window.")),
+    choice("harness.dereference", "Rewrite messages", DEREFERENCE, "Before the root agent reads a message, a small call rewrites it into a standalone prompt (pronouns and \"that file\" replaced by what they refer to). auto does it only when the root agent's model runs on this machine; the original message stays in the transcript, and a failed or slow rewrite is skipped."),
+    def("harness.dereference_max_tokens", "Rewrite length (tokens)", Integer, "Most tokens the rewriting call may write."),
+    def("harness.dereference_timeout_s", "Rewrite timeout (seconds)", Integer, "Seconds the rewriting call may take before the original message is used."),
+    def("harness.dereference_history_chars", "Rewrite history (characters)", Integer, "Characters of earlier conversation the rewriting call reads."),
+    def("harness.state", "Session state", Bool, "Keep the entities, goals and constraints of the conversation as a small JSON object kept with the session, and put it at the top of each turn."),
+    def("harness.state_max_chars", "Session state size (characters)", Integer, "Most characters the session state may take; the oldest entries are dropped first."),
+    def("harness.hints", "Ambiguity hints", Bool, "Put guidance for messages that point at something unseen (\"that file\", \"the issue from earlier\", \"deploy it\") at the top of the turn they arrive in."),
+    def("harness.clarify_below", "Ask below confidence", Number, "Confidence (0 to 1) below which the root agent asks with request_clarification instead of guessing."),
     def("sessions.auto_archive_after_days", "Archive idle sessions after (days)", Integer, "Archive a session after this many days without activity; 0 never does. Working, waiting, pinned, and project-agent sessions are never archived."),
     def("sessions.auto_archive_on_pr_close", "Archive when the pull request closes", Bool, "Archive a session once the pull request it watches is merged or closed."),
     def("sessions.agent_state_keep", "Keep agent state", Bool, "Keep each agent's conversation, plan, and usage beside the session's files, so finished subagents can be resumed with a follow-up, also after a restart. Deleted with the session."),

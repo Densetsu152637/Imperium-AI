@@ -91,6 +91,8 @@ pub struct SessionConfig {
     /// Compact an agent's conversation mid-turn when the next model call would read this share
     /// of its model's context window (`context.auto_compact_at`); `None` or 0 turns it off.
     pub auto_compact_at: Option<f64>,
+    /// The harness aids for small models: de-referencing, state, hints (`[harness]`).
+    pub harness: imperium_config::HarnessSettings,
     /// Keep every agent's state (a subagent's conversation included) in
     /// `<journal>.agents/`, so finished subagents can be resumed after a restart
     /// (`sessions.agent_state_keep`). Off, it is kept in memory while the session runs.
@@ -689,6 +691,8 @@ pub(crate) struct Shared {
     pub local: Option<Arc<dyn LocalModels>>,
     pub max_steps: u32,
     pub auto_compact_at: Option<f64>,
+    /// The harness aids for small models (`[harness]`).
+    pub harness: imperium_config::HarnessSettings,
     /// Tools the user allowed for the rest of the session, for every agent.
     pub allowed_tools: Mutex<HashSet<String>>,
     /// Tools an unattended session's starter allowed up front: they run without asking in
@@ -822,6 +826,7 @@ async fn run(
         local: config.local,
         max_steps: config.max_steps,
         auto_compact_at: config.auto_compact_at,
+        harness: config.harness,
         allowed_tools: Mutex::new(config.pre_approved.iter().cloned().collect()),
         pre_approved: config.pre_approved.into_iter().collect(),
         tools: config.tools,

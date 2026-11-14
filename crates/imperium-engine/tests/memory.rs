@@ -105,6 +105,7 @@ fn start(id: &str, url: &str, data: &std::path::Path, project: &std::path::Path)
         budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
+        harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: data.join(format!("{id}.jsonl")),
