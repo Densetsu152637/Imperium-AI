@@ -12,7 +12,9 @@ import type { ConfigDescribeResult, EnvironmentInfo, LocalModelRow, ModelRow } f
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import type { DaemonClient } from "../daemon/client";
-import { useSettings } from "../settings";
+import { houseModelSuggestion } from "../houseModels";
+import { useChangeSettings, useSettings } from "../settings";
+import { HouseModelCard } from "./HouseModelCard";
 import { asSpec, modelOptions } from "./ModelSelect";
 import { ModelSetup } from "./ModelSetup";
 
@@ -82,6 +84,7 @@ export function NewSessionPanel({
   onOpenLocalModels,
 }: Props) {
   const settings = useSettings();
+  const changeSettings = useChangeSettings();
   const [draft, setDraft] = useState("");
   // Undefined until the user picks: then the configured default applies.
   const [chosenModel, setChosenModel] = useState<string | undefined>(undefined);
@@ -111,6 +114,16 @@ export function NewSessionPanel({
   const defaultSpec = asSpec(models, defaultModel !== undefined ? defaultModel : defaults.model);
   const usable = models.some((row) => row.endpoint_configured) || localModels.some((row) => !row.problem);
   const needsSetup = client !== null && !defaultSpec && !usable;
+  const houseModels = needsSetup
+    ? houseModelSuggestion(
+        {
+          hostedConfigured: models.filter((row) => row.endpoint_configured).length,
+          localFound: localModels.length,
+          defaultModel: defaultSpec,
+        },
+        settings.houseModelsDismissed,
+      )
+    : [];
   const model = chosenModel ?? defaultSpec ?? "";
   const options = [
     // Without a configured default a session may start with no model; its messages wait.
@@ -168,6 +181,14 @@ export function NewSessionPanel({
         </p>
       )}
 
+      {houseModels.length > 0 && (
+        <HouseModelCard
+          models={houseModels}
+          client={client}
+          onDismiss={() => changeSettings((current) => ({ ...current, houseModelsDismissed: true }))}
+          onStarted={onModelsChanged}
+        />
+      )}
       {needsSetup && <ModelSetup client={client} onChanged={onModelsChanged} onDownload={onOpenLocalModels} />}
 
       <form
