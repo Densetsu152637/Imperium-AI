@@ -859,6 +859,17 @@ mod tests {
         assert!(safety_floor(CallKind::Edit, &path("config/.env.local")));
         assert!(safety_floor(CallKind::Edit, &path(".git/config")));
         assert!(safety_floor(CallKind::Edit, &path("certs/server.pem")));
+        // The daemon's record of approved mod permissions, wherever it sits.
+        assert!(safety_floor(CallKind::Edit, &path("mod-approvals.json")));
+        assert!(safety_floor(
+            CallKind::Edit,
+            &path("data/imperium/mod-approvals.json")
+        ));
+        assert!(!safety_floor(CallKind::Read, &path("mod-approvals.json")));
+        assert!(!safety_floor(
+            CallKind::Edit,
+            &path("mod-approvals.json.md")
+        ));
         assert!(!safety_floor(CallKind::Edit, &path("src/main.rs")));
         assert!(!safety_floor(CallKind::Read, &path(".env")));
         assert!(!safety_floor(

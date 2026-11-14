@@ -61,6 +61,9 @@ pub async fn read_file(
     Ok(out)
 }
 
+/// How much of a valid-UTF-8 file is scanned for NUL bytes before it is called binary.
+const NUL_SCAN_BYTES: usize = 8 * 1024;
+
 /// The text of a file's bytes for reading: UTF-8, or UTF-16 when it starts with a byte order
 /// mark (what PowerShell's `>` and many Windows tools write). Editing keeps to UTF-8, so a
 /// UTF-16 file is never rewritten in another encoding.
@@ -97,13 +100,20 @@ fn readable_text(bytes: Vec<u8>, shown: &str) -> Result<(String, Option<&'static
         [0xFF, 0xFE, rest @ ..] => utf16(rest, false),
         [0xFE, 0xFF, rest @ ..] => utf16(rest, true),
         _ => match String::from_utf8(bytes) {
+            // Valid UTF-8 can still be binary (BOM-less UTF-16 of ASCII text is valid UTF-8 full
+            // of NULs), so the head is checked for NUL bytes too.
+            Ok(text) if text.as_bytes()[..text.len().min(NUL_SCAN_BYTES)].contains(&0) => {
+                return Err(ToolError::Invalid(format!("{shown} is a binary file")));
+            }
             Ok(text) => (text, None),
             Err(error) if error.as_bytes().contains(&0) => {
                 return Err(ToolError::Invalid(format!("{shown} is a binary file")));
             }
             Err(error) => (
                 String::from_utf8_lossy(error.as_bytes()).into_owned(),
-                Some("the file is not valid UTF-8; invalid bytes show as U+FFFD"),
+                Some(
+                    "the file is not valid UTF-8; invalid bytes show as U+FFFD. Do not rewrite the file from this text (edit_file will refuse it)",
+                ),
             ),
         },
     })
@@ -220,6 +230,17 @@ mod tests {
         std::fs::write(dir.path().join("log.txt"), bytes).unwrap();
         let read = read_file(&workspace, "log.txt", None, None).await.unwrap();
         assert_eq!(read, "     1\tone\n     2\ttwo \u{e9}\n");
+        // BOM-less UTF-16 is valid UTF-8 full of NULs: binary, not garbage.
+        let bomless: Vec<u8> = "hello
+"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+        std::fs::write(dir.path().join("nobom.txt"), bomless).unwrap();
+        assert!(matches!(
+            read_file(&workspace, "nobom.txt", None, None).await,
+            Err(ToolError::Invalid(_))
+        ));
         std::fs::write(dir.path().join("bin.dat"), [0xFFu8, 0x00, 0x80]).unwrap();
         assert!(matches!(
             read_file(&workspace, "bin.dat", None, None).await,
@@ -252,6 +273,7 @@ mod tests {
             read.starts_with("[note: the file is not valid UTF-8"),
             "{read}"
         );
+        assert!(read.contains("Do not rewrite the file"), "{read}");
         assert!(read.contains("caf\u{fffd}"), "{read}");
 
         std::fs::create_dir(dir.path().join("src")).unwrap();

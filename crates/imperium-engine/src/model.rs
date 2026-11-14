@@ -507,14 +507,15 @@ pub fn escalate(
         .collect();
     // A route is acceptable only when it is a table row (never what the router falls back to
     // when nothing fits; a real row that happens to be the session's model is fine), in the
-    // task's location, at or above `floor`.
+    // task's location (the call's, else the user's matching rule's), at or above `floor`.
+    let location = effective_location(routing, request);
     let acceptable = |routed: &Routed, floor: Tier| {
         !routed.fell_back
             && rest
                 .iter()
                 .find(|c| c.model.spec == routed.model.spec)
                 .is_some_and(|c| {
-                    c.tier >= floor && request.location.is_none_or(|wanted| c.location == wanted)
+                    c.tier >= floor && location.is_none_or(|wanted| c.location == wanted)
                 })
     };
     let listed = routing
@@ -1474,6 +1475,33 @@ tier = "basic"
                 &listed,
                 &fallback(),
                 coding,
+                "endpoint:cheap",
+                1,
+                None
+            )
+            .is_none()
+        );
+        // The same holds when the location comes from the user's rule, not from the call.
+        let by_rule = RoutingSettings {
+            rules: vec![RoutingRule {
+                when_tag: Some("code".into()),
+                location: Some(Location::Local),
+                escalate: vec!["big".into()],
+                ..RoutingRule::default()
+            }],
+            ..RoutingSettings::default()
+        };
+        let unconfined = TaskRequest {
+            tier: Tier::Basic,
+            tags: &tags,
+            ..TaskRequest::default()
+        };
+        assert!(
+            escalate(
+                &rows,
+                &by_rule,
+                &fallback(),
+                unconfined,
                 "endpoint:cheap",
                 1,
                 None

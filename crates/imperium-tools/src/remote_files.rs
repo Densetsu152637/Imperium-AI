@@ -48,6 +48,11 @@ pub(crate) async fn read_bytes(workspace: &Workspace, path: &str) -> Result<Vec<
     )
     .await?;
     if !output.success() {
+        if output.message().contains("Is a directory") {
+            return Err(ToolError::Invalid(format!(
+                "{path} is a directory; use list_dir to see what is in it"
+            )));
+        }
         return Err(failed(path, &output));
     }
     Ok(output.stdout)
