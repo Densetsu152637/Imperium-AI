@@ -3754,7 +3754,8 @@ async fn run_escalating(
 ) -> TaskReport {
     let shared = Arc::clone(&agent.shared);
     let id = agent.id.clone();
-    // What routing falls back to when nothing fits: never an escalation target.
+    // What routing falls back to when nothing fits. It is an escalation target only when it is
+    // also a real table row; the fallback itself is never accepted as a route.
     let session_model = shared
         .agents
         .model(ROOT_AGENT)

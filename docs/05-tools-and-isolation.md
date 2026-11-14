@@ -555,8 +555,10 @@ tool that resolves a path (`read_file`, `write_file`, `edit_file`, `list_dir`, `
 or `file` (giving it twice is an error), and `read_file`'s `offset` and `limit` as numbers, whole
 floats, or numbers in quotes (null, empty, zero, or negative means not given). `read_file` reads
 a UTF-16 file that starts with a byte order mark as text (a lone trailing byte is left out, with a
-note); a UTF-8 file with invalid bytes and no NUL bytes is read with U+FFFD for them and a note,
-a file with NUL bytes is refused as binary, and a folder is refused with a pointer to `list_dir`.
+note); a UTF-8 file with invalid bytes and no NUL bytes is read with U+FFFD for them and a note
+(not to rewrite the file from that text: `edit_file` refuses it), a file with NUL bytes (in the
+first 8 KB when the bytes are valid UTF-8, so BOM-less UTF-16 is not shown as garbage) is refused
+as binary, and a folder is refused with a pointer to `list_dir`, in a remote workspace too.
 One read returns at most 100,000 characters (line numbers and notes included); a longer line is
 cut where that ends, with a note to page by `offset` and `limit`. Edits stay UTF-8. `tool.before`
 and `tool.after` hooks get a `read_file` or `list_dir` call's arguments under the schema's names

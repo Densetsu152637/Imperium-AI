@@ -38,7 +38,8 @@ const POLL: Duration = Duration::from_millis(500);
 const SAFETY: Duration = Duration::from_secs(2);
 /// Characters of one tool output kept in a result.
 const OUTPUT_LIMIT: usize = 800;
-/// Characters of a pending request's summary or question kept in a result.
+/// Characters of a pending request's summary, suggested rule, or a question's text, options
+/// and recommended answer kept in a result.
 const PENDING_LIMIT: usize = 500;
 /// Characters of a tool call's arguments kept in a result.
 const ARGUMENT_LIMIT: usize = 400;
@@ -595,6 +596,10 @@ async fn start_session(hub: &Hub, args: &Value) -> Result<Value, String> {
 /// Sends a message and returns the cursor for waiting on it: the session's event count from
 /// before the message, so a wait sees the turn the message starts and no earlier one. A steering
 /// message joins the running turn, so its cursor is that turn's start.
+///
+/// A steering message can race the turn's end: the turn may finish between reading the history
+/// and `session.send`, in which case the message starts a new turn that the cursor (the old
+/// turn's start) also covers. The caller should check the status after sending.
 async fn send(hub: &Hub, session_id: &str, text: &str, steer: bool) -> Result<usize, String> {
     let history = hub.history(session_id).await?;
     let cursor = if steer {
@@ -923,6 +928,9 @@ fn analyze(
                 if let Some(summary) = body["summary"].as_str() {
                     request["summary"] = json!(clip(summary, PENDING_LIMIT));
                 }
+                if let Some(rule) = body["suggested_rule"].as_str() {
+                    request["suggested_rule"] = json!(clip(rule, PENDING_LIMIT));
+                }
                 let request_id = body["request_id"].as_u64().unwrap_or_default();
                 permissions.retain(|(waiting, _)| waiting != agent);
                 if !answered.contains(&(true, index, request_id)) {
@@ -943,6 +951,20 @@ fn analyze(
                                 item["question"].as_str().map(|t| clip(t, PENDING_LIMIT))
                             {
                                 item["question"] = json!(text);
+                            }
+                            if let Some(text) =
+                                item["recommended"].as_str().map(|t| clip(t, PENDING_LIMIT))
+                            {
+                                item["recommended"] = json!(text);
+                            }
+                            if let Some(options) = item["options"].as_array_mut() {
+                                for option in options {
+                                    if let Some(text) =
+                                        option.as_str().map(|t| clip(t, PENDING_LIMIT))
+                                    {
+                                        *option = json!(text);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1325,6 +1347,34 @@ mod tests {
             "questions_asked"
         );
         assert_eq!(run(&[started(), asked, answered], None).outcome, "running");
+    }
+
+    #[test]
+    fn pending_questions_and_permissions_are_clipped() {
+        let long = "x".repeat(PENDING_LIMIT + 50);
+        let asked = event(
+            "root",
+            json!({"type": "questions_asked", "request_id": 2, "questions": [
+                {"question": long, "options": [long, "short"], "recommended": long}
+            ]}),
+        );
+        let turn = run(&[started(), asked], None);
+        let question = &turn.report["pending_questions"][0]["questions"][0];
+        let clipped = |value: &Value| value.as_str().unwrap().ends_with("(truncated)");
+        assert!(clipped(&question["question"]));
+        assert!(clipped(&question["options"][0]));
+        assert_eq!(question["options"][1], "short");
+        assert!(clipped(&question["recommended"]));
+
+        let permission = event(
+            "root",
+            json!({"type": "permission_requested", "request_id": 7, "tool": "bash",
+                "summary": "run", "suggested_rule": long}),
+        );
+        let turn = run(&[started(), permission], None);
+        assert!(clipped(
+            &turn.report["pending_permissions"][0]["suggested_rule"]
+        ));
     }
 
     #[test]
