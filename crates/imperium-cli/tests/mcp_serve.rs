@@ -521,6 +521,43 @@ async fn a_timed_out_wait_continues_from_its_cursor_to_the_end_of_the_turn() {
 }
 
 #[tokio::test]
+async fn two_queued_messages_are_waited_for_one_after_the_other() {
+    let project = tempfile::tempdir().unwrap();
+    let (mut harness, _data) = harness().await;
+    let started = harness
+        .ok(
+            "start_session",
+            json!({"project_dir": project.path().to_string_lossy(), "prompt": "please answer slowly"}),
+        )
+        .await;
+    let session_id = started["session_id"].as_str().unwrap().to_string();
+    // Queued behind the running turn; it starts as soon as the first ends.
+    harness
+        .ok(
+            "send_message",
+            json!({"session_id": session_id, "text": "and then say thanks"}),
+        )
+        .await;
+    let first = harness
+        .ok(
+            "wait_for_turn",
+            json!({"session_id": session_id, "since": started["cursor"], "timeout_s": 40}),
+        )
+        .await;
+    assert_eq!(first["outcome"], "completed", "{first}");
+    // The next wait starts just after the first turn's end, so it sees the second turn
+    // whether or not it had already begun.
+    let second = harness
+        .ok(
+            "wait_for_turn",
+            json!({"session_id": session_id, "since": first["cursor"], "timeout_s": 40}),
+        )
+        .await;
+    assert_eq!(second["outcome"], "completed", "{second}");
+    assert_ne!(second["cursor"], first["cursor"]);
+}
+
+#[tokio::test]
 async fn a_steering_message_waits_for_the_running_turn() {
     let project = tempfile::tempdir().unwrap();
     let (mut harness, _data) = harness().await;

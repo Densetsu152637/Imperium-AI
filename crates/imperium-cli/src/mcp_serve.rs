@@ -38,6 +38,8 @@ const POLL: Duration = Duration::from_millis(500);
 const SAFETY: Duration = Duration::from_secs(2);
 /// Characters of one tool output kept in a result.
 const OUTPUT_LIMIT: usize = 800;
+/// Characters of a pending request's summary or question kept in a result.
+const PENDING_LIMIT: usize = 500;
 /// Characters of a tool call's arguments kept in a result.
 const ARGUMENT_LIMIT: usize = 400;
 /// Tool log entries in a wait's report (the newest; the count of older ones is given).
@@ -69,14 +71,16 @@ struct Hub {
     changed: Arc<Notify>,
     /// Sessions that had an event (other than streamed text) since a wait last read them.
     dirty: Arc<Mutex<HashSet<String>>>,
-    /// Requests answered through this harness, per session: `true` for a permission request,
-    /// `false` for a batch of questions. The daemon only queues an answer, so the event
-    /// history keeps showing the request as open until the agent moves on.
+    /// Requests answered through this harness, per session, as (`true` for a permission
+    /// request or `false` for a batch of questions, the history index of the event that asked,
+    /// its request id). The daemon only queues an answer, so the event history keeps showing
+    /// the request as open until the agent moves on. The index tells it from a later request
+    /// that reuses the id (ids restart when a session is restarted in place).
     answered: Arc<Mutex<Answered>>,
 }
 
 /// Per session, the requests answered through the harness.
-type Answered = HashMap<String, HashSet<(bool, u64)>>;
+type Answered = HashMap<String, HashSet<(bool, usize, u64)>>;
 
 impl Hub {
     fn start(client: Client) -> (Hub, tokio::task::JoinHandle<()>) {
@@ -108,15 +112,30 @@ impl Hub {
         dirty.contains(session_id)
     }
 
-    fn note_answered(&self, session_id: &str, permission: bool, request_id: u64) {
+    /// Records that the request `request_id` was answered: the latest event in the session's
+    /// history that asked it, which is the occurrence the answer was for.
+    async fn note_answered(&self, session_id: &str, permission: bool, request_id: u64) {
+        let Ok(history) = self.history(session_id).await else {
+            return;
+        };
+        let asked = if permission {
+            "permission_requested"
+        } else {
+            "questions_asked"
+        };
+        let Some(index) = history.iter().rposition(|event| {
+            kind(event) == asked && event["event"]["request_id"].as_u64() == Some(request_id)
+        }) else {
+            return;
+        };
         let mut answered = self.answered.lock().unwrap_or_else(|e| e.into_inner());
         answered
             .entry(session_id.to_string())
             .or_default()
-            .insert((permission, request_id));
+            .insert((permission, index, request_id));
     }
 
-    fn answered_in(&self, session_id: &str) -> HashSet<(bool, u64)> {
+    fn answered_in(&self, session_id: &str) -> HashSet<(bool, usize, u64)> {
         let answered = self.answered.lock().unwrap_or_else(|e| e.into_inner());
         answered.get(session_id).cloned().unwrap_or_default()
     }
@@ -135,7 +154,7 @@ impl Hub {
 
     /// Every event the session has emitted so far, oldest first.
     async fn history(&self, session_id: &str) -> Result<Vec<Value>, String> {
-        let subscribed = self
+        let mut subscribed = self
             .call("session.subscribe", json!({"session_id": session_id}))
             .await
             .map_err(|error| {
@@ -149,11 +168,10 @@ impl Hub {
                     error
                 }
             })?;
-        Ok(subscribed
-            .get("history")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default())
+        Ok(match subscribed.get_mut("history").map(Value::take) {
+            Some(Value::Array(events)) => events,
+            _ => Vec::new(),
+        })
     }
 
     /// The daemon's summary of one session.
@@ -638,7 +656,14 @@ async fn wait_turn(
         }
         // Read again when something happened, or after the safety interval, but never sooner
         // than POLL after the last read: a read is the whole history.
-        while !hub.is_dirty(session_id) {
+        loop {
+            // Registered before the check, so an event between the two is not lost.
+            let notified = hub.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if hub.is_dirty(session_id) {
+                break;
+            }
             let now = Instant::now();
             let quiet = now.duration_since(fetched);
             if now >= deadline || quiet >= SAFETY {
@@ -646,7 +671,7 @@ async fn wait_turn(
             }
             let pause = (deadline - now).min(SAFETY - quiet);
             tokio::select! {
-                _ = hub.changed.notified() => {}
+                _ = &mut notified => {}
                 _ = tokio::time::sleep(pause) => {}
             }
         }
@@ -739,7 +764,7 @@ async fn respond_permission(hub: &Hub, args: &Value) -> Result<Value, String> {
         json!({"session_id": session_id, "request_id": request_id, "decision": decision}),
     )
     .await?;
-    hub.note_answered(session_id, true, request_id);
+    hub.note_answered(session_id, true, request_id).await;
     Ok(json!({"session_id": session_id, "request_id": request_id, "decision": decision}))
 }
 
@@ -758,7 +783,7 @@ async fn answer_questions(hub: &Hub, args: &Value) -> Result<Value, String> {
         json!({"session_id": session_id, "request_id": request_id, "answers": answers}),
     )
     .await?;
-    hub.note_answered(session_id, false, request_id);
+    hub.note_answered(session_id, false, request_id).await;
     Ok(json!({"session_id": session_id, "request_id": request_id, "answered": answers.len()}))
 }
 
@@ -828,7 +853,7 @@ fn open_turn_start(history: &[Value]) -> Option<usize> {
 fn analyze(
     history: &[Value],
     since: Option<usize>,
-    answered: &HashSet<(bool, u64)>,
+    answered: &HashSet<(bool, usize, u64)>,
     stop: bool,
 ) -> Turn {
     let start = match since {
@@ -848,6 +873,8 @@ fn analyze(
     let mut notices: Vec<Value> = Vec::new();
     let mut detail = Map::new();
     let mut outcome: Option<&'static str> = None;
+    // The index just after the event that ended the turn.
+    let mut end: Option<usize> = None;
     for (index, event) in history.iter().enumerate().skip(lo) {
         // Before the cursor only what is still waiting on the caller is read.
         let counting = index >= start;
@@ -887,15 +914,18 @@ fn analyze(
                 }
             }
             "permission_requested" => {
-                let request = entry(
+                let mut request = entry(
                     "permission_requested",
                     agent,
                     body,
                     &["request_id", "tool", "summary", "suggested_rule"],
                 );
+                if let Some(summary) = body["summary"].as_str() {
+                    request["summary"] = json!(clip(summary, PENDING_LIMIT));
+                }
                 let request_id = body["request_id"].as_u64().unwrap_or_default();
                 permissions.retain(|(waiting, _)| waiting != agent);
-                if !answered.contains(&(true, request_id)) {
+                if !answered.contains(&(true, index, request_id)) {
                     permissions.push((agent.to_string(), request.clone()));
                 }
                 if counting {
@@ -904,11 +934,19 @@ fn analyze(
             }
             "questions_asked" => {
                 let request_id = body["request_id"].as_u64().unwrap_or_default();
-                if !answered.contains(&(false, request_id)) {
-                    questions.push((
-                        request_id,
-                        entry("questions_asked", agent, body, &["request_id", "questions"]),
-                    ));
+                if !answered.contains(&(false, index, request_id)) {
+                    let mut asked =
+                        entry("questions_asked", agent, body, &["request_id", "questions"]);
+                    if let Some(items) = asked["questions"].as_array_mut() {
+                        for item in items {
+                            if let Some(text) =
+                                item["question"].as_str().map(|t| clip(t, PENDING_LIMIT))
+                            {
+                                item["question"] = json!(text);
+                            }
+                        }
+                    }
+                    questions.push((request_id, asked));
                 }
             }
             "questions_answered" => {
@@ -923,6 +961,7 @@ fn analyze(
             }
             "turn_completed" if root && started && outcome.is_none() => {
                 outcome = Some("completed");
+                end = Some(index + 1);
                 for key in ["usage", "cost_usd", "steps"] {
                     detail.insert(key.to_string(), body[key].clone());
                 }
@@ -932,6 +971,7 @@ fn analyze(
             }
             "turn_failed" if root && started && outcome.is_none() => {
                 outcome = Some("failed");
+                end = Some(index + 1);
                 detail.insert("message".into(), body["message"].clone());
                 if stop {
                     break;
@@ -939,6 +979,7 @@ fn analyze(
             }
             "work_stopped" if root && started && outcome.is_none() => {
                 outcome = Some("stopped");
+                end = Some(index + 1);
                 if stop {
                     break;
                 }
@@ -953,10 +994,11 @@ fn analyze(
     } else {
         "running"
     });
-    // A final report's cursor is where the next message's wait starts; any other report's is
-    // where to wait again from.
+    // A final report's cursor is just after the event that ended the turn, where the wait for
+    // the next turn starts (a turn already begun after it is still seen); any other report's
+    // is where to wait again from.
     let cursor = if matches!(outcome, "completed" | "failed" | "stopped") {
-        history.len()
+        end.unwrap_or(history.len())
     } else {
         turn_start.unwrap_or(start)
     };
@@ -1188,10 +1230,36 @@ mod tests {
     #[test]
     fn an_answered_request_is_not_reported_again() {
         let history = vec![started(), ask(7)];
-        let answered = HashSet::from([(true, 7)]);
+        let answered = HashSet::from([(true, 1, 7)]);
         let turn = analyze(&history, None, &answered, true);
         assert_eq!(turn.outcome, "running");
         assert_eq!(turn.report["pending_permissions"], json!([]));
+    }
+
+    #[test]
+    fn a_later_request_that_reuses_an_answered_id_is_still_reported() {
+        // Ids restart when a session is restarted in place: the first request 1 (event 1) was
+        // answered, the second (event 3) is a different one.
+        let history = vec![started(), ask(1), finished(), ask(1)];
+        let answered = HashSet::from([(true, 1, 1)]);
+        let turn = analyze(&history, None, &answered, true);
+        assert_eq!(turn.outcome, "permission_required");
+        assert_eq!(turn.report["pending_permissions"][0]["request_id"], 1);
+    }
+
+    #[test]
+    fn a_final_cursor_does_not_skip_a_turn_already_begun() {
+        // Two queued messages: the second turn started right after the first ended.
+        let history = vec![started(), completed(), started()];
+        let first = run(&history, Some(0));
+        assert_eq!(first.outcome, "completed");
+        assert_eq!(first.report["cursor"], 2);
+        assert_eq!(first.report["events"], 3);
+        let second = run(&history, Some(2));
+        assert_eq!(second.outcome, "running");
+        let mut done = history;
+        done.push(completed());
+        assert_eq!(run(&done, Some(2)).outcome, "completed");
     }
 
     #[test]
