@@ -176,7 +176,10 @@ fn start(index: usize, local: Arc<dyn LocalModels>, dir: &std::path::Path) -> Se
         budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
-        harness: Default::default(),
+        harness: imperium_config::HarnessSettings {
+            dereference: imperium_config::Dereference::Off,
+            ..Default::default()
+        },
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.join(".journal.jsonl"),
