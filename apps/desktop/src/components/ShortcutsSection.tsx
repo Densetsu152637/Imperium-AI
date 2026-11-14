@@ -51,7 +51,13 @@ export function ShortcutsSection({ settings, onChange }: { settings: AppSettings
         return;
       }
       const chord = chordFromEvent(event);
-      if (!chord) return; // only modifiers so far
+      if (!chord) {
+        // Only modifiers so far, unless AltGr is down: say why that cannot be a shortcut.
+        if (event.getModifierState("AltGraph") && !["Control", "Alt", "AltGraph", "Meta", "Shift"].includes(event.key)) {
+          setMessage("AltGr combinations can't be shortcuts.");
+        }
+        return;
+      }
       const problem = chordProblem(chord);
       const conflict = problem ? null : findConflict(settings.shortcuts, capturing, chord, reservedChords(settings));
       if (problem || conflict) {

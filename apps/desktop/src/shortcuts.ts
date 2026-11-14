@@ -38,7 +38,19 @@ export const RESERVED_CHORDS: readonly string[] = [
   "Mod+Z",
   "Mod+Y",
   "Mod+Backspace",
+  "Mod+Delete",
+  "Mod+Shift+Z",
+  "Mod+Left",
+  "Mod+Right",
 ];
+
+/** What a reserved chord is kept for, for the message when one is refused. */
+const reservedUse = (chord: string, extra: readonly string[]): string =>
+  extra.some((e) => normalizeChord(e) === normalizeChord(chord))
+    ? "push-to-talk"
+    : chord.endsWith("Enter")
+      ? "sending a message"
+      : "text editing";
 
 let capturing = false;
 /** Set while Settings waits for a new binding, so no shortcut handler runs for that keypress. */
@@ -175,7 +187,7 @@ export function findConflict(
     if (action.id !== id && normalizeChord(held) === wanted) return { with: action.id, label: action.label };
   }
   for (const fixed of [...RESERVED_CHORDS, ...reserved]) {
-    if (normalizeChord(fixed) === wanted) return { with: "reserved", label: `${fixed} (kept for another use)` };
+    if (normalizeChord(fixed) === wanted) return { with: "reserved", label: reservedUse(fixed, reserved) };
   }
   return null;
 }
@@ -237,6 +249,12 @@ export function sanitizeOverrides(saved: unknown, reserved: readonly string[] = 
     else if (result[a] !== undefined) result = withoutBinding(result, a);
   }
   return result;
+}
+
+/** The action whose binding in force is one of these chords, if any (checked when a reserved key changes). */
+export function shortcutHolding(overrides: ShortcutOverrides | undefined, chords: readonly string[]): ShortcutAction | null {
+  const wanted = new Set(chords.map(normalizeChord));
+  return allBindings(overrides).find(({ chord }) => wanted.has(normalizeChord(chord)))?.action ?? null;
 }
 
 /** A chord as this platform writes it: "Mod+," is "Ctrl+," here and "⌘," on macOS. */

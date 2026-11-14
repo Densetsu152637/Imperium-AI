@@ -16,6 +16,7 @@ import {
   normalizeChord,
   parseChord,
   sanitizeOverrides,
+  shortcutHolding,
   triggers,
   withBinding,
   withoutBinding,
@@ -142,6 +143,20 @@ test("editing chords are reserved", () => {
     assert.equal(findConflict({}, "palette.toggle", `Mod+${k}`)?.with, "reserved", k);
   }
   assert.deepEqual(sanitizeOverrides({ "palette.toggle": "Mod+C" }), {});
+});
+
+test("more editing chords are reserved, and refusals name the use in plain words", () => {
+  for (const k of ["Mod+Shift+Z", "Mod+Delete", "Mod+Left", "Mod+Right"]) {
+    assert.equal(findConflict({}, "palette.toggle", k)?.label, "text editing", k);
+  }
+  assert.equal(findConflict({}, "palette.toggle", "Mod+Enter")?.label, "sending a message");
+  assert.equal(findConflict({}, "palette.toggle", "Mod+Space", ["Mod+Space"])?.label, "push-to-talk");
+});
+
+test("a push-to-talk key a binding already holds is found", () => {
+  assert.equal(shortcutHolding({ "palette.toggle": "Mod+Space" }, ["Mod+Space"])?.id, "palette.toggle");
+  assert.equal(shortcutHolding({}, ["Mod+Space"]), null);
+  assert.equal(shortcutHolding({}, ["Mod+,"])?.id, "settings.toggle");
 });
 
 test("an extra Alt does not trigger the stop shortcut", () => {

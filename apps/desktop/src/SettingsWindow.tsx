@@ -44,7 +44,7 @@ import {
   Volume2,
   type LucideIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import type {
   ConfigChange,
@@ -77,7 +77,8 @@ import type { DaemonClient } from "./daemon/client";
 import { type Daemon, DaemonSettings } from "./DaemonControl";
 import { addModelFolder } from "./panels/ModelSetup";
 import { preview, testNotification } from "./notify";
-import { ACCENTS, DEFAULT_SETTINGS, BUNDLED_ON_BY_DEFAULT, modEnabled, type AppSettings } from "./settings";
+import { ACCENTS, DEFAULT_SETTINGS, BUNDLED_ON_BY_DEFAULT, modEnabled, reservedChords, type AppSettings } from "./settings";
+import { shortcutHolding } from "./shortcuts";
 import { pickFolder } from "./daemon/connection";
 import { storeFolder } from "./store";
 import { type Updates, UpdateSettings } from "./UpdateControl";
@@ -564,7 +565,19 @@ export function SettingsWindow(props: Props) {
   }, [config]);
   const sections = [...APP_SECTIONS, ...configSections, PERMISSIONS_SECTION, BUDGETS_SECTION, API_SECTION, AGENT_CHANGES_SECTION, ...TAIL_SECTIONS];
 
-  const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => onChange({ ...settings, [key]: value });
+  // A push-to-talk key that a shortcut binding already uses is refused, so no binding is dropped later.
+  const [pttNotice, setPttNotice] = useState<string | null>(null);
+  const set = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
+    if (key === "pushToTalkKey") {
+      const taken = shortcutHolding(settings.shortcuts, reservedChords({ pushToTalkKey: value as AppSettings["pushToTalkKey"] }));
+      if (taken) {
+        setPttNotice(`${value as string} is used by the ${taken.label} shortcut. Change that shortcut in Keyboard first.`);
+        return;
+      }
+      setPttNotice(null);
+    }
+    onChange({ ...settings, [key]: value });
+  };
 
   const setConfigValue = async (key: string, value: unknown): Promise<void> => {
     if (!client) return;
@@ -584,7 +597,17 @@ export function SettingsWindow(props: Props) {
     }
   };
 
-  const fieldRows = (fields: Field[]) => fields.map((field) => <FieldRow key={field.key} field={field} value={settings[field.key]} onChange={set} />);
+  const fieldRows = (fields: Field[]) =>
+    fields.map((field) => (
+      <Fragment key={field.key}>
+        <FieldRow field={field} value={settings[field.key]} onChange={set} />
+        {field.key === "pushToTalkKey" && pttNotice && (
+          <p className="muted" role="status">
+            {pttNotice}
+          </p>
+        )}
+      </Fragment>
+    ));
   const configRows = (entries: ConfigEntry[]) =>
     entries.map((entry) =>
       entry.key === "policy.personality" && client ? (
