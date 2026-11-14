@@ -1,281 +1,74 @@
 // Model configuration: llama.cpp / vLLM settings of local models and the editable settings of
-// model-table rows. Edits are saved through `models.set_config`; a debounced dry run supplies the
-// live memory estimate and the server's validation message. It uses the Settings window's shell
-// (SettingsModal): the models are its navigation, local ones and model-table rows in two groups.
+// model-table rows, drawn as tables: one row per setting (its name with an (i) icon that says in
+// plain words what it affects, its value, a reset), grouped (modelSettingsTable.ts holds the
+// rows and their explanations). A local model's table of estimated memory (modelMemory.ts) follows
+// the settings as they are edited. "Use this model" switches a model off: it is greyed out, left
+// out of the pickers, routing and escalation, and cannot be the default (modelAvailability.ts).
+// Edits are saved through `models.set_config`; a debounced dry run supplies the live estimate and
+// the server's validation message. It uses the Settings window's shell (SettingsModal): the models
+// are its navigation, local ones and model-table rows in two groups.
 
-import { Boxes, Cpu, Search } from "lucide-react";
-import { checkDraft } from "./draftSettings";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Boxes, Cpu, Info, Search } from "lucide-react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
-  LocalLaunchSettings,
   LocalModelConfig,
   ModelConfigResult,
   ModelSetConfigParams,
   TableModelConfig,
   TableModelSettings,
+  LocalLaunchSettings,
 } from "@imperium/protocol";
+import { Switch } from "./components/Switch";
 import { matches, ModalNavGroup, ModalNavItem, SettingsModal } from "./components/SettingsModal";
 import type { DaemonClient } from "./daemon/client";
+import {
+  defaultTurnedOff,
+  disabledToSave,
+  offSpecs,
+  replacementDefaults,
+  type AvailabilityInput,
+  type Switches,
+} from "./modelAvailability";
+import {
+  EMPTY_LOCAL,
+  EMPTY_TABLE,
+  FLASH,
+  localDraft,
+  localSettings,
+  MAX_ALIAS_CHARS,
+  MAX_CARD_CHARS,
+  normLocal,
+  normTable,
+  same,
+  tableDraft,
+  tableSettings,
+  TIERS,
+  type LocalDraft,
+  type TableDraft,
+} from "./modelConfigDrafts";
+import { estimateValue, localEstimate, rowEstimate, summaryLine, type MemoryEstimate } from "./modelMemory";
+import {
+  affectsText,
+  ASPECT_LABELS,
+  ESTIMATE_ROWS,
+  groupedSettings,
+  LOCAL_GROUPS,
+  LOCAL_SETTINGS,
+  TABLE_GROUPS,
+  TABLE_SETTINGS,
+  type SettingGroup,
+  type SettingSpec,
+} from "./modelSettingsTable";
 import { arrangeModels, markOf } from "./modelPrefs";
 import { useSettings } from "./settings";
+import "./modelConfig.css";
 
 export type ModelDialogTarget = { tab: "local" | "table"; id?: string };
 
-const GIB = 1024 ** 3;
-const gib = (bytes: number): string => `${(bytes / GIB).toFixed(1)} GiB`;
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-const TIERS = ["basic", "standard", "strong", "frontier"] as const;
-const FLASH = ["auto", "on", "off"] as const;
-const FULL_PRECISION_V = ["f16", "bf16", "f32"];
 
-/** Local form fields as typed: an empty string means "not set" (sent as null). */
-type LocalDraft = {
-  alias: string;
-  card: string;
-  context: string;
-  pool_tokens: string;
-  slots: string;
-  cache_type_k: string;
-  cache_type_v: string;
-  flash_attn: string;
-  max_gpu_layers: string;
-  max_wait_s: string;
-  max_output_tokens: string;
-  extra_args: string;
-  draft_model: string;
-  draft_max: string;
-  draft_min: string;
-  draft_gpu_layers: string;
-};
-
-type TableDraft = {
-  alias: string;
-  card: string;
-  enabled: boolean | null;
-  tier: string;
-  tags: string;
-  context_window: string;
-  input_usd_per_mtok: string;
-  output_usd_per_mtok: string;
-};
-
-const num = (value: number | null): string => (value === null ? "" : String(value));
-
-function localDraft(saved: LocalLaunchSettings): LocalDraft {
-  return {
-    alias: saved.alias ?? "",
-    card: saved.card ?? "",
-    context: saved.context_auto ? "auto" : num(saved.context),
-    pool_tokens: num(saved.pool_tokens),
-    slots: num(saved.slots),
-    cache_type_k: saved.cache_type_k ?? "",
-    cache_type_v: saved.cache_type_v ?? "",
-    flash_attn: saved.flash_attn ?? "",
-    max_gpu_layers: num(saved.max_gpu_layers),
-    max_wait_s: num(saved.max_wait_s),
-    max_output_tokens: num(saved.max_output_tokens),
-    extra_args: (saved.extra_args ?? []).join("\n"),
-    draft_model: saved.draft_model ?? "",
-    draft_max: num(saved.draft_max),
-    draft_min: num(saved.draft_min),
-    draft_gpu_layers: num(saved.draft_gpu_layers),
-  };
-}
-
-function tableDraft(saved: TableModelSettings): TableDraft {
-  return {
-    alias: saved.alias ?? "",
-    card: saved.card ?? "",
-    enabled: saved.enabled,
-    tier: saved.tier ?? "",
-    tags: (saved.tags ?? []).join(", "),
-    context_window: num(saved.context_window),
-    input_usd_per_mtok: num(saved.input_usd_per_mtok),
-    output_usd_per_mtok: num(saved.output_usd_per_mtok),
-  };
-}
-
-const EMPTY_LOCAL: LocalDraft = localDraft({
-  alias: null,
-  card: null,
-  context: null,
-  context_auto: false,
-  pool_tokens: null,
-  slots: null,
-  cache_type_k: null,
-  cache_type_v: null,
-  flash_attn: null,
-  max_gpu_layers: null,
-  max_wait_s: null,
-  max_output_tokens: null,
-  extra_args: null,
-  draft_model: null,
-  draft_max: null,
-  draft_min: null,
-  draft_gpu_layers: null,
-});
-
-const EMPTY_TABLE: TableDraft = tableDraft({
-  alias: null,
-  card: null,
-  enabled: null,
-  tier: null,
-  tags: null,
-  context_window: null,
-  input_usd_per_mtok: null,
-  output_usd_per_mtok: null,
-});
-
-/** Longest alias the daemon accepts, in characters (imperium-config's MAX_ALIAS_CHARS). */
-const MAX_ALIAS_CHARS = 80;
-
-/** An alias from its field: trimmed, null when empty; throws a message when too long. */
-export function aliasValue(text: string): string | null {
-  const trimmed = text.trim().replace(/\s+/g, " ");
-  if (trimmed === "") return null;
-  if ([...trimmed].length > MAX_ALIAS_CHARS) throw new Error(`Display name must be at most ${MAX_ALIAS_CHARS} characters`);
-  return trimmed;
-}
-
-/** Longest model card the daemon accepts, in characters (imperium-config's MAX_CARD_CHARS). */
-const MAX_CARD_CHARS = 4000;
-
-/** A model card from its field: trimmed, null when empty; throws a message when too long. */
-export function cardValue(text: string): string | null {
-  const trimmed = text.trim();
-  if (trimmed === "") return null;
-  if ([...trimmed].length > MAX_CARD_CHARS) throw new Error(`The model card must be at most ${MAX_CARD_CHARS} characters`);
-  return trimmed;
-}
-
-/** A whole number from a field, or null when empty; throws a message for anything else. */
-function integer(text: string, label: string, min: number): number | null {
-  const trimmed = text.trim();
-  if (trimmed === "") return null;
-  if (!/^\d+$/.test(trimmed)) throw new Error(`${label} must be a whole number`);
-  const value = Number.parseInt(trimmed, 10);
-  if (value < min) throw new Error(`${label} must be at least ${min}`);
-  return value;
-}
-
-function price(text: string, label: string): number | null {
-  const trimmed = text.trim();
-  if (trimmed === "") return null;
-  const value = Number(trimmed);
-  if (!Number.isFinite(value) || value < 0) throw new Error(`${label} must be a number, 0 or more`);
-  return value;
-}
-
-/** Form to settings; throws the first client-side validation message (the server is authoritative). */
-function localSettings(draft: LocalDraft, config: LocalModelConfig): LocalLaunchSettings {
-  const contextAuto = draft.context.trim().toLowerCase() === "auto";
-  const context = contextAuto ? null : integer(draft.context, "Max context (a number or auto)", 1);
-  const pool = integer(draft.pool_tokens, "KV pool", 1);
-  const slots = integer(draft.slots, "Slots", 1);
-  if (slots !== null && slots > 256) throw new Error("Slots must be at most 256");
-  const args = draft.extra_args
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const vllm = config.runtime === "vllm";
-  const settings: LocalLaunchSettings = {
-    alias: aliasValue(draft.alias),
-    card: cardValue(draft.card),
-    context,
-    context_auto: contextAuto,
-    pool_tokens: pool,
-    slots,
-    cache_type_k: vllm ? null : draft.cache_type_k || null,
-    cache_type_v: vllm ? null : draft.cache_type_v || null,
-    flash_attn: vllm ? null : ((draft.flash_attn || null) as LocalLaunchSettings["flash_attn"]),
-    max_gpu_layers: vllm ? null : integer(draft.max_gpu_layers, "Max GPU layers", 0),
-    max_wait_s: integer(draft.max_wait_s, "Max wait", 1),
-    max_output_tokens: integer(draft.max_output_tokens, "Max output tokens", 0),
-    extra_args: args.length > 0 ? args : null,
-    draft_model: vllm ? null : draft.draft_model.trim() || null,
-    draft_max: vllm ? null : integer(draft.draft_max, "Draft max tokens", 1),
-    draft_min: vllm ? null : integer(draft.draft_min, "Draft min tokens", 0),
-    draft_gpu_layers: vllm ? null : integer(draft.draft_gpu_layers, "Draft GPU layers", 0),
-  };
-  checkDraft(config.id, {
-    model: settings.draft_model,
-    max: settings.draft_max,
-    min: settings.draft_min,
-    gpuLayers: settings.draft_gpu_layers,
-  }, config.effective.draft_max);
-  // A fixed pool must hold a fixed context; an `auto` context is capped to the pool instead.
-  const fixedContext = contextAuto ? null : (context ?? (config.effective.context_auto ? null : config.effective.context));
-  if (pool !== null && fixedContext !== null && pool < fixedContext) {
-    throw new Error("A fixed KV pool must be at least the max context");
-  }
-  const v = settings.cache_type_v ?? config.effective.cache_type_v;
-  const flash = settings.flash_attn ?? config.effective.flash_attn;
-  if (!vllm && !FULL_PRECISION_V.includes(v) && flash === "off") {
-    throw new Error("A quantised V cache type needs flash attention on or auto");
-  }
-  return settings;
-}
-
-function tableSettings(draft: TableDraft): TableModelSettings {
-  const input = price(draft.input_usd_per_mtok, "Input price");
-  const output = price(draft.output_usd_per_mtok, "Output price");
-  if ((input === null) !== (output === null)) throw new Error("Set both prices or neither");
-  const tags = draft.tags
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-  return {
-    alias: aliasValue(draft.alias),
-    card: cardValue(draft.card),
-    enabled: draft.enabled,
-    tier: (draft.tier || null) as TableModelSettings["tier"],
-    tags: tags.length > 0 ? tags : null,
-    context_window: integer(draft.context_window, "Context window", 1),
-    input_usd_per_mtok: input,
-    output_usd_per_mtok: output,
-  };
-}
-
-const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-
-/** Normalises settings the way the form round-trips them, so "unchanged" compares equal. */
-const normLocal = (s: LocalLaunchSettings): LocalLaunchSettings => ({
-  ...s,
-  extra_args: s.extra_args && s.extra_args.length > 0 ? s.extra_args : null,
-});
-const normTable = (s: TableModelSettings): TableModelSettings => ({
-  ...s,
-  tags: s.tags && s.tags.length > 0 ? s.tags : null,
-});
-
-function Field({
-  label,
-  hint,
-  filled,
-  onReset,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  filled: boolean;
-  onReset: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <label className="setting model-field">
-      <span>
-        {label}
-        {filled && (
-          <button type="button" className="ghost reset" onClick={onReset} title="Use the default">
-            reset
-          </button>
-        )}
-      </span>
-      {children}
-      {hint && <small className="muted">{hint}</small>}
-    </label>
-  );
-}
+/** The spec a local model is used by. */
+const localSpecOf = (model: LocalModelConfig): string => `${model.runtime}:${model.id}`;
 
 export function ModelConfigDialog({
   client,
@@ -295,6 +88,10 @@ export function ModelConfigDialog({
   const [query, setQuery] = useState("");
   const [localDrafts, setLocalDrafts] = useState<Record<string, LocalDraft>>({});
   const [tableDrafts, setTableDrafts] = useState<Record<string, TableDraft>>({});
+  /** "Use this model" switches of local models, by spec, not saved yet. */
+  const [localSwitches, setLocalSwitches] = useState<Record<string, boolean>>({});
+  /** The model to make the default when the current default is switched off. */
+  const [newDefault, setNewDefault] = useState("");
   const [preview, setPreview] = useState<LocalModelConfig | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -327,6 +124,35 @@ export function ModelConfigDialog({
   const selectedTable = tab === "table" && selected ? tableById.get(selected) : undefined;
   const selectedAlias = selectedLocal?.saved.alias ?? selectedTable?.effective.alias ?? null;
 
+  // Which models are off, with the switches not saved yet.
+  const availability: AvailabilityInput | null = useMemo(
+    () =>
+      config && {
+        disabled: config.disabled ?? [],
+        local: config.local.map(localSpecOf),
+        rows: config.table.map((row) => ({ id: row.id, spec: row.spec, enabled: row.effective.enabled })),
+        defaultModel: config.default_model ?? null,
+      },
+    [config],
+  );
+  const switches: Switches = useMemo(() => {
+    const rows: Record<string, boolean> = {};
+    for (const [id, draft] of Object.entries(tableDrafts)) {
+      if (draft.enabled !== null) rows[id] = draft.enabled;
+    }
+    return { local: localSwitches, rows };
+  }, [localSwitches, tableDrafts]);
+  const off = useMemo(() => (availability ? offSpecs(availability, switches) : new Set<string>()), [availability, switches]);
+  const defaultOff = availability ? defaultTurnedOff(availability, switches) : null;
+  const replacements = useMemo(() => {
+    if (!config || defaultOff === null) return [];
+    const specs = [
+      ...config.local.map((model) => ({ spec: localSpecOf(model), usable: true })),
+      ...config.table.map((row) => ({ spec: row.spec, usable: row.endpoint_configured })),
+    ];
+    return replacementDefaults(specs, off, defaultOff);
+  }, [config, defaultOff, off]);
+
   /** One model's settings if its form differs from what is saved; throws a validation message. */
   const localChange = (model: LocalModelConfig): LocalLaunchSettings | null => {
     const draft = localDrafts[model.id];
@@ -342,7 +168,13 @@ export function ModelConfigDialog({
   };
 
   const collect = (): ModelSetConfigParams => {
-    const params: ModelSetConfigParams = { local: [], table: [], hidden: null, dry_run: false };
+    const params: ModelSetConfigParams = {
+      local: [],
+      table: [],
+      hidden: null,
+      disabled: config ? disabledToSave(config.disabled ?? [], switches) : null,
+      dry_run: false,
+    };
     for (const model of config?.local ?? []) {
       const settings = localChange(model);
       if (settings) params.local.push({ id: model.id, settings });
@@ -350,6 +182,10 @@ export function ModelConfigDialog({
     for (const row of config?.table ?? []) {
       const settings = tableChange(row);
       if (settings) params.table.push({ id: row.id, settings });
+    }
+    // The daemon refuses to switch off the default model: another one is chosen first.
+    if (defaultOff !== null && newDefault === "") {
+      throw new Error(`${defaultOff} is your default model: choose another default model before switching it off`);
     }
     return params;
   };
@@ -361,7 +197,7 @@ export function ModelConfigDialog({
     setPreview(null);
     setPreviewError(null);
     if (!client) return;
-    const params: ModelSetConfigParams = { local: [], table: [], hidden: null, dry_run: true };
+    const params: ModelSetConfigParams = { local: [], table: [], hidden: null, disabled: null, dry_run: true };
     try {
       if (selectedLocal && selectedLocalDraft) {
         params.local.push({ id: selectedLocal.id, settings: localSettings(selectedLocalDraft, selectedLocal) });
@@ -406,12 +242,16 @@ export function ModelConfigDialog({
       setError(message(e));
       return;
     }
-    if (params.local.length === 0 && params.table.length === 0) {
+    if (params.local.length === 0 && params.table.length === 0 && params.disabled === null) {
       if (close) onClose();
       return;
     }
     setSaving(true);
     try {
+      // The new default first: the daemon refuses to switch the old one off while it is the default.
+      if (defaultOff !== null && newDefault !== "") {
+        await client.call("models.use", { model: newDefault });
+      }
       const result = await client.call<ModelConfigResult>("models.set_config", params);
       onSaved();
       if (close) {
@@ -421,6 +261,8 @@ export function ModelConfigDialog({
       setConfig(result);
       setLocalDrafts({});
       setTableDrafts({});
+      setLocalSwitches({});
+      setNewDefault("");
       setApplied(true);
     } catch (e) {
       setError(message(e));
@@ -440,7 +282,7 @@ export function ModelConfigDialog({
     try {
       if (kind === "local") {
         const model = localById.get(id);
-        return model ? localChange(model) !== null : false;
+        return model ? localChange(model) !== null || localSpecOf(model) in localSwitches : false;
       }
       const row = tableById.get(id);
       return row ? tableChange(row) !== null : false;
@@ -450,15 +292,23 @@ export function ModelConfigDialog({
   };
   const dirty =
     config !== null &&
-    (config.local.some((m) => changed(m.id, "local")) || config.table.some((r) => changed(r.id, "table")));
+    (config.local.some((m) => changed(m.id, "local")) ||
+      config.table.some((r) => changed(r.id, "table")) ||
+      disabledToSave(config.disabled ?? [], switches) !== null);
 
   const setLocal = (model: LocalModelConfig, patch: Partial<LocalDraft>) =>
     setLocalDrafts((all) => ({ ...all, [model.id]: { ...(all[model.id] ?? localDraft(model.saved)), ...patch } }));
   const setTable = (row: TableModelConfig, patch: Partial<TableDraft>) =>
     setTableDrafts((all) => ({ ...all, [row.id]: { ...(all[row.id] ?? tableDraft(row.saved)), ...patch } }));
+  /** Switches a local model: back to what is saved when it matches, so it is not "edited". */
+  const switchLocal = (model: LocalModelConfig, on: boolean) =>
+    setLocalSwitches((all) => {
+      const { [localSpecOf(model)]: _old, ...rest } = all;
+      return on === (config?.disabled ?? []).every((spec) => spec !== localSpecOf(model)) ? rest : { ...rest, [localSpecOf(model)]: on };
+    });
 
   // Favourites first and hidden models last, as in the model panels (modelPrefs.ts).
-  const specOf = (item: LocalModelConfig | TableModelConfig) => ("spec" in item ? item.spec : `${item.runtime}:${item.id}`);
+  const specOf = (item: LocalModelConfig | TableModelConfig) => ("spec" in item ? item.spec : localSpecOf(item));
   const aliasOf = (item: LocalModelConfig | TableModelConfig): string | null => ("spec" in item ? item.effective.alias : item.saved.alias);
   const arrange = <T extends LocalModelConfig | TableModelConfig>(list: T[]): T[] => {
     const arranged = arrangeModels<T>(
@@ -474,12 +324,16 @@ export function ModelConfigDialog({
     const row = kind === "table" ? (item as TableModelConfig) : undefined;
     const mark = markOf(modelMarks, specOf(item));
     const alias = aliasOf(item);
+    // A table row is off by its own switch (or its model's); a local model by the list.
+    const isOff = row
+      ? (config?.disabled ?? []).includes(row.spec) || !(tableDrafts[row.id]?.enabled ?? row.effective.enabled)
+      : off.has(specOf(item));
     return (
       <ModalNavItem
         key={`${kind}:${item.id}`}
         icon={kind === "local" ? Cpu : Boxes}
         active={tab === kind && selected === item.id}
-        dimmed={mark === "hidden"}
+        dimmed={mark === "hidden" || isOff}
         title={alias ? `${alias} (${item.id})` : item.id}
         onClick={() => {
           setTab(kind);
@@ -487,6 +341,7 @@ export function ModelConfigDialog({
         }}
         badges={
           <>
+            {isOff && <span className="badge off">off</span>}
             {mark === "favourite" && <span className="badge">favourite</span>}
             {mark === "hidden" && <span className="badge off">hidden</span>}
             {local && <span className="badge">{local.runtime}</span>}
@@ -561,6 +416,23 @@ export function ModelConfigDialog({
     </>
   );
 
+  /** The choice shown with the switch of the default model when it is being switched off. */
+  const defaultChoice = (spec: string): ReactNode =>
+    defaultOff === spec ? (
+      <div className="model-default-choice">
+        <span>This is your default model for new sessions. Choose the one to use instead:</span>
+        <select aria-label="New default model" value={newDefault} onChange={(event) => setNewDefault(event.target.value)}>
+          <option value="">choose a model…</option>
+          {replacements.map((replacement) => (
+            <option key={replacement} value={replacement}>
+              {replacement}
+            </option>
+          ))}
+        </select>
+        {replacements.length === 0 && <span className="warning">No other model is on to take over.</span>}
+      </div>
+    ) : null;
+
   return (
     <SettingsModal
       label="Models"
@@ -587,15 +459,25 @@ export function ModelConfigDialog({
           cacheTypes={config.cache_types}
           preview={preview}
           previewError={previewError}
+          updating={preview === null && previewError === null && selectedLocalDraft !== undefined && changed(selectedLocal.id, "local")}
+          on={!off.has(localSpecOf(selectedLocal))}
+          onSwitch={(on) => switchLocal(selectedLocal, on)}
+          defaultChoice={defaultChoice(localSpecOf(selectedLocal))}
           onChange={(patch) => setLocal(selectedLocal, patch)}
-          onResetAll={() => setLocalDrafts((all) => ({ ...all, [selectedLocal.id]: EMPTY_LOCAL }))}
+          onResetAll={() => {
+            setLocalDrafts((all) => ({ ...all, [selectedLocal.id]: EMPTY_LOCAL }));
+          }}
         />
       )}
-      {selectedTable && (
+      {selectedTable && config && (
         <TableForm
           row={selectedTable}
           draft={tableDrafts[selectedTable.id] ?? tableDraft(selectedTable.saved)}
+          local={config.local}
           previewError={previewError}
+          modelOff={(config.disabled ?? []).includes(selectedTable.spec)}
+          on={!(config.disabled ?? []).includes(selectedTable.spec) && (tableDrafts[selectedTable.id]?.enabled ?? selectedTable.effective.enabled)}
+          defaultChoice={defaultChoice(selectedTable.spec)}
           onChange={(patch) => setTable(selectedTable, patch)}
           onResetAll={() => setTableDrafts((all) => ({ ...all, [selectedTable.id]: EMPTY_TABLE }))}
         />
@@ -605,75 +487,205 @@ export function ModelConfigDialog({
 }
 
 /**
- * The model's display name: shown instead of its id wherever a model is named. The id stays what
- * config, routing and `--model` use. `fallback` is an alias the row has from config.toml.
+ * The (i) icon beside a setting: a keyboard-focusable button whose popover says in plain words
+ * what the setting affects. It opens on hover and on focus, stays while the button has focus, and
+ * Esc closes it (without closing the dialog). The text is the button's description
+ * (`aria-describedby`), so a screen reader reads it with the button.
  */
-function AliasField({
-  id,
-  value,
-  fallback,
-  onChange,
-}: {
-  id: string;
-  value: string;
-  fallback: string | null;
-  onChange: (alias: string) => void;
-}) {
+function InfoTip({ label, children }: { label: string; children: ReactNode }) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const focused = useRef(false);
   return (
-    <Field
-      label="Display name"
-      hint={`Shown instead of the id everywhere; the id (${id}) is unchanged in config and routing. Empty shows ${fallback ? "the configured alias" : "the id"}.`}
-      filled={value !== ""}
-      onReset={() => onChange("")}
-    >
-      <input type="text" value={value} placeholder={fallback ?? id} maxLength={MAX_ALIAS_CHARS} spellCheck={false} onChange={(e) => onChange(e.target.value)} />
-    </Field>
+    <span className="info-tip" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(focused.current)}>
+      <button
+        type="button"
+        className="info-tip-button"
+        aria-label={`What ${label} affects`}
+        aria-describedby={id}
+        aria-expanded={open}
+        onClick={() => setOpen(true)}
+        onFocus={() => {
+          focused.current = true;
+          setOpen(true);
+        }}
+        onBlur={() => {
+          focused.current = false;
+          setOpen(false);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && open) {
+            // Closes the popover only: the dialog's own Esc handler sees the prevented event.
+            event.preventDefault();
+            setOpen(false);
+          }
+        }}
+      >
+        <Info aria-hidden="true" />
+      </button>
+      <span role="tooltip" id={id} className="info-tip-pop" hidden={!open}>
+        {children}
+      </span>
+    </span>
   );
 }
 
-/**
- * The model card: what the model is good at (coding, writing, research, ...) and notes. Agents
- * read it, with what the model's metadata says, when they choose a model to delegate to.
- */
-function CardField({
-  value,
-  metadata,
-  fallback,
-  onChange,
+/** One group of settings as a table, with its title and note as the caption. */
+function GroupTable({ group, children }: { group: SettingGroup; children: ReactNode }) {
+  return (
+    <table className="model-table">
+      <caption>
+        <span className="model-table-title">{group.title}</span>
+        {group.note && <small className="muted">{group.note}</small>}
+      </caption>
+      <thead className="visually-hidden">
+        <tr>
+          <th scope="col">Setting</th>
+          <th scope="col">Value</th>
+          <th scope="col">Reset</th>
+        </tr>
+      </thead>
+      <tbody>{children}</tbody>
+    </table>
+  );
+}
+
+/** A table row: the setting's name with its (i), the value control, and a reset when it is set. */
+function SettingRow({
+  spec,
+  filled,
+  onReset,
+  hint,
+  unavailable,
+  children,
 }: {
-  value: string;
-  metadata: string | null;
-  fallback: string | null;
-  onChange: (card: string) => void;
+  spec: Pick<SettingSpec<string>, "label" | "help" | "affects">;
+  filled: boolean;
+  onReset: () => void;
+  hint?: ReactNode;
+  /** Why the value cannot be changed (shown instead of the hint). */
+  unavailable?: string;
+  children: ReactNode;
 }) {
   return (
-    <Field
-      label="Model card"
-      hint="What the model is good at and notes; agents read it when they pick a model to delegate to."
-      filled={value !== ""}
-      onReset={() => onChange("")}
+    <tr className={`model-setting-row${unavailable ? " unavailable" : ""}`}>
+      <th scope="row">
+        <span className="model-setting-name">
+          {spec.label}
+          <InfoTip label={spec.label}>
+            <span>{spec.help}</span>
+            <span className="info-tip-affects">{affectsText(spec.affects)}</span>
+          </InfoTip>
+        </span>
+        <small className="model-setting-aspects muted">{spec.affects.map((aspect) => ASPECT_LABELS[aspect]).join(" · ")}</small>
+      </th>
+      <td className="model-setting-value">
+        {children}
+        {(unavailable ?? hint) && <small className="muted">{unavailable ?? hint}</small>}
+      </td>
+      <td className="model-setting-reset">
+        {filled && !unavailable && (
+          <button type="button" className="ghost reset" onClick={onReset} title="Use the default" aria-label={`Reset ${spec.label}`}>
+            reset
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+/** The estimated memory of a model as a table: "≈ estimate", updating as the settings change. */
+function MemoryTable({ estimate, updating, remoteNote }: { estimate: MemoryEstimate; updating: boolean; remoteNote?: string }) {
+  const caption = (
+    <caption>
+      <span className="model-table-title">
+        Estimated memory <span className="badge estimate">≈ estimate</span>
+        {updating && <span className="muted model-estimate-updating"> updating…</span>}
+      </span>
+      <small className="muted">
+        {estimate.kind === "remote"
+          ? "A hosted model runs on the provider's computers."
+          : "What this computer would use with the settings below, from the same planner that loads the model; it updates as you change them."}
+      </small>
+    </caption>
+  );
+  if (estimate.kind === "remote") {
+    return (
+      <table className="model-table model-memory">
+        {caption}
+        <tbody>
+          <tr className="model-setting-row">
+            <th scope="row">
+              <span className="model-setting-name">
+                Memory on this computer
+                <InfoTip label="memory on this computer">
+                  <span>
+                    {remoteNote ??
+                      "This model runs on the provider's servers, so it uses no graphics card or system memory here. Only your network and the provider's price and limits matter."}
+                  </span>
+                </InfoTip>
+              </span>
+            </th>
+            <td className="model-setting-value">runs remotely</td>
+            <td className="model-setting-reset" />
+          </tr>
+        </tbody>
+      </table>
+    );
+  }
+  return (
+    <table className={`model-table model-memory${updating ? " updating" : ""}`}>
+      {caption}
+      <tbody>
+        {ESTIMATE_ROWS.map((row) => (
+          <tr key={row.key} className={`model-setting-row${estimate.fits ? "" : " warn"}`}>
+            <th scope="row">
+              <span className="model-setting-name">
+                {row.label}
+                <InfoTip label={row.label}>
+                  <span>{row.help}</span>
+                </InfoTip>
+              </span>
+            </th>
+            <td className="model-setting-value">
+              <output>{estimateValue(estimate, row.key)}</output>
+            </td>
+            <td className="model-setting-reset" />
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** The "Use this model" row: a switch, and what being off means. */
+function UseRow({
+  spec,
+  on,
+  onSwitch,
+  locked,
+  defaultChoice,
+}: {
+  spec: Pick<SettingSpec<string>, "label" | "help" | "affects">;
+  on: boolean;
+  onSwitch: (on: boolean) => void;
+  /** Why the switch cannot be changed. */
+  locked?: string;
+  defaultChoice: ReactNode;
+}) {
+  return (
+    <SettingRow
+      spec={spec}
+      filled={false}
+      onReset={() => {}}
+      hint={
+        locked ??
+        (on ? "On: routing, the pickers and agents may use it." : "Off: greyed out, never routed or offered, and it cannot be the default.")
+      }
     >
-      <textarea
-        rows={4}
-        value={value}
-        maxLength={MAX_CARD_CHARS}
-        placeholder={fallback ?? "Good at: coding, tool use. Notes: fast; weak at long documents."}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      {metadata && (
-        <details className="model-card-metadata">
-          <summary>
-            From the model's metadata{" "}
-            {value === "" && (
-              <button type="button" className="ghost reset" onClick={() => onChange(metadata)}>
-                copy into the card
-              </button>
-            )}
-          </summary>
-          <pre className="muted">{metadata}</pre>
-        </details>
-      )}
-    </Field>
+      <Switch checked={on} onChange={onSwitch} label={`${spec.label}`} disabled={locked !== undefined} />
+      {defaultChoice}
+    </SettingRow>
   );
 }
 
@@ -685,6 +697,10 @@ function LocalForm({
   cacheTypes,
   preview,
   previewError,
+  updating,
+  on,
+  onSwitch,
+  defaultChoice,
   onChange,
   onResetAll,
 }: {
@@ -696,48 +712,167 @@ function LocalForm({
   cacheTypes: string[];
   preview: LocalModelConfig | null;
   previewError: string | null;
+  /** The estimate is waiting for the daemon's answer to the latest edit. */
+  updating: boolean;
+  on: boolean;
+  onSwitch: (on: boolean) => void;
+  defaultChoice: ReactNode;
   onChange: (patch: Partial<LocalDraft>) => void;
   onResetAll: () => void;
 }) {
   const vllm = model.runtime === "vllm";
   const eff = model.effective;
   const estimate = preview ?? model;
-  const text = (
-    key: keyof LocalDraft,
-    label: string,
-    placeholder: number | null,
-    options: { disabled?: boolean; hint?: string } = {},
-  ) => (
-    <Field label={label} hint={options.hint} filled={draft[key] !== ""} onReset={() => onChange({ [key]: "" })}>
-      <input
-        type="text"
-        inputMode="numeric"
-        value={draft[key]}
-        placeholder={placeholder === null ? "planner decides" : String(placeholder)}
-        disabled={options.disabled}
-        onChange={(e) => onChange({ [key]: e.target.value })}
-      />
-    </Field>
-  );
-  const select = (
-    key: "cache_type_k" | "cache_type_v" | "flash_attn",
-    label: string,
-    values: readonly string[],
-    fallback: string,
-  ) => (
-    <Field label={label} filled={draft[key] !== ""} onReset={() => onChange({ [key]: "" })}>
-      <select value={draft[key]} disabled={vllm} onChange={(e) => onChange({ [key]: e.target.value })}>
-        <option value="">default ({fallback})</option>
-        {values.map((value) => (
-          <option key={value} value={value}>
-            {value}
-          </option>
-        ))}
-      </select>
-    </Field>
-  );
+  const spec = (key: string) => {
+    const found = LOCAL_SETTINGS.find((setting) => setting.key === key);
+    if (!found) throw new Error(`no setting ${key}`);
+    return found;
+  };
+  const noVllm = (key: string): string | undefined => (vllm && spec(key).llamacppOnly ? "Not used by vLLM models." : undefined);
+  const text = (key: keyof LocalDraft, placeholder: number | null, options: { disabled?: boolean; hint?: ReactNode } = {}) => {
+    const setting = spec(key);
+    return (
+      <SettingRow spec={setting} filled={draft[key] !== ""} onReset={() => onChange({ [key]: "" })} hint={options.hint} unavailable={noVllm(key)}>
+        <input
+          type="text"
+          inputMode="numeric"
+          aria-label={setting.label}
+          value={draft[key]}
+          placeholder={placeholder === null ? "planner decides" : String(placeholder)}
+          disabled={options.disabled || noVllm(key) !== undefined}
+          onChange={(e) => onChange({ [key]: e.target.value })}
+        />
+      </SettingRow>
+    );
+  };
+  const select = (key: "cache_type_k" | "cache_type_v" | "flash_attn", values: readonly string[], fallback: string) => {
+    const setting = spec(key);
+    return (
+      <SettingRow spec={setting} filled={draft[key] !== ""} onReset={() => onChange({ [key]: "" })} unavailable={noVllm(key)}>
+        <select aria-label={setting.label} value={draft[key]} disabled={vllm} onChange={(e) => onChange({ [key]: e.target.value })}>
+          <option value="">default ({fallback})</option>
+          {values.map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
+        </select>
+      </SettingRow>
+    );
+  };
+  const draftOff = vllm || draft.draft_model.trim() === "";
+  const rows: Record<string, ReactNode> = {
+    enabled: <UseRow key="enabled" spec={spec("enabled")} on={on} onSwitch={onSwitch} defaultChoice={defaultChoice} />,
+    alias: (
+      <SettingRow
+        key="alias"
+        spec={spec("alias")}
+        filled={draft.alias !== ""}
+        onReset={() => onChange({ alias: "" })}
+        hint={`Empty shows the id (${model.id}).`}
+      >
+        <input
+          type="text"
+          aria-label={spec("alias").label}
+          value={draft.alias}
+          placeholder={model.id}
+          maxLength={MAX_ALIAS_CHARS}
+          spellCheck={false}
+          onChange={(e) => onChange({ alias: e.target.value })}
+        />
+      </SettingRow>
+    ),
+    card: (
+      <SettingRow key="card" spec={spec("card")} filled={draft.card !== ""} onReset={() => onChange({ card: "" })}>
+        <textarea
+          rows={4}
+          aria-label={spec("card").label}
+          value={draft.card}
+          maxLength={MAX_CARD_CHARS}
+          placeholder="Good at: coding, tool use. Notes: fast; weak at long documents."
+          onChange={(e) => onChange({ card: e.target.value })}
+        />
+        {model.metadata_card && (
+          <details className="model-card-metadata">
+            <summary>
+              From the model's metadata{" "}
+              {draft.card === "" && (
+                <button type="button" className="ghost reset" onClick={() => onChange({ card: model.metadata_card })}>
+                  copy into the card
+                </button>
+              )}
+            </summary>
+            <pre className="muted">{model.metadata_card}</pre>
+          </details>
+        )}
+      </SettingRow>
+    ),
+    context: (
+      <SettingRow key="context" spec={spec("context")} filled={draft.context !== ""} onReset={() => onChange({ context: "" })} hint="A number, or auto.">
+        <input
+          type="text"
+          list="model-context-choices"
+          aria-label={spec("context").label}
+          value={draft.context}
+          placeholder={eff.context_auto ? `auto (${eff.context})` : String(eff.context)}
+          onChange={(e) => onChange({ context: e.target.value })}
+        />
+        <datalist id="model-context-choices">
+          <option value="auto" />
+        </datalist>
+      </SettingRow>
+    ),
+    pool_tokens: text("pool_tokens", eff.pool_fixed ? eff.pool_tokens : null, {
+      hint: eff.pool_fixed ? "Fixed: shared by every slot." : `Empty: starts at ${eff.pool_tokens} and grows on demand up to the max context.`,
+    }),
+    slots: text("slots", eff.slots),
+    cache_type_k: select("cache_type_k", cacheTypes, defaults.cache_type_k),
+    cache_type_v: select("cache_type_v", cacheTypes, defaults.cache_type_v),
+    flash_attn: select("flash_attn", FLASH, defaults.flash_attn),
+    max_gpu_layers: text("max_gpu_layers", eff.max_gpu_layers),
+    draft_model: (
+      <SettingRow
+        key="draft_model"
+        spec={spec("draft_model")}
+        filled={draft.draft_model !== ""}
+        onReset={() => onChange({ draft_model: "" })}
+        unavailable={noVllm("draft_model")}
+      >
+        <input
+          type="text"
+          list="model-draft-choices"
+          aria-label={spec("draft_model").label}
+          value={draft.draft_model}
+          placeholder="none"
+          disabled={vllm}
+          onChange={(e) => onChange({ draft_model: e.target.value })}
+        />
+        <datalist id="model-draft-choices">
+          {draftChoices.map((id) => (
+            <option key={id} value={id} />
+          ))}
+        </datalist>
+      </SettingRow>
+    ),
+    draft_max: text("draft_max", null, { disabled: draftOff, hint: draftOff && !vllm ? "Needs a draft model." : undefined }),
+    draft_min: text("draft_min", null, { disabled: draftOff, hint: draftOff && !vllm ? "Needs a draft model." : undefined }),
+    draft_gpu_layers: text("draft_gpu_layers", null, { disabled: draftOff, hint: draftOff && !vllm ? "Needs a draft model." : undefined }),
+    max_wait_s: text("max_wait_s", eff.max_wait_s),
+    max_output_tokens: text("max_output_tokens", eff.max_output_tokens),
+    extra_args: (
+      <SettingRow key="extra_args" spec={spec("extra_args")} filled={draft.extra_args !== ""} onReset={() => onChange({ extra_args: "" })}>
+        <textarea
+          rows={3}
+          aria-label={spec("extra_args").label}
+          value={draft.extra_args}
+          placeholder={eff.extra_args.join("\n")}
+          onChange={(e) => onChange({ extra_args: e.target.value })}
+        />
+      </SettingRow>
+    ),
+  };
   return (
-    <div className="model-form-fields">
+    <div className={`model-config${on ? "" : " model-off"}`}>
       <div className="model-summary">
         <span className="muted">
           {model.saved.alias ? `${model.id} · ` : ""}
@@ -746,9 +881,7 @@ function LocalForm({
           {model.context_length ? ` · trained for ${model.context_length.toLocaleString()} tokens` : ""}
           {` · up to ${estimate.effective.context.toLocaleString()} per agent${estimate.effective.context_auto ? " (auto)" : ""}`}
         </span>
-        <span>
-          needs {gib(estimate.required_bytes)} · KV pool {gib(estimate.kv_pool_bytes)} · {estimate.placement}
-        </span>
+        {!on && <span className="warning">This model is off: it is never routed to, offered or chosen. Turn it on below to use it again.</span>}
         {model.reload_pending && (
           <span className="warning">Loaded with other settings; the new ones apply once no session uses it.</span>
         )}
@@ -760,7 +893,7 @@ function LocalForm({
         )}
         {estimate.draft_in_use && (
           <span className="muted">
-            Drafting with {estimate.draft_in_use} (speculative decoding); its memory is in the figures above.
+            Drafting with {estimate.draft_in_use} (speculative decoding); its memory is in the figures below.
           </span>
         )}
         {estimate.draft_notice && <span className="warning">{estimate.draft_notice}</span>}
@@ -768,79 +901,14 @@ function LocalForm({
           <span className="warning">The weights do not fit on the GPU: some layers run on the CPU, which is much slower.</span>
         )}
       </div>
-      <AliasField id={model.id} value={draft.alias} fallback={null} onChange={(alias) => onChange({ alias })} />
-      <CardField value={draft.card} metadata={model.metadata_card || null} fallback={null} onChange={(card) => onChange({ card })} />
-      <Field
-        label="Max context per agent (tokens)"
-        hint="A number, or auto: what the model was trained for, capped to what fits in memory beside it."
-        filled={draft.context !== ""}
-        onReset={() => onChange({ context: "" })}
-      >
-        <input
-          type="text"
-          list="model-context-choices"
-          value={draft.context}
-          placeholder={eff.context_auto ? `auto (${eff.context})` : String(eff.context)}
-          onChange={(e) => onChange({ context: e.target.value })}
-        />
-        <datalist id="model-context-choices">
-          <option value="auto" />
-        </datalist>
-      </Field>
-      {text("pool_tokens", "KV pool (tokens)", eff.pool_fixed ? eff.pool_tokens : null, {
-        hint: eff.pool_fixed
-          ? "Fixed: shared by every slot, at least the context."
-          : `Empty: starts at ${eff.pool_tokens} and grows on demand up to the max context. A number fixes it.`,
-      })}
-      {text("slots", "Slots", eff.slots, { hint: "1 to 256 calls at once." })}
-      {select("cache_type_k", "K cache type", cacheTypes, defaults.cache_type_k)}
-      {select("cache_type_v", "V cache type", cacheTypes, defaults.cache_type_v)}
-      {select("flash_attn", "Flash attention", FLASH, defaults.flash_attn)}
-      {text("max_gpu_layers", "Max GPU layers", eff.max_gpu_layers, { disabled: vllm })}
-      <Field
-        label="Draft model"
-        hint="Speculative decoding: a smaller installed model with the same tokenizer drafts tokens that this one checks, which speeds up generation. Empty: no draft. If it is missing, incompatible, or does not fit, the model runs without it."
-        filled={draft.draft_model !== ""}
-        onReset={() => onChange({ draft_model: "" })}
-      >
-        <input
-          type="text"
-          list="model-draft-choices"
-          value={draft.draft_model}
-          placeholder="none"
-          disabled={vllm}
-          onChange={(e) => onChange({ draft_model: e.target.value })}
-        />
-        <datalist id="model-draft-choices">
-          {draftChoices.map((id) => (
-            <option key={id} value={id} />
+      <MemoryTable estimate={localEstimate(estimate)} updating={updating} />
+      {groupedSettings(LOCAL_GROUPS, LOCAL_SETTINGS).map(({ group, settings }) => (
+        <GroupTable key={group.id} group={group}>
+          {settings.map((setting) => (
+            <Fragment key={setting.key}>{rows[setting.key]}</Fragment>
           ))}
-        </datalist>
-      </Field>
-      {text("draft_max", "Draft max tokens", null, {
-        disabled: vllm || draft.draft_model.trim() === "",
-        hint: "Most tokens the draft proposes per step. Empty: llama.cpp's default.",
-      })}
-      {text("draft_min", "Draft min tokens", null, {
-        disabled: vllm || draft.draft_model.trim() === "",
-        hint: "Fewest tokens the draft proposes per step (0 is allowed). Empty: llama.cpp's default (0).",
-      })}
-      {text("draft_gpu_layers", "Draft GPU layers", null, {
-        disabled: vllm || draft.draft_model.trim() === "",
-        hint: "Layers of the draft on the GPU; 0 keeps it in RAM. Empty: llama.cpp places them (auto), normally all.",
-      })}
-      {text("max_wait_s", "Max wait (s)", eff.max_wait_s)}
-      {text("max_output_tokens", "Max output tokens", eff.max_output_tokens, {
-        hint: "0 means uncapped (reserves the whole context).",
-      })}
-      <Field label="Extra arguments (one per line)" filled={draft.extra_args !== ""} onReset={() => onChange({ extra_args: "" })}>
-        <textarea
-          rows={3}
-          value={draft.extra_args}
-          placeholder={eff.extra_args.join("\n")}
-          onChange={(e) => onChange({ extra_args: e.target.value })}
-        />
-      </Field>
+        </GroupTable>
+      ))}
       <div className="model-form-actions">
         <button type="button" onClick={onResetAll}>
           Reset model
@@ -854,52 +922,89 @@ function LocalForm({
 function TableForm({
   row,
   draft,
+  local,
   previewError,
+  modelOff,
+  on,
+  defaultChoice,
   onChange,
   onResetAll,
 }: {
   row: TableModelConfig;
   draft: TableDraft;
+  local: LocalModelConfig[];
   previewError: string | null;
+  /** The row's model is switched off in the local models list, which switches the row off. */
+  modelOff: boolean;
+  on: boolean;
+  defaultChoice: ReactNode;
   onChange: (patch: Partial<TableDraft>) => void;
   onResetAll: () => void;
 }) {
   const eff = row.effective;
-  const priceField = (key: "input_usd_per_mtok" | "output_usd_per_mtok", label: string, hint?: string) => (
-    <Field label={label} hint={hint} filled={draft[key] !== ""} onReset={() => onChange({ [key]: "" })}>
+  const spec = (key: string) => {
+    const found = TABLE_SETTINGS.find((setting) => setting.key === key);
+    if (!found) throw new Error(`no setting ${key}`);
+    return found;
+  };
+  const priceField = (key: "input_usd_per_mtok" | "output_usd_per_mtok", hint?: string) => (
+    <SettingRow key={key} spec={spec(key)} filled={draft[key] !== ""} onReset={() => onChange({ [key]: "" })} hint={hint}>
       <input
         type="text"
         inputMode="decimal"
+        aria-label={spec(key).label}
         value={draft[key]}
         placeholder={eff[key] === null ? "free" : String(eff[key])}
         onChange={(e) => onChange({ [key]: e.target.value })}
       />
-    </Field>
+    </SettingRow>
   );
-  return (
-    <div className="model-form-fields">
-      <div className="model-summary">
-        <span className="muted">{eff.alias ? `${row.id} · ${row.spec}` : row.spec}</span>
-        {!row.endpoint_configured && <span className="warning">This row names an endpoint that is not configured.</span>}
-      </div>
-      <AliasField
-        id={row.id}
-        value={draft.alias}
-        fallback={row.saved.alias === null ? eff.alias : null}
-        onChange={(alias) => onChange({ alias })}
+  const rows: Record<string, ReactNode> = {
+    enabled: (
+      <UseRow
+        key="enabled"
+        spec={spec("enabled")}
+        on={on}
+        locked={modelOff ? "Its model is switched off in the local models list; switch that on first." : undefined}
+        // Back to "not set" when it matches the configured value, so the row is not "edited".
+        onSwitch={(value) => onChange({ enabled: value === eff.enabled && row.saved.enabled === null ? null : value })}
+        defaultChoice={defaultChoice}
       />
-      <CardField
-        value={draft.card}
-        metadata={null}
-        fallback={row.saved.card === null ? eff.card : null}
-        onChange={(card) => onChange({ card })}
-      />
-      <label className="radio model-check">
-        <input type="checkbox" checked={draft.enabled ?? eff.enabled} onChange={(e) => onChange({ enabled: e.target.checked })} />
-        Enabled (routing may use this model)
-      </label>
-      <Field label="Tier" filled={draft.tier !== ""} onReset={() => onChange({ tier: "" })}>
-        <select value={draft.tier} onChange={(e) => onChange({ tier: e.target.value })}>
+    ),
+    alias: (
+      <SettingRow
+        key="alias"
+        spec={spec("alias")}
+        filled={draft.alias !== ""}
+        onReset={() => onChange({ alias: "" })}
+        hint={`Empty shows ${row.saved.alias === null && eff.alias ? "the configured alias" : "the id"} (${row.id}).`}
+      >
+        <input
+          type="text"
+          aria-label={spec("alias").label}
+          value={draft.alias}
+          placeholder={(row.saved.alias === null ? eff.alias : null) ?? row.id}
+          maxLength={MAX_ALIAS_CHARS}
+          spellCheck={false}
+          onChange={(e) => onChange({ alias: e.target.value })}
+        />
+      </SettingRow>
+    ),
+    card: (
+      <SettingRow key="card" spec={spec("card")} filled={draft.card !== ""} onReset={() => onChange({ card: "" })}>
+        <textarea
+          rows={4}
+          aria-label={spec("card").label}
+          value={draft.card}
+          maxLength={MAX_CARD_CHARS}
+          placeholder={(row.saved.card === null ? eff.card : null) ?? "Good at: coding, tool use. Notes: fast; weak at long documents."}
+          onChange={(e) => onChange({ card: e.target.value })}
+        />
+      </SettingRow>
+    ),
+    tier: (
+      <SettingRow key="tier" spec={spec("tier")} filled={draft.tier !== ""} onReset={() => onChange({ tier: "" })}>
+        <select aria-label={spec("tier").label} value={draft.tier} onChange={(e) => onChange({ tier: e.target.value })}>
           <option value="">default ({eff.tier})</option>
           {TIERS.map((tier) => (
             <option key={tier} value={tier}>
@@ -907,21 +1012,51 @@ function TableForm({
             </option>
           ))}
         </select>
-      </Field>
-      <Field label="Tags (comma-separated)" filled={draft.tags !== ""} onReset={() => onChange({ tags: "" })}>
-        <input type="text" value={draft.tags} placeholder={eff.tags.join(", ")} onChange={(e) => onChange({ tags: e.target.value })} />
-      </Field>
-      <Field label="Context window (tokens)" filled={draft.context_window !== ""} onReset={() => onChange({ context_window: "" })}>
+      </SettingRow>
+    ),
+    tags: (
+      <SettingRow key="tags" spec={spec("tags")} filled={draft.tags !== ""} onReset={() => onChange({ tags: "" })}>
+        <input
+          type="text"
+          aria-label={spec("tags").label}
+          value={draft.tags}
+          placeholder={eff.tags.join(", ")}
+          onChange={(e) => onChange({ tags: e.target.value })}
+        />
+      </SettingRow>
+    ),
+    context_window: (
+      <SettingRow key="context_window" spec={spec("context_window")} filled={draft.context_window !== ""} onReset={() => onChange({ context_window: "" })}>
         <input
           type="text"
           inputMode="numeric"
+          aria-label={spec("context_window").label}
           value={draft.context_window}
           placeholder={eff.context_window === null ? "unknown" : String(eff.context_window)}
           onChange={(e) => onChange({ context_window: e.target.value })}
         />
-      </Field>
-      {priceField("input_usd_per_mtok", "Input price ($/Mtok)", "Set both prices or neither.")}
-      {priceField("output_usd_per_mtok", "Output price ($/Mtok)")}
+      </SettingRow>
+    ),
+    input_usd_per_mtok: priceField("input_usd_per_mtok", "Set both prices or neither."),
+    output_usd_per_mtok: priceField("output_usd_per_mtok"),
+  };
+  const estimate = rowEstimate(row, local);
+  return (
+    <div className={`model-config${on ? "" : " model-off"}`}>
+      <div className="model-summary">
+        <span className="muted">{eff.alias ? `${row.id} · ${row.spec}` : row.spec}</span>
+        {!on && <span className="warning">This model is off: it is never routed to, offered or chosen. Turn it on below to use it again.</span>}
+        {!row.endpoint_configured && <span className="warning">This row names an endpoint that is not configured.</span>}
+        {estimate.kind === "local" && <span className="muted">Runs locally: {summaryLine(estimate)}.</span>}
+      </div>
+      <MemoryTable estimate={estimate} updating={false} />
+      {groupedSettings(TABLE_GROUPS, TABLE_SETTINGS).map(({ group, settings }) => (
+        <GroupTable key={group.id} group={group}>
+          {settings.map((setting) => (
+            <Fragment key={setting.key}>{rows[setting.key]}</Fragment>
+          ))}
+        </GroupTable>
+      ))}
       <div className="model-form-actions">
         <button type="button" onClick={onResetAll}>
           Reset model

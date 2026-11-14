@@ -94,7 +94,8 @@ const GROUP_LABELS: Record<ModelGroup, string> = { favourite: "Favourites", norm
 
 /** Every model a session could use, in the table's order, before favourites and hidden models apply. */
 function allModelOptions(models: ModelRow[], local: LocalModelRow[]): SelectOption[] {
-  const options: SelectOption[] = models.map((row) => {
+  // A model switched off in the model settings ("Use this model") is not offered.
+  const options: SelectOption[] = models.filter((row) => row.enabled).map((row) => {
     // A table row that names a local model also says what that model is.
     const localRow = local.find((candidate) => localSpec(candidate) === row.spec);
     // Shown by its alias (or the local model's it names), with the id kept in the description.
@@ -112,7 +113,7 @@ function allModelOptions(models: ModelRow[], local: LocalModelRow[]): SelectOpti
   });
   for (const row of local) {
     const spec = localSpec(row);
-    if (options.some((option) => option.value === spec)) continue;
+    if (!row.enabled || options.some((option) => option.value === spec)) continue;
     options.push({
       value: spec,
       label: row.alias ?? row.id,
