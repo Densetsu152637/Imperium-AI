@@ -59,6 +59,8 @@ pub fn all() -> Vec<ToolDefinition> {
         suggest_local_model(),
         delegate_chunks(),
         ask_user(),
+        request_clarification(),
+        update_state(),
         search_sessions(),
         list_models(),
         set_model_card(),
@@ -250,6 +252,41 @@ pub fn ask_user() -> ToolDefinition {
     }
 }
 
+/// Pause for the user's answer about one missing piece, instead of guessing.
+pub fn request_clarification() -> ToolDefinition {
+    ToolDefinition {
+        name: "request_clarification",
+        description: "Pause and ask the user for one missing piece when your confidence about what they mean is below the threshold you were given, instead of guessing. Name the missing parameter and list the likely options (at most five). Check the session state, the conversation and the files first: ask only when they do not settle it. The user's answer comes back as the result; nothing runs meanwhile.",
+        parameters: json!({"type": "object", "properties": {
+            "missing_parameter": {"type": "string", "description": "What you cannot determine, such as \"which file\" or \"which branch\""},
+            "options": {"type": "array", "items": {"type": "string"}, "description": "The likely answers, best first; leave empty when the answer is open-ended"},
+            "question": {"type": "string", "description": "The question to show, one short sentence; made from the missing parameter when left out"},
+            "confidence": {"type": "number", "description": "Your confidence, from 0 to 1, in the best guess you could act on"}
+        }, "required": ["missing_parameter", "options"]}),
+        status: ToolStatus::Available,
+    }
+}
+
+/// Update the session state kept at the top of each turn.
+pub fn update_state() -> ToolDefinition {
+    ToolDefinition {
+        name: "update_state",
+        description: "Update the session state shown at the top of each turn: the files, sessions, tasks and other things in play, the user's goals, and constraints already settled. Add what later messages may refer to (\"that file\", \"the previous step\"), and forget what no longer matters. The state is small and bounded; the oldest entries are dropped first. Returns the new state.",
+        parameters: json!({"type": "object", "properties": {
+            "entities": {"type": "array", "items": {"type": "object", "properties": {
+                "kind": {"type": "string", "description": "file, session, task, branch, error, or another short word"},
+                "name": {"type": "string", "description": "The path, id or title the user would refer to it by"},
+                "note": {"type": "string", "description": "A few words on its role or status"}
+            }, "required": ["kind", "name"]}, "description": "Things to add or update; an entity is identified by its kind and name"},
+            "forget": {"type": "array", "items": {"type": "string"}, "description": "Names of entities to remove"},
+            "goals": {"type": "array", "items": {"type": "string"}, "description": "The user's current goals; replaces the earlier list"},
+            "constraints": {"type": "array", "items": {"type": "string"}, "description": "Constraints that are now settled, to add"},
+            "drop_constraints": {"type": "array", "items": {"type": "string"}, "description": "Constraints to remove, as written"}
+        }}),
+        status: ToolStatus::Available,
+    }
+}
+
 /// Search earlier sessions' conversations.
 pub fn search_sessions() -> ToolDefinition {
     ToolDefinition {
@@ -413,6 +450,11 @@ mod tests {
             assert!(root.contains(rule), "{rule} missing from the root prompt");
         }
         assert!(prompt("questions.md").contains("recommended"));
+        // The harness aids: the root prompt names them, and the patterns are written out.
+        for name in ["request_clarification", "update_state", "<session-state>"] {
+            assert!(root.contains(name), "{name} missing from the root prompt");
+        }
+        assert!(prompt("ambiguity.md").contains("request_clarification"));
         let plan = prompt("plan.md");
         assert!(plan.contains("## Open questions"));
         for field in [

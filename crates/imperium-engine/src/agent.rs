@@ -13,6 +13,7 @@ use imperium_api::{
 };
 use imperium_config::{Location, Tier};
 use imperium_models::{ChatClient, ChatMessage, ChatRequest, Endpoint, ToolCall, ToolSpec, Usage};
+use imperium_protocol::patterns;
 use imperium_protocol::session::{
     AgentStatus, Attachment, ContextItem, ContextPointer, ExtensionKind, PauseCause,
     PermissionDecision, Plan, PlanStep, Question, ROOT_AGENT, SessionEvent, StepStatus, TokenUsage,
@@ -29,7 +30,7 @@ use serde_json::json;
 use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
 
-use imperium_config::{Enforce, WritePolicy};
+use imperium_config::{Dereference, Enforce, HarnessSettings, WritePolicy};
 use imperium_extensions::{Activation, HookEvent, Verdict};
 use imperium_memory::{NewEntry, Scope};
 
@@ -42,6 +43,7 @@ use crate::breakdown::{
     join_parts, tool_texts,
 };
 use crate::compact::{self, SwitchError};
+use crate::harness::{self, SessionState, StateUpdate};
 use crate::instructions;
 use crate::queue::{Inbox, QueueError, steering_text};
 use crate::session::{SessionMemory, Shared, lock};
@@ -70,6 +72,10 @@ const CHUNK_WINDOW_PERCENT: u64 = 60;
 const DEFAULT_WINDOW_TOKENS: u64 = 32_768;
 /// How long `ask_user` waits for an answer before taking the recommendations.
 const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+/// Most options a `request_clarification` shows.
+const MAX_CLARIFICATION_OPTIONS: usize = 5;
+/// Most ambiguity patterns whose guidance goes at the top of one turn.
+const MAX_AMBIGUITY_HINTS: usize = 2;
 /// How often a call waiting for a local model looks at why it waits.
 const WAIT_REASON_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -109,6 +115,8 @@ enum AgentTool {
     QueueAgent,
     DelegateChunks,
     AskUser,
+    RequestClarification,
+    UpdateState,
     LoadSkill,
     ActivatePlugin,
     MemorySearch,
@@ -209,6 +217,9 @@ pub struct Agent {
     /// Whether the latest tool call succeeded (only successful file calls load instruction
     /// files).
     last_tool_ok: std::sync::atomic::AtomicBool,
+    /// The root agent's structured state (see [`harness`]); read back from the conversation
+    /// when it is restored.
+    state: SessionState,
 }
 
 impl Agent {
@@ -295,6 +306,8 @@ impl Agent {
         if can_delegate {
             system.push_str("\n\n");
             system.push_str(RESPONSE_STYLE);
+            system.push_str("\n\n");
+            system.push_str(&harness_prompt(&shared.harness));
             if let Some(personality) = &shared.personality {
                 system.push_str("\n\n");
                 system.push_str(personality);
@@ -367,6 +380,7 @@ impl Agent {
             compact_skip_noticed: false,
             instructions: None,
             last_tool_ok: std::sync::atomic::AtomicBool::new(false),
+            state: SessionState::default(),
         }
     }
 
@@ -639,6 +653,9 @@ impl Agent {
         self.spans.retain(|index, _| *index == 0);
         self.last_reported = None;
         self.last_call = None;
+        if self.can_delegate {
+            self.state = harness::latest_state(&self.messages);
+        }
     }
 
     fn emit(&self, event: SessionEvent) {
@@ -754,7 +771,11 @@ impl Agent {
                 resume_agent_spec(),
                 delegate_chunks_spec(),
                 ask_user_spec(),
+                request_clarification_spec(),
             ]);
+            if self.shared.harness.state {
+                tools.push(update_state_spec());
+            }
         }
         (
             tools,
@@ -789,7 +810,44 @@ impl Agent {
             text: shown,
             attachments,
         });
+        // Harness aids for small models (root agent only): the message de-referenced, the
+        // session state and the ambiguity hints for it, all at the top of the turn.
         let mut parts = Vec::new();
+        let mut user_text = text.clone();
+        if self.can_delegate && !self.single_call {
+            self.strip_turn_blocks();
+            let found = if self.dereferences() {
+                self.dereference(&text).await
+            } else {
+                harness::Dereferenced::default()
+            };
+            let (keep_state, hints, max_state) = {
+                let settings = &self.shared.harness;
+                (
+                    settings.state,
+                    settings.hints,
+                    settings.state_max_chars as usize,
+                )
+            };
+            if keep_state && let Some(update) = found.update {
+                self.state.apply(update, max_state);
+            }
+            if let Some(resolved) = found.prompt {
+                self.emit(SessionEvent::Notice {
+                    message: format!("understood as: {resolved}"),
+                });
+                user_text = harness::resolved_text(&resolved, &text);
+            }
+            if keep_state && let Some(block) = self.state.block() {
+                parts.push((Category::Memories, block));
+            }
+            if hints
+                && let Some(block) =
+                    patterns::render(&patterns::retrieve(&text, MAX_AMBIGUITY_HINTS))
+            {
+                parts.push((Category::Memories, block));
+            }
+        }
         if !self.single_call
             && let Some(index) = &self.shared.context
         {
@@ -804,7 +862,7 @@ impl Agent {
         if !rendered.text.is_empty() {
             parts.push((Category::Attachments, rendered.text));
         }
-        parts.push((Category::User, text));
+        parts.push((Category::User, user_text));
         let (content, spans) = join_parts(parts);
         self.spans.insert(self.messages.len(), spans);
         self.messages.push(ChatMessage::User {
@@ -2020,6 +2078,10 @@ impl Agent {
             "resume_agent" if self.can_delegate => AgentTool::ResumeAgent,
             "delegate_chunks" if self.can_delegate => AgentTool::DelegateChunks,
             "ask_user" if self.can_delegate => AgentTool::AskUser,
+            "request_clarification" if self.can_delegate => AgentTool::RequestClarification,
+            "update_state" if self.can_delegate && self.shared.harness.state => {
+                AgentTool::UpdateState
+            }
             LOAD_SKILL if !self.shared.extensions.skills.is_empty() => AgentTool::LoadSkill,
             ACTIVATE_PLUGIN if !self.shared.extensions.plugins.is_empty() => {
                 AgentTool::ActivatePlugin
@@ -2050,6 +2112,8 @@ impl Agent {
             AgentTool::ResumeAgent => "resume a subagent",
             AgentTool::DelegateChunks => "split an artefact across subagents",
             AgentTool::AskUser => "ask the user",
+            AgentTool::RequestClarification => "ask the user to clarify",
+            AgentTool::UpdateState => "update the session state",
             AgentTool::LoadSkill => "load a skill",
             AgentTool::ActivatePlugin => "activate a plugin",
             AgentTool::ContextLoad => "load workflow context",
@@ -2083,6 +2147,8 @@ impl Agent {
             AgentTool::ResumeAgent => self.resume_agent(arguments),
             AgentTool::DelegateChunks => self.delegate_chunks(arguments),
             AgentTool::AskUser => self.ask_user(arguments).await,
+            AgentTool::RequestClarification => self.request_clarification(arguments).await,
+            AgentTool::UpdateState => self.update_state(arguments),
             AgentTool::LoadSkill => self.load_skill(arguments),
             AgentTool::ActivatePlugin => self.activate_plugin(arguments).await,
             AgentTool::ContextLoad => self.context_load(arguments),
@@ -2640,24 +2706,7 @@ impl Agent {
         if args.questions.is_empty() {
             return Err("ask at least one question".into());
         }
-        // Asleep until answered: the local runtime may swap this agent's model out meanwhile.
-        let _waiting = self
-            .local_models()
-            .map(|local| local.waiting(&self.model.model, &self.holder()));
-        let (request_id, answer) = self.shared.questions.request();
-        self.emit(SessionEvent::QuestionsAsked {
-            request_id,
-            questions: args.questions.clone(),
-        });
-        let (answers, timed_out) = match tokio::time::timeout(ASK_TIMEOUT, answer).await {
-            Ok(Ok(answers)) => (answers, false),
-            Ok(Err(_)) => return Err("nobody can answer: the session is closing".into()),
-            Err(_) => {
-                self.shared.questions.cancel(request_id);
-                (Vec::new(), true)
-            }
-        };
-        self.emit(SessionEvent::QuestionsAnswered { request_id });
+        let (answers, timed_out) = self.pause_for_answers(&args.questions).await?;
         let mut lines = Vec::new();
         for (index, question) in args.questions.iter().enumerate() {
             let number = index + 1;
@@ -2684,6 +2733,246 @@ impl Agent {
         } else {
             lines
         })
+    }
+
+    /// Pauses the agent, with no model calls, until `questions` are answered from any client
+    /// or [`ASK_TIMEOUT`] passes. The answers are one per question in order (blank for none);
+    /// the flag says nobody answered in time.
+    async fn pause_for_answers(
+        &self,
+        questions: &[Question],
+    ) -> Result<(Vec<String>, bool), String> {
+        // Asleep until answered: the local runtime may swap this agent's model out meanwhile.
+        let _waiting = self
+            .local_models()
+            .map(|local| local.waiting(&self.model.model, &self.holder()));
+        let (request_id, answer) = self.shared.questions.request();
+        self.emit(SessionEvent::QuestionsAsked {
+            request_id,
+            questions: questions.to_vec(),
+        });
+        let (answers, timed_out) = match tokio::time::timeout(ASK_TIMEOUT, answer).await {
+            Ok(Ok(answers)) => (answers, false),
+            Ok(Err(_)) => return Err("nobody can answer: the session is closing".into()),
+            Err(_) => {
+                self.shared.questions.cancel(request_id);
+                (Vec::new(), true)
+            }
+        };
+        self.emit(SessionEvent::QuestionsAnswered { request_id });
+        Ok((answers, timed_out))
+    }
+
+    /// `request_clarification`: pauses for the user's answer about one missing parameter. The
+    /// question goes through the same prompt as `ask_user`; unlike there, an empty answer or a
+    /// timeout is not a recommendation to take, so the agent is told not to guess.
+    async fn request_clarification(&self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Args {
+            missing_parameter: String,
+            #[serde(default)]
+            options: Vec<String>,
+            #[serde(default)]
+            question: Option<String>,
+            #[serde(default)]
+            confidence: Option<f64>,
+        }
+        let args: Args = parse(arguments)?;
+        let missing = args.missing_parameter.trim().to_string();
+        if missing.is_empty() {
+            return Err("name the missing parameter".into());
+        }
+        let options: Vec<String> = args
+            .options
+            .iter()
+            .map(|option| option.trim().to_string())
+            .filter(|option| !option.is_empty())
+            .take(MAX_CLARIFICATION_OPTIONS)
+            .collect();
+        let question = args
+            .question
+            .map(|question| question.trim().to_string())
+            .filter(|question| !question.is_empty())
+            .unwrap_or_else(|| format!("I need one more detail before I go on: {missing}?"));
+        let confidence = args
+            .confidence
+            .filter(|confidence| confidence.is_finite())
+            .map(|confidence| confidence.clamp(0.0, 1.0));
+        let prompt = Question {
+            question,
+            // The first option is only the one the form offers first; a blank answer is not
+            // taken as a choice.
+            recommended: options.first().cloned().unwrap_or_default(),
+            options,
+        };
+        let (answers, timed_out) = self
+            .pause_for_answers(std::slice::from_ref(&prompt))
+            .await?;
+        let given = answers.first().map_or("", |answer| answer.trim());
+        let confidence_note = confidence
+            .map(|confidence| format!(" (your confidence was {confidence:.2})"))
+            .unwrap_or_default();
+        Ok(if given.is_empty() {
+            let why = if timed_out {
+                format!(
+                    "Nobody answered within {} minutes",
+                    ASK_TIMEOUT.as_secs() / 60
+                )
+            } else {
+                "The user gave no answer".to_string()
+            };
+            format!(
+                "{why}, so {missing} is still unknown{confidence_note}. Do not guess it: finish \
+                 what does not depend on it, then tell the user plainly what is waiting for it."
+            )
+        } else {
+            format!(
+                "Clarified{confidence_note}: {missing} = {given}\nTreat this as the user's answer; \
+                 record it with update_state when later messages may refer to it."
+            )
+        })
+    }
+
+    /// `update_state`: changes the session state and puts the new state at the top of this
+    /// turn's message. The new state is the result.
+    fn update_state(&mut self, arguments: &str) -> Result<String, String> {
+        let update: StateUpdate = parse(arguments)?;
+        let max = self.shared.harness.state_max_chars as usize;
+        self.state.apply(update, max);
+        self.place_state_block();
+        Ok(if self.state.is_empty() {
+            "The session state is now empty.".to_string()
+        } else {
+            format!("The session state is now {}", self.state.json())
+        })
+    }
+
+    /// Puts the state's block at the top of the latest user message and takes it out of the
+    /// others, so the conversation always records the state as it is now.
+    fn place_state_block(&mut self) {
+        let block = self.state.block();
+        let last = self
+            .messages
+            .iter()
+            .rposition(|message| matches!(message, ChatMessage::User { .. }));
+        for (index, message) in self.messages.iter_mut().enumerate() {
+            let ChatMessage::User { content, .. } = message else {
+                continue;
+            };
+            let wanted = if Some(index) == last {
+                block.as_deref()
+            } else {
+                None
+            };
+            let updated = harness::with_state_block(content.as_str(), wanted);
+            if updated != *content {
+                *content = updated;
+                self.spans.remove(&index);
+            }
+        }
+    }
+
+    /// Removes what earlier turns carried only for themselves (state blocks, ambiguity hints,
+    /// the original of a rewritten message) from the conversation, so the only copies are the
+    /// new turn's.
+    fn strip_turn_blocks(&mut self) {
+        for (index, message) in self.messages.iter_mut().enumerate() {
+            let ChatMessage::User { content, .. } = message else {
+                continue;
+            };
+            if let Some(stripped) = harness::without_turn_blocks(content.as_str()) {
+                *content = stripped;
+                self.spans.remove(&index);
+            }
+        }
+    }
+
+    /// Whether this turn's message goes through the de-reference step.
+    fn dereferences(&self) -> bool {
+        if !self.can_delegate || self.single_call {
+            return false;
+        }
+        match self.shared.harness.dereference {
+            Dereference::On => true,
+            Dereference::Off => false,
+            Dereference::Auto => self.model.local,
+        }
+    }
+
+    /// The de-reference step: one small call that rewrites `text` into a standalone prompt and
+    /// reports what the state should now say. Skipped when the conversation and the state hold
+    /// nothing to resolve against. Any failure (no model, budget, timeout, unreadable reply)
+    /// leaves the message as it is; the turn goes on with the original.
+    async fn dereference(&self, text: &str) -> harness::Dereferenced {
+        let settings = &self.shared.harness;
+        let excerpt = harness::digest(&self.messages, settings.dereference_history_chars as usize);
+        if excerpt.is_empty() && self.state.is_empty() {
+            return harness::Dereferenced::default();
+        }
+        let request = harness::dereference_request(&self.state, &excerpt, text);
+        let limit = std::time::Duration::from_secs(settings.dereference_timeout_s.max(1));
+        let budget = settings.dereference_max_tokens.max(1);
+        let model = self.model.clone();
+        let holder = self.holder();
+        if self.budget_stop_for(&model.spec).await.is_some() {
+            return harness::Dereferenced::default();
+        }
+        let started = Instant::now();
+        let call = async {
+            let (client, lease) = self.client_for(&model, &holder, None, false).await?;
+            let mut ignore = |_: &str| {};
+            let result = client
+                .stream(
+                    ChatRequest {
+                        model: &model.model,
+                        messages: &request,
+                        tools: &[],
+                        slot: lease.as_ref().and_then(|lease| lease.slot),
+                        max_tokens: Some(
+                            lease
+                                .as_ref()
+                                .and_then(|lease| lease.max_tokens)
+                                .map_or(budget, |reserved| reserved.min(budget)),
+                        ),
+                        // A rewrite needs no deliberation: no reasoning control is sent.
+                        effort: None,
+                    },
+                    &mut ignore,
+                )
+                .await
+                .map_err(|error| error.to_string());
+            drop(lease);
+            result
+        };
+        let completion = match tokio::time::timeout(limit, call).await {
+            Ok(Ok(completion)) => completion,
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "the de-reference step failed; using the original message");
+                return harness::Dereferenced::default();
+            }
+            Err(_) => {
+                self.emit(SessionEvent::Notice {
+                    message: format!(
+                        "the message was not rewritten: the rewrite took longer than {} s",
+                        limit.as_secs()
+                    ),
+                });
+                return harness::Dereferenced::default();
+            }
+        };
+        // The rewrite was a model call: it counts toward budgets like any other.
+        if let Some(usage) = &completion.usage {
+            self.emit(SessionEvent::ModelCallCompleted {
+                model: model.spec.clone(),
+                usage: token_usage(usage),
+                duration_ms: millis(started.elapsed()),
+                queue_wait_ms: None,
+                time_to_first_token_ms: None,
+                tokens_per_sec: None,
+                cost_usd: model.pricing.map(|pricing| pricing.cost_usd(usage)),
+            });
+        }
+        harness::parse_dereference(&completion.text, text).unwrap_or_default()
     }
 
     /// `list_agents`: the session's subagents with their status and latest report.
@@ -2895,6 +3184,40 @@ const RESPONSE_STYLE: &str = "Replies: lead with the result. Keep them short: th
      content has that shape; otherwise plain sentences. Avoid emojis. Show code only when the \
      user asks to see it. Check results before reporting, and say plainly what you did not \
      verify.";
+
+/// What the root agent is told about the harness aids for small models: the state block, the
+/// rewritten request, the ambiguity hints, and when to ask instead of guessing.
+fn harness_prompt(settings: &HarnessSettings) -> String {
+    let mut text = String::new();
+    if settings.state {
+        text.push_str(
+            "A <session-state> block at the top of a message is strict JSON: the entities \
+             (files, sessions, tasks, errors) in play, the user's goals, and settled \
+             constraints. Resolve references such as \"that file\" or \"the previous step\" \
+             against it first, and keep it current with update_state. ",
+        );
+    }
+    if settings.dereference != Dereference::Off {
+        text.push_str(
+            "A <resolved-request> block is the user's message rewritten to stand alone by a \
+             helper; act on it, and check it against the <original-message> that follows it. ",
+        );
+    }
+    if settings.hints {
+        text.push_str(
+            "An <ambiguity-hints> block says how to handle the kind of message that arrived. ",
+        );
+    }
+    let percent = (settings.clarify_below.clamp(0.0, 1.0) * 100.0).round();
+    text.push_str(&format!(
+        "When your confidence in what the user means, or which file, step or target they mean, \
+         is below {percent:.0}%, do not guess: look at the session state, the conversation and \
+         the files first, and if they do not settle it call request_clarification with the \
+         missing parameter and the likely options, then wait for the answer. When you are \
+         confident, carry on without asking."
+    ));
+    text
+}
 
 /// A subagent's base instruction: do the brief, then report briefly to the delegator.
 fn subagent_prompt(root: &str) -> String {
@@ -3691,6 +4014,14 @@ fn ask_user_spec() -> ToolSpec {
     tool_spec(contract::ask_user())
 }
 
+fn request_clarification_spec() -> ToolSpec {
+    tool_spec(contract::request_clarification())
+}
+
+fn update_state_spec() -> ToolSpec {
+    tool_spec(contract::update_state())
+}
+
 /// The window to plan with: a hosted model's table value; a local model's planned value; the
 /// default when neither is known.
 fn effective_window(table: Option<u64>, local: bool, reported: Option<u64>) -> u64 {
@@ -4319,6 +4650,11 @@ mod tests {
             (resume_agent_spec(), contract::resume_agent()),
             (delegate_chunks_spec(), contract::delegate_chunks()),
             (ask_user_spec(), contract::ask_user()),
+            (
+                request_clarification_spec(),
+                contract::request_clarification(),
+            ),
+            (update_state_spec(), contract::update_state()),
         ] {
             assert_eq!(spec.name, definition.name);
             assert_eq!(spec.description, definition.description);

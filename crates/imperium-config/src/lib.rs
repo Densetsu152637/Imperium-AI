@@ -52,14 +52,15 @@ pub use secrets::{
 };
 pub use settings::{
     ActionSettings, AgentSettings, ApiSettings, AutofixSettings, Capability, CatalogEntry,
-    ConditionSettings, ContextSettings, DaemonSettings, EndpointSettings, Enforce,
-    ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HookSettings, ImageSettings,
-    InitiativeSettings, IsolationSettings, LLAMACPP_ENDPOINT, ListModelsScope, LlamaCppSettings,
-    LoadSettings, Location, McpServerSettings, McpSettings, MediaServiceSettings, MediaSettings,
-    MemorySettings, MemoryWrite, ModelPlacement, ModelSettings, OpenAiApiSettings, PetSettings,
-    PhoneSettings, PolicySettings, Preference, ProjectSettings, ResumeSettings, RoutingRule,
-    RoutingSettings, RuntimeSettings, ScheduleSettings, SecretRef, SessionSearchScope,
-    SessionSettings, Settings, Tier, TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings,
-    WorkflowSettings, WorkspacesSettings, WritePolicy, default_workspaces_root,
+    ConditionSettings, ContextSettings, DaemonSettings, Dereference, EndpointSettings, Enforce,
+    ExtensionSettings, GithubSettings, GithubWatch, HardwareSettings, HarnessSettings,
+    HookSettings, ImageSettings, InitiativeSettings, IsolationSettings, LLAMACPP_ENDPOINT,
+    ListModelsScope, LlamaCppSettings, LoadSettings, Location, McpServerSettings, McpSettings,
+    MediaServiceSettings, MediaSettings, MemorySettings, MemoryWrite, ModelPlacement,
+    ModelSettings, OpenAiApiSettings, PetSettings, PhoneSettings, PolicySettings, Preference,
+    ProjectSettings, ResumeSettings, RoutingRule, RoutingSettings, RuntimeSettings,
+    ScheduleSettings, SecretRef, SessionSearchScope, SessionSettings, Settings, Tier,
+    TriggerSettings, VLLM_ENDPOINT, VllmSettings, WebSettings, WorkflowSettings,
+    WorkspacesSettings, WritePolicy, default_workspaces_root,
 };
 pub use settings::{SuggestionCandidate, default_suggestions};

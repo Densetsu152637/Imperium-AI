@@ -151,6 +151,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
         budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
+        harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
@@ -209,7 +210,7 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
         .map(|tool| tool["function"]["name"].as_str().unwrap())
         .collect();
     assert_eq!(
-        names[names.len() - 10..],
+        names[names.len() - 12..],
         [
             "update_plan",
             "note_add",
@@ -220,7 +221,9 @@ async fn a_custom_provider_is_offered_and_its_calls_need_approval() {
             "list_agents",
             "resume_agent",
             "delegate_chunks",
-            "ask_user"
+            "ask_user",
+            "request_clarification",
+            "update_state"
         ]
     );
     let system = first["messages"][0]["content"].as_str().unwrap();
@@ -370,6 +373,7 @@ async fn a_root_only_provider_is_not_offered_to_subagents() {
         budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
+        harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),

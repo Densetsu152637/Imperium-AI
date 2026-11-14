@@ -1,0 +1,63 @@
+{
+  "description": "Update the session state shown at the top of each turn: the files, sessions, tasks and other things in play, the user's goals, and constraints already settled. Add what later messages may refer to (\"that file\", \"the previous step\"), and forget what no longer matters. The state is small and bounded; the oldest entries are dropped first. Returns the new state.",
+  "name": "update_state",
+  "parameters": {
+    "properties": {
+      "constraints": {
+        "description": "Constraints that are now settled, to add",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "drop_constraints": {
+        "description": "Constraints to remove, as written",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "entities": {
+        "description": "Things to add or update; an entity is identified by its kind and name",
+        "items": {
+          "properties": {
+            "kind": {
+              "description": "file, session, task, branch, error, or another short word",
+              "type": "string"
+            },
+            "name": {
+              "description": "The path, id or title the user would refer to it by",
+              "type": "string"
+            },
+            "note": {
+              "description": "A few words on its role or status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "forget": {
+        "description": "Names of entities to remove",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "goals": {
+        "description": "The user's current goals; replaces the earlier list",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "type": "object"
+  },
+  "status": "available"
+}

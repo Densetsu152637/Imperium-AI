@@ -1996,6 +1996,7 @@ impl DaemonState {
             max_steps: self.settings().agents.max_steps,
             auto_compact: options.auto_compact,
             auto_compact_at: Some(self.settings().context.auto_compact_at),
+            harness: self.settings().harness.clone(),
             keep_agent_state: remember && self.settings().sessions.agent_state_keep,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;

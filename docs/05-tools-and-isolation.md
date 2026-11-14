@@ -10,7 +10,7 @@
 | Browser     | `browser.open`, `browser.read`, `browser.act`, `browser.screenshot` | Chromium over CDP; visible or headless |
 | Agents      | `spawn_agent`, `await_tasks`, `send_to_task`, `cancel_task` | See [agent engine](03-agent-engine.md)        |
 | Media       | `media.generate`, `media.transcribe`                      | See [media](09-media-generation.md)              |
-| Interaction | `ask_user` (implemented)                                  | Pauses the agent until the user answers          |
+| Interaction | `ask_user`, `request_clarification`, `update_state` (implemented) | Pause the agent until the user answers; keep the session state |
 | App config  | `set_model_card`, `install_extension`, `uninstall_extension` (implemented) | Change the user's Imperium config through the daemon, journalled and undoable; see [06](06-extensibility.md#agents-manage-the-app-config-implemented) |
 
 Implemented in phase 8 (`imperium-web`): `web_fetch` reads an http(s) page as text (title,
@@ -233,6 +233,30 @@ pending.
   prefilled; Send answers calls `session.answer`.
 - Unattended sessions (project agents, scheduled tasks) answer with the recommendations
   immediately, since nobody is watching.
+
+### `request_clarification`
+
+`request_clarification(missing_parameter, options, question?, confidence?)` is the root's way
+to ask about one missing piece instead of guessing. `options` lists the likely answers (at most
+five, best first; empty when the answer is open); `question` is the sentence shown (made from
+the missing parameter when left out); `confidence` (0 to 1) is the root's confidence in its
+best guess and is only echoed back. It goes through the same prompt as
+[`ask_user`](#ask_user): `questions_asked` with one question whose first option is the one the
+form offers first, `session.answer`, `questions_answered`, no model calls while it waits, and
+the same 10-minute limit. Unlike `ask_user`, a blank answer or a timeout is not a
+recommendation to take: the result says the parameter is still unknown, not to guess it, to
+finish what does not depend on it and to tell the user what is waiting. Unattended sessions,
+which answer blank, therefore stop at the question instead of choosing. The root's prompt says
+when to call it (confidence below `harness.clarify_below`, after looking at the state, the
+conversation and the files), and
+[the evaluation](03-agent-engine.md#harness-aids-for-small-models) scores it.
+
+### `update_state`
+
+`update_state(entities?, forget?, goals?, constraints?, drop_constraints?)` changes the
+root's [session state](03-agent-engine.md#harness-aids-for-small-models) and returns the new
+state. Offered to the root when `harness.state` is on; not a permission matter (it changes no
+files) and allowed in plan mode.
 
 ## MCP
 
