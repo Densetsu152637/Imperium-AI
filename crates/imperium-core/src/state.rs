@@ -1202,7 +1202,7 @@ impl DaemonState {
                 resume_id: Some(id.clone()),
                 background: meta["background"].as_bool().unwrap_or(false),
                 // Stays unattended after a restart even when its pre-approved tools are gone.
-                unattended: meta["unattended"].as_bool().unwrap_or(false),
+                unattended: recorded_unattended(meta),
                 run_now: meta["run_now"].as_bool().unwrap_or(false),
                 // A branch asking for a worktree of its own gets a new one.
                 worktree,
@@ -1940,11 +1940,7 @@ impl DaemonState {
             });
         // Nobody reads the turns of a background session, one with pre-approved tools (auto-fix),
         // or a project or persistent agent: the harness aids that talk to a person stay off.
-        let attended = !(options.unattended
-            || options.background
-            || !options.pre_approved.is_empty()
-            || options.initiative_agent.is_some()
-            || options.launcher.is_some());
+        let attended = session_attended(&options);
         let session = Session::spawn(SessionConfig {
             attended,
             effort,
@@ -3048,6 +3044,24 @@ pub(crate) fn created_at(journal: &Path) -> Option<u64> {
     u64::try_from(since.as_millis()).ok()
 }
 
+/// Whether a person reads the turns of a session started with `options`. Nobody does for a
+/// background session, one with pre-approved tools (auto-fix), a project or persistent agent,
+/// or one recorded as unattended before a restart: the harness aids that talk to a person
+/// (rewrite, hints, asking) stay off there.
+fn session_attended(options: &SessionOptions) -> bool {
+    !(options.unattended
+        || options.background
+        || !options.pre_approved.is_empty()
+        || options.initiative_agent.is_some()
+        || options.launcher.is_some())
+}
+
+/// Whether a recorded session was unattended. Sessions recorded before the key existed were
+/// attended (nothing recorded it, and the aids were not there to leave on).
+fn recorded_unattended(meta: &serde_json::Value) -> bool {
+    meta["unattended"].as_bool().unwrap_or(false)
+}
+
 /// Answers a batch of questions with the agent's own recommendations: an unattended session
 /// (a project agent, a scheduled task) has nobody to ask.
 pub fn answer_with_recommendations(
@@ -3147,5 +3161,47 @@ mod tests {
         let loaded = Pack::load(&pack).unwrap();
         assert!(loaded.roles.contains_key("root") && loaded.roles.contains_key("leaf"));
         assert!(!loaded.candidates.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod attended_tests {
+    use super::*;
+
+    #[test]
+    fn a_session_recorded_as_unattended_resumes_unattended() {
+        let meta = serde_json::json!({"background": false, "unattended": true});
+        // What resume_from_meta builds from the meta: nothing else says it was unattended
+        // (an auto-fix session's pre-approved tools are not restored).
+        let options = SessionOptions {
+            background: meta["background"].as_bool().unwrap_or(false),
+            unattended: recorded_unattended(&meta),
+            ..SessionOptions::default()
+        };
+        assert!(!session_attended(&options));
+    }
+
+    #[test]
+    fn a_session_recorded_before_the_key_existed_resumes_attended() {
+        let legacy = serde_json::json!({"background": false, "model": "a:b"});
+        let options = SessionOptions {
+            unattended: recorded_unattended(&legacy),
+            ..SessionOptions::default()
+        };
+        assert!(session_attended(&options));
+        // A background session is unattended whatever its meta says about the key.
+        let background = SessionOptions {
+            background: true,
+            ..SessionOptions::default()
+        };
+        assert!(!session_attended(&background));
+        assert!(!session_attended(&SessionOptions {
+            pre_approved: vec!["run_command".into()],
+            ..SessionOptions::default()
+        }));
+        assert!(!session_attended(&SessionOptions {
+            initiative_agent: Some("agent".into()),
+            ..SessionOptions::default()
+        }));
     }
 }

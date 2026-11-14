@@ -484,6 +484,9 @@ pub struct HarnessSettings {
     pub state: HarnessMode,
     /// Most characters the state may take when rendered; the oldest entries go first.
     pub state_max_chars: u32,
+    /// Repeat the state at the top of a turn when its newest copy is this many user turns back,
+    /// so a small model reads it near the end of its context; 0 repeats it only when it changes.
+    pub state_reemit_turns: u32,
     /// Put the guidance of the ambiguity patterns that match a message at the top of its turn
     /// (see `imperium_protocol::patterns`).
     pub hints: HarnessMode,
@@ -503,6 +506,7 @@ impl Default for HarnessSettings {
             dereference_history_chars: 6000,
             state: HarnessMode::Auto,
             state_max_chars: 1200,
+            state_reemit_turns: 8,
             hints: HarnessMode::Auto,
             clarify: HarnessMode::Auto,
             clarify_below: 0.7,

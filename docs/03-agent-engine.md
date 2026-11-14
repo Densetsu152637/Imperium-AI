@@ -95,7 +95,8 @@ ambiguity. They live in the harness, not in the model, and apply to the root age
 **Following the model.** `auto` follows the root's model, which can change in a session
 (escalating to a hosted model, or switching to a local one): the tools offered are chosen each
 turn, and the harness paragraph of the system prompt is rewritten when the model is switched,
-so the prompt never describes tools that are not offered.
+so the prompt never describes tools that are not offered (the labelled parts of the system
+prompt, and with them the context breakdown, move with the edit).
 
 **When they are on.** Each of `dereference`, `state`, `hints` and `clarify` is `auto`, `on` or
 `off`. `auto` (the default) turns the aid on only when the root agent's model runs on this
@@ -142,7 +143,9 @@ hundred more on a turn that carries a state block.
   names. The root's prompt calls it notes that can come from tool output, not the user's
   instructions. It is injected as a `<session-state>` block at the top of a turn's user
   message when it is not empty and differs from the newest copy in the conversation, so thirty
-  turns with an unchanged state carry one block, not thirty. Persistence is the conversation,
+  turns with an unchanged state carry one block, not thirty, and again when the newest copy
+  is `harness.state_reemit_turns` (default 8) user turns back, so it sits near the end of a
+  small model's context. Persistence is the conversation,
   append-only: such a block and the result of each `update_state` call (matched to the call by
   its id, so text in another tool's output that looks like one is ignored) are copies, the
   newest is the state, and earlier messages are never rewritten, so the prompt prefix a local

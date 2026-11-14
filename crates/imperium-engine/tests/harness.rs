@@ -753,7 +753,11 @@ async fn an_unchanged_state_is_not_repeated_turn_after_turn() {
     )
     .await;
     let dir = tempfile::tempdir().unwrap();
-    let session = start(endpoint, dir.path(), all_on());
+    let harness = HarnessSettings {
+        state_reemit_turns: 0,
+        ..all_on()
+    };
+    let session = start(endpoint, dir.path(), harness);
     let mut events = session.subscribe();
 
     // The first turn has nothing to resolve; the second names a file, so the state changes
@@ -772,4 +776,40 @@ async fn an_unchanged_state_is_not_repeated_turn_after_turn() {
     assert_eq!(blocks, 1, "one block for thirty turns");
     // A later message still carries the state in the conversation, but not a fresh copy.
     assert!(!last_user(&last).contains("<session-state>"));
+}
+
+#[tokio::test]
+async fn an_old_copy_of_the_state_is_repeated_near_the_end_of_the_context() {
+    let seen = Arc::new(Seen::default());
+    let endpoint = endpoint(
+        vec!["Ok.".into()],
+        Rewrite::Reply(REWRITE.into()),
+        Arc::clone(&seen),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let harness = HarnessSettings {
+        state_reemit_turns: 3,
+        ..all_on()
+    };
+    let session = start(endpoint, dir.path(), harness);
+    let mut events = session.subscribe();
+
+    // Turn 2 changes the state (the rewrite names a file): the first copy. The copy is then
+    // three user turns back when turn 6 starts, and again when turn 10 starts.
+    turn(&session, &mut events, "hello").await;
+    for step in 0..11 {
+        turn(
+            &session,
+            &mut events,
+            &format!("change the timeout in that file ({step})"),
+        )
+        .await;
+    }
+    let bodies = seen.root_bodies();
+    assert_eq!(bodies.len(), 12);
+    let has_block = |turn: usize| last_user(&bodies[turn - 1]).contains("<session-state>");
+    let with_block: Vec<usize> = (1..=12).filter(|turn| has_block(*turn)).collect();
+    assert_eq!(with_block, [2, 6, 10]);
+    assert_eq!(all_text(&bodies[11]).matches("<session-state>").count(), 3);
 }

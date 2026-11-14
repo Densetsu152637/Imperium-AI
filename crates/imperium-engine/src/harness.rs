@@ -269,9 +269,9 @@ fn answers_update_state(earlier: &[ChatMessage], tool_call_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The newest state recorded in a conversation (a turn's block or the result of an
-/// `update_state` call), or an empty one.
-pub(crate) fn latest_state(messages: &[ChatMessage]) -> SessionState {
+/// The newest copy of the state in a conversation (a turn's block or the result of an
+/// `update_state` call), with the index of the message that holds it.
+fn newest_copy(messages: &[ChatMessage]) -> Option<(usize, SessionState)> {
     for (index, message) in messages.iter().enumerate().rev() {
         let found = match message {
             ChatMessage::User { content, .. } => state_in(content),
@@ -285,10 +285,28 @@ pub(crate) fn latest_state(messages: &[ChatMessage]) -> SessionState {
             _ => None,
         };
         if let Some(state) = found {
-            return state;
+            return Some((index, state));
         }
     }
-    SessionState::default()
+    None
+}
+
+/// The newest state recorded in a conversation, or an empty one.
+pub(crate) fn latest_state(messages: &[ChatMessage]) -> SessionState {
+    newest_copy(messages)
+        .map(|(_, state)| state)
+        .unwrap_or_default()
+}
+
+/// How many user messages came after the newest copy of the state; `None` when there is none.
+pub(crate) fn turns_since_copy(messages: &[ChatMessage]) -> Option<usize> {
+    let (index, _) = newest_copy(messages)?;
+    Some(
+        messages[index + 1..]
+            .iter()
+            .filter(|message| matches!(message, ChatMessage::User { .. }))
+            .count(),
+    )
 }
 
 /// What an `update_state` call returns: the new state, in the form `latest_state` reads.
@@ -629,6 +647,12 @@ mod tests {
             result(state_result(&later)),
         ];
         assert_eq!(latest_state(&spoofed).goals, ["ship"]);
+        // How far back the newest copy is: the user messages since it.
+        assert_eq!(turns_since_copy(&messages), Some(0));
+        let mut longer = messages.clone();
+        longer.extend([ChatMessage::user("a"), ChatMessage::user("b")]);
+        assert_eq!(turns_since_copy(&longer), Some(2));
+        assert_eq!(turns_since_copy(&[ChatMessage::user("none")]), None);
         assert!(latest_state(&[ChatMessage::user("no block")]).is_empty());
         assert!(latest_state(&[]).is_empty());
     }

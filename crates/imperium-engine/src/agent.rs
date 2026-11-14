@@ -849,10 +849,15 @@ impl Agent {
                 });
                 user_text = harness::resolved_text(&resolved, &text);
             }
-            // The block goes in only when the state differs from the newest copy in the
+            // The block goes in when the state differs from the newest copy in the
             // conversation, so an unchanged state is not repeated every turn.
+            // A copy far back is repeated too (`harness.state_reemit_turns`), so a small model
+            // reads the state near the end of its context.
+            let reemit = self.shared.harness.state_reemit_turns as usize;
+            let stale = reemit > 0
+                && harness::turns_since_copy(&self.messages).is_some_and(|turns| turns >= reemit);
             if keep_state
-                && harness::latest_state(&self.messages) != self.state
+                && (stale || harness::latest_state(&self.messages) != self.state)
                 && let Some(block) = self.state.block()
             {
                 parts.push((Category::Memories, block));
@@ -2880,9 +2885,25 @@ impl Agent {
         if text == self.harness_text {
             return;
         }
+        // Where the base part of the system prompt ends, which is where a new paragraph goes.
+        let base_end = self
+            .spans
+            .get(&0)
+            .and_then(|spans| {
+                spans
+                    .iter()
+                    .find(|(category, _)| *category == Category::SystemBase)
+                    .map(|(_, range)| range.end)
+            })
+            .unwrap_or(usize::MAX);
         if let Some(ChatMessage::System { content }) = self.messages.first_mut() {
-            *content = swap_harness_text(content, &self.harness_text, &text);
-            self.spans.remove(&0);
+            let (updated, at, delta) =
+                swap_harness_text(content, &self.harness_text, &text, base_end);
+            *content = updated;
+            // The labelled parts stay exact: what follows the edit moves by what it added.
+            if let Some(spans) = self.spans.get_mut(&0) {
+                shift_spans(spans, at, delta);
+            }
         }
         self.harness_text = text;
     }
@@ -3248,22 +3269,59 @@ fn is_attended(shared: &Shared) -> bool {
 }
 
 /// `content` (a system prompt) with its harness paragraph `old` replaced by `new`; either may
-/// be empty (no paragraph), and a new one is added at the end.
-fn swap_harness_text(content: &str, old: &str, new: &str) -> String {
+/// be empty (no paragraph), and a new one goes at the end of the base part, `base_end`.
+/// Returns the new text, where the edit happened, and how many bytes it added (negative: took).
+fn swap_harness_text(
+    content: &str,
+    old: &str,
+    new: &str,
+    base_end: usize,
+) -> (String, usize, isize) {
+    let size = |text: &str| isize::try_from(text.len()).unwrap_or(0);
     if old.is_empty() {
-        return if new.is_empty() {
-            content.to_string()
-        } else {
-            format!("{content}\n\n{new}")
-        };
+        if new.is_empty() {
+            return (content.to_string(), 0, 0);
+        }
+        let at = base_end.min(content.len());
+        let added = format!("\n\n{new}");
+        let mut out = content.to_string();
+        out.insert_str(at, &added);
+        // The part that ends at `at` grows, so the edit counts as inside it.
+        return (out, at.saturating_sub(1), size(&added));
     }
     let from = format!("\n\n{old}");
+    let Some(at) = content.find(&from) else {
+        return (content.to_string(), 0, 0);
+    };
     let to = if new.is_empty() {
         String::new()
     } else {
         format!("\n\n{new}")
     };
-    content.replacen(&from, &to, 1)
+    let mut out = content.to_string();
+    out.replace_range(at..at + from.len(), &to);
+    (out, at, size(&to) - size(&from))
+}
+
+/// Moves the labelled parts of a message after an edit at `at` that added `delta` bytes: a
+/// part that reaches past `at` grows or shrinks, and one that starts after it moves.
+fn shift_spans(spans: &mut Spans, at: usize, delta: isize) {
+    let shift = |value: usize| {
+        usize::try_from(
+            isize::try_from(value)
+                .unwrap_or(isize::MAX)
+                .saturating_add(delta),
+        )
+        .unwrap_or(0)
+    };
+    for (_, range) in spans.iter_mut() {
+        if range.start > at {
+            range.start = shift(range.start);
+        }
+        if range.end > at {
+            range.end = shift(range.end);
+        }
+    }
 }
 
 /// Whether a harness aid set to `mode` is on for a root agent whose model is `local` or not.
@@ -4885,17 +4943,49 @@ mod harness_tests {
         assert!(hosted.is_empty() && !local.is_empty());
         let base = "You are Imperium.\n\nReplies: short.";
         // Hosted to local: the paragraph is added; and back, it is taken out again.
-        let to_local = swap_harness_text(base, &hosted, &local);
+        let (to_local, _, _) = swap_harness_text(base, &hosted, &local, base.len());
         assert!(to_local.starts_with(base) && to_local.contains("request_clarification"));
-        assert_eq!(swap_harness_text(&to_local, &local, &hosted), base);
+        assert_eq!(
+            swap_harness_text(&to_local, &local, &hosted, base.len()).0,
+            base
+        );
         // Mid-prompt (a personality follows it) it is replaced in place.
         let with_personality = format!("{base}\n\n{local}\n\nBe Marcus.");
         assert_eq!(
-            swap_harness_text(&with_personality, &local, ""),
+            swap_harness_text(&with_personality, &local, "", base.len()).0,
             format!("{base}\n\nBe Marcus.")
         );
         // The tools follow the model through the same rule.
         assert!(!mode_on(settings.clarify, false) && mode_on(settings.clarify, true));
+    }
+
+    #[test]
+    fn the_labelled_parts_stay_exact_across_the_swap() {
+        use crate::breakdown::join_parts;
+        let settings = HarnessSettings::default();
+        let local = harness_prompt(&settings, true, true);
+        let base = "You are Imperium.\n\nReplies: short.";
+        for (old, new) in [("", local.as_str()), (local.as_str(), "")] {
+            let first = if old.is_empty() {
+                base.to_string()
+            } else {
+                format!("{base}\n\n{old}")
+            };
+            let (content, mut spans) = join_parts(vec![
+                (Category::SystemBase, first),
+                (Category::SystemSkills, "skills index".into()),
+                (Category::SystemProject, "project rules".into()),
+            ]);
+            let end = spans[0].1.end;
+            let (updated, at, delta) = swap_harness_text(&content, old, new, end);
+            shift_spans(&mut spans, at, delta);
+            // Every part still holds the text it was made from.
+            let base_part = &updated[spans[0].1.clone()];
+            assert!(base_part.starts_with(base), "{base_part}");
+            assert_eq!(base_part.contains("request_clarification"), !new.is_empty());
+            assert_eq!(&updated[spans[1].1.clone()], "skills index");
+            assert_eq!(&updated[spans[2].1.clone()], "project rules");
+        }
     }
 
     fn state_with_goal() -> SessionState {
