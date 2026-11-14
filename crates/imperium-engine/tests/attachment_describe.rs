@@ -8,7 +8,10 @@ use std::time::Duration;
 use axum::Router;
 use axum::routing::post;
 use imperium_config::{AttachmentSettings, Location, Tier};
-use imperium_engine::{CatalogModel, ResolvedModel, Session, SessionConfig};
+use imperium_engine::{
+    AcquireFuture, Availability, BudgetGate, BudgetVerdict, CatalogModel, LocalLease, LocalModels,
+    ResolvedModel, Session, SessionConfig,
+};
 use imperium_models::Endpoint;
 use imperium_protocol::session::{AgentEvent, Attachment, AttachmentKind, SendMode, SessionEvent};
 use imperium_tools::Workspace;
@@ -18,6 +21,11 @@ type Log = Arc<Mutex<Vec<Value>>>;
 
 /// Answers every request with `reply`, keeping every request body.
 async fn fake(reply: &'static str) -> (String, Log) {
+    fake_after(reply, Duration::ZERO).await
+}
+
+/// [`fake`], answering only after `delay`.
+async fn fake_after(reply: &'static str, delay: Duration) -> (String, Log) {
     let log: Log = Arc::default();
     let seen = Arc::clone(&log);
     let app = Router::new().route(
@@ -26,6 +34,7 @@ async fn fake(reply: &'static str) -> (String, Log) {
             let seen = Arc::clone(&seen);
             async move {
                 seen.lock().unwrap().push(body);
+                tokio::time::sleep(delay).await;
                 let body = format!(
                     "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
                     json!({"choices":[{"delta":{"content":reply}}]}),
@@ -101,17 +110,71 @@ fn start(
     catalog: Vec<CatalogModel>,
     attachments: AttachmentSettings,
 ) -> Session {
+    start_with(
+        dir,
+        resolved("main:blind", main),
+        None,
+        None,
+        catalog,
+        attachments,
+    )
+}
+
+/// A local runtime that has the one model `blind` loaded, served at `url`, and nothing else.
+#[derive(Debug)]
+struct OnlyBlind {
+    url: String,
+}
+
+impl LocalModels for OnlyBlind {
+    fn availability(&self, model: &str) -> Availability {
+        if model == "blind" {
+            Availability::Loaded
+        } else {
+            Availability::Unavailable
+        }
+    }
+
+    fn acquire<'a>(&'a self, _model: &'a str, _holder: &'a str) -> AcquireFuture<'a> {
+        Box::pin(async move { Ok(LocalLease::new(self.url.clone(), Some(0), None, ())) })
+    }
+}
+
+/// Refuses every call to one model.
+#[derive(Debug)]
+struct Refuse(&'static str);
+
+impl BudgetGate for Refuse {
+    fn check(&self, spec: &str) -> BudgetVerdict {
+        if spec == self.0 {
+            BudgetVerdict::Blocked(format!("{spec} is over its budget"))
+        } else {
+            BudgetVerdict::Go
+        }
+    }
+
+    fn confirm(&self, _key: &str) {}
+}
+
+fn start_with(
+    dir: &std::path::Path,
+    model: ResolvedModel,
+    local: Option<Arc<dyn LocalModels>>,
+    gate: Option<Arc<dyn BudgetGate>>,
+    catalog: Vec<CatalogModel>,
+    attachments: AttachmentSettings,
+) -> Session {
     // Each session has its own journal, so sessions started in one folder do not share one.
     static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let number = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Session::spawn(SessionConfig {
         id: format!("describe-{number}"),
         workspace: Workspace::new(dir).unwrap(),
-        model: Some(resolved("main:blind", main)),
+        model: Some(model),
         catalog,
         routing: imperium_config::RoutingSettings::default(),
         clients: Default::default(),
-        local: None,
+        local,
         tools: Vec::new(),
         notices: Vec::new(),
         extensions: Default::default(),
@@ -127,7 +190,7 @@ fn start(
         max_steps: 3,
         background: None,
         checkpoints: None,
-        budget_gate: None,
+        budget_gate: gate,
         auto_compact: false,
         auto_compact_at: None,
         attended: true,
@@ -385,5 +448,127 @@ async fn images_over_the_per_message_limits_are_noted_not_dropped() {
     assert!(
         text.contains("only 2 images of a message are described"),
         "{text}"
+    );
+}
+
+#[tokio::test]
+async fn a_local_session_does_not_send_an_image_to_a_hosted_row_unasked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (main, main_log) = fake("seen").await;
+    let (eyes, eyes_log) = fake("a hosted description").await;
+    let mut blind = resolved("llamacpp:blind", "");
+    blind.local = true;
+    let local: Arc<dyn LocalModels> = Arc::new(OnlyBlind { url: main.clone() });
+    let catalog = vec![row("eyes", "cloud:eyes", &eyes, &["vision"])];
+
+    let session = start_with(
+        dir.path(),
+        blind.clone(),
+        Some(Arc::clone(&local)),
+        None,
+        catalog.clone(),
+        AttachmentSettings::default(),
+    );
+    let mut events = session.subscribe();
+    turn(&session, &mut events, vec![image(dir.path(), "a.png", 1)]).await;
+    assert!(
+        eyes_log.lock().unwrap().is_empty(),
+        "nothing left the machine"
+    );
+    let (text, _) = last_user(&main_log);
+    assert!(
+        text.contains(
+            "could not be described: no model that reads images can take it on this machine"
+        ),
+        "{text}"
+    );
+
+    // Naming the hosted row is a choice to send it, and the notice says where it went.
+    let session = start_with(
+        dir.path(),
+        blind,
+        Some(local),
+        None,
+        catalog,
+        AttachmentSettings {
+            describe_with: Some("eyes".into()),
+            ..Default::default()
+        },
+    );
+    let mut events = session.subscribe();
+    let notices = turn(&session, &mut events, vec![image(dir.path(), "b.png", 2)]).await;
+    assert_eq!(eyes_log.lock().unwrap().len(), 1);
+    assert!(last_user(&main_log).0.contains("a hosted description"));
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.contains("sent to a hosted model, cloud:eyes")),
+        "{notices:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_slow_describer_is_given_up_on_once_for_the_whole_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let (main, main_log) = fake("seen").await;
+    let (eyes, eyes_log) = fake_after("late", Duration::from_secs(4)).await;
+    let session = start(
+        dir.path(),
+        &main,
+        vec![row("eyes", "cloud:eyes", &eyes, &["vision"])],
+        AttachmentSettings {
+            describe_timeout_s: 1,
+            ..Default::default()
+        },
+    );
+    let mut events = session.subscribe();
+    let started = std::time::Instant::now();
+    let notices = turn(
+        &session,
+        &mut events,
+        vec![
+            image(dir.path(), "one.png", 1),
+            image(dir.path(), "two.png", 2),
+        ],
+    )
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "the turn did not wait it out"
+    );
+    let (text, _) = last_user(&main_log);
+    assert!(text.contains("took longer than 1 s"), "{text}");
+    assert!(
+        text.contains("describing model unavailable (cloud:eyes)"),
+        "{text}"
+    );
+    // The second image was not sent to a model that had just timed out.
+    assert_eq!(eyes_log.lock().unwrap().len(), 1);
+    assert!(
+        notices.iter().any(|notice| notice.contains("two.png")),
+        "{notices:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_budget_that_refuses_the_describer_leaves_the_image_unseen_with_a_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let (main, main_log) = fake("seen").await;
+    let (eyes, eyes_log) = fake("never").await;
+    let session = start_with(
+        dir.path(),
+        resolved("main:blind", &main),
+        None,
+        Some(Arc::new(Refuse("cloud:eyes"))),
+        vec![row("eyes", "cloud:eyes", &eyes, &["vision"])],
+        AttachmentSettings::default(),
+    );
+    let mut events = session.subscribe();
+    turn(&session, &mut events, vec![image(dir.path(), "a.png", 1)]).await;
+    assert!(eyes_log.lock().unwrap().is_empty());
+    assert!(
+        last_user(&main_log)
+            .0
+            .contains("the budget for cloud:eyes does not allow the call")
     );
 }

@@ -526,12 +526,16 @@ pub struct AttachmentSettings {
     /// description to the model in place of the image.
     pub describe: bool,
     /// The model that describes them: a model table `id` or `<endpoint>:<model>` spec of a row
-    /// in the table. Unset, a row tagged `vision` is picked by the routing rules (on this
-    /// machine when the session's model is local, so an image never leaves it unasked).
+    /// in the table, used as given: naming a hosted row sends the image to that provider even
+    /// when the session's model runs on this machine. Unset, a row tagged `vision` is picked by
+    /// the routing rules: on this machine when the session's model is local (an image never
+    /// leaves it unasked), and in a hosted session possibly another provider's.
     pub describe_with: Option<String>,
     /// Most tokens one description may take.
     pub describe_max_tokens: u32,
-    /// Seconds one description may take.
+    /// Seconds one description may take, a local model's loading included. A message's
+    /// descriptions take twice this at most, and a model that timed out or failed is not asked
+    /// again for the message's other images.
     pub describe_timeout_s: u64,
     /// Most images described for one message; the rest are noted as not described.
     pub describe_max_images: u32,

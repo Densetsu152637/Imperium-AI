@@ -423,7 +423,10 @@ pub fn render_with(attachments: &[Attachment], descriptions: &Descriptions) -> R
             &mut rendered.images,
         ) {
             Ok(body) => body,
-            Err(error) => format!("[The file could not be read: {error}]"),
+            Err(error) => format!(
+                "[The file could not be read: {}]",
+                neutralize(&error.to_string())
+            ),
         };
         text.push_str(&format!(
             "<attachment name=\"{}\" type=\"{}\" path=\"{}\">\n{}\n</attachment>\n",
@@ -636,8 +639,9 @@ fn render_one(
             Some(Description::Text { model, text }) => frame_description("image", model, text),
             Some(Description::Missing(reason)) => format!(
                 "[Image attached, but your model cannot view images and it could not be \
-                 described: {reason}. You have not seen it; the file is at the path above for \
-                 tools that can read it.]"
+                 described: {}. You have not seen it; the file is at the path above for \
+                 tools that can read it.]",
+                neutralize(reason)
             ),
             None => "[Image attached. Your model cannot view images, so it is not \
                  shown; the file is at the path above for tools that can read it.]"
@@ -671,7 +675,8 @@ fn render_one(
                     body.push_str(&frame_description("scanned PDF's pages", model, text));
                 }
                 Some(Description::Missing(reason)) => body.push_str(&format!(
-                    "\n[The PDF's pages could not be described: {reason}. You have not seen them.]"
+                    "\n[The PDF's pages could not be described: {}. You have not seen them.]",
+                    neutralize(reason)
                 )),
                 None => {}
             }

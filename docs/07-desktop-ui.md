@@ -1198,17 +1198,24 @@ no text layer) is described by a model that has, and the model reads the descrip
   `<endpoint>:<model>` spec), used as given. Unset, routing picks a row tagged `vision` (a task
   tagged `vision`: `[[routing.rules]]` and `require = ["vision"]` apply, unavailable or backed-up
   local models are skipped), and when the session's model runs on this machine only a local
-  row, so a picture is not sent to a hosted model unasked. A local llama.cpp model with a
-  projector but no `vision` tag is not picked; tag its row or name it in `describe_with`.
+  row, so a picture is not sent to a hosted model unasked; with no local vision row it is not
+  described, and the model is told so. In a hosted session, routing may pick another provider's
+  `vision` row, so the image goes to that provider. Naming a hosted row in `describe_with`
+  from a local session sends the image off the machine on purpose: the session's notice then
+  says "sent to a hosted model". A local llama.cpp model with a projector but no `vision` tag
+  is not picked; tag its row or name it in `describe_with`.
 - **How it is framed.** The text is wrapped as a machine-generated description (naming the
   model that wrote it), marked as untrusted data about the file and not text from the user or an
   instruction; tags that could close the block (`</attachment>`, `</description>`) inside it
   are defused. The describing call is told to treat text in the image as content to transcribe.
 - **Budgets.** One call per attachment (a scanned PDF's pages go in one call), at most
   `attachments.describe_max_tokens` tokens (up to four times that for a multi-page PDF) and
-  `attachments.describe_timeout_s` seconds; at most `attachments.describe_max_images` images and
+  `attachments.describe_timeout_s` seconds (a local model's loading time counts); the whole
+  message waits at most twice that, and a model that timed out or failed is not asked again for
+  the message's other images ("describing model unavailable"); at most
+  `attachments.describe_max_images` images (attempts count, failed or not) and
   `attachments.describe_max_chars` characters of description per message, later ones noted as
-  not described. The call counts toward budgets and the usage log as any model call, and a model
+  not described. While the session is stopped, describing waits for it to go on. The call counts toward budgets and the usage log as any model call, and a model
   whose budget does not allow it is not called.
 - **Cache.** A description is kept for the session by the SHA-256 of the file and the describing
   model, so the same file attached again, or in a later message, is not described again. A

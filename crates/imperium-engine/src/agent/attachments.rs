@@ -98,11 +98,18 @@ impl Agent {
             }
         };
         let max_images = settings.describe_max_images as usize;
-        let mut images = 0usize;
+        let mut attempts = 0usize;
         let mut remaining = settings.describe_max_chars as usize;
         let mut described = Vec::new();
+        // The whole message waits at most twice one call's time for its descriptions, and a
+        // model that timed out or could not be reached is not asked again.
+        let per_call = std::time::Duration::from_secs(
+            settings.describe_timeout_s.clamp(1, MAX_DESCRIBE_SECONDS),
+        );
+        let deadline = Instant::now() + per_call * 2;
+        let mut unavailable = false;
         for one in pending {
-            let reason = if images + one.images.len() > max_images {
+            let reason = if attempts + one.images.len() > max_images {
                 Some(format!(
                     "only {max_images} images of a message are described \
                      (attachments.describe_max_images)"
@@ -113,16 +120,30 @@ impl Agent {
                      (attachments.describe_max_chars)",
                     settings.describe_max_chars
                 ))
+            } else if unavailable {
+                Some(format!("describing model unavailable ({})", model.spec))
+            } else if deadline <= Instant::now() {
+                Some(format!(
+                    "the descriptions of this message ran out of time ({} s: twice \
+                     attachments.describe_timeout_s)",
+                    per_call.as_secs() * 2
+                ))
             } else {
                 None
             };
             let outcome = match reason {
-                Some(reason) => Err(reason),
-                None => self.describe_one(&model, &one).await,
+                Some(reason) => Err(Failure {
+                    reason,
+                    fatal: false,
+                }),
+                None => {
+                    attempts += one.images.len();
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    self.describe_one(&model, &one, per_call.min(left)).await
+                }
             };
             match outcome {
                 Ok(text) => {
-                    images += one.images.len();
                     let text = cut_description(&text, remaining);
                     remaining = remaining.saturating_sub(text.chars().count());
                     described.push(one.name.clone());
@@ -134,16 +155,24 @@ impl Agent {
                         },
                     );
                 }
-                Err(reason) => {
-                    unseen.push(format!("{} ({reason})", one.name));
-                    found.insert(one.attachment_id, Description::Missing(reason));
+                Err(failure) => {
+                    unavailable |= failure.fatal;
+                    unseen.push(format!("{} ({})", one.name, failure.reason));
+                    found.insert(one.attachment_id, Description::Missing(failure.reason));
                 }
             }
         }
         if !described.is_empty() {
+            // A hosted describer for a session whose model runs here was chosen by name: it
+            // is said when it happens.
+            let sent = if self.model.local && !model.local {
+                format!(" (sent to a hosted model, {})", model.spec)
+            } else {
+                String::new()
+            };
             self.emit(SessionEvent::Notice {
                 message: format!(
-                    "{} cannot see images: {} described by {} for it",
+                    "{} cannot see images: {} described by {} for it{sent}",
                     self.model.spec,
                     described.join(", "),
                     model.spec
@@ -222,17 +251,23 @@ impl Agent {
         &self,
         model: &ResolvedModel,
         one: &Undescribed,
-    ) -> Result<String, String> {
+        limit: std::time::Duration,
+    ) -> Result<String, Failure> {
         let key = format!("{}\n{}", model.spec, one.hash);
         if let Some(text) = lock(&self.shared.descriptions).get(&key) {
             return Ok(text.clone());
         }
         if !self.budget_allows(&model.spec) {
-            return Err(format!(
+            return Err(Failure::soft(format!(
                 "the budget for {} does not allow the call",
                 model.spec
-            ));
+            )));
         }
+        // Images sent while the session is stopped are described when it goes on, not given
+        // up on: the stop is a pause, and the turn waits with it.
+        let holder = self.holder();
+        let mut attached = None;
+        self.hold_while_stopped(&mut attached, &holder).await;
         let settings = &self.shared.attachments;
         let prompt = describe_prompt(one);
         let request = vec![
@@ -244,9 +279,6 @@ impl Agent {
                 images: one.images.clone(),
             },
         ];
-        let limit = std::time::Duration::from_secs(
-            settings.describe_timeout_s.clamp(1, MAX_DESCRIBE_SECONDS),
-        );
         // Several pages need more room than one image, up to four times as much.
         let budget = settings
             .describe_max_tokens
@@ -257,7 +289,6 @@ impl Agent {
             + TOKENS_PER_IMAGE * one.images.len() as u64
             + compact::MESSAGE_FORMATTING * 2;
         let prompt_tokens = u32::try_from(estimate).ok();
-        let holder = self.holder();
         let started = Instant::now();
         let call = async {
             let (client, lease) = self
@@ -288,22 +319,29 @@ impl Agent {
             result
         };
         let mut stop = self.shared.controls.stop_signal();
+        // Biased: a stop wins over a reply that arrives in the same moment, so a stopped
+        // session does not go on to use the description.
         let completion = tokio::select! {
+            biased;
+            Ok(_) = stop.wait_for(|stopped| *stopped) => {
+                return Err(Failure::soft("the session was stopped"));
+            }
             result = tokio::time::timeout(limit, call) => match result {
                 Ok(Ok(completion)) => completion,
-                Ok(Err(error)) => return Err(format!("{} failed: {error}", model.spec)),
+                Ok(Err(error)) => {
+                    return Err(Failure::fatal(format!("{} failed: {error}", model.spec)));
+                }
                 Err(_) => {
-                    return Err(format!(
-                        "{} took longer than {} s (attachments.describe_timeout_s)",
+                    return Err(Failure::fatal(format!(
+                        "{} took longer than {} s (attachments.describe_timeout_s; a local \
+                         model's loading counts)",
                         model.spec,
                         limit.as_secs()
-                    ));
+                    )));
                 }
             },
-            Ok(_) = stop.wait_for(|stopped| *stopped) => {
-                return Err("the session was stopped".into());
-            }
         };
+        drop(attached);
         // The description was a model call: it counts toward budgets like any other.
         if let Some(usage) = &completion.usage {
             self.emit(SessionEvent::ModelCallCompleted {
@@ -318,7 +356,10 @@ impl Agent {
         }
         let mut text = completion.text.trim().to_string();
         if text.is_empty() {
-            return Err(format!("{} returned no description", model.spec));
+            return Err(Failure::soft(format!(
+                "{} returned no description",
+                model.spec
+            )));
         }
         if completion.finish_reason.as_deref() == Some("length") {
             text.push_str("\n[the description reached its length limit and was cut]");
@@ -329,6 +370,29 @@ impl Agent {
         }
         cache.insert(key, text.clone());
         Ok(text)
+    }
+}
+
+/// Why an image was not described. `fatal`: the model timed out or could not be reached, so
+/// the rest of the message's images are not sent to it.
+struct Failure {
+    reason: String,
+    fatal: bool,
+}
+
+impl Failure {
+    fn soft(reason: impl Into<String>) -> Self {
+        Failure {
+            reason: reason.into(),
+            fatal: false,
+        }
+    }
+
+    fn fatal(reason: impl Into<String>) -> Self {
+        Failure {
+            reason: reason.into(),
+            fatal: true,
+        }
     }
 }
 
