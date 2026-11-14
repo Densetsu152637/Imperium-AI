@@ -417,10 +417,14 @@ and `environments.agent_update` (protocol 0.28)
 41. **read_file fix.** The `read_file` tool does not work in use. Reproduce the failure first,
     find its cause in the tool's path handling or its result, and fix it. Add a test that reads a
     real file through the same path the app uses ([05](05-tools-and-isolation.md)).
-42. **Claude harness for imperium-core.** A harness that lets Claude Code drive the imperium-core
-    runtime. Claude hands tasks to Imperium so it can orchestrate them. Claude also exercises
-    Imperium's agents and their capabilities, to test bugs and new features
-    ([02](02-architecture.md), [03](03-agent-engine.md)).
+42. **Claude harness for imperium-core** (implemented). `imperium mcp-serve` is an MCP server on
+    stdio that lets Claude Code drive the daemon: hand tasks to Imperium to orchestrate, and
+    exercise its agents to test bugs and new features. It lists environments and sessions, starts
+    a session with a prompt, sends messages, waits for a turn, reads tool logs and transcripts,
+    answers permission requests only when told to, and stops sessions, all through the daemon's
+    own permission checks and without exposing the token. No protocol change. *Not built:*
+    exposing Imperium's own tools over MCP, streamed turn text, and automatic reconnection
+    ([20](20-claude-harness.md), [02](02-architecture.md), [03](03-agent-engine.md)).
 43. **Harness-level engineering.** One change to the harness around the model, in four parts.
     (a) A de-reference step before the planner. The small (4B) model reads the latest user message
     and the compacted history, then writes a standalone prompt. Pronouns and references such as
