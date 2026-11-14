@@ -41,6 +41,8 @@ type Props = {
   localModels: LocalModelRow[];
   /** `models.default` as the daemon applies it (from `models.local`); undefined until known. */
   defaultModel?: string | null;
+  /** Whether the daemon has reported the model table and the local models; false hides the house-model card. */
+  modelsLoaded: boolean;
   client: DaemonClient | null;
   /** Creates the session and sends the message; rejects with the daemon's reason. */
   onCreate: (options: NewSessionOptions) => Promise<void>;
@@ -78,6 +80,7 @@ export function NewSessionPanel({
   models,
   localModels,
   defaultModel,
+  modelsLoaded,
   client,
   onCreate,
   onModelsChanged,
@@ -120,6 +123,7 @@ export function NewSessionPanel({
           hostedConfigured: models.filter((row) => row.endpoint_configured).length,
           localFound: localModels.length,
           defaultModel: defaultSpec,
+          loaded: modelsLoaded,
         },
         settings.houseModelsDismissed,
       )

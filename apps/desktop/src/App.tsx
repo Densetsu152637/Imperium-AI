@@ -1275,6 +1275,7 @@ export function App() {
         models={modelTable?.models ?? []}
         localModels={localModels?.models ?? []}
         defaultModel={localModels ? (localModels.default_model ?? null) : undefined}
+        modelsLoaded={modelTable !== null && localModels !== null}
         client={client}
         onCreate={createSession}
         onModelsChanged={refreshModels}

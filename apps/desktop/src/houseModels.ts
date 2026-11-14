@@ -46,6 +46,8 @@ const REPO = /^[A-Za-z0-9][\w.-]*\/[\w.-]+$/;
 
 function parseSource(raw: unknown): HouseModelSource | null {
   if (!isRecord(raw) || typeof raw.repo !== "string" || !REPO.test(raw.repo)) return null;
+  // "owner/.." and "./x" name no repository.
+  if (raw.repo.split("/").some((part) => /^\.+$/.test(part))) return null;
   const quant = typeof raw.quant === "string" && raw.quant.trim() ? raw.quant.trim() : undefined;
   return quant ? { repo: raw.repo, quant } : { repo: raw.repo };
 }
@@ -93,6 +95,8 @@ export type ModelInventory = {
   localFound: number;
   /** `models.default`, when set. */
   defaultModel: string | null;
+  /** Whether the daemon has reported both model lists; until then nothing is known to be missing. */
+  loaded: boolean;
 };
 
 /** True when the user has any model at all: then the suggestion never shows. */
@@ -100,15 +104,15 @@ export const hasAnyModel = (inventory: ModelInventory): boolean =>
   inventory.hostedConfigured > 0 || inventory.localFound > 0 || inventory.defaultModel !== null;
 
 /**
- * The house models to suggest: none once the user has dismissed the suggestion or has any model,
- * and none when the catalogue is empty.
+ * The house models to suggest: none before the model lists have loaded, once the user has
+ * dismissed the suggestion or has any model, and none when the catalogue is empty.
  */
 export function houseModelSuggestion(
   inventory: ModelInventory,
   dismissed: boolean,
   catalogue: readonly HouseModel[] = HOUSE_MODELS,
 ): HouseModel[] {
-  if (dismissed || hasAnyModel(inventory)) return [];
+  if (!inventory.loaded || dismissed || hasAnyModel(inventory)) return [];
   return [...catalogue];
 }
 
