@@ -358,3 +358,180 @@ async fn lifecycle_events_reach_http_hooks_with_their_payloads() {
     assert_eq!(ended[0]["session_id"], "life");
     assert_eq!(ended[0]["reason"], "closed");
 }
+
+/// A server that answers every `tool.before` POST with `answer`.
+async fn answering(answer: Value) -> String {
+    let app = Router::new().route(
+        "/hook",
+        post(move |_: axum::Json<Value>| {
+            let answer = answer.clone();
+            async move { axum::Json(answer) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    url
+}
+
+/// What a session did with one `echo hi` call that a hook rewrote.
+struct Rewrite {
+    notices: Vec<String>,
+    asked: Vec<String>,
+    started: Vec<String>,
+    output: String,
+}
+
+/// Runs a turn in which the model calls `run_command` with `echo hi`, `run_command` is
+/// pre-approved, and a `tool.before` hook answers with `answer`. Any approval asked is denied.
+async fn rewritten_call(answer: Value) -> Rewrite {
+    let config = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let extensions = imperium_extensions::load(&Sources {
+        config_dir: config.path().to_path_buf(),
+        project_dir: project.path().to_path_buf(),
+        plugin_dirs: Vec::new(),
+        disabled_plugins: Vec::new(),
+        hooks: vec![ConfiguredHook {
+            event: "tool.before".into(),
+            matcher: "run_command".into(),
+            command: String::new(),
+            url: Some(answering(answer).await),
+            headers: Default::default(),
+            timeout_s: Some(5),
+        }],
+        server_timeout: Duration::from_secs(5),
+        lazy: true,
+        eager: Vec::new(),
+    });
+    assert!(extensions.notices.is_empty(), "{:?}", extensions.notices);
+    let session = Session::spawn(SessionConfig {
+        id: "rewrite".into(),
+        workspace: Workspace::new(project.path()).unwrap(),
+        model: Some(ResolvedModel {
+            spec: "fake:model".into(),
+            endpoint: Endpoint {
+                base_url: asking_model().await,
+                api_key: None,
+            },
+            model: "model".into(),
+            pricing: None,
+            local: false,
+            context_window: None,
+            kind: "openai".into(),
+            reasoning: None,
+        }),
+        catalog: Vec::new(),
+        routing: imperium_config::RoutingSettings::default(),
+        clients: Default::default(),
+        local: None,
+        tools: Vec::new(),
+        notices: Vec::new(),
+        extensions,
+        memory: None,
+        context: None,
+        enforce: imperium_config::Enforce::Warn,
+        pre_approved: vec!["run_command".into()],
+        launcher: None,
+        resume: false,
+        resume_policy: imperium_engine::default_resume_policy(),
+        instructions: None,
+        personality: None,
+        max_steps: 5,
+        background: None,
+        checkpoints: None,
+        budget_gate: None,
+        auto_compact: false,
+        auto_compact_at: None,
+        keep_agent_state: true,
+        effort: Default::default(),
+        journal_path: project.path().join(".journal.jsonl"),
+    })
+    .unwrap();
+    let mut events = session.subscribe();
+    session.send("go".into()).unwrap();
+    let mut seen = Rewrite {
+        notices: Vec::new(),
+        asked: Vec::new(),
+        started: Vec::new(),
+        output: String::new(),
+    };
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .expect("an event within 10 s")
+            .unwrap()
+            .event;
+        match event {
+            SessionEvent::Notice { message } => seen.notices.push(message),
+            SessionEvent::PermissionRequested {
+                request_id,
+                summary,
+                ..
+            } => {
+                seen.asked.push(summary);
+                session
+                    .respond(request_id, PermissionDecision::Deny)
+                    .unwrap();
+            }
+            SessionEvent::ToolStarted { summary, .. } => seen.started.push(summary),
+            SessionEvent::ToolFinished { output, .. } => seen.output = output,
+            SessionEvent::TurnCompleted { .. } => break,
+            SessionEvent::TurnFailed { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    seen
+}
+
+#[tokio::test]
+async fn a_rewritten_call_is_shown_and_checked_like_the_models_own() {
+    // Into a command the safety floor covers: pre-approval does not apply, so the user is
+    // asked about the rewritten command, with the original named, and denies it.
+    let seen = rewritten_call(json!({"updated_input": {"command": "rm -rf build"}})).await;
+    assert_eq!(seen.asked.len(), 1, "{seen:?}", seen = seen.asked);
+    assert!(seen.asked[0].contains("rm -rf build"), "{}", seen.asked[0]);
+    assert!(
+        seen.asked[0].contains("rewritten by a hook") && seen.asked[0].contains("echo hi"),
+        "{}",
+        seen.asked[0]
+    );
+    assert!(seen.started.is_empty(), "the denied call never started");
+    assert!(seen.output.contains("denied"), "{}", seen.output);
+    let notice = seen
+        .notices
+        .iter()
+        .find(|notice| notice.contains("A hook rewrote the run_command call"))
+        .expect("a notice shows both versions");
+    assert!(
+        notice.contains("Before:") && notice.contains("echo hi"),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("After:") && notice.contains("rm -rf build"),
+        "{notice}"
+    );
+}
+
+#[tokio::test]
+async fn a_harmless_rewrite_runs_and_says_so() {
+    let seen = rewritten_call(json!({"updated_input": {"command": "echo changed"}})).await;
+    assert!(seen.asked.is_empty(), "{:?}", seen.asked);
+    assert_eq!(seen.started.len(), 1);
+    assert!(
+        seen.started[0].contains("echo changed"),
+        "{}",
+        seen.started[0]
+    );
+    assert!(seen.output.contains("changed"), "{}", seen.output);
+    assert!(seen.notices.iter().any(|n| n.contains("A hook rewrote")));
+}
+
+#[tokio::test]
+async fn an_answer_that_is_not_a_rewrite_changes_nothing() {
+    // Not an object, so the original call runs as the model made it.
+    let seen = rewritten_call(json!({"updated_input": "rm -rf build"})).await;
+    assert!(seen.asked.is_empty());
+    assert!(seen.started[0].contains("echo hi"), "{}", seen.started[0]);
+    assert!(!seen.notices.iter().any(|n| n.contains("A hook rewrote")));
+}

@@ -1365,6 +1365,28 @@ impl Shared {
             .await
     }
 
+    /// [`Shared::hook_in`] for `tool.before` and `prompt.submit`, which may rewrite what they
+    /// see ([`imperium_extensions::Hooks::run_rewriting`]). The caller checks a rewrite again.
+    pub(crate) async fn hook_rewriting_in(
+        &self,
+        workspace: &Workspace,
+        event: HookEvent,
+        tool: Option<&str>,
+        payload: serde_json::Value,
+    ) -> imperium_extensions::Rewriting {
+        if self.extensions.hooks.is_empty() {
+            return imperium_extensions::Rewriting {
+                verdict: Verdict::Allow,
+                updated_input: None,
+                updated_prompt: None,
+            };
+        }
+        self.extensions
+            .hooks
+            .run_rewriting(event, tool, &payload, &workspace.local_dir())
+            .await
+    }
+
     /// Starts the hooks of an observer-only event (`turn.start`, `turn.end`, `session.end`,
     /// `permission.requested`) without waiting for them: they run in their own task, capped at
     /// [`OBSERVER_CAP`] in all, so a slow hook or endpoint never holds up a turn, an approval
@@ -1404,11 +1426,27 @@ impl Shared {
             }
             None => text,
         };
-        match self
-            .hook(HookEvent::PromptSubmit, None, json!({"prompt": text}))
-            .await
-        {
-            Verdict::Allow => Some(text),
+        let outcome = self
+            .hook_rewriting_in(
+                &self.workspace,
+                HookEvent::PromptSubmit,
+                None,
+                json!({"prompt": text}),
+            )
+            .await;
+        match outcome.verdict {
+            Verdict::Allow => match outcome.updated_prompt {
+                Some(new) if new != text => {
+                    // The user sees both: what they wrote, and what the model will read.
+                    notice(format!(
+                        "A hook rewrote your message.\nBefore: {}\nAfter: {}",
+                        crate::agent::shown(&text),
+                        crate::agent::shown(&new)
+                    ));
+                    Some(new)
+                }
+                _ => Some(text),
+            },
             Verdict::Block(reason) => {
                 notice(format!("A hook blocked this message: {reason}"));
                 None

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 pub use activation::{Activation, LazyPlugin, PluginTools};
 pub use commands::SlashCommand;
-pub use hooks::{ConfiguredHook, Hook, HookEvent, Hooks, Verdict};
+pub use hooks::{ConfiguredHook, Hook, HookEvent, Hooks, Rewriting, Verdict};
 pub use skills::Skill;
 
 /// Where a session's extensions come from.
