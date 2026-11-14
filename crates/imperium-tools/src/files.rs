@@ -11,12 +11,15 @@ pub async fn read_file(
     offset: Option<usize>,
     limit: Option<usize>,
 ) -> Result<String, ToolError> {
-    let text = if workspace.runtime().is_some() {
-        remote_files::read_text(workspace, path).await?
+    let bytes = if workspace.runtime().is_some() {
+        remote_files::read_bytes(workspace, path).await?
     } else {
         let full = workspace.resolve(path)?;
-        read_text(&full, path).await?
+        tokio::fs::read(&full)
+            .await
+            .map_err(|error| ToolError::Io(format!("{path}: {error}")))?
     };
+    let text = readable_text(bytes, path)?;
     let start = offset.unwrap_or(1).max(1) - 1;
     let lines: Vec<&str> = text
         .lines()
@@ -35,6 +38,33 @@ pub async fn read_file(
         out.push_str("[no lines in that range]");
     }
     Ok(out)
+}
+
+/// The text of a file's bytes for reading: UTF-8, or UTF-16 when it starts with a byte order
+/// mark (what PowerShell's `>` and many Windows tools write). Editing keeps to UTF-8, so a
+/// UTF-16 file is never rewritten in another encoding.
+fn readable_text(bytes: Vec<u8>, shown: &str) -> Result<String, ToolError> {
+    let utf16 = |rest: &[u8], big_endian: bool| {
+        let units: Vec<u16> = rest
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| {
+                if big_endian {
+                    u16::from_be_bytes(*pair)
+                } else {
+                    u16::from_le_bytes(*pair)
+                }
+            })
+            .collect();
+        String::from_utf16(&units).map_err(|_| ToolError::Invalid(format!("{shown} is not text")))
+    };
+    match bytes.as_slice() {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, false),
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, true),
+        _ => String::from_utf8(bytes)
+            .map_err(|_| ToolError::Invalid(format!("{shown} is not UTF-8 text"))),
+    }
 }
 
 pub async fn write_file(
@@ -134,6 +164,26 @@ async fn read_text(full: &Path, shown: &str) -> Result<String, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn utf16_files_with_a_byte_order_mark_are_read_as_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(
+            "one\r\ntwo \u{e9}\r\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        );
+        std::fs::write(dir.path().join("log.txt"), bytes).unwrap();
+        let read = read_file(&workspace, "log.txt", None, None).await.unwrap();
+        assert_eq!(read, "     1\tone\n     2\ttwo \u{e9}\n");
+        std::fs::write(dir.path().join("bin.dat"), [0xFFu8, 0x00, 0x80]).unwrap();
+        assert!(matches!(
+            read_file(&workspace, "bin.dat", None, None).await,
+            Err(ToolError::Invalid(_))
+        ));
+    }
 
     #[tokio::test]
     async fn write_read_edit_and_list_round_trip() {

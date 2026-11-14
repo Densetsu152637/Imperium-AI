@@ -879,12 +879,31 @@ fn spellings(path: &str) -> Vec<String> {
         written = rest;
     }
     let mut found = vec![written.to_string()];
-    if cfg!(windows)
-        && let Some(drive) = drive_path(written)
-    {
-        found.push(drive);
+    if cfg!(windows) {
+        found.extend(drive_path(written));
+        if let Some(tidy) = tidy_drive_path(written)
+            && !found.contains(&tidy)
+        {
+            found.push(tidy);
+        }
     }
     found
+}
+
+/// A Windows drive path written with stray separators or colons after the drive
+/// (`D:\://Git-Worktrees\x`, `D://x`, `D:\\x`) as the plain `D:/…` path it was meant to be;
+/// `None` when it is not a drive path or already plain. Small models write these often.
+fn tidy_drive_path(written: &str) -> Option<String> {
+    let mut chars = written.chars();
+    let letter = chars.next().filter(char::is_ascii_alphabetic)?;
+    let rest = chars.as_str().strip_prefix(':')?;
+    // `D:file` is relative to the drive's current folder, not a spelling of `D:/file`.
+    if !rest.starts_with(['\\', '/']) {
+        return None;
+    }
+    let tail = rest.trim_start_matches(['\\', '/', ':']);
+    let tidy = format!("{}:/{tail}", letter.to_ascii_uppercase());
+    (tidy != written).then_some(tidy)
 }
 
 /// A POSIX-style spelling of a Windows drive path (`/d/x`, `/mnt/d/x`, `/D:/x`) as `D:/x`.
@@ -917,6 +936,33 @@ pub fn plain(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drive_paths_with_stray_separators_are_tidied() {
+        for (written, tidy) in [
+            (r"D:\://Git-Worktrees\x", r"D:/Git-Worktrees\x"),
+            ("D://Git Repositories/a.txt", "D:/Git Repositories/a.txt"),
+            (r"d:\\Git\a.txt", r"D:/Git\a.txt"),
+        ] {
+            assert_eq!(tidy_drive_path(written).as_deref(), Some(tidy), "{written}");
+        }
+        for plain in ["D:/Git/a.txt", "D:file", "src/a.txt", "/d/x", "D:"] {
+            assert_eq!(tidy_drive_path(plain), None, "{plain}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_mangled_drive_path_still_resolves_inside_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let workspace = Workspace::new(dir.path()).unwrap();
+        let real = plain(&dir.path().canonicalize().unwrap());
+        let (drive, rest) = real.split_at(2);
+        let mangled = format!(r"{drive}\://{}/a.txt", rest.trim_start_matches('\\'));
+        let full = workspace.resolve(&mangled).unwrap();
+        assert_eq!(workspace.display(&full), "a.txt");
+    }
 
     #[test]
     fn paths_resolve_inside_and_are_refused_outside() {
