@@ -168,6 +168,9 @@ pub struct Settings {
     /// `[harness]`: aids for small models (see docs/03-agent-engine.md#harness-aids-for-small-models).
     #[serde(default)]
     pub harness: HarnessSettings,
+    /// `[attachments]`: describing images for models that cannot see them (see docs/07).
+    #[serde(default)]
+    pub attachments: AttachmentSettings,
     /// `[permissions]`: path grants and rules for every environment (see docs/05).
     #[serde(default)]
     pub permissions: crate::PermissionSettings,
@@ -510,6 +513,45 @@ impl Default for HarnessSettings {
             hints: HarnessMode::Auto,
             clarify: HarnessMode::Auto,
             clarify_below: 0.7,
+        }
+    }
+}
+
+/// `[attachments]`: what happens to an attached image (or a scanned PDF's pages) when the
+/// session's model cannot see images (see docs/07-desktop-ui.md#attachments-and-voice-input-implemented).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AttachmentSettings {
+    /// Describe images for a model without vision, with a vision-capable model, and give the
+    /// description to the model in place of the image.
+    pub describe: bool,
+    /// The model that describes them: a model table `id` or `<endpoint>:<model>` spec of a row
+    /// in the table, used as given: naming a hosted row sends the image to that provider even
+    /// when the session's model runs on this machine. Unset, a row tagged `vision` is picked by
+    /// the routing rules: on this machine when the session's model is local (an image never
+    /// leaves it unasked), and in a hosted session possibly another provider's.
+    pub describe_with: Option<String>,
+    /// Most tokens one description may take.
+    pub describe_max_tokens: u32,
+    /// Seconds one description may take, a local model's loading included. A message's
+    /// descriptions take twice this at most, and a model that timed out or failed is not asked
+    /// again for the message's other images.
+    pub describe_timeout_s: u64,
+    /// Most images described for one message; the rest are noted as not described.
+    pub describe_max_images: u32,
+    /// Most characters of descriptions one message may carry in all.
+    pub describe_max_chars: u32,
+}
+
+impl Default for AttachmentSettings {
+    fn default() -> Self {
+        AttachmentSettings {
+            describe: true,
+            describe_with: None,
+            describe_max_tokens: 400,
+            describe_timeout_s: 60,
+            describe_max_images: 8,
+            describe_max_chars: 6000,
         }
     }
 }

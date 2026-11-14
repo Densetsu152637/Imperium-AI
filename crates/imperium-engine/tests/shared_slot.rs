@@ -177,6 +177,7 @@ fn start(index: usize, local: Arc<dyn LocalModels>, dir: &std::path::Path) -> Se
         auto_compact: false,
         auto_compact_at: None,
         attended: true,
+        attachments: Default::default(),
         harness: imperium_config::HarnessSettings {
             dereference: imperium_config::HarnessMode::Off,
             state: imperium_config::HarnessMode::Off,

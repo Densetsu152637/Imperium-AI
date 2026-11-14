@@ -117,6 +117,7 @@ fn start(
         auto_compact: false,
         auto_compact_at,
         attended: true,
+        attachments: Default::default(),
         harness: Default::default(),
         background: None,
         checkpoints: None,

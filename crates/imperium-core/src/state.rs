@@ -2007,6 +2007,7 @@ impl DaemonState {
             auto_compact: options.auto_compact,
             auto_compact_at: Some(self.settings().context.auto_compact_at),
             harness: self.settings().harness.clone(),
+            attachments: self.settings().attachments.clone(),
             keep_agent_state: remember && self.settings().sessions.agent_state_keep,
         })
         .map_err(|error| CreateError::Start(error.to_string()))?;

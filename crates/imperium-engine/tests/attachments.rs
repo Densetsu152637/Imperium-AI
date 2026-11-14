@@ -108,6 +108,7 @@ async fn attachments_reach_the_model_and_the_journal() {
         auto_compact: false,
         auto_compact_at: None,
         attended: true,
+        attachments: Default::default(),
         harness: Default::default(),
         keep_agent_state: false,
         effort: Default::default(),
