@@ -59,9 +59,9 @@ return the position from before the message, so `wait_for_turn` with that `since
 the turn the message starts; a turn that was already ending when the message was sent is not
 mistaken for it. A steering message (`steer`) joins the running turn, so its cursor is that
 turn's start. The turn can end between the history read and the send; the message then starts a
-new turn instead of joining one, so check the session's status after a steering send. A wait that returns without the turn having ended (`timeout`,
-`permission_required`, `questions_asked`) gives the cursor to wait from again: the start of the
-turn it saw. Pass it as `since` and the wait finishes that turn. A finished turn's report
+new turn instead of joining one, so check the session's status after a steering send. A wait
+that returns without the turn having ended (`timeout`, `permission_required`,
+`questions_asked`) gives the cursor to wait from again: the start of the turn it saw. Pass it as `since` and the wait finishes that turn. A finished turn's report
 gives the position just after the event that ended the turn, the cursor for the wait on what
 follows (a queued message's turn that had already begun is still seen); every report also has
 `events`, the history's length. A permission request still open from before `since`, in the turn

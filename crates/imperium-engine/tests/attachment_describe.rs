@@ -642,6 +642,49 @@ async fn a_stop_while_describing_waits_and_is_not_charged_to_the_deadline() {
 }
 
 #[tokio::test]
+async fn a_stop_mid_call_retries_the_image_after_the_resume_and_a_notice_precedes_the_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let (main, main_log) = fake("seen").await;
+    // The describer answers after 1.5 s, so the stop lands while the call is in flight.
+    let (eyes, eyes_log) = fake_after("a description", Duration::from_millis(1500)).await;
+    let session = start(
+        dir.path(),
+        &main,
+        vec![row("eyes", "cloud:eyes", &eyes, &["vision"])],
+        AttachmentSettings {
+            describe_timeout_s: 10,
+            ..Default::default()
+        },
+    );
+    let mut events = session.subscribe();
+    let stop_then_resume = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        session.stop();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        session.resume_work();
+    };
+    let attached = vec![image(dir.path(), "one.png", 1)];
+    let (notices, _) = tokio::join!(turn(&session, &mut events, attached), stop_then_resume);
+    assert_eq!(
+        eyes_log.lock().unwrap().len(),
+        2,
+        "the stopped call was asked again once"
+    );
+    let (text, _) = last_user(&main_log);
+    assert!(text.contains("a description"), "{text}");
+    assert!(!text.contains("the session was stopped"), "{text}");
+    let first = notices
+        .iter()
+        .position(|notice| notice.contains("describing 1 image\u{2026}"))
+        .expect("a describing notice");
+    let done = notices
+        .iter()
+        .position(|notice| notice.contains("described by cloud:eyes"))
+        .expect("a described notice");
+    assert!(first < done, "{notices:?}");
+}
+
+#[tokio::test]
 async fn a_refused_image_does_not_make_the_model_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let (main, main_log) = fake("seen").await;

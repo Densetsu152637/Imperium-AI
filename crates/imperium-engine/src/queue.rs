@@ -16,6 +16,7 @@ use imperium_protocol::session::{AgentEvent, Attachment, QueuedMessage, ROOT_AGE
 
 use tokio::sync::watch;
 
+use crate::breakdown::PART_SEPARATOR;
 use crate::session::{Emitter, lock};
 
 /// Why a message could not be queued, edited, or removed.
@@ -338,8 +339,24 @@ fn id_number(id: &str) -> u64 {
 /// it was working and the turn goes on.
 pub(crate) fn steering_text(text: &str) -> String {
     format!(
-        "<steering>\nA message sent while you were working on this turn. Take it into account \
-         and carry on from where you are; nothing was cancelled.\n\n{text}\n</steering>"
+        "{STEERING_OPEN}
+A message sent while you were working on this turn. Take it into account          and carry on from where you are; nothing was cancelled.
+
+{text}
+</steering>"
+    )
+}
+
+const STEERING_OPEN: &str = "<steering>";
+
+/// Whether `message` is a steering message added mid-turn (see [`steering_text`]); attachment
+/// text may come before the wrapper.
+pub(crate) fn is_steering_message(message: &imperium_models::ChatMessage) -> bool {
+    matches!(
+        message,
+        imperium_models::ChatMessage::User { content, .. }
+            if content.starts_with(STEERING_OPEN)
+                || content.contains(&format!("{PART_SEPARATOR}{STEERING_OPEN}"))
     )
 }
 

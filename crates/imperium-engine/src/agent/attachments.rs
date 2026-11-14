@@ -17,6 +17,8 @@ const MAX_CACHED: usize = 64;
 /// Tokens the prompt of a describing call is counted as for each image, for a local model's
 /// reservation (the image's own size is not known here).
 const TOKENS_PER_IMAGE: u64 = 1500;
+/// The reason of a description cut short by a stop.
+const STOPPED: &str = "the session was stopped";
 
 const DESCRIBE_SYSTEM: &str = "You describe images for a reader who cannot see them. State what \
 the image shows, then transcribe any visible text exactly (keep a table's rows and columns). \
@@ -36,23 +38,24 @@ impl Agent {
         let unseen = owned
             .iter()
             .any(|a| !a.vision && matches!(a.kind, AttachmentKind::Image | AttachmentKind::Pdf));
-        let descriptions = if unseen {
+        let (descriptions, reads) = if unseen {
             self.describe_unseen(&owned).await
         } else {
-            Descriptions::new()
+            Default::default()
         };
-        tokio::task::spawn_blocking(move || media::render_with(&owned, &descriptions))
+        tokio::task::spawn_blocking(move || media::render_reusing(&owned, &descriptions, &reads))
             .await
             .unwrap_or_default()
     }
 
     /// Describes the images in `attachments` that this agent's model cannot see. An image that
     /// is not described gets the reason as its entry, and the user a notice.
-    async fn describe_unseen(&self, attachments: &[Attachment]) -> Descriptions {
+    async fn describe_unseen(&self, attachments: &[Attachment]) -> (Descriptions, media::PdfReads) {
         let owned = attachments.to_vec();
-        let (pending, failed) = tokio::task::spawn_blocking(move || media::undescribed(&owned))
-            .await
-            .unwrap_or_default();
+        let (pending, failed, reads) =
+            tokio::task::spawn_blocking(move || media::undescribed_reading(&owned))
+                .await
+                .unwrap_or_default();
         let mut found = Descriptions::new();
         let mut unseen: Vec<String> = Vec::new();
         for one in failed {
@@ -72,7 +75,7 @@ impl Agent {
                 ),
             });
         }
-        found
+        (found, reads)
     }
 
     async fn describe_all(
@@ -108,6 +111,13 @@ impl Agent {
         );
         let mut deadline = Instant::now() + per_call * 2;
         let mut unavailable = false;
+        let images: usize = pending.iter().map(|one| one.images.len()).sum();
+        self.emit(SessionEvent::Notice {
+            message: format!(
+                "describing {images} image{}\u{2026}",
+                if images == 1 { "" } else { "s" }
+            ),
+        });
         for one in pending {
             // A stopped session waits here, holding nothing (a call takes its own slot, and
             // the turn keeps the presence it already has), and the time it waited is not
@@ -143,7 +153,15 @@ impl Agent {
                 None => {
                     attempts += one.images.len();
                     let left = deadline.saturating_duration_since(Instant::now());
-                    self.describe_one(&model, &one, per_call.min(left)).await
+                    let mut outcome = self.describe_one(&model, &one, per_call.min(left)).await;
+                    // A stop that landed mid-call took this image's call with it: wait it out
+                    // and ask once more, so the image is not left unseen for a pause.
+                    if matches!(&outcome, Err(failure) if failure.reason == STOPPED) {
+                        deadline += self.wait_out_stop().await;
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        outcome = self.describe_one(&model, &one, per_call.min(left)).await;
+                    }
+                    outcome
                 }
             };
             match outcome {
@@ -343,7 +361,7 @@ impl Agent {
         let completion = tokio::select! {
             biased;
             Ok(_) = stop.wait_for(|stopped| *stopped) => {
-                return Err(Failure::soft("the session was stopped"));
+                return Err(Failure::soft(STOPPED));
             }
             result = tokio::time::timeout(limit, call) => match result {
                 Ok(Ok(completion)) => completion,

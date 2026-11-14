@@ -1246,8 +1246,12 @@ no text layer) is described by a model that has, and the model reads the descrip
   the message's other images ("describing model unavailable"); at most
   `attachments.describe_max_images` images (attempts count, failed or not) and
   `attachments.describe_max_chars` characters of description per message, later ones noted as
-  not described. While the session is stopped, describing waits for it to go on. The call counts toward budgets and the usage log as any model call, and a model
-  whose budget does not allow it is not called.
+  not described. While the session is stopped, describing waits for it to go on, and a call
+  the stop cut short is asked once more after the resume instead of leaving the image unseen.
+  A notice ("describing N images…") says so before the first call. A scanned PDF is parsed
+  once for the whole message: the text read to decide whether it needs describing is the text
+  the model is given. The call counts toward budgets and the usage log as any model call, and a
+  model whose budget does not allow it is not called.
 - **Cache.** A description is kept for the session by the SHA-256 of the file and the describing
   model, so the same file attached again, or in a later message, is not described again. A
   resumed session keeps the descriptions in its saved conversation; the cache itself is not

@@ -417,7 +417,19 @@ async fn a_benchmark_measures_the_stream_through_the_normal_launch_path_and_save
     assert_eq!(loaded[0].slots_in_use, 0);
     let mut load_announced = false;
     let mut progress = Vec::new();
-    while let Ok(notification) = announced.try_recv() {
+    // Announcements may trail the run's end a little: read until the final one arrives (or
+    // none comes for five seconds), not just what is already queued.
+    loop {
+        let next = if progress.last().is_some_and(|run| run["state"] == "done") {
+            announced.try_recv().ok()
+        } else {
+            match tokio::time::timeout(Duration::from_secs(5), announced.recv()).await {
+                Ok(Ok(notification)) => Some(notification),
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                _ => None,
+            }
+        };
+        let Some(notification) = next else { break };
         match notification.method.as_str() {
             "model.residency" => {
                 load_announced |= notification.params["action"] == "load"
@@ -591,9 +603,12 @@ async fn a_server_without_usage_claims_no_prompt_speed() {
         assert_eq!(prompt["prompt_tokens_estimated"], true, "{prompt}");
         // The streamed chunks stand in for the reply tokens.
         assert_eq!(prompt["completion_tokens"], TOKENS);
-        range(&prompt["gen_tok_s"], 5.6, 6.7);
+        // At most the schedule's 4 tokens in 0.6 s (sleeps only run long); the floor is loose
+        // because a slow or busy machine (a macOS CI runner) stretches every sleep, and this
+        // test is about the missing usage, not the speed (the stream test pins the formula).
+        range(&prompt["gen_tok_s"], 2.0, 6.7);
     }
-    range(&result["gen_tok_s"], 5.6, 6.7);
+    range(&result["gen_tok_s"], 2.0, 6.7);
 }
 
 #[tokio::test]
