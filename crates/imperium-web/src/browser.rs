@@ -810,7 +810,7 @@ impl Browser {
         let fresh = self.collect_downloads().await;
         // Pages may have opened tabs since the last look.
         let _ = self.sync_tabs().await;
-        let mut lines: Vec<String> = self.opened_by_pages.drain(..).collect();
+        let mut lines = std::mem::take(&mut self.opened_by_pages);
         for download in &fresh {
             lines.push(format!(
                 "the page tried to download a file and the browser refused it: {} (suggested name {:?}); \

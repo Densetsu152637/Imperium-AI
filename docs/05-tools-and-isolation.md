@@ -115,7 +115,7 @@ none); a remote or read-only session offers no `browser_download`. Limits and ha
 `web.download_max_mb` (25; `0` turns downloads off), checked against the announced length and
 again while receiving (a partial file is deleted); the file name is made safe (folders, special
 characters, hidden-file dots and Windows reserved names removed, at most 100 characters, a name
-that is taken gets ` (2)`, never overwritten); a file a person could run by opening it (`.exe`,
+that is taken gets a number, as in `report (2).pdf`, and nothing is overwritten); a file a person could run by opening it (`.exe`,
 `.sh`, `.ps1`, `.py` and the like) is saved with `.download` added; a `text/html` answer for a
 file name is flagged (an error or login page); files the safety floor protects (secrets, anything
 under `.git`) are refused; `blob:` and `data:` downloads, which the browser keeps no fetchable copy
