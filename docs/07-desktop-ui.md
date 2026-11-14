@@ -1388,6 +1388,22 @@ model's tokenizer*; *Calibrated to the provider's count*; *Estimated; the provid
 usage*) and the prompt tokens served from cache. A negative template overhead is listed but not
 drawn. Session totals and recent outputs follow.
 
+## House models on first run (implemented)
+
+While the user has no model at all (no configured hosted endpoint, no local model found in the
+model folders, no default), the new-session view shows a card above the model setup suggesting
+Emperor (the root agent and planner, on a base of about 4B) and Consul (its critic and reviewer,
+which checks Emperor's plans and delegated work and can reject them, on a base of about 9B),
+Imperium's own fine-tuned open-weight models, each with a role blurb and an approximate size
+(placeholders until the models are published). The catalogue is `apps/desktop/src/houseModels.ts`; an entry with no download
+source (both, today) reads *not yet available — still in training* and has no button. An entry
+with a Hugging Face source gets a *Download* button that runs the same `models.hf_files` and
+`models.download` calls as the Local models panel's form. The × dismisses the card for good (the
+`houseModelsDismissed` setting), and it never shows once any model is present. Not built, until
+the models are fully trained: a hardware-based pick of size and quantisation, progress and resume
+on the card, checksum verification, and making the model the default after the download
+([12](12-roadmap.md), item 44).
+
 ## Model configuration dialog (implemented)
 
 A modal edits model settings. It uses the Settings window's shell (`SettingsModal`: the same
