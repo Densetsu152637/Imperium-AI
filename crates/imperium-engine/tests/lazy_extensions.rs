@@ -142,6 +142,7 @@ fn start(
         config_dir: config.to_path_buf(),
         project_dir: project.to_path_buf(),
         plugin_dirs: Vec::new(),
+        user_plugin_dirs: Vec::new(),
         disabled_plugins: Vec::new(),
         hooks: Vec::new(),
         server_timeout: Duration::from_secs(5),

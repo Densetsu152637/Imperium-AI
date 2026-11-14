@@ -262,6 +262,67 @@ pub fn decide_call(
     }
 }
 
+/// Folders the daemon asks the floor to guard, as normalised text (see [`protect_dir`]).
+static PROTECTED_DIRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn normalise_dir(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    let path = path.strip_prefix("//?/").unwrap_or(&path);
+    let path = path.trim_end_matches('/');
+    if cfg!(any(windows, target_os = "macos")) {
+        path.to_lowercase()
+    } else {
+        path.to_string()
+    }
+}
+
+/// Makes writing under `dir` something the safety floor always asks about, like a `.git`
+/// folder: the daemon uses it for the user's installed mods, whose files are what an approval
+/// vouches for. A process-wide list (every daemon in the process adds its own folders).
+///
+/// Both the path as given and the one it resolves to (its nearest existing ancestor made
+/// canonical, the rest appended, as the file tools resolve a path) are guarded, so a folder
+/// reached through a symbolic link, a junction, an 8.3 name or a redirected config folder is
+/// still covered.
+pub fn protect_dir(dir: &std::path::Path) {
+    let mut forms = vec![normalise_dir(&dir.to_string_lossy())];
+    if let Some(resolved) = resolved_form(dir) {
+        forms.push(normalise_dir(&resolved.to_string_lossy()));
+    }
+    let mut dirs = PROTECTED_DIRS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    for form in forms {
+        if !form.is_empty() && !dirs.contains(&form) {
+            dirs.push(form);
+        }
+    }
+}
+
+/// `path` with its nearest existing ancestor canonicalised and the missing rest appended.
+fn resolved_form(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut existing = path;
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        missing.push(existing.file_name()?.to_owned());
+        existing = existing.parent()?;
+    }
+    let mut resolved = existing.canonicalize().ok()?;
+    for name in missing.into_iter().rev() {
+        resolved.push(name);
+    }
+    Some(resolved)
+}
+
+fn in_protected_dir(absolute: &str) -> bool {
+    let path = normalise_dir(absolute);
+    PROTECTED_DIRS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|dir| path == *dir || path.starts_with(&format!("{dir}/")))
+}
+
 /// Built-in ask rules for writing files that hold secrets.
 const FLOOR_PATHS: &[&str] = &[
     ".env",
@@ -298,6 +359,7 @@ pub fn safety_floor(kind: CallKind, target: &Target) -> bool {
                 }
             });
             in_git
+                || in_protected_dir(absolute)
                 || FLOOR_PATHS.iter().any(|pattern| {
                     path_matches(pattern, absolute, None)
                         || (fold && path_matches(pattern, &absolute.to_lowercase(), None))
@@ -1221,5 +1283,67 @@ mod tests {
         assert!(validate_grant(&grant(r"C:\Users\me\.cargo")).is_ok());
         assert!(validate_grant(&grant("relative/path")).is_err());
         assert!(validate_grant(&grant("~/.cache/*")).is_err());
+    }
+
+    #[test]
+    fn the_floor_guards_a_folder_the_daemon_protects() {
+        protect_dir(std::path::Path::new("/floor-test-config/mods"));
+        let path = |absolute: &str| Target::Path {
+            absolute: absolute.to_string(),
+            relative: None,
+        };
+        for inside in [
+            "/floor-test-config/mods",
+            "/floor-test-config/mods/demo/index.js",
+            "/floor-test-config/mods/demo/../demo/mod.json",
+        ] {
+            assert!(safety_floor(CallKind::Edit, &path(inside)), "{inside}");
+        }
+        for outside in [
+            "/floor-test-config/modsy/x.js",
+            "/floor-test-config/plugins/x.js",
+            "/elsewhere/floor-test-config/mods/x.js",
+        ] {
+            assert!(!safety_floor(CallKind::Edit, &path(outside)), "{outside}");
+        }
+        // Reading is never covered.
+        assert!(!safety_floor(
+            CallKind::Read,
+            &path("/floor-test-config/mods/demo/index.js")
+        ));
+    }
+
+    #[test]
+    fn a_protected_folder_is_guarded_by_its_resolved_path_too() {
+        let base = tempfile::tempdir().unwrap();
+        let real = base.path().join("real-config");
+        std::fs::create_dir_all(real.join("mods")).unwrap();
+        // A folder that does not exist yet is resolved through its existing ancestor.
+        protect_dir(&base.path().join("not-yet").join("mods"));
+        let path = |absolute: &std::path::Path| Target::Path {
+            absolute: absolute.to_string_lossy().replace('\\', "/"),
+            relative: None,
+        };
+        let canonical = base.path().canonicalize().unwrap();
+        assert!(safety_floor(
+            CallKind::Edit,
+            &path(&canonical.join("not-yet/mods/x.js"))
+        ));
+        // Reached through a link, the real folder is still the one that is guarded.
+        #[cfg(unix)]
+        {
+            let link = base.path().join("link-config");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            protect_dir(&link.join("mods"));
+            assert!(safety_floor(
+                CallKind::Edit,
+                &path(&real.canonicalize().unwrap().join("mods/x.js"))
+            ));
+            assert!(safety_floor(CallKind::Edit, &path(&link.join("mods/x.js"))));
+        }
+        assert!(!safety_floor(
+            CallKind::Edit,
+            &path(&canonical.join("elsewhere/x.js"))
+        ));
     }
 }

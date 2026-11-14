@@ -1178,6 +1178,7 @@ async fn session_bound_tools_and_hooks_follow_the_writers_own_worktree() {
         config_dir: config.path().to_path_buf(),
         project_dir: repo.path().to_path_buf(),
         plugin_dirs: Vec::new(),
+        user_plugin_dirs: Vec::new(),
         disabled_plugins: Vec::new(),
         hooks: vec![imperium_extensions::ConfiguredHook {
             event: "PostToolUse".into(),

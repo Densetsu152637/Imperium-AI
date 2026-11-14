@@ -72,6 +72,10 @@ pub fn install(
             println!("Nothing was installed.");
             return Ok(());
         }
+        // Running outside the sandbox is a separate answer, typed at a terminal; `--yes` never
+        // gives it.
+        let trusted =
+            preview.main_context && answer == Answer::Prompted && confirm_trust(&preview)?;
         let done = client
             .call::<ModInstall>(ModInstallParams {
                 source,
@@ -81,8 +85,12 @@ pub fn install(
                 permissions: preview.permissions.clone(),
                 replace: false,
                 interactive: answer == Answer::Prompted,
+                trusted,
             })
             .await?;
+        if preview.main_context && !trusted {
+            println!("It asked to run in the app's own window; it runs in the sandbox instead.");
+        }
         println!(
             "Installed {} {} into {}.{}",
             done.id,
@@ -155,6 +163,12 @@ pub fn update(id: String, sha256: Option<String>, yes: bool) -> anyhow::Result<(
             }
             interactive = answer == Answer::Prompted;
         }
+        // Trust was for the content the user confirmed: new content asks again.
+        let was_trusted = preview.installed.as_ref().is_some_and(|i| i.trusted);
+        let trusted = was_trusted && preview.main_context && confirm_trust(&preview)?;
+        if was_trusted && !trusted {
+            println!("The updated mod runs in the sandbox, not in the app's own window.");
+        }
         let done = client
             .call::<ModInstall>(ModInstallParams {
                 source: from.location.clone(),
@@ -164,6 +178,7 @@ pub fn update(id: String, sha256: Option<String>, yes: bool) -> anyhow::Result<(
                 permissions: preview.permissions.clone(),
                 replace: true,
                 interactive,
+                trusted,
             })
             .await?;
         println!(
@@ -201,6 +216,43 @@ fn check_pin(preview: &ModPreview, pin: &str) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// The warning shown before a mod may run in the app's own window, in plain words, with the
+/// content hash the confirmation is for.
+fn trust_warning(preview: &ModPreview) -> String {
+    format!(
+        "{name} ({id}) asks to run INSIDE the app's own window, not in a sandbox. There it can \
+         read and change everything the app can: your sessions and settings, and the connection \
+         to the daemon (and so the daemon's token), and act as you. Trust it only if you have \
+         read its code.\n  This confirmation is for exactly this content: sha256:{hash}\n  \
+         A new version asks again. You can turn it off for this mod in Settings → Mods.\n",
+        name = preview.name,
+        id = preview.id,
+        hash = preview.sha256
+    )
+}
+
+/// Asks the user to type `trust <id>`. Without a terminal, or with any other answer, the mod
+/// stays in its sandbox.
+fn confirm_trust(preview: &ModPreview) -> anyhow::Result<bool> {
+    if !std::io::stdin().is_terminal() {
+        println!(
+            "{} asks to run in the app's own window; that needs your answer at a terminal, so \
+             it stays in the sandbox.",
+            preview.id
+        );
+        return Ok(false);
+    }
+    print!("{}", trust_warning(preview));
+    print!(
+        "Type `trust {}` to allow it, or press Enter to keep it sandboxed: ",
+        preview.id
+    );
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(answer.trim() == format!("trust {}", preview.id))
 }
 
 /// How the user answered.
@@ -249,6 +301,9 @@ fn render(preview: &ModPreview) -> String {
         ));
     }
     text.push_str(&format!("\n  content sha256:{}\n", preview.sha256));
+    if preview.main_context {
+        text.push_str("  It asks to run in the app's own window (it runs in a sandbox unless you trust it).\n");
+    }
     match &preview.installed {
         Some(installed) => text.push_str(&format!(
             "Update from {} (installed). Requested permissions, against what you approved:\n",
@@ -308,6 +363,7 @@ mod tests {
             version: "1.1.0".into(),
             permissions: vec!["storage".into(), "sessions:read".into()],
             panels: Vec::new(),
+            main_context: false,
             sha256: "ab".repeat(32),
             location: "https://example.com/demo.git".into(),
             revision: Some("0123456789abcdef".into()),
@@ -341,6 +397,7 @@ mod tests {
                 version: "1.0.0".into(),
                 permissions: vec!["storage".into(), "pets:read".into()],
                 sha256: None,
+                trusted: false,
             }),
             added_permissions: vec!["sessions:read".into()],
             removed_permissions: vec!["pets:read".into()],
@@ -369,6 +426,7 @@ mod tests {
                 version: "1.0.0".into(),
                 permissions: vec!["storage".into(), "sessions:read".into()],
                 sha256: Some("cd".repeat(32)),
+                trusted: false,
             }),
             added_permissions: Vec::new(),
             removed_permissions: Vec::new(),
@@ -383,6 +441,21 @@ mod tests {
             text.contains("the permissions are the same as before"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn trusting_a_mod_is_a_plain_and_specific_warning() {
+        let ask = ModPreview {
+            main_context: true,
+            ..preview()
+        };
+        let warning = trust_warning(&ask);
+        assert!(warning.contains("INSIDE the app's own window"), "{warning}");
+        assert!(warning.contains("not in a sandbox"), "{warning}");
+        assert!(warning.contains("sha256:abab"), "{warning}");
+        assert!(warning.contains("asks again"), "{warning}");
+        assert!(render(&ask).contains("asks to run in the app's own window"));
+        assert!(!render(&preview()).contains("own window"));
     }
 
     #[test]

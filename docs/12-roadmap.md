@@ -333,10 +333,19 @@ and `environments.agent_update` (protocol 0.28)
     redirects; secrets only from the keychain), and `imperium mods install|update` from a git
     URL or a folder with a permission prompt, a content hash that must match what was approved,
     and a permission diff on update ([06](06-extensibility.md#hooks),
-    [06](06-extensibility.md#installing-and-updating-mods-implemented)). *Not built:* hooks
-    that rewrite calls and trusted main-context mods (both widen trust; a design is proposed in
-    [06](06-extensibility.md#later-stages-rewriting-hooks-and-trusted-mods)), more mod
-    contribution points, and the desktop's own install dialog.
+    [06](06-extensibility.md#installing-and-updating-mods-implemented)).
+    *Second stage (implemented):* hooks that rewrite a tool call (`tool.before`) or the prompt
+    (`prompt.submit`), with the rewritten call run through every check again and both versions
+    shown ([06](06-extensibility.md#rewriting-hooks-implemented)); and the trust half of
+    trusted main-context mods: a manifest's `main_context`, a typed confirmation at a terminal
+    bound to the content hash, and `trusted` on `mods.list`
+    ([06](06-extensibility.md#trusted-main-context-mods-trust-implemented-loader-not-built)).
+    *Still not built:* the desktop loader that runs a trusted mod in the app's own window (it
+    needs the app's content security policy changed and can only be checked in a running app, and
+    it must not ship before a daemon-side check of the trust grant, the peer's process or a
+    prompt the daemon itself puts to the user: today the CLI's terminal check holds only against
+    an agent that cannot reach the daemon's token or socket),
+    more mod contribution points, and the desktop's own install dialog.
 31. **Policy packs and MCP.** Fetching pack updates shown as a diff to accept, a policy crate
     that layers packs into the prompt; MCP resources, prompts, sampling, and OAuth for remote
     servers; and an MCP server bridge exposing Imperium itself
