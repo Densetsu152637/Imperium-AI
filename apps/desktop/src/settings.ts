@@ -8,6 +8,7 @@ import { createContext, useContext } from "react";
 import { toggleMark, type ModelMark, type ModelMarks } from "./modelPrefs";
 import { rememberTheme } from "./boot";
 import { getDoc, setDoc, takeLegacy } from "./store";
+import { migrateTour, type TourState } from "./tourSteps";
 import type { PttKey } from "./voice";
 
 export type Density = "compact" | "comfortable" | "spacious";
@@ -72,6 +73,8 @@ export type AppSettings = {
   enabledMods: Record<string, boolean>;
   // Models: favourites and hidden ones, by spec (modelPrefs.ts).
   modelMarks: ModelMarks;
+  // The first-run tour: how it last ended, null until it has run (tourSteps.ts).
+  tour: TourState;
 };
 
 /** The settings each display control used to be called. */
@@ -109,6 +112,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   checkUpdatesAtLogin: false,
   enabledMods: {},
   modelMarks: {},
+  tour: null,
 };
 
 /** The saved document: the settings plus a version for future migrations. */
@@ -120,8 +124,18 @@ export function loadSettings(): AppSettings {
   let saved = getDoc<Saved>("settings");
   if (!saved) {
     // Before version 1 only the display settings existed, in local storage.
-    saved = takeLegacy<Saved>("imperium.display") ?? {};
+    const legacy = takeLegacy<Saved>("imperium.display");
+    // A new install has not seen the tour (an explicit null, so a later load does not take it
+    // for an older install); display settings from before version 1 mean an existing one.
+    saved = { ...(legacy ?? {}), tour: legacy ? migrateTour({}) : null };
     setDoc("settings", { ...saved, version: VERSION });
+  } else {
+    // A document from before the tour existed: its user is not new.
+    const tour = migrateTour(saved);
+    if (tour) {
+      saved = { ...saved, tour };
+      setDoc("settings", { ...saved, version: VERSION });
+    }
   }
   return { ...DEFAULT_SETTINGS, ...saved };
 }

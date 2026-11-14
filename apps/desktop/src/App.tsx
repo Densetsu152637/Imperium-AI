@@ -118,6 +118,8 @@ import { PANELS_ICON, SETTINGS_SECTIONS, SettingsWindow, type LayoutNotice } fro
 import { appCommands } from "./commands/appCommands";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
 import { splashDone } from "./boot";
+import { Tour } from "./Tour";
+import { autoStartReady, recordOutcome, shouldAutoStart, type TourOutcome } from "./tourSteps";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
 import { ConnectorsWindow } from "./ConnectorsWindow";
 import { EnvironmentWindow } from "./EnvironmentWindow";
@@ -128,6 +130,9 @@ import { setModelAliases } from "./modelNames";
 import { applyResidency, type Residency } from "./waits";
 import { hiddenSpecs } from "./modelPrefs";
 import { UpdateControl, useUpdates } from "./UpdateControl";
+
+/** How long the tour waits for the composer to appear before starting without it. */
+const TOUR_COMPOSER_WAIT_MS = 8000;
 
 type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
 
@@ -229,6 +234,10 @@ export function App() {
   // Panels whose windows this session has opened, so each opens once.
   const opened = useRef(new Set<string>());
   const [showSettings, setShowSettings] = useState(false);
+  /** The first-run tour is showing. */
+  const [touring, setTouring] = useState(false);
+  /** The tour started by itself (not asked for), so it steps aside for a pending approval. */
+  const [tourAuto, setTourAuto] = useState(false);
   /** The Settings section the command palette asked for. */
   const [settingsRequest, setSettingsRequest] = useState<{ section: string } | null>(null);
   const [modelDialog, setModelDialog] = useState<ModelDialogTarget | null>(null);
@@ -1023,6 +1032,50 @@ export function App() {
     setSettings(next);
     saveSettings(next);
   };
+  /** Starts the tour from its first step, closing the windows over the workspace first. */
+  const startTour = () => {
+    setShowSettings(false);
+    setShowConnectors(false);
+    setTourAuto(false);
+    setTouring(true);
+  };
+  const endTour = (outcome: TourOutcome) => {
+    setTouring(false);
+    changeSettings((current) => recordOutcome(current, outcome));
+  };
+  // A first run: the tour starts by itself, in the main window only, once connected and the
+  // interface is up (the composer showing, or after a few seconds any panel) with no dialog open.
+  const connectedNow = !!client;
+  // An approval waiting is never held up by the tour: it steps aside until none is pending
+  // (and does not start while one is), then carries on where it was.
+  const approvalsWaiting = approvals.length > 0;
+  const approvalsWaitingRef = useRef(approvalsWaiting);
+  approvalsWaitingRef.current = approvalsWaiting;
+  const tourPending = shouldAutoStart(settings) && !touring;
+  useEffect(() => {
+    if (isDetached || !tourPending || !connectedNow) return;
+    const since = Date.now();
+    const timer = window.setInterval(() => {
+      const composer = !!document.querySelector("form.composer");
+      const anyPanel = !!document.querySelector("[data-panel]");
+      const ready = autoStartReady(
+        { tour: null },
+        {
+          mainWindow: true,
+          connected: true,
+          uiReady: composer || (anyPanel && Date.now() - since > TOUR_COMPOSER_WAIT_MS),
+          modalOpen: approvalsWaitingRef.current || !!document.querySelector('[aria-modal="true"], dialog[open], [role="alertdialog"]'),
+        },
+      );
+      if (ready) {
+        window.clearInterval(timer);
+        setTourAuto(true);
+        setTouring(true);
+      }
+    }, 500);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourPending, connectedNow]);
   // For panels that change a setting of their own (model favourites and hidden models).
   const changeSettings: ChangeSettings = (change) =>
     setSettings((current) => {
@@ -1405,6 +1458,7 @@ export function App() {
       dockPanel: dock,
       toggleTheme: () => updateSettings({ ...settings, theme: resolvedTheme(settings.theme) === "dark" ? "light" : "dark" }),
       checkUpdates: () => updates?.check(),
+      startTour,
     });
   });
 
@@ -1535,6 +1589,7 @@ export function App() {
           className={`ghost titlebar-button icon-only layout-toggle${editingLayout ? " active" : ""}`}
           onClick={() => setEditingLayout((editing) => !editing)}
           aria-pressed={editingLayout}
+          data-tour="layout"
           aria-label="Edit layout"
           title={editingLayout ? "Done editing the layout (Esc)" : "Edit layout"}
         >
@@ -1544,6 +1599,7 @@ export function App() {
           className="ghost titlebar-button icon-only"
           onClick={() => setShowSettings((open) => !open)}
           aria-expanded={showSettings}
+          data-tour="settings"
           aria-label="Settings"
           title="Settings (Ctrl+,)"
         >
@@ -1572,6 +1628,7 @@ export function App() {
             setShowSettings(false);
             setModelDialog({ tab: "local" });
           }}
+          onStartTour={startTour}
           onModelsChanged={refreshModels}
           onResetLayout={() => {
             // The layout that applies here goes back to the default: the global one, or this environment's own.
@@ -1600,6 +1657,7 @@ export function App() {
         />
       )}
       <CommandPalette detached={false} />
+      {touring && <Tour hold={approvalsWaiting && tourAuto}onEnd={endTour} />}
       {modelDialog && (
         <ModelConfigDialog client={client} target={modelDialog} onClose={() => setModelDialog(null)} onSaved={refreshModels} />
       )}
