@@ -14,6 +14,7 @@ use imperium_models::Endpoint;
 use imperium_protocol::clarification::{ClarificationCase, Observed, Verdict, score};
 use imperium_protocol::session::{AgentEvent, SessionEvent};
 use imperium_tools::Workspace;
+use imperium_workflow::ContextIndex;
 use tokio::sync::broadcast;
 
 fn text_body(text: &str) -> String {
@@ -120,6 +121,8 @@ struct Options {
     attended: bool,
     gate: Option<Arc<dyn BudgetGate>>,
     resume: bool,
+    /// Workflow context, so instruction files are loaded as they are met.
+    workflow: bool,
 }
 
 impl Options {
@@ -129,6 +132,7 @@ impl Options {
             attended: true,
             gate: None,
             resume: false,
+            workflow: false,
         }
     }
 }
@@ -159,7 +163,9 @@ fn start_with(endpoint: Endpoint, dir: &std::path::Path, options: Options) -> Se
         notices: Vec::new(),
         extensions: Default::default(),
         memory: None,
-        context: None,
+        context: options
+            .workflow
+            .then(|| Arc::new(ContextIndex::new(Vec::new(), dir))),
         enforce: imperium_config::Enforce::Warn,
         pre_approved: Vec::new(),
         launcher: None,
@@ -698,15 +704,18 @@ async fn the_root_prompt_tells_it_when_to_ask_and_how_far_to_trust_the_notes() {
 async fn update_state_leaves_an_instruction_file_message_alone() {
     let seen = Arc::new(Seen::default());
     let script = vec![
-        r#"call:read_file:{"path":"a.txt"}"#.to_string(),
+        r#"call:read_file:{"path":"pkg/a.txt"}"#.to_string(),
         r#"call:update_state:{"goals":["read a.txt"]}"#.to_string(),
         "Done.".to_string(),
     ];
     let endpoint = endpoint(script, Rewrite::Reply("{}".into()), Arc::clone(&seen)).await;
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("AGENTS.md"), "Be careful.").unwrap();
-    std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
-    let session = start(endpoint, dir.path(), all_on());
+    std::fs::create_dir_all(dir.path().join("pkg")).unwrap();
+    std::fs::write(dir.path().join("pkg/AGENTS.md"), "Be careful.").unwrap();
+    std::fs::write(dir.path().join("pkg/a.txt"), "hello").unwrap();
+    let mut options = Options::new(all_on());
+    options.workflow = true;
+    let session = start_with(endpoint, dir.path(), options);
     let mut events = session.subscribe();
     turn(&session, &mut events, "read a.txt and note it").await;
 
