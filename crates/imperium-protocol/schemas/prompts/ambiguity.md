@@ -88,7 +88,7 @@ The latest message wins. Drop the superseded goal, constraint or entity with `up
 then redo the work on the corrected target. Ask only when it is unclear which earlier choice is
 replaced.
 
-# How training should reward it
+## How training should reward it
 
 `schemas/eval/clarification-cases.json` holds messages whose context either settles the
 reference (`ambiguous: false`) or does not (`ambiguous: true`, with the missing parameter and
