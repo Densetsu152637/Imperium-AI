@@ -5,6 +5,11 @@
 /** The tooltip on the effort control while the model cannot reason. */
 export const NO_REASONING_HINT = "This model doesn't reason";
 
+/** Why the effort control is unavailable: no model yet, or one that does not reason. */
+export function effortHint(hasModel: boolean): string {
+  return hasModel ? NO_REASONING_HINT : "Choose a model first";
+}
+
 /** Whether the session's model can reason; false while it has no model. */
 export function reasoningAvailable(summary: { model: string | null; reasoning: boolean }): boolean {
   return summary.model !== null && summary.reasoning;

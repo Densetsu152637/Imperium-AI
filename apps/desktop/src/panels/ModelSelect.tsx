@@ -3,13 +3,13 @@
 // switch an open session's model and by the new-session composer to pick the first one.
 
 import { X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import type { LocalModelRow, ModelRow, RuntimeInfo, SessionControlResult } from "@imperium/protocol";
 
 import { Select, type SelectOption } from "../components/Select";
 import { chooserModels, type ModelGroup, type ModelMarks } from "../modelPrefs";
-import { effortToSend, NO_REASONING_HINT } from "../effort";
+import { effortHint, effortToSend } from "../effort";
 import { formatTokens } from "../sessions";
 import { useSettings } from "../settings";
 
@@ -370,6 +370,11 @@ export function PermissionModeSelect({
         disabled={disabled || pending !== null}
         onChange={choose}
       />
+      {!reasons && (
+        <span id={hintId} className="visually-hidden">
+          {hint}
+        </span>
+      )}
       {error && (
         <span className="model-status error" role="alert" title={error}>
           {error}
@@ -397,6 +402,7 @@ export function EffortSelect({
   current,
   disabled,
   reasons = true,
+  hasModel = true,
   onChange,
 }: {
   /** The session's effort; daemons before protocol 0.9 send none, shown as medium. */
@@ -404,11 +410,15 @@ export function EffortSelect({
   disabled?: boolean;
   /** Whether the model can reason; if not the control stays, greyed out, and sends nothing. */
   reasons?: boolean;
+  /** Whether the session has a model; without one the hint says to choose it first. */
+  hasModel?: boolean;
   /** Sets the effort; rejects with the daemon's reason. */
   onChange: (effort: Effort) => Promise<unknown>;
 }) {
   const [pending, setPending] = useState<Effort | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const hintId = useId();
+  const hint = effortHint(hasModel);
   const choose = (value: string) => {
     const effort = effortToSend(reasons, current, value as Effort);
     if (effort === null) return;
@@ -421,15 +431,16 @@ export function EffortSelect({
   return (
     <span
       className={`effort-select${reasons ? "" : " unavailable"}`}
-      title={reasons ? undefined : NO_REASONING_HINT}
-      aria-disabled={reasons ? undefined : true}
+      title={reasons ? undefined : hint}
     >
       <Select
         aria-label="Reasoning effort"
         className="effort-select-button"
         value={pending ?? current ?? "medium"}
         options={EFFORT_OPTIONS}
-        disabled={disabled || !reasons || pending !== null}
+        inert={!reasons}
+        aria-describedby={reasons ? undefined : hintId}
+        disabled={disabled || pending !== null}
         onChange={choose}
       />
       {error && (

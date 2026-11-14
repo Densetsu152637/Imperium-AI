@@ -868,7 +868,7 @@ button.icon-only.panel-tool .lucide {
   background: transparent;
   border-color: transparent;
   color: var(--muted);
-  pointer-events: none;
+  cursor: not-allowed;
 }
 
 /* How actions are approved: as quiet as the effort beside it. */
@@ -1039,7 +1039,7 @@ button.icon-only.panel-tool .lucide {
 }
 
 .new-session-options {
-  margin-top: 0;
+  margin-top: var(--space);
 }
 
 .new-session-worktree {
@@ -1540,6 +1540,13 @@ button.danger:hover:not(:disabled) {
   max-width: var(--prose-max);
   margin: 0 auto var(--space);
   border-radius: var(--radius-lg);
+}
+
+/* The new-session form is a bare .composer, not inside .composer-area: same column. */
+.new-session-view > .composer {
+  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
+  max-width: var(--prose-max);
+  margin: 0 auto var(--space);
 }
 
 .composer-area[hidden] {

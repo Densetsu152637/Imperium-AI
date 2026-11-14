@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { effortToSend, NO_REASONING_HINT, reasoningAvailable } from "../src/effort.ts";
+import { effortHint, effortToSend, NO_REASONING_HINT, reasoningAvailable } from "../src/effort.ts";
 
 test("a model that reasons enables the effort control", () => {
   assert.equal(reasoningAvailable({ model: "deepseek", reasoning: true }), true);
@@ -23,4 +23,9 @@ test("an effort is never sent for a model that cannot reason", () => {
 
 test("the tooltip says why the control is greyed out", () => {
   assert.equal(NO_REASONING_HINT, "This model doesn't reason");
+});
+
+test("with no model at all the hint says to choose one", () => {
+  assert.equal(effortHint(false), "Choose a model first");
+  assert.equal(effortHint(true), NO_REASONING_HINT);
 });

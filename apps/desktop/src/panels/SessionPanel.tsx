@@ -503,6 +503,7 @@ export function SessionPanel({
             key={`effort-${session.summary.session_id}`}
             current={session.summary.effort}
             reasons={reasoningAvailable(session.summary)}
+            hasModel={session.summary.model !== null}
             disabled={archived}
             onChange={onSetEffort}
           />
