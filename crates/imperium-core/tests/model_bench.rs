@@ -416,7 +416,7 @@ async fn a_benchmark_measures_the_stream_through_the_normal_launch_path_and_save
     assert_eq!(loaded[0].model_id, "tiny");
     assert_eq!(loaded[0].slots_in_use, 0);
     let mut load_announced = false;
-    let mut progress = Vec::new();
+    let mut progress: Vec<Value> = Vec::new();
     // Announcements may trail the run's end a little: read until the final one arrives (or
     // none comes for five seconds), not just what is already queued.
     loop {
