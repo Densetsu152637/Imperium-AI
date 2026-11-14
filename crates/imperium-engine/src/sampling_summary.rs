@@ -26,6 +26,12 @@ fn prompt_chars(request: &SamplingRequest) -> u64 {
     (system + messages) as u64
 }
 
+/// Invisible Unicode format characters (zero-width and bidirectional controls) that could make
+/// a quotation read as something else.
+fn is_format_char(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
+}
+
 /// `text` cut to `limit` characters, quoted, with line breaks shown as `⏎` and quotes escaped.
 pub(crate) fn quote(text: &str, limit: usize) -> String {
     let flat: String = truncate_chars(text, limit)
@@ -33,7 +39,7 @@ pub(crate) fn quote(text: &str, limit: usize) -> String {
         .flat_map(|c| match c {
             '\n' | '\r' => vec!['⏎'],
             '"' => vec!['\\', '"'],
-            c if c.is_control() => vec![' '],
+            c if c.is_control() || is_format_char(c) => vec![' '],
             c => vec![c],
         })
         .collect();
@@ -128,6 +134,12 @@ mod tests {
         let mut bare = request();
         bare.system_prompt = None;
         assert!(summary("m", None, &bare).contains("no system prompt"));
+    }
+
+    #[test]
+    fn invisible_format_characters_are_blanked() {
+        let sneaky = "a\u{200B}b\u{202E}c\u{2066}d\u{FEFF}e\u{200F}f";
+        assert_eq!(quote(sneaky, 50), "\"a b c d e f\"");
     }
 
     #[test]

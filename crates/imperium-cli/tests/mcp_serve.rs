@@ -709,6 +709,17 @@ async fn the_harness_never_answers_an_mcp_servers_sampling_request() {
     assert_eq!(reply["result"]["isError"], true, "{reply}");
     let text = reply["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("only the user can answer"), "{text}");
+    // A request id the history never showed is refused too (fail closed).
+    let unknown = harness
+        .request(
+            "tools/call",
+            json!({"name": "respond_permission", "arguments": {
+                "session_id": session_id, "request_id": 987_654, "decision": "allow"}}),
+        )
+        .await;
+    assert_eq!(unknown["result"]["isError"], true, "{unknown}");
+    let text = unknown["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("no permission request 987654"), "{text}");
     // Still pending: nothing answered it.
     let still = harness
         .ok("get_session", json!({"session_id": session_id}))
