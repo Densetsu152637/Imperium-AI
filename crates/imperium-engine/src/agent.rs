@@ -225,6 +225,9 @@ pub struct Agent {
     /// The root agent's structured state (see [`harness`]); read back from the conversation
     /// when it is restored.
     state: SessionState,
+    /// The harness paragraph in the system prompt, for the model the agent has now: it is
+    /// rewritten when the model is switched, so the prompt and the tools offered always agree.
+    harness_text: String,
 }
 
 impl Agent {
@@ -308,13 +311,14 @@ impl Agent {
         }
         // How the root agent answers the user; it closes the base instruction. The personality
         // follows the reply rules, so it sets the tone without replacing them.
+        let mut harness_text = String::new();
         if can_delegate {
             system.push_str("\n\n");
             system.push_str(RESPONSE_STYLE);
-            let harness = harness_prompt(&shared.harness, model.local, is_attended(&shared));
-            if !harness.is_empty() {
+            harness_text = harness_prompt(&shared.harness, model.local, is_attended(&shared));
+            if !harness_text.is_empty() {
                 system.push_str("\n\n");
-                system.push_str(&harness);
+                system.push_str(&harness_text);
             }
             if let Some(personality) = &shared.personality {
                 system.push_str("\n\n");
@@ -389,6 +393,7 @@ impl Agent {
             instructions: None,
             last_tool_ok: std::sync::atomic::AtomicBool::new(false),
             state: SessionState::default(),
+            harness_text,
         }
     }
 
@@ -844,7 +849,12 @@ impl Agent {
                 });
                 user_text = harness::resolved_text(&resolved, &text);
             }
-            if keep_state && let Some(block) = self.state.block() {
+            // The block goes in only when the state differs from the newest copy in the
+            // conversation, so an unchanged state is not repeated every turn.
+            if keep_state
+                && harness::latest_state(&self.messages) != self.state
+                && let Some(block) = self.state.block()
+            {
                 parts.push((Category::Memories, block));
             }
             if hints
@@ -2855,6 +2865,28 @@ impl Agent {
         Ok(harness::state_result(&self.state))
     }
 
+    /// Rewrites the harness paragraph of the system prompt for the model the agent has now. The
+    /// `auto` settings follow the model (local or hosted), and the tools offered do at every
+    /// turn; the prompt is rewritten here so it never describes tools that are not offered.
+    fn refresh_harness_text(&mut self) {
+        if !self.can_delegate || self.single_call {
+            return;
+        }
+        let text = harness_prompt(
+            &self.shared.harness,
+            self.model.local,
+            is_attended(&self.shared),
+        );
+        if text == self.harness_text {
+            return;
+        }
+        if let Some(ChatMessage::System { content }) = self.messages.first_mut() {
+            *content = swap_harness_text(content, &self.harness_text, &text);
+            self.spans.remove(&0);
+        }
+        self.harness_text = text;
+    }
+
     /// Whether a person reads this session's turns; see [`is_attended`].
     fn attended(&self) -> bool {
         is_attended(&self.shared)
@@ -3215,6 +3247,25 @@ fn is_attended(shared: &Shared) -> bool {
     shared.attended && shared.launcher.is_none()
 }
 
+/// `content` (a system prompt) with its harness paragraph `old` replaced by `new`; either may
+/// be empty (no paragraph), and a new one is added at the end.
+fn swap_harness_text(content: &str, old: &str, new: &str) -> String {
+    if old.is_empty() {
+        return if new.is_empty() {
+            content.to_string()
+        } else {
+            format!("{content}\n\n{new}")
+        };
+    }
+    let from = format!("\n\n{old}");
+    let to = if new.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{new}")
+    };
+    content.replacen(&from, &to, 1)
+}
+
 /// Whether a harness aid set to `mode` is on for a root agent whose model is `local` or not.
 fn mode_on(mode: HarnessMode, local: bool) -> bool {
     match mode {
@@ -3404,6 +3455,7 @@ impl Agent {
         self.shared
             .agents
             .register(&self.id, &self.role, &self.model);
+        self.refresh_harness_text();
         // The calibration related the heuristic to the old model's counts, and the exact count
         // the next local reservation starts from was the old model's.
         self.last_reported = None;
@@ -4823,6 +4875,27 @@ mod harness_tests {
             ..HarnessSettings::default()
         };
         assert!(!harness_prompt(&quiet, true, true).contains("request_clarification"));
+    }
+
+    #[test]
+    fn the_paragraph_follows_the_model_when_it_is_switched() {
+        let settings = HarnessSettings::default();
+        let hosted = harness_prompt(&settings, false, true);
+        let local = harness_prompt(&settings, true, true);
+        assert!(hosted.is_empty() && !local.is_empty());
+        let base = "You are Imperium.\n\nReplies: short.";
+        // Hosted to local: the paragraph is added; and back, it is taken out again.
+        let to_local = swap_harness_text(base, &hosted, &local);
+        assert!(to_local.starts_with(base) && to_local.contains("request_clarification"));
+        assert_eq!(swap_harness_text(&to_local, &local, &hosted), base);
+        // Mid-prompt (a personality follows it) it is replaced in place.
+        let with_personality = format!("{base}\n\n{local}\n\nBe Marcus.");
+        assert_eq!(
+            swap_harness_text(&with_personality, &local, ""),
+            format!("{base}\n\nBe Marcus.")
+        );
+        // The tools follow the model through the same rule.
+        assert!(!mode_on(settings.clarify, false) && mode_on(settings.clarify, true));
     }
 
     fn state_with_goal() -> SessionState {

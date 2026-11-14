@@ -735,3 +735,34 @@ async fn update_state_leaves_an_instruction_file_message_alone() {
     let result = messages.last().unwrap()["content"].as_str().unwrap();
     assert!(result.contains("read a.txt"), "{result}");
 }
+
+#[tokio::test]
+async fn an_unchanged_state_is_not_repeated_turn_after_turn() {
+    let seen = Arc::new(Seen::default());
+    let endpoint = endpoint(
+        vec!["Ok.".into()],
+        Rewrite::Reply(REWRITE.into()),
+        Arc::clone(&seen),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let session = start(endpoint, dir.path(), all_on());
+    let mut events = session.subscribe();
+
+    // The first turn has nothing to resolve; the second names a file, so the state changes
+    // once. Every later turn rewrites to the same file, which leaves the state as it was.
+    turn(&session, &mut events, "hello").await;
+    for step in 0..29 {
+        turn(
+            &session,
+            &mut events,
+            &format!("change the timeout in that file ({step})"),
+        )
+        .await;
+    }
+    let last = seen.root_bodies().pop().unwrap();
+    let blocks = all_text(&last).matches("<session-state>").count();
+    assert_eq!(blocks, 1, "one block for thirty turns");
+    // A later message still carries the state in the conversation, but not a fresh copy.
+    assert!(!last_user(&last).contains("<session-state>"));
+}

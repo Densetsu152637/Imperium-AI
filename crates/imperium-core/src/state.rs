@@ -103,6 +103,10 @@ pub struct SessionOptions {
     /// A persistent agent: it is offered the initiative tools (`suggest_work`,
     /// `work_digest`) under this agent id.
     pub initiative_agent: Option<String>,
+    /// Nobody reads this session's turns although nothing else in the options says so. It is
+    /// kept in the session's meta and set again when the session resumes, because the options
+    /// that implied it (an auto-fix session's pre-approved tools) are not restored.
+    pub unattended: bool,
     /// The caller already holds the working-folders lock (a Home session made its folder under
     /// it), so the session must not take it again.
     #[doc(hidden)]
@@ -1197,6 +1201,8 @@ impl DaemonState {
             let options = SessionOptions {
                 resume_id: Some(id.clone()),
                 background: meta["background"].as_bool().unwrap_or(false),
+                // Stays unattended after a restart even when its pre-approved tools are gone.
+                unattended: meta["unattended"].as_bool().unwrap_or(false),
                 run_now: meta["run_now"].as_bool().unwrap_or(false),
                 // A branch asking for a worktree of its own gets a new one.
                 worktree,
@@ -1934,7 +1940,8 @@ impl DaemonState {
             });
         // Nobody reads the turns of a background session, one with pre-approved tools (auto-fix),
         // or a project or persistent agent: the harness aids that talk to a person stay off.
-        let attended = !(options.background
+        let attended = !(options.unattended
+            || options.background
             || !options.pre_approved.is_empty()
             || options.initiative_agent.is_some()
             || options.launcher.is_some());
@@ -2014,6 +2021,7 @@ impl DaemonState {
                 "project_dir": project_dir,
                 "model": model_spec,
                 "background": options.background,
+                "unattended": !attended,
                 "run_now": options.run_now,
                 "environment_id": placement.environment_id,
                 "folders": placement.folders,

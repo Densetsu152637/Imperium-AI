@@ -92,12 +92,19 @@ ambiguity. They live in the harness, not in the model, and apply to the root age
 (subagents get self-contained briefs). They are set under `[harness]`
 ([10](10-configuration.md)).
 
+**Following the model.** `auto` follows the root's model, which can change in a session
+(escalating to a hosted model, or switching to a local one): the tools offered are chosen each
+turn, and the harness paragraph of the system prompt is rewritten when the model is switched,
+so the prompt never describes tools that are not offered.
+
 **When they are on.** Each of `dereference`, `state`, `hints` and `clarify` is `auto`, `on` or
 `off`. `auto` (the default) turns the aid on only when the root agent's model runs on this
 machine, so a hosted root gets the same prompts, tools and messages as before unless an aid is
 set to `on`. They are always off in an unattended session, whatever the setting: a background
 session (schedules), one with pre-approved tools (auto-fix), and project and persistent agents
-(`SessionConfig::attended`, set by the daemon). The aids add a fixed cost when on: about 600 to
+(`SessionConfig::attended`, set by the daemon and kept in the session's meta as
+`unattended`, so an auto-fix session, whose pre-approved tools are not restored, is still
+unattended after a restart). The aids add a fixed cost when on: about 600 to
 900 tokens of tool schemas (`update_state`, `request_clarification`) and root prompt, and a few
 hundred more on a turn that carries a state block.
 
@@ -133,12 +140,13 @@ hundred more on a turn that carries a state block.
   the root's `update_state` tool (entities added or updated by kind and name, `forget` by name,
   `goals` replacing the list, `constraints` added or dropped) and by the entities the rewrite
   names. The root's prompt calls it notes that can come from tool output, not the user's
-  instructions. It is injected as a `<session-state>` block at the top of each turn's user
-  message while it is not empty. Persistence is the conversation, append-only: the block of
-  each turn and the result of each `update_state` call are copies, the newest is the state, and
-  earlier messages are never rewritten, so the prompt prefix a local model has cached does not
-  change (a block repeated each turn costs up to `state_max_chars` of context per turn until a
-  compaction). A resumed session reads the newest copy back, a session branched at an earlier
+  instructions. It is injected as a `<session-state>` block at the top of a turn's user
+  message when it is not empty and differs from the newest copy in the conversation, so thirty
+  turns with an unchanged state carry one block, not thirty. Persistence is the conversation,
+  append-only: such a block and the result of each `update_state` call (matched to the call by
+  its id, so text in another tool's output that looks like one is ignored) are copies, the
+  newest is the state, and earlier messages are never rewritten, so the prompt prefix a local
+  model has cached does not change. A resumed session reads the newest copy back, a session branched at an earlier
   turn has the copies up to that turn, and a compaction that summarises the newest copy away
   puts the state back at the top of the first kept user message. There is no file beside
   `<id>.messages.json`. It counts under `memories` in context breakdowns.

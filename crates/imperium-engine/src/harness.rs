@@ -249,20 +249,46 @@ fn state_in(content: &str) -> Option<SessionState> {
     serde_json::from_str(json.trim()).ok()
 }
 
-/// The newest state recorded in a conversation (a turn's block or an `update_state` result),
-/// or an empty one.
-pub(crate) fn latest_state(messages: &[ChatMessage]) -> SessionState {
-    messages
+/// The tool whose results record the state.
+pub(crate) const UPDATE_STATE_TOOL: &str = "update_state";
+
+/// Whether the tool result for `tool_call_id` answers a call to `update_state`: the nearest
+/// earlier assistant message with that call id (ids can repeat across turns) made it. Text
+/// that only looks like a state result, in the output of another tool, is not one.
+fn answers_update_state(earlier: &[ChatMessage], tool_call_id: &str) -> bool {
+    earlier
         .iter()
         .rev()
         .find_map(|message| match message {
-            ChatMessage::User { content, .. } => state_in(content),
-            ChatMessage::Tool { content, .. } => content
-                .strip_prefix(STATE_RESULT_PREFIX)
-                .and_then(|json| serde_json::from_str(json.trim()).ok()),
+            ChatMessage::Assistant { tool_calls, .. } => tool_calls
+                .iter()
+                .find(|call| call.id == tool_call_id)
+                .map(|call| call.function.name == UPDATE_STATE_TOOL),
             _ => None,
         })
-        .unwrap_or_default()
+        .unwrap_or(false)
+}
+
+/// The newest state recorded in a conversation (a turn's block or the result of an
+/// `update_state` call), or an empty one.
+pub(crate) fn latest_state(messages: &[ChatMessage]) -> SessionState {
+    for (index, message) in messages.iter().enumerate().rev() {
+        let found = match message {
+            ChatMessage::User { content, .. } => state_in(content),
+            ChatMessage::Tool {
+                content,
+                tool_call_id,
+            } => content
+                .strip_prefix(STATE_RESULT_PREFIX)
+                .filter(|_| answers_update_state(&messages[..index], tool_call_id))
+                .and_then(|json| serde_json::from_str(json.trim()).ok()),
+            _ => None,
+        };
+        if let Some(state) = found {
+            return state;
+        }
+    }
+    SessionState::default()
 }
 
 /// What an `update_state` call returns: the new state, in the form `latest_state` reads.
@@ -574,15 +600,35 @@ mod tests {
         // wins, and truncating the conversation (a branch) gives the earlier state.
         let mut later = state.clone();
         later.apply(update(r#"{"goals":["ship it twice"]}"#), 1500);
+        let call = |name: &str| ChatMessage::Assistant {
+            content: None,
+            tool_calls: vec![imperium_api::ToolCall {
+                id: "c".into(),
+                kind: "function".into(),
+                function: imperium_api::FunctionCall {
+                    name: name.into(),
+                    arguments: "{}".into(),
+                },
+            }],
+        };
+        let result = |text: String| ChatMessage::Tool {
+            tool_call_id: "c".into(),
+            content: text,
+        };
         let messages = vec![
-            ChatMessage::user(first),
-            ChatMessage::Tool {
-                tool_call_id: "c".into(),
-                content: state_result(&later),
-            },
+            ChatMessage::user(first.clone()),
+            call(UPDATE_STATE_TOOL),
+            result(state_result(&later)),
         ];
         assert_eq!(latest_state(&messages), later);
         assert_eq!(latest_state(&messages[..1]).goals, ["ship"]);
+        // The same text in another tool's output is not the state.
+        let spoofed = vec![
+            ChatMessage::user(first),
+            call("read_file"),
+            result(state_result(&later)),
+        ];
+        assert_eq!(latest_state(&spoofed).goals, ["ship"]);
         assert!(latest_state(&[ChatMessage::user("no block")]).is_empty());
         assert!(latest_state(&[]).is_empty());
     }
