@@ -38,7 +38,6 @@ function execute(command: Command): void {
 export function CommandPalette({ detached }: { detached: boolean }) {
   const [open, setOpen] = useState(false);
   const shortcuts = useSettings().shortcuts;
-  const shown = (command: Command) => (command.shortcutAction ? bindingFor(shortcuts, command.shortcutAction) : command.shortcut);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -75,6 +74,8 @@ export function CommandPalette({ detached }: { detached: boolean }) {
 }
 
 function PaletteDialog({ onClose, onChoose }: { onClose: () => void; onChoose: (command: Command) => void }) {
+  const shortcuts = useSettings().shortcuts;
+  const shown = (command: Command) => (command.shortcutAction ? bindingFor(shortcuts, command.shortcutAction) : command.shortcut);
   const dialog = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
