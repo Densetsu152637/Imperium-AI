@@ -118,10 +118,13 @@ impl Client {
         let tcp = TcpStream::connect((host, port))
             .await
             .map_err(|error| ClientError::Connect(Box::new(tungstenite::Error::Io(error))))?;
-        let (socket, _) =
-            tokio_tungstenite::client_async(request, Transport::Tcp(MaybeTlsStream::Plain(tcp)))
-                .await
-                .map_err(|error| ClientError::Connect(Box::new(error)))?;
+        let (socket, _) = tokio_tungstenite::client_async_with_config(
+            request,
+            Transport::Tcp(MaybeTlsStream::Plain(tcp)),
+            Some(websocket_config()),
+        )
+        .await
+        .map_err(|error| ClientError::Connect(Box::new(error)))?;
         Self::handshake(socket, client).await
     }
 
@@ -146,9 +149,13 @@ impl Client {
         request
             .headers_mut()
             .insert("Authorization", authorization(token)?);
-        let (socket, _) = tokio_tungstenite::client_async(request, Transport::Local(stream))
-            .await
-            .map_err(|error| ClientError::Connect(Box::new(error)))?;
+        let (socket, _) = tokio_tungstenite::client_async_with_config(
+            request,
+            Transport::Local(stream),
+            Some(websocket_config()),
+        )
+        .await
+        .map_err(|error| ClientError::Connect(Box::new(error)))?;
         Self::handshake(socket, client).await
     }
 
@@ -183,13 +190,25 @@ impl Client {
     }
 
     pub async fn call<M: Method>(&mut self, params: M::Params) -> Result<M::Result, ClientError> {
+        let params = serde_json::to_value(params).map_err(protocol_error)?;
+        let value = self.call_value(M::NAME, params).await?;
+        serde_json::from_value(value).map_err(protocol_error)
+    }
+
+    /// Calls a method by name with untyped parameters and returns its untyped result, for
+    /// clients that pass a method's JSON through, such as the MCP harness.
+    pub async fn call_value(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, ClientError> {
         let id = RequestId::Number(self.next_id);
         self.next_id += 1;
         let request = Request {
             jsonrpc: JsonRpcVersion,
             id: id.clone(),
-            method: M::NAME.to_string(),
-            params: Some(serde_json::to_value(params).map_err(protocol_error)?),
+            method: method.to_string(),
+            params: Some(params),
         };
         let text = serde_json::to_string(&request).map_err(protocol_error)?;
         self.socket
@@ -205,7 +224,7 @@ impl Client {
             )));
         }
         match response.outcome {
-            Outcome::Result(value) => serde_json::from_value(value).map_err(protocol_error),
+            Outcome::Result(value) => Ok(value),
             Outcome::Error(error) => Err(ClientError::Rpc(error)),
         }
     }
@@ -271,6 +290,17 @@ impl Client {
 enum Incoming {
     Response(Response),
     Notification(Notification),
+}
+
+/// The most one frame or message from the daemon may hold. The WebSocket library's default
+/// frame limit (16 MiB) is smaller than a long session's event history, which
+/// `session.subscribe` returns in one reply.
+const MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
+
+fn websocket_config() -> tungstenite::protocol::WebSocketConfig {
+    tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_MESSAGE_BYTES))
 }
 
 fn authorization(token: &str) -> Result<tungstenite::http::HeaderValue, ClientError> {
