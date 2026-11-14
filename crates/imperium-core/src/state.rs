@@ -282,6 +282,9 @@ impl DaemonState {
         local: Option<LocalRuntime>,
         secrets: Arc<dyn SecretStore>,
     ) -> Arc<Self> {
+        // Writing into the installed mods is something the safety floor always asks about: their
+        // files are what an approval vouches for.
+        imperium_tools::permissions::protect_dir(&paths.config_dir().join("mods"));
         let devices = Devices::load(paths.data_dir().join("devices.json"));
         let monitor = Arc::new(LoadMonitor::new(settings.load.clone()));
         let environments = Environments::load(paths.data_dir().join("environments.json"));
@@ -2637,6 +2640,8 @@ impl DaemonState {
                 config_dir: self.paths.config_dir().to_path_buf(),
                 project_dir: project_dir.to_path_buf(),
                 plugin_dirs: settings.extensions.plugin_dirs.clone(),
+                // The user's own folders, never what an environment's configuration merged in.
+                user_plugin_dirs: self.settings().extensions.plugin_dirs.clone(),
                 disabled_plugins: settings.extensions.disabled_plugins.clone(),
                 hooks: self
                     .settings()

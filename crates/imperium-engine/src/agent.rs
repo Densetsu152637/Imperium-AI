@@ -230,6 +230,8 @@ pub struct Agent {
     pending_rewrite: Mutex<Option<String>>,
     /// While a rewritten call runs: the arguments the model gave, as the user is shown them.
     rewritten_from: Mutex<Option<String>>,
+    /// The arguments the latest call ran with when a hook rewrote them.
+    ran_rewritten: Mutex<Option<String>>,
     /// The root agent's structured state (see [`harness`]); read back from the conversation
     /// when it is restored.
     state: SessionState,
@@ -402,6 +404,7 @@ impl Agent {
             last_tool_ok: std::sync::atomic::AtomicBool::new(false),
             pending_rewrite: Mutex::new(None),
             rewritten_from: Mutex::new(None),
+            ran_rewritten: Mutex::new(None),
             state: SessionState::default(),
             harness_text,
         }
@@ -1156,12 +1159,13 @@ impl Agent {
                 let output = self.guard_input(output, window);
                 // Only a call that worked counts as opening the directory: not one that was
                 // denied, refused by a hook, or failed.
+                // The arguments the call ran with: a hook may have rewritten them.
+                let ran_with = lock(&self.ran_rewritten)
+                    .clone()
+                    .unwrap_or_else(|| call.function.arguments.clone());
                 if self.last_tool_ok.load(Ordering::SeqCst)
-                    && let Some(dir) = instructions::touched_dir(
-                        &self.workspace,
-                        &call.function.name,
-                        &call.function.arguments,
-                    )
+                    && let Some(dir) =
+                        instructions::touched_dir(&self.workspace, &call.function.name, &ran_with)
                     && !touched.contains(&dir)
                 {
                     touched.push(dir);
@@ -2121,6 +2125,7 @@ impl Agent {
     /// versions. It stays the same tool: a hook cannot turn a call into another tool's.
     async fn run_tool(&mut self, call: &ToolCall) -> String {
         *lock(&self.pending_rewrite) = None;
+        *lock(&self.ran_rewritten) = None;
         let output = self.run_tool_once(call).await;
         let Some(arguments) = lock(&self.pending_rewrite).take() else {
             return output;
@@ -2136,6 +2141,7 @@ impl Agent {
         let mut rewritten = call.clone();
         rewritten.function.arguments = arguments;
         *lock(&self.rewritten_from) = Some(original);
+        *lock(&self.ran_rewritten) = Some(rewritten.function.arguments.clone());
         let output = self.run_tool_once(&rewritten).await;
         *lock(&self.rewritten_from) = None;
         *lock(&self.pending_rewrite) = None;

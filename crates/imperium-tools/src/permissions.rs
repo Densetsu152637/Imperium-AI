@@ -262,6 +262,45 @@ pub fn decide_call(
     }
 }
 
+/// Folders the daemon asks the floor to guard, as normalised text (see [`protect_dir`]).
+static PROTECTED_DIRS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn normalise_dir(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    let path = path.strip_prefix("//?/").unwrap_or(&path);
+    let path = path.trim_end_matches('/');
+    if cfg!(any(windows, target_os = "macos")) {
+        path.to_lowercase()
+    } else {
+        path.to_string()
+    }
+}
+
+/// Makes writing under `dir` something the safety floor always asks about, like a `.git`
+/// folder: the daemon uses it for the user's installed mods, whose files are what an approval
+/// vouches for. A process-wide list (every daemon in the process adds its own folders).
+pub fn protect_dir(dir: &std::path::Path) {
+    let dir = normalise_dir(&dir.to_string_lossy());
+    if dir.is_empty() {
+        return;
+    }
+    let mut dirs = PROTECTED_DIRS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if !dirs.contains(&dir) {
+        dirs.push(dir);
+    }
+}
+
+fn in_protected_dir(absolute: &str) -> bool {
+    let path = normalise_dir(absolute);
+    PROTECTED_DIRS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|dir| path == *dir || path.starts_with(&format!("{dir}/")))
+}
+
 /// Built-in ask rules for writing files that hold secrets.
 const FLOOR_PATHS: &[&str] = &[
     ".env",
@@ -298,6 +337,7 @@ pub fn safety_floor(kind: CallKind, target: &Target) -> bool {
                 }
             });
             in_git
+                || in_protected_dir(absolute)
                 || FLOOR_PATHS.iter().any(|pattern| {
                     path_matches(pattern, absolute, None)
                         || (fold && path_matches(pattern, &absolute.to_lowercase(), None))
@@ -1221,5 +1261,33 @@ mod tests {
         assert!(validate_grant(&grant(r"C:\Users\me\.cargo")).is_ok());
         assert!(validate_grant(&grant("relative/path")).is_err());
         assert!(validate_grant(&grant("~/.cache/*")).is_err());
+    }
+
+    #[test]
+    fn the_floor_guards_a_folder_the_daemon_protects() {
+        protect_dir(std::path::Path::new("/floor-test-config/mods"));
+        let path = |absolute: &str| Target::Path {
+            absolute: absolute.to_string(),
+            relative: None,
+        };
+        for inside in [
+            "/floor-test-config/mods",
+            "/floor-test-config/mods/demo/index.js",
+            "/floor-test-config/mods/demo/../demo/mod.json",
+        ] {
+            assert!(safety_floor(CallKind::Edit, &path(inside)), "{inside}");
+        }
+        for outside in [
+            "/floor-test-config/modsy/x.js",
+            "/floor-test-config/plugins/x.js",
+            "/elsewhere/floor-test-config/mods/x.js",
+        ] {
+            assert!(!safety_floor(CallKind::Edit, &path(outside)), "{outside}");
+        }
+        // Reading is never covered.
+        assert!(!safety_floor(
+            CallKind::Read,
+            &path("/floor-test-config/mods/demo/index.js")
+        ));
     }
 }

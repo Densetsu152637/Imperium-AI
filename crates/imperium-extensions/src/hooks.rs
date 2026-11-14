@@ -241,6 +241,11 @@ impl Hooks {
         self.hooks.len()
     }
 
+    /// The hooks, in the order they run.
+    pub fn list(&self) -> &[Hook] {
+        &self.hooks
+    }
+
     /// Runs the hooks for `event` (and `tool`, for tool events) in order. For blocking events
     /// the first block wins and later hooks do not run. Rewrites are ignored.
     pub async fn run(
@@ -310,7 +315,18 @@ impl Hooks {
                     };
                 }
                 Ok(answer) => {
-                    let wants = answer.updated_input.is_some() || answer.updated_prompt.is_some();
+                    // A hook that answers again with what is already in place (the second look at
+                    // a call it rewrote) asks for nothing.
+                    let again_input = answer
+                        .updated_input
+                        .as_ref()
+                        .is_some_and(|new| Some(new) == input.get("tool_input"));
+                    let again_prompt = answer.updated_prompt.as_deref().is_some_and(|new| {
+                        Some(new) == input.get("prompt").and_then(Value::as_str)
+                    });
+                    let again = again_input || again_prompt;
+                    let wants = (answer.updated_input.is_some() || answer.updated_prompt.is_some())
+                        && !again;
                     let allowed = rewriting && hook.may_rewrite;
                     if wants && !allowed {
                         tracing::warn!(

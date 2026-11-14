@@ -142,8 +142,12 @@ pub(crate) fn apply_approvals(state: &DaemonState, listing: &mut ModListResult) 
         info.installed_from = Some(record.source.clone());
         info.permissions
             .retain(|permission| record.permissions.contains(permission));
-        let intact = tree_sha256(&mods_dir.join(&info.id))
-            .is_ok_and(|hash| hash.eq_ignore_ascii_case(&record.sha256));
+        // One read of the folder `mods/<id>` gives both the hash and what the listing must
+        // match: the listed entry belongs to that folder (not another folder that claims the
+        // id) and has not changed since the list read it.
+        let intact = snapshot(&mods_dir.join(&info.id)).is_ok_and(|files| {
+            hash_files(&files).eq_ignore_ascii_case(&record.sha256) && matches_listing(&files, info)
+        });
         if !intact {
             info.permissions.clear();
             info.modified = true;
@@ -227,8 +231,9 @@ fn installed(state: &DaemonState, id: &str) -> Option<ModInstalled> {
         Some(record) => ModInstalled {
             version: record.version,
             permissions: record.permissions,
+            trusted: record.trusted
+                && tree_sha256(&dir).is_ok_and(|hash| hash.eq_ignore_ascii_case(&record.sha256)),
             sha256: Some(record.sha256),
-            trusted: record.trusted,
         },
         None => ModInstalled {
             version: info.version,
@@ -450,23 +455,66 @@ pub(crate) async fn install(
 /// its length, and its bytes, in path order. Leaves out `.git` and the source file an install
 /// writes, so a copy hashes the same as the source it came from.
 pub(crate) fn tree_sha256(dir: &Path) -> Result<String, String> {
-    let mut files = Vec::new();
-    collect(dir, "", &mut files)?;
-    files.sort();
+    Ok(hash_files(&snapshot(dir)?))
+}
+
+/// A folder's files (path relative to it with `/`, and bytes), in path order, each read once.
+type Files = Vec<(String, Vec<u8>)>;
+
+fn snapshot(dir: &Path) -> Result<Files, String> {
+    let mut paths = Vec::new();
+    collect(dir, "", &mut paths)?;
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|relative| {
+            let bytes = std::fs::read(dir.join(&relative))
+                .map_err(|error| format!("{relative}: {error}"))?;
+            Ok((relative, bytes))
+        })
+        .collect()
+}
+
+fn hash_files(files: &Files) -> String {
     let mut digest = Sha256::new();
-    for relative in files {
-        let bytes =
-            std::fs::read(dir.join(&relative)).map_err(|error| format!("{relative}: {error}"))?;
+    for (relative, bytes) in files {
         digest.update(relative.as_bytes());
         digest.update([0u8]);
         digest.update(u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes());
-        digest.update(&bytes);
+        digest.update(bytes);
     }
-    Ok(digest
+    digest
         .finalize()
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect())
+        .collect()
+}
+
+/// Whether the snapshot's `mod.json` has the id the listing gave and its entry file holds the
+/// source the listing carries.
+fn matches_listing(files: &Files, info: &imperium_protocol::methods::ModInfo) -> bool {
+    let file = |name: &str| {
+        files
+            .iter()
+            .find(|(relative, _)| relative == name)
+            .map(|(_, bytes)| bytes)
+    };
+    let Some(manifest) =
+        file("mod.json").and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+    else {
+        return false;
+    };
+    if manifest.get("id").and_then(serde_json::Value::as_str) != Some(info.id.as_str()) {
+        return false;
+    }
+    let entry = manifest
+        .get("entry")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("index.js")
+        .replace('\\', "/");
+    file(&entry)
+        .and_then(|bytes| String::from_utf8(bytes.clone()).ok())
+        .is_some_and(|source| source == info.source)
 }
 
 fn collect(root: &Path, prefix: &str, files: &mut Vec<String>) -> Result<(), String> {
@@ -1055,6 +1103,39 @@ mod tests {
         .unwrap();
         assert!(listed(&state).mods[0].modified);
         assert!(!listed(&state).mods[0].trusted);
+    }
+
+    #[tokio::test]
+    async fn a_mod_in_another_folder_does_not_inherit_the_trust_of_its_id() {
+        let home = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        write_main_context_mod(source.path(), "1.0.0", "export default 1;");
+        let state = state(home.path());
+        let preview = inspect(&state, inspect_params(source.path()))
+            .await
+            .unwrap();
+        let mut trusted = install_params(&preview, source.path(), false);
+        trusted.trusted = true;
+        install(&state, trusted).await.unwrap();
+        assert!(listed(&state).mods[0].trusted);
+
+        // Another folder, listed first, claims the same id with other code: it is the one the
+        // list shows, and nothing the id earned goes to it.
+        let other = state.mods_dir().join("aaa-other");
+        write_main_context_mod(&other, "9.9.9", "export default 'evil';");
+        let listing = listed(&state);
+        let shown = &listing.mods[0];
+        assert_eq!(shown.source, "export default 'evil';");
+        assert!(!shown.trusted, "an id is not a folder");
+        assert!(shown.modified);
+        assert!(shown.permissions.is_empty());
+        assert!(shown.opt_in);
+
+        // A mod whose folder name is not its id is never approved by the id's record either.
+        std::fs::remove_dir_all(state.mods_dir().join("demo")).unwrap();
+        let listing = listed(&state);
+        assert!(!listing.mods[0].trusted);
+        assert!(listing.mods[0].modified);
     }
 
     #[tokio::test]

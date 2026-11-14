@@ -28,8 +28,14 @@ pub struct Sources {
     /// The user's configuration folder: `skills/`, `commands/`, and `plugins/` inside it.
     pub config_dir: PathBuf,
     pub project_dir: PathBuf,
-    /// More plugin folders (each a plugin, or a folder of plugins).
+    /// More plugin folders (each a plugin, or a folder of plugins). These may include folders an
+    /// environment's configuration added, so a plugin found only here is not the user's own.
     pub plugin_dirs: Vec<PathBuf>,
+    /// The plugin folders from the user's own settings (a subset of `plugin_dirs`, not what an
+    /// environment's configuration merged in). Only plugins under these or under
+    /// `<config_dir>/plugins` may rewrite tool calls and prompts with their hooks; a plugin from
+    /// any other folder may still block.
+    pub user_plugin_dirs: Vec<PathBuf>,
     /// Plugins, by name, that are found but not loaded.
     pub disabled_plugins: Vec<String>,
     /// `[[hooks]]` from the user's configuration.
@@ -123,6 +129,23 @@ pub fn load_with(sources: &Sources, hooks_allowed: &dyn Fn(&str) -> bool) -> Ext
     plugin_dirs.extend(sources.plugin_dirs.iter().cloned());
     let (mut plugins, mut notices) = plugins::discover(&plugin_dirs, sources.server_timeout);
     plugins.retain(|plugin| !sources.disabled_plugins.contains(&plugin.name));
+    // A repository can add plugin folders to an environment's configuration, and a plugin there
+    // runs commands once trusted; it still must not rewrite what the user or the model asked.
+    let user_roots: Vec<PathBuf> = std::iter::once(sources.config_dir.join("plugins"))
+        .chain(sources.user_plugin_dirs.iter().cloned())
+        .filter_map(|dir| dir.canonicalize().ok())
+        .collect();
+    for plugin in &mut plugins {
+        let mine = plugin
+            .root
+            .canonicalize()
+            .is_ok_and(|root| user_roots.iter().any(|dir| root.starts_with(dir)));
+        if !mine {
+            for hook in &mut plugin.hooks {
+                hook.may_rewrite = false;
+            }
+        }
+    }
     let eager = |name: &str| !sources.lazy || sources.eager.iter().any(|eager| eager == name);
 
     let project = &sources.project_dir;
@@ -206,6 +229,7 @@ mod tests {
             config_dir: config.to_path_buf(),
             project_dir: project.to_path_buf(),
             plugin_dirs: Vec::new(),
+            user_plugin_dirs: Vec::new(),
             disabled_plugins: Vec::new(),
             hooks: Vec::new(),
             server_timeout: Duration::from_secs(5),
@@ -250,6 +274,58 @@ mod tests {
         assert!(refused.hooks.is_empty());
         assert!(refused.index().unwrap().contains("- style: House style"));
         assert!(!load_with(&sources, &|_| true).hooks.is_empty());
+    }
+
+    #[test]
+    fn only_a_plugin_from_the_users_own_folders_may_rewrite() {
+        let (config, project) = fixture();
+        let hooks_json =
+            r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "x"}]}]}}"#;
+        let plugin = |dir: &Path, name: &str| {
+            let root = dir.join(name);
+            write(
+                &root.join(".claude-plugin/plugin.json"),
+                &format!(r#"{{"name": "{name}"}}"#),
+            );
+            write(&root.join("hooks/hooks.json"), hooks_json);
+        };
+        let env_dir = tempfile::tempdir().unwrap();
+        let own_dir = tempfile::tempdir().unwrap();
+        plugin(env_dir.path(), "from-env");
+        plugin(own_dir.path(), "from-own");
+        let mut sources = sources(config.path(), project.path(), true, &[]);
+        sources.plugin_dirs = vec![env_dir.path().to_path_buf(), own_dir.path().to_path_buf()];
+        sources.user_plugin_dirs = vec![own_dir.path().to_path_buf()];
+        let loaded = load(&sources);
+        let rewrites = |origin: &str| {
+            loaded
+                .hooks
+                .list()
+                .iter()
+                .find(|hook| hook.origin == origin)
+                .map(|hook| hook.may_rewrite)
+        };
+        // Not an agent's install, and not from an environment's folder: only the latter is
+        // refused, the user's folders and `<config>/plugins` may rewrite.
+        assert_eq!(rewrites("plugin:from-env"), Some(false));
+        assert_eq!(rewrites("plugin:from-own"), Some(true));
+        assert_eq!(rewrites("plugin:lint"), Some(true));
+        // Spelling an environment's folder so that it passes through the user's plugin folder
+        // (`plugins/../envp`) does not make it the user's: the paths are compared resolved.
+        let through = config.path().join("envp");
+        plugin(&through, "from-dots");
+        std::fs::create_dir_all(config.path().join("plugins")).unwrap();
+        let mut tricky = sources.clone();
+        tricky.plugin_dirs = vec![config.path().join("plugins/../envp")];
+        tricky.user_plugin_dirs = Vec::new();
+        let loaded = load(&tricky);
+        let dots = loaded
+            .hooks
+            .list()
+            .iter()
+            .find(|hook| hook.origin == "plugin:from-dots")
+            .expect("the plugin is found");
+        assert!(!dots.may_rewrite);
     }
 
     #[test]

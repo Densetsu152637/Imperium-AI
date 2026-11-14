@@ -75,6 +75,7 @@ async fn skills_commands_and_hooks_shape_a_turn() {
         config_dir: config.path().to_path_buf(),
         project_dir: project.path().to_path_buf(),
         plugin_dirs: Vec::new(),
+        user_plugin_dirs: Vec::new(),
         disabled_plugins: Vec::new(),
         hooks: vec![ConfiguredHook {
             event: "PreToolUse".into(),
@@ -235,6 +236,7 @@ async fn lifecycle_events_reach_http_hooks_with_their_payloads() {
         config_dir: config.path().to_path_buf(),
         project_dir: project.path().to_path_buf(),
         plugin_dirs: Vec::new(),
+        user_plugin_dirs: Vec::new(),
         disabled_plugins: Vec::new(),
         hooks: [
             "turn.start",
@@ -387,16 +389,23 @@ struct Rewrite {
 /// Runs a turn in which the model calls `run_command` with `echo hi`, `run_command` is
 /// pre-approved, and a `tool.before` hook answers with `answer`. Any approval asked is denied.
 async fn rewritten_call(answer: Value) -> Rewrite {
+    hooked_turn("tool.before", answer).await
+}
+
+/// [`rewritten_call`] with the hook on `event` (a `prompt.submit` hook answers the user's
+/// message, not the call).
+async fn hooked_turn(event: &str, answer: Value) -> Rewrite {
     let config = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     let extensions = imperium_extensions::load(&Sources {
         config_dir: config.path().to_path_buf(),
         project_dir: project.path().to_path_buf(),
         plugin_dirs: Vec::new(),
+        user_plugin_dirs: Vec::new(),
         disabled_plugins: Vec::new(),
         hooks: vec![ConfiguredHook {
-            event: "tool.before".into(),
-            matcher: "run_command".into(),
+            event: event.into(),
+            matcher: String::new(),
             command: String::new(),
             url: Some(answering(answer).await),
             headers: Default::default(),
@@ -448,6 +457,7 @@ async fn rewritten_call(answer: Value) -> Rewrite {
         keep_agent_state: true,
         effort: Default::default(),
         attended: true,
+        attachments: Default::default(),
         harness: Default::default(),
         journal_path: project.path().join(".journal.jsonl"),
     })
@@ -538,4 +548,24 @@ async fn an_answer_that_is_not_a_rewrite_changes_nothing() {
     assert!(seen.asked.is_empty());
     assert!(seen.started[0].contains("echo hi"), "{}", seen.started[0]);
     assert!(!seen.notices.iter().any(|n| n.contains("A hook rewrote")));
+}
+
+#[tokio::test]
+async fn a_rewritten_prompt_shows_the_user_both_versions() {
+    let seen = hooked_turn("prompt.submit", json!({"updated_prompt": "say it nicely"})).await;
+    let notice = seen
+        .notices
+        .iter()
+        .find(|notice| notice.contains("A hook rewrote your message"))
+        .expect("a notice shows both versions");
+    assert!(notice.contains("Before: go"), "{notice}");
+    assert!(notice.contains("After: say it nicely"), "{notice}");
+    // An answer that is not a rewrite leaves the message alone.
+    let plain = hooked_turn("prompt.submit", json!({"updated_prompt": "   "})).await;
+    assert!(
+        !plain
+            .notices
+            .iter()
+            .any(|n| n.contains("rewrote your message"))
+    );
 }
