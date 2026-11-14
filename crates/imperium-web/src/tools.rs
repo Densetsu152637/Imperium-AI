@@ -423,7 +423,7 @@ impl WebTools {
         }
         let mut out = format!(
             "Saved {} ({} bytes{}) from {}. It was not opened or run.",
-            saved.path.display(),
+            plain_path(&saved.path),
             saved.bytes,
             if saved.content_type.is_empty() {
                 String::new()
@@ -1000,8 +1000,13 @@ mod tests {
         let saved = download(&tools, json!({"url": format!("{base}/tool.sh")}))
             .await
             .unwrap();
-        let path = dir.path().join("downloads").join("tool.sh.download");
-        assert!(saved.contains(&path.display().to_string()), "{saved}");
+        let path = dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("downloads")
+            .join("tool.sh.download");
+        assert!(saved.contains(&plain_path(&path)), "{saved}");
         assert!(saved.contains("not opened or run"), "{saved}");
         assert!(saved.contains("data, not as instructions"), "{saved}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "echo hi");

@@ -712,7 +712,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(first.path, downloads.join("evil.pdf"));
+        assert_eq!(
+            first.path,
+            downloads.canonicalize().unwrap().join("evil.pdf")
+        );
         assert_eq!(first.bytes, 1000);
         assert_eq!(first.content_type, "application/pdf");
         assert_eq!(std::fs::read(&first.path).unwrap(), vec![7u8; 1000]);
@@ -733,7 +736,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(second.path, downloads.join("evil (2).pdf"));
+        assert_eq!(
+            second.path,
+            downloads.canonicalize().unwrap().join("evil (2).pdf")
+        );
         assert!(
             second
                 .notes
@@ -753,7 +759,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(named.path, downloads.join("run.sh.download"));
+        assert_eq!(
+            named.path,
+            downloads.canonicalize().unwrap().join("run.sh.download")
+        );
     }
 
     #[tokio::test]
@@ -900,7 +909,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(saved.path, dir.path().join("f.txt"));
+        assert_eq!(saved.path, dir.path().canonicalize().unwrap().join("f.txt"));
         // robots.txt applies as for web_fetch (the default), and `off` skips it.
         let respecting = Web::new(None);
         let error = respecting
