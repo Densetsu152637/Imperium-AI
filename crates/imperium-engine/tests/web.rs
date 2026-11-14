@@ -462,7 +462,7 @@ async fn agents_use_tabs_and_save_downloads_after_approval() {
             }),
             downloads: Some(Downloads {
                 dir: dir.path().join("downloads"),
-                max_bytes: 1_000_000,
+                max_bytes: 1024 * 1024,
                 workspace: None,
             }),
         })],
@@ -661,7 +661,7 @@ async fn a_download_is_approved_afresh_every_time() {
             }),
             downloads: Some(Downloads {
                 dir: dir.path().join("downloads"),
-                max_bytes: 1_000_000,
+                max_bytes: 1024 * 1024,
                 workspace: None,
             }),
         })],
