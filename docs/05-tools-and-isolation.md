@@ -241,14 +241,15 @@ to ask about one missing piece instead of guessing. `options` lists the likely a
 five, best first; empty when the answer is open); `question` is the sentence shown (made from
 the missing parameter when left out); `confidence` (0 to 1) is the root's confidence in its
 best guess and is only echoed back. It goes through the same prompt as
-[`ask_user`](#ask_user): `questions_asked` with one question whose first option is the one the
-form offers first, `session.answer`, `questions_answered`, no model calls while it waits, and
-the same 10-minute limit. Unlike `ask_user`, a blank answer or a timeout is not a
-recommendation to take: the result says the parameter is still unknown, not to guess it, to
-finish what does not depend on it and to tell the user what is waiting. Unattended sessions,
-which answer blank, therefore stop at the question instead of choosing. The root's prompt says
-when to call it (confidence below `harness.clarify_below`, after looking at the state, the
-conversation and the files), and
+[`ask_user`](#ask_user): `questions_asked` with one question, `session.answer`,
+`questions_answered`, no model calls while it waits, and the same 10-minute limit. Nothing is
+recommended, so a blank answer or a timeout is not taken as a choice: the result says the
+parameter is still unknown, not to guess it, to finish what does not depend on it and to tell
+the user what is waiting. It is offered only in attended sessions and when `harness.clarify`
+applies (`auto`: a local root model): sessions that nobody reads (background, auto-fix, project
+and persistent agents) are not offered it, because their runners answer `ask_user` with its
+recommendation. The root's prompt says when to call it (confidence below
+`harness.clarify_below`, after looking at the state, the conversation and the files), and
 [the evaluation](03-agent-engine.md#harness-aids-for-small-models) scores it.
 
 ### `update_state`

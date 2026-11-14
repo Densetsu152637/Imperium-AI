@@ -44,7 +44,10 @@ impl ToolDefinition {
     }
 }
 
-/// Every model-facing tool Emperor uses, in index order.
+/// Every model-facing tool Emperor uses, in index order. `request_clarification` and
+/// `update_state` are offered by the engine only when the harness aids they belong to are on
+/// (`harness.clarify`, `harness.state`: by default for a local root model in an attended
+/// session); the export cannot say that, so their `available` means "implemented".
 pub fn all() -> Vec<ToolDefinition> {
     vec![
         spawn_agent(),

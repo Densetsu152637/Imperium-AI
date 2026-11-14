@@ -436,9 +436,9 @@ and `environments.agent_update` (protocol 0.28)
     reasoning-pattern retrieval store. For a request such as "fix the issue from earlier", the agent
     checks the error log state first, and asks only if that does not settle it
     ([03](03-agent-engine.md#harness-aids-for-small-models), [05](05-tools-and-isolation.md#request_clarification), [17](17-memory.md)).
-    Built as described: the rewrite runs for local root models by default (`harness.dereference`),
-    the state lives in the conversation and is updated by the rewrite and by `update_state`,
-    `request_clarification` reuses the `ask_user` prompt, the ambiguity patterns are a new table
+    Built as described, on by default only for local root models in attended sessions (`[harness]`):
+    the rewrite adds entities to the state, which lives in the conversation and is also updated by
+    `update_state`; `request_clarification` reuses the `ask_user` prompt, the ambiguity patterns are a new table
     (no retrieval store existed) with a training document, and `schemas/eval` scores asking against
     guessing. Not built: automatic state updates from tool calls, a separate small model for the
     rewrite, and showing the state in the desktop.

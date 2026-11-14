@@ -26,16 +26,11 @@ pub const PATTERNS: &[Pattern] = &[
         triggers: &[
             "from earlier",
             "from before",
-            "we had",
-            "the issue",
+            "we had earlier",
             "that issue",
-            "the problem",
             "that problem",
-            "the bug",
             "that bug",
-            "the error",
             "that error",
-            "the failure",
             "that failure",
             "fix it",
             "try again",
@@ -49,17 +44,12 @@ pub const PATTERNS: &[Pattern] = &[
         triggers: &[
             "that file",
             "this file",
-            "the file",
-            "same file",
+            "the same file",
             "the other file",
             "that test",
-            "the test",
             "that function",
-            "the function",
-            "the config",
-            "the script",
-            "that one",
-            "this one",
+            "that config",
+            "that script",
         ],
         guidance: "The user names a target by pointing at it. Resolve it against the session state's files first, then the files read, written or listed most recently in the conversation. Exactly one plausible candidate: use it and name it in your reply. Two or more: call request_clarification with the candidate paths as options. None: search the project (glob, grep) before asking.",
     },
@@ -69,10 +59,9 @@ pub const PATTERNS: &[Pattern] = &[
             "previous step",
             "last step",
             "that step",
-            "previous one",
-            "last one",
             "do that again",
-            "redo",
+            "redo that",
+            "redo it",
             "undo that",
             "undo it",
             "revert that",
@@ -108,8 +97,6 @@ pub const PATTERNS: &[Pattern] = &[
             "the first one",
             "the second one",
             "the third one",
-            "the former",
-            "the latter",
             "the other option",
             "the other one",
         ],
@@ -120,14 +107,13 @@ pub const PATTERNS: &[Pattern] = &[
         triggers: &[
             "delete all",
             "remove all",
-            "clean up",
+            "delete everything",
+            "remove everything",
             "wipe",
-            "reset",
             "force push",
-            "everything",
             "all of them",
-            "the rest",
-            "the old",
+            "delete the old",
+            "remove the old",
         ],
         guidance: "The scope of a destructive request is vague. Enumerate the concrete set first (list, glob, git status) and never act on a vague scope. When the set is small and the words clearly cover it, say what you will remove and go ahead; otherwise call request_clarification with the concrete groups as options, the smallest first.",
     },
@@ -146,7 +132,6 @@ pub const PATTERNS: &[Pattern] = &[
             "share it",
             "post it",
             "tell the team",
-            "the team",
         ],
         guidance: "The action reaches outside the project and the recipient or environment is missing. These cannot be taken back, so do not guess: use the session state, the project configuration and the conversation to build the options (for example staging and production), then call request_clarification. Do the preparation that does not depend on the answer meanwhile.",
     },
@@ -158,24 +143,21 @@ pub const PATTERNS: &[Pattern] = &[
             "make it work",
             "improve it",
             "clean it up",
+            "tidy it up",
             "optimise it",
             "optimize it",
-            "refactor it",
-            "tidy up",
         ],
         guidance: "The goal has no measurable target. Take the target from the session state's goals and constraints, or from the failing test or slow command the conversation just showed. When none exists, call request_clarification asking what to improve, with two or three concrete options drawn from the code in play.",
     },
     Pattern {
         id: "correction",
         triggers: &[
-            "actually",
             "not that",
             "i meant",
+            "scratch that",
+            "the wrong one",
             "no, the other",
             "instead of that",
-            "scratch that",
-            "never mind",
-            "the wrong one",
         ],
         guidance: "The user corrects what you took. The latest message wins: drop the superseded goal, constraint or entity with update_state, then redo the work on the corrected target. Ask with request_clarification only when you cannot tell which earlier choice is replaced.",
     },
@@ -274,6 +256,29 @@ mod tests {
         // "reset" inside another word is not the word.
         assert!(ids("presetting the thing").is_empty());
         assert!(ids("Add a unit test for parse_args").is_empty());
+    }
+
+    /// Routine requests that name things, ask about errors, tests or files in general, or say
+    /// "everything" or "actually" in passing select nothing.
+    #[test]
+    fn routine_messages_select_no_pattern() {
+        for message in [
+            "Add a unit test for the parser",
+            "Explain the error handling in src/main.rs",
+            "Write the tests for the file watcher",
+            "Fix the failing test in crates/engine",
+            "Reset the counter at the start of each loop",
+            "Run the tests and show me everything that failed",
+            "Clean up the formatting of the README",
+            "Actually, that is a good point about naming; please continue",
+            "Summarise the issue tracker setup and the team's labels",
+            "Read the file src/lib.rs and describe the config loader",
+            "Delete the temporary file scratch.txt",
+            "Push the branch feat/login to origin",
+            "What does the old parser do?",
+        ] {
+            assert!(ids(message).is_empty(), "{message}: {:?}", ids(message));
+        }
     }
 
     #[test]

@@ -139,6 +139,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         max_steps: 8,
         auto_compact: false,
         auto_compact_at: None,
+        attended: true,
         harness: Default::default(),
         background: None,
         checkpoints: None,

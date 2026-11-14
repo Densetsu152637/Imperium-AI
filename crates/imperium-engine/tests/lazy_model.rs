@@ -160,8 +160,12 @@ fn start(
         budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
+        attended: true,
         harness: imperium_config::HarnessSettings {
-            dereference: imperium_config::Dereference::Off,
+            dereference: imperium_config::HarnessMode::Off,
+            state: imperium_config::HarnessMode::Off,
+            hints: imperium_config::HarnessMode::Off,
+            clarify: imperium_config::HarnessMode::Off,
             ..Default::default()
         },
         keep_agent_state: true,

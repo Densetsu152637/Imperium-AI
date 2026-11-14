@@ -102,6 +102,11 @@ events (`imperium_protocol::clarification::Observed::from_events`), then score i
 | resolvable | acts | 1.0 |
 | resolvable | asks anyway | -0.5 |
 
+The cases in `schemas/eval/clarification-cases.json` are a hold-out for measuring a trained
+model: do not use them as training data (write other cases for that), or the score stops
+telling you whether the model generalises. A call to `ask_user` counts as asking too, its first
+question standing for the missing parameter; `request_clarification` is the one to teach.
+
 `imperium_protocol::clarification::report` also gives the ask recall (ambiguous cases it asked
 on) and ask precision (its asks that were on ambiguous cases); a model that asks about
 everything has full recall and poor precision, and one that never asks the reverse. The reward

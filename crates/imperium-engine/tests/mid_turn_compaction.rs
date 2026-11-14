@@ -111,7 +111,7 @@ fn start_gated(
             model: "model".into(),
             pricing: None,
             local: false,
-            context_window: Some(12_000),
+            context_window: Some(10_000),
             kind: "openai".into(),
             reasoning: None,
         }),
@@ -134,6 +134,7 @@ fn start_gated(
         max_steps: 12,
         auto_compact: false,
         auto_compact_at,
+        attended: true,
         harness: Default::default(),
         background: None,
         checkpoints: None,
@@ -253,7 +254,7 @@ async fn a_low_threshold_is_clamped_and_compaction_cannot_loop() {
     let url = serve(Arc::clone(&fake), false).await;
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "word ".repeat(1_500)).unwrap();
-    // 0.1 is clamped to 0.5 of the 12,000-token window (the built-in tools alone take about
+    // 0.1 is clamped to 0.5 of the 10,000-token window (the built-in tools alone take about
     // a third of that, so a smaller window would leave nothing worth compacting).
     let session = start(&url, dir.path(), Some(0.1));
 
@@ -279,8 +280,8 @@ async fn a_low_threshold_is_clamped_and_compaction_cannot_loop() {
     assert!(compactions.len() <= fake.turns().len(), "{compactions:?}");
     for (before, after) in compactions {
         assert!(after < before, "{before} -> {after}");
-        // Aimed well under the 6,000-token trigger.
-        assert!(after <= 4_800 + 400, "{after}");
+        // Aimed well under the 5,000-token trigger.
+        assert!(after <= 4_000 + 400, "{after}");
     }
 }
 

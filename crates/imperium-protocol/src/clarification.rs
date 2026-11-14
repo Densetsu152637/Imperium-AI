@@ -6,7 +6,8 @@
 //! an agent did on one case, read from the events of its turn; [`score`] turns the pair into a
 //! reward in `-1..=1` and [`report`] summarises a run. The same reward is what the Emperor
 //! training repository optimises: it vendors this folder and reuses the cases and the table
-//! below.
+//! below. The 15 cases are a hold-out: they measure a trained model, so they must not be
+//! used as training data (write new cases for that).
 //!
 //! | Case | Behaviour | Reward |
 //! | --- | --- | --- |
@@ -21,6 +22,9 @@ use crate::session::SessionEvent;
 
 /// The name of the tool whose use the evaluation looks for.
 pub const CLARIFICATION_TOOL: &str = "request_clarification";
+
+/// The older question tool, which also counts as asking.
+pub const ASK_USER_TOOL: &str = "ask_user";
 
 /// One evaluation case.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +74,10 @@ pub struct Observed {
 }
 
 impl Observed {
-    /// Reads the first clarification out of a turn's events (its tool call's arguments).
+    /// Reads the first question the agent asked out of a turn's events (its tool call's
+    /// arguments): `request_clarification`, or `ask_user`, whose first question stands for the
+    /// missing parameter. Either counts as asking: what is scored is whether it asked instead
+    /// of guessing, and `request_clarification` is the one the prompt teaches.
     pub fn from_events<'a>(events: impl IntoIterator<Item = &'a SessionEvent>) -> Observed {
         for event in events {
             let SessionEvent::ToolStarted {
@@ -79,20 +86,25 @@ impl Observed {
             else {
                 continue;
             };
-            if tool != CLARIFICATION_TOOL {
+            if tool != CLARIFICATION_TOOL && tool != ASK_USER_TOOL {
                 continue;
             }
             let parsed: serde_json::Value = arguments
                 .as_deref()
                 .and_then(|text| serde_json::from_str(text).ok())
                 .unwrap_or_default();
+            let (missing, options) = if tool == ASK_USER_TOOL {
+                (
+                    &parsed["questions"][0]["question"],
+                    &parsed["questions"][0]["options"],
+                )
+            } else {
+                (&parsed["missing_parameter"], &parsed["options"])
+            };
             return Observed {
                 asked: true,
-                missing_parameter: parsed["missing_parameter"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                options: parsed["options"]
+                missing_parameter: missing.as_str().unwrap_or_default().to_string(),
+                options: options
                     .as_array()
                     .map(|items| {
                         items
@@ -314,6 +326,14 @@ mod tests {
             Observed::from_events(&[started("read_file", None)]),
             Observed::default()
         );
+        // ask_user counts as asking too, its first question standing for the parameter.
+        let asked_user = Observed::from_events(&[started(
+            ASK_USER_TOOL,
+            Some(
+                r#"{"questions":[{"question":"Which file?","options":["a.rs"],"recommended":"a.rs"}]}"#,
+            ),
+        )]);
+        assert_eq!(asked_user, asked("Which file?", &["a.rs"]));
         // A call whose arguments are lost still counts as asking.
         assert!(Observed::from_events(&[started(CLARIFICATION_TOOL, None)]).asked);
     }

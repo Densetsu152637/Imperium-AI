@@ -75,6 +75,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         budget_gate: None,
         auto_compact: false,
         auto_compact_at: None,
+        attended: true,
         harness: Default::default(),
         keep_agent_state: true,
         effort: Default::default(),
