@@ -1035,8 +1035,9 @@ close button.
 
 **Effort selector (implemented):** beside the model, a compact list of the session's
 [reasoning effort](04-models-and-routing.md#reasoning-effort) (*Low*, *Medium*, *High*, *Max
-effort*), shown only while the session's model can reason (the session summary's `reasoning`,
-updated when the model is switched). Choosing one sends `session.control` `set_effort`, which
+effort*). While the session's model cannot reason (the session summary's `reasoning`, updated when
+the model is switched) the selector stays but is greyed out and disabled, with the tooltip *This
+model doesn't reason*, and no effort is sent. Choosing one sends `session.control` `set_effort`, which
 applies from the agents' next model call, during a turn too, and is kept across restarts; a
 refusal shows its error beside the list. New sessions start at `models.effort`, which the
 Settings window lists with the other model settings.

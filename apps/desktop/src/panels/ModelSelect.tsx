@@ -9,6 +9,7 @@ import type { LocalModelRow, ModelRow, RuntimeInfo, SessionControlResult } from 
 
 import { Select, type SelectOption } from "../components/Select";
 import { chooserModels, type ModelGroup, type ModelMarks } from "../modelPrefs";
+import { effortToSend, NO_REASONING_HINT } from "../effort";
 import { formatTokens } from "../sessions";
 import { useSettings } from "../settings";
 
@@ -389,25 +390,28 @@ const EFFORT_OPTIONS: SelectOption[] = [
 ];
 
 /**
- * The open session's reasoning effort, beside its model. The footer shows it only when the
- * model can reason; a change applies from the agents' next model call, during a turn too.
+ * The open session's reasoning effort, beside its model. For a model that cannot reason it is
+ * greyed out, not hidden, with a tooltip saying why; a change applies from the agents' next model call, during a turn too.
  */
 export function EffortSelect({
   current,
   disabled,
+  reasons = true,
   onChange,
 }: {
   /** The session's effort; daemons before protocol 0.9 send none, shown as medium. */
   current: Effort | undefined;
   disabled?: boolean;
+  /** Whether the model can reason; if not the control stays, greyed out, and sends nothing. */
+  reasons?: boolean;
   /** Sets the effort; rejects with the daemon's reason. */
   onChange: (effort: Effort) => Promise<unknown>;
 }) {
   const [pending, setPending] = useState<Effort | null>(null);
   const [error, setError] = useState<string | null>(null);
   const choose = (value: string) => {
-    const effort = value as Effort;
-    if (effort === current) return;
+    const effort = effortToSend(reasons, current, value as Effort);
+    if (effort === null) return;
     setPending(effort);
     setError(null);
     onChange(effort)
@@ -415,13 +419,17 @@ export function EffortSelect({
       .finally(() => setPending(null));
   };
   return (
-    <span className="effort-select">
+    <span
+      className={`effort-select${reasons ? "" : " unavailable"}`}
+      title={reasons ? undefined : NO_REASONING_HINT}
+      aria-disabled={reasons ? undefined : true}
+    >
       <Select
         aria-label="Reasoning effort"
         className="effort-select-button"
         value={pending ?? current ?? "medium"}
         options={EFFORT_OPTIONS}
-        disabled={disabled || pending !== null}
+        disabled={disabled || !reasons || pending !== null}
         onChange={choose}
       />
       {error && (

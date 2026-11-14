@@ -58,6 +58,7 @@ import { describeWait, type Residency } from "../waits";
 import { modelName, useModelNames } from "../modelNames";
 import type { DaemonClient } from "../daemon/client";
 import { SentAttachments } from "../components/AttachmentChips";
+import { reasoningAvailable } from "../effort";
 import { Composer } from "./Composer";
 import { CompareForm } from "./ComparePanel";
 import { ContextBreakdownView } from "./ContextBreakdown";
@@ -497,10 +498,11 @@ export function SessionPanel({
           onOpenLocalModels={onOpenLocalModels}
           onSwitch={onSetModel}
         />
-        {onSetEffort && session.summary.reasoning && (
+        {onSetEffort && (
           <EffortSelect
             key={`effort-${session.summary.session_id}`}
             current={session.summary.effort}
+            reasons={reasoningAvailable(session.summary)}
             disabled={archived}
             onChange={onSetEffort}
           />

@@ -756,6 +756,8 @@ button.icon-only.panel-tool .lucide {
 
 /* Session: a header, the conversation, and the composer floating at the bottom */
 .session {
+  /* One gutter for everything stacked under the transcript, so the column lines up. */
+  --session-gutter: calc(var(--space) * 3);
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -808,9 +810,9 @@ button.icon-only.panel-tool .lucide {
   flex-wrap: wrap;
   align-items: center;
   gap: calc(var(--space) * 0.5) var(--space);
-  width: calc(100% - var(--space) * 6);
+  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
   max-width: var(--prose-max);
-  margin: calc(var(--space) * -1.5) auto calc(var(--space) * 1.5);
+  margin: 0 auto calc(var(--space) * 1.5);
   padding: 0 calc(var(--space) * 0.5);
   font-size: 0.8rem;
   color: var(--muted);
@@ -854,6 +856,19 @@ button.icon-only.panel-tool .lucide {
 
 .session-footer .effort-select-button .select-value {
   color: var(--muted);
+}
+
+/* A model that cannot reason: the control stays, greyed out, with a tooltip saying why. */
+.effort-select.unavailable {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.effort-select.unavailable button.select {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  pointer-events: none;
 }
 
 /* How actions are approved: as quiet as the effort beside it. */
@@ -961,7 +976,7 @@ button.icon-only.panel-tool .lucide {
 .session-drawer {
   position: relative;
   flex: none;
-  width: calc(100% - var(--space) * 6);
+  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
   max-width: var(--prose-max);
   max-height: 45vh;
   margin: 0 auto var(--space);
@@ -1024,7 +1039,7 @@ button.icon-only.panel-tool .lucide {
 }
 
 .new-session-options {
-  margin-top: calc(var(--space) * -1.5);
+  margin-top: 0;
 }
 
 .new-session-worktree {
@@ -1521,9 +1536,9 @@ button.danger:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: calc(var(--space) * 0.75);
-  width: calc(100% - var(--space) * 6);
+  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
   max-width: var(--prose-max);
-  margin: 0 auto calc(var(--space) * 2.5);
+  margin: 0 auto var(--space);
   border-radius: var(--radius-lg);
 }
 
@@ -1641,7 +1656,7 @@ button.danger:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: calc(var(--space) * 0.5);
-  width: calc(100% - var(--space) * 6);
+  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
   max-width: var(--prose-max);
   margin: 0 auto var(--space);
   padding: 0;
@@ -3681,7 +3696,10 @@ button.select.sessions-sort {
   align-items: center;
   justify-content: space-between;
   gap: var(--space);
-  margin: 0 var(--space) var(--space);
+  flex: none;
+  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
+  max-width: var(--prose-max);
+  margin: 0 auto var(--space);
   padding: 0.5rem 0.75rem;
   border: 1px dashed var(--border-strong, var(--border));
   border-radius: var(--radius);
@@ -4132,7 +4150,10 @@ button.colour-choice[aria-checked="true"]::after {
 
 /* A session without a model: says what to do before its messages can run. */
 .needs-model {
-  margin: 0 var(--space) var(--space);
+  flex: none;
+  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
+  max-width: var(--prose-max);
+  margin: 0 auto var(--space);
   padding: 0.5rem 0.75rem;
   border: 1px dashed var(--accent);
   border-radius: var(--radius);
@@ -4209,7 +4230,7 @@ button.colour-choice[aria-checked="true"]::after {
   align-items: center;
   justify-content: space-between;
   gap: var(--space);
-  width: calc(100% - var(--space) * 6);
+  width: calc(100% - var(--session-gutter, calc(var(--space) * 3)) * 2);
   max-width: var(--prose-max);
   margin: 0 auto var(--space);
   padding: calc(var(--space) * 0.75) var(--space) calc(var(--space) * 0.75) calc(var(--space) * 1.5);
@@ -4293,10 +4314,12 @@ button.colour-choice[aria-checked="true"]::after {
     padding-inline: calc(var(--space) * 1.5);
   }
 
-  .composer,
+  .session,
+  .new-session-view {
+    --session-gutter: calc(var(--space) * 1.5);
+  }
+
   .plan,
-  .session-footer,
-  .session-drawer,
   .new-session-intro,
   .new-session-error {
     width: calc(100% - var(--space) * 3);
