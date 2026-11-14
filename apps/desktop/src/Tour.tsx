@@ -26,11 +26,31 @@ const OTHER_DIALOGS = '[aria-modal="true"]:not(.tour-card), dialog[open], [role=
 
 const FOCUSABLE = "button:not(:disabled), [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
 
-export function Tour({ steps = TOUR_STEPS, onEnd }: { steps?: TourStep[]; onEnd: (outcome: TourOutcome) => void }) {
+/** Mutations that happened inside the tour's own elements: they never change what the tour shows. */
+const ownMutations = (records: MutationRecord[]): boolean =>
+  records.every((record) => {
+    const node = record.target instanceof Element ? record.target : record.target.parentElement;
+    return !!node?.closest(".tour-backdrop");
+  });
+
+const sameBox = (a: Box | null, b: Box | null): boolean =>
+  a === b || (!!a && !!b && a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height);
+
+export function Tour({
+  steps = TOUR_STEPS,
+  hold = false,
+  onEnd,
+}: {
+  steps?: TourStep[];
+  /** The app has something more urgent to show (an approval waiting): the tour steps aside until it is gone. */
+  hold?: boolean;
+  onEnd: (outcome: TourOutcome) => void;
+}) {
   const [currentId, setCurrentId] = useState(steps[0]?.id ?? "");
   const [box, setBox] = useState<Box | null>(null);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
-  const [paused, setPaused] = useState(() => !!document.querySelector(OTHER_DIALOGS));
+  const [otherDialog, setOtherDialog] = useState(false);
+  const paused = otherDialog || hold;
   const [announcement, setAnnouncement] = useState("");
   // Bumped when the page changed in a way that can change which steps are available.
   const [, setTick] = useState(0);
@@ -65,9 +85,13 @@ export function Tour({ steps = TOUR_STEPS, onEnd }: { steps?: TourStep[]; onEnd:
 
   // Step aside while another dialog is open, and come back when it closes.
   useEffect(() => {
-    const check = () => setPaused(!!document.querySelector(OTHER_DIALOGS));
-    const observer = new MutationObserver(check);
+    const check = () => setOtherDialog(!!document.querySelector(OTHER_DIALOGS));
+    const observer = new MutationObserver((records) => {
+      if (!ownMutations(records)) check();
+    });
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["open", "aria-modal", "role"] });
+    // A dialog that closed before this ran (Settings, when the tour was started from it) left nothing to observe.
+    check();
     return () => observer.disconnect();
   }, []);
 
@@ -81,9 +105,11 @@ export function Tour({ steps = TOUR_STEPS, onEnd }: { steps?: TourStep[]; onEnd:
     const measure = () => {
       const rect = element?.getBoundingClientRect();
       const next = rect && rect.width > 0 && element?.isConnected ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null;
-      setBox(next);
+      // Unchanged values keep the old state, so streaming output elsewhere does not re-render the tour.
+      setBox((prev) => (sameBox(prev, next) ? prev : next));
       const size = card.current?.getBoundingClientRect();
-      setPosition(cardPosition(next, { width: size?.width ?? 360, height: size?.height ?? 200 }, { width: window.innerWidth, height: window.innerHeight }));
+      const placed = cardPosition(next, { width: size?.width ?? 360, height: size?.height ?? 200 }, { width: window.innerWidth, height: window.innerHeight });
+      setPosition((prev) => (prev && prev.left === placed.left && prev.top === placed.top ? prev : placed));
     };
     let frame = 0;
     const refresh = () => {
@@ -98,7 +124,11 @@ export function Tour({ steps = TOUR_STEPS, onEnd }: { steps?: TourStep[]; onEnd:
     window.addEventListener("scroll", refresh, true);
     const resize = element && typeof ResizeObserver !== "undefined" ? new ResizeObserver(refresh) : null;
     if (element) resize?.observe(element);
-    const mutations = step.target ? new MutationObserver(refresh) : null;
+    const mutations = step.target
+      ? new MutationObserver((records) => {
+          if (!ownMutations(records)) refresh();
+        })
+      : null;
     mutations?.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden"] });
     return () => {
       cancelAnimationFrame(frame);
@@ -109,12 +139,13 @@ export function Tour({ steps = TOUR_STEPS, onEnd }: { steps?: TourStep[]; onEnd:
     };
   }, [step]);
 
-  // Focus the card on each step (and again when the tour comes back from another dialog). The
-  // first step is read from the dialog's own name and description; later ones are announced below.
+  // Focus the card when the tour opens and when it comes back from another dialog, which reads
+  // the dialog's name and description. Moving between steps leaves focus on the button or card it
+  // is already on, so the step is read once, by the announcement below.
   const first = useRef(true);
   useEffect(() => {
     if (paused) return;
-    card.current?.focus();
+    if (!card.current?.contains(document.activeElement)) card.current?.focus();
   }, [step?.id, paused]);
   useEffect(() => {
     if (first.current) {
@@ -168,7 +199,11 @@ export function Tour({ steps = TOUR_STEPS, onEnd }: { steps?: TourStep[]; onEnd:
   // Hand focus back to where it was when the tour closes.
   useEffect(() => {
     const previous = before.current;
-    return () => previous?.focus?.();
+    return () => {
+      // The element may be gone (the tour was started from Settings, which has closed).
+      const target = previous?.isConnected ? previous : document.querySelector<HTMLElement>('[data-tour="settings"], main');
+      target?.focus?.();
+    };
   }, []);
 
   if (!step) return null;

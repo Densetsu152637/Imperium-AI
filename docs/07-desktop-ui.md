@@ -631,8 +631,9 @@ and approvals, memory, and Settings. Each step is a small card beside a highligh
   only the steps that can be shown. Adding a step is adding an entry. The highlight follows its element as the window or any
   container scrolls or the layout changes, and a step whose element goes away is dropped.
 - **Never in the way.** While another dialog is open (the palette, Settings, a confirmation) the
-  tour hides and leaves keys to that dialog, then returns. If an approval arrives, the tour ends
-  as skipped so the approval is never covered.
+  tour hides and leaves keys to that dialog, then returns. If an approval arrives, the tour
+  hides the same way until none is waiting, then carries on from the same step, so the approval is
+  never covered and a first-run user does not lose the tour.
 
 Sequencing, skipping missing targets, the persisted outcome, and card placement are pure functions
 tested in `test/tourSteps.test.ts`.

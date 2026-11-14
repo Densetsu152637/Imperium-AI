@@ -1043,15 +1043,11 @@ export function App() {
   // A first run: the tour starts by itself, in the main window only, once connected and the
   // interface is up (the composer showing, or after a few seconds any panel) with no dialog open.
   const connectedNow = !!client;
-  // An approval waiting is never held up by the tour: it ends (as skipped) when one arrives,
-  // and does not start while one is pending.
+  // An approval waiting is never held up by the tour: it steps aside until none is pending
+  // (and does not start while one is), then carries on where it was.
   const approvalsWaiting = approvals.length > 0;
   const approvalsWaitingRef = useRef(approvalsWaiting);
   approvalsWaitingRef.current = approvalsWaiting;
-  useEffect(() => {
-    if (touring && approvalsWaiting) endTour("skipped");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [touring, approvalsWaiting]);
   const tourPending = shouldAutoStart(settings) && !touring;
   useEffect(() => {
     if (isDetached || !tourPending || !connectedNow) return;
@@ -1657,7 +1653,7 @@ export function App() {
         />
       )}
       <CommandPalette detached={false} />
-      {touring && <Tour onEnd={endTour} />}
+      {touring && <Tour hold={approvalsWaiting} onEnd={endTour} />}
       {modelDialog && (
         <ModelConfigDialog client={client} target={modelDialog} onClose={() => setModelDialog(null)} onSaved={refreshModels} />
       )}
