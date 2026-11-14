@@ -89,6 +89,9 @@ impl Default for FetchOptions {
 #[derive(Debug, Clone)]
 pub struct Web {
     http: reqwest::Client,
+    /// For downloads: no limit on the whole request (a large file takes longer than a page),
+    /// but a connection and a stall limit; the transfer has its own overall deadline.
+    download_http: reqwest::Client,
     search: Option<Arc<dyn SearchProvider>>,
     cache: Option<FetchCache>,
     robots: Arc<Robots>,
@@ -126,6 +129,13 @@ impl Web {
             http: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(TIMEOUT)
+                .user_agent(concat!("Imperium/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .unwrap_or_default(),
+            download_http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(15))
+                .read_timeout(Duration::from_secs(30))
                 .user_agent(concat!("Imperium/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .unwrap_or_default(),
@@ -196,14 +206,23 @@ impl Web {
         start: &Url,
         follow: &(dyn Fn(&Url) -> bool + Sync),
     ) -> Result<(reqwest::Response, bool), WebError> {
+        self.get_following_with(&self.http, start, follow).await
+    }
+
+    /// [`get_following`](Self::get_following) with the client that makes the requests.
+    async fn get_following_with(
+        &self,
+        client: &reqwest::Client,
+        start: &Url,
+        follow: &(dyn Fn(&Url) -> bool + Sync),
+    ) -> Result<(reqwest::Response, bool), WebError> {
         let mut url = start.clone();
         let mut same_origin = true;
         for _ in 0..=MAX_REDIRECTS {
             if self.respect_robots && !self.robots.allowed(&self.http, &url).await {
                 return Err(WebError::Robots(url.to_string()));
             }
-            let response = self
-                .http
+            let response = client
                 .get(url.clone())
                 .send()
                 .await

@@ -219,7 +219,7 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
               className="ghost icon-only"
               aria-label="New tab"
               title="New tab"
-              onClick={() => act({ type: "new_tab", url: null })}
+              onClick={() => act({ type: "new_tab" })}
             >
               <Plus aria-hidden="true" />
             </button>

@@ -82,7 +82,7 @@ async fn takeover_needs_a_session_with_a_browser() {
 /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
 #[tokio::test]
 async fn the_user_takes_the_browser_over_drives_it_and_gives_it_back() {
-    if imperium_web::browser::find_browser().is_none() {
+    if imperium_web::browser::browser_for_tests().is_none() {
         eprintln!("no Chrome, Chromium, or Edge found; skipping");
         return;
     }

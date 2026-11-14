@@ -10,7 +10,7 @@ export type BrowserPage = { url: string, title: string, screenshot: string,
  * The tab this page is, as `browser_tabs` and `browser_switch` name it. Absent from a
  * daemon older than protocol 0.35.
  */
-tab: string | null, 
+tab?: string, 
 /**
  * Every open tab, in the order they were opened, the one shown included. Absent from a
  * daemon older than protocol 0.35.

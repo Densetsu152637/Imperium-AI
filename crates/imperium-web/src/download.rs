@@ -1,9 +1,10 @@
 //! Saving a file a page offered (`browser_download`): into one folder chosen by the session (never
 //! by the page), under a name made safe, within a size cap, and never executed or marked
-//! executable. The request goes through the same client, `robots.txt` check and redirect rules as
-//! `web_fetch`.
+//! executable. The request goes through the same redirect rules and `robots.txt` check as
+//! `web_fetch`, on a client with its own timeouts.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 use url::Url;
@@ -12,20 +13,57 @@ use crate::{Web, WebError};
 
 /// Longest file name kept, in characters.
 const MAX_NAME: usize = 100;
+/// The longest one download may take in all (each wait for data has its own, shorter limit).
+const DOWNLOAD_DEADLINE: Duration = Duration::from_secs(600);
 
-/// Extensions of files a person might run by opening them. A download with one is saved with
-/// `.download` added, so nothing runs it by accident; its content is untouched.
-const RUNNABLE: &[&str] = &[
-    "exe", "msi", "bat", "cmd", "com", "scr", "pif", "ps1", "psm1", "vbs", "vbe", "js", "jse",
-    "wsf", "wsh", "hta", "cpl", "lnk", "reg", "dll", "sys", "jar", "apk", "app", "dmg", "pkg",
-    "deb", "rpm", "sh", "bash", "zsh", "command", "run", "appimage", "desktop", "scpt", "py", "pl",
-    "rb",
+/// Extensions of files that do nothing when a person opens them: documents, images, media,
+/// archives and plain data. Any other name, however harmless it looks (`.scf`, `.url`, `.msc`,
+/// `.iso`, `.docm`, `.xlsm` and `.library-ms` among thousands), is saved with `.download` added so
+/// nothing runs, mounts or loads it by accident; its content is untouched. A name with no
+/// extension cannot be launched and is kept as it is.
+const INERT: &[&str] = &[
+    "txt", "md", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml", "toml", "log", "ini", "pdf",
+    "rtf", "epub", "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff", "heic",
+    "avif", "mp3", "wav", "flac", "ogg", "m4a", "mp4", "mkv", "webm", "mov", "avi", "zip", "gz",
+    "tgz", "tar", "bz2", "xz", "zst", "7z", "rar", "docx", "xlsx", "pptx", "odt", "ods", "odp",
+    "ttf", "otf", "woff", "woff2", "bin", "dat", "parquet", "patch", "diff", "download",
 ];
 
-/// Names Windows reserves, whatever the extension.
+/// Names Windows reserves, whatever the extension (and trailing spaces or dots), superscript
+/// digits and the console devices included.
 const RESERVED: &[&str] = &[
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "conin$",
+    "conout$",
+    "com0",
+    "com1",
+    "com2",
+    "com3",
+    "com4",
+    "com5",
+    "com6",
+    "com7",
+    "com8",
+    "com9",
+    "com\u{b9}",
+    "com\u{b2}",
+    "com\u{b3}",
+    "lpt0",
+    "lpt1",
+    "lpt2",
+    "lpt3",
+    "lpt4",
+    "lpt5",
+    "lpt6",
+    "lpt7",
+    "lpt8",
+    "lpt9",
+    "lpt\u{b9}",
+    "lpt\u{b2}",
+    "lpt\u{b3}",
 ];
 
 /// A file saved by [`Web::download`].
@@ -42,10 +80,16 @@ pub struct Downloaded {
     pub notes: Vec<String>,
 }
 
+fn reserved(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default();
+    let stem = stem.trim_end_matches([' ', '.']).to_lowercase();
+    RESERVED.contains(&stem.as_str())
+}
+
 /// A file name made safe from whatever a page or server suggested: no folders, no characters a
-/// file system treats specially, no hidden or reserved names, a bounded length, and, for a file
-/// a person could run, `.download` added. Returns the name and whether it was changed beyond
-/// trimming.
+/// file system treats specially, no hidden or reserved names, a bounded length, and `.download`
+/// added unless the extension is a known inert one. Returns the name and whether it was changed
+/// beyond trimming.
 pub fn safe_name(suggested: &str) -> (String, bool) {
     let base = suggested
         .rsplit(['/', '\\'])
@@ -68,13 +112,7 @@ pub fn safe_name(suggested: &str) -> (String, bool) {
     if name.is_empty() {
         name = "download".into();
     }
-    let stem_of = |name: &str| {
-        name.split('.')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-    };
-    if RESERVED.contains(&stem_of(&name).as_str()) {
+    if reserved(&name) {
         name.insert(0, '_');
     }
     if name.chars().count() > MAX_NAME {
@@ -86,15 +124,22 @@ pub fn safe_name(suggested: &str) -> (String, bool) {
         let keep = MAX_NAME.saturating_sub(ext.chars().count());
         name = format!("{}{ext}", stem.chars().take(keep).collect::<String>());
     }
-    let extension = name
-        .rsplit_once('.')
-        .map(|(_, ext)| ext.to_ascii_lowercase())
-        .unwrap_or_default();
-    if RUNNABLE.contains(&extension.as_str()) {
+    if let Some((_, ext)) = name.rsplit_once('.')
+        && !INERT.contains(&ext.to_ascii_lowercase().as_str())
+    {
         name.push_str(".download");
     }
     let changed = name != suggested.trim();
     (name, changed)
+}
+
+/// Why a file of this (already safe) name is not saved at all, if it is not: files a system reads
+/// settings from when it opens the folder.
+fn refused_name(name: &str) -> Option<String> {
+    let bare = name.strip_suffix(".download").unwrap_or(name);
+    bare.eq_ignore_ascii_case("desktop.ini").then(|| {
+        "desktop.ini changes how a folder behaves when it is opened, so it is not saved".to_string()
+    })
 }
 
 /// The file name in a `Content-Disposition` header, if it names one (`filename*` first).
@@ -158,14 +203,121 @@ fn extension(name: &str) -> Option<String> {
         .map(|(_, ext)| ext.to_ascii_lowercase())
 }
 
+/// Whether `meta` describes a link: a symbolic link, or on Windows any reparse point (a junction
+/// included).
+fn is_link(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
+}
+
+/// Makes `dir` if needed and returns its canonical path, refusing a folder that is itself a link
+/// or that resolves anywhere but where its own name puts it inside its parent: a downloads
+/// folder swapped for a link to somewhere else (the home folder, a startup folder) must not
+/// receive files.
+async fn secure_dir(dir: &Path) -> Result<PathBuf, WebError> {
+    let fail = |message: String| WebError::Http(message);
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|error| fail(format!("could not make the downloads folder: {error}")))?;
+    let meta = tokio::fs::symlink_metadata(dir)
+        .await
+        .map_err(|error| fail(format!("could not read the downloads folder: {error}")))?;
+    if is_link(&meta) {
+        return Err(fail(
+            "the downloads folder is a link (a symbolic link or junction), so nothing is saved \
+             in it"
+                .into(),
+        ));
+    }
+    let canonical = tokio::fs::canonicalize(dir)
+        .await
+        .map_err(|error| fail(format!("could not resolve the downloads folder: {error}")))?;
+    let parent = match dir.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let expected = tokio::fs::canonicalize(&parent)
+        .await
+        .map_err(|error| fail(format!("could not resolve the downloads folder: {error}")))?
+        .join(dir.file_name().unwrap_or_default());
+    if canonical != expected {
+        return Err(fail(
+            "the downloads folder resolves to another place than where it is, so nothing is \
+             saved in it"
+                .into(),
+        ));
+    }
+    Ok(canonical)
+}
+
+/// Removes the files of an unfinished download when dropped, which includes the download being
+/// cancelled.
+struct Partial {
+    paths: Vec<PathBuf>,
+}
+
+impl Drop for Partial {
+    fn drop(&mut self) {
+        for path in &self.paths {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Marks a saved file as coming from the web where the platform has a way to: the
+/// `Zone.Identifier` stream on Windows (zone 3, the internet), the quarantine attribute on
+/// macOS. Returns a note when it could not.
+fn mark_from_web(path: &Path, source: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let stream = format!("{}:Zone.Identifier", path.display());
+        let text = format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={source}\r\n");
+        return std::fs::write(stream, text).err().map(|error| {
+            format!("it could not be marked as downloaded from the internet ({error})")
+        });
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = source;
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        let value = format!("0083;{seconds:x};Imperium;");
+        let status = std::process::Command::new("xattr")
+            .args(["-w", "com.apple.quarantine", value.as_str()])
+            .arg(path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        return match status {
+            Ok(status) if status.success() => None,
+            _ => Some("it could not be marked as downloaded from the internet".into()),
+        };
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (path, source);
+        None
+    }
+}
+
 impl Web {
     /// Downloads `url` into `dir` (made if needed) as `name_hint` (or the server's or the URL's
     /// name) made safe, never replacing a file that is there: a taken name gets ` (2)`,
     /// ` (3)` and so on. Refuses a file larger than `max_bytes` (by its announced length, and
-    /// again while receiving, so a server that lies is cut off and its partial file removed).
-    /// `follow` judges each redirect as for `web_fetch`; `robots.txt` is checked as for it.
-    /// `refuse` is shown the path the file would be saved at, before anything is written, and
-    /// returns why that must not happen (the safety floor's protected files, for one).
+    /// again while receiving, so a server that lies is cut off). The file is written as
+    /// `<name>.part` and renamed when complete; a failed, timed-out or cancelled download leaves
+    /// nothing behind. `follow` judges each redirect as for `web_fetch`; `robots.txt` is checked
+    /// as for it. `refuse` is shown the resolved path the file would be saved at, before
+    /// anything is written, and returns why that must not happen (the safety floor's protected
+    /// files, a path the session may not write).
     pub async fn download(
         &self,
         url: &str,
@@ -175,11 +327,36 @@ impl Web {
         follow: &(dyn Fn(&Url) -> bool + Sync),
         refuse: &(dyn Fn(&Path) -> Option<String> + Sync),
     ) -> Result<Downloaded, WebError> {
+        self.download_within(
+            url,
+            dir,
+            name_hint,
+            max_bytes,
+            follow,
+            refuse,
+            DOWNLOAD_DEADLINE,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn download_within(
+        &self,
+        url: &str,
+        dir: &Path,
+        name_hint: Option<&str>,
+        max_bytes: u64,
+        follow: &(dyn Fn(&Url) -> bool + Sync),
+        refuse: &(dyn Fn(&Path) -> Option<String> + Sync),
+        deadline: Duration,
+    ) -> Result<Downloaded, WebError> {
         let parsed = Url::parse(url)
             .ok()
             .filter(|parsed| matches!(parsed.scheme(), "http" | "https") && parsed.has_host())
             .ok_or_else(|| WebError::BadUrl(url.into()))?;
-        let (mut response, _) = self.get_following(&parsed, follow).await?;
+        let (mut response, _) = self
+            .get_following_with(&self.download_http, &parsed, follow)
+            .await?;
         let final_url = response.url().clone();
         let header = |name: &str| {
             response
@@ -209,6 +386,9 @@ impl Web {
             )));
         }
         let (name, changed) = safe_name(&suggested);
+        if let Some(why) = refused_name(&name) {
+            return Err(WebError::Http(why));
+        }
         let mut notes = Vec::new();
         if changed && !suggested.trim().is_empty() {
             notes.push(format!(
@@ -228,15 +408,33 @@ impl Web {
                     .to_string(),
             );
         }
+        let dir = secure_dir(dir).await?;
         if let Some(why) = refuse(&dir.join(&name)) {
             return Err(WebError::Http(why));
         }
-        tokio::fs::create_dir_all(dir).await.map_err(|error| {
-            WebError::Http(format!("could not make the downloads folder: {error}"))
-        })?;
-        let (path, mut file) = create_unique(dir, &name).await?;
+        let (path, reserved_file) = create_unique(&dir, &name).await?;
+        drop(reserved_file);
+        let mut part_name = path.file_name().unwrap_or_default().to_os_string();
+        part_name.push(".part");
+        let part = path.with_file_name(part_name);
+        let mut guard = Partial {
+            paths: vec![path.clone(), part.clone()],
+        };
+        let mut file = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)
+            .await
+        {
+            Ok(file) => file,
+            Err(error) => {
+                return Err(WebError::Http(format!(
+                    "could not create the file: {error}"
+                )));
+            }
+        };
         let mut written: u64 = 0;
-        let outcome: Result<(), WebError> = async {
+        let transfer = async {
             while let Some(chunk) = response
                 .chunk()
                 .await
@@ -249,19 +447,30 @@ impl Web {
                          the download was stopped"
                     )));
                 }
-                file.write_all(&chunk)
-                    .await
-                    .map_err(|error| WebError::Http(format!("could not write the file: {error}")))?;
+                file.write_all(&chunk).await.map_err(|error| {
+                    WebError::Http(format!("could not write the file: {error}"))
+                })?;
             }
             file.flush()
                 .await
                 .map_err(|error| WebError::Http(format!("could not write the file: {error}")))
+        };
+        match tokio::time::timeout(deadline, transfer).await {
+            Ok(outcome) => outcome?,
+            Err(_) => {
+                return Err(WebError::Http(format!(
+                    "the download took longer than {} seconds and was stopped",
+                    deadline.as_secs()
+                )));
+            }
         }
-        .await;
         drop(file);
-        if let Err(error) = outcome {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(error);
+        tokio::fs::rename(&part, &path)
+            .await
+            .map_err(|error| WebError::Http(format!("could not finish the file: {error}")))?;
+        guard.paths.clear();
+        if let Some(note) = mark_from_web(&path, final_url.as_str()) {
+            notes.push(note);
         }
         if path.file_name().and_then(|file| file.to_str()) != Some(name.as_str()) {
             notes.push("a file with that name already existed, so this one has another".into());
@@ -349,6 +558,64 @@ mod tests {
         assert_eq!(name("nul"), "_nul");
         assert_eq!(name("com1.log"), "_com1.log");
         assert_eq!(name("console.log"), "console.log");
+        // Reserved names the simple check missed: more devices, superscript digits, trailing
+        // spaces before the extension.
+        assert_eq!(name("COM0.txt"), "_COM0.txt");
+        assert_eq!(name("lpt\u{b9}.txt"), "_lpt\u{b9}.txt");
+        assert_eq!(name("CONIN$"), "_CONIN$");
+        assert_eq!(name("CONOUT$.txt"), "_CONOUT$.txt");
+        assert_eq!(name("con .txt"), "_con .txt");
+        assert_eq!(name("aux.tar.gz"), "_aux.tar.gz");
+    }
+
+    #[test]
+    fn only_inert_extensions_keep_their_names() {
+        for inert in [
+            "a.txt",
+            "a.PDF",
+            "a.zip",
+            "a.png",
+            "a.csv",
+            "a.docx",
+            "a.json",
+            "noextension",
+        ] {
+            assert_eq!(safe_name(inert).0, inert, "{inert}");
+        }
+        // Everything that opens, mounts, loads or launches something, and anything unknown.
+        for risky in [
+            "a.scf",
+            "a.library-ms",
+            "a.searchConnector-ms",
+            "a.url",
+            "a.appref-ms",
+            "a.application",
+            "a.settingcontent-ms",
+            "a.msc",
+            "a.chm",
+            "a.inf",
+            "a.xll",
+            "a.msix",
+            "a.appx",
+            "a.msp",
+            "a.wsc",
+            "a.sct",
+            "a.jnlp",
+            "a.iso",
+            "a.img",
+            "a.vhd",
+            "a.vhdx",
+            "a.docm",
+            "a.xlsm",
+            "a.exe",
+            "a.lnk",
+            "a.sh",
+            "a.something-new",
+        ] {
+            assert_eq!(safe_name(risky).0, format!("{risky}.download"), "{risky}");
+        }
+        // Already marked: not marked twice.
+        assert_eq!(safe_name("a.exe.download").0, "a.exe.download");
     }
 
     #[test]
@@ -654,5 +921,221 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn desktop_ini_is_not_saved() {
+        let base =
+            serve(Router::new().route("/desktop.ini", get(|| async { "[.ShellClassInfo]" }))).await;
+        let dir = tempfile::tempdir().unwrap();
+        let error = web()
+            .download(
+                &format!("{base}/desktop.ini"),
+                dir.path(),
+                None,
+                1000,
+                &|_| true,
+                &|_| None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("desktop.ini"), "{error}");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_download_reports_where_redirects_ended_and_leaves_no_partial_file() {
+        let target = serve(Router::new().route("/final.txt", get(|| async { "done" }))).await;
+        let to = format!("{target}/final.txt");
+        let base = serve(Router::new().route(
+            "/go",
+            get(move || {
+                let to = to.clone();
+                async move { axum::response::Redirect::temporary(&to) }
+            }),
+        ))
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let saved = web()
+            .download(
+                &format!("{base}/go"),
+                dir.path(),
+                None,
+                100,
+                &|_| true,
+                &|_| None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.final_url, format!("{target}/final.txt"));
+        let files: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(files, ["final.txt"], "no .part file is left");
+    }
+
+    /// A body that sends a little and then waits.
+    fn stalling() -> axum::body::Body {
+        let stream = futures_util::stream::unfold(0u32, |step| async move {
+            if step > 0 {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+            Some((Ok::<_, std::io::Error>(vec![3u8; 100]), step + 1))
+        });
+        axum::body::Body::from_stream(stream)
+    }
+
+    #[tokio::test]
+    async fn a_download_that_takes_too_long_is_stopped_and_leaves_nothing() {
+        let base = serve(Router::new().route("/slow.bin", get(|| async { stalling() }))).await;
+        let dir = tempfile::tempdir().unwrap();
+        let error = web()
+            .download_within(
+                &format!("{base}/slow.bin"),
+                dir.path(),
+                None,
+                10_000,
+                &|_| true,
+                &|_| None,
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("took longer"), "{error}");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_download_removes_its_partial_file() {
+        let base = serve(Router::new().route("/slow.bin", get(|| async { stalling() }))).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        let url = format!("{base}/slow.bin");
+        let task = tokio::spawn(async move {
+            web()
+                .download(&url, &path, None, 10_000, &|_| true, &|_| None)
+                .await
+        });
+        // Wait until the partial file exists, then cancel.
+        for _ in 0..100 {
+            if std::fs::read_dir(dir.path()).unwrap().count() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(std::fs::read_dir(dir.path()).unwrap().count() > 0);
+        task.abort();
+        let _ = task.await;
+        for _ in 0..100 {
+            if std::fs::read_dir(dir.path()).unwrap().count() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_downloads_folder_that_is_a_link_receives_nothing() {
+        let base = serve(Router::new().route("/f.txt", get(|| async { "x" }))).await;
+        let root = tempfile::tempdir().unwrap();
+        let elsewhere = root.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let link = root.path().join("downloads");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&elsewhere)
+                .output()
+                .unwrap()
+                .status;
+            assert!(status.success(), "could not make a junction");
+        }
+        let error = web()
+            .download(
+                &format!("{base}/f.txt"),
+                &link,
+                None,
+                100,
+                &|_| true,
+                &|_| None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("is a link"), "{error}");
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        // The refusal sees the resolved path: a real folder is passed to it in canonical form.
+        let real = root.path().join("real");
+        let seen = std::sync::Mutex::new(None);
+        web()
+            .download(
+                &format!("{base}/f.txt"),
+                &real,
+                None,
+                100,
+                &|_| true,
+                &|path| {
+                    *seen.lock().unwrap() = Some(path.to_path_buf());
+                    None
+                },
+            )
+            .await
+            .unwrap();
+        let seen = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(seen.parent().unwrap(), real.canonicalize().unwrap());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_download_on_windows_is_marked_as_from_the_internet() {
+        let base = serve(Router::new().route("/f.txt", get(|| async { "x" }))).await;
+        let dir = tempfile::tempdir().unwrap();
+        let saved = web()
+            .download(
+                &format!("{base}/f.txt"),
+                dir.path(),
+                None,
+                100,
+                &|_| true,
+                &|_| None,
+            )
+            .await
+            .unwrap();
+        let zone =
+            std::fs::read_to_string(format!("{}:Zone.Identifier", saved.path.display())).unwrap();
+        assert!(zone.contains("ZoneId=3"), "{zone}");
+        assert!(zone.contains(&format!("HostUrl={base}/f.txt")), "{zone}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_download_on_macos_is_quarantined() {
+        let base = serve(Router::new().route("/f.txt", get(|| async { "x" }))).await;
+        let dir = tempfile::tempdir().unwrap();
+        let saved = web()
+            .download(
+                &format!("{base}/f.txt"),
+                dir.path(),
+                None,
+                100,
+                &|_| true,
+                &|_| None,
+            )
+            .await
+            .unwrap();
+        let output = std::process::Command::new("xattr")
+            .args(["-p", "com.apple.quarantine"])
+            .arg(&saved.path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?} {:?}", saved.notes, output);
     }
 }

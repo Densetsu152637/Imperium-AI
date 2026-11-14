@@ -157,6 +157,14 @@ pub trait ToolProvider: Send + Sync + fmt::Debug {
         Box::pin(async { Vec::new() })
     }
 
+    /// Whether the call to `name` is approved afresh every time: it asks even where the tool
+    /// was allowed for the session, an allow rule covers it, the session was pre-approved or the
+    /// permission mode is `full`, and offers no "always allow" rule. Deny rules and plan mode
+    /// still refuse it. For a call that writes outside what a rule can describe (a download).
+    fn always_asks(&self, _name: &str) -> bool {
+        false
+    }
+
     /// Instructions added to the system prompt while the tools are offered.
     fn instructions(&self) -> Option<&str> {
         None

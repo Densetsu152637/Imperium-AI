@@ -5,4 +5,4 @@
  * visible width and height, so a client scales a click on the screenshot without knowing the
  * page's size.
  */
-export type BrowserAction = { "type": "navigate", url: string, } | { "type": "back" } | { "type": "forward" } | { "type": "reload" } | { "type": "click", x: number, y: number, } | { "type": "type", text: string, } | { "type": "key", key: string, } | { "type": "scroll", dy: number, } | { "type": "new_tab", url: string | null, } | { "type": "switch_tab", tab: string, } | { "type": "close_tab", tab: string, };
+export type BrowserAction = { "type": "navigate", url: string, } | { "type": "back" } | { "type": "forward" } | { "type": "reload" } | { "type": "click", x: number, y: number, } | { "type": "type", text: string, } | { "type": "key", key: string, } | { "type": "scroll", dy: number, } | { "type": "new_tab", url?: string, } | { "type": "switch_tab", tab: string, } | { "type": "close_tab", tab: string, };

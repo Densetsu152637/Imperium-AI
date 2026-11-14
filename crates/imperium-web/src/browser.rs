@@ -41,6 +41,9 @@ pub const MAX_TABS: usize = 8;
 const DOWNLOAD_POLL: Duration = Duration::from_millis(150);
 /// Downloads remembered so the agent can save one without naming its URL.
 const MAX_PENDING_DOWNLOADS: usize = 10;
+/// The most time, and the most events, one look at the download connection may take.
+const DOWNLOAD_READ_LIMIT: Duration = Duration::from_secs(1);
+const DOWNLOAD_EVENTS: usize = 200;
 
 /// What the page looks like after an action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,8 +96,13 @@ pub struct Browser {
     opened_by_pages: Vec<String>,
     /// Pages the browser lists that are not tabs: the throwaway page of the start-up warm-up.
     ignored: Vec<String>,
+    /// The last URL the browser listed for each open tab (by label), for the approval rules.
+    tab_urls: Vec<(u32, String)>,
     /// The browser-level connection that reports downloads (and refuses them).
     downloads: Option<Socket>,
+    /// The connection that refuses downloads closed or failed: the browser may save files
+    /// by itself now, so it must not be used any more.
+    refusal_lost: bool,
     pending_downloads: Vec<PendingDownload>,
 }
 
@@ -150,6 +158,11 @@ impl Browser {
         headless: bool,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(profile_dir).map_err(|error| error.to_string())?;
+        // Defence in depth next to the debugger's refusal: should a download ever get through,
+        // it lands in an empty folder of the browser's own profile, after a prompt nobody sees.
+        if let Err(error) = set_download_prefs(profile_dir) {
+            tracing::warn!(%error, "could not point the browser's downloads at an empty folder");
+        }
         let log_path = profile_dir.join("imperium-browser.log");
         let mut command = Command::new(program);
         let deadline = Instant::now() + START_TIMEOUT;
@@ -244,7 +257,9 @@ impl Browser {
             next_tab: 2,
             opened_by_pages: Vec::new(),
             ignored: Vec::new(),
+            tab_urls: Vec::new(),
             downloads: None,
+            refusal_lost: false,
             pending_downloads: Vec::new(),
         }
     }
@@ -535,6 +550,14 @@ impl Browser {
     async fn sync_tabs(&mut self) -> Result<Vec<Listed>, String> {
         let listed = self.list_targets().await?;
         let changes = tabs::reconcile(&mut self.tabs, &mut self.next_tab, &listed, MAX_TABS);
+        self.tab_urls = self
+            .tabs
+            .iter()
+            .filter_map(|rec| {
+                let page = listed.iter().find(|page| page.id == rec.target)?;
+                Some((rec.label, page.url.clone()))
+            })
+            .collect();
         for target in &changes.excess {
             self.close_target(target).await;
         }
@@ -774,12 +797,32 @@ impl Browser {
     }
 
     /// Reads the downloads the browser refused since the last look, and returns the new ones.
+    /// Reading stops after `DOWNLOAD_READ_LIMIT` in all, or `DOWNLOAD_EVENTS` events, so a page
+    /// that floods the connection cannot hold a call up. A connection that closes or fails is
+    /// remembered (`refusal_lost`): the browser is no longer made to refuse downloads.
     async fn collect_downloads(&mut self) -> Vec<PendingDownload> {
         let mut fresh = Vec::new();
-        let Some(socket) = self.downloads.as_mut() else {
+        let Some(mut socket) = self.downloads.take() else {
             return fresh;
         };
-        while let Ok(Some(Ok(message))) = tokio::time::timeout(DOWNLOAD_POLL, socket.next()).await {
+        let mut lost = false;
+        let deadline = Instant::now() + DOWNLOAD_READ_LIMIT;
+        let mut events = 0;
+        while events < DOWNLOAD_EVENTS {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let message = match tokio::time::timeout(DOWNLOAD_POLL.min(left), socket.next()).await {
+                Err(_) => break,
+                Ok(None) | Ok(Some(Err(_))) => {
+                    tracing::warn!("the browser's download-refusing connection ended");
+                    lost = true;
+                    break;
+                }
+                Ok(Some(Ok(message))) => message,
+            };
+            events += 1;
             let Message::Text(text) = message else {
                 continue;
             };
@@ -807,7 +850,27 @@ impl Browser {
                 self.pending_downloads.remove(0);
             }
         }
+        if lost {
+            self.refusal_lost = true;
+        } else {
+            self.downloads = Some(socket);
+        }
         fresh
+    }
+
+    /// Whether the browser may no longer be trusted not to save files by itself: its
+    /// download-refusing connection ended. The owner drops it and starts a new browser.
+    pub fn refusal_lost(&self) -> bool {
+        self.refusal_lost
+    }
+
+    /// The last URL the browser listed for tab `id`, if that tab is known.
+    pub fn tab_url(&self, id: &str) -> Option<String> {
+        let label = id.trim().parse::<u32>().ok()?;
+        self.tab_urls
+            .iter()
+            .find(|(known, _)| *known == label)
+            .map(|(_, url)| url.clone())
     }
 
     /// What happened in the browser that the agent did not ask for since the last look, as
@@ -995,6 +1058,48 @@ impl Browser {
         }
         Ok(())
     }
+}
+
+/// Sets the profile's download preferences (`Default/Preferences`) so that a download the
+/// debugger's refusal missed would go to an empty folder under the profile, and only after a
+/// prompt. Existing preferences are kept.
+fn set_download_prefs(profile_dir: &Path) -> Result<(), String> {
+    let folder = profile_dir.join("blocked-downloads");
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    let default = profile_dir.join("Default");
+    std::fs::create_dir_all(&default).map_err(|error| error.to_string())?;
+    let path = default.join("Preferences");
+    let mut prefs: Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    for section in ["download", "savefile"] {
+        if !prefs[section].is_object() {
+            prefs[section] = json!({});
+        }
+    }
+    let folder = folder.display().to_string();
+    prefs["download"]["default_directory"] = json!(folder);
+    prefs["download"]["prompt_for_download"] = json!(true);
+    prefs["download"]["directory_upgrade"] = json!(true);
+    prefs["savefile"]["default_directory"] = json!(folder);
+    std::fs::write(&path, prefs.to_string()).map_err(|error| error.to_string())
+}
+
+/// The browser for a test that needs one: where it is installed; where it is not, a skip with a
+/// note, except on CI (the `CI` variable is set), where the runners have one and its absence
+/// means the test would otherwise pass without testing anything.
+#[doc(hidden)]
+pub fn browser_for_tests() -> Option<PathBuf> {
+    let found = find_browser();
+    if found.is_none() {
+        if std::env::var_os("CI").is_some() {
+            panic!("no Chrome, Chromium, or Edge found on CI; the browser tests would not run");
+        }
+        eprintln!("no Chrome, Chromium, or Edge found; skipping");
+    }
+    found
 }
 
 /// Sends a CDP command on `socket` and waits for its result, skipping events in between; gives
@@ -1229,6 +1334,8 @@ mod tests {
         Refusing,
         /// Answers every command with a result.
         Answering,
+        /// Answers one command, then closes the connection.
+        AnswerOnce,
     }
 
     type Seen = Arc<Mutex<Vec<String>>>;
@@ -1236,6 +1343,7 @@ mod tests {
     /// Serves one debugger socket as `mock` says, noting each command as "method url".
     async fn serve_ws(mut ws: WebSocketStream<TcpStream>, mock: Mock, seen: Seen) {
         let refusing = matches!(mock, Mock::Refusing);
+        let once = matches!(mock, Mock::AnswerOnce);
         match mock {
             Mock::Silent => std::future::pending::<()>().await,
             Mock::Chatty => loop {
@@ -1245,7 +1353,7 @@ mod tests {
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             },
-            Mock::Refusing | Mock::Answering => {
+            Mock::Refusing | Mock::Answering | Mock::AnswerOnce => {
                 while let Some(Ok(Message::Text(text))) = ws.next().await {
                     let command: Value = serde_json::from_str(text.as_str()).unwrap();
                     seen.lock().unwrap().push(format!(
@@ -1262,6 +1370,7 @@ mod tests {
                         .send(Message::Text(reply.to_string().into()))
                         .await
                         .is_err()
+                        || once
                     {
                         break;
                     }
@@ -1335,6 +1444,7 @@ mod tests {
                 if head.starts_with(b"PUT /json/new")
                     || head.starts_with(b"GET /json/close")
                     || head.starts_with(b"GET /json/list")
+                    || head.starts_with(b"GET /json/vers")
                 {
                     let request = read_request(&mut stream).await;
                     let body = if request.starts_with("PUT") {
@@ -1342,6 +1452,11 @@ mod tests {
                             "id": "T1",
                             "type": "page",
                             "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/page/T1"),
+                        })
+                        .to_string()
+                    } else if request.starts_with("GET /json/vers") {
+                        json!({
+                            "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/browser/B1"),
                         })
                         .to_string()
                     } else if request.starts_with("GET /json/list") {
@@ -1560,8 +1675,7 @@ mod tests {
     /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
     #[tokio::test]
     async fn the_browser_opens_reads_clicks_types_and_screenshots() {
-        let Some(program) = find_browser() else {
-            eprintln!("no Chrome, Chromium, or Edge found; skipping");
+        let Some(program) = browser_for_tests() else {
             return;
         };
         let page = r#"<html><head><title>Counter</title></head><body>
@@ -1602,8 +1716,7 @@ mod tests {
     /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
     #[tokio::test]
     async fn the_user_clicks_types_presses_keys_and_navigates() {
-        let Some(program) = find_browser() else {
-            eprintln!("no Chrome, Chromium, or Edge found; skipping");
+        let Some(program) = browser_for_tests() else {
             return;
         };
         // A page that is one big button, then a field to type in, then a second page.
@@ -1678,8 +1791,7 @@ mod tests {
     /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
     #[tokio::test]
     async fn tabs_open_switch_list_close_and_are_bounded() {
-        let Some(program) = find_browser() else {
-            eprintln!("no Chrome, Chromium, or Edge found; skipping");
+        let Some(program) = browser_for_tests() else {
             return;
         };
         let page = |title: &'static str, body: &'static str| {
@@ -1775,8 +1887,7 @@ mod tests {
     /// Runs where Chrome, Chromium, or Edge is installed; skipped elsewhere.
     #[tokio::test]
     async fn the_browser_refuses_downloads_and_reports_them() {
-        let Some(program) = find_browser() else {
-            eprintln!("no Chrome, Chromium, or Edge found; skipping");
+        let Some(program) = browser_for_tests() else {
             return;
         };
         let page = r#"<html><head><title>Files</title></head><body>
@@ -1826,5 +1937,50 @@ mod tests {
         assert!(browser.last_download().is_none());
         // Told once.
         assert!(browser.notices().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_browser_that_will_not_refuse_downloads_does_not_start() {
+        let debugger = mock_debugger(Mock::Refusing).await;
+        let (mut browser, _dir, _) = mock_browser(Mock::Answering, "").await;
+        browser.port = debugger.port;
+        let error = browser.refuse_downloads().await.unwrap_err();
+        assert!(
+            error.contains("could not make the browser refuse downloads"),
+            "{error}"
+        );
+        assert!(browser.downloads.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_lost_download_refusal_is_remembered_so_the_browser_is_replaced() {
+        let debugger = mock_debugger(Mock::AnswerOnce).await;
+        let (mut browser, _dir, _) = mock_browser(Mock::Answering, "").await;
+        browser.port = debugger.port;
+        browser.refuse_downloads().await.unwrap();
+        assert!(!browser.refusal_lost());
+        // The stand-in closed the connection after its one answer.
+        browser.collect_downloads().await;
+        assert!(browser.refusal_lost());
+        assert!(browser.downloads.is_none());
+    }
+
+    #[test]
+    fn the_profile_sends_stray_downloads_to_an_empty_folder() {
+        let profile = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(profile.path().join("Default")).unwrap();
+        let path = profile.path().join("Default").join("Preferences");
+        std::fs::write(&path, r#"{"keep":1,"download":{"other":true}}"#).unwrap();
+        set_download_prefs(profile.path()).unwrap();
+        let prefs: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(prefs["keep"], 1);
+        assert_eq!(prefs["download"]["other"], true);
+        assert_eq!(prefs["download"]["prompt_for_download"], true);
+        let folder = prefs["download"]["default_directory"].as_str().unwrap();
+        assert!(folder.ends_with("blocked-downloads"), "{folder}");
+        assert_eq!(std::fs::read_dir(folder).unwrap().count(), 0);
+        // A damaged file is replaced, not fatal.
+        std::fs::write(&path, "not json").unwrap();
+        set_download_prefs(profile.path()).unwrap();
     }
 }

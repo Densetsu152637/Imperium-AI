@@ -101,28 +101,57 @@ tab and the list of tabs (protocol 0.35); the desktop keeps one mirror per tab
 ([07](07-desktop-ui.md#preview-and-browser-panels-implemented)), and the user's takeover applies
 to the active tab (`session.browser_act` gained `new_tab`, `switch_tab` and `close_tab`).
 
-Downloads are refused by the browser itself: at start-up a browser-level connection sets
-`Browser.setDownloadBehavior` to `deny` with events on, and a browser that cannot be made to
-refuse downloads does not start. When a click or script starts a download, the next browser tool
-result says so (the URL and the suggested name, flattened to one line and framed as page text), and
-`browser_download` saves it: with no `url` the most recent one the page started, or any http(s)
-`url`. The file is fetched by the same client as `web_fetch`, not by the browser (the browser's
-profile has no logins, so there are no cookies to lose), so `robots.txt`, the redirect rule (the
-host and port asked for, or `web.allow_domains`; never https to http) and `web.robots` apply. It is
-saved only into one folder chosen by the session, never by a page or the agent: `web.download_dir`
-when set, else a `downloads` folder in the session's scratch folder (its working folder if it has
-none); a remote or read-only session offers no `browser_download`. Limits and handling: at most
-`web.download_max_mb` (25; `0` turns downloads off), checked against the announced length and
-again while receiving (a partial file is deleted); the file name is made safe (folders, special
-characters, hidden-file dots and Windows reserved names removed, at most 100 characters, a name
-that is taken gets a number, as in `report (2).pdf`, and nothing is overwritten); a file a person could run by opening it (`.exe`,
-`.sh`, `.ps1`, `.py` and the like) is saved with `.download` added; a `text/html` answer for a
-file name is flagged (an error or login page); files the safety floor protects (secrets, anything
-under `.git`) are refused; `blob:` and `data:` downloads, which the browser keeps no fetchable copy
-of, cannot be saved. The file is never opened or run and its mode is the platform default, never
-executable. The call always asks (like a write), so a deny rule on `browser_download` or plan mode
-refuses it, "always allow" lasts for the session, and an agent profile that locks an agent to local
-files removes it with the other web tools; it is refused while the user drives the browser.
+Downloads are refused by the browser itself. At start-up a browser-level connection sets
+`Browser.setDownloadBehavior` to `deny` with events on, and a browser that cannot be made to refuse
+downloads does not start. As defence in depth the browser's profile is also written, before it
+starts, with an empty `blocked-downloads` folder as its download and save folder and a prompt
+nobody sees. If the refusing connection later closes or fails, the browser is treated as unsafe:
+it is closed and the next browser tool starts a new one (the open pages are lost, and the agent
+is told). When a click or script starts a download, the next browser tool result says so (the URL
+and the suggested name, flattened to one line and framed as page text), and `browser_download`
+saves it. `url` is required: the agent names the URL it was told about, so the line the user
+approves is the request.
+
+*Approval.* Every call is approved afresh: the question shows the exact URL (control characters
+written out as escapes, so it stays one line), the folder and the size limit, and it is not
+covered by "allow for this session", an allow rule, pre-approval of the tool or the `full`
+permission mode, and offers no "always allow" rule. This is the tool provider's `always_asks`,
+which the session treats like the safety floor (the same way `mcp_sampling` asks each time). A deny
+rule on `browser_download` or plan mode still refuses it, an agent profile that locks an agent to
+local files removes it with the other web tools, and it is refused while the user drives the
+browser. `browser_switch` asks when the tab's page is outside `web.allow_domains` (or unknown),
+because a page can open a tab on any site; opening a page, in a new tab or not, follows the
+`web_fetch` domain rule.
+
+*Where and how.* The file is fetched by the same redirect rules and `robots.txt` check as
+`web_fetch` (the host and port asked for, or `web.allow_domains`; never https to http;
+`web.robots`), on a client of its own with a connect limit, a 30 s stall limit and 10 minutes in
+all, not the 30 s the page client has. It is not fetched by the browser (its profile has no
+logins). The result names where it ended after redirects. It is saved only into one folder chosen
+by the session, never by a page or the agent: `web.download_dir` when set, else `downloads` in the
+session's scratch folder (its working folder if it has none); a remote or read-only session offers
+no `browser_download`. Before writing, the folder is made if needed and then refused if it is a
+symbolic link or a Windows reparse point (junction), or if its canonical path is not its parent's
+canonical path plus its own name; the file is then judged at its resolved path by the safety
+floor (secrets, anything under `.git`) and, for the default folder, by the file tools' write
+resolver (a read-only grant, the local-files scope).
+
+*The file.* At most `web.download_max_mb` (25; `0` turns downloads off), checked against the
+announced length and again while receiving. It is written as `<name>.part` and renamed when
+complete; a failed, timed-out or cancelled download leaves nothing behind. The name is made safe:
+folders, special characters and hidden-file dots removed, Windows reserved names (`CON`, `COM0` to
+`COM9`, superscript digits, `CONIN$`, `CONOUT$`, trailing spaces before the extension) prefixed, at
+most 100 characters, a taken name gets a number as in `report (2).pdf`, and nothing is
+overwritten. `desktop.ini` is refused. Only known-inert extensions (documents, images, media,
+archives, plain data: `txt`, `pdf`, `png`, `zip`, `csv`, `docx` and the like) keep their name; any
+other, `.scf`, `.url`, `.msc`, `.iso`, `.docm`, `.xlsm`, `.exe`, `.sh` or one nobody has heard of,
+is saved with `.download` added (a name with no extension is kept). A `text/html` answer for a
+file name is flagged (an error or login page); `blob:` and `data:` downloads, which the browser
+keeps no fetchable copy of, cannot be saved. The file is never opened or run and its mode is the
+platform default, never executable. Where the platform has a way to, it is marked as coming from
+the web: the `Zone.Identifier` stream (zone 3, `HostUrl` the final URL) on Windows, the
+`com.apple.quarantine` attribute on macOS (a note says if that failed).
+
 Titles, URLs and file names come from pages: they are shown to the agent flattened to one line,
 framed as data, and the web instructions say to treat them as data, never as instructions.
 

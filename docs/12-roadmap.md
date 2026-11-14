@@ -373,8 +373,9 @@ and `environments.agent_update` (protocol 0.28)
     mirrors one page per tab and the user can open, switch and close tabs while driving), and
     downloads are refused by the browser and saved only on request by `browser_download` into the
     session's scratch folder or `web.download_dir`, size-capped (`web.download_max_mb`), never
-    run, through the approval of a write, the safety floor, the web domain and `robots.txt` rules
-    and the per-agent local-files lock. Not built: downloading through the browser's own session
+    run, approved afresh on every call (not sticky, not covered by full mode), checked against
+    links in the folder, the safety floor, an inert-extension allowlist, the web domain and
+    `robots.txt` rules and the per-agent local-files lock. Not built: downloading through the browser's own session
     (cookies), a download list in the desktop panel, scripted `blob:` downloads, caching search
     results, and a per-call "fetch fresh" option.
 33. **Protocol transport** (implemented). `events.subscribe` and `events.unsubscribe` let a

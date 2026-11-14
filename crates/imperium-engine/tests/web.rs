@@ -205,7 +205,7 @@ async fn agents_research_and_cite_sources() {
 /// Chrome, Chromium, or Edge is installed.
 #[tokio::test]
 async fn browser_actions_are_mirrored_as_screenshots() {
-    let Some(program) = imperium_web::browser::find_browser() else {
+    let Some(program) = imperium_web::browser::browser_for_tests() else {
         eprintln!("no browser found; skipping");
         return;
     };
@@ -350,7 +350,7 @@ async fn browser_actions_are_mirrored_as_screenshots() {
 /// Edge is installed.
 #[tokio::test]
 async fn agents_use_tabs_and_save_downloads_after_approval() {
-    let Some(program) = imperium_web::browser::find_browser() else {
+    let Some(program) = imperium_web::browser::browser_for_tests() else {
         eprintln!("no browser found; skipping");
         return;
     };
@@ -405,7 +405,10 @@ async fn agents_use_tabs_and_save_downloads_after_approval() {
                         2 => call("browser_tabs", json!({})),
                         3 => call("browser_switch", json!({"tab": "1"})),
                         4 => call("browser_click", json!({"selector": "#dl"})),
-                        5 => call("browser_download", json!({})),
+                        5 => call(
+                            "browser_download",
+                            json!({"url": format!("{start}report.csv")}),
+                        ),
                         _ => sse(json!({"choices":[{"delta":{"content":"Saved the report."}}]})),
                     };
                     ([("content-type", "text/event-stream")], body)
@@ -460,6 +463,7 @@ async fn agents_use_tabs_and_save_downloads_after_approval() {
             downloads: Some(Downloads {
                 dir: dir.path().join("downloads"),
                 max_bytes: 1_000_000,
+                workspace: None,
             }),
         })],
         max_steps: 12,
@@ -526,13 +530,15 @@ async fn agents_use_tabs_and_save_downloads_after_approval() {
     assert!(failed.is_empty(), "browser tools failed: {failed:?}");
     // Opening allowed pages, listing, switching and reading did not ask; clicking did, and so
     // did saving a file.
-    assert_eq!(
-        asked,
-        [
-            "click #dl in the browser",
-            "save the file the page tried to download"
-        ]
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[0], "click #dl in the browser");
+    // The approval names the exact URL, the folder and the size limit.
+    assert!(
+        asked[1].starts_with("download http://127.0.0.1:")
+            && asked[1].contains("/report.csv into "),
+        "{asked:?}"
     );
+    assert!(asked[1].ends_with("(at most 1 MB)"), "{asked:?}");
     let output = |tool: &str| {
         outputs
             .iter()
@@ -577,4 +583,164 @@ async fn agents_use_tabs_and_save_downloads_after_approval() {
         std::fs::read_to_string(dir.path().join("downloads").join("report.csv")).unwrap(),
         "a,b\n1,2\n"
     );
+}
+
+/// A download asks every time: not once the user allowed it for the session, not when the tool
+/// is pre-approved, not in full mode. Needs no browser.
+#[tokio::test]
+async fn a_download_is_approved_afresh_every_time() {
+    let program = std::path::PathBuf::from("imperium-no-such-browser");
+    let site = serve(Router::new().route("/f.txt", get(|| async { "file one" }))).await;
+    let step = Arc::new(AtomicUsize::new(0));
+    let start = format!("{site}/");
+    let model = {
+        let (step, start) = (Arc::clone(&step), start.clone());
+        serve(Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let (step, start) = (Arc::clone(&step), start.clone());
+                async move {
+                    let body = match step.fetch_add(1, Ordering::SeqCst) {
+                        0 | 1 => call("browser_download", json!({"url": format!("{start}f.txt")})),
+                        _ => sse(json!({"choices":[{"delta":{"content":"Saved the report."}}]})),
+                    };
+                    ([("content-type", "text/event-stream")], body)
+                }
+            }),
+        ))
+        .await
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let session = Session::spawn(SessionConfig {
+        attachments: Default::default(),
+        id: "afresh".into(),
+        workspace: {
+            let workspace = Workspace::new(dir.path()).unwrap();
+            workspace
+                .permissions()
+                .set_mode(imperium_api::PermissionMode::Full);
+            workspace
+        },
+        model: Some(ResolvedModel {
+            spec: "fake:model".into(),
+            endpoint: Endpoint {
+                base_url: format!("{model}/v1"),
+                api_key: None,
+            },
+            model: "model".into(),
+            pricing: None,
+            local: false,
+            context_window: None,
+            kind: "openai".into(),
+            reasoning: None,
+        }),
+        catalog: Vec::new(),
+        routing: imperium_config::RoutingSettings::default(),
+        clients: Default::default(),
+        local: None,
+        notices: Vec::new(),
+        extensions: Default::default(),
+        memory: None,
+        context: None,
+        enforce: imperium_config::Enforce::Warn,
+        pre_approved: vec!["browser_download".to_string()],
+        launcher: None,
+        resume: false,
+        resume_policy: imperium_engine::default_resume_policy(),
+        instructions: None,
+        personality: None,
+        tools: vec![Arc::new(WebTools {
+            web: Web::new(None),
+            allow_domains: vec!["127.0.0.1".into()],
+            browser: Some(BrowserSetup {
+                program,
+                profile_dir: dir.path().join("profile"),
+                headless: true,
+                instance: Arc::default(),
+                takeover: Arc::default(),
+            }),
+            downloads: Some(Downloads {
+                dir: dir.path().join("downloads"),
+                max_bytes: 1_000_000,
+                workspace: None,
+            }),
+        })],
+        max_steps: 12,
+        background: None,
+        checkpoints: None,
+        budget_gate: None,
+        auto_compact: false,
+        auto_compact_at: None,
+        attended: true,
+        harness: Default::default(),
+        keep_agent_state: true,
+        effort: Default::default(),
+        journal_path: dir.path().join("journal.jsonl"),
+    })
+    .unwrap();
+    let mut events = session.subscribe();
+    session
+        .send("Open the second page in a tab, then save the report".into())
+        .unwrap();
+    let mut views = Vec::new();
+    let mut outputs = Vec::new();
+    let mut asked = Vec::new();
+    let mut failed = Vec::new();
+    loop {
+        // Generous: the first browser call includes a cold browser start.
+        let event = tokio::time::timeout(Duration::from_secs(90), events.recv())
+            .await
+            .expect("an event within 90 s")
+            .unwrap()
+            .event;
+        match event {
+            SessionEvent::PermissionRequested {
+                request_id,
+                summary,
+                ..
+            } => {
+                asked.push(summary);
+                session
+                    .respond(request_id, PermissionDecision::AllowForSession)
+                    .unwrap();
+            }
+            SessionEvent::BrowserView {
+                title,
+                screenshot,
+                tab,
+                tabs,
+                ..
+            } => views.push((title, screenshot.len(), tab, tabs.len())),
+            SessionEvent::ToolFinished {
+                ok: true,
+                output,
+                tool,
+                ..
+            } => outputs.push((tool.unwrap_or_default(), output)),
+            SessionEvent::ToolFinished {
+                ok: false, output, ..
+            } => failed.push(output),
+            SessionEvent::TurnCompleted { .. } => break,
+            SessionEvent::TurnFailed { message } => panic!("{message}"),
+            _ => {}
+        }
+    }
+    // A browser that failed to start shows here rather than as a bare count mismatch.
+    assert!(failed.is_empty(), "browser tools failed: {failed:?}");
+    // Full mode, pre-approval and "allow for the session" did not remove the question: both
+    // calls asked, and both saved.
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(
+        asked
+            .iter()
+            .all(|line| line.starts_with("download http://")),
+        "{asked:?}"
+    );
+    let saved = outputs
+        .iter()
+        .filter(|(tool, _)| tool == "browser_download")
+        .count();
+    assert_eq!(saved, 2, "{outputs:?}");
+    assert!(dir.path().join("downloads").join("f.txt").exists());
+    assert!(dir.path().join("downloads").join("f (2).txt").exists());
 }

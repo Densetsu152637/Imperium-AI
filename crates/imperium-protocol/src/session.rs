@@ -214,7 +214,8 @@ pub enum SessionEvent {
         url: String,
         title: String,
         screenshot: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         tab: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         #[ts(as = "Option<Vec<crate::methods::BrowserTab>>", optional)]

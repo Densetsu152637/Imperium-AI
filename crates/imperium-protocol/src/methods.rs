@@ -3586,7 +3586,8 @@ pub struct BrowserPage {
     pub screenshot: String,
     /// The tab this page is, as `browser_tabs` and `browser_switch` name it. Absent from a
     /// daemon older than protocol 0.35.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub tab: Option<String>,
     /// Every open tab, in the order they were opened, the one shown included. Absent from a
     /// daemon older than protocol 0.35.
@@ -3659,7 +3660,8 @@ pub enum BrowserAction {
     /// Open a new tab (at `url` when given) and make it the active one. Refused when the
     /// browser already has its most tabs open.
     NewTab {
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         url: Option<String>,
     },
     /// Make an open tab the active one.
