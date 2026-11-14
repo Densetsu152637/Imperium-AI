@@ -407,13 +407,16 @@ and `environments.agent_update` (protocol 0.28)
     0.31 only ([17](17-memory.md#migrating-older-project-memory), [10](10-configuration.md)).
     Protocol 0.31.
 
-40. **New-user tutorial.** An interactive first-run tutorial in the desktop app: a skippable guided
+40. **New-user tutorial** (implemented). An interactive first-run tutorial in the desktop app: a skippable guided
     tour of the main areas (sessions and the composer, panels and layouts, environments including
     Home, agents and permissions, models and settings, memory), contextual tips the first time a
     feature is used, and a replayable *Tour* entry in the help and the command palette. Progress is
     remembered per user, the tour works with the keyboard and screen readers, and it needs no
-    network ([07](07-desktop-ui.md), [14](14-projects-and-automation.md#home-implemented),
-    [17](17-memory.md)).
+    network ([07](07-desktop-ui.md#new-user-tour-implemented),
+    [14](14-projects-and-automation.md#home-implemented), [17](17-memory.md)). *Not built:* the
+    contextual tips the first time a feature is used; the tour has no separate help menu (the
+    command palette and Settings → About start it); it starts for existing users too, once, after
+    updating, since nothing records that they have used the app before.
 41. **read_file fix** (implemented). The `read_file` tool does not work in use. Reproduce the failure first,
     find its cause in the tool's path handling or its result, and fix it. Add a test that reads a
     real file through the same path the app uses ([05](05-tools-and-isolation.md)).

@@ -120,6 +120,8 @@ type Props = {
   onOpenConnectors: () => void;
   /** Opens the model configuration dialog (local models and model-table rows). */
   onOpenModels: () => void;
+  /** Closes Settings and starts the first-run tour again. */
+  onStartTour: () => void;
   /** The model folders changed: refresh the model lists. */
   onModelsChanged?: () => void;
   onResetLayout: () => void;
@@ -730,7 +732,7 @@ export function SettingsWindow(props: Props) {
       case "data":
         return <DataSection userFile={config?.user_file ?? null} settings={settings} onChange={onChange} onResetLayout={props.onResetLayout} />;
       case "about":
-        return <AboutSection updates={props.updates} client={client} />;
+        return <AboutSection updates={props.updates} client={client} onStartTour={props.onStartTour} />;
       default: {
         const fields = FIELDS.filter((field) => field.section === section);
         return (
@@ -1336,7 +1338,7 @@ function DataSection({
     storeFolder().then(setFolder, () => setFolder(null));
   }, []);
   const changed = (Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]).filter(
-    (key) => JSON.stringify(settings[key]) !== JSON.stringify(DEFAULT_SETTINGS[key]),
+    (key) => key !== "tour" && JSON.stringify(settings[key]) !== JSON.stringify(DEFAULT_SETTINGS[key]),
   );
   return (
     <>
@@ -1347,7 +1349,7 @@ function DataSection({
         <code className="path">{userFile ?? "connect to imperium-core to see it"}</code>
       </Row>
       <Row label="Reset app settings" description={`Return the ${changed.length} changed app settings to their defaults. Daemon settings are not affected.`}>
-        <button onClick={() => onChange(DEFAULT_SETTINGS)} disabled={changed.length === 0}>
+        <button onClick={() => onChange({ ...DEFAULT_SETTINGS, tour: settings.tour })} disabled={changed.length === 0}>
           Reset
         </button>
       </Row>
@@ -1358,7 +1360,7 @@ function DataSection({
   );
 }
 
-function AboutSection({ updates, client }: { updates: Updates | null; client: DaemonClient | null }) {
+function AboutSection({ updates, client, onStartTour }: { updates: Updates | null; client: DaemonClient | null; onStartTour: () => void }) {
   const daemon = client?.daemon;
   return (
     <>
@@ -1367,6 +1369,9 @@ function AboutSection({ updates, client }: { updates: Updates | null; client: Da
       </Row>
       <Row label="imperium-core" description="The daemon this window is connected to.">
         <span>{daemon ? `${daemon.daemon.version} · protocol ${daemon.protocol.major}.${daemon.protocol.minor}` : "not connected"}</span>
+      </Row>
+      <Row label="Tour" description="A short guided tour of the main areas of the app.">
+        <button onClick={onStartTour}>Take the tour</button>
       </Row>
       <Row label="Source" description="Code, releases, and issues.">
         <span>github.com/Densetsu152637/Imperium-AI</span>

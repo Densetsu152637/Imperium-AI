@@ -21,6 +21,7 @@ import {
   Pin,
   PinOff,
   Plug,
+  Route,
   Settings,
   SunMoon,
   X,
@@ -68,6 +69,7 @@ export type AppCommandContext = {
   dockPanel: (id: string) => void;
   toggleTheme: () => void;
   checkUpdates: () => void;
+  startTour: () => void;
 };
 
 /** Icons for the panels that have an obvious one; the rest use a generic panel icon. */
@@ -169,6 +171,7 @@ export function appCommands(app: AppCommandContext): Command[] {
     stayInWindow: true,
     run: app.toggleTheme,
   });
+  add({ id: "tour.start", group: "actions", title: "Take the tour", keywords: ["tutorial", "help", "guide", "welcome", "onboarding", "walkthrough"], icon: Route, run: app.startTour });
   if (app.canCheckUpdates) {
     add({ id: "updates.check", group: "actions", title: "Check for updates", keywords: ["upgrade", "version"], icon: Download, run: app.checkUpdates });
   }

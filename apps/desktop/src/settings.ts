@@ -8,6 +8,7 @@ import { createContext, useContext } from "react";
 import { toggleMark, type ModelMark, type ModelMarks } from "./modelPrefs";
 import { rememberTheme } from "./boot";
 import { getDoc, setDoc, takeLegacy } from "./store";
+import type { TourState } from "./tour";
 import type { PttKey } from "./voice";
 
 export type Density = "compact" | "comfortable" | "spacious";
@@ -72,6 +73,8 @@ export type AppSettings = {
   enabledMods: Record<string, boolean>;
   // Models: favourites and hidden ones, by spec (modelPrefs.ts).
   modelMarks: ModelMarks;
+  // The first-run tour: how it last ended, null until it has run (tour.ts).
+  tour: TourState;
 };
 
 /** The settings each display control used to be called. */
@@ -109,6 +112,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   checkUpdatesAtLogin: false,
   enabledMods: {},
   modelMarks: {},
+  tour: null,
 };
 
 /** The saved document: the settings plus a version for future migrations. */

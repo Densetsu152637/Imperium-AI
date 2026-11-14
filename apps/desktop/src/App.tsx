@@ -118,6 +118,8 @@ import { PANELS_ICON, SETTINGS_SECTIONS, SettingsWindow, type LayoutNotice } fro
 import { appCommands } from "./commands/appCommands";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
 import { splashDone } from "./boot";
+import { Tour } from "./Tour";
+import { recordOutcome, shouldAutoStart, type TourOutcome } from "./tour";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
 import { ConnectorsWindow } from "./ConnectorsWindow";
 import { EnvironmentWindow } from "./EnvironmentWindow";
@@ -229,6 +231,8 @@ export function App() {
   // Panels whose windows this session has opened, so each opens once.
   const opened = useRef(new Set<string>());
   const [showSettings, setShowSettings] = useState(false);
+  /** The first-run tour is showing. */
+  const [touring, setTouring] = useState(false);
   /** The Settings section the command palette asked for. */
   const [settingsRequest, setSettingsRequest] = useState<{ section: string } | null>(null);
   const [modelDialog, setModelDialog] = useState<ModelDialogTarget | null>(null);
@@ -1023,6 +1027,21 @@ export function App() {
     setSettings(next);
     saveSettings(next);
   };
+  /** Starts the tour from its first step, closing the windows over the workspace first. */
+  const startTour = () => {
+    setShowSettings(false);
+    setShowConnectors(false);
+    setTouring(true);
+  };
+  const endTour = (outcome: TourOutcome) => {
+    setTouring(false);
+    changeSettings((current) => recordOutcome(current, outcome));
+  };
+  // A first run: the tour starts by itself, in the main window only.
+  useEffect(() => {
+    if (!isDetached && shouldAutoStart(settings)) setTouring(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // For panels that change a setting of their own (model favourites and hidden models).
   const changeSettings: ChangeSettings = (change) =>
     setSettings((current) => {
@@ -1405,6 +1424,7 @@ export function App() {
       dockPanel: dock,
       toggleTheme: () => updateSettings({ ...settings, theme: resolvedTheme(settings.theme) === "dark" ? "light" : "dark" }),
       checkUpdates: () => updates?.check(),
+      startTour,
     });
   });
 
@@ -1535,6 +1555,7 @@ export function App() {
           className={`ghost titlebar-button icon-only layout-toggle${editingLayout ? " active" : ""}`}
           onClick={() => setEditingLayout((editing) => !editing)}
           aria-pressed={editingLayout}
+          data-tour="layout"
           aria-label="Edit layout"
           title={editingLayout ? "Done editing the layout (Esc)" : "Edit layout"}
         >
@@ -1544,6 +1565,7 @@ export function App() {
           className="ghost titlebar-button icon-only"
           onClick={() => setShowSettings((open) => !open)}
           aria-expanded={showSettings}
+          data-tour="settings"
           aria-label="Settings"
           title="Settings (Ctrl+,)"
         >
@@ -1572,6 +1594,7 @@ export function App() {
             setShowSettings(false);
             setModelDialog({ tab: "local" });
           }}
+          onStartTour={startTour}
           onModelsChanged={refreshModels}
           onResetLayout={() => {
             // The layout that applies here goes back to the default: the global one, or this environment's own.
@@ -1600,6 +1623,7 @@ export function App() {
         />
       )}
       <CommandPalette detached={false} />
+      {touring && <Tour onEnd={endTour} />}
       {modelDialog && (
         <ModelConfigDialog client={client} target={modelDialog} onClose={() => setModelDialog(null)} onSaved={refreshModels} />
       )}

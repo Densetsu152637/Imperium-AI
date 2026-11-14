@@ -601,6 +601,34 @@ id to the main window (a `command` panel-window event), which runs it, records i
 comes forward; theme changes leave the panel window in front. The shortcut is listed under
 Settings → Keyboard; shortcuts are not rebindable yet.
 
+## New-user tour (implemented)
+
+The first time the app opens for a user, a guided tour walks through the main areas: environments
+and Home, the sessions list, the composer, panels and layouts, the command palette, permissions
+and approvals, memory, and Settings. Each step is a small card beside a highlighted element
+(or centred, for a step about the app as a whole) with Back, Next, and Skip tour.
+
+- **Remembered per user.** How the tour ended (`finished` or `skipped`, and when) is the app
+  setting `tour` in the local settings document, so it starts by itself only once, in the main
+  window and never in a panel window. Resetting app settings keeps it.
+- **Restartable.** *Take the tour* is a command in the palette (keywords: tutorial, help,
+  onboarding) and a button in Settings → About; both close the windows over the workspace and start
+  from the first step.
+- **Accessible.** The card is a modal dialog named and described by its title and text; focus moves
+  to it on each step and stays inside it (Tab and Shift+Tab wrap), Right Arrow goes on, Left Arrow
+  goes back, Esc skips, and each step is announced in a polite live region. Focus returns to where
+  it was when the tour closes. It uses no animation.
+- **No network and no library.** The tour is `src/Tour.tsx` (the card and highlight, on the
+  app's theme tokens) over `src/tour.ts` (the steps and pure logic); it adds no dependency.
+- **Declarative steps.** `TOUR_STEPS` in `tour.ts` is a list of `{ id, title, body, target? }`,
+  where `target` is a CSS selector (panels have `data-panel`, and the title bar's Edit layout and
+  Settings buttons `data-tour`). A step whose target is not on screen (no session open for the
+  composer, a closed or detached panel) is skipped, in both directions, and the step counter counts
+  only the steps that can be shown. Adding a step is adding an entry.
+
+Sequencing, skipping missing targets, the persisted outcome, and card placement are pure functions
+tested in `test/tour.test.ts`.
+
 ## Accessibility
 
 Full keyboard navigation, visible focus, screen-reader labels, reduced-motion support, and
