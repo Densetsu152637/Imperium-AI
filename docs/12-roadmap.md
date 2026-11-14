@@ -414,6 +414,24 @@ and `environments.agent_update` (protocol 0.28)
     remembered per user, the tour works with the keyboard and screen readers, and it needs no
     network ([07](07-desktop-ui.md), [14](14-projects-and-automation.md#home-implemented),
     [17](17-memory.md)).
+41. **read_file fix.** The `read_file` tool does not work in use. Reproduce the failure first,
+    find its cause in the tool's path handling or its result, and fix it. Add a test that reads a
+    real file through the same path the app uses ([05](05-tools-and-isolation.md)).
+42. **Claude harness for imperium-core.** A harness that lets Claude Code drive the imperium-core
+    runtime. Claude hands tasks to Imperium so it can orchestrate them. Claude also exercises
+    Imperium's agents and their capabilities, to test bugs and new features
+    ([02](02-architecture.md), [03](03-agent-engine.md)).
+43. **Harness-level engineering.** One change to the harness around the model, in four parts.
+    (a) A de-reference step before the planner. The small (4B) model reads the latest user message
+    and the compacted history, then writes a standalone prompt. Pronouns and references such as
+    "it", "that file" and "the previous step" become concrete names. (b) A structured state object,
+    kept outside the chat history. It tracks active entities, user goals and resolved constraints,
+    and it is injected at the top of every prompt. (c) Ambiguity as a tool:
+    `request_clarification(missing_parameter, options)`. The agent calls it when its confidence is
+    below a threshold, and evaluation rewards the call. (d) Ambiguity patterns in the
+    reasoning-pattern retrieval store. For a request such as "fix the issue from earlier", the agent
+    checks the error log state first, and asks only if that does not settle it
+    ([03](03-agent-engine.md), [17](17-memory.md)).
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
