@@ -268,6 +268,12 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "D:/Notes"]
 trusted_projects = ["D:/Git Repositories/Imperium-AI"]
 ```
 
+**Imperium as an MCP server (implemented, session level).** `imperium mcp-serve` is an MCP
+server on stdio that lets an external agent such as Claude Code start sessions, follow them,
+read their tool logs and answer their permission requests through the daemon, with everything
+under the daemon's normal permission checks; see [20](20-claude-harness.md). Exposing Imperium's
+own tools as MCP tools is not built.
+
 A stdio server's tokens go in `secret_env`, environment variables read from the keychain when
 the server starts, so the config file never holds them:
 `secret_env = { SLACK_BOT_TOKEN = { secret = "mcp.slack.bot-token" } }`. A server may also

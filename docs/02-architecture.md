@@ -146,7 +146,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-local`      | GGUF discovery, hardware probe, memory planner, runtime packs, runtime supervision (llama.cpp, vLLM); carries out residency decisions, decides none on its own |
 | `imperium-tools`      | Built-in tools: files, commands, isolation tiers (implemented)         |
 | `imperium-web`        | Web search providers, page fetching, and a CDP browser (implemented)   |
-| `imperium-mcp`        | MCP client (stdio, streamable HTTP; implemented) and server bridge (planned) |
+| `imperium-mcp`        | MCP client (stdio, streamable HTTP; implemented) and server bridge for Imperium's own tools (planned; the [Claude harness](20-claude-harness.md), a session-level MCP server, lives in `imperium-cli`) |
 | `imperium-sandbox`    | Isolation tiers: policy guard, container driver, SSH transport         |
 | `imperium-extensions` | Plugin, skill, hook, and slash-command loading; Claude Code plugin compatibility (implemented) |
 | `imperium-workflow`   | Workflow packs, context retrieval, load manifests, documentation pointers (implemented) |
@@ -160,7 +160,7 @@ Core method groups: `session.*`, `agent.*`, `task.*`, `model.*`, `runtime.*`, `t
 | `imperium-media`      | Image (OpenAI-compatible, ComfyUI), speech, and transcription tools (implemented) |
 | `imperium-pets`       | Pixel Pets v3 packages and the behaviour arbiter (implemented); WASM behaviours (planned) |
 | `imperium-core`       | The daemon (`imperium-core` binary, formerly `imperiumd`), also a library for tests |
-| `imperium-cli`        | `imperium` binary: CLI and TUI client                                  |
+| `imperium-cli`        | `imperium` binary: CLI and TUI client, and `imperium mcp-serve` ([20](20-claude-harness.md)) |
 
 `imperium-api` depends on no other Imperium crate, and crates that only share vocabulary
 depend on it rather than on each other: `imperium-tools`, `imperium-mcp`, `imperium-web`, and

@@ -166,6 +166,10 @@ enum Command {
         #[command(subcommand)]
         command: RuntimeCommand,
     },
+    /// Serve the Claude harness: an MCP server on standard input and output that lets an
+    /// external agent such as Claude Code start sessions, follow them and answer their
+    /// permission requests through this daemon. Register it in `.mcp.json`.
+    McpServe,
     /// CPU, GPU, RAM, and VRAM usage, the local models loaded, and the endpoints sessions use.
     Resources {
         /// Keep printing a fresh snapshot every two seconds until Ctrl+C.
@@ -864,6 +868,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             command: RuntimeCommand::Use { path },
         } => local::use_server(path),
         Command::Resources { watch } => resources::show(watch),
+        Command::McpServe => mcp_serve(),
         Command::Api { command } => match command {
             ApiCommand::Status => api::status(),
             ApiCommand::Enable => api::set_enabled(true),
@@ -931,6 +936,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             MemoryCommand::Forget { name, scope } => memory::forget(&name, scope),
         },
     }
+}
+
+/// Serves the Claude harness on standard input and output until the caller closes it. Only
+/// protocol messages go to standard output; errors go to standard error.
+fn mcp_serve() -> anyhow::Result<()> {
+    block_on(async {
+        let (client, _) = connect().await?;
+        imperium_cli::mcp_serve::serve(
+            client,
+            tokio::io::BufReader::new(tokio::io::stdin()),
+            tokio::io::stdout(),
+        )
+        .await
+    })
 }
 
 fn ping() -> anyhow::Result<()> {
