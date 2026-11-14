@@ -114,7 +114,8 @@ and `environments.agent_update` (protocol 0.28)
    in the context breakdown. Push-to-talk (a held key or the mic button) transcribes into the
    composer through `[media.transcription]`
    ([07](07-desktop-ui.md#attachments-and-voice-input-implemented)). Describing images for models
-   without vision, rendering drawn PDF pages, and a supervised local whisper remain to do.
+   without vision is done under item 34; rendering drawn PDF pages and a supervised local
+   whisper remain to do.
 6. **Review pane and checkpoints** (implemented). Diffs of an agent's changes with
    accept or reject per hunk, then commit or open a pull request; git-based checkpoints to
    rewind a session's files and conversation. Checkpoints: before each root turn that changes
@@ -357,9 +358,16 @@ and `environments.agent_update` (protocol 0.28)
     ([02](02-architecture.md#protocol), [05](05-tools-and-isolation.md#ssh-hosts),
     [10](10-configuration.md)). Protocol 0.26.
 34. **Desktop and platform gaps.** Rebindable shortcuts; attachments for models without
-    vision (image descriptions), drawn PDF pages, and a supervised local whisper; an encrypted
-    secret store where no keychain exists; WASM pet behaviours
-    ([07](07-desktop-ui.md), [10](10-configuration.md), [16](16-pets.md)).
+    vision, drawn PDF pages, and a supervised local whisper; an encrypted secret store where no
+    keychain exists; WASM pet behaviours
+    ([07](07-desktop-ui.md), [10](10-configuration.md), [16](16-pets.md)). Done so far:
+    image descriptions for models without vision (`[attachments]`: a vision-tagged or named
+    model describes an attached image or a scanned PDF's embedded JPEG pages, framed as
+    machine-generated data, budgeted and cached per file hash, with a plain note to the model
+    and the user when nothing can; [07](07-desktop-ui.md#images-for-a-model-that-cannot-see-them-implemented)).
+    Not built: rendering drawn PDF pages (no renderer in the build; scans whose pages are not
+    embedded JPEGs are reported as unreadable), the composer chip saying a description will be
+    made instead of *path only*, and the other parts above.
 35. **Layouts** (implemented). Dragging a panel out into its own window and back, and a mod's
     panel into another panel as a module, each with a keyboard alternative in the panel's menu;
     per-environment layouts that fall back to the global one; and exportable, validated,

@@ -93,6 +93,8 @@ pub struct SessionConfig {
     pub auto_compact_at: Option<f64>,
     /// The harness aids for small models: de-referencing, state, hints, asking (`[harness]`).
     pub harness: imperium_config::HarnessSettings,
+    /// Describing images for models that cannot see them (`[attachments]`).
+    pub attachments: imperium_config::AttachmentSettings,
     /// Whether a person reads the session's turns. False for background sessions, ones with
     /// pre-approved tools, and project or persistent agents: the aids that talk to a person
     /// (the rewrite, hints, `request_clarification`) stay off there.
@@ -697,6 +699,11 @@ pub(crate) struct Shared {
     pub auto_compact_at: Option<f64>,
     /// The harness aids for small models (`[harness]`).
     pub harness: imperium_config::HarnessSettings,
+    /// Describing images for models that cannot see them (`[attachments]`).
+    pub attachments: imperium_config::AttachmentSettings,
+    /// Image descriptions by describing model and file hash, so a file attached again (or to
+    /// another message) is not described again.
+    pub descriptions: Mutex<std::collections::HashMap<String, String>>,
     /// Whether a person reads the session's turns; see [`SessionConfig::attended`].
     pub attended: bool,
     /// Tools the user allowed for the rest of the session, for every agent.
@@ -833,6 +840,8 @@ async fn run(
         max_steps: config.max_steps,
         auto_compact_at: config.auto_compact_at,
         harness: config.harness,
+        attachments: config.attachments,
+        descriptions: Mutex::new(std::collections::HashMap::new()),
         attended: config.attended,
         allowed_tools: Mutex::new(config.pre_approved.iter().cloned().collect()),
         pre_approved: config.pre_approved.into_iter().collect(),

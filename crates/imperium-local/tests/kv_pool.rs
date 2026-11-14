@@ -687,6 +687,7 @@ async fn a_session_parked_on_an_approval_holds_no_claim() {
         auto_compact: false,
         auto_compact_at: None,
         attended: true,
+        attachments: Default::default(),
         harness: imperium_config::HarnessSettings {
             dereference: imperium_config::HarnessMode::Off,
             state: imperium_config::HarnessMode::Off,

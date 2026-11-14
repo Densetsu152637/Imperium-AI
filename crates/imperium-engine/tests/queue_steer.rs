@@ -194,6 +194,7 @@ fn start(url: &str, dir: &std::path::Path, resume: bool) -> Session {
         auto_compact: false,
         auto_compact_at: None,
         attended: true,
+        attachments: Default::default(),
         harness: Default::default(),
         background: None,
         checkpoints: None,
