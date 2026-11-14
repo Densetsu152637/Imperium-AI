@@ -346,15 +346,16 @@ fn spawn_stdio_server(server: tokio::io::DuplexStream) {
     });
 }
 
+async fn call(client: &Client, fake: Option<&Fake>) -> Result<Value, McpError> {
+    let sampling = fake.map(|sampler| Sampling {
+        sampler,
+        server: "s",
+    });
+    client.request_with("tools/call", json!({}), sampling).await
+}
+
 #[tokio::test]
 async fn stream_servers_are_answered_only_inside_a_request_that_allows_it() {
-    let call = |client: &Client, fake: Option<&Fake>| {
-        let sampling = fake.map(|sampler| Sampling {
-            sampler,
-            server: "s",
-        });
-        client.request_with("tools/call", json!({}), sampling)
-    };
     // Allowed, with a sampler.
     let (client_side, server_side) = tokio::io::duplex(64 * 1024);
     spawn_stdio_server(server_side);
