@@ -588,6 +588,13 @@ impl EnvironmentConfig {
                 "mcp.servers.{name}: allow was ignored; its tools ask like any others"
             ));
         }
+        if server.sampling {
+            server.sampling = false;
+            self.refuse(format!(
+                "mcp.servers.{name}: sampling was ignored; only your own config lets a server \
+                 use your models"
+            ));
+        }
         server.catalog = None;
         self.mcp_servers.insert(name, server);
     }
@@ -1064,6 +1071,26 @@ plugin_dirs = ["tools/plugins"]
         let out = applied(&dir, &other);
         assert!(out.settings.mcp.servers.is_empty());
         assert!(out.settings.extensions.plugin_dirs.is_empty());
+    }
+
+    #[test]
+    fn a_repositorys_server_never_gets_to_sample() {
+        let dir = project(&[(
+            "config.toml",
+            "[mcp.servers.docs]\ncommand = \"docs-server\"\nsampling = true\n",
+        )]);
+        let trusted = format!("[mcp]\ntrusted_projects = [\"{}\"]", quoted(&dir));
+        let out = applied(&dir, &trusted);
+        let docs = &out.settings.mcp.servers["docs"];
+        assert_eq!(docs.command.as_deref(), Some("docs-server"));
+        assert!(!docs.sampling);
+        assert!(
+            out.refused
+                .iter()
+                .any(|reason| reason.contains("mcp.servers.docs: sampling was ignored")),
+            "{:?}",
+            out.refused
+        );
     }
 
     #[test]

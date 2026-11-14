@@ -68,6 +68,7 @@ fn server(name: &str, url: String) -> ServerSpec {
         },
         allow: vec!["*".into()],
         timeout: Duration::from_secs(5),
+        sampling: false,
     }
 }
 

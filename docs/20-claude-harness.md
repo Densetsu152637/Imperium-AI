@@ -25,7 +25,10 @@ What it does not do:
   budgets, isolation tier and hooks all apply as for a session started from the terminal.
 - **It answers nothing on its own.** A permission request an agent raises stays pending until
   the caller sends `respond_permission` with an explicit decision; there is no auto-approve
-  option, and the harness never calls `session.control` `set_permission_mode`.
+  option, and the harness never calls `session.control` `set_permission_mode`. It also refuses
+  to answer an `mcp_sampling` request (an MCP server asking to use the user's model, see
+  [05](05-tools-and-isolation.md#resources-prompts-and-sampling-implemented)): those stay with
+  the user in the desktop app or the CLI.
 - **It never shows the token.** The token stays in the harness process; no tool result or error
   includes it (the integration test checks every reply for it). The harness is as trusted as
   the user who can read the endpoint file: anything that can run it can drive the daemon, so

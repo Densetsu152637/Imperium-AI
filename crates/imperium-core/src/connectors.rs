@@ -256,6 +256,8 @@ fn from_wire(config: &McpServerConfig) -> Result<McpServerSettings, ErrorObject>
         allow: config.allow.clone(),
         enabled: config.enabled,
         timeout_s: config.timeout_s,
+        // Not a connector form field: `save` keeps what the config file says.
+        sampling: false,
         catalog: blank(&config.catalog),
     })
 }
@@ -271,13 +273,16 @@ pub fn save(state: &DaemonState, params: McpSaveParams) -> Result<McpSaveResult,
             imperium_config::MAX_SERVER_NAME
         )));
     }
-    let server = from_wire(&params.config)?;
-    if params.create && current(state)?.mcp.servers.contains_key(&params.name) {
+    let mut server = from_wire(&params.config)?;
+    let existing = current(state)?.mcp.servers.get(&params.name).cloned();
+    if params.create && existing.is_some() {
         return Err(invalid(format!(
             "a connector named {} already exists",
             params.name
         )));
     }
+    // Sampling is set in the config file only; saving from the form keeps it.
+    server.sampling = existing.is_some_and(|existing| existing.sampling);
     // Secrets are stored first, so the saved server never refers to a secret that was refused.
     let mut secrets = Vec::new();
     for (name, value) in &params.secrets {
@@ -701,5 +706,43 @@ mod tests {
         assert!(config.env.is_empty());
         let error = expand(get("slack"), "slack", &BTreeMap::new()).unwrap_err();
         assert!(error.contains("required"), "{error}");
+    }
+
+    #[test]
+    fn saving_from_the_form_keeps_the_files_sampling_and_new_servers_start_without_it() {
+        use imperium_config::{Config, Layer};
+        let settings = Config::from_layers([Layer::defaults()]).settings().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let state = DaemonState::new(Paths::under(home.path()), settings, None);
+        let by_hand = McpServerSettings {
+            command: Some("docs".into()),
+            sampling: true,
+            ..McpServerSettings::default()
+        };
+        imperium_config::save_mcp_server(&Paths::under(home.path()), "docs", &by_hand, []).unwrap();
+        let params = |name: &str, create: bool| McpSaveParams {
+            name: name.into(),
+            config: McpServerConfig {
+                command: Some("docs-v2".into()),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                secret_env: BTreeMap::new(),
+                url: None,
+                headers: BTreeMap::new(),
+                bearer_secret: None,
+                allow: Vec::new(),
+                enabled: true,
+                timeout_s: None,
+                catalog: None,
+            },
+            secrets: BTreeMap::new(),
+            create,
+        };
+        save(&state, params("docs", false)).unwrap();
+        let servers = current(&state).unwrap().mcp.servers;
+        assert_eq!(servers["docs"].command.as_deref(), Some("docs-v2"));
+        assert!(servers["docs"].sampling, "the form does not switch it off");
+        save(&state, params("fresh", true)).unwrap();
+        assert!(!current(&state).unwrap().mcp.servers["fresh"].sampling);
     }
 }

@@ -341,6 +341,17 @@ and `environments.agent_update` (protocol 0.28)
     that layers packs into the prompt; MCP resources, prompts, sampling, and OAuth for remote
     servers; and an MCP server bridge exposing Imperium itself
     ([08](08-agent-policy.md), [05](05-tools-and-isolation.md#mcp), [02](02-architecture.md)).
+    *Stage 1 (MCP client extras) is implemented:* resources and resource templates
+    (`resources_list`, `resources_read`) and prompts (`prompts_list`, `prompts_get`) are offered
+    as tools of the server that provides them, framed as untrusted data and governed by the same
+    permission rules, per-agent MCP allowlists, and local-files-only lock; sampling is off unless
+    the user's own config enables it for a server, then asks the user for every request and runs
+    through the budgets
+    ([05](05-tools-and-isolation.md#resources-prompts-and-sampling-implemented)), with no
+    protocol change. *Remaining:* pack update diffs, the policy crate, OAuth for remote servers,
+    the full server bridge (`imperium mcp-serve` already bridges sessions,
+    [20](20-claude-harness.md); exposing Imperium's own tools is not built), and inserting MCP
+    prompts as slash commands in the desktop and CLI.
 32. **Web and browser** (partly implemented). The browser pane the user can take over exists.
     Kagi and Exa join SearXNG, Brave and Tavily as search providers (keys only from the keychain);
     `web_fetch` keeps a bounded on-disk cache of shareable pages (`web.cache_ttl_s`,

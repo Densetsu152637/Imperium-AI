@@ -867,6 +867,7 @@ card = "Good at: creative writing, stories and essays."
             let context = ToolContext {
                 root: std::path::Path::new("."),
                 emit: &emit,
+                sampler: None,
             };
             let text = tool
                 .call(
