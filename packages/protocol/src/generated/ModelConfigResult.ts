@@ -28,4 +28,14 @@ file: string,
  * Specs of the models the user hid (`models.hidden`), which agents' `list_models` leaves
  * out.
  */
-hidden: Array<string>, };
+hidden: Array<string>, 
+/**
+ * Specs of the models the user switched off (`models.disabled`); a model-table row
+ * whose spec is listed is off whatever its own `enabled` says.
+ */
+disabled: Array<string>, 
+/**
+ * `models.default`, the model new sessions use, as a spec; null when none is set. A
+ * default model cannot be switched off.
+ */
+default_model: string | null, };

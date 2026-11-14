@@ -8,6 +8,11 @@ export type ModelSetConfigParams = { local: Array<LocalModelUpdate>, table: Arra
  */
 hidden: Array<string> | null, 
 /**
+ * Replaces `models.disabled`, the specs of the models the user switched off ("Use this
+ * model"); null leaves it alone. Refused when it would disable the default model.
+ */
+disabled: Array<string> | null, 
+/**
  * Check and compute the result without saving or applying anything.
  */
 dry_run: boolean, };

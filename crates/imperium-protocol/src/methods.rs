@@ -1725,6 +1725,10 @@ pub struct LocalModelRow {
     /// Of those, tokens reserved by calls running now.
     #[serde(default)]
     pub pool_reserved_tokens: u32,
+    /// False when the user switched the model off ("Use this model" in the model configuration
+    /// dialog, `models.disabled`): it is not routed to, offered to agents, or selectable.
+    #[serde(default = "yes")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -2474,6 +2478,14 @@ pub struct ModelConfigResult {
     /// out.
     #[serde(default)]
     pub hidden: Vec<String>,
+    /// Specs of the models the user switched off (`models.disabled`); a model-table row
+    /// whose spec is listed is off whatever its own `enabled` says.
+    #[serde(default)]
+    pub disabled: Vec<String>,
+    /// `models.default`, the model new sessions use, as a spec; null when none is set. A
+    /// default model cannot be switched off.
+    #[serde(default)]
+    pub default_model: Option<String>,
 }
 
 /// A local model's llama.cpp settings.
@@ -2517,6 +2529,29 @@ pub struct LocalModelConfig {
     /// counts the draft only while it is used.
     #[serde(default)]
     pub draft_notice: Option<String>,
+    /// False when the user switched the model off (`models.disabled`).
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Size of the model's weights on disk, which is what loading them takes.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub weights_bytes: u64,
+    /// Layers the model has, when its header says.
+    #[serde(default)]
+    pub layers: Option<u32>,
+    /// Layers the planner puts on the GPU with the effective settings, when it can place the
+    /// model at all (null otherwise).
+    #[serde(default)]
+    pub gpu_layers: Option<u32>,
+    /// VRAM the model would take with the effective settings, weights and KV pool included;
+    /// 0 when it cannot be placed. An estimate beside what is loaded now.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub vram_bytes: u64,
+    /// System RAM the model would take with the effective settings; 0 when it cannot be placed.
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub ram_bytes: u64,
 }
 
 /// Per-model llama.cpp settings; a null field takes the default.
@@ -2702,6 +2737,10 @@ pub struct ModelSetConfigParams {
     /// Replaces `models.hidden`, the specs of the models the user hid; null leaves it alone.
     #[serde(default)]
     pub hidden: Option<Vec<String>>,
+    /// Replaces `models.disabled`, the specs of the models the user switched off ("Use this
+    /// model"); null leaves it alone. Refused when it would disable the default model.
+    #[serde(default)]
+    pub disabled: Option<Vec<String>>,
     /// Check and compute the result without saving or applying anything.
     #[serde(default)]
     pub dry_run: bool,

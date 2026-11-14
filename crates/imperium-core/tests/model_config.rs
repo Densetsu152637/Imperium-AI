@@ -476,3 +476,122 @@ async fn a_vllm_model_is_refused_a_draft_model() {
         "{message}"
     );
 }
+
+#[tokio::test]
+async fn models_are_switched_off_and_the_default_model_cannot_be() {
+    let home = tempfile::tempdir().unwrap();
+    let (mut socket, daemon) = start_daemon(home.path()).await;
+    let paths = Paths::under(home.path());
+
+    // Everything is on to begin with, and a local model carries its memory estimate.
+    let config = call(&mut socket, "models.config", json!({})).await.unwrap();
+    assert_eq!(config["local"][0]["enabled"], true);
+    assert_eq!(config["disabled"], json!([]));
+    assert_eq!(config["default_model"], Value::Null);
+    assert!(config["local"][0]["weights_bytes"].is_u64());
+    assert!(config["local"][0]["vram_bytes"].is_u64());
+    assert!(config["local"][0]["ram_bytes"].is_u64());
+
+    // Switching off a local model and a hosted one: saved sorted and once each, listed as off.
+    let result = call(
+        &mut socket,
+        "models.set_config",
+        json!({"disabled": ["llamacpp:tiny", "cloud:coder-1", "llamacpp:tiny", " "]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result["disabled"],
+        json!(["cloud:coder-1", "llamacpp:tiny"])
+    );
+    assert_eq!(result["local"][0]["enabled"], false);
+    assert_eq!(daemon.settings().models.disabled.len(), 2);
+    let listing = call(&mut socket, "models.local", json!({})).await.unwrap();
+    assert_eq!(listing["models"][0]["enabled"], false);
+    let table = call(&mut socket, "models.list", json!({})).await.unwrap();
+    assert_eq!(table["models"][0]["enabled"], false);
+    let loaded = imperium_config::load(&paths, None, [])
+        .unwrap()
+        .settings()
+        .unwrap();
+    assert_eq!(loaded.models.disabled, ["cloud:coder-1", "llamacpp:tiny"]);
+
+    // A session cannot start on a model that is off, and it cannot become the default.
+    let refused = call(
+        &mut socket,
+        "session.create",
+        json!({"model": "llamacpp:tiny"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused["message"].as_str().unwrap().contains("turned off"),
+        "{refused}"
+    );
+    let refused = call(&mut socket, "models.use", json!({"model": "tiny"}))
+        .await
+        .unwrap_err();
+    assert_eq!(refused["code"], -32602, "{refused}");
+
+    // Leaving it out keeps the list; an empty one switches everything back on.
+    let kept = call(&mut socket, "models.set_config", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(kept["disabled"], json!(["cloud:coder-1", "llamacpp:tiny"]));
+    let cleared = call(&mut socket, "models.set_config", json!({"disabled": []}))
+        .await
+        .unwrap();
+    assert_eq!(cleared["disabled"], json!([]));
+    assert_eq!(cleared["local"][0]["enabled"], true);
+
+    // The default model is refused, dry run or not, and nothing is saved.
+    call(&mut socket, "models.use", json!({"model": "tiny"}))
+        .await
+        .unwrap();
+    for dry_run in [true, false] {
+        let refused = call(
+            &mut socket,
+            "models.set_config",
+            json!({"disabled": ["llamacpp:tiny"], "dry_run": dry_run}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            refused["message"]
+                .as_str()
+                .unwrap()
+                .contains("default model"),
+            "{refused}"
+        );
+    }
+    assert!(daemon.settings().models.disabled.is_empty());
+    let config = call(&mut socket, "models.config", json!({})).await.unwrap();
+    assert_eq!(config["default_model"], "llamacpp:tiny");
+
+    // Choosing another default first lets it go; the row's own switch counts the same way.
+    call(&mut socket, "models.use", json!({"model": "coder"}))
+        .await
+        .unwrap();
+    let result = call(
+        &mut socket,
+        "models.set_config",
+        json!({"disabled": ["llamacpp:tiny"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["local"][0]["enabled"], false);
+    let refused = call(
+        &mut socket,
+        "models.set_config",
+        json!({"table": [{"id": "coder", "settings": {"enabled": false}}]}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("default model"),
+        "{refused}"
+    );
+}

@@ -231,6 +231,11 @@ pub fn use_model(
     params: ModelUseParams,
 ) -> Result<ModelUseResult, ErrorObject> {
     let spec = spec_of(state, &params.model)?;
+    if state.settings().models.is_disabled(&spec) {
+        return Err(invalid(format!(
+            "{spec} is turned off; turn it on in Settings → Models before making it the default"
+        )));
+    }
     save(
         state,
         "models.default",

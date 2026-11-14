@@ -1757,7 +1757,7 @@ impl DaemonState {
         };
         let project_dir_path = local_project.as_path();
         // A model table id or a spec, as the model pickers offer them.
-        let model = match self.resolve_model(model) {
+        let model = match self.resolve_usable_model(model) {
             Ok(model) => Some(model),
             Err(ModelError::NoDefault) if options.may_wait_for_model => None,
             Err(error) => return Err(error.into()),
@@ -2138,7 +2138,7 @@ impl DaemonState {
                 ));
             }
             // The model is checked first, so a refusal leaves no folder behind.
-            match self.resolve_model(model) {
+            match self.resolve_usable_model(model) {
                 Ok(_) => {}
                 Err(ModelError::NoDefault) if options.may_wait_for_model => {}
                 Err(error) => return Err(error.into()),
@@ -2701,11 +2701,28 @@ impl DaemonState {
         resolve_model(&settings, spec, |name| self.secrets.load(name))
     }
 
+    /// [`DaemonState::resolve_model`] for a model a session is going to run on: a model the
+    /// user switched off ("Use this model", `models.disabled`) is refused, whether it was named
+    /// or is `models.default`.
+    pub fn resolve_usable_model(
+        &self,
+        requested: Option<&str>,
+    ) -> Result<ResolvedModel, ModelError> {
+        let model = self.resolve_model(requested)?;
+        if self.settings().models.is_disabled(&model.spec) {
+            return Err(ModelError::Disabled(model.spec));
+        }
+        Ok(model)
+    }
+
     /// Checks, without loading or starting anything, that a model a client picked for a session
-    /// can be asked for: a local model needs the local runtime and must be among the models it
-    /// found. Whether it loads (its server, the memory it needs) is found out when the session
-    /// first sends it a message.
+    /// can be asked for: it must not be switched off, and a local model needs the local runtime
+    /// and must be among the models it found. Whether it loads (its server, the memory it
+    /// needs) is found out when the session first sends it a message.
     pub fn check_selectable(&self, model: &ResolvedModel) -> Result<(), String> {
+        if self.settings().models.is_disabled(&model.spec) {
+            return Err(ModelError::Disabled(model.spec.clone()).to_string());
+        }
         if !model.local {
             return Ok(());
         }
@@ -2733,7 +2750,7 @@ impl DaemonState {
             .models
             .catalog
             .iter()
-            .filter(|entry| entry.enabled)
+            .filter(|entry| settings.models.row_enabled(entry))
             .filter_map(|entry| {
                 match resolve_model(&settings, Some(&entry.spec), |name| self.secrets.load(name)) {
                     Ok(model) => Some(CatalogModel {
@@ -2786,7 +2803,7 @@ impl DaemonState {
                     output_usd_per_mtok: pricing.map(|p| p.output_usd_per_mtok),
                     endpoint_configured: endpoint.is_some(),
                     context_window: entry.context_window,
-                    enabled: entry.enabled,
+                    enabled: settings.models.row_enabled(entry),
                     reasoning: self.model_reasons(&entry.spec),
                 }
             })

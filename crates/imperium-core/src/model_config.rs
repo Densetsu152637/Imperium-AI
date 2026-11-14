@@ -122,9 +122,13 @@ pub fn set_config(
         );
     }
     if let Some(hidden) = &params.hidden {
-        set_hidden(&mut saved, hidden);
+        set_specs(&mut saved, "hidden", hidden);
+    }
+    if let Some(disabled) = &params.disabled {
+        set_specs(&mut saved, "disabled", disabled);
     }
     let candidate = candidate(state, &file, &saved)?;
+    refuse_disabled_default(&current, &candidate)?;
     if params.dry_run {
         return Ok(result(state, &candidate, &saved));
     }
@@ -329,8 +333,31 @@ fn write_app_file(file: &Path, saved: &Table) -> Result<(), String> {
         .map_err(|error| format!("could not replace {}: {error}", file.display()))
 }
 
-/// Sets `models.hidden` to `specs` (sorted, each once), or removes it when there are none.
-fn set_hidden(saved: &mut Table, specs: &[String]) {
+/// Refuses switching off the model new sessions start on (`models.default`): the user picks
+/// another default first (`models.use`), so a new session never starts on a model that is off.
+/// A default that was already off before this save (a hand edit) does not block other changes.
+fn refuse_disabled_default(current: &Settings, candidate: &Settings) -> Result<(), String> {
+    let Some(default) = candidate.models.default.as_deref() else {
+        return Ok(());
+    };
+    // `models.default` is a spec; a model table id is accepted by hand, so map it to its spec.
+    let spec = candidate
+        .models
+        .catalog
+        .iter()
+        .find(|entry| entry.id == default)
+        .map_or(default, |entry| entry.spec.as_str());
+    if candidate.models.is_disabled(spec) && !current.models.is_disabled(spec) {
+        return Err(format!(
+            "{spec} is the default model for new sessions, so it cannot be turned off. Choose              another default model first, then turn this one off"
+        ));
+    }
+    Ok(())
+}
+
+/// Sets `models.<key>` (a list of model specs, such as `hidden` or `disabled`) to `specs`
+/// (sorted, each once), or removes it when there are none.
+fn set_specs(saved: &mut Table, key: &str, specs: &[String]) {
     let mut specs: Vec<String> = specs
         .iter()
         .map(|spec| spec.trim().to_string())
@@ -346,9 +373,9 @@ fn set_hidden(saved: &mut Table, specs: &[String]) {
         return;
     };
     if specs.is_empty() {
-        models.remove("hidden");
+        models.remove(key);
     } else {
-        models.insert("hidden".into(), strings(&specs));
+        models.insert(key.into(), strings(&specs));
     }
 }
 
@@ -555,6 +582,7 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                 let cpu_lane = settings.cpu_row(&model.id).is_some();
                 let (draft_in_use, draft_notice) = supervisor.draft_state(model, &launch);
                 let vllm = model.format == imperium_local::scan::Format::Safetensors;
+                let spec = format!("{}:{}", if vllm { "vllm" } else { "llamacpp" }, model.id);
                 LocalModelConfig {
                     id: model.id.clone(),
                     runtime: if vllm { "vllm" } else { "llamacpp" }.into(),
@@ -575,6 +603,20 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
                     metadata_card: imperium_local::card::metadata_card(model),
                     draft_in_use,
                     draft_notice,
+                    enabled: !settings.models.is_disabled(&spec),
+                    weights_bytes: footprint.weights_bytes,
+                    layers: footprint.layers,
+                    // What the planner would do with the effective settings: the layers it
+                    // offloads and the memory split between the GPU and system RAM.
+                    gpu_layers: placement
+                        .as_ref()
+                        .and_then(|placed| match footprint.layers {
+                            Some(layers) => Some(placed.gpu_layers.min(layers)),
+                            // "Every layer" with no layer count in the header has no number.
+                            None => (placed.gpu_layers != u32::MAX).then_some(placed.gpu_layers),
+                        }),
+                    vram_bytes: placement.as_ref().map_or(0, |placed| placed.vram_bytes),
+                    ram_bytes: placement.as_ref().map_or(0, |placed| placed.ram_bytes),
                 }
             })
             .collect()
@@ -627,5 +669,7 @@ fn result(state: &DaemonState, settings: &Settings, saved: &Table) -> ModelConfi
         cache_types: CACHE_TYPES.iter().map(ToString::to_string).collect(),
         file: state.paths().app_models_file().display().to_string(),
         hidden: settings.models.hidden.clone(),
+        disabled: settings.models.disabled.clone(),
+        default_model: settings.models.default.clone(),
     }
 }

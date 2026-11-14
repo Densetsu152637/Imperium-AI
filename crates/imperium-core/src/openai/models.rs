@@ -30,7 +30,7 @@ pub(crate) fn candidates(state: &DaemonState) -> Vec<Candidate> {
             continue;
         }
         let id = format!("{}:{}", row.runtime, row.id);
-        if settings.models.hidden.contains(&id) {
+        if settings.models.hidden.contains(&id) || settings.models.is_disabled(&id) {
             continue;
         }
         let name = catalog_alias(&settings, &id)
@@ -44,7 +44,12 @@ pub(crate) fn candidates(state: &DaemonState) -> Vec<Candidate> {
             exposed: true,
         });
     }
-    for entry in settings.models.catalog.iter().filter(|entry| entry.enabled) {
+    for entry in settings
+        .models
+        .catalog
+        .iter()
+        .filter(|entry| settings.models.row_enabled(entry))
+    {
         let (endpoint, _) = entry.spec.split_once(':').unwrap_or((&entry.spec, ""));
         if is_local_endpoint(endpoint) || found.iter().any(|known| known.id == entry.spec) {
             continue;
