@@ -1,7 +1,7 @@
 //! An MCP server's sampling request during a tool call: refused unless the server's config
 //! allows it, then always asked of the user, then answered by the session's model.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -136,13 +136,14 @@ impl Options {
     }
 }
 
-/// Lets the first model call through and refuses the second, which is the sampled one.
-#[derive(Debug, Default)]
-struct SecondCallBlocked(AtomicUsize);
+/// Refuses the next model call after the test armed it: the one a sampling request makes once
+/// the user approved it.
+#[derive(Debug)]
+struct BlockAfterApproval(Arc<AtomicBool>);
 
-impl imperium_engine::BudgetGate for SecondCallBlocked {
+impl imperium_engine::BudgetGate for BlockAfterApproval {
     fn check(&self, _spec: &str) -> imperium_engine::BudgetVerdict {
-        if self.0.fetch_add(1, Ordering::SeqCst) == 1 {
+        if self.0.swap(false, Ordering::SeqCst) {
             imperium_engine::BudgetVerdict::Blocked("the budget is used up".into())
         } else {
             imperium_engine::BudgetVerdict::Go
@@ -163,6 +164,7 @@ async fn run(options: Options) -> Outcome {
         budget_blocks,
     } = options;
     let samples = Arc::new(AtomicUsize::new(0));
+    let armed = Arc::new(AtomicBool::new(false));
     let sampled = Arc::new(Mutex::new(Vec::new()));
     let replies = Arc::new(Mutex::new(Vec::new()));
     let dir = tempfile::tempdir().unwrap();
@@ -212,7 +214,7 @@ async fn run(options: Options) -> Outcome {
         background: None,
         checkpoints: None,
         budget_gate: budget_blocks.then(|| {
-            Arc::new(SecondCallBlocked::default()) as Arc<dyn imperium_engine::BudgetGate>
+            Arc::new(BlockAfterApproval(Arc::clone(&armed))) as Arc<dyn imperium_engine::BudgetGate>
         }),
         auto_compact: false,
         auto_compact_at: None,
@@ -240,6 +242,9 @@ async fn run(options: Options) -> Outcome {
                 summary,
                 ..
             } => {
+                if tool == "mcp_sampling" {
+                    armed.store(true, Ordering::SeqCst);
+                }
                 approvals.push((tool, summary));
                 session.respond(request_id, decision).unwrap();
             }
