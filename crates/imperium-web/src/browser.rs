@@ -703,6 +703,8 @@ impl Browser {
         let label = self.label_of(id)?;
         if label != self.active {
             self.attach(label).await?;
+            // A page still loading (a window a page just opened) is waited for, within limits.
+            let _ = self.wait_until_loaded().await;
         }
         Ok(())
     }
@@ -1858,7 +1860,16 @@ mod tests {
         assert_eq!(browser.tabs().await.unwrap().len(), 3);
         assert_eq!(browser.view().await.unwrap().tab, "1");
         browser.switch_tab("3").await.unwrap();
-        assert!(browser.read().await.unwrap().contains("Page C"));
+        // The window the page opened may still be loading its page.
+        let mut text = String::new();
+        for _ in 0..100 {
+            text = browser.read().await.unwrap();
+            if text.contains("Page C") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(text.contains("Page C"), "{text}");
 
         // Closing the active tab hands over to a neighbour; the last tab stays.
         browser.close_tab("3").await.unwrap();
