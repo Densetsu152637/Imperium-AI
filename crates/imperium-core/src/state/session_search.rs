@@ -613,6 +613,7 @@ mod tests {
         let context = ToolContext {
             root: std::path::Path::new("."),
             emit: &emit,
+            sampler: None,
         };
         tool.call(&context, TOOL, arguments).await.unwrap()
     }

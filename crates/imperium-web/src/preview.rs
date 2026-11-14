@@ -583,6 +583,7 @@ mod tests {
         let context = ToolContext {
             root: std::path::Path::new("."),
             emit: &emit,
+            sampler: None,
         };
         let result = tools
             .call(&context, "preview_open", &arguments.to_string())
@@ -706,6 +707,7 @@ mod tests {
         let context = ToolContext {
             root: std::path::Path::new("."),
             emit: &emit,
+            sampler: None,
         };
         tools.clear_if_ended(&context);
         assert_eq!(tools.url(), None);

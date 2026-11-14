@@ -442,6 +442,7 @@ mod tests {
         let context = ToolContext {
             root: std::path::Path::new("."),
             emit: &emit,
+            sampler: None,
         };
         tools
             .call(&context, name, r#"{"url":"http://localhost/"}"#)

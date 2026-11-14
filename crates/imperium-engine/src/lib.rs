@@ -20,6 +20,7 @@ mod launcher;
 mod model;
 mod queue;
 mod quiet;
+mod sampling_summary;
 mod session;
 mod status;
 mod title;

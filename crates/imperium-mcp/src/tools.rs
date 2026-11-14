@@ -97,7 +97,7 @@ impl ToolProvider for McpTools {
 
     fn call<'a>(
         &'a self,
-        _context: &'a ToolContext<'a>,
+        context: &'a ToolContext<'a>,
         name: &'a str,
         arguments: &'a str,
     ) -> ToolFuture<'a> {
@@ -105,7 +105,7 @@ impl ToolProvider for McpTools {
             let servers = self
                 .servers()
                 .ok_or_else(|| format!("unknown MCP tool {name}"))?;
-            servers.call(name, arguments).await
+            servers.call(name, arguments, context.sampler).await
         })
     }
 }

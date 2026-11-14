@@ -76,6 +76,48 @@ pub struct ToolContext<'a> {
     pub root: &'a Path,
     /// Reports an event to the session's clients, attributed to the calling agent.
     pub emit: &'a (dyn Fn(ToolEvent) + Send + Sync),
+    /// Answers a sampling request an outside server (MCP) makes while the call runs, by asking
+    /// the user and then the session's model; `None` where there is no one to ask.
+    pub sampler: Option<&'a dyn Sampler>,
+}
+
+/// One message of a sampling request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SamplingMessage {
+    /// Written by the assistant rather than the user.
+    pub assistant: bool,
+    pub text: String,
+}
+
+/// What an outside server asks the session's model to continue, already bounded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SamplingRequest {
+    /// The server's name in the configuration.
+    pub server: String,
+    pub system_prompt: Option<String>,
+    pub messages: Vec<SamplingMessage>,
+    /// Most tokens the reply may generate.
+    pub max_tokens: u32,
+}
+
+/// The model's reply to a sampling request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SamplingReply {
+    pub text: String,
+    /// The model that wrote it.
+    pub model: String,
+    /// The reply was cut at `max_tokens`.
+    pub truncated: bool,
+}
+
+/// A sampling request's outcome: the reply, or why it was refused or failed.
+pub type SamplingFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<SamplingReply, String>> + Send + 'a>>;
+
+/// Runs a sampling request: asks the user to approve it, checks the budgets, and calls the
+/// session's model. An error is the reason it was refused.
+pub trait Sampler: Send + Sync {
+    fn sample<'a>(&'a self, request: SamplingRequest) -> SamplingFuture<'a>;
 }
 
 /// A set of tools offered to every agent in a session.

@@ -599,3 +599,136 @@ async fn bad_input_gets_an_error_and_the_server_carries_on() {
     let pong = harness.request("ping", json!({})).await;
     assert!(pong["result"].is_object());
 }
+
+/// An MCP server whose `work` tool asks the session's model for a reply before it answers.
+async fn sampling_mcp_server() -> String {
+    use axum::response::IntoResponse;
+    let app = Router::new().route(
+        "/mcp",
+        post(|axum::Json(request): axum::Json<Value>| async move {
+            let Some(id) = request.get("id").cloned() else {
+                return axum::http::StatusCode::ACCEPTED.into_response();
+            };
+            if request.get("method").is_none() {
+                return axum::http::StatusCode::ACCEPTED.into_response();
+            }
+            let result = match request["method"].as_str() {
+                Some("initialize") => {
+                    json!({"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}})
+                }
+                Some("tools/list") => json!({"tools": [
+                    {"name": "work", "description": "Needs a model", "inputSchema": {"type": "object"}}]}),
+                _ => {
+                    let ask = json!({"jsonrpc": "2.0", "id": "s1",
+                        "method": "sampling/createMessage", "params": {
+                            "messages": [{"role": "user",
+                                "content": {"type": "text", "text": "name a colour"}}]}});
+                    let done = json!({"jsonrpc": "2.0", "id": id,
+                        "result": {"content": [{"type": "text", "text": "worked"}]}});
+                    let body =
+                        format!("event: message\ndata: {ask}\n\nevent: message\ndata: {done}\n\n");
+                    return ([("content-type", "text/event-stream")], body).into_response();
+                }
+            };
+            axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    url
+}
+
+#[tokio::test]
+async fn the_harness_never_answers_an_mcp_servers_sampling_request() {
+    let model = scripted_model(vec![("use the w server", "mcp__w__work", json!({}))]).await;
+    let mcp = sampling_mcp_server().await;
+    let config = format!(
+        "{}[mcp.servers.w]\nurl = \"{mcp}\"\nallow = [\"*\"]\nsampling = true\n",
+        CONFIG.replace("{URL}", &model)
+    );
+    let data = tempfile::tempdir().unwrap();
+    let endpoint = start_daemon(daemon_with(&config, data.path())).await;
+    let mut harness = Harness::start(&endpoint).await;
+    harness
+        .request(
+            "initialize",
+            json!({"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "test", "version": "0"}}),
+        )
+        .await;
+    harness
+        .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let started = harness
+        .ok(
+            "start_session",
+            json!({"project_dir": project.path().to_string_lossy(), "prompt": "use the w server"}),
+        )
+        .await;
+    let session_id = started["session_id"].as_str().unwrap().to_string();
+    let mut waited = harness
+        .ok(
+            "wait_for_turn",
+            json!({"session_id": session_id, "since": started["cursor"], "timeout_s": 30}),
+        )
+        .await;
+    // The tool call itself may ask first (answered like any request); the sampling one is the
+    // one the harness must refuse.
+    for _ in 0..3 {
+        assert_eq!(waited["outcome"], "permission_required", "{waited}");
+        let pending = &waited["pending_permissions"][0];
+        if pending["tool"] == "mcp_sampling" {
+            break;
+        }
+        harness
+            .ok(
+                "respond_permission",
+                json!({"session_id": session_id, "request_id": pending["request_id"],
+                       "decision": "allow"}),
+            )
+            .await;
+        waited = harness
+            .ok(
+                "wait_for_turn",
+                json!({"session_id": session_id, "since": waited["cursor"], "timeout_s": 30}),
+            )
+            .await;
+    }
+    let request = &waited["pending_permissions"][0];
+    assert_eq!(request["tool"], "mcp_sampling");
+    let reply = harness
+        .request(
+            "tools/call",
+            json!({"name": "respond_permission", "arguments": {
+                "session_id": session_id, "request_id": request["request_id"],
+                "decision": "allow"}}),
+        )
+        .await;
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("only the user can answer"), "{text}");
+    // A request id the history never showed is refused too (fail closed).
+    let unknown = harness
+        .request(
+            "tools/call",
+            json!({"name": "respond_permission", "arguments": {
+                "session_id": session_id, "request_id": 987_654, "decision": "allow"}}),
+        )
+        .await;
+    assert_eq!(unknown["result"]["isError"], true, "{unknown}");
+    let text = unknown["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("no permission request 987654"), "{text}");
+    // Still pending: nothing answered it.
+    let still = harness
+        .ok("get_session", json!({"session_id": session_id}))
+        .await;
+    assert_eq!(
+        still["pending_permissions"][0]["request_id"],
+        request["request_id"]
+    );
+    harness
+        .ok("stop_session", json!({"session_id": session_id}))
+        .await;
+}

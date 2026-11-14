@@ -204,6 +204,7 @@ fn write_server(table: &mut dyn TableLike, server: &McpServerSettings) {
             .timeout_s
             .map(|seconds| Value::from(i64::try_from(seconds).unwrap_or(i64::MAX))),
     );
+    set_key(table, "sampling", server.sampling.then(|| true.into()));
     set_key(table, "catalog", text(&server.catalog));
 }
 
