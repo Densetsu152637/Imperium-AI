@@ -118,3 +118,21 @@ test("the card sits below its element, above it near the bottom, and inside the 
   assert.ok(edge.left + card.width <= viewport.width);
   assert.deepEqual(cardPosition(null, card, viewport), { left: 320, top: 500 / 3 });
 });
+
+test("one modal check serves the tour, its auto-start and the Esc guard", async () => {
+  const { anyModalOpen, MODAL_SELECTOR } = await import("../src/tourSteps.ts");
+  const asked: string[] = [];
+  const dom = (found: boolean) => ({
+    querySelector: (selector: string) => {
+      asked.push(selector);
+      return found ? ({} as Element) : null;
+    },
+  });
+  assert.equal(anyModalOpen(dom(true)), true);
+  assert.equal(anyModalOpen(dom(false)), false);
+  assert.deepEqual(asked, [MODAL_SELECTOR, MODAL_SELECTOR]);
+  // Sheets, native dialogs and confirmations all count; the tour's own card does not.
+  for (const part of ['[aria-modal="true"]:not(.tour-card)', "dialog[open]", '[role="alertdialog"]']) {
+    assert.ok(MODAL_SELECTOR.includes(part), part);
+  }
+});

@@ -121,7 +121,7 @@ import { bindingFor, isCapturing, triggers } from "./shortcuts";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
 import { splashDone } from "./boot";
 import { Tour } from "./Tour";
-import { autoStartReady, recordOutcome, shouldAutoStart, type TourOutcome } from "./tourSteps";
+import { anyModalOpen, autoStartReady, recordOutcome, shouldAutoStart, type TourOutcome } from "./tourSteps";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
 import { ConnectorsWindow } from "./ConnectorsWindow";
 import { EnvironmentWindow } from "./EnvironmentWindow";
@@ -511,7 +511,7 @@ export function App() {
   useEffect(() => {
     if (!editingLayout) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("[aria-modal='true']")) return;
+      if (event.key !== "Escape" || event.defaultPrevented || anyModalOpen()) return;
       setEditingLayout(false);
     };
     window.addEventListener("keydown", onKey);
@@ -1066,7 +1066,7 @@ export function App() {
           mainWindow: true,
           connected: true,
           uiReady: composer || (anyPanel && Date.now() - since > TOUR_COMPOSER_WAIT_MS),
-          modalOpen: approvalsWaitingRef.current || !!document.querySelector('[aria-modal="true"], dialog[open], [role="alertdialog"]'),
+          modalOpen: approvalsWaitingRef.current || anyModalOpen(),
         },
       );
       if (ready) {
@@ -1659,7 +1659,7 @@ export function App() {
         />
       )}
       <CommandPalette detached={false} />
-      {touring && <Tour hold={approvalsWaiting && tourAuto}onEnd={endTour} />}
+      {touring && <Tour hold={approvalsWaiting && tourAuto} onEnd={endTour} />}
       {modelDialog && (
         <ModelConfigDialog client={client} target={modelDialog} onClose={() => setModelDialog(null)} onSaved={refreshModels} />
       )}

@@ -411,6 +411,23 @@ pub fn render(attachments: &[Attachment]) -> Rendered {
 /// [`render`], with the descriptions of the images a model without vision cannot see (see
 /// [`undescribed`]) in place of the images.
 pub fn render_with(attachments: &[Attachment], descriptions: &Descriptions) -> Rendered {
+    render_reusing(attachments, descriptions, &PdfReads::new())
+}
+
+/// What reading a PDF gave, as [`pdf_text`] returns it: the text (`None` when extraction
+/// failed) and the page count.
+pub type PdfRead = (Option<String>, Option<usize>);
+
+/// PDF reads by attachment id, kept from [`undescribed_reading`] so a PDF is parsed once.
+pub type PdfReads = HashMap<String, PdfRead>;
+
+/// [`render_with`], taking the text of the PDFs from `reads` (from [`undescribed_reading`])
+/// instead of parsing them again.
+pub fn render_reusing(
+    attachments: &[Attachment],
+    descriptions: &Descriptions,
+    reads: &PdfReads,
+) -> Rendered {
     let mut rendered = Rendered::default();
     if attachments.is_empty() {
         return rendered;
@@ -420,6 +437,7 @@ pub fn render_with(attachments: &[Attachment], descriptions: &Descriptions) -> R
         let body = match render_one(
             attachment,
             descriptions.get(&attachment.id),
+            reads.get(&attachment.id),
             &mut rendered.images,
         ) {
             Ok(body) => body,
@@ -477,13 +495,22 @@ enum Skipped {
 /// A scan whose pages are in another encoding cannot be drawn without a PDF renderer, which
 /// this build does not have; it is returned as undescribable, with the reason.
 pub fn undescribed(attachments: &[Attachment]) -> (Vec<Undescribed>, Vec<Undescribable>) {
+    let (found, failed, _) = undescribed_reading(attachments);
+    (found, failed)
+}
+
+/// [`undescribed`], also returning what reading each PDF gave, for [`render_reusing`].
+pub fn undescribed_reading(
+    attachments: &[Attachment],
+) -> (Vec<Undescribed>, Vec<Undescribable>, PdfReads) {
+    let mut reads = PdfReads::new();
     let mut found = Vec::new();
     let mut failed = Vec::new();
     for attachment in attachments.iter().filter(|a| !a.vision) {
         if !matches!(attachment.kind, AttachmentKind::Image | AttachmentKind::Pdf) {
             continue;
         }
-        match undescribed_one(attachment) {
+        match undescribed_one(attachment, &mut reads) {
             Ok(one) => found.push(one),
             Err(Skipped::NotNeeded) => {}
             Err(Skipped::Failed(reason)) => failed.push(Undescribable {
@@ -493,16 +520,18 @@ pub fn undescribed(attachments: &[Attachment]) -> (Vec<Undescribed>, Vec<Undescr
             }),
         }
     }
-    (found, failed)
+    (found, failed, reads)
 }
 
-fn undescribed_one(attachment: &Attachment) -> Result<Undescribed, Skipped> {
+fn undescribed_one(attachment: &Attachment, reads: &mut PdfReads) -> Result<Undescribed, Skipped> {
     let bytes = read_verified(attachment)
         .map_err(|error| Skipped::Failed(format!("the file could not be read: {error}")))?;
     let (what, images) = if attachment.kind == AttachmentKind::Image {
         ("image", vec![data_url(&attachment.mime, &bytes)])
     } else {
-        let text = pdf_text(&bytes).0;
+        let read = pdf_text(&bytes);
+        let text = read.0.clone();
+        reads.insert(attachment.id.clone(), read);
         if text.as_deref().is_some_and(|text| !text.trim().is_empty()) {
             return Err(Skipped::NotNeeded);
         }
@@ -620,6 +649,7 @@ fn read_verified(attachment: &Attachment) -> std::io::Result<Vec<u8>> {
 fn render_one(
     attachment: &Attachment,
     described: Option<&Description>,
+    read: Option<&PdfRead>,
     images: &mut Vec<String>,
 ) -> std::io::Result<String> {
     Ok(match attachment.kind {
@@ -649,7 +679,7 @@ fn render_one(
         },
         AttachmentKind::Pdf => {
             let bytes = read_verified(attachment)?;
-            let (text, pages) = pdf_text(&bytes);
+            let (text, pages) = read.cloned().unwrap_or_else(|| pdf_text(&bytes));
             let mut body = match text {
                 Some(text) if !text.trim().is_empty() => {
                     cut_chars(text.trim(), PDF_TEXT_CHARS, &attachment.path)
@@ -1017,6 +1047,44 @@ mod tests {
         // A broken file is reported, not a panic.
         let (broken, _) = pdf_text(b"%PDF-1.4\ngarbage");
         assert!(broken.is_none());
+    }
+
+    #[test]
+    fn a_pdf_read_for_description_is_reused_by_the_render() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.pdf");
+        std::fs::write(&path, tiny_pdf()).unwrap();
+        let path = plain(&path.canonicalize().unwrap());
+        let pdf = Attachment {
+            id: "doc".into(),
+            name: "doc.pdf".into(),
+            kind: AttachmentKind::Pdf,
+            mime: "application/pdf".into(),
+            size: std::fs::metadata(&path).unwrap().len(),
+            path,
+            copied: false,
+            vision: false,
+            preview: None,
+        };
+        let (pending, failed, mut reads) = undescribed_reading(std::slice::from_ref(&pdf));
+        // A PDF with a text layer needs no description, but its read is kept.
+        assert!(pending.is_empty() && failed.is_empty());
+        let kept = reads.get("doc").expect("the PDF's read is kept");
+        assert!(
+            kept.0
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Hello attachments")
+        );
+        assert_eq!(kept.1, Some(1));
+        // The render takes the kept read rather than parsing the file again.
+        reads.insert("doc".into(), (Some("from the kept read".into()), Some(7)));
+        let text = render_reusing(&[pdf], &Descriptions::new(), &reads).text;
+        assert!(
+            text.contains("[7 pages]") && text.contains("from the kept read"),
+            "{text}"
+        );
+        assert!(!text.contains("Hello attachments"), "{text}");
     }
 
     #[test]
