@@ -231,7 +231,12 @@ the others and follow the open session.
   (no streaming; the page updates on interaction). Tab and Escape stay with the app so the
   keyboard is never trapped. The agent's `browser_*` tools are refused with a message saying the
   user is driving until *Give back to agent*; `browser_control` events keep every client's
-  panel in step. The browser stays one page: no tabs, no downloads.
+  panel in step. Open tabs show in a strip above the page, each with its own latest screenshot
+  (the `browser_view` event names its tab and lists them all); the agent's active tab is marked.
+  Anyone can look at another tab; while the user drives, a tab's title switches to it, its close
+  button closes it and the plus button opens a new one (`switch_tab`, `close_tab`, `new_tab` in
+  `session.browser_act`). Downloads are not shown here: the browser refuses them and the agent's
+  `browser_download` result tells the transcript what was saved.
 
 ### Resources panel (implemented)
 

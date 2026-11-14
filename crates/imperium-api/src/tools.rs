@@ -46,6 +46,15 @@ pub struct ToolCheck {
     pub command: Option<String>,
 }
 
+/// One open tab of the session's browser, as reported with [`ToolEvent::BrowserView`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserTabView {
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    pub active: bool,
+}
+
 /// Something a call produced that the session reports to its clients.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -56,11 +65,14 @@ pub enum ToolEvent {
         kind: String,
         prompt: String,
     },
-    /// The browser's page after an action, with a base64 PNG screenshot.
+    /// The browser's page after an action, with a base64 JPEG screenshot, the tab it is and
+    /// every open tab.
     BrowserView {
         url: String,
         title: String,
         screenshot: String,
+        tab: String,
+        tabs: Vec<BrowserTabView>,
     },
     /// The live preview changed: `url` is the loopback page now shown, or `None` once it is
     /// closed. `command` is the process serving it, when the session started one.

@@ -3559,13 +3559,35 @@ pub struct BrowserControlResult {
     pub view: Option<BrowserPage>,
 }
 
-/// The browser's page: URL, title, and a JPEG screenshot (base64).
+/// The browser's page: URL, title, and a JPEG screenshot (base64), with the tab it belongs to
+/// and every tab that is open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct BrowserPage {
     pub url: String,
     pub title: String,
     pub screenshot: String,
+    /// The tab this page is, as `browser_tabs` and `browser_switch` name it. Absent from a
+    /// daemon older than protocol 0.35.
+    #[serde(default)]
+    pub tab: Option<String>,
+    /// Every open tab, in the order they were opened, the one shown included. Absent from a
+    /// daemon older than protocol 0.35.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<BrowserTab>>", optional)]
+    pub tabs: Vec<BrowserTab>,
+}
+
+/// One tab of the session's browser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BrowserTab {
+    /// Short, and unique among the open tabs for as long as the tab is open.
+    pub id: String,
+    pub url: String,
+    pub title: String,
+    /// Whether this is the tab the browser tools and `session.browser_act` work on.
+    pub active: bool,
 }
 
 /// `session.browser_act`: an action of the user in the browser they have taken over
@@ -3616,6 +3638,21 @@ pub enum BrowserAction {
     /// Scroll the page by `dy` pixels (positive is down).
     Scroll {
         dy: f64,
+    },
+    /// Open a new tab (at `url` when given) and make it the active one. Refused when the
+    /// browser already has its most tabs open.
+    NewTab {
+        #[serde(default)]
+        url: Option<String>,
+    },
+    /// Make an open tab the active one.
+    SwitchTab {
+        tab: String,
+    },
+    /// Close a tab. The last tab cannot be closed; when the active tab is closed a neighbour
+    /// becomes the active one.
+    CloseTab {
+        tab: String,
     },
 }
 

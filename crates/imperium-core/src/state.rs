@@ -1029,7 +1029,9 @@ impl DaemonState {
     }
 
     /// Web tools from `[web]`; a provider whose key is missing is left out with a warning.
-    fn web_tools(&self) -> Option<WebTools> {
+    /// `downloads` is the folder `browser_download` saves into unless `web.download_dir` names
+    /// one, or `None` where the session cannot take downloads (a remote or read-only one).
+    fn web_tools(&self, downloads: Option<PathBuf>) -> Option<WebTools> {
         let web = &self.settings().web;
         if !web.enabled {
             return None;
@@ -1073,6 +1075,16 @@ impl DaemonState {
                 },
             ),
             allow_domains: web.allow_domains.clone(),
+            downloads: downloads
+                .filter(|_| web.download_max_mb > 0)
+                .map(|default_dir| imperium_web::Downloads {
+                    dir: web
+                        .download_dir
+                        .clone()
+                        .filter(|dir| !dir.as_os_str().is_empty())
+                        .unwrap_or(default_dir),
+                    max_bytes: web.download_max_mb.saturating_mul(1024 * 1024),
+                }),
             browser,
         })
     }
@@ -1857,7 +1869,15 @@ impl DaemonState {
         if let Some(media) = self.media() {
             tools.push(Arc::new(MediaTools::new(media)));
         }
-        if let Some(web) = self.web_tools() {
+        // Files a page offers are saved in the session's scratch folder (which its agents may
+        // read), or its working folder when it has none; never on a remote machine's behalf.
+        let downloads = (!remote && !options.read_only).then(|| {
+            workspace
+                .scratch()
+                .unwrap_or_else(|| workspace.root())
+                .join("downloads")
+        });
+        if let Some(web) = self.web_tools(downloads) {
             if let Some(browser) = &web.browser {
                 self.browsers
                     .lock()

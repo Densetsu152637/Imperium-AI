@@ -3175,6 +3175,37 @@ button.setup-action small {
   min-width: 0;
 }
 
+.browser-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  overflow-x: auto;
+}
+
+.browser-tab {
+  display: inline-flex;
+  align-items: center;
+  max-width: 12rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.browser-tab.selected {
+  border-color: var(--accent);
+}
+
+.browser-tab.active > button[role="tab"]::before {
+  content: "\25CF  ";
+  color: var(--accent);
+}
+
+.browser-tab > button[role="tab"] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .browser-note,
 .preview-note {
   margin: 0;

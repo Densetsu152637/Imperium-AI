@@ -358,6 +358,15 @@ impl Settings {
         if self.web.cache_ttl_s > 30 * 24 * 3600 {
             return Err("web.cache_ttl_s must be at most 2592000 (30 days)".into());
         }
+        if self.web.download_max_mb > 4096 {
+            return Err("web.download_max_mb must be at most 4096 (4 GB)".into());
+        }
+        if let Some(dir) = &self.web.download_dir
+            && !dir.as_os_str().is_empty()
+            && !dir.is_absolute()
+        {
+            return Err("web.download_dir must be an absolute folder (or empty)".into());
+        }
         if !matches!(self.web.robots.as_str(), "respect" | "off") {
             return Err("web.robots must be respect or off".into());
         }
@@ -743,6 +752,11 @@ pub struct WebSettings {
     pub browser_path: Option<PathBuf>,
     /// Run the browser without a window (the desktop app mirrors it either way).
     pub headless: bool,
+    /// The folder `browser_download` saves into; empty means a `downloads` folder inside the
+    /// session's scratch folder (or its working folder when it has none).
+    pub download_dir: Option<PathBuf>,
+    /// The largest file `browser_download` saves, in MB; 0 turns downloads off.
+    pub download_max_mb: u64,
 }
 
 impl Default for WebSettings {
@@ -760,6 +774,8 @@ impl Default for WebSettings {
             browser: true,
             browser_path: None,
             headless: true,
+            download_dir: None,
+            download_max_mb: 25,
         }
     }
 }

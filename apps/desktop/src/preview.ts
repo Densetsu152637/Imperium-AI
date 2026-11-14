@@ -115,3 +115,48 @@ export function browserAddress(input: string): string | null {
     return null;
   }
 }
+
+/** One tab's latest page, as the agent's actions and the user's last showed it. */
+export type BrowserPageView = { url: string; title: string; screenshot: string };
+
+/** One open tab of the session's browser. */
+export type BrowserTabState = { id: string; url: string; title: string; active: boolean };
+
+/** The tabs of the session's browser and the latest page of each, for one mirror per tab. */
+export type BrowserMirror = {
+  /** The tab the browser tools work on; null from a daemon that does not name tabs. */
+  active: string | null;
+  tabs: BrowserTabState[];
+  pages: Record<string, BrowserPageView>;
+};
+
+/** The key a page is kept under when the daemon does not name its tab (protocol before 0.35). */
+export const UNNAMED_TAB = "0";
+
+/**
+ * The mirror after a `browser_view` event: the page is kept under its tab, the tab list is
+ * replaced by the event's, and pages of tabs that are no longer open are dropped. An event
+ * without tabs (an older daemon) leaves a single unnamed tab.
+ */
+export function applyBrowserView(
+  mirror: BrowserMirror | null,
+  event: { url: string; title: string; screenshot: string; tab?: string | null; tabs?: BrowserTabState[] },
+): BrowserMirror {
+  const id = event.tab ?? UNNAMED_TAB;
+  const tabs = event.tabs ?? [];
+  const open = tabs.length > 0 ? tabs.map((tab) => tab.id) : [id];
+  const pages: Record<string, BrowserPageView> = {};
+  for (const key of open) {
+    const page = key === id ? undefined : mirror?.pages[key];
+    if (page) pages[key] = page;
+  }
+  pages[id] = { url: event.url, title: event.title, screenshot: event.screenshot };
+  return { active: event.tab ?? null, tabs, pages };
+}
+
+/** The tab a client shows: the one it chose if that tab still has a page, else the active one. */
+export function shownTab(mirror: BrowserMirror | null, chosen: string | null): string | null {
+  if (!mirror) return null;
+  if (chosen && mirror.pages[chosen]) return chosen;
+  return mirror.active ?? UNNAMED_TAB;
+}

@@ -2,14 +2,16 @@
 // While the user drives, clicks on the page, typing, scrolling, and the address bar act in the
 // agent's browser (`session.browser_act`) and the agent's browser tools are refused; *Give back
 // to the agent* returns it. Each action returns a fresh screenshot, so the page updates on
-// interaction rather than streaming.
+// interaction rather than streaming. Each open tab shows in a strip above the page with its own
+// latest screenshot; the user can look at any tab, and while driving can open, switch, and close
+// tabs (the page the agent's tools work on is the active one).
 
-import { ArrowLeft, ArrowRight, RotateCw } from "lucide-react";
+import { ArrowLeft, ArrowRight, Plus, RotateCw, X } from "lucide-react";
 import { type FormEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { BrowserAction, BrowserActResult, BrowserControlResult } from "@imperium/protocol";
 
 import type { DaemonClient } from "../daemon/client";
-import { browserAddress, clickFraction, keyAction } from "../preview";
+import { browserAddress, clickFraction, keyAction, shownTab } from "../preview";
 import type { SessionState } from "../sessions";
 
 /** How long typed characters are gathered before they are sent as one action. */
@@ -19,8 +21,13 @@ const message = (failure: unknown): string => (failure instanceof Error ? failur
 
 export function BrowserPanel({ session, client }: { session: SessionState | null; client: DaemonClient | null }) {
   const sessionId = session?.summary.session_id ?? null;
-  const view = session?.browser;
+  const mirror = session?.browserTabs ?? null;
   const driving = session?.driver === "user";
+  // The tab on screen: the one the user chose to look at, or (always, while driving) the active one.
+  const [chosen, setChosen] = useState<string | null>(null);
+  const shown = shownTab(mirror, driving ? null : chosen);
+  const view = (shown ? mirror?.pages[shown] : undefined) ?? session?.browser;
+  const tabs = mirror?.tabs ?? [];
   const hasView = Boolean(view);
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
@@ -94,6 +101,15 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
       setError(message(failure));
     } finally {
       setWorking(false);
+    }
+  };
+
+  const selectTab = (id: string) => {
+    if (driving) {
+      flushTyping();
+      act({ type: "switch_tab", tab: id });
+    } else {
+      setChosen(id);
     }
   };
 
@@ -173,6 +189,43 @@ export function BrowserPanel({ session, client }: { session: SessionState | null
           </>
         )}
       </div>
+      {tabs.length > 0 && (
+        <div className="browser-tabs" role="tablist" aria-label="Browser tabs">
+          {tabs.map((tab) => (
+            <span key={tab.id} className={`browser-tab${tab.id === shown ? " selected" : ""}${tab.active ? " active" : ""}`}>
+              <button
+                role="tab"
+                className="ghost"
+                aria-selected={tab.id === shown}
+                title={tab.active ? `${tab.url} (the agent's active tab)` : tab.url}
+                onClick={() => selectTab(tab.id)}
+              >
+                {tab.title || tab.url || "New tab"}
+              </button>
+              {driving && tabs.length > 1 && (
+                <button
+                  className="ghost icon-only"
+                  aria-label={`Close ${tab.title || tab.url || "tab"}`}
+                  title="Close tab"
+                  onClick={() => act({ type: "close_tab", tab: tab.id })}
+                >
+                  <X aria-hidden="true" />
+                </button>
+              )}
+            </span>
+          ))}
+          {driving && (
+            <button
+              className="ghost icon-only"
+              aria-label="New tab"
+              title="New tab"
+              onClick={() => act({ type: "new_tab", url: null })}
+            >
+              <Plus aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )}
       {driving && (
         <p className="muted browser-note" role="status">
           You are driving. The agent's browser tools are unavailable until you give the browser back.

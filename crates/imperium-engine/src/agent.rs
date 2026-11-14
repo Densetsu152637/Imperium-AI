@@ -4812,10 +4812,22 @@ fn tool_event(event: ToolEvent) -> Option<SessionEvent> {
             url,
             title,
             screenshot,
+            tab,
+            tabs,
         } => SessionEvent::BrowserView {
             url,
             title,
             screenshot,
+            tab: Some(tab),
+            tabs: tabs
+                .into_iter()
+                .map(|tab| imperium_protocol::methods::BrowserTab {
+                    id: tab.id,
+                    url: tab.url,
+                    title: tab.title,
+                    active: tab.active,
+                })
+                .collect(),
         },
         ToolEvent::PreviewChanged { url, command } => SessionEvent::PreviewChanged { url, command },
         _ => return None,

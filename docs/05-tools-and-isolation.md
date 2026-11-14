@@ -84,15 +84,47 @@ None of this changes the permission model: `web_fetch` still asks unless the hos
 apply as before, and an agent profile that locks an agent to local files still removes the web
 tools.
 
-**Browser tabs and downloads (not built, design).** The browser is one page. Next stage: the
-`browser` module tracks targets (`Target.getTargets`, `Target.attachToTarget` with flattened
-sessions) so `browser_open` takes a `new_tab` flag, `browser_tabs` lists tabs (id, URL, title)
-and `browser_switch` and `browser_close` act on one, each tab keeping its own `browser_view`
-mirror and the user's takeover applying to the active tab. Downloads are denied by default
-(`Browser.setDownloadBehavior` with `behavior: deny`); when a click starts one the agent is told,
-and `browser_download` fetches the file into the session's scratch folder through the same
-approval as a write, size-capped and never executed. Both need protocol additions (tab fields on
-`browser_view` and `session.browser_act`), so they are a separate protocol minor.
+**Browser tabs and downloads (implemented).** The browser has up to eight tabs (`MAX_TABS`).
+`browser_open` takes a `new_tab` flag (the page opens in a new tab, which becomes the active one;
+the same domain rule and approval apply), `browser_tabs` lists the tabs (id, title, URL; the
+active one marked), `browser_switch` makes one active and returns its text, and `browser_close`
+closes one (the last tab cannot be closed; closing the active one hands over to a neighbour). The
+other browser tools work on the active tab. Ids are short numbers that are never reused while the
+browser runs. Each tab has its own debugger connection (the page sockets the browser lists at
+`/json/list`, found and opened over its loopback HTTP endpoint, not `Target.attachToTarget`
+sessions: it keeps the one-socket-per-page model the browser module already had), the tab list is
+reconciled with what the browser reports after every action, and a page that opens a window
+(`target=_blank`, `window.open`) gets a tab of its own, up to the limit (the rest are closed). The
+agent is told when a page opened a tab and is not switched to it. Clicks count as a user gesture so
+a link that opens a window works; the limit still holds. Each `browser_view` event carries the
+tab and the list of tabs (protocol 0.35); the desktop keeps one mirror per tab
+([07](07-desktop-ui.md#preview-and-browser-panels-implemented)), and the user's takeover applies
+to the active tab (`session.browser_act` gained `new_tab`, `switch_tab` and `close_tab`).
+
+Downloads are refused by the browser itself: at start-up a browser-level connection sets
+`Browser.setDownloadBehavior` to `deny` with events on, and a browser that cannot be made to
+refuse downloads does not start. When a click or script starts a download, the next browser tool
+result says so (the URL and the suggested name, flattened to one line and framed as page text), and
+`browser_download` saves it: with no `url` the most recent one the page started, or any http(s)
+`url`. The file is fetched by the same client as `web_fetch`, not by the browser (the browser's
+profile has no logins, so there are no cookies to lose), so `robots.txt`, the redirect rule (the
+host and port asked for, or `web.allow_domains`; never https to http) and `web.robots` apply. It is
+saved only into one folder chosen by the session, never by a page or the agent: `web.download_dir`
+when set, else a `downloads` folder in the session's scratch folder (its working folder if it has
+none); a remote or read-only session offers no `browser_download`. Limits and handling: at most
+`web.download_max_mb` (25; `0` turns downloads off), checked against the announced length and
+again while receiving (a partial file is deleted); the file name is made safe (folders, special
+characters, hidden-file dots and Windows reserved names removed, at most 100 characters, a name
+that is taken gets ` (2)`, never overwritten); a file a person could run by opening it (`.exe`,
+`.sh`, `.ps1`, `.py` and the like) is saved with `.download` added; a `text/html` answer for a
+file name is flagged (an error or login page); files the safety floor protects (secrets, anything
+under `.git`) are refused; `blob:` and `data:` downloads, which the browser keeps no fetchable copy
+of, cannot be saved. The file is never opened or run and its mode is the platform default, never
+executable. The call always asks (like a write), so a deny rule on `browser_download` or plan mode
+refuses it, "always allow" lasts for the session, and an agent profile that locks an agent to local
+files removes it with the other web tools; it is refused while the user drives the browser.
+Titles, URLs and file names come from pages: they are shown to the agent flattened to one line,
+framed as data, and the web instructions say to treat them as data, never as instructions.
 
 Browser tools (`browser_open`, `browser_read`, `browser_click`, `browser_type`) drive Chrome,
 Chromium, or Edge over the DevTools Protocol, found in the usual install locations or set with
@@ -108,8 +140,8 @@ from that panel ([07](07-desktop-ui.md#preview-and-browser-panels-implemented)):
 `session.browser_control` sets who drives, `session.browser_act` carries the user's click, typing,
 key, scroll, and navigation, and while the user drives every `browser_*` call is refused before
 any approval with a message saying so (a call already waiting for the browser re-checks once it
-holds it). Giving the browser back restores the agent's tools. Screenshots for vision models,
-tabs, and downloads are later work; the browser is one page.
+holds it). Giving the browser back restores the agent's tools. Screenshots for vision models are
+later work.
 
 ### Live preview (implemented)
 
