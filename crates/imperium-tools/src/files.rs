@@ -46,12 +46,14 @@ pub async fn read_file(
 fn readable_text(bytes: Vec<u8>, shown: &str) -> Result<String, ToolError> {
     let utf16 = |rest: &[u8], big_endian: bool| {
         let units: Vec<u16> = rest
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 if big_endian {
-                    u16::from_be_bytes([pair[0], pair[1]])
+                    u16::from_be_bytes(*pair)
                 } else {
-                    u16::from_le_bytes([pair[0], pair[1]])
+                    u16::from_le_bytes(*pair)
                 }
             })
             .collect();
