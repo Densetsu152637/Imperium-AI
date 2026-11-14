@@ -1932,7 +1932,14 @@ impl DaemonState {
                         .collect(),
                 ))
             });
+        // Nobody reads the turns of a background session, one with pre-approved tools (auto-fix),
+        // or a project or persistent agent: the harness aids that talk to a person stay off.
+        let attended = !(options.background
+            || !options.pre_approved.is_empty()
+            || options.initiative_agent.is_some()
+            || options.launcher.is_some());
         let session = Session::spawn(SessionConfig {
+            attended,
             effort,
             journal_path,
             budget_gate: Some(Arc::new(crate::budgets::CallGate::new(

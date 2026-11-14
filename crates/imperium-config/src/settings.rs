@@ -454,10 +454,11 @@ impl Default for ContextSettings {
     }
 }
 
-/// When the de-reference step rewrites the user's message before the root agent reads it.
+/// Whether a harness aid is on: `auto` turns it on for a root agent whose model runs on this
+/// machine, which is the small model the aids are for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Dereference {
+pub enum HarnessMode {
     /// On when the root agent's model runs on this machine; off for hosted models.
     #[default]
     Auto,
@@ -471,7 +472,7 @@ pub enum Dereference {
 #[serde(default)]
 pub struct HarnessSettings {
     /// Whether a small preprocessing call rewrites each message into a standalone prompt.
-    pub dereference: Dereference,
+    pub dereference: HarnessMode,
     /// Most tokens the rewriting call may write.
     pub dereference_max_tokens: u32,
     /// Seconds the rewriting call may take before the original message is used.
@@ -479,13 +480,15 @@ pub struct HarnessSettings {
     /// Characters of earlier conversation the rewriting call reads.
     pub dereference_history_chars: u32,
     /// Keep the structured state (entities, goals, constraints) outside the free-text history
-    /// and put it at the top of each turn.
-    pub state: bool,
+    /// and put it at the top of each turn; offers the root `update_state`.
+    pub state: HarnessMode,
     /// Most characters the state may take when rendered; the oldest entries go first.
     pub state_max_chars: u32,
     /// Put the guidance of the ambiguity patterns that match a message at the top of its turn
     /// (see `imperium_protocol::patterns`).
-    pub hints: bool,
+    pub hints: HarnessMode,
+    /// Offer the root `request_clarification` and tell it when to ask instead of guessing.
+    pub clarify: HarnessMode,
     /// Confidence (0 to 1) below which the root agent is told to ask with
     /// `request_clarification` rather than guess.
     pub clarify_below: f64,
@@ -494,13 +497,14 @@ pub struct HarnessSettings {
 impl Default for HarnessSettings {
     fn default() -> Self {
         HarnessSettings {
-            dereference: Dereference::Auto,
+            dereference: HarnessMode::Auto,
             dereference_max_tokens: 400,
             dereference_timeout_s: 20,
             dereference_history_chars: 6000,
-            state: true,
-            state_max_chars: 1500,
-            hints: true,
+            state: HarnessMode::Auto,
+            state_max_chars: 1200,
+            hints: HarnessMode::Auto,
+            clarify: HarnessMode::Auto,
             clarify_below: 0.7,
         }
     }
