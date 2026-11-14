@@ -40,6 +40,9 @@ async fn scripted_model(scripts: Vec<(&'static str, &'static str, Value)>) -> St
                     .and_then(|m| m["content"].as_str())
                     .unwrap_or_default()
                     .to_string();
+                if prompt.contains("slowly") {
+                    tokio::time::sleep(Duration::from_millis(2500)).await;
+                }
                 let call = scripts.iter().find(|(key, _, _)| prompt.contains(key));
                 // One call per user message: only the first request after it makes the call.
                 let after_last_user = messages
@@ -136,6 +139,20 @@ impl Harness {
             .write_all(format!("{message}\n").as_bytes())
             .await
             .unwrap();
+    }
+
+    /// The next message the harness wrote.
+    async fn read(&mut self) -> Value {
+        let line = tokio::time::timeout(Duration::from_secs(60), self.lines.next_line())
+            .await
+            .expect("a reply within 60 s")
+            .unwrap()
+            .expect("the harness is still running");
+        assert!(
+            !line.contains(&self.token),
+            "the daemon token appeared in a reply"
+        );
+        serde_json::from_str(&line).unwrap()
     }
 
     /// One request and its reply (the message with that id).
@@ -389,10 +406,12 @@ async fn a_permission_request_waits_for_an_explicit_answer() {
             json!({"session_id": session_id, "request_id": request["request_id"], "decision": "deny"}),
         )
         .await;
+    // Waiting again from the cursor the permission report gave, straight after the answer: the
+    // answered request is not reported again, and the turn is seen through to its end.
     let waited = harness
         .ok(
             "wait_for_turn",
-            json!({"session_id": session_id, "since": started["cursor"], "timeout_s": 30}),
+            json!({"session_id": session_id, "since": waited["cursor"], "timeout_s": 30}),
         )
         .await;
     assert_eq!(waited["outcome"], "completed", "{waited}");
@@ -425,7 +444,7 @@ async fn a_permission_request_waits_for_an_explicit_answer() {
     let waited = harness
         .ok(
             "wait_for_turn",
-            json!({"session_id": session_id, "since": sent["cursor"], "timeout_s": 30}),
+            json!({"session_id": session_id, "since": waited["cursor"], "timeout_s": 30}),
         )
         .await;
     assert_eq!(waited["outcome"], "completed", "{waited}");
@@ -463,4 +482,83 @@ async fn an_unfinished_turn_times_out_without_failing() {
         .tool("wait_for_turn", json!({"session_id": "no-such-session"}))
         .await;
     assert!(failed, "{error}");
+}
+
+#[tokio::test]
+async fn a_timed_out_wait_continues_from_its_cursor_to_the_end_of_the_turn() {
+    let project = tempfile::tempdir().unwrap();
+    let (mut harness, _data) = harness().await;
+    // The fake model takes about 2.5 s to answer this prompt.
+    let started = harness
+        .ok(
+            "start_session",
+            json!({
+                "project_dir": project.path().to_string_lossy(),
+                "prompt": "please answer slowly",
+                "wait_timeout_s": 1,
+            }),
+        )
+        .await;
+    let session_id = started["session_id"].as_str().unwrap().to_string();
+    let first = &started["turn"];
+    assert_eq!(first["outcome"], "timeout", "{first}");
+    assert_eq!(first["status"], "working");
+
+    // Waiting again from the cursor the timeout gave sees the same turn through.
+    let second = harness
+        .ok(
+            "wait_for_turn",
+            json!({"session_id": session_id, "since": first["cursor"], "timeout_s": 30}),
+        )
+        .await;
+    assert_eq!(second["outcome"], "completed", "{second}");
+    assert_eq!(second["assistant_text"], "Done.");
+
+    let state = harness
+        .ok("get_session", json!({"session_id": session_id}))
+        .await;
+    assert_eq!(state["latest_turn"], "completed");
+}
+
+#[tokio::test]
+async fn a_steering_message_waits_for_the_running_turn() {
+    let project = tempfile::tempdir().unwrap();
+    let (mut harness, _data) = harness().await;
+    let started = harness
+        .ok(
+            "start_session",
+            json!({"project_dir": project.path().to_string_lossy(), "prompt": "please answer slowly"}),
+        )
+        .await;
+    let session_id = started["session_id"].as_str().unwrap().to_string();
+    let steered = harness
+        .ok(
+            "send_message",
+            json!({"session_id": session_id, "text": "and be brief", "steer": true,
+                   "wait_timeout_s": 40}),
+        )
+        .await;
+    assert_eq!(steered["turn"]["outcome"], "completed", "{steered}");
+}
+
+#[tokio::test]
+async fn bad_input_gets_an_error_and_the_server_carries_on() {
+    let (mut harness, _data) = harness().await;
+    // Bytes that are not UTF-8: one parse error, not the end of the server.
+    harness
+        .writer
+        .write_all(b"\xff\xfe not json\n")
+        .await
+        .unwrap();
+    assert_eq!(harness.read().await["error"]["code"], -32700);
+    // An id without a method is an invalid request; a client's response gets no reply.
+    harness.send(json!({"jsonrpc": "2.0", "id": 90})).await;
+    let invalid = harness.read().await;
+    assert_eq!(invalid["error"]["code"], -32600);
+    assert_eq!(invalid["id"], 90);
+    harness
+        .send(json!({"jsonrpc": "2.0", "id": 91, "result": {}}))
+        .await;
+    let pong = harness.request("ping", json!({})).await;
+    assert!(pong["result"].is_object());
 }

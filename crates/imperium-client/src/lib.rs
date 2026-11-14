@@ -118,10 +118,13 @@ impl Client {
         let tcp = TcpStream::connect((host, port))
             .await
             .map_err(|error| ClientError::Connect(Box::new(tungstenite::Error::Io(error))))?;
-        let (socket, _) =
-            tokio_tungstenite::client_async(request, Transport::Tcp(MaybeTlsStream::Plain(tcp)))
-                .await
-                .map_err(|error| ClientError::Connect(Box::new(error)))?;
+        let (socket, _) = tokio_tungstenite::client_async_with_config(
+            request,
+            Transport::Tcp(MaybeTlsStream::Plain(tcp)),
+            Some(websocket_config()),
+        )
+        .await
+        .map_err(|error| ClientError::Connect(Box::new(error)))?;
         Self::handshake(socket, client).await
     }
 
@@ -146,9 +149,13 @@ impl Client {
         request
             .headers_mut()
             .insert("Authorization", authorization(token)?);
-        let (socket, _) = tokio_tungstenite::client_async(request, Transport::Local(stream))
-            .await
-            .map_err(|error| ClientError::Connect(Box::new(error)))?;
+        let (socket, _) = tokio_tungstenite::client_async_with_config(
+            request,
+            Transport::Local(stream),
+            Some(websocket_config()),
+        )
+        .await
+        .map_err(|error| ClientError::Connect(Box::new(error)))?;
         Self::handshake(socket, client).await
     }
 
@@ -283,6 +290,17 @@ impl Client {
 enum Incoming {
     Response(Response),
     Notification(Notification),
+}
+
+/// The most one frame or message from the daemon may hold. The WebSocket library's default
+/// frame limit (16 MiB) is smaller than a long session's event history, which
+/// `session.subscribe` returns in one reply.
+const MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
+
+fn websocket_config() -> tungstenite::protocol::WebSocketConfig {
+    tungstenite::protocol::WebSocketConfig::default()
+        .max_message_size(Some(MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_MESSAGE_BYTES))
 }
 
 fn authorization(token: &str) -> Result<tungstenite::http::HeaderValue, ClientError> {
