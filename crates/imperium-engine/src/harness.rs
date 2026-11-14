@@ -542,8 +542,9 @@ mod tests {
             1500,
         );
         let block = state.block().unwrap();
-        assert_eq!(block.matches('<').count(), 1, "{block}");
-        assert_eq!(block.matches('>').count(), 1, "{block}");
+        // Only the block's own two tags have brackets.
+        assert_eq!(block.matches('<').count(), 2, "{block}");
+        assert_eq!(block.matches('>').count(), 2, "{block}");
         // The block is still one block that reads back.
         assert_eq!(state_in(&block), Some(state));
     }
