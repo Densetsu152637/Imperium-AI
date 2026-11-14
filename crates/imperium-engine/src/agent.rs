@@ -825,7 +825,8 @@ impl Agent {
                 let settings = &self.shared.harness;
                 (
                     settings.state,
-                    settings.hints,
+                    // Nobody reads hints in an unattended session.
+                    settings.hints && self.attended(),
                     settings.state_max_chars as usize,
                 )
             };
@@ -2887,9 +2888,16 @@ impl Agent {
         }
     }
 
+    /// Whether a person reads this session's turns: not a background session, and not one that
+    /// starts sessions itself (a project agent or an environment's persistent agent), whose
+    /// messages are machine-made.
+    fn attended(&self) -> bool {
+        self.shared.background.is_none() && self.shared.launcher.is_none()
+    }
+
     /// Whether this turn's message goes through the de-reference step.
     fn dereferences(&self) -> bool {
-        if !self.can_delegate || self.single_call {
+        if !self.can_delegate || self.single_call || !self.attended() {
             return false;
         }
         match self.shared.harness.dereference {
