@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { cardPosition, nextStep, previousStep, settleStep, TOUR_STEPS, type Box, type TourOutcome, type TourStep } from "./tourSteps";
+import { anyModalOpen, cardPosition, nextStep, previousStep, settleStep, TOUR_STEPS, type Box, type TourOutcome, type TourStep } from "./tourSteps";
 
 const exists = (selector: string): boolean => {
   try {
@@ -20,9 +20,6 @@ const exists = (selector: string): boolean => {
     return false;
   }
 };
-
-/** Dialogs other than the tour's own card: modal sheets, the (native) palette, confirmations. */
-const OTHER_DIALOGS = '[aria-modal="true"]:not(.tour-card), dialog[open], [role="alertdialog"]';
 
 const FOCUSABLE = "button:not(:disabled), [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
 
@@ -85,7 +82,7 @@ export function Tour({
 
   // Step aside while another dialog is open, and come back when it closes.
   useEffect(() => {
-    const check = () => setOtherDialog(!!document.querySelector(OTHER_DIALOGS));
+    const check = () => setOtherDialog(anyModalOpen());
     const observer = new MutationObserver((records) => {
       if (!ownMutations(records)) check();
     });

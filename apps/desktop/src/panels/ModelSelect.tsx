@@ -3,12 +3,13 @@
 // switch an open session's model and by the new-session composer to pick the first one.
 
 import { X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import type { LocalModelRow, ModelRow, RuntimeInfo, SessionControlResult } from "@imperium/protocol";
 
 import { Select, type SelectOption } from "../components/Select";
 import { chooserModels, type ModelGroup, type ModelMarks } from "../modelPrefs";
+import { effortHint, effortToSend } from "../effort";
 import { formatTokens } from "../sessions";
 import { useSettings } from "../settings";
 
@@ -390,25 +391,33 @@ const EFFORT_OPTIONS: SelectOption[] = [
 ];
 
 /**
- * The open session's reasoning effort, beside its model. The footer shows it only when the
- * model can reason; a change applies from the agents' next model call, during a turn too.
+ * The open session's reasoning effort, beside its model. For a model that cannot reason it is
+ * greyed out, not hidden, with a tooltip saying why; a change applies from the agents' next model call, during a turn too.
  */
 export function EffortSelect({
   current,
   disabled,
+  reasons = true,
+  hasModel = true,
   onChange,
 }: {
   /** The session's effort; daemons before protocol 0.9 send none, shown as medium. */
   current: Effort | undefined;
   disabled?: boolean;
+  /** Whether the model can reason; if not the control stays, greyed out, and sends nothing. */
+  reasons?: boolean;
+  /** Whether the session has a model; without one the hint says to choose it first. */
+  hasModel?: boolean;
   /** Sets the effort; rejects with the daemon's reason. */
   onChange: (effort: Effort) => Promise<unknown>;
 }) {
   const [pending, setPending] = useState<Effort | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const hintId = useId();
+  const hint = effortHint(hasModel);
   const choose = (value: string) => {
-    const effort = value as Effort;
-    if (effort === current) return;
+    const effort = effortToSend(reasons, current, value as Effort);
+    if (effort === null) return;
     setPending(effort);
     setError(null);
     onChange(effort)
@@ -416,15 +425,25 @@ export function EffortSelect({
       .finally(() => setPending(null));
   };
   return (
-    <span className="effort-select">
+    <span
+      className={`effort-select${reasons ? "" : " unavailable"}`}
+      title={reasons ? undefined : hint}
+    >
       <Select
         aria-label="Reasoning effort"
         className="effort-select-button"
         value={pending ?? current ?? "medium"}
         options={EFFORT_OPTIONS}
+        inert={!reasons}
+        aria-describedby={reasons ? undefined : hintId}
         disabled={disabled || pending !== null}
         onChange={choose}
       />
+      {!reasons && (
+        <span id={hintId} className="visually-hidden">
+          {hint}
+        </span>
+      )}
       {error && (
         <span className="model-status error" role="alert" title={error}>
           {error}

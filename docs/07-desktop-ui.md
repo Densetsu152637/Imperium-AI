@@ -1035,8 +1035,9 @@ close button.
 
 **Effort selector (implemented):** beside the model, a compact list of the session's
 [reasoning effort](04-models-and-routing.md#reasoning-effort) (*Low*, *Medium*, *High*, *Max
-effort*), shown only while the session's model can reason (the session summary's `reasoning`,
-updated when the model is switched). Choosing one sends `session.control` `set_effort`, which
+effort*). While the session's model cannot reason (the session summary's `reasoning`, updated when
+the model is switched) the selector stays but is greyed out and disabled, with the tooltip *This
+model doesn't reason*, and no effort is sent. Choosing one sends `session.control` `set_effort`, which
 applies from the agents' next model call, during a turn too, and is kept across restarts; a
 refusal shows its error beside the list. New sessions start at `models.effort`, which the
 Settings window lists with the other model settings.
@@ -1246,8 +1247,12 @@ no text layer) is described by a model that has, and the model reads the descrip
   the message's other images ("describing model unavailable"); at most
   `attachments.describe_max_images` images (attempts count, failed or not) and
   `attachments.describe_max_chars` characters of description per message, later ones noted as
-  not described. While the session is stopped, describing waits for it to go on. The call counts toward budgets and the usage log as any model call, and a model
-  whose budget does not allow it is not called.
+  not described. While the session is stopped, describing waits for it to go on, and a call
+  the stop cut short is asked once more after the resume instead of leaving the image unseen.
+  A notice ("describing N images…") says so before the first call. A scanned PDF is parsed
+  once for the whole message: the text read to decide whether it needs describing is the text
+  the model is given. The call counts toward budgets and the usage log as any model call, and a
+  model whose budget does not allow it is not called.
 - **Cache.** A description is kept for the session by the SHA-256 of the file and the describing
   model, so the same file attached again, or in a later message, is not described again. A
   resumed session keeps the descriptions in its saved conversation; the cache itself is not
@@ -1383,6 +1388,22 @@ segment and swatch is named. Below it, the counting method in words (*Exact, cou
 model's tokenizer*; *Calibrated to the provider's count*; *Estimated; the provider reported no
 usage*) and the prompt tokens served from cache. A negative template overhead is listed but not
 drawn. Session totals and recent outputs follow.
+
+## House models on first run (implemented)
+
+While the user has no model at all (no configured hosted endpoint, no local model found in the
+model folders, no default), the new-session view shows a card above the model setup suggesting
+Emperor (the root agent and planner, on a base of about 4B) and Consul (its critic and reviewer,
+which checks Emperor's plans and delegated work and can reject them, on a base of about 9B),
+Imperium's own fine-tuned open-weight models, each with a role blurb and an approximate size
+(placeholders until the models are published). The catalogue is `apps/desktop/src/houseModels.ts`; an entry with no download
+source (both, today) reads *not yet available — still in training* and has no button. An entry
+with a Hugging Face source gets a *Download* button that runs the same `models.hf_files` and
+`models.download` calls as the Local models panel's form. The × dismisses the card for good (the
+`houseModelsDismissed` setting), and it never shows once any model is present. Not built, until
+the models are fully trained: a hardware-based pick of size and quantisation, progress and resume
+on the card, checksum verification, and making the model the default after the download
+([12](12-roadmap.md), item 44).
 
 ## Model configuration dialog (implemented)
 

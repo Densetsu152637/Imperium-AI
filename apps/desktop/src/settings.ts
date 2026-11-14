@@ -74,6 +74,8 @@ export type AppSettings = {
   enabledMods: Record<string, boolean>;
   // Models: favourites and hidden ones, by spec (modelPrefs.ts).
   modelMarks: ModelMarks;
+  // The first-run suggestion of Emperor and Consul was dismissed (houseModels.ts).
+  houseModelsDismissed: boolean;
   // The first-run tour: how it last ended, null until it has run (tourSteps.ts).
   tour: TourState;
   // Keyboard shortcuts the user rebound, by action; the rest use their defaults (shortcuts.ts).
@@ -115,6 +117,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   checkUpdatesAtLogin: false,
   enabledMods: {},
   modelMarks: {},
+  houseModelsDismissed: false,
   tour: null,
   shortcuts: {},
 };

@@ -91,6 +91,14 @@ export type AppReadiness = {
   mainWindow: boolean;
 };
 
+/** Dialogs other than the tour's own card: modal sheets, the (native) palette, confirmations. */
+export const MODAL_SELECTOR = '[aria-modal="true"]:not(.tour-card), dialog[open], [role="alertdialog"]';
+
+/** Whether any modal is open: the one definition the tour, its auto-start and the Esc guards share. */
+export function anyModalOpen(root: Pick<ParentNode, "querySelector"> = document): boolean {
+  return !!root.querySelector(MODAL_SELECTOR);
+}
+
 /** The tour starts by itself once, for a new user, when the main interface is up and nothing else is open. */
 export function autoStartReady(settings: Pick<AppSettings, "tour">, app: AppReadiness): boolean {
   return shouldAutoStart(settings) && app.mainWindow && app.connected && app.uiReady && !app.modalOpen;

@@ -298,13 +298,18 @@ pub(crate) fn latest_state(messages: &[ChatMessage]) -> SessionState {
         .unwrap_or_default()
 }
 
-/// How many user messages came after the newest copy of the state; `None` when there is none.
+/// How many user turns came after the newest copy of the state; `None` when there is none.
+/// Instruction messages and mid-turn steering messages are not turns.
 pub(crate) fn turns_since_copy(messages: &[ChatMessage]) -> Option<usize> {
     let (index, _) = newest_copy(messages)?;
     Some(
         messages[index + 1..]
             .iter()
-            .filter(|message| matches!(message, ChatMessage::User { .. }))
+            .filter(|message| {
+                matches!(message, ChatMessage::User { .. })
+                    && !crate::instructions::is_message(message)
+                    && !crate::queue::is_steering_message(message)
+            })
             .count(),
     )
 }
@@ -651,6 +656,18 @@ mod tests {
         assert_eq!(turns_since_copy(&messages), Some(0));
         let mut longer = messages.clone();
         longer.extend([ChatMessage::user("a"), ChatMessage::user("b")]);
+        assert_eq!(turns_since_copy(&longer), Some(2));
+        // Instruction and steering messages are not user turns.
+        longer.push(ChatMessage::user(crate::instructions::wrap(&[
+            "rules".into()
+        ])));
+        longer.push(ChatMessage::user(crate::queue::steering_text("hurry")));
+        longer.push(ChatMessage::user(format!(
+            "attached
+
+{}",
+            crate::queue::steering_text("with a file")
+        )));
         assert_eq!(turns_since_copy(&longer), Some(2));
         assert_eq!(turns_since_copy(&[ChatMessage::user("none")]), None);
         assert!(latest_state(&[ChatMessage::user("no block")]).is_empty());

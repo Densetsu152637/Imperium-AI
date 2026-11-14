@@ -478,6 +478,21 @@ and `environments.agent_update` (protocol 0.28)
     (no retrieval store existed) with a training document, and `schemas/eval` scores asking against
     guessing. Not built: automatic state updates from tool calls, a separate small model for the
     rewrite, and showing the state in the desktop.
+44. **House models on first run** (implemented, first version). When the user has no model at all
+    (no hosted endpoint, no local model, no default), the new-session view suggests Emperor and
+    Consul, Imperium's own fine-tuned open-weight models (Emperor plans, on a base of about 4B;
+    Consul is its critic and reviewer, on about 9B), above the model setup. A small
+    catalogue (`houseModels.ts`) gives each model a name, a role blurb, an approximate size and
+    an optional Hugging Face source. Neither model has a source yet, so the card says *not yet
+    available — still in training* and offers no download button; once a source is set, the
+    button lists the repository's files and starts the ordinary `models.download`. The card is
+    dismissible, the dismissal is remembered in the app's settings, and it never shows while any
+    model is present. No protocol change
+    ([07](07-desktop-ui.md#house-models-on-first-run-implemented)). *Not built, to be fleshed
+    out when the models are fully trained:* choosing between sizes and quantisations from the
+    machine's hardware, download progress and resume on the card itself, checksum verification,
+    making the downloaded model the default (or assigning Emperor and Consul to their roles),
+    and offering the suggestion again from the Local models panel.
 
 Custom agents come from customised open-weight models (Emperor and Consul) rather than a
 separate agent builder, and checkpoints are git-based rather than a separate snapshot store.
