@@ -445,6 +445,8 @@ async fn rewritten_call(answer: Value) -> Rewrite {
         auto_compact_at: None,
         keep_agent_state: true,
         effort: Default::default(),
+        attended: true,
+        harness: Default::default(),
         journal_path: project.path().join(".journal.jsonl"),
     })
     .unwrap();
