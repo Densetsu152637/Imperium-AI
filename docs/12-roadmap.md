@@ -415,8 +415,8 @@ and `environments.agent_update` (protocol 0.28)
     network ([07](07-desktop-ui.md#new-user-tour-implemented),
     [14](14-projects-and-automation.md#home-implemented), [17](17-memory.md)). *Not built:* the
     contextual tips the first time a feature is used; the tour has no separate help menu (the
-    command palette and Settings → About start it); it starts for existing users too, once, after
-    updating, since nothing records that they have used the app before.
+    command palette and Settings → About start it); installs that predate the tour are marked
+    existing and never see it unprompted.
 41. **read_file fix** (implemented). The `read_file` tool does not work in use. Reproduce the failure first,
     find its cause in the tool's path handling or its result, and fix it. Add a test that reads a
     real file through the same path the app uses ([05](05-tools-and-isolation.md)).

@@ -8,7 +8,7 @@ import { createContext, useContext } from "react";
 import { toggleMark, type ModelMark, type ModelMarks } from "./modelPrefs";
 import { rememberTheme } from "./boot";
 import { getDoc, setDoc, takeLegacy } from "./store";
-import type { TourState } from "./tour";
+import { migrateTour, type TourState } from "./tour";
 import type { PttKey } from "./voice";
 
 export type Density = "compact" | "comfortable" | "spacious";
@@ -124,8 +124,18 @@ export function loadSettings(): AppSettings {
   let saved = getDoc<Saved>("settings");
   if (!saved) {
     // Before version 1 only the display settings existed, in local storage.
-    saved = takeLegacy<Saved>("imperium.display") ?? {};
+    const legacy = takeLegacy<Saved>("imperium.display");
+    // A new install has not seen the tour (an explicit null, so a later load does not take it
+    // for an older install); display settings from before version 1 mean an existing one.
+    saved = { ...(legacy ?? {}), tour: legacy ? migrateTour({}) : null };
     setDoc("settings", { ...saved, version: VERSION });
+  } else {
+    // A document from before the tour existed: its user is not new.
+    const tour = migrateTour(saved);
+    if (tour) {
+      saved = { ...saved, tour };
+      setDoc("settings", { ...saved, version: VERSION });
+    }
   }
   return { ...DEFAULT_SETTINGS, ...saved };
 }

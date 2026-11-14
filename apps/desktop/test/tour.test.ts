@@ -4,8 +4,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  autoStartReady,
   availableSteps,
   cardPosition,
+  migrateTour,
   nextStep,
   previousStep,
   recordOutcome,
@@ -70,6 +72,28 @@ test("the tour starts by itself only until it has run", () => {
   assert.equal(shouldAutoStart({ tour: undefined as never }), true);
   assert.equal(shouldAutoStart(recordOutcome({ tour: null }, "finished")), false);
   assert.equal(shouldAutoStart(recordOutcome({ tour: null }, "skipped")), false);
+});
+
+test("auto-start waits for a connected main window with the interface up and no dialog open", () => {
+  const fresh = { tour: null };
+  const ready = { mainWindow: true, connected: true, uiReady: true, modalOpen: false };
+  assert.equal(autoStartReady(fresh, ready), true);
+  assert.equal(autoStartReady(fresh, { ...ready, connected: false }), false);
+  assert.equal(autoStartReady(fresh, { ...ready, uiReady: false }), false);
+  assert.equal(autoStartReady(fresh, { ...ready, modalOpen: true }), false);
+  assert.equal(autoStartReady(fresh, { ...ready, mainWindow: false }), false);
+  assert.equal(autoStartReady(recordOutcome(fresh, "skipped"), ready), false);
+});
+
+test("a settings document from before the tour marks an existing install, which never auto-starts", () => {
+  const now = new Date("2026-01-02T03:04:05.000Z");
+  const existing = migrateTour({ theme: "dark", version: 1 }, now);
+  assert.deepEqual(existing, { outcome: "existing", at: "2026-01-02T03:04:05.000Z" });
+  assert.equal(shouldAutoStart({ tour: existing! }), false);
+  // A new install has no document; one that already records the tour (even null) is left alone.
+  assert.equal(migrateTour(undefined, now), undefined);
+  assert.equal(migrateTour({ tour: null }, now), undefined);
+  assert.equal(migrateTour({ tour: { outcome: "finished", at: "x" } }, now), undefined);
 });
 
 test("finishing and skipping are remembered with their outcome, and keep other settings", () => {

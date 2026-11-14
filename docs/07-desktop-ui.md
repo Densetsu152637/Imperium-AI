@@ -603,20 +603,24 @@ Settings → Keyboard; shortcuts are not rebindable yet.
 
 ## New-user tour (implemented)
 
-The first time the app opens for a user, a guided tour walks through the main areas: environments
+For a new user, a guided tour walks through the main areas: environments
 and Home, the sessions list, the composer, panels and layouts, the command palette, permissions
 and approvals, memory, and Settings. Each step is a small card beside a highlighted element
 (or centred, for a step about the app as a whole) with Back, Next, and Skip tour.
 
-- **Remembered per user.** How the tour ended (`finished` or `skipped`, and when) is the app
-  setting `tour` in the local settings document, so it starts by itself only once, in the main
-  window and never in a panel window. Resetting app settings keeps it.
+- **For new users, once.** How the tour ended (`finished` or `skipped`, and when) is the app
+  setting `tour` in the local settings document, so it starts by itself only once. It starts in the
+  main window only, once imperium-core is connected and the composer is showing (after eight
+  seconds, any panel will do), and never while a dialog or a pending approval is on screen. An install
+  whose settings document predates the tour is marked `existing` when loaded, so people updating
+  are not shown it (they can still start it). Resetting app settings keeps the setting.
 - **Restartable.** *Take the tour* is a command in the palette (keywords: tutorial, help,
   onboarding) and a button in Settings → About; both close the windows over the workspace and start
   from the first step.
 - **Accessible.** The card is a modal dialog named and described by its title and text; focus moves
-  to it on each step and stays inside it (Tab and Shift+Tab wrap), Right Arrow goes on, Left Arrow
-  goes back, Esc skips, and each step is announced in a polite live region. Focus returns to where
+  to it on each step and stays inside it (Tab and Shift+Tab wrap), Right Arrow (or Enter on the card)
+  goes on, Left Arrow goes back, Esc skips, and each step after the first is announced, with its
+  text, in a polite live region. Focus returns to where
   it was when the tour closes. It uses no animation.
 - **No network and no library.** The tour is `src/Tour.tsx` (the card and highlight, on the
   app's theme tokens) over `src/tour.ts` (the steps and pure logic); it adds no dependency.
@@ -624,7 +628,11 @@ and approvals, memory, and Settings. Each step is a small card beside a highligh
   where `target` is a CSS selector (panels have `data-panel`, and the title bar's Edit layout and
   Settings buttons `data-tour`). A step whose target is not on screen (no session open for the
   composer, a closed or detached panel) is skipped, in both directions, and the step counter counts
-  only the steps that can be shown. Adding a step is adding an entry.
+  only the steps that can be shown. Adding a step is adding an entry. The highlight follows its element as the window or any
+  container scrolls or the layout changes, and a step whose element goes away is dropped.
+- **Never in the way.** While another dialog is open (the palette, Settings, a confirmation) the
+  tour hides and leaves keys to that dialog, then returns. If an approval arrives, the tour ends
+  as skipped so the approval is never covered.
 
 Sequencing, skipping missing targets, the persisted outcome, and card placement are pure functions
 tested in `test/tour.test.ts`.

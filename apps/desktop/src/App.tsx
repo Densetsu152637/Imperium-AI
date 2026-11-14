@@ -119,7 +119,7 @@ import { appCommands } from "./commands/appCommands";
 import { CommandPalette, useRegisterCommands } from "./commands/CommandPalette";
 import { splashDone } from "./boot";
 import { Tour } from "./Tour";
-import { recordOutcome, shouldAutoStart, type TourOutcome } from "./tour";
+import { autoStartReady, recordOutcome, shouldAutoStart, type TourOutcome } from "./tour";
 import { emitPanelEvent, detachedPanelId, listenPanelEvents, openPanelWindow } from "./panelWindows";
 import { ConnectorsWindow } from "./ConnectorsWindow";
 import { EnvironmentWindow } from "./EnvironmentWindow";
@@ -130,6 +130,9 @@ import { setModelAliases } from "./modelNames";
 import { applyResidency, type Residency } from "./waits";
 import { hiddenSpecs } from "./modelPrefs";
 import { UpdateControl, useUpdates } from "./UpdateControl";
+
+/** How long the tour waits for the composer to appear before starting without it. */
+const TOUR_COMPOSER_WAIT_MS = 8000;
 
 type Status = { kind: "connecting" } | { kind: "connected"; client: DaemonClient } | { kind: "failed"; message: string };
 
@@ -1037,11 +1040,42 @@ export function App() {
     setTouring(false);
     changeSettings((current) => recordOutcome(current, outcome));
   };
-  // A first run: the tour starts by itself, in the main window only.
+  // A first run: the tour starts by itself, in the main window only, once connected and the
+  // interface is up (the composer showing, or after a few seconds any panel) with no dialog open.
+  const connectedNow = !!client;
+  // An approval waiting is never held up by the tour: it ends (as skipped) when one arrives,
+  // and does not start while one is pending.
+  const approvalsWaiting = approvals.length > 0;
+  const approvalsWaitingRef = useRef(approvalsWaiting);
+  approvalsWaitingRef.current = approvalsWaiting;
   useEffect(() => {
-    if (!isDetached && shouldAutoStart(settings)) setTouring(true);
+    if (touring && approvalsWaiting) endTour("skipped");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [touring, approvalsWaiting]);
+  const tourPending = shouldAutoStart(settings) && !touring;
+  useEffect(() => {
+    if (isDetached || !tourPending || !connectedNow) return;
+    const since = Date.now();
+    const timer = window.setInterval(() => {
+      const composer = !!document.querySelector("form.composer");
+      const anyPanel = !!document.querySelector("[data-panel]");
+      const ready = autoStartReady(
+        { tour: null },
+        {
+          mainWindow: true,
+          connected: true,
+          uiReady: composer || (anyPanel && Date.now() - since > TOUR_COMPOSER_WAIT_MS),
+          modalOpen: approvalsWaitingRef.current || !!document.querySelector('[aria-modal="true"], dialog[open], [role="alertdialog"]'),
+        },
+      );
+      if (ready) {
+        window.clearInterval(timer);
+        setTouring(true);
+      }
+    }, 500);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourPending, connectedNow]);
   // For panels that change a setting of their own (model favourites and hidden models).
   const changeSettings: ChangeSettings = (change) =>
     setSettings((current) => {

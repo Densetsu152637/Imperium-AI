@@ -1,7 +1,11 @@
 // The first-run tour: a card that walks through TOUR_STEPS (tour.ts), pointing at each step's
 // element with a highlight. It is a modal dialog: focus moves to the card and stays inside it,
-// Right/Enter go on, Left goes back, Esc skips, and each step is announced to screen readers.
-// Steps whose element is not on screen are skipped. It makes no network requests.
+// Right Arrow (or Enter on the focused card) goes on, Left Arrow goes back, Esc skips, and each
+// step after the first is announced to screen readers. Steps whose element is not on screen are
+// skipped, and the highlight follows the element as the window scrolls or the layout changes.
+// While another dialog is open (the palette, an approval or confirmation, Settings) the tour
+// steps aside, hidden and not handling keys, and comes back when that closes: it never blocks one.
+// It makes no network requests.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -17,15 +21,26 @@ const exists = (selector: string): boolean => {
   }
 };
 
+/** Dialogs other than the tour's own card: modal sheets, the (native) palette, confirmations. */
+const OTHER_DIALOGS = '[aria-modal="true"]:not(.tour-card), dialog[open], [role="alertdialog"]';
+
 const FOCUSABLE = "button:not(:disabled), [href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
 
 export function Tour({ steps = TOUR_STEPS, onEnd }: { steps?: TourStep[]; onEnd: (outcome: TourOutcome) => void }) {
   const [currentId, setCurrentId] = useState(steps[0]?.id ?? "");
   const [box, setBox] = useState<Box | null>(null);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const [paused, setPaused] = useState(() => !!document.querySelector(OTHER_DIALOGS));
+  const [announcement, setAnnouncement] = useState("");
+  // Bumped when the page changed in a way that can change which steps are available.
+  const [, setTick] = useState(0);
   const card = useRef<HTMLDivElement>(null);
+  // Where focus was before the tour opened, captured on the first render, before the card takes it.
+  const before = useRef<HTMLElement | null>(document.activeElement as HTMLElement | null);
   const end = useRef(onEnd);
   end.current = onEnd;
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   const settled = settleStep(steps, currentId, exists);
   const step = settled?.steps[settled.index] ?? null;
@@ -48,60 +63,101 @@ export function Tour({ steps = TOUR_STEPS, onEnd }: { steps?: TourStep[]; onEnd:
     [steps, step],
   );
 
-  // Point at the step's element, and keep the highlight on it as the window changes.
+  // Step aside while another dialog is open, and come back when it closes.
+  useEffect(() => {
+    const check = () => setPaused(!!document.querySelector(OTHER_DIALOGS));
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["open", "aria-modal", "role"] });
+    return () => observer.disconnect();
+  }, []);
+
+  // Point at the step's element and keep the highlight on it: as the window resizes, any
+  // container scrolls, the element resizes, or the layout changes. If the element goes away,
+  // the step is dropped (the next available one is shown).
   useLayoutEffect(() => {
     if (!step) return;
     const element = step.target ? document.querySelector<HTMLElement>(step.target) : null;
     element?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
     const measure = () => {
       const rect = element?.getBoundingClientRect();
-      const next = rect && rect.width > 0 ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null;
+      const next = rect && rect.width > 0 && element?.isConnected ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height } : null;
       setBox(next);
       const size = card.current?.getBoundingClientRect();
       setPosition(cardPosition(next, { width: size?.width ?? 360, height: size?.height ?? 200 }, { width: window.innerWidth, height: window.innerHeight }));
     };
+    let frame = 0;
+    const refresh = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        if (step.target && !exists(step.target)) setTick((tick) => tick + 1);
+        else measure();
+      });
+    };
     measure();
-    window.addEventListener("resize", measure);
-    const observer = element && typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
-    if (element) observer?.observe(element);
+    window.addEventListener("resize", refresh);
+    window.addEventListener("scroll", refresh, true);
+    const resize = element && typeof ResizeObserver !== "undefined" ? new ResizeObserver(refresh) : null;
+    if (element) resize?.observe(element);
+    const mutations = step.target ? new MutationObserver(refresh) : null;
+    mutations?.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden"] });
     return () => {
-      window.removeEventListener("resize", measure);
-      observer?.disconnect();
+      cancelAnimationFrame(frame);
+      window.removeEventListener("resize", refresh);
+      window.removeEventListener("scroll", refresh, true);
+      resize?.disconnect();
+      mutations?.disconnect();
     };
   }, [step]);
 
-  // Focus the card on each step; its heading is read out with the dialog's name and description.
+  // Focus the card on each step (and again when the tour comes back from another dialog). The
+  // first step is read from the dialog's own name and description; later ones are announced below.
+  const first = useRef(true);
   useEffect(() => {
+    if (paused) return;
     card.current?.focus();
+  }, [step?.id, paused]);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    if (step) setAnnouncement(`Step ${index + 1} of ${total}: ${step.title}. ${step.body}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step?.id]);
 
-  // Keys: the tour is modal, so it handles them before the rest of the app sees them.
+  // Keys: the tour is modal, so it handles them before the rest of the app sees them, except
+  // while another dialog is open, which keeps its own keys.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (pausedRef.current) return;
+      const consume = () => {
         event.preventDefault();
         event.stopPropagation();
+      };
+      if (event.key === "Escape") {
+        consume();
         end.current("skipped");
       } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        event.stopPropagation();
+        consume();
         go(1);
       } else if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        event.stopPropagation();
+        consume();
         go(-1);
+      } else if (event.key === "Enter" && document.activeElement === card.current) {
+        consume();
+        go(1);
       } else if (event.key === "Tab" && card.current) {
         const items = [...card.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
         if (items.length === 0) return;
-        const first = items[0];
+        const firstItem = items[0];
         const lastItem = items[items.length - 1];
         const active = document.activeElement;
-        if (!card.current.contains(active) || (event.shiftKey && (active === first || active === card.current))) {
+        if (!card.current.contains(active) || (event.shiftKey && (active === firstItem || active === card.current))) {
           event.preventDefault();
-          (event.shiftKey ? lastItem : first).focus();
+          (event.shiftKey ? lastItem : firstItem).focus();
         } else if (!event.shiftKey && active === lastItem) {
           event.preventDefault();
-          first.focus();
+          firstItem.focus();
         }
       }
     };
@@ -111,13 +167,13 @@ export function Tour({ steps = TOUR_STEPS, onEnd }: { steps?: TourStep[]; onEnd:
 
   // Hand focus back to where it was when the tour closes.
   useEffect(() => {
-    const before = document.activeElement as HTMLElement | null;
-    return () => before?.focus?.();
+    const previous = before.current;
+    return () => previous?.focus?.();
   }, []);
 
   if (!step) return null;
   return createPortal(
-    <div className="tour-backdrop" onMouseDown={(event) => event.preventDefault()}>
+    <div className="tour-backdrop" hidden={paused} onMouseDown={(event) => event.preventDefault()}>
       {box ? (
         <div
           className="tour-spotlight"
@@ -154,10 +210,10 @@ export function Tour({ steps = TOUR_STEPS, onEnd }: { steps?: TourStep[]; onEnd:
             {last ? "Finish" : "Next"}
           </button>
         </div>
-        <span className="tour-sr" role="status" aria-live="polite">
-          Step {index + 1} of {total}: {step.title}
-        </span>
       </div>
+      <span className="tour-sr" role="status" aria-live="polite">
+        {announcement}
+      </span>
     </div>,
     document.body,
   );

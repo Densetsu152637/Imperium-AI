@@ -18,7 +18,8 @@ export type TourStep = {
 
 /** How the tour last ended for this user; null while it has never run. */
 export type TourOutcome = "finished" | "skipped";
-export type TourState = { outcome: TourOutcome; at: string } | null;
+/** "existing" marks an install that predates the tour: it never starts by itself. */
+export type TourState = { outcome: TourOutcome | "existing"; at: string } | null;
 
 export const TOUR_STEPS: TourStep[] = [
   {
@@ -76,6 +77,33 @@ export const TOUR_STEPS: TourStep[] = [
 /** True when the tour should start by itself: it has never run for this user. */
 export function shouldAutoStart(settings: Pick<AppSettings, "tour">): boolean {
   return settings.tour == null;
+}
+
+/** What the app looks like right now, for deciding whether to start the tour. */
+export type AppReadiness = {
+  /** Connected to imperium-core. */
+  connected: boolean;
+  /** The main interface is on screen (the sessions panel exists). */
+  uiReady: boolean;
+  /** A dialog, the palette, or a confirmation is open. */
+  modalOpen: boolean;
+  /** This is the main window, not a panel window. */
+  mainWindow: boolean;
+};
+
+/** The tour starts by itself once, for a new user, when the main interface is up and nothing else is open. */
+export function autoStartReady(settings: Pick<AppSettings, "tour">, app: AppReadiness): boolean {
+  return shouldAutoStart(settings) && app.mainWindow && app.connected && app.uiReady && !app.modalOpen;
+}
+
+/**
+ * What to record for a settings document just loaded, or undefined to leave it: a document that
+ * exists without a `tour` entry belongs to an install that predates the tour, so it is marked
+ * "existing" and the tour does not start by itself (it can still be taken from the palette).
+ */
+export function migrateTour(saved: object | undefined, now: Date = new Date()): TourState | undefined {
+  if (!saved || "tour" in saved) return undefined;
+  return { outcome: "existing", at: now.toISOString() };
 }
 
 /** The settings after the tour ended (finished on its last step, or skipped). */
