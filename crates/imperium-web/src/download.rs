@@ -275,37 +275,44 @@ impl Drop for Partial {
 /// `Zone.Identifier` stream on Windows (zone 3, the internet), the quarantine attribute on
 /// macOS. Returns a note when it could not.
 fn mark_from_web(path: &Path, source: &str) -> Option<String> {
-    #[cfg(windows)]
-    {
-        let stream = format!("{}:Zone.Identifier", path.display());
-        let text = format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={source}\r\n");
-        return std::fs::write(stream, text).err().map(|error| {
-            format!("it could not be marked as downloaded from the internet ({error})")
-        });
+    mark_platform(path, source)
+}
+
+#[cfg(windows)]
+fn mark_platform(path: &Path, source: &str) -> Option<String> {
+    let stream = format!("{}:Zone.Identifier", path.display());
+    let text = format!(
+        "[ZoneTransfer]
+ZoneId=3
+HostUrl={source}
+"
+    );
+    std::fs::write(stream, text)
+        .err()
+        .map(|error| format!("it could not be marked as downloaded from the internet ({error})"))
+}
+
+#[cfg(target_os = "macos")]
+fn mark_platform(path: &Path, _source: &str) -> Option<String> {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let value = format!("0083;{seconds:x};Imperium;");
+    let status = std::process::Command::new("xattr")
+        .args(["-w", "com.apple.quarantine", value.as_str()])
+        .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match status {
+        Ok(status) if status.success() => None,
+        _ => Some("it could not be marked as downloaded from the internet".into()),
     }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = source;
-        let seconds = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
-        let value = format!("0083;{seconds:x};Imperium;");
-        let status = std::process::Command::new("xattr")
-            .args(["-w", "com.apple.quarantine", value.as_str()])
-            .arg(path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        return match status {
-            Ok(status) if status.success() => None,
-            _ => Some("it could not be marked as downloaded from the internet".into()),
-        };
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        let _ = (path, source);
-        None
-    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn mark_platform(_path: &Path, _source: &str) -> Option<String> {
+    None
 }
 
 impl Web {
