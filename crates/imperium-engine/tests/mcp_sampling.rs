@@ -70,28 +70,30 @@ fn sse(chunk: Value) -> String {
 
 /// The session's model: calls `work`, writes "teal" when asked without tools (the sampled
 /// request), and answers once it has the tool's result. `samples` counts the sampled requests.
-async fn model(samples: Arc<AtomicUsize>) -> String {
+async fn model(samples: Arc<AtomicUsize>, bodies: Arc<Mutex<Vec<Value>>>, calls: usize) -> String {
     let app = Router::new().route(
         "/v1/chat/completions",
         post(move |axum::Json(body): axum::Json<Value>| {
             let samples = Arc::clone(&samples);
+            let bodies = Arc::clone(&bodies);
             async move {
                 let tools = body["tools"].as_array().map_or(0, Vec::len);
-                let has_result = body["messages"]
+                let results = body["messages"]
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .any(|message| message["role"] == "tool");
+                    .filter(|message| message["role"] == "tool")
+                    .count();
                 let text = if tools == 0 {
                     samples.fetch_add(1, Ordering::SeqCst);
+                    bodies.lock().unwrap().push(body);
                     sse(json!({"choices":[{"delta":{"content":"teal"}}]}))
-                } else if has_result {
+                } else if results >= calls {
                     sse(json!({"choices":[{"delta":{"content":"done"}}]}))
                 } else {
-                    sse(
-                        json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1",
-                        "function":{"name":"mcp__w__work","arguments":"{}"}}]}}]}),
-                    )
+                    sse(json!({"choices":[{"delta":{"tool_calls":[{"index":0,
+                        "id":format!("c{results}"),
+                        "function":{"name":"mcp__w__work","arguments":"{}"}}]}}]}))
                 };
                 ([("content-type", "text/event-stream")], text)
             }
@@ -105,11 +107,63 @@ struct Outcome {
     tool_output: String,
     replies: Vec<Value>,
     samples: usize,
+    /// The requests the model received for sampling.
+    sampled: Vec<Value>,
 }
 
-/// Runs one turn that calls `work`, answering any approval with `decision`.
-async fn run(sampling: bool, decision: PermissionDecision) -> Outcome {
+/// What a run changes from the usual: sampling on, a person watching, the approval answered
+/// with `decision`, one call of the tool.
+struct Options {
+    sampling: bool,
+    decision: PermissionDecision,
+    attended: bool,
+    pre_approved: Vec<String>,
+    calls: usize,
+    /// A budget that is used up for the second model call (the sampled one).
+    budget_blocks: bool,
+}
+
+impl Options {
+    fn new(sampling: bool, decision: PermissionDecision) -> Self {
+        Options {
+            sampling,
+            decision,
+            attended: true,
+            pre_approved: Vec::new(),
+            calls: 1,
+            budget_blocks: false,
+        }
+    }
+}
+
+/// Lets the first model call through and refuses the second, which is the sampled one.
+#[derive(Debug, Default)]
+struct SecondCallBlocked(AtomicUsize);
+
+impl imperium_engine::BudgetGate for SecondCallBlocked {
+    fn check(&self, _spec: &str) -> imperium_engine::BudgetVerdict {
+        if self.0.fetch_add(1, Ordering::SeqCst) == 1 {
+            imperium_engine::BudgetVerdict::Blocked("the budget is used up".into())
+        } else {
+            imperium_engine::BudgetVerdict::Go
+        }
+    }
+
+    fn confirm(&self, _key: &str) {}
+}
+
+/// Runs one turn that calls `work`, answering any approval as the options say.
+async fn run(options: Options) -> Outcome {
+    let Options {
+        sampling,
+        decision,
+        attended,
+        pre_approved,
+        calls,
+        budget_blocks,
+    } = options;
     let samples = Arc::new(AtomicUsize::new(0));
+    let sampled = Arc::new(Mutex::new(Vec::new()));
     let replies = Arc::new(Mutex::new(Vec::new()));
     let dir = tempfile::tempdir().unwrap();
     let session = Session::spawn(SessionConfig {
@@ -118,7 +172,7 @@ async fn run(sampling: bool, decision: PermissionDecision) -> Outcome {
         model: Some(ResolvedModel {
             spec: "fake:model".into(),
             endpoint: Endpoint {
-                base_url: model(Arc::clone(&samples)).await,
+                base_url: model(Arc::clone(&samples), Arc::clone(&sampled), calls).await,
                 api_key: None,
             },
             model: "model".into(),
@@ -148,7 +202,7 @@ async fn run(sampling: bool, decision: PermissionDecision) -> Outcome {
         memory: None,
         context: None,
         enforce: imperium_config::Enforce::Warn,
-        pre_approved: Vec::new(),
+        pre_approved,
         launcher: None,
         resume: false,
         resume_policy: imperium_engine::default_resume_policy(),
@@ -157,11 +211,13 @@ async fn run(sampling: bool, decision: PermissionDecision) -> Outcome {
         max_steps: 5,
         background: None,
         checkpoints: None,
-        budget_gate: None,
+        budget_gate: budget_blocks.then(|| {
+            Arc::new(SecondCallBlocked::default()) as Arc<dyn imperium_engine::BudgetGate>
+        }),
         auto_compact: false,
         auto_compact_at: None,
         keep_agent_state: true,
-        attended: true,
+        attended,
         harness: Default::default(),
         effort: Default::default(),
         journal_path: dir.path().join("journal.jsonl"),
@@ -194,31 +250,56 @@ async fn run(sampling: bool, decision: PermissionDecision) -> Outcome {
         }
     }
     let replies = replies.lock().unwrap().clone();
+    let sampled = sampled.lock().unwrap().clone();
     Outcome {
         approvals,
         tool_output,
         replies,
         samples: samples.load(Ordering::SeqCst),
+        sampled,
     }
 }
 
 #[tokio::test]
-async fn an_approved_request_is_written_by_the_session_model() {
-    let outcome = run(true, PermissionDecision::Allow).await;
+async fn an_approved_request_is_written_by_the_session_model_alone() {
+    let outcome = run(Options::new(true, PermissionDecision::Allow)).await;
     assert_eq!(outcome.tool_output, "worked");
     assert_eq!(outcome.approvals.len(), 1);
     assert_eq!(outcome.approvals[0].0, "mcp_sampling");
-    assert!(outcome.approvals[0].1.contains("MCP server w"));
-    assert!(outcome.approvals[0].1.contains("name a colour"));
+    let summary = &outcome.approvals[0].1;
+    assert!(
+        summary.contains("MCP server w asks fake:model"),
+        "{summary}"
+    );
+    assert!(summary.contains("up to 20 tokens"), "{summary}");
+    assert!(summary.contains("1 message(s)"), "{summary}");
+    assert!(summary.contains("no system prompt"), "{summary}");
+    assert!(summary.contains("\"name a colour\""), "{summary}");
     assert_eq!(outcome.samples, 1);
     assert_eq!(outcome.replies.len(), 1);
     assert_eq!(outcome.replies[0]["result"]["content"]["text"], "teal");
     assert_eq!(outcome.replies[0]["result"]["model"], "fake:model");
+    // The model sees the server's message and nothing of the session: no history, no
+    // session system prompt, no tools, and a reply bounded by the server's token limit.
+    let body = &outcome.sampled[0];
+    let roles: Vec<_> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(roles, ["system", "user"]);
+    assert_eq!(body["messages"][1]["content"], "name a colour");
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("untrusted"), "{system}");
+    assert!(!body.to_string().contains("use the w server"));
+    assert!(body["tools"].as_array().is_none_or(Vec::is_empty));
+    assert_eq!(body["max_tokens"], 20);
 }
 
 #[tokio::test]
 async fn a_declined_request_never_reaches_the_model() {
-    let outcome = run(true, PermissionDecision::Deny).await;
+    let outcome = run(Options::new(true, PermissionDecision::Deny)).await;
     assert_eq!(outcome.approvals.len(), 1);
     assert_eq!(outcome.samples, 0);
     assert_eq!(outcome.replies[0]["error"]["code"], -1);
@@ -227,9 +308,51 @@ async fn a_declined_request_never_reaches_the_model() {
 
 #[tokio::test]
 async fn sampling_is_refused_without_asking_unless_the_server_is_configured() {
-    let outcome = run(false, PermissionDecision::Allow).await;
+    let outcome = run(Options::new(false, PermissionDecision::Allow)).await;
     assert!(outcome.approvals.is_empty(), "{:?}", outcome.approvals);
     assert_eq!(outcome.samples, 0);
     assert_eq!(outcome.replies[0]["error"]["code"], -32601);
     assert_eq!(outcome.tool_output, "worked");
+}
+
+#[tokio::test]
+async fn an_unattended_session_refuses_without_asking() {
+    let mut options = Options::new(true, PermissionDecision::Allow);
+    options.attended = false;
+    let outcome = run(options).await;
+    assert!(outcome.approvals.is_empty(), "{:?}", outcome.approvals);
+    assert_eq!(outcome.samples, 0);
+    assert_eq!(outcome.replies[0]["error"]["code"], -1);
+    let message = outcome.replies[0]["error"]["message"].as_str().unwrap();
+    assert!(message.contains("person watching"), "{message}");
+}
+
+#[tokio::test]
+async fn allowing_for_the_session_does_not_cover_the_next_request() {
+    let mut options = Options::new(true, PermissionDecision::AllowForSession);
+    options.calls = 2;
+    let outcome = run(options).await;
+    assert_eq!(outcome.approvals.len(), 2, "{:?}", outcome.approvals);
+    assert_eq!(outcome.samples, 2);
+}
+
+#[tokio::test]
+async fn pre_approving_the_name_does_not_skip_the_question() {
+    let mut options = Options::new(true, PermissionDecision::Allow);
+    options.pre_approved = vec!["mcp_sampling".into()];
+    let outcome = run(options).await;
+    assert_eq!(outcome.approvals.len(), 1, "{:?}", outcome.approvals);
+    assert_eq!(outcome.samples, 1);
+}
+
+#[tokio::test]
+async fn a_used_up_budget_refuses_an_approved_request() {
+    let mut options = Options::new(true, PermissionDecision::Allow);
+    options.budget_blocks = true;
+    let outcome = run(options).await;
+    assert_eq!(outcome.approvals.len(), 1);
+    assert_eq!(outcome.samples, 0);
+    assert_eq!(outcome.replies[0]["error"]["code"], -1);
+    let message = outcome.replies[0]["error"]["message"].as_str().unwrap();
+    assert!(message.contains("budget is used up"), "{message}");
 }

@@ -2,14 +2,16 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use imperium_api::{Sampler, ToolSpec};
+use imperium_api::{Sampler, SamplingFuture, SamplingRequest, ToolSpec};
 use serde_json::{Value, json};
 use tokio::process::{Child, Command};
 
 use crate::client::{Client, McpError, PROTOCOL_VERSION, Sampling};
 use crate::extras::{self, ToolKind};
+use crate::sampling::MAX_REQUESTS_PER_CALL;
 
 /// How to reach a server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +56,39 @@ pub struct McpTool {
     pub allowed: bool,
     /// One of the server's own tools, or an extra tool for its resources or prompts.
     pub kind: ToolKind,
+}
+
+/// The sampler for one tool call: a few requests at most, and none after one was declined or
+/// failed.
+struct Limited<'a> {
+    inner: &'a dyn Sampler,
+    asked: AtomicUsize,
+    stopped: AtomicBool,
+}
+
+impl Sampler for Limited<'_> {
+    fn sample<'a>(&'a self, request: SamplingRequest) -> SamplingFuture<'a> {
+        Box::pin(async move {
+            if self.stopped.load(Ordering::SeqCst) {
+                return Err(
+                    "sampling was stopped for this call after an earlier request was \
+                            declined or failed"
+                        .into(),
+                );
+            }
+            if self.asked.fetch_add(1, Ordering::SeqCst) >= MAX_REQUESTS_PER_CALL {
+                self.stopped.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "at most {MAX_REQUESTS_PER_CALL} sampling requests are allowed per tool call"
+                ));
+            }
+            let reply = self.inner.sample(request).await;
+            if reply.is_err() {
+                self.stopped.store(true, Ordering::SeqCst);
+            }
+            reply
+        })
+    }
 }
 
 struct Server {
@@ -151,7 +186,12 @@ impl McpServers {
             serde_json::from_str(arguments)
                 .map_err(|error| format!("invalid arguments: {error}"))?
         };
-        let sampling = sampler.map(|sampler| Sampling {
+        let limited = sampler.map(|inner| Limited {
+            inner,
+            asked: AtomicUsize::new(0),
+            stopped: AtomicBool::new(false),
+        });
+        let sampling = limited.as_ref().map(|sampler| Sampling {
             sampler,
             server: &server.name,
         });

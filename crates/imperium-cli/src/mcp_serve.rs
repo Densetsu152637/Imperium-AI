@@ -764,6 +764,24 @@ async fn respond_permission(hub: &Hub, args: &Value) -> Result<Value, String> {
             ));
         }
     };
+    // An MCP server asking for one of the user's models stays the user's call: the harness
+    // answers nothing of the kind, and an unreadable history is not a reason to guess.
+    let history = hub.history(session_id).await?;
+    let asked_sampling = history
+        .iter()
+        .rev()
+        .find(|event| {
+            kind(event) == "permission_requested"
+                && event["event"]["request_id"].as_u64() == Some(request_id)
+        })
+        .is_some_and(|event| event["event"]["tool"] == "mcp_sampling");
+    if asked_sampling {
+        return Err(
+            "this request is an MCP server asking to use the user's model (sampling): only the \
+             user can answer it, in the desktop app or the imperium CLI"
+                .into(),
+        );
+    }
     hub.call(
         "session.respond",
         json!({"session_id": session_id, "request_id": request_id, "decision": decision}),

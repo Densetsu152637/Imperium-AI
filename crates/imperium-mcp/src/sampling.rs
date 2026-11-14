@@ -11,6 +11,10 @@ pub const DEFAULT_MAX_TOKENS: u32 = 1024;
 pub const MAX_TOKENS: u32 = 4096;
 /// Most characters of prompt (messages and system prompt together) one request may carry.
 pub const MAX_PROMPT_CHARS: usize = 100_000;
+/// Most messages one request may carry.
+pub const MAX_MESSAGES: usize = 50;
+/// Most sampling requests one tool call may make; the first one declined or failed ends them.
+pub const MAX_REQUESTS_PER_CALL: usize = 3;
 
 /// JSON-RPC error code for a request the user declined (the MCP convention).
 const DECLINED: i64 = -1;
@@ -49,6 +53,12 @@ fn parse(server: &str, params: &Value) -> Result<SamplingRequest, String> {
         .and_then(Value::as_array)
         .filter(|messages| !messages.is_empty())
         .ok_or("messages are required")?;
+    if messages.len() > MAX_MESSAGES {
+        return Err(format!(
+            "the request carries {} messages; at most {MAX_MESSAGES} are accepted",
+            messages.len()
+        ));
+    }
     let mut parsed = Vec::new();
     let mut chars = 0;
     for message in messages {
@@ -146,6 +156,14 @@ mod tests {
         let image =
             json!({"messages": [{"role": "user", "content": {"type": "image", "data": "x"}}]});
         assert!(parse("s", &image).unwrap_err().contains("text only"));
+        let many: Vec<Value> = (0..=MAX_MESSAGES)
+            .map(|_| json!({"role": "user", "content": {"type": "text", "text": "x"}}))
+            .collect();
+        assert!(
+            parse("s", &json!({"messages": many}))
+                .unwrap_err()
+                .contains("messages")
+        );
         let big = "x".repeat(MAX_PROMPT_CHARS + 1);
         let long =
             json!({"messages": [{"role": "user", "content": {"type": "text", "text": big}}]});

@@ -292,17 +292,27 @@ described by size and type, not decoded.
 unless the user's own config sets `sampling = true` on that server; a repository's `.mcp.json`
 or environment config can never turn it on, and the connector forms keep the value that is in
 the file. The client then declares the `sampling` capability, and a request is answered only
-while one of the agent's own calls to that server is waiting (usually the tool call that made
-the server ask); at any other time it is refused. Each request waits for the user's approval,
-shown as a permission request for `mcp_sampling` with the server, the model, the token limit and
-the start of the last message. It is never pre-approved and "allow for the session" does not
-apply to it, in every permission mode. After approval the session's current model writes the
-reply, with no tools and a system note that the server's messages are untrusted data; the call
-passes through the usage budgets and is counted like any other. The reply is bounded: text
-only, at most 100,000 characters of prompt, and at most 4,096 generated tokens (1,024 when the
-server names none); the server's model preferences and `includeContext` are ignored, and the
-reply names the model that wrote it. Declining returns the MCP error `-1` to the server. The
-time spent waiting for the user or the model does not count toward the server's timeout.
+while some call of this session to that server is in flight (usually the tool call that made
+the server ask; a stdio server's requests are shared by the calls waiting on it, so with
+parallel calls any of them may carry the question); at any other time it is refused, and a
+request still waiting when its call ends or is cancelled is refused with `-1`. Each request
+waits for the user's approval, shown as a permission request for `mcp_sampling` that states the
+server, the model, the token limit, the message count and size, whether there is a system
+prompt (with a short excerpt), an upper bound on the cost from the model's price, and an
+excerpt of the last message, quoted with line breaks marked `⏎`. It is never pre-approved,
+"allow for the session" does not apply to it, and it is refused outright in an unattended
+session (background, auto-fix, project agents: "sampling needs a person watching the session")
+and cannot be answered through `imperium mcp-serve`, in every permission mode. A tool call may
+make at most three requests, and none after one was declined or failed. After approval the
+session's current model writes the reply with no history, no session instructions, no tools, no
+reasoning control, and a system note that the server's messages are untrusted data; the call
+passes through the usage budgets and is counted like any other (by estimate when the provider
+reports no usage). The request is bounded: text only, at most 50 messages and 100,000
+characters of prompt, and at most 4,096 generated tokens (1,024 when the server names none);
+the server's model preferences and `includeContext` are ignored, and the reply names the model
+that wrote it. Declining returns the MCP error `-1` to the server. The time spent waiting for
+the user or the model is added to the server's timeout, but nothing else resets it: a server
+that only sends pings cannot keep a call alive.
 
 *Not built:* inserting an MCP prompt into the desktop or CLI composer as a slash command (it
 needs a daemon method and a protocol minor; today only the agent can use prompts), resource

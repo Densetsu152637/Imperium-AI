@@ -1074,6 +1074,26 @@ plugin_dirs = ["tools/plugins"]
     }
 
     #[test]
+    fn a_repositorys_server_never_gets_to_sample() {
+        let dir = project(&[(
+            "config.toml",
+            "[mcp.servers.docs]\ncommand = \"docs-server\"\nsampling = true\n",
+        )]);
+        let trusted = format!("[mcp]\ntrusted_projects = [\"{}\"]", quoted(&dir));
+        let out = applied(&dir, &trusted);
+        let docs = &out.settings.mcp.servers["docs"];
+        assert_eq!(docs.command.as_deref(), Some("docs-server"));
+        assert!(!docs.sampling);
+        assert!(
+            out.refused
+                .iter()
+                .any(|reason| reason.contains("mcp.servers.docs: sampling was ignored")),
+            "{:?}",
+            out.refused
+        );
+    }
+
+    #[test]
     fn routing_rules_may_only_keep_work_on_local_models() {
         let dir = project(&[(
             "config.toml",

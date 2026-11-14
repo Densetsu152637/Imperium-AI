@@ -224,6 +224,7 @@ impl Sampler for Fake {
 async fn sampling_server(
     capabilities: Arc<Mutex<Option<Value>>>,
     replies: Arc<Mutex<Vec<Value>>>,
+    asks: usize,
 ) -> String {
     serve(Router::new().route(
         "/mcp",
@@ -247,14 +248,18 @@ async fn sampling_server(
                     Some("tools/list") => json!({"tools": [
                         {"name": "work", "description": "Needs a model", "inputSchema": {"type": "object"}}]}),
                     _ => {
-                        let ask = json!({"jsonrpc": "2.0", "id": "s1",
-                            "method": "sampling/createMessage", "params": {
-                                "messages": [{"role": "user",
-                                    "content": {"type": "text", "text": "name a colour"}}],
-                                "systemPrompt": "be short", "maxTokens": 50_000}});
+                        let mut body = String::new();
+                        for n in 1..=asks {
+                            let ask = json!({"jsonrpc": "2.0", "id": format!("s{n}"),
+                                "method": "sampling/createMessage", "params": {
+                                    "messages": [{"role": "user",
+                                        "content": {"type": "text", "text": "name a colour"}}],
+                                    "systemPrompt": "be short", "maxTokens": 50_000}});
+                            body.push_str(&format!("event: message\ndata: {ask}\n\n"));
+                        }
                         let done = json!({"jsonrpc": "2.0", "id": id,
                             "result": {"content": [{"type": "text", "text": "worked"}]}});
-                        let body = format!("event: message\ndata: {ask}\n\nevent: message\ndata: {done}\n\n");
+                        body.push_str(&format!("event: message\ndata: {done}\n\n"));
                         return ([("content-type", "text/event-stream")], body).into_response();
                     }
                 };
@@ -269,9 +274,18 @@ async fn run_work(
     sampling: bool,
     fake: &Fake,
 ) -> (Option<Value>, Vec<Value>, Result<String, String>) {
+    run_asking(sampling, fake, 1).await
+}
+
+/// One call of `work`, in which the server asks `asks` times.
+async fn run_asking(
+    sampling: bool,
+    fake: &Fake,
+    asks: usize,
+) -> (Option<Value>, Vec<Value>, Result<String, String>) {
     let capabilities = Arc::new(Mutex::new(None));
     let replies = Arc::new(Mutex::new(Vec::new()));
-    let url = sampling_server(Arc::clone(&capabilities), Arc::clone(&replies)).await;
+    let url = sampling_server(Arc::clone(&capabilities), Arc::clone(&replies), asks).await;
     let (servers, failed) = McpServers::connect(vec![spec("w", url, &["*"], sampling)]).await;
     assert!(failed.is_empty(), "{failed:?}");
     let result = servers.call("mcp__w__work", "{}", Some(fake)).await;
@@ -313,27 +327,28 @@ async fn sampling_is_bounded_answered_and_off_by_default() {
     assert_eq!(replies[0]["error"]["code"], -32601);
 }
 
-/// A stdio-style server that asks for sampling in the middle of a `tools/call`, waits for the
-/// answer, and reports what it got.
+/// A stdio-style server that asks for sampling in the middle of each `tools/call` (one request
+/// per call, `s<call id>`), waits for the answer, and reports what it got.
 fn spawn_stdio_server(server: tokio::io::DuplexStream) {
     let (read, mut write) = tokio::io::split(server);
     tokio::spawn(async move {
         let mut lines = BufReader::new(read).lines();
-        let mut call = None;
+        let mut calls = std::collections::HashMap::new();
         while let Ok(Some(line)) = lines.next_line().await {
             let message: Value = serde_json::from_str(&line).unwrap();
             let reply = if message["method"] == "tools/call" {
-                call = Some(message["id"].clone());
-                json!({"jsonrpc": "2.0", "id": "s1", "method": "sampling/createMessage",
+                let asked = format!("s{}", message["id"]);
+                calls.insert(asked.clone(), message["id"].clone());
+                json!({"jsonrpc": "2.0", "id": asked, "method": "sampling/createMessage",
                     "params": {"messages": [{"role": "user",
                         "content": {"type": "text", "text": "hi"}}]}})
-            } else if message["id"] == "s1" {
+            } else if let Some(call) = message["id"].as_str().and_then(|id| calls.remove(id)) {
                 let text = message["result"]["content"]["text"]
                     .as_str()
                     .or_else(|| message["error"]["message"].as_str())
                     .unwrap_or("?")
                     .to_string();
-                json!({"jsonrpc": "2.0", "id": call.take().unwrap(),
+                json!({"jsonrpc": "2.0", "id": call,
                     "result": {"content": [{"type": "text", "text": text}]}})
             } else {
                 continue;
@@ -438,4 +453,128 @@ fn tool_context_carries_an_optional_sampler() {
         sampler: None,
     };
     assert!(context.sampler.is_none());
+}
+
+#[tokio::test]
+async fn two_calls_in_flight_share_one_stream() {
+    let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+    spawn_stdio_server(server_side);
+    let (read, write) = tokio::io::split(client_side);
+    let client = Client::over_stream(read, write, Duration::from_secs(5));
+    client.allow_sampling();
+    let fake = Fake::new(Ok("ok"));
+    let (a, b) = tokio::join!(call(&client, Some(&fake)), call(&client, Some(&fake)));
+    assert_eq!(a.unwrap()["content"][0]["text"], "ok");
+    assert_eq!(b.unwrap()["content"][0]["text"], "ok");
+    assert_eq!(fake.asked.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_call_may_ask_only_a_few_times_and_not_again_after_a_refusal() {
+    let fake = Fake::new(Ok("teal"));
+    let (_, replies, result) = run_asking(true, &fake, 5).await;
+    assert_eq!(result, Ok("worked".to_string()));
+    assert_eq!(replies.len(), 5);
+    assert_eq!(
+        replies
+            .iter()
+            .filter(|reply| reply.get("result").is_some())
+            .count(),
+        3
+    );
+    assert_eq!(fake.asked.lock().unwrap().len(), 3);
+
+    let fake = Fake::new(Err("declined"));
+    let (_, replies, _) = run_asking(true, &fake, 3).await;
+    assert_eq!(fake.asked.lock().unwrap().len(), 1);
+    assert_eq!(replies.len(), 3);
+    assert!(replies.iter().all(|reply| reply["error"]["code"] == -1));
+}
+
+#[tokio::test]
+async fn a_cancelled_call_refuses_the_request_it_was_answering() {
+    struct Hang;
+    impl Sampler for Hang {
+        fn sample<'a>(&'a self, _request: SamplingRequest) -> SamplingFuture<'a> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Err("never".to_string())
+            })
+        }
+    }
+    let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+    let (read, mut write) = tokio::io::split(server_side);
+    let (seen, mut refused) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(read).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let message: Value = serde_json::from_str(&line).unwrap();
+            if message["method"] == "tools/call" {
+                let ask = json!({"jsonrpc": "2.0", "id": "s1", "method": "sampling/createMessage",
+                    "params": {"messages": [{"role": "user",
+                        "content": {"type": "text", "text": "hi"}}]}});
+                write
+                    .write_all(format!("{ask}\n").as_bytes())
+                    .await
+                    .unwrap();
+            } else if message["id"] == "s1" {
+                let _ = seen.send(message);
+            }
+        }
+    });
+    let (read, write) = tokio::io::split(client_side);
+    let client = Client::over_stream(read, write, Duration::from_secs(60));
+    client.allow_sampling();
+    let sampling = Some(Sampling {
+        sampler: &Hang,
+        server: "s",
+    });
+    let cancelled = tokio::time::timeout(
+        Duration::from_millis(300),
+        client.request_with("tools/call", json!({}), sampling),
+    )
+    .await;
+    assert!(cancelled.is_err());
+    let reply = tokio::time::timeout(Duration::from_secs(5), refused.recv())
+        .await
+        .expect("the server is told within 5 s")
+        .unwrap();
+    assert_eq!(reply["error"]["code"], -1);
+}
+
+/// An HTTP server that answers every request with an SSE stream of server pings and never a
+/// response.
+async fn pinging_server(period: Duration) -> String {
+    serve(Router::new().route(
+        "/mcp",
+        post(move |axum::Json(request): axum::Json<Value>| async move {
+            if request.get("method").is_none() {
+                return axum::http::StatusCode::ACCEPTED.into_response();
+            }
+            let pings = futures_util::stream::unfold(0u32, move |n| async move {
+                tokio::time::sleep(period).await;
+                let ping = json!({"jsonrpc": "2.0", "id": format!("p{n}"), "method": "ping"});
+                Some((
+                    Ok::<String, std::convert::Infallible>(format!("data: {ping}\n\n")),
+                    n + 1,
+                ))
+            });
+            (
+                [("content-type", "text/event-stream")],
+                axum::body::Body::from_stream(pings),
+            )
+                .into_response()
+        }),
+    ))
+    .await
+}
+
+#[tokio::test]
+async fn a_server_that_only_pings_cannot_keep_a_call_alive() {
+    let url = pinging_server(Duration::from_millis(150)).await;
+    let client = Client::over_http(url, Vec::new(), Duration::from_millis(600));
+    let started = std::time::Instant::now();
+    let result = client.request("tools/call", json!({})).await;
+    assert_eq!(result, Err(McpError::Timeout(0)));
+    assert!(started.elapsed() < Duration::from_secs(5));
 }

@@ -3422,16 +3422,14 @@ impl Agent {
     /// budgets like any other model call. Its length is bounded by `request.max_tokens`, and
     /// the model is given no tools.
     async fn sample_for_mcp(&self, request: SamplingRequest) -> Result<SamplingReply, String> {
-        let last = request
-            .messages
-            .last()
-            .map_or("", |message| message.text.as_str());
-        let summary = format!(
-            "MCP server {} asks {} to write a reply of up to {} tokens to: {}",
-            request.server,
-            self.model.spec,
-            request.max_tokens,
-            truncate(last, 300)
+        // Nobody is there to ask: a request would wait for an answer that never comes.
+        if !is_attended(&self.shared) {
+            return Err("sampling needs a person watching the session".into());
+        }
+        let summary = crate::sampling_summary::summary(
+            &self.model.spec,
+            self.model.pricing.as_ref(),
+            &request,
         );
         if !self
             .approve_with("mcp_sampling", &summary, None, false, true)
@@ -3491,17 +3489,21 @@ impl Agent {
             .await;
         drop(lease);
         let completion = completion.map_err(|error| error.to_string())?;
-        if let Some(usage) = &completion.usage {
-            self.emit(SessionEvent::ModelCallCompleted {
-                model: self.model.spec.clone(),
-                usage: token_usage(usage),
-                duration_ms: millis(started.elapsed()),
-                queue_wait_ms: None,
-                time_to_first_token_ms: None,
-                tokens_per_sec: None,
-                cost_usd: self.cost(usage),
-            });
-        }
+        // A provider that reports no usage is counted by estimate, so budgets still see the call.
+        let usage = completion.usage.unwrap_or(Usage {
+            prompt_tokens: crate::sampling_summary::prompt_tokens(&request),
+            completion_tokens: (completion.text.chars().count() as u64).div_ceil(4),
+            cached_tokens: 0,
+        });
+        self.emit(SessionEvent::ModelCallCompleted {
+            model: self.model.spec.clone(),
+            usage: token_usage(&usage),
+            duration_ms: millis(started.elapsed()),
+            queue_wait_ms: None,
+            time_to_first_token_ms: None,
+            tokens_per_sec: None,
+            cost_usd: self.cost(&usage),
+        });
         Ok(SamplingReply {
             text: completion.text,
             model: self.model.spec.clone(),

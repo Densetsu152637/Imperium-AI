@@ -66,18 +66,34 @@ impl Inbound {
 }
 
 /// Counts one request of ours as waiting for its answer.
-struct InFlight<'a>(&'a Inbound);
+/// When the last one ends (answered, timed out, or cancelled), sampling requests still queued
+/// are refused: nobody is left to answer them.
+struct InFlight<'a> {
+    inbound: &'a Inbound,
+    replies: Option<&'a mpsc::UnboundedSender<String>>,
+}
 
 impl<'a> InFlight<'a> {
-    fn new(inbound: &'a Inbound) -> Self {
+    fn new(inbound: &'a Inbound, replies: Option<&'a mpsc::UnboundedSender<String>>) -> Self {
         inbound.in_flight.fetch_add(1, Ordering::SeqCst);
-        InFlight(inbound)
+        InFlight { inbound, replies }
     }
 }
 
 impl Drop for InFlight<'_> {
     fn drop(&mut self) {
-        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+        if self.inbound.in_flight.fetch_sub(1, Ordering::SeqCst) != 1 {
+            return;
+        }
+        while let Some(request) = self.inbound.pop() {
+            if let Some(replies) = self.replies {
+                let refusal = reply_message(
+                    &request.id,
+                    Err((-1, "the call ended before the request was answered".into())),
+                );
+                let _ = replies.send(refusal.to_string());
+            }
+        }
     }
 }
 
@@ -206,7 +222,13 @@ impl Client {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let seconds = self.timeout.as_secs();
-        let _waiting = InFlight::new(&self.inbound);
+        let _waiting = InFlight::new(
+            &self.inbound,
+            match &self.transport {
+                Transport::Stream { outgoing, .. } => Some(outgoing),
+                Transport::Http(_) => None,
+            },
+        );
         match &self.transport {
             Transport::Stream { outgoing, pending } => {
                 let (sender, mut receiver) = oneshot::channel();
@@ -220,10 +242,13 @@ impl Client {
                     tokio::select! {
                         result = &mut receiver => break result.unwrap_or(Err(McpError::Closed)),
                         () = self.inbound.wake.notified() => {
+                            // Only the time spent answering is given back; a server that
+                            // keeps sending requests cannot keep the call alive.
+                            let started = Instant::now();
                             while let Some(request) = self.inbound.pop() {
                                 self.serve(request, sampling).await;
                             }
-                            deadline = Instant::now() + self.timeout;
+                            deadline += started.elapsed();
                         }
                         () = tokio::time::sleep_until(deadline) => {
                             break Err(McpError::Timeout(seconds));
@@ -256,6 +281,15 @@ impl Client {
 
     /// Answers a sampling request that was read from a stream.
     async fn serve(&self, request: ServerRequest, sampling: Option<Sampling<'_>>) {
+        // Only stream transports queue requests; HTTP ones are answered where they arrive.
+        let Transport::Stream { outgoing, .. } = &self.transport else {
+            return;
+        };
+        // If the call is cancelled while the request is being answered, the server is told so.
+        let mut unanswered = Refusal {
+            replies: outgoing,
+            id: Some(request.id.clone()),
+        };
         let outcome = match (request.method.as_str(), sampling) {
             (SAMPLING_METHOD, Some(sampling)) => {
                 crate::sampling::create_message(sampling, &request.params).await
@@ -265,14 +299,26 @@ impl Client {
                 format!("{method} is not available outside a tool call"),
             )),
         };
+        unanswered.id = None;
         let reply = reply_message(&request.id, outcome);
-        match &self.transport {
-            Transport::Stream { outgoing, .. } => {
-                let _ = outgoing.send(reply.to_string());
-            }
-            Transport::Http(http) => {
-                let _ = http.send(&reply).await;
-            }
+        let _ = outgoing.send(reply.to_string());
+    }
+}
+
+/// Refuses a server's request when dropped while still unanswered.
+struct Refusal<'a> {
+    replies: &'a mpsc::UnboundedSender<String>,
+    id: Option<Value>,
+}
+
+impl Drop for Refusal<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            let refusal = reply_message(
+                &id,
+                Err((-1, "the call ended before the request was answered".into())),
+            );
+            let _ = self.replies.send(refusal.to_string());
         }
     }
 }
@@ -362,9 +408,11 @@ impl Http {
                 if message.get("method").is_some() {
                     // A request or notification from the server.
                     if let Some(request_id) = message.get("id") {
+                        let started = Instant::now();
                         let reply = answer(request_id, &message, inbound, sampling).await;
-                        let _ = self.send(&reply).await;
-                        deadline = Instant::now() + limit;
+                        // Only the time spent answering is given back (a ping costs none).
+                        deadline += started.elapsed();
+                        let _ = tokio::time::timeout_at(deadline, self.send(&reply)).await;
                     }
                 } else if message.get("id").and_then(Value::as_u64) == Some(id) {
                     return result_of(&message, id);
